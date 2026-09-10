@@ -259,8 +259,55 @@ occurrence while scored rows keep their score-separated identity — a miss row
 never merges with a scored row because the score column differs (`Null` vs
 `Float64`). LIMIT/OFFSET slot consumption follows the existing post-dedup rule
 (dedup runs before skip/take; a DISTINCT tail bypasses the ranking window).
-Threshold/compound/second-call combinations with an optional prefix stay
-rejected. Covered live by a duplicate-empty-project fixture (two `pno`-101
+Compound/second-call combinations with an optional prefix stay
+rejected (threshold over an optional prefix takes the drop contract of the
+threshold-nested addendum below). Covered live by a duplicate-empty-project fixture (two `pno`-101
 misses plus one `pno`-102 miss): the lifecycle asserts the 45-row non-DISTINCT
 baseline, the 23-row DISTINCT collapse (21 scored + 2 miss survivors, null
 group trailing in prefix order with NULL scores), and replay.
+
+Threshold over an optional prefix has since been accepted with the
+drop contract (see the threshold-nested addendum below); compound/second-
+call combinations with an optional prefix stay rejected.
+## Addendum: threshold over an OPTIONAL MATCH prefix (implemented 2026-09-10)
+
+A threshold predicate over an optional-bound variable is accepted with a
+null-**drop** contract (SQL three-valued logic), the deliberate counterpart to
+the TopK null-keep contract:
+
+|                        | TopK + optional (keep)              | Threshold + optional (drop)              |
+|------------------------|-------------------------------------|------------------------------------------|
+| Operation              | `ORDER BY s` (ordering)             | `WHERE s > t` (filtering)                |
+| NULL rows              | Kept: NULLS LAST tail, prefix order | Dropped: `NULL cmp bound` is UNKNOWN     |
+| `LIMIT`                | Nulls consume slots                 | Applies to the scored-only set           |
+| `truncated`            | TEXT-owned                          | `Some(false)`: a drop is not truncation  |
+| Score column           | `Null`-projected (nullable manifest)| No score column at all                  |
+
+Why the drop preserves meaning: the surface `WHERE` arrives as a
+`PropertyFilter` *inside* the `OptionalMatch` subplan (the grammar binds the
+clause to the optional match), while the Router barrier must evaluate after
+optional padding. The planner hoists the subplan-trailing single-predicate
+threshold filter to a top-level `Threshold` barrier
+(`try_optional_hoisted_threshold_barrier`: exact `[.., OptionalMatch,
+Project]` tail, one optional level, score-free siblings, same prefix/label/
+coverage guards as the top-level barrier). The hoist turns error into drop and
+never keep into drop: a residual `text_score` call fails closed in Graph
+execution (`UnsupportedExpression`), so no keep-semantics execution exists for
+the shape — there is no coverage-dependent meaning flip.
+
+Router-side the gate opens from TopK-only to TopK|Threshold (compound and
+second calls stay rejected), and a mode-gated 3-line retain drops null-key
+rows before TEXT and rank — beside the dual symmetric retain, so the
+drop → retain → truncate order the compound follow-up needs is already in
+place. Non-optional threshold plans are unaffected (every key decodes
+non-null there). NaN bounds inherit the existing contract unchanged
+(`resolve_scan_bound` has no NaN guard; every comparison is UNKNOWN, so a NaN
+bound retains nothing — fail-safe, not fail-closed) and need no nested-
+specific branch. `RETURN DISTINCT` rides the same mode-agnostic post-rank
+dedup over the dropped set with no extra code.
+
+Covered live by reusing the nested doc-less-project fixture: the lifecycle
+asserts the 42-row drop (44 would mean keep) with all-`None` pno (a leaked
+miss would read 101/102), exact frame equality with the non-nested threshold
+frame (membership and order), an interior-score `>`/`>=` split, a NaN bound
+retaining zero rows, a DISTINCT collapse to the 21 documents, and replay.

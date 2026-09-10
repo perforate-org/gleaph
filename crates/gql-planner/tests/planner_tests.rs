@@ -8253,6 +8253,59 @@ fn candidate_text_threshold_rejects_compound_filter_and_missing_shape() {
 }
 
 #[test]
+fn candidate_text_threshold_lowers_over_optional_match_prefix() {
+    // The threshold lowering proves the scored label descending one optional
+    // level, so an OPTIONAL MATCH prefix lowers to the same barrier the
+    // Router null-drop contract executes. A misimplementation that refuses to
+    // descend leaves the threshold Filter residual and fails closed.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title",
+        &text_coverage_stats(),
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("threshold barrier over an optional prefix");
+    assert!(
+        plan.ops[..scan_idx]
+            .iter()
+            .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+        "barrier must sit after the optional prefix, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            &plan.ops[scan_idx],
+            PlanOp::TextScan {
+                mode: TextScanMode::Threshold { .. },
+                ..
+            }
+        ),
+        "expected a threshold barrier, got: {:?}",
+        plan.ops
+    );
+    for query in [
+        // Two conjuncts in the optional WHERE: the subplan filter is not a
+        // single-predicate threshold, so no hoist.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 AND d.title = 'x' RETURN d.title",
+        // Compound over an optional prefix: the follow-up owns the
+        // drop-then-truncate order, so this slice lowers nothing.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title ORDER BY text_score(d.body,'hello') DESC LIMIT 10",
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::TextScan { .. })),
+            "non-minimal optional shape must not lower: {query}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
 fn candidate_text_threshold_without_coverage_stays_unlowered() {
     let mut stats = text_coverage_stats();
     stats

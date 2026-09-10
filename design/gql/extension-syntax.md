@@ -1096,7 +1096,8 @@ Contract:
   Compound (`s1+s2` ordering), threshold-mixed, DISTINCT-mixed, third-call, and
   multi-shard duals stay rejected and fail closed. An `OPTIONAL MATCH` prefix is
   TopK-only with a single score column (DISTINCT accepted with the null-row
-  contract below): the planner proves the
+  contract below); the threshold form is accepted with the null-drop contract
+  below. The planner proves the
   scored label descending one optional level (ambiguous or unlabeled optional
   bindings fail closed) and accepts an explicit `NULLS LAST` as a no-op
   restatement, while an explicit `NULLS FIRST` refuses to lower and fails closed.
@@ -1106,8 +1107,17 @@ Contract:
   consumes null slots; the TEXT window stays scored-only and `truncated` stays
   TEXT-owned. This nulls-last default deliberately deviates from the GQL DESC
   default and a prepared-manifest covering the shape must declare the score
-  column nullable. Threshold/compound/dual combinations with an
-  optional prefix stay rejected. A `RETURN DISTINCT` tail over an `OPTIONAL MATCH`
+  column nullable. A threshold predicate over an optional-bound variable
+  (`OPTIONAL MATCH ... WHERE text_score(d.body,$q) > t`) is evaluated after
+  optional padding with SQL three-valued logic: `NULL > t` is UNKNOWN, so the
+  barrier drops miss rows before TEXT and rank (`truncated` stays `false` — a
+  drop is filtering, not truncation). The planner hoists the subplan-trailing
+  single-predicate threshold filter to the top-level barrier; the hoist is
+  meaning-preserving because a residual `text_score` call fails closed in
+  Graph execution (`UnsupportedExpression`), so lifting turns error into drop
+  and never turns a keep into a drop. Multi-predicate, multi-optional, and
+  second-call shapes stay residual and fail closed. Compound/dual combinations
+  with an optional prefix stay rejected. A `RETURN DISTINCT` tail over an `OPTIONAL MATCH`
   prefix dedups the fully projected rows with the null-safe whole-row key
   (`Null == Null`, SQL DISTINCT semantics): byte-identical miss rows collapse to
   one while scored rows keep score-separated identity (a miss never merges with

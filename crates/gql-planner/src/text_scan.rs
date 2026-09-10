@@ -645,12 +645,19 @@ pub(crate) fn apply_candidate_text_topk_lowering(
 /// absorbs `IsLabeled` into `ExpandFilter` destinations), so the barrier takes
 /// exactly one single-predicate `PropertyFilter` whose predicate extracts.
 pub(crate) fn apply_candidate_text_threshold_lowering(
-    ops: &mut [PlanOp],
+    ops: &mut Vec<PlanOp>,
     stats: Option<&dyn GraphStats>,
 ) -> bool {
     let Some(stats) = stats else {
         return false;
     };
+    if try_top_level_threshold_barrier(ops, stats) {
+        return true;
+    }
+    try_optional_hoisted_threshold_barrier(ops, stats)
+}
+
+fn try_top_level_threshold_barrier(ops: &mut [PlanOp], stats: &dyn GraphStats) -> bool {
     // The barrier candidate is a single-predicate `PropertyFilter` whose predicate
     // extracts as a threshold (other single-predicate filters, such as the anchor
     // equality, stay in the prefix). Exactly one must exist.
@@ -711,6 +718,102 @@ pub(crate) fn apply_candidate_text_threshold_lowering(
         property_projection: None,
     };
     ops[filter_idx] = text_scan;
+    true
+}
+
+/// Threshold-over-optional hoist (threshold-nested slice): a single-predicate
+/// threshold `PropertyFilter` trailing one `OptionalMatch` subplan lifts to a
+/// top-level `Threshold` barrier evaluated after optional padding.
+///
+/// The hoist is meaning-preserving for the only two outcomes this shape has:
+/// a residual `text_score` call fails closed in Graph execution
+/// (`UnsupportedExpression`), so lifting it turns error into the documented
+/// post-padding drop contract (SQL three-valued logic) and never turns a
+/// keep into a drop. Anything but the exact shape — a non-trailing filter,
+/// extra predicates, a second score mention, a second optional level — stays
+/// residual and fails closed.
+fn try_optional_hoisted_threshold_barrier(ops: &mut Vec<PlanOp>, stats: &dyn GraphStats) -> bool {
+    // The barrier evaluates after the complete prefix: the tail must be
+    // exactly `[.., OptionalMatch, Project]`.
+    if ops.len() < 3 || !matches!(ops[ops.len() - 1], PlanOp::Project { .. }) {
+        return false;
+    }
+    let opt_idx = ops.len() - 2;
+    let PlanOp::OptionalMatch { .. } = &ops[opt_idx] else {
+        return false;
+    };
+    // Exactly one optional level: a second `OptionalMatch` anywhere else in
+    // the prefix stays unlowered.
+    if ops[..opt_idx]
+        .iter()
+        .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
+    {
+        return false;
+    }
+    // The hoist candidate is the subplan's trailing single-predicate
+    // threshold filter; the rest of the subplan must be score-free.
+    let (score, cmp, bound) = {
+        let PlanOp::OptionalMatch { sub_plan } = &ops[opt_idx] else {
+            unreachable!("checked above");
+        };
+        let Some(PlanOp::PropertyFilter { predicates, .. }) = sub_plan.last() else {
+            return false;
+        };
+        if predicates.len() != 1 {
+            return false;
+        }
+        match extract_threshold_predicate(&predicates[0]) {
+            Some(seed) => seed,
+            None => return false,
+        }
+    };
+    let PlanOp::OptionalMatch { sub_plan } = &ops[opt_idx] else {
+        unreachable!("checked above");
+    };
+    if sub_plan.len() < 2
+        || sub_plan[..sub_plan.len() - 1]
+            .iter()
+            .any(op_mentions_text_score)
+    {
+        return false;
+    }
+    // The hoisted predicate is the only score mention: no sibling may carry
+    // another `text_score` call.
+    if ops[..opt_idx].iter().any(op_mentions_text_score) {
+        return false;
+    }
+    // The same completeness guards as the top-level barrier: no scan, no row
+    // cap anywhere in the prefix.
+    if ops[..opt_idx].iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        )
+    }) {
+        return false;
+    }
+    let Some(label) = proven_prefix_label(&ops[..=opt_idx], &score.variable) else {
+        return false;
+    };
+    if !stats.is_vertex_property_text_indexed_for(Some(&label), &score.property) {
+        return false;
+    }
+    // Commit: drop the filter from the subplan, insert the barrier before the
+    // tail Project. The barrier carries no score column: threshold-only
+    // RETURN rows project the surviving prefix bindings.
+    let PlanOp::OptionalMatch { sub_plan } = &mut ops[opt_idx] else {
+        unreachable!("checked above");
+    };
+    sub_plan.pop();
+    let text_scan = PlanOp::TextScan {
+        variable: score.variable.as_str().into(),
+        label: label.as_str().into(),
+        property: score.property.as_str().into(),
+        query: score.query.clone(),
+        mode: TextScanMode::Threshold { cmp, bound },
+        property_projection: None,
+    };
+    ops.insert(opt_idx + 1, text_scan);
     true
 }
 

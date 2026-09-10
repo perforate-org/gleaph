@@ -3628,3 +3628,159 @@ fn non_leading_text_candidate_nested_distinct_lifecycle() {
         "nested DISTINCT replay is deterministic"
     );
 }
+
+const CANDIDATE_NESTED_THRESHOLD_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, p.pno AS pno";
+const CANDIDATE_NESTED_THRESHOLD_GE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) >= $t \
+     RETURN d.rank AS rank, p.pno AS pno";
+const CANDIDATE_NESTED_THRESHOLD_DISTINCT_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN DISTINCT d.rank AS rank, p.pno AS pno";
+
+/// Reads `(rank, pno)` rows of a threshold-only nested query. The rank must be
+/// non-null: a leaked miss row would surface here as `Null` and fail loudly.
+/// The main project carries no `pno`, so surviving rows all read `None` while
+/// a leaked miss would read 101/102.
+fn nested_threshold_rows(result: &GqlQueryResult) -> Vec<(i64, Option<i64>)> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let rank = match columns.get("rank").expect("rank column present") {
+                GqlWireValue::Int64(rank) => *rank,
+                other => panic!("a surviving row must carry a rank, got {other:?}"),
+            };
+            let pno = match columns.get("pno").expect("pno column present") {
+                GqlWireValue::Int64(pno) => Some(*pno),
+                GqlWireValue::Null => None,
+                other => panic!("pno must be Int64 or Null, got {other:?}"),
+            };
+            (rank, pno)
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_nested_threshold_lifecycle() {
+    let fixture = seed_nested_score_fixture();
+    let env = fixture.env;
+
+    // Calibration: the non-nested threshold frame for the same query text.
+    let base = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    );
+    let base_frame = threshold_scored_rows(&base);
+    assert_eq!(base_frame.len(), 42, "bio frame holds every candidate row");
+    assert_eq!(base.truncated, Some(false), "threshold never truncates");
+
+    // Null drop: every scored row survives, both misses leave (44 would mean
+    // TopK-style keep). The surviving rows carry no pno — a leaked miss would
+    // read 101/102 and fail the assertion below.
+    let all = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    );
+    let rows = nested_threshold_rows(&all);
+    assert_eq!(rows.len(), 42, "null rows drop under three-valued logic");
+    assert!(
+        rows.iter().all(|(_, pno)| pno.is_none()),
+        "no miss row may leak, got: {rows:?}"
+    );
+    assert_eq!(
+        all.truncated,
+        Some(false),
+        "a drop is filtering, not truncation"
+    );
+    // Membership and order equal the non-nested frame exactly: the barrier
+    // must neither lose a scored row nor reorder the frame.
+    assert_eq!(
+        rows.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        base_frame.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        "nested frame matches the non-nested threshold frame"
+    );
+
+    // Boundary: an interior score splits `>` and `>=` exactly as the base
+    // frame predicts.
+    let probe = base_frame[10].1;
+    let gt = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", probe),
+    );
+    let gt_rows = nested_threshold_rows(&gt);
+    let gt_expected: Vec<i64> = base_frame
+        .iter()
+        .filter(|(_, score)| *score > probe)
+        .map(|(rank, _)| *rank)
+        .collect();
+    assert_eq!(
+        gt_rows.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        gt_expected,
+        "strict bound keeps scores above the probe only"
+    );
+    let ge = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_GE_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", probe),
+    );
+    let ge_rows = nested_threshold_rows(&ge);
+    let ge_expected: Vec<i64> = base_frame
+        .iter()
+        .filter(|(_, score)| *score >= probe)
+        .map(|(rank, _)| *rank)
+        .collect();
+    assert_eq!(
+        ge_rows.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        ge_expected,
+        "inclusive bound keeps scores at or above the probe"
+    );
+
+    // NaN bound retains nothing: every comparison is UNKNOWN, never an error.
+    let nan = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", f64::NAN),
+    );
+    assert_eq!(nan.row_count, 0, "NaN bound matches no row");
+    assert_eq!(nan.truncated, Some(false));
+
+    // DISTINCT over the dropped set dedups scored duplicates: 42 rows become
+    // the 21 distinct documents, with no null group left to collapse.
+    let distinct = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_DISTINCT_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    );
+    let distinct_rows = nested_threshold_rows(&distinct);
+    let mut deduped: Vec<(i64, Option<i64>)> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        if !deduped.contains(row) {
+            deduped.push(*row);
+        }
+    }
+    assert_eq!(distinct_rows, deduped, "DISTINCT dedups the scored set");
+    assert_eq!(distinct_rows.len(), 21, "two users fan out to 21 documents");
+
+    // Replay determinism: the drop contract replays row-identical.
+    let again = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_THRESHOLD_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    );
+    assert_eq!(
+        nested_threshold_rows(&again),
+        rows,
+        "threshold drop replays deterministically"
+    );
+}

@@ -457,18 +457,23 @@ fn analyze_candidate_barrier_shape(
     }
     let score_cols = usize::from(score_col_idx.is_some()) + usize::from(second.is_some());
     // Nested-keep slice: an OPTIONAL MATCH prefix is TopK-only and single-score.
-    // Threshold/compound modes and second calls need their own null-row
-    // contracts and stay rejected here. DISTINCT rides the mode-agnostic
-    // rank → dedup → skip → take stage: the whole-row key is null-safe
-    // (Null == Null, SQL DISTINCT semantics), so identical miss rows collapse
-    // to one while scored rows keep their score-separated identity.
+    // The threshold-nested slice opens the Threshold mode with a null-drop
+    // contract (SQL three-valued logic: `NULL > t` is UNKNOWN, so WHERE keeps
+    // only TRUE rows); compound modes and second calls still need their own
+    // null-row contracts and stay rejected here. DISTINCT rides the
+    // mode-agnostic rank → dedup → skip → take stage: the whole-row key is
+    // null-safe (Null == Null, SQL DISTINCT semantics), so identical miss rows
+    // collapse to one while scored rows keep their score-separated identity.
     if plan.ops[..scan_idx]
         .iter()
         .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
     {
-        if !matches!(mode, CandidateBarrierMode::TopK { .. }) {
+        if !matches!(
+            mode,
+            CandidateBarrierMode::TopK { .. } | CandidateBarrierMode::Threshold { .. }
+        ) {
             return Err(unsupported(
-                "an OPTIONAL MATCH prefix is supported in the top-k form only",
+                "an OPTIONAL MATCH prefix is supported in the top-k and threshold forms only",
             ));
         }
         if second.is_some() {
@@ -1034,6 +1039,19 @@ async fn try_execute_candidate_text_scan(
         prefix_rows.retain(|row| {
             second_join_key(row, two_variable).is_some_and(|key| second_scores.contains_key(&key))
         });
+    }
+
+    // Threshold-family null drop (SQL three-valued logic): an OPTIONAL MATCH
+    // miss has no score, so `NULL cmp bound` is UNKNOWN and the WHERE keeps
+    // only TRUE rows. Dropped before TEXT (misses never reach TEXT anyway) and
+    // before rank, so a later truncate counts scored rows only — the same
+    // drop → retain → truncate order the compound follow-up needs. A no-op
+    // without an optional prefix: every key decodes non-null there.
+    if matches!(
+        barrier.mode,
+        CandidateBarrierMode::Threshold { .. } | CandidateBarrierMode::Compound { .. }
+    ) {
+        prefix_rows.retain(|row| row.key.is_some());
     }
 
     let (row_cap, take) = barrier_row_window(&barrier.mode, barrier.distinct, barrier.skip);
@@ -3136,17 +3154,84 @@ mod candidate_barrier_tests {
     }
 
     #[test]
-    fn barrier_shape_rejects_optional_match_combinations() {
+    fn barrier_shape_accepts_optional_match_threshold() {
         let optional = || PlanOp::OptionalMatch { sub_plan: vec![] };
-        // Threshold mode has no null-row contract: fail closed.
+        // Threshold + OPTIONAL MATCH opens with the null-drop contract: the
+        // WHERE keeps only TRUE rows, so misses leave before rank.
         let plan = test_plan(vec![
             node_scan_d(),
             optional(),
             barrier_scan_threshold(),
-            tail_project(),
+            tail_project_no_score(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(shape.mode, CandidateBarrierMode::Threshold { .. }));
+        // DISTINCT rides along: dedup runs on the scored-only set after rank.
+        let PlanOp::Project { columns, .. } = tail_project_no_score() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_threshold(),
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert!(matches!(shape.mode, CandidateBarrierMode::Threshold { .. }));
+        // Compound + OPTIONAL MATCH stays rejected: the immediate follow-up
+        // owns the drop → truncate order definition.
+        let mut scan = barrier_scan(20);
+        let PlanOp::TextScan { mode, .. } = &mut scan else {
+            panic!("scan");
+        };
+        *mode = TextScanMode::ThresholdTopK {
+            cmp: CmpOp::Gt,
+            bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            scan,
+            tail_project_no_score(),
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
-        // Compound mode shares the TopK-only gate: fail closed with DISTINCT too.
+        // A second call + threshold + OPTIONAL MATCH stays rejected.
+        let PlanOp::Project { columns, .. } = tail_project_dual() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_threshold(),
+            PlanOp::Project {
+                columns,
+                distinct: false,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // Skip + threshold + OPTIONAL MATCH stays rejected: the threshold
+        // lowering carries no TopK to fuse an OFFSET through.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_threshold(),
+            tail_project_no_score(),
+            skip_limit_op(5),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn barrier_shape_rejects_optional_match_combinations() {
+        let optional = || PlanOp::OptionalMatch { sub_plan: vec![] };
+        // Threshold mode opens with the null-drop contract (covered as an
+        // accept in `barrier_shape_accepts_optional_match_threshold`).
+        // Compound mode shares the TopK/threshold-only gate: fail closed with DISTINCT too.
         let mut scan = barrier_scan(20);
         let PlanOp::TextScan { mode, .. } = &mut scan else {
             panic!("scan");
