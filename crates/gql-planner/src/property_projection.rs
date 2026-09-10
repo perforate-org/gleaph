@@ -103,15 +103,39 @@ fn collect_search_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<Stri
     out
 }
 
-/// Collect scored variables of later `TextScan` operators. A candidate barrier
-/// (`TextScan` after a traversal prefix) is executed by keying TEXT candidates
-/// off `ELEMENT_ID(variable)`, so the prefix binding must remain a full vertex
-/// binding even when the original `RETURN` only reads properties — a projected
-/// record drops identity. Deliberately conservative like the collectors below:
-/// an extra member only forces full hydration for that slot, never changes
-/// results.
+/// Collect scored variables of later `TextScan` operators, plus the variables of
+/// bare `text_score(v.prop, Q)` calls projected by later `Project` columns. A
+/// candidate barrier (`TextScan` after a traversal prefix) is executed by keying
+/// TEXT candidates off `ELEMENT_ID(variable)`, so the prefix binding must remain
+/// a full vertex binding even when the original `RETURN` only reads properties —
+/// a projected record drops identity. The `Project` half matters for two-variable
+/// dual scoring: the second variable never lowers to a `TextScan` (its call stays
+/// a residual column), yet the Router still keys the second TEXT round trip off
+/// its element id. Only the bare-call form is collected — wrapped calls never
+/// reach a Router barrier (the shape gate rejects them), so protecting them
+/// would only force hydration. Deliberately conservative like the collectors
+/// below: an extra member only forces full hydration for that slot, never
+/// changes results.
 fn collect_text_barrier_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
+    fn bare_scored_variable(expr: &Expr) -> Option<&str> {
+        let ExprKind::FunctionCall { name, args, .. } = &expr.kind else {
+            return None;
+        };
+        if name.parts.len() != 1 || !name.parts[0].eq_ignore_ascii_case("text_score") {
+            return None;
+        }
+        let [target, _] = args.as_slice() else {
+            return None;
+        };
+        let ExprKind::PropertyAccess { expr, .. } = &target.kind else {
+            return None;
+        };
+        match &expr.kind {
+            ExprKind::Variable(variable) => Some(variable.as_ref()),
+            _ => None,
+        }
+    }
     fn scan_physical(plan: &PhysicalPlan, out: &mut BTreeSet<String>) {
         scan(&plan.ops, out);
     }
@@ -119,6 +143,13 @@ fn collect_text_barrier_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSe
         for op in ops {
             if let PlanOp::TextScan { variable, .. } = op {
                 out.insert(variable.to_string());
+            }
+            if let PlanOp::Project { columns, .. } = op {
+                for col in columns {
+                    if let Some(variable) = bare_scored_variable(&col.expr) {
+                        out.insert(variable.to_string());
+                    }
+                }
             }
             match op {
                 PlanOp::OptionalMatch { sub_plan } => scan(sub_plan, out),
@@ -804,6 +835,56 @@ mod tests {
     use super::*;
     use gleaph_gql::ast::Expr;
     use gleaph_gql::types::EdgeDirection;
+
+    #[test]
+    fn text_barrier_bindings_cover_projected_residual_calls() {
+        // The second variable of a two-variable dual score never lowers to a
+        // TextScan — its bare call stays a residual Project column — yet the
+        // Router keys the second TEXT round trip off its element id, so the
+        // binding must stay a vertex here.
+        let scored = |variable: &str| {
+            Expr::new(ExprKind::FunctionCall {
+                name: gleaph_gql::ast::ObjectName::simple("text_score"),
+                args: vec![
+                    Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable(variable.into()))),
+                        property: "text".into(),
+                    }),
+                    Expr::new(ExprKind::Literal(gleaph_gql::Value::Text("q".into()))),
+                ],
+                distinct: false,
+            })
+        };
+        let project = PlanOp::Project {
+            columns: vec![crate::plan::ProjectColumn {
+                expr: scored("s"),
+                alias: Some("s2".into()),
+            }],
+            distinct: false,
+        };
+        let got = collect_text_barrier_bindings(&[project], &[]);
+        assert!(
+            got.contains("s"),
+            "bare residual call variable is protected"
+        );
+        // A wrapped call never reaches a Router barrier (the shape gate
+        // rejects it), so it must not force hydration.
+        let wrapped = PlanOp::Project {
+            columns: vec![crate::plan::ProjectColumn {
+                expr: Expr::new(ExprKind::BinaryOp {
+                    op: gleaph_gql::ast::BinaryOp::Add,
+                    left: Box::new(scored("w")),
+                    right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Float64(
+                        1.0,
+                    )))),
+                }),
+                alias: Some("s2".into()),
+            }],
+            distinct: false,
+        };
+        let got = collect_text_barrier_bindings(&[wrapped], &[]);
+        assert!(!got.contains("w"), "wrapped calls stay unprotected");
+    }
 
     #[test]
     fn projection_includes_property_access_only() {

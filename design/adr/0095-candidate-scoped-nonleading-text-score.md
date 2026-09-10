@@ -165,10 +165,11 @@ same document key — so there is no row-type or wire change; the
 `SecondBarrierScore` carrier documents the second-key slot as the reserved
 extension point for a future two-variable form (left unimplemented). The planner
 needs no change (it already lowers the s1 triple; the bare s2 call never lowers).
-The Router shape gate accepts the scanned call plus at most one same-variable
-distinct-property bare call (`resolve_residual_call`, bare-form only) and rejects
-wrapped calls, duplicate scanned calls, second variables, third calls, non-TopK
-modes, and DISTINCT tails. Execution resolves the second triple's
+The Router shape gate accepts the scanned call plus at most one distinct-property
+bare call on the same variable (slice 1) and rejects wrapped calls, duplicate
+scanned calls, third calls, non-TopK
+modes, and DISTINCT tails; a second variable with no prefix-proven label is
+rejected (see the slice-2 addendum for the bound-variable form). Execution resolves the second triple's
 `(label, property)` index BEFORE any TEXT I/O — an uncovered second property
 fails closed with function-unknown (`no ready TEXT index covers text_score`),
 never a partial single-score frame — then runs the same barrier twice over the
@@ -188,4 +189,32 @@ lands the symmetric minimal fix in the text resume path — on re-drive, a termi
 (`Applied`/`Failed`) result's record is written back to `ROUTER_SCHEMA_MIGRATIONS`
 (mirroring the generic index path's `finish_applied`/`finish_failed_migration`),
 while non-terminal `Progress` leaves the ledger untouched — and the ignore is
-removed with the happy path green. The 2-variable extension remains future work.
+removed with the happy path green.
+
+## Addendum: candidate-scoped two-variable dual-score (implemented)
+
+Slice 2 covers `RETURN ..., text_score(d.body,$q) AS s1, text_score(s.text,$q)
+AS s2 ORDER BY s1 DESC LIMIT k`: the second call scores a second prefix-bound
+variable with its own `(label, property)` triple and joins on its own document
+key. Changes: (a) the prefix terminal projection carries `ELEMENT_ID(s)` as a
+second internal identity column (the s2 call itself never reaches the graph —
+both score columns stay excluded); (b) `CandidatePrefixRow` gains an internal
+`key2` (struct extension only, wire unchanged); (c) the second round trip keys
+TEXT off the deduplicated `key2` set and retains symmetrically (a row survives
+only with both scores); ranking stays on s1. (d) The planner
+`collect_text_barrier_bindings` hook now also protects variables of bare
+`text_score` calls projected by later `Project` columns — the second variable
+never lowers to a `TextScan`, so without this its binding could project to a
+record and lose identity; only the bare-call form is collected (wrapped calls
+never reach a barrier). The Router proves the second label from the
+barrier-free prefix with the planner's own `proven_prefix_label` (now `pub`;
+generic plan analysis, no execution assumptions) — unbound or ambiguously
+labeled second variables fail closed. Per-call 256/32KiB caps stay independent;
+an uncovered second triple fails closed before any I/O. Still rejected with
+docs: `s1+s2` ordering, threshold/compound-mixed barriers, DISTINCT-mixed tails,
+third calls, and multi-shard duals. Router unit tests cover the second-variable
+shape accepts/rejects plus the pure `second_join_key` extract/join/drop/order;
+the planner hook has its own bare-vs-wrapped unit test; the live E2E seeds one
+Summary per document (`HAS_SUMMARY`, second TEXT index chained via the fixed
+migration lane) and kills second-join-ignore, scoreless-remain,
+s2-order-confusion, and replay.

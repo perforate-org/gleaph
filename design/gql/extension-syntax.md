@@ -1083,8 +1083,17 @@ Contract:
   then runs the barrier twice over the same candidate keys (`TEXT(a)` → join →
   `TEXT(b)` → join → rank by `s1` → project both): no prefix re-run, no TEXT or wire
   change, per-call caps independent, and rows missing either score drop symmetrically.
-  Compound (`s1+s2` ordering), threshold-mixed, different-variable, DISTINCT-mixed,
-  second-key, and multi-shard duals stay rejected and fail closed. Multi-shard,
+  The barrier also accepts a **two-variable dual-score** tail — `RETURN ...,
+  text_score(d.body,$q) AS s1, text_score(s.text,$q) AS s2 ORDER BY s1 DESC LIMIT k`
+  — where `s` is a second prefix-bound variable with a single prefix-proven label.
+  The planner hook keeps the second binding a full vertex (`ELEMENT_ID(s)` must
+  survive projection), the Router carries it as a second internal identity column
+  (internal only, wire unchanged) and keys the second round trip off it
+  (`TEXT(body)` → join → `TEXT(s.text)` → join → rank by `s1`): the label is
+  proven from the prefix with the planner's own helper, and the second triple is
+  resolved before any I/O.
+  Compound (`s1+s2` ordering), threshold-mixed, DISTINCT-mixed, third-call, and
+  multi-shard duals stay rejected and fail closed. Multi-shard,
   ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
   `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
   returns the *least* relevant candidates, and no demand for that shape exists today.

@@ -336,7 +336,12 @@ fn op_mentions_text_score(op: &PlanOp) -> bool {
 /// prefix: a labeled `NodeScan`, or an `ExpandFilter` destination guarded by a
 /// non-negated `IS LABELED <simple name>` conjunct. Returns `None` when the variable
 /// is unbound, ambiguously labeled, or only guarded by a compound label expression.
-fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> {
+///
+/// Shared with the Router candidate barrier (`gql_text_scan`): the second variable of
+/// a two-variable dual-score shape never lowers to a `TextScan`, so the Router
+/// re-derives its label from the barrier-free prefix with this same helper.
+/// Generic plan analysis — no execution or storage assumptions.
+pub fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> {
     fn simple_label_expr(label: &LabelExpr) -> Option<String> {
         match label {
             LabelExpr::Name(name) => Some(name.clone()),

@@ -1917,6 +1917,10 @@ fn candidate_rows(result: &GqlQueryResult) -> Vec<(i64, Vec<u8>, f64)> {
 struct CandidateFixture {
     env: Env,
     text_canister: Principal,
+    /// Local vertex ids of the 21 reachable documents, indexed by rank. The
+    /// two-variable dual-score slice links one Summary per document; only that
+    /// seed pays for the extra vertices.
+    reachable_docs: Vec<u32>,
 }
 
 fn seed_candidate_fixture() -> CandidateFixture {
@@ -2042,7 +2046,11 @@ fn seed_candidate_fixture() -> CandidateFixture {
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
     flush_until_done(&env);
-    CandidateFixture { env, text_canister }
+    CandidateFixture {
+        env,
+        text_canister,
+        reachable_docs: reachable,
+    }
 }
 
 #[test]
@@ -3073,5 +3081,210 @@ fn non_leading_text_candidate_dual_score_unready_lifecycle() {
     assert!(
         message.contains("no ready TEXT index covers text_score"),
         "unexpected unready second-index error: {message}"
+    );
+}
+
+// ──── Candidate-scoped dual-score (two variables: Document + Summary) ────
+
+const CANDIDATE_SUMMARY_LABEL: &str = "Summary";
+const CANDIDATE_SUMMARY_TEXT_PROPERTY: &str = "text";
+const CANDIDATE_SUMMARY_EDGE: &str = "HAS_SUMMARY";
+const CANDIDATE_DUAL_VAR_INDEX_NAME: &str = "text_score_query_summary_idx";
+const CANDIDATE_DUAL_VAR_MIGRATION_ID: &str = "000105_text_score_query_summary";
+/// Document rank whose summary carries no query term: its rows must drop.
+const CANDIDATE_DUAL_VAR_DROP_RANK: i64 = 7;
+
+/// Summary bodies cycle wombat counts out of phase with BOTH the bio and blurb
+/// bodies, so the summary ranking differs from the bio ranking (an s2-ordered
+/// execution cannot pass as s1-ordered). The drop rank carries no query term.
+fn dual_var_summary_text(i: i64) -> String {
+    if i == CANDIDATE_DUAL_VAR_DROP_RANK {
+        "silent meadow pages".to_string()
+    } else {
+        format!(
+            "wombat SUMMARY{i} {}",
+            "wombat ".repeat((i * 3 + 1) as usize % 7 + 1)
+        )
+    }
+}
+
+const CANDIDATE_DUAL_VAR_FRAME_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     MATCH (d)-[:HAS_SUMMARY]->(s:Summary) WHERE text_score(s.text,$q) > $t \
+     RETURN d.rank AS rank, text_score(s.text,$q) AS score";
+const CANDIDATE_DUAL_VAR_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     MATCH (d)-[:HAS_SUMMARY]->(s:Summary) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS s1, text_score(s.text,$q) AS s2 ORDER BY s1 DESC LIMIT 42";
+
+/// Composes the shared candidate fixture with one Summary vertex per reachable
+/// document plus a second TEXT index on `(Summary, text)`. The summaries reuse
+/// the fixture's reachable document ids, so no vertex lookup is needed.
+fn seed_dual_var_score_fixture() -> CandidateFixture {
+    let fixture = seed_candidate_fixture();
+    let env = &fixture.env;
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_SUMMARY_LABEL);
+    let text_property =
+        gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_SUMMARY_TEXT_PROPERTY);
+    let summary_edge = gleaph_pocket_ic_tests::ensure_edge_label(&env.fed, CANDIDATE_SUMMARY_EDGE);
+    let summary_label =
+        gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_SUMMARY_LABEL).raw();
+    let graph = env.fed.graph_source;
+    for (i, doc) in fixture.reachable_docs.iter().enumerate() {
+        let summary = gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_text_property(
+            &env.fed,
+            graph,
+            summary_label,
+            text_property.raw(),
+            dual_var_summary_text(i as i64),
+        )
+        .local_vertex_id;
+        gleaph_pocket_ic_tests::e2e_insert_edge_with_label(
+            &env.fed,
+            graph,
+            *doc,
+            summary,
+            summary_edge.raw(),
+        );
+    }
+    let statement = format!(
+        "CREATE TEXT INDEX {CANDIDATE_DUAL_VAR_INDEX_NAME} FOR (v:{CANDIDATE_SUMMARY_LABEL}) ON (v.{CANDIDATE_SUMMARY_TEXT_PROPERTY}) ANALYZER unicode_bigram"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "text-ddl-summary");
+    let canister = get_text_index_named(env, CANDIDATE_DUAL_VAR_INDEX_NAME)
+        .canister
+        .expect("provisioned summary canister attached");
+    env.fed.pic.add_cycles(canister, 20_000_000_000_000);
+    // Settle the bio migration head to a terminal replay before chaining: the
+    // summary inserts plus the second DDL re-arm the bio backfill build, so the
+    // settle runs here, after all writes, immediately before the chained prepare.
+    let bio_statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    let bio_args = migration_args(MIGRATION_ID, &bio_statement);
+    let mut settled = false;
+    for _ in 0..128 {
+        match try_apply_once(env, &bio_args) {
+            Ok(result)
+                if matches!(
+                    result.status,
+                    SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Replay
+                ) =>
+            {
+                settled = true;
+                break;
+            }
+            Ok(result) => assert!(
+                matches!(result.status, SchemaMigrationApplyStatus::Progress(_)),
+                "unexpected bio settle status: {:?}",
+                result.status
+            ),
+            Err(err) => panic!("bio settle rejected: {err:?}"),
+        }
+    }
+    assert!(settled, "bio migration head did not settle to Replay");
+
+    let summary_selector = SchemaMigrationGraphSelector::Default;
+    let args = ApplySchemaMigrationArgs::V1(ApplySchemaMigrationArgsV1 {
+        id: CANDIDATE_DUAL_VAR_MIGRATION_ID.to_owned(),
+        parent: Some(MIGRATION_ID.to_owned()),
+        graph_selector: summary_selector.clone(),
+        checksum: gleaph_migration_api::schema_migration_checksum(
+            CANDIDATE_DUAL_VAR_MIGRATION_ID,
+            Some(MIGRATION_ID),
+            &summary_selector,
+            statement.as_bytes(),
+        ),
+        statement: statement.clone(),
+    });
+    drive_to_ready_for(env, &args, CANDIDATE_DUAL_VAR_INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(env, CANDIDATE_DUAL_VAR_INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(env, CANDIDATE_DUAL_VAR_INDEX_NAME);
+    fixture
+}
+
+#[test]
+fn non_leading_text_candidate_dual_var_score_lifecycle() {
+    let fixture = seed_dual_var_score_fixture();
+    let env = fixture.env;
+
+    // Calibration frames, both self-calibrating with no hand-computed scores:
+    // the bio top-k (ORDER BY s1 source) and the summary threshold (s2 source).
+    let bio = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_BIO_FRAME_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let bio_frame = threshold_scored_rows(&bio);
+    assert_eq!(bio_frame.len(), 42, "bio frame holds every candidate row");
+    let summary = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_VAR_FRAME_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    );
+    let summary_frame = threshold_scored_rows(&summary);
+    assert_eq!(
+        summary_frame.len(),
+        40,
+        "the drop document's summary has no postings (21 docs minus one, times two users)"
+    );
+    let summary_by_rank: BTreeMap<i64, f64> = summary_frame.into_iter().collect();
+    // Premise: on the surviving set the summary ranking differs from the bio
+    // ranking, so an s2-ordered execution cannot pass as s1-ordered.
+    let bio_order: Vec<i64> = bio_frame
+        .iter()
+        .map(|(rank, _)| *rank)
+        .filter(|rank| *rank != CANDIDATE_DUAL_VAR_DROP_RANK)
+        .collect();
+    let mut summary_ranked: Vec<(f64, i64)> = summary_by_rank
+        .iter()
+        .map(|(rank, score)| (*score, *rank))
+        .collect();
+    summary_ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let summary_order: Vec<i64> = summary_ranked.into_iter().map(|(_, rank)| rank).collect();
+    assert_ne!(
+        bio_order, summary_order,
+        "summary ranking must differ from bio ranking for the order-confusion kill"
+    );
+
+    // Dual score across two variables: rank by s1, project both, drop rows
+    // whose summary never scored.
+    let dual = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_VAR_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        dual.row_count, 40,
+        "rows missing either score drop symmetrically"
+    );
+    assert_eq!(
+        dual.truncated,
+        Some(false),
+        "exact dual join never truncates"
+    );
+    let expected: Vec<(i64, f64, f64)> = bio_frame
+        .iter()
+        .filter(|(rank, _)| *rank != CANDIDATE_DUAL_VAR_DROP_RANK)
+        .map(|(rank, s1)| (*rank, *s1, summary_by_rank[rank]))
+        .collect();
+    assert_eq!(
+        dual_scored_rows(&dual),
+        expected,
+        "s1 order with per-row s2: a second-join-ignoring execution cannot match"
+    );
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_VAR_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        dual_scored_rows(&replay),
+        expected,
+        "two-variable dual-score replay is deterministic"
     );
 }

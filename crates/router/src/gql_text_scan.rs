@@ -61,6 +61,10 @@ const MAX_CANDIDATE_KEYS: usize = 256;
 const MAX_CANDIDATE_CALL_BYTES: usize = 32 * 1024;
 /// Internal prefix-projection alias carrying `ELEMENT_ID(scored variable)`.
 const CANDIDATE_ID_ALIAS: &str = "__gleaph_cid";
+/// Internal prefix-projection alias carrying `ELEMENT_ID(second variable)` for the
+/// two-variable dual-score slice. Projected only then; the same-variable slice
+/// reuses the single identity column.
+const CANDIDATE_ID_ALIAS_2: &str = "__gleaph_cid2";
 /// Internal prefix-projection alias prefix for retained user columns.
 const CANDIDATE_COLUMN_ALIAS_PREFIX: &str = "__gleaph_c";
 
@@ -230,11 +234,16 @@ enum CandidateBarrierMode {
     Compound { cmp: CmpOp, bound: f64, limit: u32 },
 }
 
-/// Second residual score on the same variable with a different property (slice 1:
-/// same-document dual scoring). Both scores share the barrier identity column, so
-/// no second key column exists; a future two-variable form would carry its own
-/// identity alias here.
+/// Second residual score on a different (variable, property, label) triple:
+/// slice 1 scores a distinct property of the scanned variable (same document
+/// key, no second identity column); slice 2 scores a second prefix-bound
+/// variable (own identity column, own label resolved from the prefix). Both
+/// scores resolve their queries independently — no same-query requirement.
 struct SecondBarrierScore {
+    /// Second scored variable (equals the barrier variable in slice 1).
+    variable: String,
+    /// Second scored label name (equals the barrier label in slice 1).
+    label: String,
     /// Second scored property name (resolved to an id by the caller).
     property: String,
     /// Second scored query (literal or `$param`, resolved per call).
@@ -265,7 +274,8 @@ struct CandidateBarrierShape {
     /// Trailing-`Project` column index holding the residual score call, when the
     /// `RETURN` projects one. A threshold-only `RETURN` carries no score column.
     score_col_idx: Option<usize>,
-    /// Optional second residual score (same variable, distinct property).
+    /// Optional second residual score: same-variable distinct-property (slice 1)
+    /// or second-variable (slice 2, own label and identity column).
     second: Option<SecondBarrierScore>,
     /// Count of retained user columns (excludes the score column).
     user_col_count: usize,
@@ -392,26 +402,54 @@ fn analyze_candidate_barrier_shape(
             continue;
         }
         // Slice 1: a second bare call on the same variable with a distinct
-        // property. Anything else — a wrapped call, a second variable, a third
+        // property. Slice 2: a bare call on a second prefix-bound variable with
+        // a label proven by the prefix. Anything else — a wrapped call, a third
         // call — fails closed.
         let Some((var2, prop2, query2)) = resolve_residual_call(&col.expr) else {
             return Err(unsupported(
-                "the trailing Project carries at most the scanned call plus one bare same-variable call",
+                "the trailing Project carries at most the scanned call plus one bare second call",
             ));
         };
-        if var2 != variable.to_string() || prop2 == property.to_string() || second.is_some() {
+        if second.is_some() {
             return Err(unsupported(
-                "the second residual call must score a distinct property of the scanned variable, at most once",
+                "the second residual call is accepted at most once",
             ));
         }
-        // The second join is TopK-only in this slice: threshold and compound
+        // The second join is TopK-only in both slices: threshold and compound
         // barriers plus DISTINCT tails stay single-score and fail closed.
         if !matches!(mode, CandidateBarrierMode::TopK { .. }) || distinct {
             return Err(unsupported(
                 "a second text_score call is supported in the top-k form only, without DISTINCT",
             ));
         }
+        if var2 == variable.to_string() {
+            if prop2 == property.to_string() {
+                return Err(unsupported(
+                    "the second residual call must score a distinct property of the scanned variable",
+                ));
+            }
+            second = Some(SecondBarrierScore {
+                variable: var2,
+                label: label.to_string(),
+                property: prop2,
+                query: query2,
+                score_col_idx: idx,
+            });
+            continue;
+        }
+        // Slice 2: the second variable's label is proven from the barrier-free
+        // prefix with the same helper the planner lowering uses. An unbound or
+        // ambiguously labeled variable fails closed — the Router cannot key a
+        // TEXT triple without an exact (label, property) index.
+        let prefix = &plan.ops[..scan_idx];
+        let Some(label2) = gleaph_gql_planner::text_scan::proven_prefix_label(prefix, &var2) else {
+            return Err(unsupported(
+                "the second scored variable needs a single proven label in the prefix",
+            ));
+        };
         second = Some(SecondBarrierScore {
+            variable: var2,
+            label: label2,
             property: prop2,
             query: query2,
             score_col_idx: idx,
@@ -509,10 +547,24 @@ fn residual_call_matches_scan(
     }
 }
 
-/// One authorized prefix row: the TEXT candidate key plus retained user values.
+/// One authorized prefix row: the TEXT candidate key, the optional second-variable
+/// key (slice 2 only), plus retained user values.
 struct CandidatePrefixRow {
     key: u64,
+    key2: Option<u64>,
     values: Vec<gleaph_gql_ic::GqlWireValue>,
+}
+
+/// Join key for the second round trip (pure: unit-tested without I/O). The
+/// same-variable slice reuses the shared document key; the two-variable slice
+/// keys off the second variable's element id. `None` (a slice-2 row without a
+/// second identity) never joins — the caller treats it as a scoreless drop.
+fn second_join_key(row: &CandidatePrefixRow, two_variable: bool) -> Option<u64> {
+    if two_variable {
+        row.key2
+    } else {
+        Some(row.key)
+    }
 }
 
 /// Row window and post-dedup take for the barrier execution. A `DISTINCT` tail
@@ -605,15 +657,21 @@ async fn try_execute_candidate_text_scan(
     let target = def
         .target
         .expect("planning-visible text definitions always carry a target");
-    // Slice 1 second triple: same label, distinct property. Unready resolves
-    // fail-closed before any I/O, exactly like the primary triple.
+    // Second triple: the second variable's own label (slice 2) or the barrier
+    // label (slice 1), distinct property. Unready resolves fail-closed before
+    // any I/O, exactly like the primary triple.
     let second_target = if let Some(second) = &barrier.second {
+        let second_label_id = store
+            .lookup_vertex_label_id(graph_id, &second.label)
+            .map_err(|e| {
+                RouterError::NotFound(format!("candidate text label {}: {e}", second.label))
+            })?;
         let second_property_id = store
             .lookup_property_id(graph_id, &second.property)
             .map_err(|e| {
                 RouterError::NotFound(format!("candidate text property {}: {e}", second.property))
             })?;
-        let second_def = resolve_text_index(graph_id, label_id, second_property_id)?;
+        let second_def = resolve_text_index(graph_id, second_label_id, second_property_id)?;
         Some(
             second_def
                 .target
@@ -647,6 +705,22 @@ async fn try_execute_candidate_text_scan(
         )))),
         alias: Some(CANDIDATE_ID_ALIAS.into()),
     });
+    // Slice 2 carries the second variable's element id alongside: the s2 call
+    // never reaches the graph (both score columns stay excluded below), but the
+    // barrier needs the second key to address the second TEXT triple.
+    let second_variable = barrier
+        .second
+        .as_ref()
+        .filter(|second| second.variable != barrier.variable)
+        .map(|second| second.variable.clone());
+    if let Some(variable) = &second_variable {
+        internal_cols.push(ProjectColumn {
+            expr: Expr::new(ExprKind::ElementId(Box::new(Expr::new(
+                ExprKind::Variable(variable.clone()),
+            )))),
+            alias: Some(CANDIDATE_ID_ALIAS_2.into()),
+        });
+    }
     let mut user_positions: Vec<usize> = Vec::with_capacity(barrier.user_col_count);
     for (idx, col) in columns.iter().enumerate() {
         if Some(idx) == barrier.score_col_idx
@@ -768,8 +842,44 @@ async fn try_execute_candidate_text_scan(
                 })?;
             values.push(value);
         }
+        // Slice 2 second key: same element-id decode and shard check as the
+        // primary identity. Required exactly when the barrier carries a second
+        // variable; absent otherwise (the same-variable slice never projects it).
+        let key2 = if second_variable.is_some() {
+            let identity2 = row
+                .columns
+                .iter()
+                .find(|(name, _)| name == CANDIDATE_ID_ALIAS_2)
+                .map(|(_, value)| value)
+                .ok_or_else(|| {
+                    RouterError::Internal(
+                        "candidate prefix row lacks the second identity column".into(),
+                    )
+                })?;
+            let gleaph_gql_ic::GqlWireValue::Bytes(id2_bytes) = identity2 else {
+                return Err(RouterError::Internal(
+                    "candidate second identity column is not an element id".into(),
+                ));
+            };
+            let encoded2: [u8; 8] = id2_bytes.as_slice().try_into().map_err(|_| {
+                RouterError::InvalidArgument("candidate element id must be 8 bytes".into())
+            })?;
+            let global2 = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                &element_id_key,
+                gleaph_graph_kernel::federation::EncodedVertexId(encoded2),
+            );
+            if global2.shard_id != shard.shard_id {
+                return Err(RouterError::InvalidArgument(
+                    "candidate second vertex shard does not match the live shard".into(),
+                ));
+            }
+            Some(u64::from(global2.local_vertex_id))
+        } else {
+            None
+        };
         prefix_rows.push(CandidatePrefixRow {
             key: u64::from(global.local_vertex_id),
+            key2,
             values,
         });
     }
@@ -832,13 +942,28 @@ async fn try_execute_candidate_text_scan(
         }
     }
 
-    // Slice 1 second round trip: same candidate keys against the second triple's
-    // index. Calls are sequential; the join below is symmetric (a row survives
-    // only with both scores), so ranking afterwards stays exact.
+    // Second round trip: slice 1 reuses the candidate keys against the second
+    // triple's index; slice 2 keys off the second variable's element ids.
+    // Calls are sequential; the join below is symmetric (a row survives only
+    // with both scores), so ranking afterwards stays exact. Caps apply per
+    // call, independently.
     let mut second_scores: BTreeMap<u64, u32> = BTreeMap::new();
     if let (Some(second), Some(second_target)) = (&barrier.second, second_target) {
+        let two_variable = second.variable != barrier.variable;
+        let mut second_keys: Vec<u64> = prefix_rows
+            .iter()
+            .filter_map(|row| second_join_key(row, two_variable))
+            .collect();
+        second_keys.sort_unstable();
+        second_keys.dedup();
+        if second_keys.len() > MAX_CANDIDATE_KEYS {
+            return Err(RouterError::InvalidArgument(format!(
+                "{} distinct candidate second keys exceed the 256-key admission cap",
+                second_keys.len()
+            )));
+        }
         let second_query = resolve_scan_query(&second.query, &params)?;
-        let second_args = Encode!(&(&second_query, &keys)).map_err(|e| {
+        let second_args = Encode!(&(&second_query, &second_keys)).map_err(|e| {
             RouterError::Internal(format!("candidate second text call encode failed: {e}"))
         })?;
         if second_args.len() > MAX_CANDIDATE_CALL_BYTES {
@@ -848,7 +973,7 @@ async fn try_execute_candidate_text_scan(
             )));
         }
         let second_hits =
-            text_canister_search_candidates(second_target, second_query, keys.clone())
+            text_canister_search_candidates(second_target, second_query, second_keys.clone())
                 .await
                 .map_err(RouterError::Internal)?;
         let mut second_seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -859,7 +984,7 @@ async fn try_execute_candidate_text_scan(
                     hit.key
                 )));
             }
-            if keys.binary_search(&hit.key).is_err() {
+            if second_keys.binary_search(&hit.key).is_err() {
                 return Err(RouterError::InvalidArgument(format!(
                     "candidate second text hit for unrequested document key {}",
                     hit.key
@@ -868,7 +993,11 @@ async fn try_execute_candidate_text_scan(
             second_scores.insert(hit.key, hit.score);
         }
         // Symmetric scoreless drop: rows missing either score leave before rank.
-        prefix_rows.retain(|row| second_scores.contains_key(&row.key));
+        // Slice 2 joins on the second key — a row whose summary never scored
+        // drops even when its document scored.
+        prefix_rows.retain(|row| {
+            second_join_key(row, two_variable).is_some_and(|key| second_scores.contains_key(&key))
+        });
     }
 
     let (row_cap, take) = barrier_row_window(&barrier.mode, barrier.distinct, barrier.skip);
@@ -893,6 +1022,12 @@ async fn try_execute_candidate_text_scan(
     let mut out_rows = Vec::with_capacity(ranked.len());
     for (score, row) in ranked {
         let mut out_cols = Vec::with_capacity(columns.len());
+        // Resolve the second join key before `values` is moved into the user
+        // iterator below.
+        let second_lookup = barrier
+            .second
+            .as_ref()
+            .and_then(|second| second_join_key(&row, second.variable != barrier.variable));
         let mut user_iter = row.values.into_iter();
         for (idx, out_col) in plan.output.columns.iter().enumerate() {
             if Some(idx) == barrier.score_col_idx {
@@ -905,7 +1040,13 @@ async fn try_execute_candidate_text_scan(
                 .as_ref()
                 .is_some_and(|second| idx == second.score_col_idx)
             {
-                let second_score = second_scores.get(&row.key).ok_or_else(|| {
+                // Slice 2 reads the second score by the second key; slice 1 by
+                // the shared document key. The symmetric retain above guarantees
+                // presence — a miss is an internal invariant break, never silent.
+                let lookup = second_lookup.ok_or_else(|| {
+                    RouterError::Internal("candidate second key missing after join".into())
+                })?;
+                let second_score = second_scores.get(&lookup).ok_or_else(|| {
                     RouterError::Internal("candidate second score missing after join".into())
                 })?;
                 out_cols.push((
@@ -2716,7 +2857,8 @@ mod candidate_barrier_tests {
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
         let _ = plan;
-        // A second variable stays out of slice 1.
+        // A second variable with no prefix binding stays out of slice 2: the
+        // label cannot be proven.
         let other_var = Expr::new(ExprKind::FunctionCall {
             name: gleaph_gql::ast::ObjectName::simple("text_score"),
             args: vec![
@@ -2776,6 +2918,186 @@ mod candidate_barrier_tests {
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
     }
 
+    fn node_scan_s() -> PlanOp {
+        PlanOp::NodeScan {
+            variable: "s".into(),
+            label: Some(NodeLabelRef::from("Summary")),
+            property_projection: None,
+        }
+    }
+
+    fn score_call_on_var(variable: &str, property: &str) -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName::simple("text_score"),
+            args: vec![
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable(variable.into()))),
+                    property: property.into(),
+                }),
+                Expr::new(ExprKind::Literal(gleaph_gql::Value::Text("hello".into()))),
+            ],
+            distinct: false,
+        })
+    }
+
+    fn tail_project_dual_var() -> PlanOp {
+        PlanOp::Project {
+            columns: vec![
+                ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                        property: "title".into(),
+                    }),
+                    alias: None,
+                },
+                ProjectColumn {
+                    expr: score_call_expr(),
+                    alias: Some("s1".into()),
+                },
+                ProjectColumn {
+                    expr: score_call_on_var("s", "text"),
+                    alias: Some("s2".into()),
+                },
+            ],
+            distinct: false,
+        }
+    }
+
+    #[test]
+    fn barrier_shape_accepts_second_variable_call() {
+        let plan = test_plan(vec![
+            node_scan_d(),
+            node_scan_s(),
+            barrier_scan(20),
+            tail_project_dual_var(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.score_col_idx, Some(1));
+        let second = shape.second.expect("second score recorded");
+        assert_eq!(second.variable, "s");
+        assert_eq!(second.label, "Summary");
+        assert_eq!(second.property, "text");
+        assert_eq!(second.score_col_idx, 2);
+        // The second join composes with a parked skip.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            node_scan_s(),
+            barrier_scan(15),
+            tail_project_dual_var(),
+            skip_limit_op(5),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.second.is_some());
+        assert_eq!(shape.skip, 5);
+    }
+
+    #[test]
+    fn barrier_shape_rejects_second_variable_violations() {
+        // Ambiguously labeled second variable: the TEXT triple is unprovable.
+        let ambiguous = PlanOp::NodeScan {
+            variable: "s".into(),
+            label: Some(NodeLabelRef::from("Other")),
+            property_projection: None,
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            node_scan_s(),
+            ambiguous,
+            barrier_scan(20),
+            tail_project_dual_var(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A third call stays out of both slices.
+        let PlanOp::Project { columns, .. } = tail_project_dual_var() else {
+            panic!("tail");
+        };
+        let mut triple = columns.clone();
+        triple.push(ProjectColumn {
+            expr: score_call_on("blurb"),
+            alias: Some("s3".into()),
+        });
+        let plan = test_plan(vec![
+            node_scan_d(),
+            node_scan_s(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns: triple,
+                distinct: false,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // Threshold and compound barriers stay single-score for slice 2 too.
+        for scan in [barrier_scan_threshold(), {
+            let mut scan = barrier_scan_threshold();
+            let PlanOp::TextScan { mode, .. } = &mut scan else {
+                panic!("scan");
+            };
+            *mode = TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            };
+            scan
+        }] {
+            let plan = test_plan(vec![
+                node_scan_d(),
+                node_scan_s(),
+                scan,
+                tail_project_dual_var(),
+            ]);
+            assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        }
+        // DISTINCT plus a slice-2 second call stays rejected.
+        let PlanOp::Project { columns, .. } = tail_project_dual_var() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            node_scan_s(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn second_join_key_selects_identity_per_slice() {
+        use gleaph_gql_ic::GqlWireValue;
+        let row = CandidatePrefixRow {
+            key: 11,
+            key2: Some(77),
+            values: vec![GqlWireValue::Null],
+        };
+        // Slice 1 reuses the shared document key.
+        assert_eq!(second_join_key(&row, false), Some(11));
+        // Slice 2 keys off the second variable's element id.
+        assert_eq!(second_join_key(&row, true), Some(77));
+        // A slice-2 row without a second identity never joins: the retain
+        // below drops it exactly like a scoreless row.
+        let mut rows = vec![
+            row,
+            CandidatePrefixRow {
+                key: 12,
+                key2: None,
+                values: vec![GqlWireValue::Null],
+            },
+        ];
+        let second_scores: BTreeMap<u64, u32> = [(77, 5)].into_iter().collect();
+        rows.retain(|row| {
+            second_join_key(row, true).is_some_and(|key| second_scores.contains_key(&key))
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, 11);
+        // Ranking stays on the first score: s2 never reorders.
+        let scores: BTreeMap<u64, u32> = [(11, 30), (12, 90)].into_iter().collect();
+        let ranked = rank_candidate_rows(rows, &scores, 10);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0, 30);
+    }
+
     #[test]
     fn resolve_residual_call_accepts_bare_calls_only() {
         let (var, prop, query) =
@@ -2802,18 +3124,22 @@ mod candidate_barrier_tests {
         let rows = vec![
             CandidatePrefixRow {
                 key: 3,
+                key2: None,
                 values: vec![GqlWireValue::Int64(3)],
             },
             CandidatePrefixRow {
                 key: 1,
+                key2: None,
                 values: vec![GqlWireValue::Int64(1)],
             },
             CandidatePrefixRow {
                 key: 3,
+                key2: None,
                 values: vec![GqlWireValue::Int64(33)],
             },
             CandidatePrefixRow {
                 key: 9,
+                key2: None,
                 values: vec![GqlWireValue::Int64(9)],
             },
         ];
@@ -2831,10 +3157,12 @@ mod candidate_barrier_tests {
         let rows = vec![
             CandidatePrefixRow {
                 key: 1,
+                key2: None,
                 values: vec![],
             },
             CandidatePrefixRow {
                 key: 3,
+                key2: None,
                 values: vec![],
             },
         ];
@@ -2849,10 +3177,12 @@ mod candidate_barrier_tests {
         let rows = vec![
             CandidatePrefixRow {
                 key: 7,
+                key2: None,
                 values: vec![GqlWireValue::Null],
             },
             CandidatePrefixRow {
                 key: 2,
+                key2: None,
                 values: vec![GqlWireValue::Null],
             },
         ];
