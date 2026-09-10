@@ -7568,6 +7568,78 @@ fn candidate_text_topk_rejects_asc_order_and_offset() {
 }
 
 #[test]
+fn candidate_text_topk_descends_into_optional_match() {
+    // The scored variable binds only inside the OPTIONAL MATCH branch: the
+    // label proof descends one optional level and the barrier lowers.
+    let query = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 5";
+    let plan = plan_query_with_stats(query, &text_coverage_stats());
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("optional-bound barrier scan");
+    assert!(scan_idx > 0, "barrier must sit after the prefix");
+    assert!(
+        plan.ops[..scan_idx]
+            .iter()
+            .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+        "optional branch must survive in the prefix, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_rejects_unlabeled_optional_variable() {
+    // No label inside the optional branch: nothing to prove, no lowering —
+    // the residual mention fails closed downstream.
+    let query = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 5";
+    let plan = plan_query_with_stats(query, &text_coverage_stats());
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "unlabeled optional variable must not lower, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_rejects_nulls_first_accepts_nulls_last() {
+    // An explicit NULLS FIRST refuses to lower: no barrier honors null-first
+    // ranking, so the TopK mention stays residual and fails closed.
+    let first = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC NULLS FIRST LIMIT 5";
+    let plan = plan_query_with_stats(first, &text_coverage_stats());
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "NULLS FIRST must not lower, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        "unlowered TopK must survive, got: {:?}",
+        plan.ops
+    );
+    // An explicit NULLS LAST is a no-op restatement of the barrier contract.
+    let last = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC NULLS LAST LIMIT 5";
+    let plan = plan_query_with_stats(last, &text_coverage_stats());
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK { .. },
+                ..
+            }
+        )),
+        "NULLS LAST must lower like the bare form, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
 fn candidate_text_topk_rejects_threshold_compound_and_leading_seed() {
     // A WHERE threshold conjunct takes the leading seed path; the trailing TopK must
     // not additionally lower into a candidate barrier.

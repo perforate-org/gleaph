@@ -110,6 +110,13 @@ fn reverse_threshold_cmp(op: CmpOp) -> CmpOp {
 /// Match an ORDER BY clause whose leading key is exactly `text_score(v.prop, Q) DESC`.
 /// ASC is deliberately deferred (least-relevant top-k, no demand); reopen on a concrete use case.
 ///
+/// An explicit `NULLS FIRST` refuses to lower: no barrier honors null-first ranking,
+/// so the mention stays residual and fails closed instead of silently ranking
+/// nulls last. An explicit `NULLS LAST` is accepted as a no-op restatement — the
+/// candidate barrier keeps unmatched (null-identity) rows after the scored rows —
+/// and an absent modifier lowers with that same nulls-last barrier contract (a
+/// deliberate deviation from the GQL DESC default, documented at the barrier).
+///
 /// The scan itself delivers the decided `(score DESC, element-key ASC)` determinism
 /// contract. An explicitly written second key is accepted only when it is the scanned
 /// variable itself (a no-op restatement of the implicit tie-break); any other secondary
@@ -121,6 +128,7 @@ pub(crate) fn extract_topk_order(order_by: &OrderByClause) -> Option<TextScoreRe
             items[0].direction,
             Some(gleaph_gql::ast::SortDirection::Desc)
         )
+        || matches!(items[0].null_order, Some(gleaph_gql::ast::NullOrder::First))
     {
         return None;
     }
@@ -363,12 +371,24 @@ pub fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> 
     }
     let mut labels: BTreeSet<String> = BTreeSet::new();
     let mut bound = false;
-    for op in prefix {
+    // The nested-keep slice descends into OPTIONAL MATCH sub-plans: a scored
+    // variable bound only inside one optional branch proves its label the same
+    // way. Accumulators are shared, so a second label anywhere — top level or
+    // any optional branch — stays ambiguous and fails closed. Other sub-plan
+    // shapes (joins, unions, semi-applies) are never descended: a variable
+    // bound only there stays unproven and fails closed.
+    fn collect_op(
+        op: &PlanOp,
+        variable: &str,
+        bound: &mut bool,
+        labels: &mut BTreeSet<String>,
+        is_labeled_name: &dyn Fn(&Expr, &str) -> Option<String>,
+    ) -> Option<()> {
         match op {
             PlanOp::NodeScan {
                 variable: v, label, ..
             } if v.as_ref() == variable => {
-                bound = true;
+                *bound = true;
                 let Some(l) = label else {
                     return None;
                 };
@@ -377,7 +397,7 @@ pub fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> 
             PlanOp::ExpandFilter {
                 dst, dst_filter, ..
             } if dst.as_ref() == variable => {
-                bound = true;
+                *bound = true;
                 let mut guarded = false;
                 for predicate in dst_filter {
                     if let Some(name) = is_labeled_name(predicate, variable) {
@@ -390,6 +410,15 @@ pub fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> 
                 }
             }
             _ => {}
+        }
+        Some(())
+    }
+    for op in prefix {
+        collect_op(op, variable, &mut bound, &mut labels, &is_labeled_name)?;
+        if let PlanOp::OptionalMatch { sub_plan } = op {
+            for sub in sub_plan {
+                collect_op(sub, variable, &mut bound, &mut labels, &is_labeled_name)?;
+            }
         }
     }
     if !bound || labels.len() != 1 {

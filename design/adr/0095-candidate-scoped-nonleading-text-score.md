@@ -218,3 +218,30 @@ the planner hook has its own bare-vs-wrapped unit test; the live E2E seeds one
 Summary per document (`HAS_SUMMARY`, second TEXT index chained via the fixed
 migration lane) and kills second-join-ignore, scoreless-remain,
 s2-order-confusion, and replay.
+
+## Addendum: nested OPTIONAL MATCH prefix with nulls-last keep (implemented)
+
+The nested-keep slice covers `MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project)
+OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.rank AS rank, p.pno AS pno,
+text_score(d.bio,$q) AS s ORDER BY s DESC LIMIT k`: documents may miss per project.
+Changes: (a) the planner `extract_topk_order` rejects an explicit `NULLS FIRST`
+(no barrier honors null-first ranking — the mention stays residual and fails
+closed) and lowers bare/`NULLS LAST` with the nulls-last barrier contract (a
+deliberate deviation from the GQL DESC default); `proven_prefix_label` descends
+one `OptionalMatch` sub-plan level with shared label accumulators, so an
+ambiguous or unlabeled optional binding stays unproven and fails closed. (b) The
+Router gate keeps the shape TopK-only, single-score, without DISTINCT
+(threshold/compound/second-call/DISTINCT combinations stay rejected);
+`CandidatePrefixRow.key` becomes `Option<u64>` (struct only, wire unchanged),
+a `Null` identity decodes to `None` (any other non-bytes value is still a wire
+break), null keys never reach TEXT, `rank_candidate_rows` keeps null rows after
+the scored group in prefix order (null-null compares equal under the stable
+sort), projects `Null` for their score, and skip/take apply to the final column
+— `LIMIT k` consumes null slots while the TEXT window stays scored-only and
+`truncated` stays TEXT-owned. Covered live by a doc-less-project fixture (one
+empty project per user, `pno` 101/102 distinguishes the two null rows):
+the keep test asserts 44 rows (42 in bio-frame order plus the null group in
+barrier-free prefix order, NULL scores), LIMIT-43 slot consumption, and replay;
+the fail-closed test asserts explicit `NULLS FIRST` rejects with the
+did-not-lower diagnostic. A prepared-manifest covering this shape must declare
+the score column nullable.

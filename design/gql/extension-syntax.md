@@ -1093,7 +1093,19 @@ Contract:
   proven from the prefix with the planner's own helper, and the second triple is
   resolved before any I/O.
   Compound (`s1+s2` ordering), threshold-mixed, DISTINCT-mixed, third-call, and
-  multi-shard duals stay rejected and fail closed. Multi-shard,
+  multi-shard duals stay rejected and fail closed. An `OPTIONAL MATCH` prefix is
+  TopK-only with a single score column and no DISTINCT: the planner proves the
+  scored label descending one optional level (ambiguous or unlabeled optional
+  bindings fail closed) and accepts an explicit `NULLS LAST` as a no-op
+  restatement, while an explicit `NULLS FIRST` refuses to lower and fails closed.
+  The barrier keeps OPTIONAL MATCH miss rows (null identity, never sent to TEXT)
+  after the scored `(score desc, key asc)` group in prefix order, projects a NULL
+  score for them, and applies skip/take to the final column — so `LIMIT k`
+  consumes null slots; the TEXT window stays scored-only and `truncated` stays
+  TEXT-owned. This nulls-last default deliberately deviates from the GQL DESC
+  default and a prepared-manifest covering the shape must declare the score
+  column nullable. Threshold/compound/dual/DISTINCT combinations with an
+  optional prefix stay rejected. Multi-shard,
   ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
   `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
   returns the *least* relevant candidates, and no demand for that shape exists today.

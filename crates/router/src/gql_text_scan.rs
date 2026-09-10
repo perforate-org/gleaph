@@ -456,6 +456,29 @@ fn analyze_candidate_barrier_shape(
         });
     }
     let score_cols = usize::from(score_col_idx.is_some()) + usize::from(second.is_some());
+    // Nested-keep slice: an OPTIONAL MATCH prefix is TopK-only, single-score,
+    // without DISTINCT. Threshold/compound modes, second calls, and DISTINCT
+    // tails need their own null-row contracts and stay rejected here.
+    if plan.ops[..scan_idx]
+        .iter()
+        .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
+    {
+        if !matches!(mode, CandidateBarrierMode::TopK { .. }) {
+            return Err(unsupported(
+                "an OPTIONAL MATCH prefix is supported in the top-k form only",
+            ));
+        }
+        if second.is_some() {
+            return Err(unsupported(
+                "a second text_score call is unsupported with an OPTIONAL MATCH prefix",
+            ));
+        }
+        if distinct {
+            return Err(unsupported(
+                "DISTINCT is unsupported with an OPTIONAL MATCH prefix",
+            ));
+        }
+    }
     let user_col_count = columns.len() - score_cols;
     if user_col_count > MAX_CANDIDATE_USER_COLUMNS {
         return Err(unsupported("at most 16 retained user columns"));
@@ -547,24 +570,22 @@ fn residual_call_matches_scan(
     }
 }
 
-/// One authorized prefix row: the TEXT candidate key, the optional second-variable
-/// key (slice 2 only), plus retained user values.
+/// One authorized prefix row: the TEXT candidate key (`None` for an OPTIONAL
+/// MATCH miss — kept as a null-score row, never sent to TEXT), the optional
+/// second-variable key (slice 2 only), plus retained user values.
 struct CandidatePrefixRow {
-    key: u64,
+    key: Option<u64>,
     key2: Option<u64>,
     values: Vec<gleaph_gql_ic::GqlWireValue>,
 }
 
 /// Join key for the second round trip (pure: unit-tested without I/O). The
-/// same-variable slice reuses the shared document key; the two-variable slice
+/// same-variable slice reuses the shared document key (`None` for an OPTIONAL
+/// MATCH miss — the caller keeps it as a null-score row); the two-variable slice
 /// keys off the second variable's element id. `None` (a slice-2 row without a
 /// second identity) never joins — the caller treats it as a scoreless drop.
 fn second_join_key(row: &CandidatePrefixRow, two_variable: bool) -> Option<u64> {
-    if two_variable {
-        row.key2
-    } else {
-        Some(row.key)
-    }
+    if two_variable { row.key2 } else { row.key }
 }
 
 /// Row window and post-dedup take for the barrier execution. A `DISTINCT` tail
@@ -598,24 +619,35 @@ fn dedup_wire_rows(rows: &mut Vec<gleaph_gql_ic::GqlWireRow>) {
     }
     *rows = unique;
 }
-/// Join TEXT scores onto prefix rows and rank: keep rows whose key scored, order
-/// `(score desc, key asc)` (stable within identical pairs, preserving prefix order),
-/// truncate to the row limit. Pure: unit-tested without I/O.
+/// Join TEXT scores onto prefix rows and rank: scored rows order
+/// `(score desc, key asc)` (stable within identical triples, preserving prefix
+/// order); rows with a null identity (OPTIONAL MATCH misses) keep their prefix
+/// order after the scored group — the nulls-last barrier contract. Rows with a
+/// non-null key that never scored still drop. Truncates to the row limit, which
+/// therefore counts null rows: `LIMIT k` consumes null slots. Pure:
+/// unit-tested without I/O.
 fn rank_candidate_rows(
     rows: Vec<CandidatePrefixRow>,
     scores: &BTreeMap<u64, u32>,
     limit: usize,
-) -> Vec<(u32, CandidatePrefixRow)> {
-    let mut ranked: Vec<(u32, usize, CandidatePrefixRow)> = Vec::new();
+) -> Vec<(Option<u32>, CandidatePrefixRow)> {
+    let mut ranked: Vec<(Option<u32>, usize, CandidatePrefixRow)> = Vec::new();
     for (order, row) in rows.into_iter().enumerate() {
-        if let Some(score) = scores.get(&row.key) {
-            ranked.push((*score, order, row));
+        let scored = row.key.and_then(|key| scores.get(&key).copied());
+        if row.key.is_none() || scored.is_some() {
+            ranked.push((scored, order, row));
         }
     }
-    ranked.sort_by(|a, b| {
-        b.0.cmp(&a.0)
+    ranked.sort_by(|a, b| match (&a.0, &b.0) {
+        (Some(score_a), Some(score_b)) => score_b
+            .cmp(score_a)
             .then_with(|| a.2.key.cmp(&b.2.key))
-            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.1.cmp(&b.1)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        // Null-null compares equal: `sort_by` is stable, so the null group
+        // keeps prefix order with no key available to tie-break.
+        (None, None) => std::cmp::Ordering::Equal,
     });
     ranked.truncate(limit);
     ranked
@@ -810,23 +842,32 @@ async fn try_execute_candidate_text_scan(
             .ok_or_else(|| {
                 RouterError::Internal("candidate prefix row lacks the identity column".into())
             })?;
-        let gleaph_gql_ic::GqlWireValue::Bytes(id_bytes) = identity else {
-            return Err(RouterError::Internal(
-                "candidate identity column is not an element id".into(),
-            ));
+        // An OPTIONAL MATCH miss carries Null here (the graph null-pads
+        // unwritten bindings): the row is kept with no key as a null-score
+        // row and never sent to TEXT. Any other non-bytes value is a wire break.
+        let key: Option<u64> = match identity {
+            gleaph_gql_ic::GqlWireValue::Null => None,
+            gleaph_gql_ic::GqlWireValue::Bytes(id_bytes) => {
+                let encoded: [u8; 8] = id_bytes.as_slice().try_into().map_err(|_| {
+                    RouterError::InvalidArgument("candidate element id must be 8 bytes".into())
+                })?;
+                let global = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                    &element_id_key,
+                    gleaph_graph_kernel::federation::EncodedVertexId(encoded),
+                );
+                if global.shard_id != shard.shard_id {
+                    return Err(RouterError::InvalidArgument(
+                        "candidate vertex shard does not match the live shard".into(),
+                    ));
+                }
+                Some(u64::from(global.local_vertex_id))
+            }
+            _ => {
+                return Err(RouterError::Internal(
+                    "candidate identity column is not an element id".into(),
+                ));
+            }
         };
-        let encoded: [u8; 8] = id_bytes.as_slice().try_into().map_err(|_| {
-            RouterError::InvalidArgument("candidate element id must be 8 bytes".into())
-        })?;
-        let global = gleaph_graph_kernel::federation::decode_global_vertex_id(
-            &element_id_key,
-            gleaph_graph_kernel::federation::EncodedVertexId(encoded),
-        );
-        if global.shard_id != shard.shard_id {
-            return Err(RouterError::InvalidArgument(
-                "candidate vertex shard does not match the live shard".into(),
-            ));
-        }
         let mut values = Vec::with_capacity(user_positions.len());
         for position in 0..user_positions.len() {
             let want = format!("{CANDIDATE_COLUMN_ALIAS_PREFIX}{position}");
@@ -877,16 +918,13 @@ async fn try_execute_candidate_text_scan(
         } else {
             None
         };
-        prefix_rows.push(CandidatePrefixRow {
-            key: u64::from(global.local_vertex_id),
-            key2,
-            values,
-        });
+        prefix_rows.push(CandidatePrefixRow { key, key2, values });
     }
 
     // Deduplicate keys into canonical ascending order for the TEXT call. No hit
-    // carries row multiplicity; multiplicity is restored at join time.
-    let mut keys: Vec<u64> = prefix_rows.iter().map(|row| row.key).collect();
+    // carries row multiplicity; multiplicity is restored at join time. Null
+    // identities (OPTIONAL MATCH misses) never reach TEXT.
+    let mut keys: Vec<u64> = prefix_rows.iter().filter_map(|row| row.key).collect();
     keys.sort_unstable();
     keys.dedup();
     if keys.len() > MAX_CANDIDATE_KEYS {
@@ -1005,14 +1043,15 @@ async fn try_execute_candidate_text_scan(
     // the barrier scan already carries the inflated `k + skip` window, and scoring
     // is all-match, so skipping here yields exactly rows `skip..skip + k`. A
     // DISTINCT tail skips nothing here: dedup runs before skip/take below.
-    let ranked: Vec<(u32, CandidatePrefixRow)> = rank_candidate_rows(prefix_rows, &scores, row_cap)
-        .into_iter()
-        .skip(if barrier.distinct {
-            0
-        } else {
-            barrier.skip as usize
-        })
-        .collect();
+    let ranked: Vec<(Option<u32>, CandidatePrefixRow)> =
+        rank_candidate_rows(prefix_rows, &scores, row_cap)
+            .into_iter()
+            .skip(if barrier.distinct {
+                0
+            } else {
+                barrier.skip as usize
+            })
+            .collect();
     // Output names follow the original trailing Project order (score included).
     if plan.output.columns.len() != columns.len() {
         return Err(RouterError::Internal(
@@ -1031,10 +1070,13 @@ async fn try_execute_candidate_text_scan(
         let mut user_iter = row.values.into_iter();
         for (idx, out_col) in plan.output.columns.iter().enumerate() {
             if Some(idx) == barrier.score_col_idx {
-                out_cols.push((
-                    out_col.name.to_string(),
-                    gleaph_gql_ic::GqlWireValue::Float64(f64::from(score)),
-                ));
+                // An OPTIONAL MATCH miss projects a null score (the wire
+                // carries `Null`; a prepared-manifest covering this shape must
+                // declare the score column nullable).
+                let score_value = score.map_or(gleaph_gql_ic::GqlWireValue::Null, |score| {
+                    gleaph_gql_ic::GqlWireValue::Float64(f64::from(score))
+                });
+                out_cols.push((out_col.name.to_string(), score_value));
             } else if barrier
                 .second
                 .as_ref()
@@ -3064,10 +3106,104 @@ mod candidate_barrier_tests {
     }
 
     #[test]
+    fn barrier_shape_accepts_optional_match_prefix_topk() {
+        // A pure-traversal OPTIONAL MATCH in the prefix keeps the TopK shape:
+        // the scored variable binds inside the optional branch.
+        let optional = PlanOp::OptionalMatch { sub_plan: vec![] };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional,
+            barrier_scan(20),
+            tail_project(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.scan_idx, 2);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK { limit: 20 }
+        ));
+    }
+
+    #[test]
+    fn barrier_shape_rejects_optional_match_combinations() {
+        let optional = || PlanOp::OptionalMatch { sub_plan: vec![] };
+        // Threshold mode has no null-row contract: fail closed.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_threshold(),
+            tail_project(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A second call has no null-row contract: fail closed.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan(20),
+            tail_project_dual(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // DISTINCT has no null-row contract yet: fail closed (next candidate).
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan(20),
+            tail_project_distinct(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn rank_candidate_rows_keeps_nulls_last_in_prefix_order() {
+        use gleaph_gql_ic::GqlWireValue;
+        let row = |key: Option<u64>| CandidatePrefixRow {
+            key,
+            key2: None,
+            values: vec![GqlWireValue::Null],
+        };
+        let scores: BTreeMap<u64, u32> = [(1, 10), (3, 30)].into_iter().collect();
+        let rows = vec![
+            row(None),
+            row(Some(1)),
+            row(None),
+            row(Some(3)),
+            row(Some(9)),
+        ];
+        let ranked = rank_candidate_rows(rows, &scores, 20);
+        // Scored first by (score desc, key asc); unscored non-null key 9 still
+        // drops; null rows trail in prefix order.
+        assert_eq!(ranked.len(), 4);
+        assert_eq!(ranked[0].0, Some(30));
+        assert_eq!(ranked[1].0, Some(10));
+        assert_eq!(ranked[2].0, None);
+        assert_eq!(ranked[3].0, None);
+        assert_eq!(ranked[2].1.key, None);
+        assert_eq!(ranked[3].1.key, None);
+        // Truncation counts null slots: a window of 3 keeps one null row.
+        let rows = vec![row(None), row(Some(1)), row(None), row(Some(3))];
+        let ranked = rank_candidate_rows(rows, &scores, 3);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0].0, Some(30));
+        assert_eq!(ranked[1].0, Some(10));
+        assert_eq!(ranked[2].0, None);
+    }
+
+    #[test]
+    fn second_join_key_returns_none_for_null_primary() {
+        use gleaph_gql_ic::GqlWireValue;
+        let row = CandidatePrefixRow {
+            key: None,
+            key2: None,
+            values: vec![GqlWireValue::Null],
+        };
+        assert_eq!(second_join_key(&row, false), None);
+    }
+
+    #[test]
     fn second_join_key_selects_identity_per_slice() {
         use gleaph_gql_ic::GqlWireValue;
         let row = CandidatePrefixRow {
-            key: 11,
+            key: Some(11),
             key2: Some(77),
             values: vec![GqlWireValue::Null],
         };
@@ -3080,7 +3216,7 @@ mod candidate_barrier_tests {
         let mut rows = vec![
             row,
             CandidatePrefixRow {
-                key: 12,
+                key: Some(12),
                 key2: None,
                 values: vec![GqlWireValue::Null],
             },
@@ -3090,12 +3226,12 @@ mod candidate_barrier_tests {
             second_join_key(row, true).is_some_and(|key| second_scores.contains_key(&key))
         });
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].key, 11);
+        assert_eq!(rows[0].key, Some(11));
         // Ranking stays on the first score: s2 never reorders.
         let scores: BTreeMap<u64, u32> = [(11, 30), (12, 90)].into_iter().collect();
         let ranked = rank_candidate_rows(rows, &scores, 10);
         assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].0, 30);
+        assert_eq!(ranked[0].0, Some(30));
     }
 
     #[test]
@@ -3123,22 +3259,22 @@ mod candidate_barrier_tests {
         use gleaph_gql_ic::GqlWireValue;
         let rows = vec![
             CandidatePrefixRow {
-                key: 3,
+                key: Some(3),
                 key2: None,
                 values: vec![GqlWireValue::Int64(3)],
             },
             CandidatePrefixRow {
-                key: 1,
+                key: Some(1),
                 key2: None,
                 values: vec![GqlWireValue::Int64(1)],
             },
             CandidatePrefixRow {
-                key: 3,
+                key: Some(3),
                 key2: None,
                 values: vec![GqlWireValue::Int64(33)],
             },
             CandidatePrefixRow {
-                key: 9,
+                key: Some(9),
                 key2: None,
                 values: vec![GqlWireValue::Int64(9)],
             },
@@ -3147,28 +3283,28 @@ mod candidate_barrier_tests {
         let ranked = rank_candidate_rows(rows, &scores, 20);
         // Key 9 unmatched (dropped); key 3 twice (both prefix paths survive).
         assert_eq!(ranked.len(), 3);
-        assert_eq!(ranked[0].1.key, 3);
-        assert_eq!(ranked[1].1.key, 3);
-        assert_eq!(ranked[2].1.key, 1);
+        assert_eq!(ranked[0].1.key, Some(3));
+        assert_eq!(ranked[1].1.key, Some(3));
+        assert_eq!(ranked[2].1.key, Some(1));
         // Stable within identical (score, key): first prefix occurrence first.
         assert!(matches!(ranked[0].1.values[0], GqlWireValue::Int64(3)));
         assert!(matches!(ranked[1].1.values[0], GqlWireValue::Int64(33)));
         // Truncation keeps the head of the ranked order.
         let rows = vec![
             CandidatePrefixRow {
-                key: 1,
+                key: Some(1),
                 key2: None,
                 values: vec![],
             },
             CandidatePrefixRow {
-                key: 3,
+                key: Some(3),
                 key2: None,
                 values: vec![],
             },
         ];
         let ranked = rank_candidate_rows(rows, &scores, 1);
         assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].0, 30);
+        assert_eq!(ranked[0].0, Some(30));
     }
 
     #[test]
@@ -3176,19 +3312,19 @@ mod candidate_barrier_tests {
         use gleaph_gql_ic::GqlWireValue;
         let rows = vec![
             CandidatePrefixRow {
-                key: 7,
+                key: Some(7),
                 key2: None,
                 values: vec![GqlWireValue::Null],
             },
             CandidatePrefixRow {
-                key: 2,
+                key: Some(2),
                 key2: None,
                 values: vec![GqlWireValue::Null],
             },
         ];
         let scores: BTreeMap<u64, u32> = [(7, 5), (2, 5)].into_iter().collect();
         let ranked = rank_candidate_rows(rows, &scores, 10);
-        assert_eq!(ranked[0].1.key, 2);
-        assert_eq!(ranked[1].1.key, 7);
+        assert_eq!(ranked[0].1.key, Some(2));
+        assert_eq!(ranked[1].1.key, Some(7));
     }
 }

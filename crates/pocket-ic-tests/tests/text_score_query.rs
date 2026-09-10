@@ -1921,6 +1921,9 @@ struct CandidateFixture {
     /// two-variable dual-score slice links one Summary per document; only that
     /// seed pays for the extra vertices.
     reachable_docs: Vec<u32>,
+    /// Local vertex ids of the two anchor users. The nested-keep slice links
+    /// one document-less project per user; only that seed pays for them.
+    users: Vec<u32>,
 }
 
 fn seed_candidate_fixture() -> CandidateFixture {
@@ -2050,6 +2053,7 @@ fn seed_candidate_fixture() -> CandidateFixture {
         env,
         text_canister,
         reachable_docs: reachable,
+        users,
     }
 }
 
@@ -3286,5 +3290,211 @@ fn non_leading_text_candidate_dual_var_score_lifecycle() {
         dual_scored_rows(&replay),
         expected,
         "two-variable dual-score replay is deterministic"
+    );
+}
+
+// ──── Candidate-scoped top-k over an OPTIONAL MATCH prefix (nulls last) ────
+
+const CANDIDATE_NESTED_PNO_PROPERTY: &str = "pno";
+/// Project numbers of the two document-less projects, one per anchor user.
+/// They distinguish the two null rows so the null group's prefix order is
+/// observable (rank and score are both NULL there).
+const CANDIDATE_NESTED_EMPTY_A: i64 = 101;
+const CANDIDATE_NESTED_EMPTY_B: i64 = 102;
+
+const CANDIDATE_NESTED_PREFIX_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno";
+const CANDIDATE_NESTED_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC LIMIT 44";
+const CANDIDATE_NESTED_SLOT_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC LIMIT 43";
+const CANDIDATE_NESTED_FIRST_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC NULLS FIRST LIMIT 44";
+
+/// Composes the shared candidate fixture with one document-less project per
+/// anchor user. The main project keeps its 21 documents; each empty project
+/// contributes exactly one OPTIONAL MATCH miss row per user.
+fn seed_nested_score_fixture() -> CandidateFixture {
+    let fixture = seed_candidate_fixture();
+    let env = &fixture.env;
+    let pno_property =
+        gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_NESTED_PNO_PROPERTY);
+    let member_edge = gleaph_pocket_ic_tests::ensure_edge_label(&env.fed, CANDIDATE_MEMBER_EDGE);
+    let project_label =
+        gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_PROJECT_LABEL).raw();
+    let graph = env.fed.graph_source;
+    for (user, pno) in fixture
+        .users
+        .iter()
+        .zip([CANDIDATE_NESTED_EMPTY_A, CANDIDATE_NESTED_EMPTY_B])
+    {
+        let empty = gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_property(
+            &env.fed,
+            graph,
+            project_label,
+            pno_property.raw(),
+            pno,
+        )
+        .local_vertex_id;
+        gleaph_pocket_ic_tests::e2e_insert_edge_with_label(
+            &env.fed,
+            graph,
+            *user,
+            empty,
+            member_edge.raw(),
+        );
+    }
+    fixture
+}
+
+/// Reads `(rank, pno, score)` rows in order; any position may be NULL.
+fn nested_scored_rows(result: &GqlQueryResult) -> Vec<(Option<i64>, Option<i64>, Option<f64>)> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let int_or_null = |name: &str| match columns.get(name).expect("column present") {
+                GqlWireValue::Int64(v) => Some(*v),
+                GqlWireValue::Null => None,
+                other => panic!("{name} must be Int64 or Null, got {other:?}"),
+            };
+            let score = match columns.get("s").expect("s column present") {
+                GqlWireValue::Float64(score) => Some(*score),
+                GqlWireValue::Null => None,
+                other => panic!("s must be Float64 or Null, got {other:?}"),
+            };
+            (int_or_null("rank"), int_or_null("pno"), score)
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_nested_nulls_last_lifecycle() {
+    let fixture = seed_nested_score_fixture();
+    let env = fixture.env;
+
+    // Calibration: the scored side follows the shared bio top-k frame.
+    let bio = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_BIO_FRAME_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let bio_frame = threshold_scored_rows(&bio);
+    assert_eq!(bio_frame.len(), 42, "bio frame holds every candidate row");
+
+    // The barrier-free prefix order, observed without scoring: the null
+    // group's emission order is the contract the barrier must preserve.
+    let prefix = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_PREFIX_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let prefix_blob = prefix.rows_blob.as_ref().expect("rows blob present");
+    let prefix_nulls: Vec<(Option<i64>, Option<i64>)> = GqlWireRows::decode_blob(prefix_blob)
+        .expect("decode rows")
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let int_or_null = |name: &str| match columns.get(name).expect("column present") {
+                GqlWireValue::Int64(v) => Some(*v),
+                GqlWireValue::Null => None,
+                other => panic!("{name} must be Int64 or Null, got {other:?}"),
+            };
+            let rank = int_or_null("rank");
+            rank.is_none().then(|| (rank, int_or_null("pno")))
+        })
+        .collect();
+    assert_eq!(
+        prefix_nulls.len(),
+        2,
+        "one OPTIONAL MATCH miss per empty project"
+    );
+
+    // Nulls last: 42 scored rows in bio-frame order, then the null group in
+    // prefix order with NULL scores.
+    let scored = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(scored.row_count, 44, "miss rows are kept, not dropped");
+    assert_eq!(scored.truncated, Some(false), "exact nulls-last join");
+    let rows = nested_scored_rows(&scored);
+    let expected_head: Vec<(Option<i64>, Option<i64>, Option<f64>)> = bio_frame
+        .iter()
+        .map(|(rank, score)| (Some(*rank), None, Some(*score)))
+        .collect();
+    assert_eq!(
+        rows[..42],
+        expected_head,
+        "scored head follows the bio frame with no pno"
+    );
+    let null_tail: Vec<(Option<i64>, Option<i64>)> = rows[42..]
+        .iter()
+        .map(|(rank, pno, score)| {
+            assert_eq!(*score, None, "miss rows project a NULL score");
+            (*rank, *pno)
+        })
+        .collect();
+    assert_eq!(null_tail, prefix_nulls, "null group trails in prefix order");
+
+    // LIMIT counts null slots: 43 rows keep 42 scored plus the first null.
+    let slot = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_SLOT_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(slot.row_count, 43, "a null row consumes a LIMIT slot");
+    let slot_rows = nested_scored_rows(&slot);
+    assert_eq!(slot_rows[..42], expected_head);
+    assert_eq!(
+        (slot_rows[42].0, slot_rows[42].1, slot_rows[42].2),
+        (prefix_nulls[0].0, prefix_nulls[0].1, None),
+        "the surviving null is the prefix-first miss"
+    );
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        nested_scored_rows(&replay),
+        rows,
+        "nulls-last replay is deterministic"
+    );
+}
+
+/// No barrier honors null-first ranking: the mention stays residual and the
+/// Router rejects the surviving TopK tail fail-closed.
+#[test]
+fn non_leading_text_candidate_nested_nulls_first_rejected() {
+    let fixture = seed_nested_score_fixture();
+    let env = fixture.env;
+    let err = raw_gql_query(
+        &env,
+        CANDIDATE_NESTED_FIRST_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    )
+    .expect_err("explicit NULLS FIRST must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("did not lower into a TextScan"),
+        "unexpected nulls-first rejection: {message}"
     );
 }
