@@ -3314,6 +3314,12 @@ const CANDIDATE_NESTED_SLOT_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBE
 const CANDIDATE_NESTED_FIRST_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
      OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
      RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC NULLS FIRST LIMIT 44";
+const CANDIDATE_NESTED_DISTINCT_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN DISTINCT d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC LIMIT 45";
+const CANDIDATE_NESTED_DISTINCT_BASE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s DESC LIMIT 45";
 
 /// Composes the shared candidate fixture with one document-less project per
 /// anchor user. The main project keeps its 21 documents; each empty project
@@ -3496,5 +3502,129 @@ fn non_leading_text_candidate_nested_nulls_first_rejected() {
     assert!(
         message.contains("did not lower into a TextScan"),
         "unexpected nulls-first rejection: {message}"
+    );
+}
+
+/// Composes the nested fixture with a second document-less project carrying
+/// the SAME `pno` (101) for the first user: the miss group holds two
+/// byte-identical `(NULL, 101, NULL)` rows plus `(NULL, 102, NULL)`, so the
+/// DISTINCT tail must collapse the duplicate miss while keeping the survivor.
+fn seed_nested_distinct_fixture() -> CandidateFixture {
+    let fixture = seed_nested_score_fixture();
+    let env = &fixture.env;
+    let pno_property =
+        gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_NESTED_PNO_PROPERTY);
+    let member_edge = gleaph_pocket_ic_tests::ensure_edge_label(&env.fed, CANDIDATE_MEMBER_EDGE);
+    let project_label =
+        gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_PROJECT_LABEL).raw();
+    let graph = env.fed.graph_source;
+    let duplicate = gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_property(
+        &env.fed,
+        graph,
+        project_label,
+        pno_property.raw(),
+        CANDIDATE_NESTED_EMPTY_A,
+    )
+    .local_vertex_id;
+    gleaph_pocket_ic_tests::e2e_insert_edge_with_label(
+        &env.fed,
+        graph,
+        fixture.users[0],
+        duplicate,
+        member_edge.raw(),
+    );
+    fixture
+}
+
+/// DISTINCT over an OPTIONAL MATCH prefix: the whole-row dedup key is
+/// null-safe, so the duplicate miss collapses to one row, scored rows keep
+/// their score-separated identity, and the null group still trails in prefix
+/// order with NULL scores. Skip/take apply after dedup per the existing rule.
+#[test]
+fn non_leading_text_candidate_nested_distinct_lifecycle() {
+    let fixture = seed_nested_distinct_fixture();
+    let env = fixture.env;
+
+    // Baseline without DISTINCT: 42 scored rows plus 3 misses (the 101 miss
+    // fanned out twice by the duplicate empty project).
+    let base = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_DISTINCT_BASE_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        base.row_count, 45,
+        "duplicate miss is kept without DISTINCT"
+    );
+    let base_rows = nested_scored_rows(&base);
+    let base_nulls: Vec<(Option<i64>, Option<i64>)> = base_rows[42..]
+        .iter()
+        .map(|(rank, pno, score)| {
+            assert_eq!(
+                (*rank, *score),
+                (None, None),
+                "miss rows carry no rank/score"
+            );
+            (*rank, *pno)
+        })
+        .collect();
+    assert_eq!(
+        base_nulls,
+        vec![(None, Some(101)), (None, Some(101)), (None, Some(102))],
+        "miss group holds the duplicate 101 row in prefix order"
+    );
+
+    // DISTINCT: the scored fan-out pairs collapse (42 → 21, same as the
+    // non-nested DISTINCT contract) and the duplicate miss collapses (3 → 2).
+    // A dedup-skipping misimplementation returns 45 rows; a null-dropping one
+    // returns 21.
+    let distinct = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_DISTINCT_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        distinct.row_count, 23,
+        "fan-out pairs and the duplicate miss collapse"
+    );
+    assert_eq!(
+        distinct.truncated,
+        Some(false),
+        "exact dedup never truncates"
+    );
+    let rows = nested_scored_rows(&distinct);
+    let mut deduped_base: Vec<(Option<i64>, Option<i64>, Option<f64>)> =
+        Vec::with_capacity(base_rows.len());
+    for row in &base_rows {
+        if !deduped_base.contains(row) {
+            deduped_base.push(*row);
+        }
+    }
+    assert_eq!(
+        rows, deduped_base,
+        "DISTINCT keeps first occurrences in rank order with the null group trailing"
+    );
+    let null_tail: Vec<(Option<i64>, Option<i64>)> = rows[21..]
+        .iter()
+        .map(|(rank, pno, score)| {
+            assert_eq!(*score, None, "miss rows project a NULL score");
+            (*rank, *pno)
+        })
+        .collect();
+    assert_eq!(
+        null_tail,
+        vec![(None, Some(101)), (None, Some(102))],
+        "one 101 miss survives in prefix order"
+    );
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_DISTINCT_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        nested_scored_rows(&replay),
+        rows,
+        "nested DISTINCT replay is deterministic"
     );
 }

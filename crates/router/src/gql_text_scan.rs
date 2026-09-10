@@ -456,9 +456,12 @@ fn analyze_candidate_barrier_shape(
         });
     }
     let score_cols = usize::from(score_col_idx.is_some()) + usize::from(second.is_some());
-    // Nested-keep slice: an OPTIONAL MATCH prefix is TopK-only, single-score,
-    // without DISTINCT. Threshold/compound modes, second calls, and DISTINCT
-    // tails need their own null-row contracts and stay rejected here.
+    // Nested-keep slice: an OPTIONAL MATCH prefix is TopK-only and single-score.
+    // Threshold/compound modes and second calls need their own null-row
+    // contracts and stay rejected here. DISTINCT rides the mode-agnostic
+    // rank → dedup → skip → take stage: the whole-row key is null-safe
+    // (Null == Null, SQL DISTINCT semantics), so identical miss rows collapse
+    // to one while scored rows keep their score-separated identity.
     if plan.ops[..scan_idx]
         .iter()
         .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
@@ -471,11 +474,6 @@ fn analyze_candidate_barrier_shape(
         if second.is_some() {
             return Err(unsupported(
                 "a second text_score call is unsupported with an OPTIONAL MATCH prefix",
-            ));
-        }
-        if distinct {
-            return Err(unsupported(
-                "DISTINCT is unsupported with an OPTIONAL MATCH prefix",
             ));
         }
     }
@@ -2819,6 +2817,19 @@ mod candidate_barrier_tests {
         ];
         dedup_wire_rows(&mut nulls);
         assert_eq!(nulls.len(), 1);
+        // Null-mixed whole rows: identical miss rows collapse to one, while a
+        // scored row never merges with a miss row (the score column differs).
+        // A null-skipping misimplementation would keep both miss rows; a
+        // null-blind one would merge the scored row into the miss group.
+        let miss = || GqlWireRow {
+            columns: vec![
+                ("title".to_string(), GqlWireValue::Null),
+                ("s".to_string(), GqlWireValue::Null),
+            ],
+        };
+        let mut mixed = vec![row("a", 3.0), miss(), row("a", 3.0), miss()];
+        dedup_wire_rows(&mut mixed);
+        assert_eq!(mixed, vec![row("a", 3.0), miss()]);
     }
 
     fn score_call_on(property: &str) -> Expr {
@@ -3135,7 +3146,24 @@ mod candidate_barrier_tests {
             tail_project(),
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
-        // A second call has no null-row contract: fail closed.
+        // Compound mode shares the TopK-only gate: fail closed with DISTINCT too.
+        let mut scan = barrier_scan(20);
+        let PlanOp::TextScan { mode, .. } = &mut scan else {
+            panic!("scan");
+        };
+        *mode = TextScanMode::ThresholdTopK {
+            cmp: CmpOp::Gt,
+            bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            scan,
+            tail_project_distinct(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A second call has no null-row contract: fail closed, with DISTINCT too.
         let plan = test_plan(vec![
             node_scan_d(),
             optional(),
@@ -3143,14 +3171,34 @@ mod candidate_barrier_tests {
             tail_project_dual(),
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
-        // DISTINCT has no null-row contract yet: fail closed (next candidate).
+        let PlanOp::Project { columns, .. } = tail_project_dual() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // DISTINCT over an OPTIONAL MATCH prefix is TopK-only, single-score:
+        // the whole-row dedup key is null-safe, so identical miss rows
+        // collapse while scored rows keep score-separated identity.
         let plan = test_plan(vec![
             node_scan_d(),
             optional(),
             barrier_scan(20),
             tail_project_distinct(),
         ]);
-        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK { limit: 20 }
+        ));
     }
 
     #[test]

@@ -230,8 +230,9 @@ closed) and lowers bare/`NULLS LAST` with the nulls-last barrier contract (a
 deliberate deviation from the GQL DESC default); `proven_prefix_label` descends
 one `OptionalMatch` sub-plan level with shared label accumulators, so an
 ambiguous or unlabeled optional binding stays unproven and fails closed. (b) The
-Router gate keeps the shape TopK-only, single-score, without DISTINCT
-(threshold/compound/second-call/DISTINCT combinations stay rejected);
+Router gate keeps the shape TopK-only and single-score
+(threshold/compound/second-call combinations stay rejected; DISTINCT opens in
+the follow-up addendum below);
 `CandidatePrefixRow.key` becomes `Option<u64>` (struct only, wire unchanged),
 a `Null` identity decodes to `None` (any other non-bytes value is still a wire
 break), null keys never reach TEXT, `rank_candidate_rows` keeps null rows after
@@ -245,3 +246,21 @@ barrier-free prefix order, NULL scores), LIMIT-43 slot consumption, and replay;
 the fail-closed test asserts explicit `NULLS FIRST` rejects with the
 did-not-lower diagnostic. A prepared-manifest covering this shape must declare
 the score column nullable.
+
+## Addendum: DISTINCT over an OPTIONAL MATCH prefix (implemented)
+
+A `RETURN DISTINCT` tail is accepted over an OPTIONAL MATCH prefix in the
+TopK-only, single-score form with no planner, TEXT, wire, or cap change: the
+Router shape gate was the only blocker, and the execution already runs the
+mode-agnostic rank → dedup → skip → take stage. The null-row contract: the
+dedup key is the whole projected row and is null-safe (`Null == Null`, SQL
+DISTINCT semantics), so byte-identical miss rows collapse to one first
+occurrence while scored rows keep their score-separated identity — a miss row
+never merges with a scored row because the score column differs (`Null` vs
+`Float64`). LIMIT/OFFSET slot consumption follows the existing post-dedup rule
+(dedup runs before skip/take; a DISTINCT tail bypasses the ranking window).
+Threshold/compound/second-call combinations with an optional prefix stay
+rejected. Covered live by a duplicate-empty-project fixture (two `pno`-101
+misses plus one `pno`-102 miss): the lifecycle asserts the 45-row non-DISTINCT
+baseline, the 23-row DISTINCT collapse (21 scored + 2 miss survivors, null
+group trailing in prefix order with NULL scores), and replay.
