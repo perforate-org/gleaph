@@ -1167,6 +1167,53 @@ mod tests {
 
     #[cfg(feature = "cypher")]
     #[test]
+    fn like_match_implies_extracted_literal_prefix() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        use gleaph_gql_planner::anchor::like_literal_prefix;
+
+        // Differential fuzz: a LIKE match must start with the planner's
+        // extracted prefix, or the fused interval could miss rows (fail
+        // direction: over-narrow is fatal, over-wide is just slow). The
+        // alphabet is heavy on wildcards, escapes, and multi-byte scalars to
+        // stress escape resolution and char-boundary slicing.
+        let pieces = ["a", "%", "_", "\\", "\u{e9}", "b"];
+        let mut state: u64 = 0x1234_5678_9abc_def1;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0;
+        for _ in 0..3000 {
+            let plen = (next() % 7) as usize;
+            let tlen = (next() % 7) as usize;
+            let pattern: String = (0..plen)
+                .map(|_| pieces[(next() as usize) % pieces.len()])
+                .collect();
+            let text: String = (0..tlen)
+                .map(|_| pieces[(next() as usize) % pieces.len()])
+                .collect();
+            let matched = eval_string_predicate_expr(
+                Value::Text(text.clone().into()),
+                K::Like,
+                Value::Text(pattern.clone().into()),
+            )
+            .expect("LIKE fuzz inputs are always Text");
+            if matched == Value::Bool(true) {
+                checked += 1;
+                let prefix = like_literal_prefix(&pattern);
+                assert!(
+                    text.starts_with(prefix.as_ref()),
+                    "LIKE match text={text:?} pattern={pattern:?} must start with {prefix:?}"
+                );
+            }
+        }
+        assert!(checked > 100, "fuzz must exercise matches, got {checked}");
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
     fn like_and_ilike_apply_sql_wildcard_semantics() {
         use gleaph_gql::ast::StringPredicateKind as K;
         // GAP-2026-08-24-009 resolved: `%`/`_` are wildcards; `\\` escapes them.

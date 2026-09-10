@@ -692,7 +692,9 @@ pub(super) fn emit_scan_for_node(
     // point probes.
     let mut inlist_preds: Vec<(String, Expr)> = Vec::new();
     // Non-negated `var.prop STARTS WITH <Text literal | $param>` predicates that
-    // can lower into one encoded TEXT prefix interval.
+    // can lower into one encoded TEXT prefix interval, plus non-negated
+    // `var.prop LIKE <Text literal>` predicates with a non-empty escape-resolved
+    // literal prefix (vertex only; edge LIKE stays residual).
     #[cfg(feature = "cypher")]
     let mut string_prefix_preds: Vec<(String, Expr)> = Vec::new();
     for p in &input.node.properties {
@@ -726,6 +728,7 @@ pub(super) fn emit_scan_for_node(
         #[cfg(feature = "cypher")]
         for c in flatten_conjunction(where_expr) {
             if let Some((v, prop, _)) = anchor::extract_string_prefix_predicate(&c)
+                .or_else(|| anchor::extract_like_prefix_predicate(&c))
                 && v == var
             {
                 string_prefix_preds.push((prop, c.clone()));
@@ -749,6 +752,7 @@ pub(super) fn emit_scan_for_node(
         }
         #[cfg(feature = "cypher")]
         if let Some((v, prop, _)) = anchor::extract_string_prefix_predicate(c)
+            .or_else(|| anchor::extract_like_prefix_predicate(c))
             && v == var
         {
             string_prefix_preds.push((prop, c.clone()));
@@ -821,16 +825,21 @@ pub(super) fn emit_scan_for_node(
     }
 
     // A scannable STARTS WITH predicate lowers into one TEXT prefix interval
-    // IndexScan, after equality and IN lists. The original predicate stays in
-    // the residual PropertyFilter so results never depend on the index path,
-    // and negated or other string-predicate kinds never reach this block.
+    // IndexScan, after equality and IN lists, as does a scannable LIKE (its
+    // escape-resolved literal prefix becomes the TextPrefix bound while the
+    // full LIKE pattern stays residual for rechecking). The original predicate
+    // stays in the residual PropertyFilter so results never depend on the
+    // index path, and negated or other string-predicate kinds never reach
+    // this block.
     #[cfg(feature = "cypher")]
     if let Some(stats) = stats {
         for (prop, pred) in &string_prefix_preds {
             if !stats.is_vertex_property_range_indexed(prop) {
                 continue;
             }
-            if let Some((_, _, pattern)) = anchor::extract_string_prefix_predicate(pred) {
+            if let Some((_, _, pattern)) = anchor::extract_string_prefix_predicate(pred)
+                .or_else(|| anchor::extract_like_prefix_predicate(pred))
+            {
                 ops.push(PlanOp::IndexScan {
                     variable: Str::from(var),
                     property: prop.clone().into(),

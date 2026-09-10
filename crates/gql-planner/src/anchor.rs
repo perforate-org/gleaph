@@ -358,8 +358,9 @@ pub(crate) fn extract_inlist_predicate(expr: &Expr) -> Option<(String, String)> 
 /// the TEXT posting domain at plan time, and a parameter is resolved by the
 /// executor/seed paths, which fall back to the non-index filter path when it
 /// resolves to a non-TEXT value. Negated predicates and other kinds (ENDS
-/// WITH, CONTAINS, ILIKE) never match because an encoded prefix interval can
-/// express only anchored prefixes.
+/// WITH, CONTAINS, ILIKE — and LIKE, which has its own
+/// [`extract_like_prefix_predicate`]) never match because an encoded prefix
+/// interval can express only anchored prefixes.
 #[cfg(feature = "cypher")]
 pub(crate) fn extract_string_prefix_predicate(expr: &Expr) -> Option<(String, String, ScanValue)> {
     use gleaph_gql::ast::StringPredicateKind;
@@ -390,6 +391,90 @@ pub(crate) fn string_prefix_pattern_scan_value(pattern: &Expr) -> Option<ScanVal
     }
 }
 
+/// Longest escape-resolved literal prefix of a SQL LIKE pattern: consume
+/// characters until the first unescaped `%` (any run) or `_` (one scalar).
+/// `\x` contributes the literal `x`, so the returned prefix never contains
+/// backslashes; a trailing lone `\` is a literal backslash, matching the
+/// Graph executor's `sql_like_match`. The result is what a TEXT prefix
+/// interval may safely narrow on — every LIKE match starts with it — while
+/// the full pattern stays residual for rechecking.
+///
+/// `pub` (unlike its `pub(crate)` siblings) because the Graph crate's
+/// differential fuzz test ties this extraction to the executor matcher;
+/// planner-internal callers use [`extract_like_prefix_predicate`].
+#[cfg(feature = "cypher")]
+pub fn like_literal_prefix(pattern: &str) -> std::borrow::Cow<'_, str> {
+    // Phase 1: byte length of the raw literal run (escapes included).
+    let mut chars = pattern.char_indices();
+    let mut raw_end = 0;
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '%' | '_' => {
+                raw_end = i;
+                break;
+            }
+            '\\' => match chars.next() {
+                Some((j, escaped)) => raw_end = j + escaped.len_utf8(),
+                None => {
+                    raw_end = i + 1;
+                    break;
+                }
+            },
+            _ => raw_end = i + c.len_utf8(),
+        }
+    }
+    let raw = &pattern[..raw_end];
+    // Phase 2: resolve escapes (fast path when there are none).
+    if !raw.contains('\\') {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    let mut resolved = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(escaped) => resolved.push(escaped),
+                // Trailing lone `\` is a literal backslash.
+                None => resolved.push('\\'),
+            }
+        } else {
+            resolved.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(resolved)
+}
+
+/// Extract `(variable, property, derived TextPrefix bound)` from a non-negated
+/// `var.prop LIKE <Text literal>` whose escape-resolved literal prefix is
+/// non-empty. Deliberately separate from [`extract_string_prefix_predicate`]:
+/// edge fusion and `$param` patterns stay out of this slice (vertex, Text
+/// literal only); ILIKE, NOT LIKE, and leading-wildcard patterns never match.
+/// The full LIKE predicate stays residual — the bound only narrows candidates.
+#[cfg(feature = "cypher")]
+pub(crate) fn extract_like_prefix_predicate(expr: &Expr) -> Option<(String, String, ScanValue)> {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    if let ExprKind::StringPredicate {
+        expr: lhs,
+        kind: StringPredicateKind::Like,
+        pattern,
+        negated: false,
+    } = &expr.kind
+        && let Some((var, prop)) = extract_property_access(lhs)
+        && let ExprKind::Literal(gleaph_gql::Value::Text(literal)) = &pattern.kind
+    {
+        let prefix = like_literal_prefix(literal);
+        if !prefix.is_empty() {
+            return Some((
+                var,
+                prop,
+                ScanValue::Literal(gleaph_gql::Value::Text(prefix.into_owned())),
+            ));
+        }
+    }
+    None
+}
+
 /// Look for `var.prop STARTS WITH <Text literal | $param>` on range-indexed properties.
 #[cfg(feature = "cypher")]
 fn find_string_prefix_anchor(
@@ -400,6 +485,26 @@ fn find_string_prefix_anchor(
     let predicates = flatten_conjunction(where_expr);
     for pred in &predicates {
         let Some((var, prop, pattern_bound)) = extract_string_prefix_predicate(pred) else {
+            continue;
+        };
+        if candidates.iter().any(|c| c.variable == var)
+            && let Some(stats) = stats
+            && stats.is_vertex_property_range_indexed(&prop)
+        {
+            return Some(AnchorInfo {
+                variable: var.into(),
+                source: AnchorSource::PropertyPrefix {
+                    property: prop.into(),
+                    pattern: pattern_bound,
+                },
+            });
+        }
+    }
+    // LIKE fallback: same range-index gate, but only a Text literal with a
+    // non-empty escape-resolved prefix may anchor (edge fusion and `$param`
+    // patterns stay out of this slice).
+    for pred in &predicates {
+        let Some((var, prop, pattern_bound)) = extract_like_prefix_predicate(pred) else {
             continue;
         };
         if candidates.iter().any(|c| c.variable == var)

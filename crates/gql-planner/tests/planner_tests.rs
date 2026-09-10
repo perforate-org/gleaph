@@ -2843,10 +2843,11 @@ fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
         "MATCH (n:User) WHERE n.name ENDS WITH 'rix' RETURN n",
         "MATCH (n:User) WHERE n.name CONTAINS 'tri' RETURN n",
         "MATCH (n:User) WHERE n.name ILIKE 'str%' RETURN n",
-        // LIKE/ILIKE wildcards never anchor: even a prefix-shaped pattern
-        // stays a residual filter (prefix-index fusion is a future slice).
-        "MATCH (n:User) WHERE n.name LIKE 'Str%' RETURN n",
+        // LIKE fusion is implemented (see match_like_literal_prefix_...): only
+        // the non-fusible LIKE shapes stay here.
         "MATCH (n:User) WHERE NOT n.name LIKE 'Str%' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE '%Str' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE $pat RETURN n",
     ];
     for input in cases {
         let plan = plan_query_with_stats(input, &string_prefix_stats());
@@ -2868,6 +2869,134 @@ fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
             )),
             "{input} must not fuse a non-negated STARTS WITH residual, got: {:?}",
             plan.ops
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_like_literal_prefix_fuses_and_keeps_full_pattern_residual() {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name LIKE 'Str%' RETURN n",
+        &string_prefix_stats(),
+    );
+    // The derived escape-resolved prefix ('Str') anchors the interval.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if &**property == "name"
+                    && **pattern == ScanValue::Literal(Value::Text("Str".into()))
+        )),
+        "expected TEXT prefix IndexScan on derived LIKE prefix, got: {:?}",
+        plan.ops
+    );
+    // The FULL original LIKE predicate stays residual for rechecking.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    &p.kind,
+                    ExprKind::StringPredicate {
+                        kind: StringPredicateKind::Like,
+                        negated: false,
+                        ..
+                    }
+                ))
+        )),
+        "original LIKE predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_like_escaped_prefix_fuses_on_resolved_literal() {
+    // `\%` contributes a literal `%`: the interval narrows on `a%b`.
+    // (GQL text spells the LIKE escape as `\\`, since `\%` is not a GQL
+    // string escape.)
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name LIKE 'a\\\\%b%' RETURN n",
+        &string_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
+        )),
+        "expected TEXT prefix IndexScan on escape-resolved LIKE prefix, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_unfusible_like_shapes_stay_residual_only() {
+    // Kill: leading `%`/`_` (empty prefix), NOT LIKE, ILIKE, `$param`
+    // patterns, and the empty pattern must never emit an IndexScan.
+    let cases = [
+        "MATCH (n:User) WHERE n.name LIKE '%str' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE '_tr' RETURN n",
+        "MATCH (n:User) WHERE NOT n.name LIKE 'Str%' RETURN n",
+        "MATCH (n:User) WHERE n.name ILIKE 'Str%' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE $pat RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE '' RETURN n",
+    ];
+    for input in cases {
+        let plan = plan_query_with_stats(input, &string_prefix_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+            "{input} must not emit an IndexScan, got: {:?}",
+            plan.ops
+        );
+    }
+    // Mid-pattern `_` truncates the prefix: `Str_ip%` fuses on `Str`.
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name LIKE 'Str_ip%' RETURN n",
+        &string_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if **pattern == ScanValue::Literal(Value::Text("Str".into()))
+        )),
+        "mid-pattern `_` must truncate the LIKE prefix to `Str`, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn like_literal_prefix_resolves_escapes_and_stops_at_wildcards() {
+    use gleaph_gql_planner::anchor::like_literal_prefix;
+
+    // (pattern, expected resolved prefix)
+    for (pattern, expected) in [
+        ("abc%", "abc"),
+        ("abc", "abc"),
+        ("%abc", ""),
+        ("_abc", ""),
+        ("", ""),
+        ("a\\%b%", "a%b"),
+        ("a\\_b%", "a_b"),
+        ("a\\\\b%", "a\\b"),
+        ("ab\\", "ab\\"),
+        ("\\", "\\"),
+        ("M_ller%", "M"),
+        ("M\u{f6}ller%", "M\u{f6}ller"),
+    ] {
+        assert_eq!(
+            like_literal_prefix(pattern).as_ref(),
+            expected,
+            "like_literal_prefix({pattern:?})"
         );
     }
 }

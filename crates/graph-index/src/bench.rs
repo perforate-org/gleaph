@@ -613,6 +613,90 @@ fn numeric_range_bounds(value: i64, op: gleaph_gql::ast::CmpOp) -> (Vec<u8>, Vec
     gleaph_gql::range_bounds(&gleaph_gql::Value::Int64(value), op).expect("range bounds")
 }
 
+/// Seed a TEXT posting domain: 1024 `user_%04d` postings plus 4 `sel_*`
+/// postings under one selective prefix, modelling a fused LIKE interval.
+fn setup_text_prefix_store() -> (IndexStore, Principal) {
+    let (store, _router, owner) = setup_index_store();
+    for vid in 0..1024u32 {
+        let value = value_to_index_key_bytes(&gleaph_gql::Value::Text(format!("user_{vid:04}")))
+            .expect("text index key")
+            .expect("indexable");
+        store
+            .bench_posting_insert(owner, ShardId::new(0), RANGE_BENCH_PROPERTY, value, vid)
+            .expect("text posting insert");
+    }
+    for (i, vid) in (1024..1028u32).enumerate() {
+        let value = value_to_index_key_bytes(&gleaph_gql::Value::Text(format!("sel_{i}")))
+            .expect("selective index key")
+            .expect("indexable");
+        store
+            .bench_posting_insert(owner, ShardId::new(0), RANGE_BENCH_PROPERTY, value, vid)
+            .expect("selective posting insert");
+    }
+    (store, owner)
+}
+
+fn text_prefix_lookup_request(low: Vec<u8>, high: Vec<u8>) -> LookupRangePageRequest {
+    LookupRangePageRequest {
+        physical_index_id: BENCH_PHYSICAL_INDEX_ID,
+        property_id: RANGE_BENCH_PROPERTY,
+        range: PostingRangeRequest::Between { low, high },
+        after: None,
+        limit: 1024,
+    }
+}
+
+/// Selective fused LIKE interval (`sel` over 1028 TEXT postings): the main
+/// signal for LIKE prefix fusion — a narrow interval must touch only its 4
+/// postings instead of the whole TEXT domain.
+#[bench(raw)]
+fn bench_lookup_range_page_text_prefix_selective_first_page() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_text_prefix_store();
+    let (low, high) =
+        gleaph_gql::text_prefix_range_bounds(&gleaph_gql::Value::Text("sel".to_string()))
+            .expect("selective prefix bounds");
+    // Sanity receipt outside the measured closure: the narrow interval hits
+    // exactly the 4 selective postings.
+    let receipt = store
+        .lookup_range_page(&text_prefix_lookup_request(low.clone(), high.clone()))
+        .expect("selective prefix receipt");
+    assert_eq!(receipt.hits.len(), 4);
+    assert!(receipt.done);
+    let req = text_prefix_lookup_request(low, high);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_text_prefix_selective_first_page");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page selective prefix");
+        black_box(page);
+    })
+}
+
+/// Full TEXT-domain interval over the same postings: the unfused baseline the
+/// selective bench above compares against (touch count, not wall time, is the
+/// signal — fewer touched rows dominate any per-call overhead).
+#[bench(raw)]
+fn bench_lookup_range_page_text_domain_full_first_page() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_text_prefix_store();
+    let (low, high) = gleaph_gql::text_prefix_range_bounds(&gleaph_gql::Value::Text(String::new()))
+        .expect("full-domain prefix bounds");
+    let receipt = store
+        .lookup_range_page(&text_prefix_lookup_request(low.clone(), high.clone()))
+        .expect("full-domain receipt");
+    // The page cap (1024) proves the interval spans the whole domain: all
+    // 1028 postings fall inside, only the first page is returned.
+    assert_eq!(receipt.hits.len(), 1024);
+    assert!(!receipt.done);
+    let req = text_prefix_lookup_request(low, high);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_text_domain_full_first_page");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page full domain");
+        black_box(page);
+    })
+}
+
 /// First page of a bounded numeric range that covers roughly half the postings.
 #[bench(raw)]
 fn bench_lookup_range_page_between_first_page() -> canbench_rs::BenchResult {

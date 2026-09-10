@@ -69,7 +69,14 @@ and edge inline predicate contexts still reject `InList` bounds fail-closed.
 
 A non-negated `WHERE v.prop STARTS WITH <Text literal | $param>` over a range-indexed vertex
 property fuses into one `IndexScan { value: TextPrefix(pattern), cmp: Eq }` anchor
-(`AnchorSource::PropertyPrefix`). ENDS WITH / CONTAINS / ILIKE, negation, unindexed or non-range
+(`AnchorSource::PropertyPrefix`). The same anchor also serves non-negated
+`WHERE v.prop LIKE <Text literal>` whose escape-resolved literal prefix
+(`anchor::like_literal_prefix`: longest run before the first unescaped `%`/`_`,
+`\\x` contributing literal `x`, trailing lone `\\` literal) is non-empty; the derived prefix
+becomes the `TextPrefix` bound while the FULL original LIKE pattern stays residual for
+rechecking. ILIKE / `$param` LIKE / NOT LIKE / leading-wildcard or empty-prefix LIKE /
+edge LIKE never fuse (edge LIKE stays a residual filter like other unfused shapes).
+ENDS WITH / CONTAINS / ILIKE, negation, unindexed or non-range
 properties never fuse. The executor lowers the resolved pattern through
 `gleaph_gql::text_prefix_range_bounds` into a half-open encoded-key interval `[low, high)`:
 TEXT keys are `[tag=6] + escaped(text) + [0, 0]`, so `low = stripped pattern key` and

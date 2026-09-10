@@ -823,6 +823,118 @@ fn executes_text_prefix_index_scan_with_between_and_dedup() {
     );
 }
 
+#[cfg(feature = "cypher")]
+#[test]
+fn executes_like_prefix_fusion_agrees_with_residual_only_scan() {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    // The fused interval is a superset by construction; the residual full-
+    // pattern check owns correctness. Feed the mock a uselessly wide hit set
+    // (every vertex, including misses and the null-name vertex) so only the
+    // residual can produce the right rows.
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let mut all_ids = Vec::new();
+    for name in ["StrPred Ada", "StrPred Axa", "StrPred xa", "Other"] {
+        let id = store
+            .insert_vertex_named(["LikeFusion"], [("name", Value::Text(name.into()))])
+            .expect("insert vertex");
+        all_ids.push(PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: u32::try_from(u64::from(id)).unwrap(),
+        });
+    }
+    let null_id = store
+        .insert_vertex_named(["LikeFusion"], [("age", Value::Int64(1))])
+        .expect("insert null-name vertex");
+    all_ids.push(PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: u32::try_from(u64::from(null_id)).unwrap(),
+    });
+    // Full pattern: derived prefix `StrPred A`, `_` one scalar, then `a%`.
+    // "StrPred xa" starts with the prefix but fails the recheck; "Other"
+    // matches neither; the null-name vertex stays UNKNOWN.
+    let like_pred = Expr::new(ExprKind::StringPredicate {
+        expr: Box::new(prop("n", "name")),
+        kind: StringPredicateKind::Like,
+        pattern: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+            "StrPred A_a%".into(),
+        )))),
+        negated: false,
+    });
+    let project_name = || PlanOp::Project {
+        columns: vec![project(prop("n", "name"), "name")],
+        distinct: false,
+    };
+    let fused = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "name".into(),
+            value: ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text(
+                "StrPred A".into(),
+            )))),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+            ordered_by_sort: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![like_pred.clone()],
+            stage: 0,
+        },
+        project_name(),
+    ]);
+    let residual_only = plan(vec![
+        PlanOp::NodeScan {
+            variable: "n".into(),
+            label: Some("LikeFusion".into()),
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![like_pred],
+            stage: 0,
+        },
+        project_name(),
+    ]);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    let index = MockPropertyIndex::default();
+    index.range_hits.borrow_mut().extend(all_ids);
+    let fused_rows = text_column(
+        &pollster::block_on(execute_plan_query(
+            &store,
+            &fused,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute fused LIKE scan"),
+        "name",
+    );
+    // The derived prefix — not the full pattern — must drive the interval.
+    let calls = index.range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![
+                TAG_TEXT, b'S', b't', b'r', b'P', b'r', b'e', b'd', b' ', b'A'
+            ],
+            high: vec![
+                TAG_TEXT, b'S', b't', b'r', b'P', b'r', b'e', b'd', b' ', b'A', 255
+            ],
+        }
+    );
+    let off_rows = text_column(
+        &store
+            .execute_plan_query(&residual_only, &params(), GqlExecutionContext::default())
+            .expect("execute residual-only LIKE scan"),
+        "name",
+    );
+    assert_eq!(fused_rows, vec!["StrPred Ada", "StrPred Axa"]);
+    assert_eq!(off_rows, fused_rows);
+}
+
 #[test]
 fn executes_empty_pattern_prefix_scan_over_full_text_domain() {
     let store = GraphStore::new();
