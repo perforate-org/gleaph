@@ -1069,6 +1069,9 @@ Contract:
   parameterized or negative offset, and an offset after a threshold-only barrier stay
   unsupported and fail closed. Multi-shard,
   `DISTINCT`/ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
+  `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
+  returns the *least* relevant candidates, and no demand for that shape exists today.
+  Reopen if a concrete low-score-side use case lands (the carrier design is recorded in review).
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
 - Non-leading/nested placements and aggregates over scores remain deferred until their

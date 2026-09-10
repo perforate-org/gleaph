@@ -108,6 +108,7 @@ fn reverse_threshold_cmp(op: CmpOp) -> CmpOp {
 }
 
 /// Match an ORDER BY clause whose leading key is exactly `text_score(v.prop, Q) DESC`.
+/// ASC is deliberately deferred (least-relevant top-k, no demand); reopen on a concrete use case.
 ///
 /// The scan itself delivers the decided `(score DESC, element-key ASC)` determinism
 /// contract. An explicitly written second key is accepted only when it is the scanned
