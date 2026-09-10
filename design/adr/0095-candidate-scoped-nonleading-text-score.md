@@ -111,3 +111,17 @@ Approve explicitly: search-hit rather than total-scalar semantics; retained proj
 hydration; conservative caps and preflight measurements; stored-controller access for candidate reads.
 The draft implementation checklist is `plans/0344-nonleading-text-score-candidate-topk.md` (ignored
 local planning artifact, not an implemented capability). No independent approval is recorded.
+
+## Addendum: candidate-scoped compound threshold-top-k (implemented)
+
+The compound form — `WHERE text_score(v.prop, Q) cmp bound` plus `ORDER BY` score
+`DESC LIMIT k` on one triple after a traversal prefix — fuses into a single
+`TextScanMode::ThresholdTopK` barrier, reusing the leading plan 0329 mode and its wire
+form with no new variant, method, or cap. Fusion lives in
+`apply_candidate_text_topk_lowering` (same-triple gate: single-predicate
+`PropertyFilter` + `TopK`); mismatched halves stay residual and fail closed. The Router
+accepts the barrier as `CandidateBarrierMode::Compound` (one new enum variant), reapplies
+the 1..=1024 row LIMIT gate, retains the threshold on the complete candidate hit set
+first, then truncates ranking — the 0329 order, candidate-scoped — reporting
+exact `truncated=false`. The `property_projection` vertex-binding hook is mode-agnostic
+and needed no change. TEXT, wire, and caps are unchanged.

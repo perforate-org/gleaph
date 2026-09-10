@@ -1054,9 +1054,15 @@ Contract:
   stable, and applies the row LIMIT. Admission caps: 256 distinct keys, 1024 prefix rows,
   1 MiB prefix plan/payload, 32 KiB candidate call, query ≤ 4096 B, LIMIT ≤ 1024, ≤ 16
   retained user columns (the LIMIT cap applies to the top-k form only; threshold keeps
-  every surviving row). Overflow, incomplete prefix, payload excess, or TEXT failure
-  fails closed — never a silent partial top-k. Multi-shard, compound threshold halves,
-  `DISTINCT`/offset/ASC, and unlabeled/uncovered scans stay unsupported.
+  every surviving row). The **candidate compound** form — `WHERE text_score(...) > t`
+  and `ORDER BY` score `DESC LIMIT k` on one triple after a prefix — fuses into a single
+  `ThresholdTopK` barrier: the Router retains the threshold on the complete candidate hit
+  set first, then truncates ranking to the row limit (the plan 0329 order, candidate-scoped),
+  exact with `truncated=false` — unlike the leading compound, whose bounded canister window
+  can mark truncation. The LIMIT cap (1..=1024) is reapplied to the compound limit.
+  Overflow, incomplete prefix, payload excess, or TEXT failure
+  fails closed — never a silent partial top-k. Multi-shard,
+  `DISTINCT`/offset/ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
 - Non-leading/nested placements and aggregates over scores remain deferred until their

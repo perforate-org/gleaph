@@ -9,7 +9,10 @@
 //! - compound threshold-top-k (plan 0329): the combined shape above fuses into ONE scan
 //!   with [`TextScanMode::ThresholdTopK`] when both halves reference the same
 //!   `(variable, property, query)` — the scan retains the threshold on the score-ranked
-//!   window, then truncates to the literal limit.
+//!   window, then truncates to the literal limit;
+//! - candidate-scoped compound: the same fusion as a ranking barrier AFTER a traversal
+//!   prefix (single threshold `PropertyFilter` + `TopK` on one triple), reusing
+//!   [`TextScanMode::ThresholdTopK`] with no new wire form.
 //!
 //! Every other placement fails closed at plan validation: an unfused `text_score`
 //! expression rejects the plan instead of falling back to a sequential scan.
@@ -403,10 +406,46 @@ fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> {
 /// The trailing `TopK` is consumed into the scan (no `Limit` survives in the plan), so
 /// limit pushdown — which runs before this pass and bails on `Sort` — cannot narrow the
 /// candidate prefix through the barrier.
+/// Find the compound partner for a candidate TopK: exactly one single-predicate
+/// `PropertyFilter` in the prefix whose predicate extracts as a threshold on the
+/// same (variable, property, query) triple as the TopK score. Returns the filter
+/// index, comparison, and bound. Zero partners, two partners, a mismatched triple,
+/// or a multi-predicate filter yields `None`, so both halves stay residual and
+/// fail closed at validation.
+fn find_compound_threshold_filter(
+    prefix: &[PlanOp],
+    score: &TextScoreRef,
+) -> Option<(usize, CmpOp, ScanValue)> {
+    let mut found = None;
+    for (idx, op) in prefix.iter().enumerate() {
+        let PlanOp::PropertyFilter { predicates, .. } = op else {
+            continue;
+        };
+        if predicates.len() != 1 {
+            continue;
+        }
+        let Some((candidate, cmp, bound)) = extract_threshold_predicate(&predicates[0]) else {
+            continue;
+        };
+        if candidate.variable != score.variable
+            || candidate.property != score.property
+            || candidate.query != score.query
+        {
+            return None;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some((idx, cmp, bound));
+    }
+    found
+}
+
 pub(crate) fn apply_candidate_text_topk_lowering(
-    ops: &mut [PlanOp],
+    ops: &mut Vec<PlanOp>,
     stats: Option<&dyn GraphStats>,
 ) -> bool {
+    // `Vec` (not a slice): the compound path removes the fused threshold filter.
     let Some(stats) = stats else {
         return false;
     };
@@ -447,6 +486,46 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     // The tail after the TopK must be exactly the late-projected RETURN.
     if ops.len() != topk_idx + 2 || !matches!(ops[topk_idx + 1], PlanOp::Project { .. }) {
         return false;
+    }
+    // Compound path (candidate-scoped plan 0329): a single threshold
+    // `PropertyFilter` on the same (variable, property, query) triple fuses with
+    // the TopK into ONE barrier. Ordered before the mention-free check below:
+    // any other score mention in the prefix stays residual and fails closed.
+    if let Some((filter_idx, cmp, bound)) = find_compound_threshold_filter(&ops[..topk_idx], &score)
+    {
+        let prefix_clean = ops[..topk_idx].iter().enumerate().all(|(idx, op)| {
+            idx == filter_idx
+                || !(matches!(
+                    op,
+                    PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+                ) || op_mentions_text_score(op))
+        });
+        if !prefix_clean {
+            return false;
+        }
+        let prefix = &ops[..topk_idx];
+        let Some(label) = proven_prefix_label(prefix, &score.variable) else {
+            return false;
+        };
+        if !stats.is_vertex_property_text_indexed_for(Some(&label), &score.property) {
+            return false;
+        }
+        let text_scan = PlanOp::TextScan {
+            variable: score.variable.as_str().into(),
+            label: label.as_str().into(),
+            property: score.property.as_str().into(),
+            query: score.query.clone(),
+            mode: TextScanMode::ThresholdTopK {
+                cmp,
+                bound,
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+            },
+            property_projection: None,
+        };
+        ops.remove(filter_idx);
+        // The filter sat strictly before the TopK, so the barrier slides one slot.
+        ops[topk_idx - 1] = text_scan;
+        return true;
     }
     let prefix = &ops[..topk_idx];
     // The prefix must not contain a scan, a row cap, or any other score mention:

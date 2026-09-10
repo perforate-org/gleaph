@@ -7804,3 +7804,103 @@ fn candidate_text_threshold_without_coverage_stays_unlowered() {
         plan.ops
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped compound threshold-top-k (plan 0329 order, 0344 barrier)
+// ════════════════════════════════════════════════════════════════════════════════
+
+const CANDIDATE_COMPOUND_QUERY: &str = "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s DESC LIMIT 10";
+
+fn candidate_compound_plan() -> PhysicalPlan {
+    plan_query_with_stats(CANDIDATE_COMPOUND_QUERY, &text_coverage_stats())
+}
+
+#[test]
+fn candidate_text_compound_fuses_into_single_barrier_scan() {
+    let plan = candidate_compound_plan();
+    // Exactly one barrier scan in ThresholdTopK mode; the threshold filter and
+    // the TopK are both consumed (no Filter/TopK/Limit may survive).
+    let scans: Vec<_> = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::TextScan { .. }))
+        .collect();
+    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops);
+    assert!(
+        matches!(
+            scans[0],
+            PlanOp::TextScan {
+                variable,
+                label,
+                property,
+                mode: TextScanMode::ThresholdTopK {
+                    cmp: gleaph_gql::ast::CmpOp::Gt,
+                    bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                },
+                ..
+            } if &**variable == "d" && &**label == "Document" && &**property == "body" && *bound == 0.5
+        ),
+        "expected a compound barrier scan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::Filter { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        )),
+        "no filter or row cap may survive compound lowering, got: {:?}",
+        plan.ops
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    assert!(scan_idx > 0, "barrier must sit after the prefix");
+    assert!(
+        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        "tail must be the late-projected RETURN, got: {:?}",
+        plan.ops
+    );
+    // The scored variable keeps its vertex binding for the barrier's key projection.
+    let bound_d = plan.ops[..scan_idx]
+        .iter()
+        .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
+        .expect("prefix binds d");
+    assert!(
+        matches!(
+            bound_d,
+            PlanOp::ExpandFilter {
+                dst_property_projection: None,
+                ..
+            }
+        ),
+        "scored variable must keep its vertex binding, got: {:?}",
+        bound_d
+    );
+}
+
+#[test]
+fn candidate_text_compound_rejects_mismatched_halves() {
+    for query in [
+        // Threshold on another property: halves disagree on the triple.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.title,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s DESC LIMIT 10",
+        // TopK on another query literal: halves disagree on the query.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'world') AS s ORDER BY s DESC LIMIT 10",
+        // Compound WHERE: the threshold shares its filter with another conjunct.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 AND d.title = 'x' RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s DESC LIMIT 10",
+        // Ascending order never fuses.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s ASC LIMIT 10",
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::TextScan { .. })),
+            "mismatched halves must not fuse: {query}, got: {:?}",
+            plan.ops
+        );
+    }
+}

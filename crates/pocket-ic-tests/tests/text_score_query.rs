@@ -2431,3 +2431,100 @@ fn non_leading_text_candidate_threshold_lifecycle() {
         "empty filtering never truncates"
     );
 }
+
+const CANDIDATE_COMPOUND_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5";
+const CANDIDATE_COMPOUND_NOSCORE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank ORDER BY text_score(d.bio,$q) DESC LIMIT 5";
+
+fn compound_rank_rows(result: &GqlQueryResult) -> Vec<i64> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            match columns.get("rank").expect("rank column present") {
+                GqlWireValue::Int64(rank) => *rank,
+                other => panic!("rank must be Int64, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_compound_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+
+    // Calibration frame: the threshold-only barrier returns every candidate in
+    // Router ranking order (score DESC, key ASC, prefix stable), so the compound
+    // expectation is exactly the filtered frame truncated to the row limit.
+    let frame = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    ));
+    assert_eq!(frame.len(), 42, "full candidate frame");
+    let mut distinct: Vec<f64> = frame.iter().map(|(_, score)| *score).collect();
+    distinct.sort_by(|a, b| a.total_cmp(b));
+    distinct.dedup();
+    let bound = distinct[(distinct.len() - 1) / 2];
+    let expected: Vec<(i64, f64)> = frame
+        .iter()
+        .filter(|(_, score)| *score > bound)
+        .take(5)
+        .copied()
+        .collect();
+    assert_eq!(expected.len(), 5, "calibration must clear the row limit");
+
+    // Scored compound: threshold first, then top-k — a truncate-then-filter
+    // misimplementation would return fewer than 5 rows here.
+    let compound = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_COMPOUND_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(
+        compound.row_count, 5,
+        "threshold-then-truncate keeps 5 rows"
+    );
+    assert_eq!(
+        compound.truncated,
+        Some(false),
+        "exact compound never truncates"
+    );
+    assert_eq!(
+        threshold_scored_rows(&compound),
+        expected,
+        "compound is the filtered frame truncated to the limit"
+    );
+
+    // Score-less compound: the ORDER BY call drives ranking without a residual
+    // score column; ranks match the scored frame.
+    let noscore = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_COMPOUND_NOSCORE_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(noscore.row_count, 5);
+    assert_eq!(
+        compound_rank_rows(&noscore),
+        expected.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        "score-less ranking matches"
+    );
+
+    // Determinism on the scored compound.
+    let replay = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_COMPOUND_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    ));
+    assert_eq!(replay, expected, "compound frame is deterministic");
+}

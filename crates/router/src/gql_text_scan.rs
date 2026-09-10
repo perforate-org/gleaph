@@ -222,6 +222,12 @@ enum CandidateBarrierMode {
     /// scan mode). Candidate scoring is all-match, so filtering is complete and
     /// the result is never truncated.
     Threshold { cmp: CmpOp, bound: f64 },
+    /// Keep the `limit` highest-scoring rows of the threshold-filtered set
+    /// (`ThresholdTopK` scan mode fused after a prefix). The threshold applies
+    /// first on the complete candidate hit set, then ranking truncates — the
+    /// candidate-scoped plan 0329 order — so the result is exact and never
+    /// truncated.
+    Compound { cmp: CmpOp, bound: f64, limit: u32 },
 }
 
 struct CandidateBarrierShape {
@@ -294,10 +300,19 @@ fn analyze_candidate_barrier_shape(
             let bound = resolve_scan_bound(bound, params)?;
             CandidateBarrierMode::Threshold { cmp: *cmp, bound }
         }
-        TextScanMode::ThresholdTopK { .. } => {
-            return Err(unsupported(
-                "compound threshold-top-k after a prefix stays unsupported in this slice",
-            ));
+        TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+            let bound = resolve_scan_bound(bound, params)?;
+            let limit = resolve_scan_limit(limit, params)?;
+            if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
+                return Err(unsupported(
+                    "row LIMIT must be within 1..=1024 in this slice",
+                ));
+            }
+            CandidateBarrierMode::Compound {
+                cmp: *cmp,
+                bound,
+                limit,
+            }
         }
     };
     let prefix = &plan.ops[..scan_idx];
@@ -629,9 +644,12 @@ async fn try_execute_candidate_text_scan(
         let mut hits = text_canister_search_candidates(target, query, keys.clone())
             .await
             .map_err(RouterError::Internal)?;
-        // Threshold mode filters here, on the complete candidate hit set: TEXT
-        // returns every candidate match, so retention is exact (never a window).
-        if let CandidateBarrierMode::Threshold { cmp, bound } = barrier.mode {
+        // Threshold and compound modes filter here, on the complete candidate hit
+        // set: TEXT returns every candidate match, so retention is exact (never
+        // a window). Compound truncates after ranking below.
+        if let CandidateBarrierMode::Threshold { cmp, bound }
+        | CandidateBarrierMode::Compound { cmp, bound, .. } = barrier.mode
+        {
             retain_threshold(&mut hits, cmp, bound);
         }
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -661,6 +679,7 @@ async fn try_execute_candidate_text_scan(
 
     let row_cap = match barrier.mode {
         CandidateBarrierMode::TopK { limit } => limit as usize,
+        CandidateBarrierMode::Compound { limit, .. } => limit as usize,
         // Threshold keeps every surviving row: filtering already happened above.
         CandidateBarrierMode::Threshold { .. } => usize::MAX,
     };
@@ -1714,8 +1733,9 @@ mod tests {
             &store,
         ))
         .expect_err("non-leading TextScan must be rejected");
-        // Plan 0344: non-leading scans route to the candidate barrier first, so a
-        // Threshold-mode scan fails there (not at the leading-only gate).
+        // Non-leading scans route to the candidate barrier first. This bare shape
+        // (no trailing Project) still fails there even though a well-formed
+        // compound barrier is accepted since the compound slice.
         assert!(
             matches!(position_err, RouterError::InvalidArgument(ref msg) if msg.contains("candidate text_score unsupported")),
             "unexpected error: {position_err:?}"
@@ -2097,7 +2117,11 @@ mod candidate_barrier_tests {
     }
 
     #[test]
-    fn barrier_shape_rejects_compound_after_prefix() {
+    // Intentional contract change: the candidate compound barrier
+    // (`ThresholdTopK` after a prefix) is now accepted — the threshold applies on
+    // the complete candidate hit set and ranking truncates after, so the result
+    // stays exact. The former rejection was the pre-compound slice boundary.
+    fn barrier_shape_accepts_compound_after_prefix() {
         let mut scan = barrier_scan_threshold();
         let PlanOp::TextScan { mode, .. } = &mut scan else {
             panic!("scan");
@@ -2108,7 +2132,29 @@ mod candidate_barrier_tests {
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
         };
         let plan = test_plan(vec![node_scan_d(), scan, tail_project_no_score()]);
-        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::Compound { bound, limit: 10, .. } if bound == 0.5
+        ));
+        // The row LIMIT cap is reapplied to the compound limit: 0 and >1024
+        // fail closed, exactly like the TopK admission gate.
+        for bad_limit in [0, 1025] {
+            let mut bad_scan = barrier_scan_threshold();
+            let PlanOp::TextScan { mode, .. } = &mut bad_scan else {
+                panic!("scan");
+            };
+            *mode = TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(bad_limit)),
+            };
+            let bad_plan = test_plan(vec![node_scan_d(), bad_scan, tail_project_no_score()]);
+            assert!(
+                analyze_candidate_barrier_shape(&bad_plan, &params()).is_err(),
+                "compound limit {bad_limit} must fail closed"
+            );
+        }
     }
 
     #[test]
