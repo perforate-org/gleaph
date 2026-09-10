@@ -20,7 +20,8 @@ use gleaph_migration_api::{
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
-    finish_provision_wired_single_shard_federation, gql_query_with_params_as_admin,
+    finish_provision_wired_single_shard_federation, gql_mutate_as_admin,
+    gql_query_with_params_as_admin, gql_query_with_params_on_router,
     install_provision_wired_router, wasm_bytes,
 };
 use gleaph_router::types::{TextIndexInfo, TextIndexStatusView};
@@ -2111,4 +2112,141 @@ fn non_leading_text_candidate_topk_lifecycle() {
             err.reject_message
         );
     }
+
+    // POLICY-DENIED HIGH SCORER (plan 0344 deferred gate): rank 5 carries a tf-7
+    // body, so it heads the authorized frame — yet a conditional MATCH grant covers
+    // every Document rank EXCEPT 5 (two AND-free range rows compose by union), while
+    // the rest of the traversal surface stays granted. The denied candidate must
+    // never enter the TEXT request: the remaining frame stays full at LIMIT 20 with
+    // descending scores, headed by the tf-7 peers (ranks 11, 17).
+    const DENIED_RANK: i64 = 5;
+    let policy_caller = Principal::from_slice(&[0x41; 29]);
+    for (key, statement) in [
+        (
+            "candidate-grant-match-user",
+            format!(
+                "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES User TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-match-project",
+            format!(
+                "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Project TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-traverse-member",
+            format!(
+                "GRANT TRAVERSE ON GRAPH {GRAPH_NAME} EDGES MEMBER_OF TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-traverse-doc",
+            format!(
+                "GRANT TRAVERSE ON GRAPH {GRAPH_NAME} EDGES HAS_DOCUMENT TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-read-user",
+            format!(
+                "GRANT READ ON GRAPH {GRAPH_NAME} NODES User {{ uid }} TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-read-doc",
+            format!(
+                "GRANT READ ON GRAPH {GRAPH_NAME} NODES Document {{ rank, bio }} TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-match-doc-below",
+            format!(
+                "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) \
+                 WHERE d.rank < {DENIED_RANK} TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+        (
+            "candidate-grant-match-doc-above",
+            format!(
+                "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) \
+                 WHERE d.rank > {DENIED_RANK} TO PRINCIPAL '{}'",
+                policy_caller.to_text()
+            ),
+        ),
+    ] {
+        gql_mutate_as_admin(&env.fed, &statement, key);
+    }
+
+    // Control: the implicit-root admin frame still ranks the denied doc at the head,
+    // proving the exclusion below is policy — not scoring.
+    let admin_frame = candidate_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    ));
+    assert!(
+        admin_frame[..6]
+            .iter()
+            .all(|(rank, _, _)| [5, 11, 17].contains(rank)),
+        "admin frame head is the tf-7 group: {:?}",
+        &admin_frame[..6]
+    );
+    assert!(
+        admin_frame[..6]
+            .iter()
+            .any(|(rank, _, _)| *rank == DENIED_RANK),
+        "denied doc scores into the authorized head"
+    );
+
+    let denied = candidate_rows(&gql_query_with_params_on_router(
+        &env.fed.pic,
+        policy_caller,
+        env.fed.router,
+        CANDIDATE_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    ));
+    assert_eq!(denied.len(), 20, "remaining frame stays full at LIMIT");
+    assert!(
+        denied.iter().all(|(rank, _, _)| *rank != DENIED_RANK),
+        "policy-denied high scorer never ranks"
+    );
+    assert!(
+        denied.iter().all(|(rank, _, _)| (0..21).contains(rank)),
+        "only reachable, authorized documents rank"
+    );
+    for window in denied.windows(2) {
+        assert!(
+            window[0].2 >= window[1].2,
+            "authorized scores stay descending: {} before {}",
+            window[0].2,
+            window[1].2
+        );
+    }
+    // The tf-7 peers inherit the head (each fanned out through both anchor users).
+    assert!(
+        denied[..4]
+            .iter()
+            .all(|(rank, _, _)| [11, 17].contains(rank)),
+        "tf-7 peers head the denied frame: {:?}",
+        &denied[..4]
+    );
+    assert_eq!(
+        denied[0].0, denied[1].0,
+        "head multiplicity survives denial"
+    );
+    let denied_replay = candidate_rows(&gql_query_with_params_on_router(
+        &env.fed.pic,
+        policy_caller,
+        env.fed.router,
+        CANDIDATE_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    ));
+    assert_eq!(denied_replay, denied, "denied frame is deterministic");
 }
