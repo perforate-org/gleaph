@@ -7437,3 +7437,173 @@ fn text_scan_wire_round_trip_preserves_compound_mode() {
             && *bound == 0.25
     )));
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped non-leading text_score top-k (plan 0344)
+// ════════════════════════════════════════════════════════════════════════════════
+
+const CANDIDATE_TOPK_QUERY: &str = "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 20";
+
+fn candidate_topk_plan() -> PhysicalPlan {
+    plan_query_with_stats(CANDIDATE_TOPK_QUERY, &text_coverage_stats())
+}
+
+#[test]
+fn candidate_text_topk_lowers_to_barrier_scan() {
+    let plan = candidate_topk_plan();
+    // The traversal prefix is preserved verbatim …
+    assert!(
+        matches!(plan.ops[0], PlanOp::NodeScan { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(plan.ops[3], PlanOp::ExpandFilter { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    // … the TopK is consumed into a non-leading TextScan barrier …
+    assert!(
+        matches!(
+            &plan.ops[4],
+            PlanOp::TextScan {
+                variable,
+                label,
+                property,
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
+                },
+                ..
+            } if &**variable == "d" && &**label == "Document" && &**property == "body"
+        ),
+        "expected a candidate barrier scan, got: {:?}",
+        plan.ops
+    );
+    // … and the late-projected RETURN survives as the tail.
+    assert!(
+        matches!(plan.ops[5], PlanOp::Project { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    assert_eq!(plan.ops.len(), 6);
+}
+
+#[test]
+fn candidate_text_topk_leaves_no_row_cap_in_plan() {
+    // G0 pushdown gate: no Limit/TopK may survive anywhere in the lowered plan, so a
+    // later pass cannot narrow the candidate prefix through the barrier.
+    let plan = candidate_topk_plan();
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Limit { .. } | PlanOp::TopK { .. })),
+        "no row cap may survive candidate lowering, got: {:?}",
+        plan.ops
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    assert!(scan_idx > 0, "barrier must sit after the prefix");
+}
+
+#[test]
+fn candidate_text_topk_without_coverage_stays_unlowered() {
+    let mut stats = text_coverage_stats();
+    stats
+        .text_indexed_vertex_properties
+        .remove(&("Document".to_string(), "body".to_string()));
+    let plan = plan_query_with_stats(CANDIDATE_TOPK_QUERY, &stats);
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "no barrier scan without confirmed coverage, got: {:?}",
+        plan.ops
+    );
+    // The unlowered TopK survives so the Router rejects the residual mention.
+    assert!(
+        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        "unlowered TopK must survive, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_rejects_unlabeled_variable() {
+    let plan = plan_query_with_stats(
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 5",
+        &text_coverage_stats(),
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "unlabeled scored variable must not lower, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_rejects_asc_order_and_offset() {
+    for query in [
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 5",
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC SKIP 3 LIMIT 5",
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::TextScan { .. })),
+            "unsupported shape must not lower: {query}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+fn candidate_text_topk_rejects_threshold_compound_and_leading_seed() {
+    // A WHERE threshold conjunct takes the leading seed path; the trailing TopK must
+    // not additionally lower into a candidate barrier.
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, 'hello') > 0.5 RETURN n ORDER BY text_score(n.body, 'hello') DESC LIMIT 5",
+        &text_coverage_stats(),
+    );
+    let scans: Vec<_> = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::TextScan { .. }))
+        .collect();
+    assert_eq!(scans.len(), 1, "exactly one seed scan, got: {:?}", plan.ops);
+    assert!(
+        matches!(plan.ops[0], PlanOp::TextScan { .. }),
+        "the surviving scan must be the leading seed, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_barrier_scan_wire_round_trip() {
+    use gleaph_gql_planner::wire::{decode_plan_bundle, encode_block_plans};
+
+    let plan = candidate_topk_plan();
+    let bytes = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
+    assert_eq!(plans.len(), 1);
+    assert!(
+        plans[0].ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK { .. },
+                ..
+            }
+        )),
+        "barrier scan must survive the wire, got: {:?}",
+        plans[0].ops
+    );
+}

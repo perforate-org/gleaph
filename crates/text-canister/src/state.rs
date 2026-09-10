@@ -153,6 +153,10 @@ pub(crate) const MAX_TEXT_BYTES_PER_DOC: usize = 65_536;
 pub(crate) const MAX_UNITS_PER_DOC: usize = 4_096;
 /// Upper bound on keys per `delete_docs` call.
 pub(crate) const MAX_KEYS_PER_DELETE: usize = 1_000;
+/// Upper bound on distinct candidate keys per `search_candidates` call (plan 0344:
+/// the Router-side prefix cap R=1024 funnels through at most this many TEXT keys per
+/// call; larger sets are rejected before any posting work).
+pub(crate) const MAX_CANDIDATE_KEYS: usize = 256;
 /// Upper bound on bytes per `admin_upload_dict_chunk` call (ADR 0087 chunk analogy).
 pub const MAX_DICT_CHUNK_BYTES: usize = 1024 * 1024;
 /// Upper bound on the total dictionary blob length (fail-closed runaway guard; plan 0341
@@ -878,9 +882,9 @@ where
             .map(|slot| slot.key)
     }
 
-    /// Docid currently addressed by `key` (None when unknown/deleted). Test
-    /// introspection only; production addressing goes through [`Self::key_of_docid`].
-    #[cfg(test)]
+    /// Docid currently addressed by `key` (`None` when unknown/deleted). Read-only
+    /// map probe; the candidate path (plan 0344) uses it to translate Router-owned
+    /// keys into posting docids before any ranking work.
     pub(crate) fn docid_of_key(&self, key: u64) -> Option<u32> {
         self.docid_by_key.get(&key).expect("doc key map readable")
     }
@@ -1629,6 +1633,110 @@ where
             .collect())
     }
 
+    /// Candidate-scoped ranked retrieval (plan 0344): the exact [`Self::search`]
+    /// analysis + scoring pipeline, but the ranking driver only ever observes the
+    /// alive postings whose docid is in the translated candidate set.
+    ///
+    /// Contract: `keys` must be strictly ascending (Router-canonical order) with at
+    /// most [`MAX_CANDIDATE_KEYS`] entries; unknown keys (never ingested) are skipped
+    /// because they cannot match, tombstoned candidates never surface through the
+    /// [`LiveReader`], and unmatched candidates simply yield no hit (search-hit
+    /// semantics — the caller drops those rows). Every returned hit's key is a
+    /// member of `keys`. Scoring is unchanged by membership: `Σ (WEIGHT_BASE + tf)`
+    /// over matched terms, ordered `(score desc, docid asc)` by the shared driver.
+    pub fn search_candidates(&self, query: &str, keys: &[u64]) -> Result<Vec<TextHit>, String> {
+        if query.len() > MAX_QUERY_BYTES {
+            return Err(format!(
+                "query of {} bytes exceeds MAX_QUERY_BYTES ({MAX_QUERY_BYTES})",
+                query.len()
+            ));
+        }
+        if keys.len() > MAX_CANDIDATE_KEYS {
+            return Err(format!(
+                "{} candidate keys exceed MAX_CANDIDATE_KEYS ({MAX_CANDIDATE_KEYS})",
+                keys.len()
+            ));
+        }
+        if keys.windows(2).any(|w| w[0] >= w[1]) {
+            return Err("candidate keys must be strictly ascending".to_string());
+        }
+        let mut allowed: Vec<u32> = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(docid) = self.docid_of_key(*key) {
+                allowed.push(docid);
+            }
+        }
+        if allowed.is_empty() {
+            return Ok(Vec::new());
+        }
+        allowed.sort_unstable();
+        allowed.dedup();
+        let meta = self.meta.get();
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
+            return Err("dictionary is not finalized; the index cannot serve queries".to_string());
+        }
+        let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
+        let tombs = TombFilter::new(&self.tombstones);
+        let mut seen = std::collections::BTreeSet::new();
+        let mut buffers: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
+        for term in analyze_pinned(self.meta.get().analyzer_id, query) {
+            if !seen.insert(term.clone()) {
+                continue;
+            }
+            let Some(term_id) = self.dict_term_id(&term) else {
+                continue;
+            };
+            let Some(blob) = self.postings_blob(term_id) else {
+                continue;
+            };
+            let bounds: Vec<u32> = self
+                .load_bounds(term_id)
+                .iter()
+                .map(|bound| bound + WEIGHT_BASE)
+                .collect();
+            buffers.push((blob, bounds));
+        }
+        if buffers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut lists: Vec<QueryList<'_, CandidateReader<'_, LiveReader<FreqVarintReader<'_>>>>> =
+            Vec::with_capacity(buffers.len());
+        for (blob, bounds) in &buffers {
+            lists.push(QueryList::new(
+                CandidateReader {
+                    inner: LiveReader {
+                        inner: FreqVarintReader::new(blob),
+                        tombs: &tombs,
+                        visible_pos: 0,
+                        frontier_live: false,
+                    },
+                    allowed: &allowed,
+                },
+                WEIGHT_BASE,
+                bounds,
+                &identity_parts,
+            ));
+        }
+        // Completeness: matches are a subset of `allowed`, so ranking the top
+        // `allowed.len()` candidate-visible hits returns every match.
+        let hits = topk_disjunctive(&mut lists, allowed.len());
+        #[cfg(debug_assertions)]
+        for hit in &hits {
+            debug_assert!(
+                allowed.binary_search(&hit.docid).is_ok(),
+                "driver must only observe candidate docids"
+            );
+        }
+        Ok(hits
+            .into_iter()
+            .map(|hit| TextHit {
+                key: self.key_of_docid(hit.docid).expect("live docid has key"),
+                docid: hit.docid,
+                score: hit.score,
+            })
+            .collect())
+    }
+
     /// Unscored live-docid window over one term's postings — the read path of the plan
     /// 0296 fair-pair matrix's custom unscored bench (never part of the Candid surface):
     /// production dictionary probe and postings fetch, fused codec stepping, tombstone
@@ -2042,6 +2150,79 @@ impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::en
         #[cfg(test)]
         driver_counters::visible_step();
         Some(step)
+    }
+}
+
+/// Candidate restriction wrapper (plan 0344): exposes exactly the alive∩allowed
+/// subsequence of the wrapped reader to the shared DAAT driver. Excluded postings
+/// are consumed through `advance(next_allowed)` so gaps skip instead of decoding
+/// one by one; per-block upper bounds stay sound (max over a subset never exceeds
+/// the stored max), so scoring and ordering reuse the driver bit-for-bit.
+struct CandidateReader<'a, R: ic_stable_text_postings::enc::PostingReader> {
+    inner: R,
+    /// Strictly ascending candidate docids (translated Router keys).
+    allowed: &'a [u32],
+}
+
+impl<'a, R: ic_stable_text_postings::enc::PostingReader> CandidateReader<'a, R> {
+    /// First allowed docid at or past the current frontier, consuming everything
+    /// skipped per the `advance` contract.
+    fn skip_excluded(&mut self) {
+        loop {
+            let Some(frontier) = self.inner.peek() else {
+                return;
+            };
+            match self.allowed.partition_point(|allowed| *allowed < frontier) {
+                idx if idx < self.allowed.len() && self.allowed[idx] == frontier => return,
+                idx if idx < self.allowed.len() => {
+                    self.inner.advance(self.allowed[idx]);
+                }
+                _ => {
+                    // No allowed docid remains: consume the tail so exhaustion is sticky.
+                    self.inner.advance(u32::MAX);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::enc::PostingReader
+    for CandidateReader<'_, R>
+{
+    fn len(&self) -> u32 {
+        self.inner.len()
+    }
+
+    fn pos(&self) -> u32 {
+        self.inner.pos()
+    }
+
+    fn peek(&mut self) -> Option<u32> {
+        self.skip_excluded();
+        self.inner.peek()
+    }
+
+    fn next(&mut self) -> Option<u32> {
+        self.skip_excluded();
+        self.inner.next()
+    }
+
+    fn advance(&mut self, target: u32) -> Option<u32> {
+        self.skip_excluded();
+        self.inner.advance(target);
+        self.skip_excluded();
+        self.inner.peek()
+    }
+
+    fn tf(&mut self) -> Option<u32> {
+        self.skip_excluded();
+        self.inner.tf()
+    }
+
+    fn next_step(&mut self) -> Option<(u32, u32)> {
+        self.skip_excluded();
+        self.inner.next_step()
     }
 }
 

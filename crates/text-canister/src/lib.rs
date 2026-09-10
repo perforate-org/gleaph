@@ -181,6 +181,15 @@ fn search(query: String, k: u32) -> Result<Vec<TextHit>, String> {
     state::with_stores(|stores| stores.search(&query, k))
 }
 
+/// Candidate-scoped ranked retrieval (plan 0344): scores only the caller-supplied
+/// document keys and returns every match ordered `(score desc, docid asc)`. Wasm
+/// enforces the stored-controller guard; unmatched or unknown keys yield no hit.
+/// Rejects oversized queries, oversized or non-ascending key sets before any work.
+#[query(guard = "guards::guard_controller")]
+fn search_candidates(query: String, keys: Vec<u64>) -> Result<Vec<TextHit>, String> {
+    state::with_stores(|stores| stores.search_candidates(&query, &keys))
+}
+
 /// Controller-guarded bounded tombstone-reclaim step (physical exactness after deletes).
 /// `budget = 0` is rejected fail-closed; larger budgets clamp to
 /// `MAX_MERGE_TERMS_PER_STEP`. Repeat until `done`.

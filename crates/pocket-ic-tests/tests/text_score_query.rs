@@ -1855,3 +1855,260 @@ fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
         "か月 and ケ月 are distinct units (v1 boundary)"
     );
 }
+
+// -- Plan 0344: candidate-scoped non-leading text_score top-k ------------------------------
+
+const CANDIDATE_USER_LABEL: &str = "User";
+const CANDIDATE_PROJECT_LABEL: &str = "Project";
+const CANDIDATE_UID_PROPERTY: &str = "uid";
+const CANDIDATE_RANK_PROPERTY: &str = "rank";
+const CANDIDATE_MEMBER_EDGE: &str = "MEMBER_OF";
+const CANDIDATE_DOC_EDGE: &str = "HAS_DOCUMENT";
+const CANDIDATE_USER_ID: i64 = 7;
+const CANDIDATE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, ELEMENT_ID(d) AS d_id, text_score(d.bio,$q) AS score \
+     ORDER BY score DESC LIMIT 20";
+
+fn candidate_query_params(user_id: i64, query: &str) -> Vec<u8> {
+    encode_gql_params_blob(vec![
+        ("user_id".to_string(), Value::Int64(user_id)),
+        ("q".to_string(), Value::Text(query.to_string())),
+    ])
+    .expect("encode params")
+}
+
+fn candidate_rows(result: &GqlQueryResult) -> Vec<(i64, Vec<u8>, f64)> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let rank = match columns.get("rank").expect("rank column present") {
+                GqlWireValue::Int64(rank) => *rank,
+                other => panic!("rank must be Int64, got {other:?}"),
+            };
+            let id = match columns.get("d_id").expect("d_id column present") {
+                GqlWireValue::Bytes(bytes) => {
+                    assert_eq!(bytes.len(), 8, "ELEMENT_ID is the 8-byte vertex encoding");
+                    bytes.clone()
+                }
+                other => panic!("ELEMENT_ID must decode as Bytes, got {other:?}"),
+            };
+            let score = match columns.get("score").expect("score column present") {
+                GqlWireValue::Float64(score) => *score,
+                other => panic!("score must be Float64, got {other:?}"),
+            };
+            (rank, id, score)
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_topk_lifecycle() {
+    let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
+    let env = Env {
+        provision,
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    let graph = env.fed.graph_source;
+
+    // The provision-wired bootstrap handshakes the index canister index-side only;
+    // label-anchor seed routing pages through the Router-side attach, so attach it
+    // explicitly (the candidate prefix starts from a label-anchored `u:User` scan).
+    gleaph_pocket_ic_tests::attach_index_canister_to_shard(
+        &env.fed.pic,
+        env.fed.admin,
+        env.fed.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        gleaph_pocket_ic_tests::SOURCE_SHARD,
+        env.fed.index,
+    );
+
+    // Labels / properties / edges for the two-hop candidate fixture.
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_USER_LABEL);
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_PROJECT_LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    let uid_property = gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_UID_PROPERTY);
+    let rank_property = gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_RANK_PROPERTY);
+    let member_edge = gleaph_pocket_ic_tests::ensure_edge_label(&env.fed, CANDIDATE_MEMBER_EDGE);
+    let doc_edge = gleaph_pocket_ic_tests::ensure_edge_label(&env.fed, CANDIDATE_DOC_EDGE);
+    let user_label =
+        gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_USER_LABEL).raw();
+    let project_label =
+        gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, CANDIDATE_PROJECT_LABEL).raw();
+    let document_label = gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL).raw();
+
+    // Two users share the anchor uid: every reachable document fans out to TWO prefix
+    // rows, so LIMIT counts rows (not distinct candidates).
+    let mut users = Vec::new();
+    for _ in 0..2 {
+        users.push(
+            gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_property(
+                &env.fed,
+                graph,
+                user_label,
+                uid_property.raw(),
+                CANDIDATE_USER_ID,
+            )
+            .local_vertex_id,
+        );
+    }
+    let project =
+        gleaph_pocket_ic_tests::e2e_insert_vertex_with_label(&env.fed, graph, project_label)
+            .local_vertex_id;
+    for user in &users {
+        gleaph_pocket_ic_tests::e2e_insert_edge_with_label(
+            &env.fed,
+            graph,
+            *user,
+            project,
+            member_edge.raw(),
+        );
+    }
+
+    // 21 reachable documents with discriminating frequencies. Docs 0 and 1 share an
+    // identical body (engineered score tie); rank carries the insertion index.
+    let mut reachable = Vec::new();
+    for i in 0..21 {
+        let body = if i < 2 {
+            "wombat wombat tiebreak".to_string()
+        } else {
+            format!("wombat DOC{i} {}", "wombat ".repeat(i % 6 + 1))
+        };
+        let doc = gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_text_property(
+            &env.fed,
+            graph,
+            document_label,
+            gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY).raw(),
+            body,
+        )
+        .local_vertex_id;
+        gleaph_pocket_ic_tests::e2e_set_vertex_property(
+            &env.fed,
+            graph,
+            doc,
+            rank_property.raw(),
+            i as i64,
+        );
+        gleaph_pocket_ic_tests::e2e_insert_edge_with_label(
+            &env.fed,
+            graph,
+            project,
+            doc,
+            doc_edge.raw(),
+        );
+        reachable.push(doc);
+    }
+
+    // 101 unreachable documents with strictly heavier frequencies: the global
+    // `search(100)` window holds ONLY unreachable docs, so any global-top-k-then-filter
+    // execution could never return a reachable row.
+    for i in 0..101 {
+        gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_text_property(
+            &env.fed,
+            graph,
+            document_label,
+            gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY).raw(),
+            format!("wombat UNREACH{i} {}", "wombat ".repeat(20)),
+        );
+    }
+
+    // Declare + provision, drive Ready, flush.
+    let info = create_text_index_definition(&env);
+    let text_canister = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(text_canister, 20_000_000_000_000);
+    env.fed.pic.add_cycles(graph, 20_000_000_000_000);
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    let args = migration_args(MIGRATION_ID, &statement);
+    drive_to_ready(&env, &args);
+    assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
+    flush_until_done(&env);
+
+    // POSITIVE: top-20 rows over graph-qualified candidates only.
+    let result = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(result.row_count, 20, "LIMIT counts ranked rows");
+    assert_eq!(
+        result.truncated,
+        Some(false),
+        "exact top-k is never truncated"
+    );
+    let rows = candidate_rows(&result);
+    assert_eq!(rows.len(), 20);
+    for window in rows.windows(2) {
+        assert!(
+            window[0].2 >= window[1].2,
+            "scores arrive descending: {} before {}",
+            window[0].2,
+            window[1].2
+        );
+        assert!(window[0].2 > 0.0, "matching rows carry positive scores");
+    }
+    // Every returned rank belongs to the reachable set: unreachable heavy docs never
+    // leak through a global window.
+    assert!(
+        rows.iter().all(|(rank, _, _)| (0..21).contains(rank)),
+        "only reachable documents rank"
+    );
+    // Row multiplicity: the top-ranked document fans out through both anchor users,
+    // so its rank heads the frame twice in a row.
+    assert_eq!(
+        rows[0].0, rows[1].0,
+        "duplicate prefix paths share the frame head"
+    );
+    assert_eq!(rows[0].1, rows[1].1, "duplicated rows share identity");
+    assert_eq!(
+        rows[0].2, rows[1].2,
+        "duplicated rows carry identical score"
+    );
+
+    // Determinism: an identical re-run returns the identical frame.
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        candidate_rows(&replay),
+        rows,
+        "ranking must be deterministic"
+    );
+
+    // GUARD MATRIX (real wasm): the candidate endpoint enforces the stored
+    // controller. A third principal and the anonymous caller both reject; the
+    // Router path above proves the controller itself succeeds.
+    for (sender, what) in [
+        (Principal::from_slice(&[0x3D; 29]), "third principal"),
+        (Principal::anonymous(), "anonymous caller"),
+    ] {
+        let err = env
+            .fed
+            .pic
+            .query_call(
+                text_canister,
+                sender,
+                "search_candidates",
+                Encode!(&("wombat".to_string(), &vec![1u64])).expect("encode candidates call"),
+            )
+            .expect_err(format!("{what} must not reach search_candidates").leak());
+        assert!(
+            err.reject_message
+                .contains("is not the text index controller"),
+            "unexpected {what} guard reject: {}",
+            err.reject_message
+        );
+    }
+}

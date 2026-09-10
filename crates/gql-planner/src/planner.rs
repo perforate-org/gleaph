@@ -517,6 +517,11 @@ fn build_plan_core(
     // Full-text top-k: rewrite [TextScan-eligible seed, …, TopK { text_score DESC, k }]
     // into a single TextScan delivering deterministic (score DESC, key ASC) order.
     crate::text_scan::apply_text_topk_lowering(&mut ops, stats);
+    // Candidate-scoped top-k (plan 0344): a traversal prefix binding the scored
+    // variable keeps its rows; the TextScan becomes a ranking barrier AFTER the
+    // prefix instead of a leading seed. Runs only when the leading lowering above
+    // did not fire (it consumes the TopK it needs).
+    crate::text_scan::apply_candidate_text_topk_lowering(&mut ops, stats);
     pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
     // Replace simple `Expand` cycles with a single `WorstCaseOptimalJoin` when safe.
     apply_wcoj_replacement(&mut ops, &mut annotations);

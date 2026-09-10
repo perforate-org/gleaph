@@ -15,8 +15,10 @@
 //! expression rejects the plan instead of falling back to a sequential scan.
 
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause};
+use gleaph_gql::types::LabelExpr;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::expr_children::for_each_immediate_child_expr;
 use crate::plan::{PlanOp, ScanValue, TextScanMode, TextSeedInfo};
 use crate::stats::GraphStats;
 
@@ -235,6 +237,245 @@ pub(crate) fn apply_text_topk_lowering(
     ops[0] = text_scan;
     // Drop the TopK op; the TextScan delivers deterministic (score DESC, key ASC) order.
     ops.remove(topk_idx);
+    true
+}
+
+/// Recursive `text_score(...)` mention check over the canonical immediate-child
+/// traversal, so every expression container (including future ones) is covered by
+/// construction.
+fn expr_mentions_text_score(expr: &Expr) -> bool {
+    if is_text_score_call(expr) {
+        return true;
+    }
+    let mut found = false;
+    for_each_immediate_child_expr(expr, |child| {
+        if !found {
+            found = expr_mentions_text_score(child);
+        }
+    });
+    found
+}
+
+fn order_mentions_text_score(order_by: &OrderByClause) -> bool {
+    order_by
+        .items
+        .iter()
+        .any(|item| expr_mentions_text_score(&item.expr))
+}
+
+/// Whether this operator carries any expression-level `text_score` mention.
+/// `TextScan` itself is the sanctioned form and is intentionally not a hit.
+fn op_mentions_text_score(op: &PlanOp) -> bool {
+    match op {
+        PlanOp::TextScan { .. } => false,
+        PlanOp::PropertyFilter { predicates, .. }
+        | PlanOp::ExpandFilter {
+            dst_filter: predicates,
+            ..
+        } => predicates.iter().any(expr_mentions_text_score),
+        PlanOp::Let { bindings } => bindings.iter().any(|b| expr_mentions_text_score(&b.value)),
+        PlanOp::For { list, .. } => expr_mentions_text_score(list),
+        PlanOp::Filter { condition } => expr_mentions_text_score(condition),
+        PlanOp::CallProcedure { args, .. } => args.iter().any(expr_mentions_text_score),
+        PlanOp::Aggregate {
+            group_by,
+            aggregates,
+        } => {
+            group_by.iter().any(expr_mentions_text_score)
+                || aggregates.iter().any(|spec| {
+                    spec.expr.as_ref().is_some_and(expr_mentions_text_score)
+                        || spec.expr2.as_ref().is_some_and(expr_mentions_text_score)
+                })
+        }
+        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => columns
+            .iter()
+            .any(|col| expr_mentions_text_score(&col.expr)),
+        PlanOp::Sort { order_by } => order_mentions_text_score(order_by),
+        PlanOp::TopK {
+            order_by,
+            k,
+            offset,
+            ..
+        } => {
+            order_mentions_text_score(order_by)
+                || expr_mentions_text_score(k)
+                || offset.as_ref().is_some_and(expr_mentions_text_score)
+        }
+        PlanOp::Limit { count, offset } => {
+            count.as_ref().is_some_and(expr_mentions_text_score)
+                || offset.as_ref().is_some_and(expr_mentions_text_score)
+        }
+        PlanOp::ShortestPath { cost, .. } => match cost {
+            crate::plan::ShortestPathCost::HopCount => false,
+            crate::plan::ShortestPathCost::EdgeCostExpr { expr, .. } => {
+                expr_mentions_text_score(expr)
+            }
+        },
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+            left.iter().any(op_mentions_text_score) || right.iter().any(op_mentions_text_score)
+        }
+        PlanOp::SetOperation { right, .. } => right.ops.iter().any(op_mentions_text_score),
+        PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
+            sub_plan.iter().any(op_mentions_text_score)
+        }
+        PlanOp::InlineProcedureCall { sub_plan, .. } => {
+            sub_plan.ops.iter().any(op_mentions_text_score)
+        }
+        PlanOp::UseGraph {
+            sub_plan: Some(sp), ..
+        } => sp.iter().any(op_mentions_text_score),
+        _ => false,
+    }
+}
+
+/// Collect the single statically proven label for `variable` from its bindings in the
+/// prefix: a labeled `NodeScan`, or an `ExpandFilter` destination guarded by a
+/// non-negated `IS LABELED <simple name>` conjunct. Returns `None` when the variable
+/// is unbound, ambiguously labeled, or only guarded by a compound label expression.
+fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> {
+    fn simple_label_expr(label: &LabelExpr) -> Option<String> {
+        match label {
+            LabelExpr::Name(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+    fn is_labeled_name(expr: &Expr, variable: &str) -> Option<String> {
+        match &expr.kind {
+            ExprKind::IsLabeled {
+                expr,
+                label,
+                negated,
+            } if !negated => match &expr.kind {
+                ExprKind::Variable(v) if v == variable => simple_label_expr(label),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let mut labels: BTreeSet<String> = BTreeSet::new();
+    let mut bound = false;
+    for op in prefix {
+        match op {
+            PlanOp::NodeScan {
+                variable: v, label, ..
+            } if v.as_ref() == variable => {
+                bound = true;
+                let Some(l) = label else {
+                    return None;
+                };
+                labels.insert(l.to_string());
+            }
+            PlanOp::ExpandFilter {
+                dst, dst_filter, ..
+            } if dst.as_ref() == variable => {
+                bound = true;
+                let mut guarded = false;
+                for predicate in dst_filter {
+                    if let Some(name) = is_labeled_name(predicate, variable) {
+                        labels.insert(name);
+                        guarded = true;
+                    }
+                }
+                if !guarded {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !bound || labels.len() != 1 {
+        return None;
+    }
+    labels.into_iter().next()
+}
+
+/// Candidate-scoped top-k lowering (plan 0344): rewrite
+/// `[candidate prefix binding v, …, TopK { text_score(v.prop, Q) DESC, k }, Project]`
+/// into `[candidate prefix binding v, …, TextScan { mode: TopK, … }, Project]`.
+///
+/// The `TextScan` sits AFTER the traversal prefix as a ranking barrier: the Router
+/// executes the fully authorized prefix first, scores only those candidates in TEXT,
+/// then applies the row LIMIT. Unlike the leading lowering, intervening traversal ops
+/// (`ExpandFilter`, …) are the point — but `Limit`/`TopK` inside the prefix, a second
+/// `TopK`, an offset, a non-`Project` tail, an unproved label, or missing TEXT coverage
+/// all refuse to lower so the residual mention fails closed downstream.
+///
+/// The trailing `TopK` is consumed into the scan (no `Limit` survives in the plan), so
+/// limit pushdown — which runs before this pass and bails on `Sort` — cannot narrow the
+/// candidate prefix through the barrier.
+pub(crate) fn apply_candidate_text_topk_lowering(
+    ops: &mut [PlanOp],
+    stats: Option<&dyn GraphStats>,
+) -> bool {
+    let Some(stats) = stats else {
+        return false;
+    };
+    let topk_positions: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op, PlanOp::TopK { .. }))
+        .map(|(idx, _)| idx)
+        .collect();
+    if topk_positions.len() != 1 {
+        return false;
+    }
+    let topk_idx = topk_positions[0];
+    if topk_idx == 0 {
+        return false;
+    }
+    let (score, k) = {
+        let PlanOp::TopK {
+            order_by,
+            k,
+            offset: None,
+            ..
+        } = &ops[topk_idx]
+        else {
+            return false;
+        };
+        let Some(k_value) = const_int64(k) else {
+            return false;
+        };
+        if k_value <= 0 {
+            return false;
+        }
+        match extract_topk_order(order_by) {
+            Some(score) => (score, k_value),
+            None => return false,
+        }
+    };
+    // The tail after the TopK must be exactly the late-projected RETURN.
+    if ops.len() != topk_idx + 2 || !matches!(ops[topk_idx + 1], PlanOp::Project { .. }) {
+        return false;
+    }
+    let prefix = &ops[..topk_idx];
+    // The prefix must not contain a scan, a row cap, or any other score mention:
+    // candidate membership is the complete authorized prefix, never a window.
+    if prefix.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        ) || op_mentions_text_score(op)
+    }) {
+        return false;
+    }
+    let Some(label) = proven_prefix_label(prefix, &score.variable) else {
+        return false;
+    };
+    if !stats.is_vertex_property_text_indexed_for(Some(&label), &score.property) {
+        return false;
+    }
+    let text_scan = PlanOp::TextScan {
+        variable: score.variable.as_str().into(),
+        label: label.as_str().into(),
+        property: score.property.as_str().into(),
+        query: score.query.clone(),
+        mode: TextScanMode::TopK {
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+        },
+        property_projection: None,
+    };
+    ops[topk_idx] = text_scan;
     true
 }
 

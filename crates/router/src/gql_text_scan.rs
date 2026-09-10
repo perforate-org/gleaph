@@ -31,6 +31,8 @@ use gleaph_graph_kernel::plan_exec::{
     SeedVertexBinding,
 };
 
+use candid::Encode;
+
 use crate::RouterStore;
 use crate::facade::stable::text_index_catalog::{self, TextIndexDefRecord};
 use crate::gql_search::cap_result_rows;
@@ -40,6 +42,27 @@ use crate::state::RouterError;
 /// Method name on the text canister (`#[query] fn search(query: String, k: u32)`).
 #[cfg(target_family = "wasm")]
 const TEXT_SEARCH_METHOD: &str = "search";
+
+/// Method name on the text canister (`#[query] fn search_candidates(query, keys)`).
+/// Controller-guarded on wasm; the native stub fails closed (plan 0344).
+#[cfg(target_family = "wasm")]
+const TEXT_SEARCH_CANDIDATES_METHOD: &str = "search_candidates";
+
+/// Admission cap on authorized prefix rows admitted into candidate scoring (R=1024;
+/// the probe row 1025 is rejected). Distinct from the TEXT-side candidate key cap.
+const MAX_CANDIDATE_PREFIX_ROWS: usize = 1024;
+/// Admission cap on the encoded prefix payload admitted into candidate scoring.
+const MAX_CANDIDATE_PREFIX_BYTES: usize = 1024 * 1024;
+/// Admission cap on user (non-identity) columns in the retained prefix projection.
+const MAX_CANDIDATE_USER_COLUMNS: usize = 16;
+/// Admission cap on distinct TEXT candidate keys per call (mirrors the canister).
+const MAX_CANDIDATE_KEYS: usize = 256;
+/// Admission cap on the encoded `search_candidates` argument payload.
+const MAX_CANDIDATE_CALL_BYTES: usize = 32 * 1024;
+/// Internal prefix-projection alias carrying `ELEMENT_ID(scored variable)`.
+const CANDIDATE_ID_ALIAS: &str = "__gleaph_cid";
+/// Internal prefix-projection alias prefix for retained user columns.
+const CANDIDATE_COLUMN_ALIAS_PREFIX: &str = "__gleaph_c";
 
 /// Mirrors the text canister's `MAX_SEARCH_K` clamp (`crates/text-canister/src/state.rs`);
 /// requests above this width stay legal but cannot be satisfied completely.
@@ -81,6 +104,12 @@ pub(crate) async fn try_execute_gql_text_scan(
         return Err(RouterError::InvalidArgument(
             "text_score requires a covered TEXT index scan; this shape did not lower into a TextScan and is not supported in this slice".into(),
         ));
+    }
+    // A TextScan AFTER a traversal prefix is the plan 0344 candidate barrier: the
+    // fully authorized prefix runs first and only its rows are scored.
+    if !matches!(plan.ops.first(), Some(PlanOp::TextScan { .. })) {
+        return try_execute_candidate_text_scan(plan, graph_id, params_blob, mode, stats, store)
+            .await;
     }
 
     let shape = analyze_text_scan_shape(plan, graph_id, store)?;
@@ -176,6 +205,475 @@ pub(crate) async fn try_execute_gql_text_scan(
         result.with_truncated(true)
     } else {
         result.with_truncated(false)
+    }))
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped non-leading text_score (plan 0344)
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Analyzed candidate barrier: everything the Router needs without catalog access.
+struct CandidateBarrierShape {
+    /// Index of the barrier `TextScan` in `plan.ops` (always > 0).
+    scan_idx: usize,
+    /// Scored variable bound by the prefix.
+    variable: String,
+    /// Scan label / property names (resolved to ids by the caller).
+    label: String,
+    property: String,
+    /// Scan query (literal or `$param`).
+    query: ScanValue,
+    /// Requested row limit (resolved literal/parameter value).
+    limit: u32,
+    /// Trailing-`Project` column index holding the residual score call.
+    score_col_idx: usize,
+    /// Count of retained user columns (excludes the score column).
+    user_col_count: usize,
+}
+
+/// Pure shape analysis for the candidate barrier (no catalog, no I/O): exactly one
+/// non-leading `TextScan` in `TopK` mode, a non-empty cap-free mention-free prefix,
+/// and exactly one trailing `Project` whose single residual `text_score` call names
+/// the scanned (variable, property, query). Anything else fails closed.
+fn analyze_candidate_barrier_shape(
+    plan: &PhysicalPlan,
+    params: &BTreeMap<String, gleaph_gql::Value>,
+) -> Result<CandidateBarrierShape, RouterError> {
+    let unsupported = |detail: &str| {
+        RouterError::InvalidArgument(format!("candidate text_score unsupported: {detail}"))
+    };
+    let scan_positions: Vec<usize> = plan
+        .ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op, PlanOp::TextScan { .. }))
+        .map(|(idx, _)| idx)
+        .collect();
+    let [scan_idx] = scan_positions.as_slice() else {
+        return Err(unsupported("exactly one TextScan is required"));
+    };
+    let scan_idx = *scan_idx;
+    if scan_idx == 0 {
+        return Err(unsupported("leading TextScan takes the seed path"));
+    }
+    let PlanOp::TextScan {
+        variable,
+        label,
+        property,
+        query,
+        mode,
+        ..
+    } = &plan.ops[scan_idx]
+    else {
+        unreachable!("position matched TextScan");
+    };
+    let TextScanMode::TopK { limit } = mode else {
+        return Err(unsupported(
+            "only TopK mode executes after a prefix in this slice",
+        ));
+    };
+    let limit = resolve_scan_limit(limit, params)?;
+    if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
+        return Err(unsupported(
+            "row LIMIT must be within 1..=1024 in this slice",
+        ));
+    }
+    let prefix = &plan.ops[..scan_idx];
+    if prefix.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        ) || op_mention_text_score(op)
+            || nested_subplan_mentions(op)
+    }) {
+        return Err(unsupported(
+            "the candidate prefix must be cap-free and mention-free",
+        ));
+    }
+    // The tail must be exactly the late-projected RETURN.
+    let [
+        PlanOp::Project {
+            columns,
+            distinct: false,
+        },
+    ] = &plan.ops[scan_idx + 1..]
+    else {
+        return Err(unsupported(
+            "only a single non-distinct trailing Project is supported",
+        ));
+    };
+    let mut score_col_idx = None;
+    for (idx, col) in columns.iter().enumerate() {
+        if !expr_mentions_text_score(&col.expr) {
+            continue;
+        }
+        if score_col_idx.is_some()
+            || !residual_call_matches_scan(&col.expr, variable, property, query)
+        {
+            return Err(unsupported(
+                "the trailing Project must carry exactly one residual call on the scanned (variable, property, query)",
+            ));
+        }
+        score_col_idx = Some(idx);
+    }
+    let Some(score_col_idx) = score_col_idx else {
+        return Err(unsupported(
+            "the trailing Project must project the score call",
+        ));
+    };
+    let user_col_count = columns.len() - 1;
+    if user_col_count > MAX_CANDIDATE_USER_COLUMNS {
+        return Err(unsupported("at most 16 retained user columns"));
+    }
+    Ok(CandidateBarrierShape {
+        scan_idx,
+        variable: variable.to_string(),
+        label: label.to_string(),
+        property: property.to_string(),
+        query: query.clone(),
+        limit,
+        score_col_idx,
+        user_col_count,
+    })
+}
+
+/// The residual call must be the entire projected expression over the scanned
+/// (variable, property) with a query matching the scan (literal-for-literal,
+/// parameter-for-parameter).
+fn residual_call_matches_scan(
+    expr: &Expr,
+    variable: &str,
+    property: &str,
+    query: &ScanValue,
+) -> bool {
+    let ExprKind::FunctionCall { name, args, .. } = &expr.kind else {
+        return false;
+    };
+    if name.parts.len() != 1 || !name.parts[0].eq_ignore_ascii_case("text_score") {
+        return false;
+    }
+    let [target, query_arg] = args.as_slice() else {
+        return false;
+    };
+    let ExprKind::PropertyAccess {
+        expr,
+        property: prop,
+    } = &target.kind
+    else {
+        return false;
+    };
+    if prop != property || !matches!(&expr.kind, ExprKind::Variable(v) if v == variable) {
+        return false;
+    }
+    match (query, &query_arg.kind) {
+        (ScanValue::Literal(want), ExprKind::Literal(got)) => want == got,
+        (ScanValue::Parameter(want), ExprKind::Parameter(got)) => {
+            want.strip_prefix('$').unwrap_or(want.as_ref())
+                == got.strip_prefix('$').unwrap_or(got.as_ref())
+        }
+        _ => false,
+    }
+}
+
+/// One authorized prefix row: the TEXT candidate key plus retained user values.
+struct CandidatePrefixRow {
+    key: u64,
+    values: Vec<gleaph_gql_ic::GqlWireValue>,
+}
+
+/// Join TEXT scores onto prefix rows and rank: keep rows whose key scored, order
+/// `(score desc, key asc)` (stable within identical pairs, preserving prefix order),
+/// truncate to the row limit. Pure: unit-tested without I/O.
+fn rank_candidate_rows(
+    rows: Vec<CandidatePrefixRow>,
+    scores: &BTreeMap<u64, u32>,
+    limit: usize,
+) -> Vec<(u32, CandidatePrefixRow)> {
+    let mut ranked: Vec<(u32, usize, CandidatePrefixRow)> = Vec::new();
+    for (order, row) in rows.into_iter().enumerate() {
+        if let Some(score) = scores.get(&row.key) {
+            ranked.push((*score, order, row));
+        }
+    }
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.2.key.cmp(&b.2.key))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    ranked.truncate(limit);
+    ranked
+        .into_iter()
+        .map(|(score, _, row)| (score, row))
+        .collect()
+}
+
+/// Execute the candidate barrier: run the fully authorized prefix on the graph,
+/// score only its document keys in TEXT, rank rows, and project the user columns
+/// plus the score — no second graph round-trip (retained projection).
+async fn try_execute_candidate_text_scan(
+    plan: &PhysicalPlan,
+    graph_id: GraphId,
+    params_blob: &[u8],
+    mode: GqlExecutionMode,
+    stats: &RouterGraphStats,
+    store: &RouterStore,
+) -> Result<Option<GqlQueryResult>, RouterError> {
+    let params = gleaph_gql_ic::wire::decode_gql_params_blob(params_blob).map_err(|e| {
+        RouterError::InvalidArgument(format!("failed to decode GQL parameters: {e}"))
+    })?;
+    let barrier = analyze_candidate_barrier_shape(plan, &params)?;
+    let query = resolve_scan_query(&barrier.query, &params)?;
+
+    let label_id = store
+        .lookup_vertex_label_id(graph_id, &barrier.label)
+        .map_err(|e| {
+            RouterError::NotFound(format!("candidate text label {}: {e}", barrier.label))
+        })?;
+    let property_id = store
+        .lookup_property_id(graph_id, &barrier.property)
+        .map_err(|e| {
+            RouterError::NotFound(format!("candidate text property {}: {e}", barrier.property))
+        })?;
+    // Planning-visible definitions are always `Ready` with an attached canister;
+    // anything else resolves as "function unknown" fail-closed.
+    let def = resolve_text_index(graph_id, label_id, property_id)?;
+    let target = def
+        .target
+        .expect("planning-visible text definitions always carry a target");
+    // One text canister serves exactly its home shard's doc-key space.
+    let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    let [shard] = shards.as_slice() else {
+        return Err(RouterError::Conflict(format!(
+            "candidate text_score requires a single live shard for this graph; {} live shards are not supported until multi-shard text fan-out lands",
+            shards.len()
+        )));
+    };
+    let element_id_key = store.graph_element_id_encoding_key(graph_id)?;
+
+    // Prefix executable plan: the barrier-free prefix plus a terminal projection
+    // carrying ELEMENT_ID(scored variable) and the retained user columns.
+    let PlanOp::Project { columns, .. } = &plan.ops[barrier.scan_idx + 1] else {
+        return Err(RouterError::InvalidArgument(
+            "candidate text_score unsupported: trailing Project vanished".into(),
+        ));
+    };
+    let mut prefix_ops: Vec<PlanOp> = plan.ops[..barrier.scan_idx].to_vec();
+    let mut internal_cols = Vec::with_capacity(barrier.user_col_count + 1);
+    internal_cols.push(ProjectColumn {
+        expr: Expr::new(ExprKind::ElementId(Box::new(Expr::new(
+            ExprKind::Variable(barrier.variable.clone()),
+        )))),
+        alias: Some(CANDIDATE_ID_ALIAS.into()),
+    });
+    let mut user_positions: Vec<usize> = Vec::with_capacity(barrier.user_col_count);
+    for (idx, col) in columns.iter().enumerate() {
+        if idx == barrier.score_col_idx {
+            continue;
+        }
+        user_positions.push(idx);
+        internal_cols.push(ProjectColumn {
+            expr: col.expr.clone(),
+            alias: Some(
+                format!(
+                    "{CANDIDATE_COLUMN_ALIAS_PREFIX}{}",
+                    user_positions.len() - 1
+                )
+                .into(),
+            ),
+        });
+    }
+    prefix_ops.push(PlanOp::Project {
+        columns: internal_cols,
+        distinct: false,
+    });
+    // Output/binding_layout are re-derived over the barrier-free prefix ops: the
+    // appended terminal projection is Router-internal and never re-planned.
+    let prefix_plan = PhysicalPlan {
+        output: gleaph_gql_planner::output_schema::derive_output_schema(&prefix_ops),
+        binding_layout: gleaph_gql_planner::binding_layout::derive_binding_layout(&prefix_ops),
+        ops: prefix_ops,
+        diagnostics: plan.diagnostics.clone(),
+        annotations: plan.annotations.clone(),
+    };
+    let prefix_blob =
+        gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&prefix_plan), false)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    if prefix_blob.len() > MAX_CANDIDATE_PREFIX_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "candidate prefix plan of {} bytes exceeds the 1MiB admission cap",
+            prefix_blob.len()
+        )));
+    }
+
+    // The prefix runs through the canonical single-graph read pipeline (seed-anchor
+    // resolution, policy lowering, sharded dispatch) with the barrier-free plan: the
+    // Router never re-implements index-anchor dispatch for candidates.
+    let prefix_result = crate::gql::dispatch_plan_blob(
+        graph_id,
+        &prefix_blob,
+        std::slice::from_ref(&prefix_plan),
+        &params,
+        params_blob,
+        mode,
+        None,
+        stats,
+    )
+    .await?;
+    let Some(rows_blob) = prefix_result.rows_blob.as_ref() else {
+        return Err(RouterError::Internal(
+            "candidate prefix returned no rows payload".into(),
+        ));
+    };
+    if rows_blob.len() > MAX_CANDIDATE_PREFIX_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "candidate prefix payload of {} bytes exceeds the 1MiB admission cap",
+            rows_blob.len()
+        )));
+    }
+    let wire_rows = gleaph_gql_ic::GqlWireRows::decode_blob(rows_blob).map_err(|e| {
+        RouterError::InvalidArgument(format!("candidate prefix decode failed: {e}"))
+    })?;
+    if wire_rows.rows.len() > MAX_CANDIDATE_PREFIX_ROWS {
+        return Err(RouterError::InvalidArgument(format!(
+            "candidate prefix of {} rows exceeds the 1024-row admission cap; narrow the graph pattern before ranking",
+            wire_rows.rows.len()
+        )));
+    }
+    let mut prefix_rows = Vec::with_capacity(wire_rows.rows.len());
+    for row in &wire_rows.rows {
+        let identity = row
+            .columns
+            .iter()
+            .find(|(name, _)| name == CANDIDATE_ID_ALIAS)
+            .map(|(_, value)| value)
+            .ok_or_else(|| {
+                RouterError::Internal("candidate prefix row lacks the identity column".into())
+            })?;
+        let gleaph_gql_ic::GqlWireValue::Bytes(id_bytes) = identity else {
+            return Err(RouterError::Internal(
+                "candidate identity column is not an element id".into(),
+            ));
+        };
+        let encoded: [u8; 8] = id_bytes.as_slice().try_into().map_err(|_| {
+            RouterError::InvalidArgument("candidate element id must be 8 bytes".into())
+        })?;
+        let global = gleaph_graph_kernel::federation::decode_global_vertex_id(
+            &element_id_key,
+            gleaph_graph_kernel::federation::EncodedVertexId(encoded),
+        );
+        if global.shard_id != shard.shard_id {
+            return Err(RouterError::InvalidArgument(
+                "candidate vertex shard does not match the live shard".into(),
+            ));
+        }
+        let mut values = Vec::with_capacity(user_positions.len());
+        for position in 0..user_positions.len() {
+            let want = format!("{CANDIDATE_COLUMN_ALIAS_PREFIX}{position}");
+            let value = row
+                .columns
+                .iter()
+                .find(|(name, _)| *name == want)
+                .map(|(_, value)| value.clone())
+                .ok_or_else(|| {
+                    RouterError::Internal(format!(
+                        "candidate prefix row lacks retained column {want}"
+                    ))
+                })?;
+            values.push(value);
+        }
+        prefix_rows.push(CandidatePrefixRow {
+            key: u64::from(global.local_vertex_id),
+            values,
+        });
+    }
+
+    // Deduplicate keys into canonical ascending order for the TEXT call. No hit
+    // carries row multiplicity; multiplicity is restored at join time.
+    let mut keys: Vec<u64> = prefix_rows.iter().map(|row| row.key).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.len() > MAX_CANDIDATE_KEYS {
+        return Err(RouterError::InvalidArgument(format!(
+            "{} distinct candidate keys exceed the 256-key admission cap",
+            keys.len()
+        )));
+    }
+    let mut scores: BTreeMap<u64, u32> = BTreeMap::new();
+    if !keys.is_empty() {
+        let args = Encode!(&(&query, &keys)).map_err(|e| {
+            RouterError::Internal(format!("candidate text call encode failed: {e}"))
+        })?;
+        if args.len() > MAX_CANDIDATE_CALL_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "candidate text call of {} bytes exceeds the 32KiB admission cap",
+                args.len()
+            )));
+        }
+        let hits = text_canister_search_candidates(target, query, keys.clone())
+            .await
+            .map_err(RouterError::Internal)?;
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for hit in hits {
+            if !seen.insert(hit.key) {
+                return Err(RouterError::InvalidArgument(format!(
+                    "duplicate candidate text hit for document key {}",
+                    hit.key
+                )));
+            }
+            if keys.binary_search(&hit.key).is_err() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "candidate text hit for unrequested document key {}",
+                    hit.key
+                )));
+            }
+            let vertex_id = u32::try_from(hit.key).map_err(|_| {
+                RouterError::InvalidArgument(format!(
+                    "candidate text document key {} does not fit a local vertex id",
+                    hit.key
+                ))
+            })?;
+            let _ = vertex_id;
+            scores.insert(hit.key, hit.score);
+        }
+    }
+
+    let ranked = rank_candidate_rows(prefix_rows, &scores, barrier.limit as usize);
+    // Output names follow the original trailing Project order (score included).
+    if plan.output.columns.len() != columns.len() {
+        return Err(RouterError::Internal(
+            "candidate trailing Project and output schema disagree".into(),
+        ));
+    }
+    let mut out_rows = Vec::with_capacity(ranked.len());
+    for (score, row) in ranked {
+        let mut out_cols = Vec::with_capacity(columns.len());
+        let mut user_iter = row.values.into_iter();
+        for (idx, out_col) in plan.output.columns.iter().enumerate() {
+            if idx == barrier.score_col_idx {
+                out_cols.push((
+                    out_col.name.to_string(),
+                    gleaph_gql_ic::GqlWireValue::Float64(f64::from(score)),
+                ));
+            } else {
+                let value = user_iter.next().ok_or_else(|| {
+                    RouterError::Internal("candidate retained values underflow".into())
+                })?;
+                out_cols.push((out_col.name.to_string(), value));
+            }
+        }
+        out_rows.push(gleaph_gql_ic::GqlWireRow { columns: out_cols });
+    }
+    let row_count = out_rows.len() as u64;
+    let out_blob = gleaph_gql_ic::GqlWireRows { rows: out_rows }
+        .encode_blob()
+        .map_err(|e| RouterError::Internal(format!("candidate result encode failed: {e}")))?;
+    Ok(Some(GqlQueryResult {
+        row_count,
+        rows_blob: Some(out_blob),
+        phase: None,
+        token: None,
+        truncated: Some(false),
+        search_chain_receipt: None,
     }))
 }
 
@@ -715,6 +1213,53 @@ async fn text_canister_search(
     Ok(Vec::new())
 }
 
+/// Candidate-scoped retrieval over the text canister's `search_candidates` endpoint.
+/// The argument payload is pre-measured so the 32KiB admission cap holds on every
+/// transport; every hit is validated against the requested key set by the caller.
+#[cfg(target_family = "wasm")]
+async fn text_canister_search_candidates(
+    target: candid::Principal,
+    query: String,
+    keys: Vec<u64>,
+) -> Result<Vec<TextHitWire>, String> {
+    use ic_cdk::call::Call;
+
+    #[derive(candid::CandidType, serde::Deserialize)]
+    struct WireTextHit {
+        key: u64,
+        docid: u32,
+        score: u32,
+    }
+
+    Call::bounded_wait(target, TEXT_SEARCH_CANDIDATES_METHOD)
+        .with_args(&(&query, &keys))
+        .await
+        .map_err(|e| format!("text {TEXT_SEARCH_CANDIDATES_METHOD} call failed: {e}"))?
+        .candid::<Result<Vec<WireTextHit>, String>>()
+        .map_err(|_| format!("text {TEXT_SEARCH_CANDIDATES_METHOD} decode failed"))?
+        .map(|hits| {
+            hits.into_iter()
+                .map(|hit| TextHitWire {
+                    key: hit.key,
+                    docid: hit.docid,
+                    score: hit.score,
+                })
+                .collect()
+        })
+        .map_err(|detail| format!("text {TEXT_SEARCH_CANDIDATES_METHOD} rejected: {detail}"))
+}
+
+/// Native transports cannot reach a text canister: fail closed instead of scoring
+/// zero rows and masquerading as an exact top-k.
+#[cfg(not(target_family = "wasm"))]
+async fn text_canister_search_candidates(
+    _target: candid::Principal,
+    _query: String,
+    _keys: Vec<u64>,
+) -> Result<Vec<TextHitWire>, String> {
+    Err("candidate text search requires the wasm transport".to_string())
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Deterministic merge + seed emission
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1142,8 +1687,10 @@ mod tests {
             &store,
         ))
         .expect_err("non-leading TextScan must be rejected");
+        // Plan 0344: non-leading scans route to the candidate barrier first, so a
+        // Threshold-mode scan fails there (not at the leading-only gate).
         assert!(
-            matches!(position_err, RouterError::InvalidArgument(ref msg) if msg.contains("leading")),
+            matches!(position_err, RouterError::InvalidArgument(ref msg) if msg.contains("candidate text_score unsupported")),
             "unexpected error: {position_err:?}"
         );
     }
@@ -1311,5 +1858,220 @@ mod tests {
         let resolved =
             resolve_text_index(graph_id, label_id, property_id).expect("Ready definition resolves");
         assert_eq!(resolved.text_index_id, raw_id);
+    }
+}
+
+#[cfg(test)]
+mod candidate_barrier_tests {
+    use super::super::gql_text_scan::*;
+    use gleaph_gql::ast::{Expr, ExprKind};
+    use gleaph_gql_planner::output_schema::{OutputBindingKind, OutputColumn, OutputSchema};
+    use gleaph_gql_planner::plan::{
+        NodeLabelRef, PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn,
+        ScanValue, TextScanMode,
+    };
+    use std::collections::BTreeMap;
+
+    fn test_plan(ops: Vec<PlanOp>) -> PhysicalPlan {
+        PhysicalPlan {
+            ops,
+            diagnostics: PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+            output: OutputSchema {
+                columns: vec![
+                    OutputColumn {
+                        name: "d.title".into(),
+                        kind: OutputBindingKind::Scalar,
+                        source_var: None,
+                    },
+                    OutputColumn {
+                        name: "score".into(),
+                        kind: OutputBindingKind::Scalar,
+                        source_var: None,
+                    },
+                ],
+            },
+            binding_layout: gleaph_gql_planner::binding_layout::derive_binding_layout(&[]),
+        }
+    }
+
+    fn node_scan_d() -> PlanOp {
+        PlanOp::NodeScan {
+            variable: "d".into(),
+            label: Some(NodeLabelRef::from("Document")),
+            property_projection: None,
+        }
+    }
+
+    fn barrier_scan(limit: i64) -> PlanOp {
+        PlanOp::TextScan {
+            variable: "d".into(),
+            label: NodeLabelRef::from("Document"),
+            property: "body".into(),
+            query: ScanValue::Literal(gleaph_gql::Value::Text("hello".into())),
+            mode: TextScanMode::TopK {
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(limit)),
+            },
+            property_projection: None,
+        }
+    }
+
+    fn score_call_expr() -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName::simple("text_score"),
+            args: vec![
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                    property: "body".into(),
+                }),
+                Expr::new(ExprKind::Literal(gleaph_gql::Value::Text("hello".into()))),
+            ],
+            distinct: false,
+        })
+    }
+
+    fn tail_project() -> PlanOp {
+        PlanOp::Project {
+            columns: vec![
+                ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                        property: "title".into(),
+                    }),
+                    alias: None,
+                },
+                ProjectColumn {
+                    expr: score_call_expr(),
+                    alias: Some("score".into()),
+                },
+            ],
+            distinct: false,
+        }
+    }
+
+    fn params() -> BTreeMap<String, gleaph_gql::Value> {
+        BTreeMap::new()
+    }
+
+    #[test]
+    fn barrier_shape_accepts_target_layout() {
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(20), tail_project()]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.scan_idx, 1);
+        assert_eq!(shape.variable, "d");
+        assert_eq!(shape.limit, 20);
+        assert_eq!(shape.score_col_idx, 1);
+        assert_eq!(shape.user_col_count, 1);
+    }
+
+    #[test]
+    fn barrier_shape_rejects_leading_scan_limit_prefix_and_over_limit() {
+        // Leading scan takes the seed path.
+        let plan = test_plan(vec![barrier_scan(20), tail_project()]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A Limit inside the prefix narrows candidates before scoring.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            PlanOp::Limit {
+                count: None,
+                offset: None,
+            },
+            barrier_scan(20),
+            tail_project(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // LIMIT beyond the admission cap fails closed.
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(2048), tail_project()]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn barrier_shape_rejects_score_mismatch_and_missing_score() {
+        // Residual call on a different property.
+        let mut project = tail_project();
+        let PlanOp::Project { columns, .. } = &mut project else {
+            panic!("project");
+        };
+        columns[1].expr = Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(1)));
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(20), project]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // Score call wrapped in arithmetic is not the entire expression.
+        let mut project = tail_project();
+        let PlanOp::Project { columns, .. } = &mut project else {
+            panic!("project");
+        };
+        columns[1].expr = Expr::new(ExprKind::BinaryOp {
+            left: Box::new(score_call_expr()),
+            op: gleaph_gql::ast::BinaryOp::Add,
+            right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(1)))),
+        });
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(20), project]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn rank_preserves_multiplicity_drops_unmatched_and_truncates() {
+        use gleaph_gql_ic::GqlWireValue;
+        let rows = vec![
+            CandidatePrefixRow {
+                key: 3,
+                values: vec![GqlWireValue::Int64(3)],
+            },
+            CandidatePrefixRow {
+                key: 1,
+                values: vec![GqlWireValue::Int64(1)],
+            },
+            CandidatePrefixRow {
+                key: 3,
+                values: vec![GqlWireValue::Int64(33)],
+            },
+            CandidatePrefixRow {
+                key: 9,
+                values: vec![GqlWireValue::Int64(9)],
+            },
+        ];
+        let scores: BTreeMap<u64, u32> = [(1, 10), (3, 30)].into_iter().collect();
+        let ranked = rank_candidate_rows(rows, &scores, 20);
+        // Key 9 unmatched (dropped); key 3 twice (both prefix paths survive).
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0].1.key, 3);
+        assert_eq!(ranked[1].1.key, 3);
+        assert_eq!(ranked[2].1.key, 1);
+        // Stable within identical (score, key): first prefix occurrence first.
+        assert!(matches!(ranked[0].1.values[0], GqlWireValue::Int64(3)));
+        assert!(matches!(ranked[1].1.values[0], GqlWireValue::Int64(33)));
+        // Truncation keeps the head of the ranked order.
+        let rows = vec![
+            CandidatePrefixRow {
+                key: 1,
+                values: vec![],
+            },
+            CandidatePrefixRow {
+                key: 3,
+                values: vec![],
+            },
+        ];
+        let ranked = rank_candidate_rows(rows, &scores, 1);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0, 30);
+    }
+
+    #[test]
+    fn rank_breaks_score_ties_by_key_ascending() {
+        use gleaph_gql_ic::GqlWireValue;
+        let rows = vec![
+            CandidatePrefixRow {
+                key: 7,
+                values: vec![GqlWireValue::Null],
+            },
+            CandidatePrefixRow {
+                key: 2,
+                values: vec![GqlWireValue::Null],
+            },
+        ];
+        let scores: BTreeMap<u64, u32> = [(7, 5), (2, 5)].into_iter().collect();
+        let ranked = rank_candidate_rows(rows, &scores, 10);
+        assert_eq!(ranked[0].1.key, 2);
+        assert_eq!(ranked[1].1.key, 7);
     }
 }

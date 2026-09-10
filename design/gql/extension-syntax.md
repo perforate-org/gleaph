@@ -972,6 +972,13 @@ WHERE text_score(d.document_text, $query) > 0.5
 RETURN d, text_score(d.document_text, $query) AS score
 ORDER BY text_score(d.document_text, $query) DESC
 LIMIT 10
+
+-- Candidate-scoped non-leading top-k (plan 0344): the score variable is bound by
+-- the graph prefix; TEXT scores only graph-qualified candidates
+MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project)
+MATCH (p)-[:HAS_DOCUMENT]->(d:Document)
+RETURN d.title, text_score(d.body,$query) AS score
+ORDER BY score DESC LIMIT 20
 ```
 
 The TEXT definition itself is declared with the vendor DDL
@@ -1027,7 +1034,19 @@ Contract:
   (variable, property, query) — fuses into one scan that retains the threshold on the
   score-ranked window and then truncates to the literal limit; disagreeing halves stay
   unfused and fail closed. Results rank by engine score descending with
-  deterministic key tie-breaks `(score DESC, element-key ASC)`.
+  deterministic key tie-breaks `(score DESC, element-key ASC)`. The **candidate-scoped
+  non-leading** shape (plan 0344, ADR 0095) — one trailing `Project` carrying exactly one
+  residual `text_score` call on a prefix-bound `(variable, property, query)` — lowers to a
+  ranking barrier *after* the graph prefix. Execution is candidate-first: the authorized
+  prefix runs through the canonical read pipeline (user LIMIT never pushed into it), the
+  Router deduplicates document keys (row multiplicity preserved), TEXT scores only the
+  bounded candidate set (`search_candidates`, all-match, same scoring), and the Router
+  joins scores to retained rows, drops scoreless rows, orders `(score DESC, key ASC)`
+  stable, and applies the row LIMIT. Admission caps: 256 distinct keys, 1024 prefix rows,
+  1 MiB prefix plan/payload, 32 KiB candidate call, query ≤ 4096 B, LIMIT ≤ 1024, ≤ 16
+  retained user columns. Overflow, incomplete prefix, payload excess, or TEXT failure
+  fails closed — never a silent partial top-k. Multi-shard, compound threshold halves,
+  `DISTINCT`/offset/ASC, and unlabeled/uncovered scans stay unsupported.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
 - Non-leading/nested placements and aggregates over scores remain deferred until their

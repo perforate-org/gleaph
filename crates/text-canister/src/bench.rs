@@ -187,6 +187,67 @@ fn bench_query_term_top100() -> canbench_rs::BenchResult {
 /// `SELECT rowid ... LIMIT 100` rowid lookup; the scored sibling above completes the
 /// matrix on this side.
 ///
+/// Candidate-scoped search (plan 0344 G0 gate): ONE full
+/// `search_candidates(query, keys)` call over the SAME dense fixture term with the
+/// G0-admission key set — the first 256 live keys in strict ascending order — so the
+/// measured closure covers key→docid resolution, `CandidateReader` skip-wrapped DAAT
+/// with `topk_disjunctive(allowed.len())` completeness, and hit projection. Term,
+/// posting density, and survivor count are fixed by the shared fixture (df ≥ 1000);
+/// the gate before measurement asserts the restricted oracle reproduces exactly.
+#[bench(raw)]
+fn bench_query_term_candidates_capped() -> canbench_rs::BenchResult {
+    /// G0 admission cap mirrored from `MAX_CANDIDATE_KEYS`.
+    const CANDIDATE_KEYS: usize = 256;
+    let f = black_box(fixture());
+    let query = black_box(f.query.clone());
+    // First 256 live keys of the dense term, strictly ascending (fixture keys equal
+    // docids, so docid order is already key order).
+    let mut keys: Vec<u64> = with_stores(|stores| {
+        stored_postings(stores, &f.query)
+            .into_iter()
+            .map(|(docid, _)| docid)
+            .filter(|&docid| !stores.is_tombstoned(docid))
+            .take(CANDIDATE_KEYS)
+            .map(|docid| stores.key_of_docid(docid).expect("live docid has key"))
+            .collect()
+    });
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        CANDIDATE_KEYS,
+        "dense fixture must fill the 256-key candidate window"
+    );
+    let keys = black_box(keys);
+    // Correctness gate outside the measured closure: the candidate path must return
+    // every match within the key set, identically ordered.
+    let truth = with_stores(|stores| {
+        stores
+            .search_candidates(&query, &keys)
+            .expect("candidate search")
+    });
+    assert!(
+        !truth.is_empty(),
+        "dense fixture must match at least one candidate key"
+    );
+    let replay = with_stores(|stores| {
+        stores
+            .search_candidates(&query, &keys)
+            .expect("candidate search")
+    });
+    assert_eq!(replay, truth, "candidate search must be deterministic");
+    let truth = black_box(truth);
+    canbench_rs::bench_fn(move || {
+        let hits = with_stores(|stores| {
+            stores
+                .search_candidates(&query, &keys)
+                .expect("candidate search")
+        });
+        black_box(hits);
+        black_box(&truth);
+    })
+}
+
 /// Gate before measurement: the walk must reproduce first-100-live-docids truth
 /// (stored postings, tombstones filtered, docid ascending) computed independently.
 #[bench(raw)]

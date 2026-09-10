@@ -39,6 +39,15 @@ docs-sync unless noted):
 - Known v1 limitations: `DROP TEXT INDEX` removes the catalog definition and fails closed
   while builds are active, but does not tear down the physical canister; multi-shard fan-out
   is deferred (single home shard).
+- Candidate endpoint (plan 0344): `search_candidates(query, keys)` (stored-controller
+  guard only, never the provision relay guard) accepts a strictly ascending key slice of
+  at most 256 entries and returns **all** matching scores — `topk_disjunctive(allowed.len())`
+  completeness over a `CandidateReader` skip wrapper that preserves block-max soundness —
+  ordered `(score DESC, docid ASC)`, tombstones excluded, unknown keys skipped, scoring
+  unchanged. Focused canbench arm `bench_query_term_candidates_capped` (same dense
+  fixture as the top-100 arm, first 256 live keys): 2.79M instructions vs 4.00M for the
+  global top-100 whole-path — the restricted set short-circuits the full-list walk.
+  Not persisted to `canbench_results.yml` (gate measurement, not a committed baseline).
 - Compound lowering (plan 0329): a combined `WHERE text_score(v.prop, $q) cmp t` +
   `ORDER BY text_score(v.prop, $q) DESC LIMIT k` predicate fuses into ONE
   `TextScan { mode: ThresholdTopK }` when both halves reference the same

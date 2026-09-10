@@ -1959,3 +1959,86 @@ fn framed_decode_cycles_per_frame() {
         "a single frame decode took {max:?} natively — unexpectedly slow"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped retrieval (plan 0344)
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Restricted oracle: brute-force scores over live docs, then keep only hits whose
+/// key is in the candidate set. `search_candidates` must equal this exactly.
+fn brute_force_candidates(stores: &TestStores, query: &str, keys: &[u64]) -> Vec<TextHit> {
+    let full = brute_force(stores, query, u32::MAX);
+    full.into_iter()
+        .filter(|hit| keys.contains(&hit.key))
+        .collect()
+}
+
+#[test]
+fn search_candidates_matches_restricted_oracle() {
+    let mut stores = TestStores::init(fresh_regions());
+    seed_corpus(&mut stores);
+    for (query, keys) in [
+        ("fox", vec![101, 102, 103, 104]),
+        ("fox", vec![101, 104]),
+        ("fox", vec![110]),
+        ("fox", vec![101, 102, 999]),
+        ("red fox", vec![101, 102, 103]),
+        ("東京都", vec![105, 106, 108]),
+        ("fulltext", vec![107]),
+        ("nomatchterm", vec![101, 102]),
+        ("fox", vec![]),
+        ("fox", vec![999]),
+    ] {
+        let got = stores
+            .search_candidates(query, &keys)
+            .expect("candidates ok");
+        let want = brute_force_candidates(&stores, query, &keys);
+        assert_eq!(
+            got, want,
+            "candidate parity failed for {query:?} keys={keys:?}"
+        );
+        assert!(
+            got.iter().all(|hit| keys.contains(&hit.key)),
+            "every hit must be a requested key"
+        );
+    }
+}
+
+#[test]
+fn search_candidates_excludes_tombstoned_candidates() {
+    let mut stores = TestStores::init(fresh_regions());
+    seed_corpus(&mut stores);
+    stores.enqueue_delete(vec![101]).expect("delete");
+    flush_all(&mut stores);
+    let got = stores
+        .search_candidates("fox", &[101, 102, 103])
+        .expect("candidates ok");
+    assert!(
+        got.iter().all(|hit| hit.key != 101),
+        "tombstoned candidate must not surface, got: {got:?}"
+    );
+    assert_eq!(
+        got,
+        brute_force_candidates(&stores, "fox", &[101, 102, 103])
+    );
+}
+
+#[test]
+fn search_candidates_rejects_bad_bounds() {
+    let mut stores = TestStores::init(fresh_regions());
+    seed_corpus(&mut stores);
+    assert!(stores.search_candidates("fox", &[102, 101]).is_err());
+    assert!(stores.search_candidates("fox", &[101, 101]).is_err());
+    assert!(
+        stores
+            .search_candidates(&"q".repeat(MAX_QUERY_BYTES + 1), &[101])
+            .is_err()
+    );
+    let too_many: Vec<u64> = (0..=MAX_CANDIDATE_KEYS as u64).collect();
+    assert!(stores.search_candidates("fox", &too_many).is_err());
+    // Boundary: exactly MAX_CANDIDATE_KEYS ascending keys are admitted; corpus keys
+    // inside the range still score (parity with the restricted oracle).
+    let at_cap: Vec<u64> = (0..MAX_CANDIDATE_KEYS as u64).collect();
+    let got = stores.search_candidates("fox", &at_cap).expect("cap ok");
+    assert_eq!(got, brute_force_candidates(&stores, "fox", &at_cap));
+}
