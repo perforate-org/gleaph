@@ -154,3 +154,38 @@ byte-identical rows collapse. A DISTINCT tail bypasses the `k + n` ranking windo
 (a pre-dedup window is never exact) and takes `window − skip` after dedup
 (`barrier_row_window`); threshold + DISTINCT opens together with no mode special
 case, while threshold + skip stays rejected. Exact with `truncated=false`.
+
+## Addendum: candidate-scoped same-variable dual-score (implemented, E2E happy path deferred)
+
+Slice 1 of multi-placement covers `RETURN ..., text_score(d.a,$q) AS s1,
+text_score(d.b,$q) AS s2 ORDER BY s1 DESC LIMIT k`: one triple feeds the ranking,
+a second bare call on the same variable and query rides along as a projected
+column. Same-variable needs no second id column — the second score joins on the
+same document key — so there is no row-type or wire change; the
+`SecondBarrierScore` carrier documents the second-key slot as the reserved
+extension point for a future two-variable form (left unimplemented). The planner
+needs no change (it already lowers the s1 triple; the bare s2 call never lowers).
+The Router shape gate accepts the scanned call plus at most one same-variable
+distinct-property bare call (`resolve_residual_call`, bare-form only) and rejects
+wrapped calls, duplicate scanned calls, second variables, third calls, non-TopK
+modes, and DISTINCT tails. Execution resolves the second triple's
+`(label, property)` index BEFORE any TEXT I/O — an uncovered second property
+fails closed with function-unknown (`no ready TEXT index covers text_score`),
+never a partial single-score frame — then runs the same barrier twice over the
+same candidate key set (`TEXT(a)` → join → `TEXT(b)` → join → rank by `s1` →
+project): no prefix re-run, no TEXT or wire change, per-call 256/32KiB caps
+independent, rows missing either score dropped symmetrically, duplicate or
+unrequested second keys rejected. Compound (`s1+s2` ordering), threshold-mixed,
+different-variable, DISTINCT-mixed, second-key, and multi-shard duals stay
+rejected with docs. Router unit tests cover the shape accepts/rejects; the live
+E2E covers the unready fail-closed contract. The happy-path E2E initially needed
+`#[ignore]` because TWO `CREATE TEXT INDEX` migrations on one graph could not
+chain: the text backfill path converged without ever persisting terminal `Applied`
+to the schema-migration ledger (`advance_text_backfill_migration` returned `Applied`
+without a ledger write, and the crash-window short-circuit resumed `Applied` the
+same way), so `pending_migration_exists()` stayed true forever. The same slice
+lands the symmetric minimal fix in the text resume path — on re-drive, a terminal
+(`Applied`/`Failed`) result's record is written back to `ROUTER_SCHEMA_MIGRATIONS`
+(mirroring the generic index path's `finish_applied`/`finish_failed_migration`),
+while non-terminal `Progress` leaves the ledger untouched — and the ignore is
+removed with the happy path green. The 2-variable extension remains future work.

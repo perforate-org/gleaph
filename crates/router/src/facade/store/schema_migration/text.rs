@@ -128,7 +128,29 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
                 },
             )),
             SchemaMigrationRecordState::PendingIndex { .. } => {
-                advance_text_backfill_migration(existing.0, driver).await
+                let result = advance_text_backfill_migration(existing.0, driver).await?;
+                // Terminal write-back (symmetric with the generic index path's
+                // finish_applied/finish_failed_migration): the advance builds the
+                // terminal record but only this resume path owns the ledger write, so
+                // a converged backfill leaves no PendingIndex row behind to block
+                // chained migrations. Progress intentionally leaves the ledger
+                // untouched; a crash between the readiness flip and this write
+                // resumes exactly here (Ready-without-record short-circuits to
+                // Applied again, idempotently).
+                if let ApplySchemaMigrationResult::V1(inner) = &result
+                    && matches!(
+                        inner.status,
+                        SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Failed(_)
+                    )
+                {
+                    ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
+                        ledger.insert(
+                            args.id.clone(),
+                            StableSchemaMigrationRecord(inner.record.clone()),
+                        );
+                    });
+                }
+                Ok(result)
             }
         };
     }

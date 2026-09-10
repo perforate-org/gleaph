@@ -1074,7 +1074,17 @@ Contract:
   bypasses the `k + n` ranking window and takes `window − skip` after dedup, still
   exact with `truncated=false`. The dedup key is the whole projected row (a shared
   title with different scores keeps both rows; only byte-identical rows collapse),
-  so no cap changes: rows only shrink. Multi-shard,
+  so no cap changes: rows only shrink. The barrier also accepts a **same-variable
+  dual-score** tail — `RETURN ..., text_score(d.a,$q) AS s1, text_score(d.b,$q) AS s2
+  ORDER BY s1 DESC LIMIT k` — where one triple feeds the ranking and a second bare
+  call on the same variable and query contributes the extra column. The Router
+  resolves the second triple's index before any TEXT I/O (an uncovered second
+  property fails closed with function-unknown, never a partial single-score frame),
+  then runs the barrier twice over the same candidate keys (`TEXT(a)` → join →
+  `TEXT(b)` → join → rank by `s1` → project both): no prefix re-run, no TEXT or wire
+  change, per-call caps independent, and rows missing either score drop symmetrically.
+  Compound (`s1+s2` ordering), threshold-mixed, different-variable, DISTINCT-mixed,
+  second-key, and multi-shard duals stay rejected and fail closed. Multi-shard,
   ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
   `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
   returns the *least* relevant candidates, and no demand for that shape exists today.

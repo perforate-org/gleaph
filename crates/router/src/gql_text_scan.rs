@@ -230,6 +230,19 @@ enum CandidateBarrierMode {
     Compound { cmp: CmpOp, bound: f64, limit: u32 },
 }
 
+/// Second residual score on the same variable with a different property (slice 1:
+/// same-document dual scoring). Both scores share the barrier identity column, so
+/// no second key column exists; a future two-variable form would carry its own
+/// identity alias here.
+struct SecondBarrierScore {
+    /// Second scored property name (resolved to an id by the caller).
+    property: String,
+    /// Second scored query (literal or `$param`, resolved per call).
+    query: ScanValue,
+    /// Trailing-`Project` column index holding the second residual call.
+    score_col_idx: usize,
+}
+
 struct CandidateBarrierShape {
     /// Index of the barrier `TextScan` in `plan.ops` (always > 0).
     scan_idx: usize,
@@ -252,6 +265,8 @@ struct CandidateBarrierShape {
     /// Trailing-`Project` column index holding the residual score call, when the
     /// `RETURN` projects one. A threshold-only `RETURN` carries no score column.
     score_col_idx: Option<usize>,
+    /// Optional second residual score (same variable, distinct property).
+    second: Option<SecondBarrierScore>,
     /// Count of retained user columns (excludes the score column).
     user_col_count: usize,
 }
@@ -362,20 +377,48 @@ fn analyze_candidate_barrier_shape(
         ));
     }
     let mut score_col_idx = None;
+    let mut second: Option<SecondBarrierScore> = None;
     for (idx, col) in columns.iter().enumerate() {
         if !expr_mentions_text_score(&col.expr) {
             continue;
         }
-        if score_col_idx.is_some()
-            || !residual_call_matches_scan(&col.expr, variable, property, query)
-        {
+        if residual_call_matches_scan(&col.expr, variable, property, query) {
+            if score_col_idx.is_some() {
+                return Err(unsupported(
+                    "the trailing Project carries the scanned call at most once",
+                ));
+            }
+            score_col_idx = Some(idx);
+            continue;
+        }
+        // Slice 1: a second bare call on the same variable with a distinct
+        // property. Anything else — a wrapped call, a second variable, a third
+        // call — fails closed.
+        let Some((var2, prop2, query2)) = resolve_residual_call(&col.expr) else {
             return Err(unsupported(
-                "the trailing Project carries at most one residual call on the scanned (variable, property, query)",
+                "the trailing Project carries at most the scanned call plus one bare same-variable call",
+            ));
+        };
+        if var2 != variable.to_string() || prop2 == property.to_string() || second.is_some() {
+            return Err(unsupported(
+                "the second residual call must score a distinct property of the scanned variable, at most once",
             ));
         }
-        score_col_idx = Some(idx);
+        // The second join is TopK-only in this slice: threshold and compound
+        // barriers plus DISTINCT tails stay single-score and fail closed.
+        if !matches!(mode, CandidateBarrierMode::TopK { .. }) || distinct {
+            return Err(unsupported(
+                "a second text_score call is supported in the top-k form only, without DISTINCT",
+            ));
+        }
+        second = Some(SecondBarrierScore {
+            property: prop2,
+            query: query2,
+            score_col_idx: idx,
+        });
     }
-    let user_col_count = columns.len() - usize::from(score_col_idx.is_some());
+    let score_cols = usize::from(score_col_idx.is_some()) + usize::from(second.is_some());
+    let user_col_count = columns.len() - score_cols;
     if user_col_count > MAX_CANDIDATE_USER_COLUMNS {
         return Err(unsupported("at most 16 retained user columns"));
     }
@@ -389,6 +432,7 @@ fn analyze_candidate_barrier_shape(
         skip,
         distinct,
         score_col_idx,
+        second,
         user_col_count,
     })
 }
@@ -396,6 +440,40 @@ fn analyze_candidate_barrier_shape(
 /// The residual call must be the entire projected expression over the scanned
 /// (variable, property) with a query matching the scan (literal-for-literal,
 /// parameter-for-parameter).
+/// Resolve a bare `text_score(v.prop, Q)` column expression into its triple.
+/// Returns `None` for wrapped or malformed calls (rejected by the shape gate).
+/// Pure: unit-tested without I/O.
+fn resolve_residual_call(expr: &Expr) -> Option<(String, String, ScanValue)> {
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if *distinct || name.parts.len() != 1 || !name.parts[0].eq_ignore_ascii_case("text_score") {
+        return None;
+    }
+    let [target, query_arg] = args.as_slice() else {
+        return None;
+    };
+    let ExprKind::PropertyAccess { expr, property } = &target.kind else {
+        return None;
+    };
+    let ExprKind::Variable(variable) = &expr.kind else {
+        return None;
+    };
+    let query = match &query_arg.kind {
+        ExprKind::Literal(gleaph_gql::Value::Text(text)) => {
+            ScanValue::Literal(gleaph_gql::Value::Text(text.clone()))
+        }
+        ExprKind::Parameter(name) => ScanValue::Parameter(name.as_str().into()),
+        _ => return None,
+    };
+    Some((variable.clone(), property.clone(), query))
+}
+
 fn residual_call_matches_scan(
     expr: &Expr,
     variable: &str,
@@ -527,6 +605,23 @@ async fn try_execute_candidate_text_scan(
     let target = def
         .target
         .expect("planning-visible text definitions always carry a target");
+    // Slice 1 second triple: same label, distinct property. Unready resolves
+    // fail-closed before any I/O, exactly like the primary triple.
+    let second_target = if let Some(second) = &barrier.second {
+        let second_property_id = store
+            .lookup_property_id(graph_id, &second.property)
+            .map_err(|e| {
+                RouterError::NotFound(format!("candidate text property {}: {e}", second.property))
+            })?;
+        let second_def = resolve_text_index(graph_id, label_id, second_property_id)?;
+        Some(
+            second_def
+                .target
+                .expect("planning-visible text definitions always carry a target"),
+        )
+    } else {
+        None
+    };
     // One text canister serves exactly its home shard's doc-key space.
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
     let [shard] = shards.as_slice() else {
@@ -554,7 +649,12 @@ async fn try_execute_candidate_text_scan(
     });
     let mut user_positions: Vec<usize> = Vec::with_capacity(barrier.user_col_count);
     for (idx, col) in columns.iter().enumerate() {
-        if Some(idx) == barrier.score_col_idx {
+        if Some(idx) == barrier.score_col_idx
+            || barrier
+                .second
+                .as_ref()
+                .is_some_and(|second| idx == second.score_col_idx)
+        {
             continue;
         }
         user_positions.push(idx);
@@ -732,6 +832,45 @@ async fn try_execute_candidate_text_scan(
         }
     }
 
+    // Slice 1 second round trip: same candidate keys against the second triple's
+    // index. Calls are sequential; the join below is symmetric (a row survives
+    // only with both scores), so ranking afterwards stays exact.
+    let mut second_scores: BTreeMap<u64, u32> = BTreeMap::new();
+    if let (Some(second), Some(second_target)) = (&barrier.second, second_target) {
+        let second_query = resolve_scan_query(&second.query, &params)?;
+        let second_args = Encode!(&(&second_query, &keys)).map_err(|e| {
+            RouterError::Internal(format!("candidate second text call encode failed: {e}"))
+        })?;
+        if second_args.len() > MAX_CANDIDATE_CALL_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "candidate second text call of {} bytes exceeds the 32KiB admission cap",
+                second_args.len()
+            )));
+        }
+        let second_hits =
+            text_canister_search_candidates(second_target, second_query, keys.clone())
+                .await
+                .map_err(RouterError::Internal)?;
+        let mut second_seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for hit in second_hits {
+            if !second_seen.insert(hit.key) {
+                return Err(RouterError::InvalidArgument(format!(
+                    "duplicate candidate second text hit for document key {}",
+                    hit.key
+                )));
+            }
+            if keys.binary_search(&hit.key).is_err() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "candidate second text hit for unrequested document key {}",
+                    hit.key
+                )));
+            }
+            second_scores.insert(hit.key, hit.score);
+        }
+        // Symmetric scoreless drop: rows missing either score leave before rank.
+        prefix_rows.retain(|row| second_scores.contains_key(&row.key));
+    }
+
     let (row_cap, take) = barrier_row_window(&barrier.mode, barrier.distinct, barrier.skip);
     // The skip applies AFTER ranking on the fully ordered rows (never before):
     // the barrier scan already carries the inflated `k + skip` window, and scoring
@@ -760,6 +899,18 @@ async fn try_execute_candidate_text_scan(
                 out_cols.push((
                     out_col.name.to_string(),
                     gleaph_gql_ic::GqlWireValue::Float64(f64::from(score)),
+                ));
+            } else if barrier
+                .second
+                .as_ref()
+                .is_some_and(|second| idx == second.score_col_idx)
+            {
+                let second_score = second_scores.get(&row.key).ok_or_else(|| {
+                    RouterError::Internal("candidate second score missing after join".into())
+                })?;
+                out_cols.push((
+                    out_col.name.to_string(),
+                    gleaph_gql_ic::GqlWireValue::Float64(f64::from(*second_score)),
                 ));
             } else {
                 let value = user_iter.next().ok_or_else(|| {
@@ -2485,6 +2636,164 @@ mod candidate_barrier_tests {
         ];
         dedup_wire_rows(&mut nulls);
         assert_eq!(nulls.len(), 1);
+    }
+
+    fn score_call_on(property: &str) -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName::simple("text_score"),
+            args: vec![
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                    property: property.into(),
+                }),
+                Expr::new(ExprKind::Literal(gleaph_gql::Value::Text("hello".into()))),
+            ],
+            distinct: false,
+        })
+    }
+
+    fn tail_project_dual() -> PlanOp {
+        PlanOp::Project {
+            columns: vec![
+                ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                        property: "title".into(),
+                    }),
+                    alias: None,
+                },
+                ProjectColumn {
+                    expr: score_call_expr(),
+                    alias: Some("s1".into()),
+                },
+                ProjectColumn {
+                    expr: score_call_on("blurb"),
+                    alias: Some("s2".into()),
+                },
+            ],
+            distinct: false,
+        }
+    }
+
+    #[test]
+    fn barrier_shape_accepts_second_same_variable_call() {
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(20), tail_project_dual()]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.score_col_idx, Some(1));
+        let second = shape.second.expect("second score recorded");
+        assert_eq!(second.property, "blurb");
+        assert_eq!(second.score_col_idx, 2);
+        // The second join composes with a parked skip.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project_dual(),
+            skip_limit_op(5),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.second.is_some());
+        assert_eq!(shape.skip, 5);
+    }
+
+    #[test]
+    fn barrier_shape_rejects_second_call_violations() {
+        // The scanned call twice is not a dual score.
+        let PlanOp::Project { columns, .. } = tail_project() else {
+            panic!("tail");
+        };
+        let mut dup = columns.clone();
+        dup.push(ProjectColumn {
+            expr: score_call_expr(),
+            alias: Some("s1b".into()),
+        });
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns: dup,
+                distinct: false,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        let _ = plan;
+        // A second variable stays out of slice 1.
+        let other_var = Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName::simple("text_score"),
+            args: vec![
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("s".into()))),
+                    property: "text".into(),
+                }),
+                Expr::new(ExprKind::Literal(gleaph_gql::Value::Text("hello".into()))),
+            ],
+            distinct: false,
+        });
+        let PlanOp::Project { columns, .. } = tail_project() else {
+            panic!("tail");
+        };
+        let mut mixed = columns.clone();
+        mixed.push(ProjectColumn {
+            expr: other_var,
+            alias: Some("s2".into()),
+        });
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns: mixed,
+                distinct: false,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // Threshold and compound barriers stay single-score.
+        for scan in [barrier_scan_threshold(), {
+            let mut scan = barrier_scan_threshold();
+            let PlanOp::TextScan { mode, .. } = &mut scan else {
+                panic!("scan");
+            };
+            *mode = TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            };
+            scan
+        }] {
+            let plan = test_plan(vec![node_scan_d(), scan, tail_project_dual()]);
+            assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        }
+        // DISTINCT plus a second call stays out of both slices.
+        let PlanOp::Project { columns, .. } = tail_project_dual() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(20),
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn resolve_residual_call_accepts_bare_calls_only() {
+        let (var, prop, query) =
+            resolve_residual_call(&score_call_on("blurb")).expect("bare call resolves");
+        assert_eq!(var, "d");
+        assert_eq!(prop, "blurb");
+        assert!(matches!(
+            query,
+            ScanValue::Literal(gleaph_gql::Value::Text(_))
+        ));
+        // A wrapped call (score arithmetic) is not a joinable residual.
+        let wrapped = Expr::new(ExprKind::BinaryOp {
+            op: gleaph_gql::ast::BinaryOp::Add,
+            left: Box::new(score_call_expr()),
+            right: Box::new(score_call_on("blurb")),
+        });
+        assert!(resolve_residual_call(&wrapped).is_none());
+        assert!(resolve_residual_call(&Expr::new(ExprKind::Variable("d".into()))).is_none());
     }
 
     #[test]

@@ -2822,3 +2822,256 @@ fn non_leading_text_candidate_compound_lifecycle() {
     ));
     assert_eq!(replay, expected, "compound frame is deterministic");
 }
+
+// ──── Candidate-scoped dual-score (same variable, two properties) ────
+
+const CANDIDATE_DUAL_BLURB_PROPERTY: &str = "blurb";
+const CANDIDATE_DUAL_INDEX_NAME: &str = "text_score_query_blurb_idx";
+const CANDIDATE_DUAL_MIGRATION_ID: &str = "000104_text_score_query_blurb";
+/// Document rank whose blurb carries no query term: its rows must drop.
+const CANDIDATE_DUAL_DROP_RANK: i64 = 7;
+
+/// Blurb bodies cycle wombat counts out of phase with the bio bodies, so the
+/// blurb ranking differs from the bio ranking (an s2-ordered execution cannot
+/// pass as s1-ordered). The drop rank carries no query term at all.
+fn dual_blurb_text(i: i64) -> String {
+    if i == CANDIDATE_DUAL_DROP_RANK {
+        "quiet harbor notes".to_string()
+    } else {
+        format!(
+            "wombat BLURB{i} {}",
+            "wombat ".repeat((i * 5 + 3) as usize % 7 + 1)
+        )
+    }
+}
+
+const CANDIDATE_DUAL_BIO_FRAME_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 42";
+const CANDIDATE_DUAL_BLURB_FRAME_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.blurb,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.blurb,$q) AS score";
+const CANDIDATE_DUAL_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS s1, text_score(d.blurb,$q) AS s2 ORDER BY s1 DESC LIMIT 42";
+
+fn dual_query_params(user_id: i64, query: &str) -> Vec<u8> {
+    encode_gql_params_blob(vec![
+        ("user_id".to_string(), Value::Int64(user_id)),
+        ("q".to_string(), Value::Text(query.to_string())),
+    ])
+    .expect("encode params")
+}
+
+/// Reads `(rank, s1, s2)` rows in order from a dual-score result.
+fn dual_scored_rows(result: &GqlQueryResult) -> Vec<(i64, f64, f64)> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let rank = match columns.get("rank").expect("rank column present") {
+                GqlWireValue::Int64(rank) => *rank,
+                other => panic!("rank must be Int64, got {other:?}"),
+            };
+            let score = |name: &str| match columns
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} column present"))
+            {
+                GqlWireValue::Float64(score) => *score,
+                other => panic!("{name} must be Float64, got {other:?}"),
+            };
+            (rank, score("s1"), score("s2"))
+        })
+        .collect()
+}
+
+/// Composes the shared candidate fixture with a second indexed text property
+/// (`blurb`) on the same documents. Other candidate tests keep the unextended
+/// seed; only the dual-score lifecycle pays for the extra migration.
+fn seed_dual_score_fixture() -> CandidateFixture {
+    let fixture = seed_candidate_fixture();
+    let env = &fixture.env;
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_DUAL_BLURB_PROPERTY);
+    for i in 0..21 {
+        let statement = format!(
+            "MATCH (d:Document) WHERE d.rank = {i} SET d.blurb = '{}'",
+            dual_blurb_text(i)
+        );
+        gleaph_pocket_ic_tests::gql_mutate_as_admin(
+            &env.fed,
+            &statement,
+            &format!("seed-blurb-{i}"),
+        );
+    }
+    let statement = format!(
+        "CREATE TEXT INDEX {CANDIDATE_DUAL_INDEX_NAME} FOR (v:{LABEL}) ON (v.{CANDIDATE_DUAL_BLURB_PROPERTY}) ANALYZER unicode_bigram"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "text-ddl-blurb");
+    let canister = get_text_index_named(env, CANDIDATE_DUAL_INDEX_NAME)
+        .canister
+        .expect("provisioned blurb canister attached");
+    env.fed.pic.add_cycles(canister, 20_000_000_000_000);
+    // Settle the bio migration head to a terminal replay before chaining. The
+    // shared seed stops driving once the index reads Ready, and the blurb SETs
+    // plus the second DDL re-arm the bio backfill build — so the settle runs
+    // here, after all writes, immediately before the chained prepare.
+    let bio_statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    let bio_args = migration_args(MIGRATION_ID, &bio_statement);
+    let mut settled = false;
+    for _ in 0..128 {
+        match try_apply_once(env, &bio_args) {
+            Ok(result)
+                if matches!(
+                    result.status,
+                    SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Replay
+                ) =>
+            {
+                settled = true;
+                break;
+            }
+            Ok(result) => assert!(
+                matches!(result.status, SchemaMigrationApplyStatus::Progress(_)),
+                "unexpected bio settle status: {:?}",
+                result.status
+            ),
+            Err(err) => panic!("bio settle rejected: {err:?}"),
+        }
+    }
+    assert!(settled, "bio migration head did not settle to Replay");
+
+    // The ledger already roots at the bio migration: the blurb migration chains
+    // under it (checksum binds the same parent).
+    let blurb_selector = SchemaMigrationGraphSelector::Default;
+    let args = ApplySchemaMigrationArgs::V1(ApplySchemaMigrationArgsV1 {
+        id: CANDIDATE_DUAL_MIGRATION_ID.to_owned(),
+        parent: Some(MIGRATION_ID.to_owned()),
+        graph_selector: blurb_selector.clone(),
+        checksum: gleaph_migration_api::schema_migration_checksum(
+            CANDIDATE_DUAL_MIGRATION_ID,
+            Some(MIGRATION_ID),
+            &blurb_selector,
+            statement.as_bytes(),
+        ),
+        statement: statement.clone(),
+    });
+    drive_to_ready_for(env, &args, CANDIDATE_DUAL_INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(env, CANDIDATE_DUAL_INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(env, CANDIDATE_DUAL_INDEX_NAME);
+    fixture
+}
+
+#[test]
+fn non_leading_text_candidate_dual_score_lifecycle() {
+    let fixture = seed_dual_score_fixture();
+    let env = fixture.env;
+
+    // Calibration frames, both self-calibrating with no hand-computed scores:
+    // the bio top-k (ORDER BY s1 source) and the blurb threshold (s2 source).
+    let bio = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_BIO_FRAME_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let bio_frame = threshold_scored_rows(&bio);
+    assert_eq!(bio_frame.len(), 42, "bio frame holds every candidate row");
+    let blurb = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_BLURB_FRAME_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    );
+    let blurb_frame = threshold_scored_rows(&blurb);
+    assert_eq!(
+        blurb_frame.len(),
+        40,
+        "the drop document has no blurb postings (21 docs minus one, times two users)"
+    );
+    let blurb_by_rank: BTreeMap<i64, f64> = blurb_frame.into_iter().collect();
+    // Premise: on the surviving set the blurb ranking differs from the bio
+    // ranking, so an s2-ordered execution cannot pass as s1-ordered.
+    let bio_order: Vec<i64> = bio_frame
+        .iter()
+        .map(|(rank, _)| *rank)
+        .filter(|rank| *rank != CANDIDATE_DUAL_DROP_RANK)
+        .collect();
+    let mut blurb_ranked: Vec<(f64, i64)> = blurb_by_rank
+        .iter()
+        .map(|(rank, score)| (*score, *rank))
+        .collect();
+    blurb_ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let blurb_order: Vec<i64> = blurb_ranked.into_iter().map(|(_, rank)| rank).collect();
+    assert_ne!(
+        bio_order, blurb_order,
+        "blurb ranking must differ from bio ranking for the order-confusion kill"
+    );
+
+    // Dual score: rank by s1, project both, drop the scoreless blurb rows.
+    let dual = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        dual.row_count, 40,
+        "rows missing either score drop symmetrically"
+    );
+    assert_eq!(
+        dual.truncated,
+        Some(false),
+        "exact dual join never truncates"
+    );
+    let expected: Vec<(i64, f64, f64)> = bio_frame
+        .iter()
+        .filter(|(rank, _)| *rank != CANDIDATE_DUAL_DROP_RANK)
+        .map(|(rank, s1)| (*rank, *s1, blurb_by_rank[rank]))
+        .collect();
+    assert_eq!(
+        dual_scored_rows(&dual),
+        expected,
+        "s1 order with per-row s2: a second-join-ignoring execution cannot match"
+    );
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        dual_scored_rows(&replay),
+        expected,
+        "dual-score replay is deterministic"
+    );
+}
+
+/// Live dual-score contract: the second triple resolves BEFORE any TEXT I/O, so
+/// a dual query whose second property has no Ready index fails closed with the
+/// function-unknown NotFound — never a partial single-score frame, never a hang.
+#[test]
+fn non_leading_text_candidate_dual_score_unready_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+    // The property exists (planner-plausible triple) but no TEXT definition
+    // covers it: resolution fails closed before the first candidate call.
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, CANDIDATE_DUAL_BLURB_PROPERTY);
+    let err = raw_gql_query(
+        &env,
+        CANDIDATE_DUAL_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    )
+    .expect_err("dual score without a second Ready index must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("no ready TEXT index covers text_score"),
+        "unexpected unready second-index error: {message}"
+    );
+}
