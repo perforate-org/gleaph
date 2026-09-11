@@ -391,3 +391,22 @@ Elasticsearch per-bucket average score) points at the grouped form, which
 would need a separate score-by-group-key slice — not the cheap global
 window fold. Current shape fails closed safely (no barrier, residual
 rejected). If demand appears, design from the grouped form.
+
+## Addendum: leading bottom-k (deferred 2026-09-11)
+
+Leading `ORDER BY` score `ASC` (weakest matches over the whole index)
+stays deferred: the only sound driver is full match evaluation with a
+k-bounded max-heap (`O(M log k)`, exact, zero persisted bytes — lower-bound
+statistics and upper-bound inversion were both ruled out, matching industry
+practice). Independent demand is thin (calibration only; the missing-data
+sweep is candidate/nested-specific). A leading-shape ASC currently lowers
+through the candidate barrier — exact or fail-closed via the admission cap
+— so the TEXT `search_bottom` driver remains a scale optimization gated on
+canbench evidence, never a correctness gap.
+
+## Addendum: multi-shard text fan-out (deferred 2026-09-11)
+
+Cross-shard TEXT fan-out (shard targeting, cross-shard merge of order /
+dedup / truncated, partial-failure fail-closed) stays deferred behind the
+per-shard cursor-stream fan-out prerequisite — see
+GAP-2026-08-25-003. Single-shard execution is unaffected.
