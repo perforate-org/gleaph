@@ -8289,9 +8289,11 @@ fn candidate_text_threshold_lowers_over_optional_match_prefix() {
         // Two conjuncts in the optional WHERE: the subplan filter is not a
         // single-predicate threshold, so no hoist.
         "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 AND d.title = 'x' RETURN d.title",
-        // Compound over an optional prefix: the follow-up owns the
-        // drop-then-truncate order, so this slice lowers nothing.
-        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title ORDER BY text_score(d.body,'hello') DESC LIMIT 10",
+        // Compound over an optional prefix lowers through the compound hoist
+        // (covered by `candidate_text_compound_lowers_over_optional_match_prefix`),
+        // but a fused OFFSET stays unlowered: skip + compound + optional is
+        // rejected.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title ORDER BY text_score(d.body,'hello') DESC LIMIT 10 OFFSET 3",
     ] {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
@@ -8303,6 +8305,71 @@ fn candidate_text_threshold_lowers_over_optional_match_prefix() {
             plan.ops
         );
     }
+}
+
+#[test]
+fn candidate_text_compound_lowers_over_optional_match_prefix() {
+    // The compound hoist fuses the subplan-trailing threshold filter with the
+    // top-level TopK into ONE ThresholdTopK barrier after optional padding.
+    // A misimplementation that drops before fusing (threshold-only hoist)
+    // leaves the TopK unlowered; one that truncates before dropping returns
+    // the null-keep shape and fails the Router gate.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 10",
+        &text_coverage_stats(),
+    );
+    let scans: Vec<_> = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::TextScan { .. }))
+        .collect();
+    assert_eq!(
+        scans.len(),
+        1,
+        "exactly one fused barrier, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            scans[0],
+            PlanOp::TextScan {
+                mode: TextScanMode::ThresholdTopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                    ..
+                },
+                ..
+            }
+        ),
+        "expected a compound barrier with the exact limit, got: {:?}",
+        plan.ops
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier");
+    assert!(
+        plan.ops[..scan_idx]
+            .iter()
+            .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+        "barrier must sit after the optional prefix, got: {:?}",
+        plan.ops
+    );
+    // The hoisted filter is consumed: no text_score predicate may survive in
+    // any subplan (a leftover would fail closed at the Router).
+    assert!(
+        !plan.ops.iter().any(|op| match op {
+            PlanOp::OptionalMatch { sub_plan } => sub_plan.iter().any(|sub| match sub {
+                PlanOp::PropertyFilter { predicates, .. } => predicates
+                    .iter()
+                    .any(|p| format!("{p:?}").contains("text_score")),
+                _ => false,
+            }),
+            _ => false,
+        }),
+        "hoisted filter must be consumed, got: {:?}",
+        plan.ops
+    );
 }
 
 #[test]

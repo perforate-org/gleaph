@@ -456,11 +456,16 @@ fn analyze_candidate_barrier_shape(
         });
     }
     let score_cols = usize::from(score_col_idx.is_some()) + usize::from(second.is_some());
-    // Nested-keep slice: an OPTIONAL MATCH prefix is TopK-only and single-score.
+    // Optional-prefix contracts, opened slice by slice from a TopK-only and
+    // single-score start (nested-keep).
     // The threshold-nested slice opens the Threshold mode with a null-drop
     // contract (SQL three-valued logic: `NULL > t` is UNKNOWN, so WHERE keeps
-    // only TRUE rows); compound modes and second calls still need their own
-    // null-row contracts and stay rejected here. DISTINCT rides the
+    // only TRUE rows). The compound-nested slice opens the Compound mode with
+    // the same drop, then the mode-agnostic row window truncates the
+    // scored-only set (`barrier_row_window` parks no skip for compound +
+    // optional: OFFSET over a null-padded set has no stable meaning, and
+    // DISTINCT over a truncated-then-deduped set would hide survivors, so
+    // compound + optional admits neither). DISTINCT rides the
     // mode-agnostic rank → dedup → skip → take stage: the whole-row key is
     // null-safe (Null == Null, SQL DISTINCT semantics), so identical miss rows
     // collapse to one while scored rows keep their score-separated identity.
@@ -470,15 +475,26 @@ fn analyze_candidate_barrier_shape(
     {
         if !matches!(
             mode,
-            CandidateBarrierMode::TopK { .. } | CandidateBarrierMode::Threshold { .. }
+            CandidateBarrierMode::TopK { .. }
+                | CandidateBarrierMode::Threshold { .. }
+                | CandidateBarrierMode::Compound { .. }
         ) {
             return Err(unsupported(
-                "an OPTIONAL MATCH prefix is supported in the top-k and threshold forms only",
+                "an OPTIONAL MATCH prefix is supported in the top-k, threshold, and compound forms only",
             ));
         }
         if second.is_some() {
             return Err(unsupported(
                 "a second text_score call is unsupported with an OPTIONAL MATCH prefix",
+            ));
+        }
+        // Compound + optional is exact-only: skip and DISTINCT would each
+        // break the drop → truncate order (skip shifts the truncated set,
+        // DISTINCT bypasses the row cap), so both stay rejected here while
+        // the planner hoist already refuses the OFFSET shape.
+        if matches!(mode, CandidateBarrierMode::Compound { .. }) && (distinct || skip != 0) {
+            return Err(unsupported(
+                "a compound barrier over an OPTIONAL MATCH prefix supports neither DISTINCT nor OFFSET",
             ));
         }
     }
@@ -2429,6 +2445,21 @@ mod candidate_barrier_tests {
         }
     }
 
+    fn barrier_scan_compound() -> PlanOp {
+        PlanOp::TextScan {
+            variable: "d".into(),
+            label: NodeLabelRef::from("Document"),
+            property: "body".into(),
+            query: ScanValue::Literal(gleaph_gql::Value::Text("hello".into())),
+            mode: TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            },
+            property_projection: None,
+        }
+    }
+
     fn tail_project_no_score() -> PlanOp {
         PlanOp::Project {
             columns: vec![ProjectColumn {
@@ -3154,7 +3185,7 @@ mod candidate_barrier_tests {
     }
 
     #[test]
-    fn barrier_shape_accepts_optional_match_threshold() {
+    fn barrier_shape_accepts_optional_match_threshold_and_compound() {
         let optional = || PlanOp::OptionalMatch { sub_plan: vec![] };
         // Threshold + OPTIONAL MATCH opens with the null-drop contract: the
         // WHERE keeps only TRUE rows, so misses leave before rank.
@@ -3182,8 +3213,9 @@ mod candidate_barrier_tests {
         let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
         assert!(shape.distinct);
         assert!(matches!(shape.mode, CandidateBarrierMode::Threshold { .. }));
-        // Compound + OPTIONAL MATCH stays rejected: the immediate follow-up
-        // owns the drop → truncate order definition.
+        // Compound + OPTIONAL MATCH opens exact-only with the same drop:
+        // misses leave before rank, then the row window truncates the
+        // scored-only set.
         let mut scan = barrier_scan(20);
         let PlanOp::TextScan { mode, .. } = &mut scan else {
             panic!("scan");
@@ -3198,6 +3230,32 @@ mod candidate_barrier_tests {
             optional(),
             scan,
             tail_project_no_score(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::Compound { limit: 10, .. }
+        ));
+        assert_eq!(shape.skip, 0);
+        assert!(!shape.distinct);
+        // Compound + DISTINCT + optional stays rejected: dedup bypasses the
+        // row cap, so a truncated-then-deduped set could hide survivors.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_compound(),
+            tail_project_distinct(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // Compound + skip + optional stays rejected: OFFSET over a
+        // null-padded set has no stable meaning (the planner hoist already
+        // refuses the shape; this is the Router-side backstop).
+        let plan = test_plan(vec![
+            node_scan_d(),
+            optional(),
+            barrier_scan_compound(),
+            tail_project_no_score(),
+            skip_limit_op(3),
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
         // A second call + threshold + OPTIONAL MATCH stays rejected.
@@ -3231,7 +3289,9 @@ mod candidate_barrier_tests {
         let optional = || PlanOp::OptionalMatch { sub_plan: vec![] };
         // Threshold mode opens with the null-drop contract (covered as an
         // accept in `barrier_shape_accepts_optional_match_threshold`).
-        // Compound mode shares the TopK/threshold-only gate: fail closed with DISTINCT too.
+        // Compound mode opens with the exact-only contract (covered as an
+        // accept in `barrier_shape_accepts_optional_match_threshold_and_compound`);
+        // compound + DISTINCT + optional stays rejected.
         let mut scan = barrier_scan(20);
         let PlanOp::TextScan { mode, .. } = &mut scan else {
             panic!("scan");

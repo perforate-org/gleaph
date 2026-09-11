@@ -3784,3 +3784,120 @@ fn non_leading_text_candidate_nested_threshold_lifecycle() {
         "threshold drop replays deterministically"
     );
 }
+
+const CANDIDATE_NESTED_COMPOUND_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5";
+const CANDIDATE_NESTED_COMPOUND_WIDE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 45";
+const CANDIDATE_NESTED_COMPOUND_OFFSET_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5 OFFSET 3";
+const CANDIDATE_NESTED_COMPOUND_DISTINCT_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN DISTINCT d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5";
+
+/// Compound over an OPTIONAL MATCH prefix: the barrier drops the two miss
+/// rows first, then truncates the scored-only set. The suite reuses the
+/// nested doc-less-project fixture (42 scored rows + 2 misses) and the
+/// non-nested threshold frame as calibration.
+#[test]
+fn non_leading_text_candidate_nested_compound_lifecycle() {
+    let fixture = seed_nested_score_fixture();
+    let env = fixture.env;
+
+    // Calibration: the non-nested threshold frame for the same query text.
+    let frame = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    ));
+    assert_eq!(frame.len(), 42, "full candidate frame");
+    let mut distinct: Vec<f64> = frame.iter().map(|(_, score)| *score).collect();
+    distinct.sort_by(|a, b| a.total_cmp(b));
+    distinct.dedup();
+    let bound = distinct[(distinct.len() - 1) / 2];
+
+    // Drop → truncate: LIMIT 5 over the dropped set returns 5 scored rows
+    // identical (membership and order) to the non-nested compound frame.
+    // Returning rows at all proves the hoist fired (else the residual
+    // text_score fails closed); frame equality pins the fused triple and
+    // the drop-before-truncate membership.
+    let compound = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_COMPOUND_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(compound.row_count, 5, "truncate keeps 5 scored rows");
+    assert_eq!(
+        compound.truncated,
+        Some(false),
+        "exact compound never truncates"
+    );
+    let expected: Vec<(i64, f64)> = frame
+        .iter()
+        .filter(|(_, score)| *score > bound)
+        .take(5)
+        .copied()
+        .collect();
+    assert_eq!(expected.len(), 5, "calibration must clear the row limit");
+    assert_eq!(
+        threshold_scored_rows(&compound),
+        expected,
+        "nested compound matches the non-nested frame"
+    );
+
+    // Over-supply: LIMIT 45 returns the 42 scored rows only — the two misses
+    // were dropped, never counted, never padded back.
+    let wide = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_COMPOUND_WIDE_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", -1.0),
+    );
+    assert_eq!(wide.row_count, 42, "no null padding past the scored set");
+    assert_eq!(wide.truncated, Some(false));
+    assert_eq!(
+        threshold_scored_rows(&wide),
+        frame,
+        "wide nested compound matches the full frame"
+    );
+
+    // Skip + compound + optional stays rejected (fail-closed, pre-I/O).
+    let err = raw_gql_query(
+        &env,
+        CANDIDATE_NESTED_COMPOUND_OFFSET_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    )
+    .expect_err("compound OFFSET over an optional prefix must fail closed");
+    assert!(
+        err.to_string().contains("did not lower into a TextScan"),
+        "unexpected offset rejection: {err}"
+    );
+
+    // DISTINCT + compound + optional stays rejected (dedup would bypass the
+    // row cap).
+    let err = raw_gql_query(
+        &env,
+        CANDIDATE_NESTED_COMPOUND_DISTINCT_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    )
+    .expect_err("compound DISTINCT over an optional prefix must fail closed");
+    assert!(
+        err.to_string()
+            .contains("supports neither DISTINCT nor OFFSET"),
+        "unexpected distinct rejection: {err}"
+    );
+
+    // Replay determinism: the drop → truncate order replays row-identical.
+    let again = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_COMPOUND_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(
+        threshold_scored_rows(&again),
+        expected,
+        "compound drop-then-truncate replays deterministically"
+    );
+}

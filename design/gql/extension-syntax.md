@@ -1097,7 +1097,8 @@ Contract:
   multi-shard duals stay rejected and fail closed. An `OPTIONAL MATCH` prefix is
   TopK-only with a single score column (DISTINCT accepted with the null-row
   contract below); the threshold form is accepted with the null-drop contract
-  below. The planner proves the
+  below, and the compound form with drop-then-truncate (exact-only: no
+  DISTINCT, no OFFSET). The planner proves the
   scored label descending one optional level (ambiguous or unlabeled optional
   bindings fail closed) and accepts an explicit `NULLS LAST` as a no-op
   restatement, while an explicit `NULLS FIRST` refuses to lower and fails closed.
@@ -1116,8 +1117,10 @@ Contract:
   meaning-preserving because a residual `text_score` call fails closed in
   Graph execution (`UnsupportedExpression`), so lifting turns error into drop
   and never turns a keep into a drop. Multi-predicate, multi-optional, and
-  second-call shapes stay residual and fail closed. Compound/dual combinations
-  with an optional prefix stay rejected. A `RETURN DISTINCT` tail over an `OPTIONAL MATCH`
+  second-call shapes stay residual and fail closed. Dual combinations
+  with an optional prefix stay rejected, as do compound barriers carrying
+  DISTINCT or OFFSET (dedup bypasses the row cap; OFFSET over a null-padded
+  set has no stable meaning). A `RETURN DISTINCT` tail over an `OPTIONAL MATCH`
   prefix dedups the fully projected rows with the null-safe whole-row key
   (`Null == Null`, SQL DISTINCT semantics): byte-identical miss rows collapse to
   one while scored rows keep score-separated identity (a miss never merges with

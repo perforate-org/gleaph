@@ -267,7 +267,9 @@ baseline, the 23-row DISTINCT collapse (21 scored + 2 miss survivors, null
 group trailing in prefix order with NULL scores), and replay.
 
 Threshold over an optional prefix has since been accepted with the
-drop contract (see the threshold-nested addendum below); compound/second-
+drop contract (see the threshold-nested addendum below); the compound form
+with the drop-then-truncate contract followed (see the compound-nested
+addendum below); non-exact compound (DISTINCT/OFFSET) and second-
 call combinations with an optional prefix stay rejected.
 ## Addendum: threshold over an OPTIONAL MATCH prefix (implemented 2026-09-10)
 
@@ -311,3 +313,41 @@ asserts the 42-row drop (44 would mean keep) with all-`None` pno (a leaked
 miss would read 101/102), exact frame equality with the non-nested threshold
 frame (membership and order), an interior-score `>`/`>=` split, a NaN bound
 retaining zero rows, a DISTINCT collapse to the 21 documents, and replay.
+
+## Addendum: compound over an OPTIONAL MATCH prefix (implemented 2026-09-11)
+
+The compound form (`WHERE text_score(d.bio,$q) > t ... ORDER BY s DESC LIMIT
+k`) over an optional-bound variable is accepted exact-only, closing the
+follow-up the threshold slice left open:
+
+- **Planner**: the compound fusion only scans top-level ops and the plain TopK
+  path refuses a score-mentioning prefix, so compound-over-optional lowered
+  nothing and failed closed. The slice adds `try_optional_hoisted_compound_barrier`,
+  the symmetric counterpart of the threshold hoist: an exact
+  `[.., OptionalMatch, TopK, Project]` tail fuses the subplan-trailing
+  single-predicate threshold filter with the TopK into ONE `ThresholdTopK`
+  barrier in place (plan length unchanged). Same-triple, single-level,
+  score-free-sibling, no-scan/no-cap, proven-label, and coverage guards all
+  carry over; the TopK must be OFFSET-free (skip + compound + optional stays
+  unlowered) and `NULLS FIRST` still refuses via the shared order extractor.
+  The hoist keeps the error-into-drop meaning argument: no keep-semantics
+  execution exists for the shape.
+- **Router**: the gate opens from TopK|Threshold to TopK|Threshold|Compound,
+  with compound + optional admitted only when exact (`!distinct`,
+  `skip == 0`; second calls stay rejected by the earlier column loop). No
+  execution change was needed: the threshold-slice retain already drops
+  null-key rows before TEXT and rank, and `barrier_row_window` truncates the
+  scored-only set after ranking — the drop → retain → truncate order the
+  design predicted. `truncated` stays `Some(false)` (exact, like the
+  non-nested compound).
+- **Out of scope, still rejected**: DISTINCT + compound + optional (dedup
+  bypasses the row cap), OFFSET + compound + optional (no stable meaning over
+  a null-padded set; refused at both the hoist and the gate), dual and
+  second-call combinations.
+
+Covered live by reusing the nested doc-less-project fixture: LIMIT 5 returns 5
+scored rows frame-equal to the non-nested compound calibration (a
+null-slot-consumption misimplementation would return fewer or leak nulls),
+LIMIT 45 returns the 42 scored rows with no null padding, and OFFSET/DISTINCT
+variants fail closed on their respective layers (planner residual vs Router
+gate) with replay determinism.

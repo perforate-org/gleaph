@@ -595,6 +595,20 @@ pub(crate) fn apply_candidate_text_topk_lowering(
         }
         return true;
     }
+    // Compound-over-optional hoist (compound-nested slice): the threshold half
+    // arrives as a `PropertyFilter` trailing one `OptionalMatch` subplan (the
+    // grammar binds the WHERE to the optional match), so the top-level fusion
+    // above cannot see it. Ordered before the mention-free check below, like
+    // the top-level fusion: any other score mention stays residual and fails
+    // closed. The hoist carries the same meaning-preservation argument as the
+    // threshold hoist — a residual `text_score` fails closed in Graph
+    // execution, so lifting turns error into drop-then-truncate, never keep
+    // into anything. A fused OFFSET stays unlowered (skip + compound +
+    // optional is rejected): the Router gate admits the compound-optional
+    // shape only with `skip == 0`.
+    if try_optional_hoisted_compound_barrier(ops, topk_idx, &score, window, skip, stats) {
+        return true;
+    }
     let prefix = &ops[..topk_idx];
     // The prefix must not contain a scan, a row cap, or any other score mention:
     // candidate membership is the complete authorized prefix, never a window.
@@ -626,6 +640,104 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     if skip > 0 {
         ops.insert(topk_idx + 2, skip_limit_op(skip));
     }
+    true
+}
+
+/// Compound-over-optional hoist: fuse a subplan-trailing single-predicate
+/// threshold filter with the top-level TopK into ONE `ThresholdTopK` barrier
+/// evaluated after optional padding.
+///
+/// The tail must be exactly `[.., OptionalMatch, TopK, Project]` on the same
+/// (variable, property, query) triple. The TopK carries no OFFSET (skip +
+/// compound + optional stays rejected and unlowered); exactly one optional
+/// level exists; siblings are score-free; the prefix has no scan or row cap;
+/// the label proves and coverage confirms — the same guards as the top-level
+/// fusion, with the filter sourced from the subplan instead of the top level.
+/// Commit drops the filter from the subplan and swaps the TopK for the fused
+/// barrier in place, so the plan length is unchanged.
+fn try_optional_hoisted_compound_barrier(
+    ops: &mut [PlanOp],
+    topk_idx: usize,
+    score: &TextScoreRef,
+    window: i64,
+    skip: i64,
+    stats: &dyn GraphStats,
+) -> bool {
+    if skip != 0 || topk_idx < 2 || ops.len() != topk_idx + 2 {
+        return false;
+    }
+    let opt_idx = topk_idx - 1;
+    let PlanOp::OptionalMatch { .. } = &ops[opt_idx] else {
+        return false;
+    };
+    if ops[..opt_idx]
+        .iter()
+        .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
+    {
+        return false;
+    }
+    let (cmp, bound) = {
+        let PlanOp::OptionalMatch { sub_plan } = &ops[opt_idx] else {
+            unreachable!("checked above");
+        };
+        let Some(PlanOp::PropertyFilter { predicates, .. }) = sub_plan.last() else {
+            return false;
+        };
+        if predicates.len() != 1 {
+            return false;
+        }
+        let Some((candidate, cmp, bound)) = extract_threshold_predicate(&predicates[0]) else {
+            return false;
+        };
+        if candidate.variable != score.variable
+            || candidate.property != score.property
+            || candidate.query != score.query
+        {
+            return false;
+        }
+        (cmp, bound)
+    };
+    let PlanOp::OptionalMatch { sub_plan } = &ops[opt_idx] else {
+        unreachable!("checked above");
+    };
+    if sub_plan.len() < 2
+        || sub_plan[..sub_plan.len() - 1]
+            .iter()
+            .any(op_mentions_text_score)
+    {
+        return false;
+    }
+    if ops[..opt_idx].iter().any(|op| {
+        op_mentions_text_score(op)
+            || matches!(
+                op,
+                PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+            )
+    }) {
+        return false;
+    }
+    let Some(label) = proven_prefix_label(&ops[..=opt_idx], &score.variable) else {
+        return false;
+    };
+    if !stats.is_vertex_property_text_indexed_for(Some(&label), &score.property) {
+        return false;
+    }
+    let PlanOp::OptionalMatch { sub_plan } = &mut ops[opt_idx] else {
+        unreachable!("checked above");
+    };
+    sub_plan.pop();
+    ops[topk_idx] = PlanOp::TextScan {
+        variable: score.variable.as_str().into(),
+        label: label.as_str().into(),
+        property: score.property.as_str().into(),
+        query: score.query.clone(),
+        mode: TextScanMode::ThresholdTopK {
+            cmp,
+            bound,
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
+        },
+        property_projection: None,
+    };
     true
 }
 
