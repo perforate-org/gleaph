@@ -110,18 +110,23 @@ impl Encoder {
                             bound: encode_scan_value(bound)?,
                         }
                     }
-                    crate::plan::TextScanMode::TopK { limit } => {
+                    crate::plan::TextScanMode::TopK { limit, rank } => {
                         crate::wire::convert::types::TextScanModeWire::TopK {
                             limit: encode_scan_value(limit)?,
+                            rank: encode_topk_rank(rank),
                         }
                     }
-                    crate::plan::TextScanMode::ThresholdTopK { cmp, bound, limit } => {
-                        crate::wire::convert::types::TextScanModeWire::ThresholdTopK {
-                            cmp: *cmp,
-                            bound: encode_scan_value(bound)?,
-                            limit: encode_scan_value(limit)?,
-                        }
-                    }
+                    crate::plan::TextScanMode::ThresholdTopK {
+                        cmp,
+                        bound,
+                        limit,
+                        rank,
+                    } => crate::wire::convert::types::TextScanModeWire::ThresholdTopK {
+                        cmp: *cmp,
+                        bound: encode_scan_value(bound)?,
+                        limit: encode_scan_value(limit)?,
+                        rank: encode_topk_rank(rank),
+                    },
                 },
                 property_projection: opt_str_slice(property_projection),
             },
@@ -587,6 +592,15 @@ fn opt_expr_id(enc: &mut Encoder, expr: Option<&Expr>) -> Result<Option<u32>, St
 
 fn opt_label_expr_id(enc: &mut Encoder, expr: Option<&LabelExpr>) -> Result<Option<u32>, String> {
     expr.map(|e| enc.intern_label_expr(e)).transpose()
+}
+
+fn encode_topk_rank(rank: &crate::plan::TextTopkRank) -> super::types::TextTopkRankWire {
+    use super::types::TextTopkRankWire;
+    match rank {
+        crate::plan::TextTopkRank::ScoreDescNullsLast => TextTopkRankWire::DescNullsLast,
+        crate::plan::TextTopkRank::ScoreAscNullsLast => TextTopkRankWire::AscNullsLast,
+        crate::plan::TextTopkRank::ScoreAscNullsFirst => TextTopkRankWire::AscNullsFirst,
+    }
 }
 
 fn encode_inline_procedure_scope(scope: &InlineProcedureScope) -> InlineProcedureScopeWire {

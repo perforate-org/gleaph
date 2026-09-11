@@ -1125,10 +1125,18 @@ Contract:
   (`Null == Null`, SQL DISTINCT semantics): byte-identical miss rows collapse to
   one while scored rows keep score-separated identity (a miss never merges with
   a scored row — `Null` vs `Float64` score); skip/take still apply after dedup. Multi-shard,
-  ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
-  `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
-  returns the *least* relevant candidates, and no demand for that shape exists today.
-  Reopen if a concrete low-score-side use case lands (the carrier design is recorded in review).
+  mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
+  `ORDER BY` score `ASC` lowers into the same barrier with an ascending rank: the barrier
+  returns the *least* relevant candidates first under the same null contract (`ASC` keeps
+  nulls last; an explicit `ASC NULLS FIRST` sweeps misses to the head in prefix order, so
+  `LIMIT k` consumes null slots from the head). `DESC NULLS FIRST` still refuses to lower
+  and fails closed — no barrier honors desc-first nulls. The threshold and compound hoists
+  store the TopK half's rank, so `WHERE s > t ... ORDER BY s ASC` truncates the filtered
+  set from the least-relevant end. The second-score join stays DESC-only: an `ASC` barrier
+  carrying a second `text_score` call fails closed rather than reordering the frame the
+  join keys off. A leading-shape `ASC` (bare `NodeScan` prefix) rides the same barrier by
+  prefix enumeration — exact or fail-closed through the 1024-row admission cap — so the
+  separate bottom-k TEXT driver stays a pure scale optimization for larger labels.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
 - Non-leading/nested placements and aggregates over scores remain deferred until their

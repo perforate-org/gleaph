@@ -309,6 +309,18 @@ pub enum ScanValueWire {
     TextPrefix(#[rkyv(omit_bounds)] Box<ScanValueWire>),
 }
 
+/// Wire form of [`crate::plan::TextTopkRank`]: the barrier ranking contract.
+/// The variants drop the plan-side `Score` prefix (`TextTopkRank` already
+/// carries the context); the encode/decode arms map them explicitly.
+/// Old bytes (without this field) are rejected at decode — pre-production
+/// formats bump cleanly with no compatibility shim.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum TextTopkRankWire {
+    DescNullsLast,
+    AscNullsLast,
+    AscNullsFirst,
+}
+
 /// Wire form of [`crate::plan::TextScanMode`].
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum TextScanModeWire {
@@ -318,6 +330,7 @@ pub enum TextScanModeWire {
     },
     TopK {
         limit: ScanValueWire,
+        rank: TextTopkRankWire,
     },
     /// Wire form of [`crate::plan::TextScanMode::ThresholdTopK`] (plan 0329 compound
     /// lowering): threshold + top-k fused into one scan.
@@ -325,6 +338,7 @@ pub enum TextScanModeWire {
         cmp: CmpOp,
         bound: ScanValueWire,
         limit: ScanValueWire,
+        rank: TextTopkRankWire,
     },
 }
 

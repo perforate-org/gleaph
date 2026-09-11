@@ -1554,6 +1554,24 @@ pub struct IndexScanSpec {
     pub cmp: CmpOp,
 }
 
+/// Ranking contract of a text_score TopK barrier: score direction plus null
+/// placement. Only three of the six `ORDER BY` spellings lower — an explicit
+/// `DESC NULLS FIRST` never fuses and fails closed at validation, while a bare
+/// `DESC` lowers with the nulls-last barrier contract (a deliberate deviation
+/// from the GQL DESC default, documented at the barrier).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextTopkRank {
+    /// `ORDER BY score DESC [NULLS LAST]` (bare `DESC` included): the `limit`
+    /// highest-scoring rows, nulls trailing.
+    ScoreDescNullsLast,
+    /// `ORDER BY score ASC [NULLS LAST]` (bare `ASC` included): the `limit`
+    /// lowest-scoring rows, nulls trailing (GQL-conformant, no deviation).
+    ScoreAscNullsLast,
+    /// `ORDER BY score ASC NULLS FIRST`: nulls heading, then the `limit`
+    /// lowest-scoring rows — the missing-data sweep shape.
+    ScoreAscNullsFirst,
+}
+
 /// Delivery mode of [`PlanOp::TextScan`].
 #[derive(Clone, Debug)]
 pub enum TextScanMode {
@@ -1561,20 +1579,25 @@ pub enum TextScanMode {
     /// vertices whose relevance score satisfies `cmp bound`. `Ge` is accepted alongside
     /// `Gt`; any other operator never lowers and fails closed at plan validation.
     Threshold { cmp: CmpOp, bound: ScanValue },
-    /// Top-k mode (the decided contract's `ORDER BY text_score(…) DESC LIMIT k` shape):
-    /// deliver only the `limit` highest-scoring vertices. `limit` is an Int64 literal or
-    /// a parameter resolved by the executor.
-    TopK { limit: ScanValue },
+    /// Top-k mode (the decided contract's `ORDER BY text_score(…) DESC LIMIT k` shape,
+    /// plus the `ASC` shapes): deliver only the `limit` rows under the `rank`
+    /// contract. `limit` is an Int64 literal or a parameter resolved by the executor.
+    TopK {
+        limit: ScanValue,
+        rank: TextTopkRank,
+    },
     /// Compound mode (plan 0329): the fused `WHERE text_score(v.prop, Q) cmp t` +
-    /// `ORDER BY text_score(v.prop, Q) DESC LIMIT k` shape. Keep only the vertices whose
-    /// relevance score satisfies `cmp bound` (literal or parameter), then deliver the
-    /// `limit` highest-scoring survivors in the deterministic `(score DESC, key ASC)`
-    /// order. `limit` is an Int64 literal (parity with the TopK lowering); the bound may
-    /// be a literal or a parameter (parity with `Threshold`).
+    /// `ORDER BY text_score(v.prop, Q) DESC LIMIT k` shape (plus the `ASC` shapes).
+    /// Keep only the vertices whose relevance score satisfies `cmp bound` (literal or
+    /// parameter), then deliver the `limit` survivors under the `rank` contract with
+    /// the deterministic key-ascending tie-break. `limit` is an Int64 literal
+    /// (parity with the TopK lowering); the bound may be a literal or a parameter
+    /// (parity with `Threshold`).
     ThresholdTopK {
         cmp: CmpOp,
         bound: ScanValue,
         limit: ScanValue,
+        rank: TextTopkRank,
     },
 }
 

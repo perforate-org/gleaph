@@ -351,3 +351,34 @@ null-slot-consumption misimplementation would return fewer or leak nulls),
 LIMIT 45 returns the 42 scored rows with no null padding, and OFFSET/DISTINCT
 variants fail closed on their respective layers (planner residual vs Router
 gate) with replay determinism.
+
+## Addendum: candidate-scoped ascending top-k (implemented 2026-09-11)
+
+`ORDER BY` score `ASC` now lowers into the same barrier with an explicit rank
+instead of refusing: the ASC slice carries only direction, no new TEXT, wire
+type, cap, or module.
+
+- **Plan/wire**: new `TextTopkRank::{ScoreDescNullsLast, ScoreAscNullsLast,
+  ScoreAscNullsFirst}` on `TextScanMode::{TopK, ThresholdTopK}` (bare
+  `ORDER BY` and `DESC NULLS FIRST` still extract to `None` and fail closed;
+  all four direction spellings normalize, absorbing the old lone-`DESCENDING`
+  refusal). The leading seed and fused leading compound stay DESC-only; the
+  candidate TopK/compound hoists (top-level and optional) thread the rank
+  through. The wire adds `TextTopkRankWire::{DescNullsLast, AscNullsLast,
+  AscNullsFirst}` (shortened names — the lint rejects the mirrored `Score`
+  prefix on the derive span) with old-bytes rejection, no shim.
+- **Router**: the second-score join admits only DESC TopK (an ASC barrier
+  carrying a second call fails closed — the join keys off the s1 frame order);
+  `rank_candidate_rows` orders `(score asc, key asc)` under ascending ranks
+  with the same key-ascending tie-break both directions, nulls tailing in
+  prefix order or heading under `AscNullsFirst`, and skip/take consuming the
+  placed side's slots. Threshold keeps its DESC default dead-explicit.
+- **Placement note**: a leading-shape ASC (bare `NodeScan` prefix) lowers
+  through the *candidate* barrier by prefix enumeration — exact or fail-closed
+  via the 1024-row admission cap — so the separate bottom-k TEXT driver
+  remains a scale optimization for larger labels, never a correctness gap.
+
+Covered live by two PocketIC tests reusing the candidate and nested fixtures:
+bare-ASC over the full 42-row frame ascends with the DESC frame's score
+multiset, and nested `ASC NULLS FIRST` heads the two prefix-ordered misses
+before the ascending scored tail, both with replay determinism.

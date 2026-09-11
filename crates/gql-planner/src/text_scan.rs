@@ -5,7 +5,8 @@
 //! [`PlanOp::TextScan`]:
 //!
 //! - threshold: a WHERE conjunct `text_score(v.prop, Q) > t` (or `>=`, or reversed);
-//! - top-k: `ORDER BY text_score(v.prop, Q) DESC LIMIT k`;
+//! - top-k: `ORDER BY text_score(v.prop, Q) DESC LIMIT k` (plus the `ASC` shapes,
+//!   which rank the lowest-scoring rows under [`TextTopkRank`]);
 //! - compound threshold-top-k (plan 0329): the combined shape above fuses into ONE scan
 //!   with [`TextScanMode::ThresholdTopK`] when both halves reference the same
 //!   `(variable, property, query)` — the scan retains the threshold on the score-ranked
@@ -22,7 +23,7 @@ use gleaph_gql::types::LabelExpr;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expr_children::for_each_immediate_child_expr;
-use crate::plan::{PlanOp, ScanValue, TextScanMode, TextSeedInfo};
+use crate::plan::{PlanOp, ScanValue, TextScanMode, TextSeedInfo, TextTopkRank};
 use crate::stats::GraphStats;
 
 /// One resolved `text_score(variable.property, query)` reference.
@@ -107,42 +108,58 @@ fn reverse_threshold_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-/// Match an ORDER BY clause whose leading key is exactly `text_score(v.prop, Q) DESC`.
-/// ASC is deliberately deferred (least-relevant top-k, no demand); reopen on a concrete use case.
+/// Match an ORDER BY clause whose leading key is exactly `text_score(v.prop, Q)`
+/// with an ascending or descending direction, returning the resolved score
+/// together with the barrier ranking contract.
 ///
-/// An explicit `NULLS FIRST` refuses to lower: no barrier honors null-first ranking,
-/// so the mention stays residual and fails closed instead of silently ranking
-/// nulls last. An explicit `NULLS LAST` is accepted as a no-op restatement — the
-/// candidate barrier keeps unmatched (null-identity) rows after the scored rows —
-/// and an absent modifier lowers with that same nulls-last barrier contract (a
-/// deliberate deviation from the GQL DESC default, documented at the barrier).
+/// Direction spellings normalize over all four variants (`ASC`/`ASCENDING`,
+/// `DESC`/`DESCENDING`): a lone `DESCENDING` previously refused to lower for no
+/// semantic reason, so normalization absorbs it here rather than in its own patch.
+/// An explicit `DESC NULLS FIRST` refuses to lower: no barrier honors desc-first
+/// nulls, so the mention stays residual and fails closed instead of silently
+/// ranking nulls last. An explicit `NULLS LAST` is accepted as a no-op restatement —
+/// the candidate barrier keeps unmatched (null-identity) rows after the scored
+/// rows — and an absent modifier lowers with that same nulls-last barrier contract
+/// (for `DESC` a deliberate deviation from the GQL default, documented at the
+/// barrier; for `ASC` GQL-conformant). `ASC NULLS FIRST` lowers with the null-head
+/// contract: the missing-data sweep shape.
 ///
-/// The scan itself delivers the decided `(score DESC, element-key ASC)` determinism
-/// contract. An explicitly written second key is accepted only when it is the scanned
-/// variable itself (a no-op restatement of the implicit tie-break); any other secondary
-/// key keeps the pipeline unfused and fails closed at validation.
-pub(crate) fn extract_topk_order(order_by: &OrderByClause) -> Option<TextScoreRef> {
+/// The scan itself delivers the decided `(score, element-key ASC)` determinism
+/// contract in the ranked direction. An explicitly written second key is accepted
+/// only when it is the scanned variable itself (a no-op restatement of the implicit
+/// tie-break); any other secondary key keeps the pipeline unfused and fails closed
+/// at validation.
+pub(crate) fn extract_topk_order(order_by: &OrderByClause) -> Option<(TextScoreRef, TextTopkRank)> {
+    use gleaph_gql::ast::{NullOrder, SortDirection};
     let items = &order_by.items;
-    if items.is_empty()
-        || !matches!(
-            items[0].direction,
-            Some(gleaph_gql::ast::SortDirection::Desc)
-        )
-        || matches!(items[0].null_order, Some(gleaph_gql::ast::NullOrder::First))
-    {
+    let [first, rest @ ..] = items.as_slice() else {
         return None;
-    }
-    let score = resolve_text_score_call(&items[0].expr)?;
-    if items.len() == 2 {
+    };
+    let descending = match first.direction {
+        Some(SortDirection::Desc) | Some(SortDirection::Descending) => true,
+        Some(SortDirection::Asc) | Some(SortDirection::Ascending) => false,
+        // A bare `ORDER BY score` parses without a direction; the decided
+        // contract only lowers explicit directions, so direction-free stays
+        // residual and fails closed rather than guessing a default.
+        None => return None,
+    };
+    let rank = match (descending, first.null_order) {
+        (true, Some(NullOrder::First)) => return None,
+        (true, _) => TextTopkRank::ScoreDescNullsLast,
+        (false, Some(NullOrder::First)) => TextTopkRank::ScoreAscNullsFirst,
+        (false, _) => TextTopkRank::ScoreAscNullsLast,
+    };
+    let score = resolve_text_score_call(&first.expr)?;
+    if rest.len() == 1 {
         let key_is_variable =
-            matches!(&items[1].expr.kind, ExprKind::Variable(v) if *v == score.variable);
+            matches!(&rest[0].expr.kind, ExprKind::Variable(v) if *v == score.variable);
         if !key_is_variable {
             return None;
         }
-    } else if items.len() > 2 {
+    } else if rest.len() > 1 {
         return None;
     }
-    Some(score)
+    Some((score, rank))
 }
 
 /// Post-pass top-k lowering: rewrite
@@ -178,9 +195,12 @@ pub(crate) fn apply_text_topk_lowering(
         let Some(k_value) = const_int64(k) else {
             return false;
         };
+        // The leading seed path stays DESC-only: an ASC top-k over the whole
+        // index needs a bottom-k TEXT driver (a separate slice), so any
+        // non-DESC rank keeps the TopK residual and fails closed downstream.
         match extract_topk_order(order_by) {
-            Some(score) => (score, k_value),
-            None => return false,
+            Some((score, TextTopkRank::ScoreDescNullsLast)) => (score, k_value),
+            _ => return false,
         }
     };
 
@@ -215,6 +235,9 @@ pub(crate) fn apply_text_topk_lowering(
                 cmp: *cmp,
                 bound: bound.clone(),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+                // The TopK half above only extracts a DESC rank (leading ASC
+                // is a separate slice), so the fused barrier is DESC-only.
+                rank: TextTopkRank::ScoreDescNullsLast,
             };
             ops.remove(topk_idx);
             return true;
@@ -243,6 +266,7 @@ pub(crate) fn apply_text_topk_lowering(
         query: score.query.clone(),
         mode: TextScanMode::TopK {
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+            rank: TextTopkRank::ScoreDescNullsLast,
         },
         property_projection: None,
     };
@@ -512,7 +536,7 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     if topk_idx == 0 {
         return false;
     }
-    let (score, window, skip) = {
+    let (score, rank, window, skip) = {
         let PlanOp::TopK {
             order_by,
             k,
@@ -543,7 +567,7 @@ pub(crate) fn apply_candidate_text_topk_lowering(
             return false;
         };
         match extract_topk_order(order_by) {
-            Some(score) => (score, window, skip_value),
+            Some((score, rank)) => (score, rank, window, skip_value),
             None => return false,
         }
     };
@@ -583,6 +607,7 @@ pub(crate) fn apply_candidate_text_topk_lowering(
                 cmp,
                 bound,
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
+                rank,
             },
             property_projection: None,
         };
@@ -606,7 +631,7 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     // into anything. A fused OFFSET stays unlowered (skip + compound +
     // optional is rejected): the Router gate admits the compound-optional
     // shape only with `skip == 0`.
-    if try_optional_hoisted_compound_barrier(ops, topk_idx, &score, window, skip, stats) {
+    if try_optional_hoisted_compound_barrier(ops, topk_idx, &score, rank, window, skip, stats) {
         return true;
     }
     let prefix = &ops[..topk_idx];
@@ -633,6 +658,7 @@ pub(crate) fn apply_candidate_text_topk_lowering(
         query: score.query.clone(),
         mode: TextScanMode::TopK {
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
+            rank,
         },
         property_projection: None,
     };
@@ -659,6 +685,7 @@ fn try_optional_hoisted_compound_barrier(
     ops: &mut [PlanOp],
     topk_idx: usize,
     score: &TextScoreRef,
+    rank: TextTopkRank,
     window: i64,
     skip: i64,
     stats: &dyn GraphStats,
@@ -735,6 +762,7 @@ fn try_optional_hoisted_compound_barrier(
             cmp,
             bound,
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
+            rank,
         },
         property_projection: None,
     };

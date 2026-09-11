@@ -78,13 +78,14 @@ fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>
         // bounds output rows at the limit; threshold mode keeps the seek estimate.
         PlanOp::TextScan { mode, .. } => {
             let rows = match mode {
-                TextScanMode::TopK { limit } => match limit {
+                TextScanMode::TopK { limit, .. } => match limit {
                     ScanValue::Literal(gleaph_gql::Value::Int64(k)) if *k > 0 => *k as f64,
                     _ => 10.0,
                 },
                 TextScanMode::Threshold { .. } => 10.0,
                 // Compound mode bounds output rows at the limit exactly like TopK; the
-                // threshold only narrows within the score-ranked window.
+                // threshold only narrows within the score-ranked window. Both are
+                // direction-free: ASC ranks the same row count from the other end.
                 TextScanMode::ThresholdTopK { limit, .. } => match limit {
                     ScanValue::Literal(gleaph_gql::Value::Int64(k)) if *k > 0 => *k as f64,
                     _ => 10.0,

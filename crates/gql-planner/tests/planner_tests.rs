@@ -7584,6 +7584,7 @@ fn text_topk_order_by_lowers_to_single_text_scan() {
                 mode:
                     TextScanMode::TopK {
                         limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                        rank: _,
                     },
                 ..
             }) if &**label == "Document"
@@ -7704,6 +7705,7 @@ fn text_combined_threshold_topk_lowers_to_single_compound_scan() {
                         cmp: CmpOp::Gt,
                         bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
                         limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                        rank: _,
                     },
                 ..
             }) if &**label == "Document" && *bound == 0.5
@@ -7742,6 +7744,7 @@ fn text_combined_compound_lowers_with_parameter_bound_and_query() {
                 cmp: CmpOp::Ge,
                 bound: ScanValue::Parameter(_),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(5)),
+                rank: _,
             },
             ..
         })
@@ -7832,6 +7835,7 @@ fn text_scan_wire_round_trip_preserves_compound_mode() {
                     cmp: CmpOp::Ge,
                     bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(7)),
+                    rank: _,
                 },
             ..
         } if &**variable == "n"
@@ -7875,6 +7879,7 @@ fn candidate_text_topk_lowers_to_barrier_scan() {
                 property,
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
+                    rank: TextTopkRank::ScoreDescNullsLast,
                 },
                 ..
             } if &**variable == "d" && &**label == "Document" && &**property == "body"
@@ -7889,6 +7894,167 @@ fn candidate_text_topk_lowers_to_barrier_scan() {
         plan.ops
     );
     assert_eq!(plan.ops.len(), 6);
+}
+
+#[test]
+fn candidate_text_topk_asc_lowers_with_ascending_rank() {
+    // ASC ranks the least-relevant rows under the nulls-last contract: the
+    // barrier lowers exactly like DESC, carrying only the rank.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 20",
+        &text_coverage_stats(),
+    );
+    assert!(
+        matches!(
+            &plan.ops[4],
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
+                    rank: TextTopkRank::ScoreAscNullsLast,
+                },
+                ..
+            }
+        ),
+        "expected an ascending barrier scan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Limit { .. } | PlanOp::TopK { .. })),
+        "no row cap may survive ascending lowering, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_direction_spellings_normalize() {
+    // All four direction spellings lower; ASCENDING/ASC share the tail rank
+    // and DESCENDING/DESC share the head rank. A lone DESCENDING previously
+    // refused to lower for no semantic reason — normalization absorbs it here.
+    for (direction, rank) in [
+        ("ASCENDING", TextTopkRank::ScoreAscNullsLast),
+        ("DESCENDING", TextTopkRank::ScoreDescNullsLast),
+    ] {
+        let plan = plan_query_with_stats(
+            &format!(
+                "MATCH (u:User {{id:$user_id}})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score {direction} LIMIT 20"
+            ),
+            &text_coverage_stats(),
+        );
+        assert!(
+            matches!(
+                &plan.ops[4],
+                PlanOp::TextScan {
+                    mode: TextScanMode::TopK { limit, rank: got },
+                    ..
+                } if matches!(limit, ScanValue::Literal(gleaph_gql::Value::Int64(20))) && *got == rank
+            ),
+            "{direction} must lower with rank {rank:?}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+fn candidate_text_topk_asc_nulls_first_lowers_with_head_rank() {
+    // The missing-data sweep shape: nulls head, then the lowest scores.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC NULLS FIRST LIMIT 20",
+        &text_coverage_stats(),
+    );
+    assert!(
+        matches!(
+            &plan.ops[4],
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
+                    rank: TextTopkRank::ScoreAscNullsFirst,
+                },
+                ..
+            }
+        ),
+        "expected a nulls-head barrier scan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_topk_desc_nulls_first_stays_residual() {
+    // No barrier honors desc-first nulls: the mention stays residual and fails
+    // closed instead of silently ranking nulls last.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC NULLS FIRST LIMIT 20",
+        &text_coverage_stats(),
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "DESC NULLS FIRST must not lower, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_compound_asc_carries_rank() {
+    // Compound fusion stores the TopK half's rank: ASC compounds truncate the
+    // threshold-filtered set from the least-relevant end.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 7",
+        &text_coverage_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                mode: TextScanMode::ThresholdTopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(7)),
+                    rank: TextTopkRank::ScoreAscNullsLast,
+                    ..
+                },
+                ..
+            }
+        )),
+        "expected an ascending compound barrier, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn leading_text_topk_asc_falls_back_to_candidate_barrier() {
+    // The leading seed path stays DESC-only, but a leading-shape ASC still
+    // lowers through the CANDIDATE barrier: the NodeScan prefix enumerates the
+    // labeled vertices, TEXT scores exactly those keys, and the Router ranks
+    // ascending. Exact-or-fail-closed by construction — a prefix beyond the
+    // Router's 1024-row admission cap rejects instead of truncating — so the
+    // separate bottom-k TEXT driver slice stays a pure scale optimization for
+    // labels beyond the cap, never a correctness gap.
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) RETURN n ORDER BY text_score(n.body, 'index') ASC LIMIT 3",
+        &text_coverage_stats(),
+    );
+    assert!(
+        matches!(
+            plan.ops.get(1),
+            Some(PlanOp::TextScan {
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                    rank: TextTopkRank::ScoreAscNullsLast,
+                },
+                ..
+            })
+        ),
+        "leading ASC must ride the candidate barrier, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        "no TopK may survive ascending lowering, got: {:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -7952,20 +8118,43 @@ fn candidate_text_topk_rejects_unlabeled_variable() {
 }
 
 #[test]
-fn candidate_text_topk_rejects_asc_order_and_offset() {
-    // Intentional contract change: the SKIP/OFFSET case used to stay unlowered
-    // alongside ASC; the offset slice now fuses it into a `k + skip` window with
-    // a trailing skip-Limit (see
-    // `candidate_text_topk_offset_lowers_to_window_with_skip`). Only ASC still
-    // refuses to lower.
-    let query = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 5";
-    let plan = plan_query_with_stats(query, &text_coverage_stats());
+fn candidate_text_topk_asc_offset_lowers_to_window_with_skip() {
+    // Intentional contract change (ASC slice): ASC used to refuse lowering
+    // alongside the old SKIP/OFFSET deferral; both now fuse — ASC carries its
+    // rank into the barrier while the offset parks a skip-Limit after the
+    // RETURN (see `candidate_text_topk_offset_lowers_to_window_with_skip`).
+    let plan = plan_query_with_stats(
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 10 OFFSET 5",
+        &text_coverage_stats(),
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
     assert!(
-        !plan
-            .ops
-            .iter()
-            .any(|op| matches!(op, PlanOp::TextScan { .. })),
-        "unsupported shape must not lower: {query}, got: {:?}",
+        matches!(
+            &plan.ops[scan_idx],
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(15)),
+                    rank: TextTopkRank::ScoreAscNullsLast,
+                },
+                ..
+            }
+        ),
+        "ascending barrier must carry the k + skip window, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            &plan.ops[scan_idx + 2],
+            PlanOp::Limit {
+                count: None,
+                offset: Some(expr),
+            } if matches!(&expr.kind, gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(5)))
+        ),
+        "trailing skip-Limit must park after the RETURN, got: {:?}",
         plan.ops
     );
 }
@@ -8423,6 +8612,7 @@ fn candidate_text_topk_offset_lowers_to_window_with_skip() {
                 variable,
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(15)),
+                    rank: _,
                 },
                 ..
             } if &**variable == "d"
@@ -8522,6 +8712,7 @@ fn candidate_text_offset_zero_lowers_to_offset_free_shape() {
             PlanOp::TextScan {
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                    rank: _,
                 },
                 ..
             }
@@ -8588,6 +8779,7 @@ fn candidate_text_compound_fuses_into_single_barrier_scan() {
                     cmp: gleaph_gql::ast::CmpOp::Gt,
                     bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                    rank: _,
                 },
                 ..
             } if &**variable == "d" && &**label == "Document" && &**property == "body" && *bound == 0.5
@@ -8641,8 +8833,8 @@ fn candidate_text_compound_rejects_mismatched_halves() {
         "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'world') AS s ORDER BY s DESC LIMIT 10",
         // Compound WHERE: the threshold shares its filter with another conjunct.
         "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 AND d.title = 'x' RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s DESC LIMIT 10",
-        // Ascending order never fuses.
-        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s ASC LIMIT 10",
+        // DESC NULLS FIRST never fuses (no barrier honors desc-first nulls).
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS s ORDER BY s DESC NULLS FIRST LIMIT 10",
     ] {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(

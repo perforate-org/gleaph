@@ -292,14 +292,24 @@ fn format_op(op: &PlanOp) -> String {
                         format_scan_value(bound)
                     )
                 }
-                TextScanMode::TopK { limit } => {
-                    format!("top-k limit {}", format_scan_value(limit))
-                }
-                TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+                TextScanMode::TopK { limit, rank } => {
                     format!(
-                        "threshold score {} {} top-k limit {}",
+                        "top-k {} limit {}",
+                        format_topk_rank(rank),
+                        format_scan_value(limit)
+                    )
+                }
+                TextScanMode::ThresholdTopK {
+                    cmp,
+                    bound,
+                    limit,
+                    rank,
+                } => {
+                    format!(
+                        "threshold score {} {} top-k {} limit {}",
                         format_cmp(cmp),
                         format_scan_value(bound),
+                        format_topk_rank(rank),
                         format_scan_value(limit)
                     )
                 }
@@ -962,6 +972,14 @@ fn format_op(op: &PlanOp) -> String {
                 r.join(" -> ")
             )
         }
+    }
+}
+
+fn format_topk_rank(rank: &crate::plan::TextTopkRank) -> &'static str {
+    match rank {
+        crate::plan::TextTopkRank::ScoreDescNullsLast => "score desc nulls last",
+        crate::plan::TextTopkRank::ScoreAscNullsLast => "score asc nulls last",
+        crate::plan::TextTopkRank::ScoreAscNullsFirst => "score asc nulls first",
     }
 }
 

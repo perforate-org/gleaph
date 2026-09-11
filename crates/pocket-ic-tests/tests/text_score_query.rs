@@ -2279,6 +2279,79 @@ fn non_leading_text_candidate_topk_lifecycle() {
     assert_eq!(denied_replay, denied, "denied frame is deterministic");
 }
 
+const CANDIDATE_ASC_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, ELEMENT_ID(d) AS d_id, text_score(d.bio,$q) AS score \
+     ORDER BY score ASC LIMIT 42";
+
+/// Ascending candidate top-k: the barrier ranks the least-relevant reachable
+/// rows first under the same nulls-last contract (no misses exist here, so
+/// the frame is fully scored). The score-multiset kill below pins the
+/// direction: an ASC that secretly ranked descending would carry the top-20
+/// multiset, not the bottom-42 one.
+#[test]
+fn non_leading_text_candidate_asc_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+
+    let result = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_ASC_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        result.row_count, 42,
+        "LIMIT covers the full candidate frame"
+    );
+    assert_eq!(
+        result.truncated,
+        Some(false),
+        "exact rank is never truncated"
+    );
+    let rows = candidate_rows(&result);
+    assert_eq!(rows.len(), 42);
+    for window in rows.windows(2) {
+        assert!(
+            window[0].2 <= window[1].2,
+            "scores arrive ascending: {} before {}",
+            window[0].2,
+            window[1].2
+        );
+        assert!(window[0].2 > 0.0, "matching rows carry positive scores");
+    }
+    assert!(
+        rows.iter().all(|(rank, _, _)| (0..21).contains(rank)),
+        "only reachable documents rank"
+    );
+    // Direction kill: the ASC frame's score multiset is the DESC frame's
+    // multiset over the same 42 rows — a descending mis-rank would instead
+    // repeat the DESC head scores.
+    let desc = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DUAL_BIO_FRAME_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let mut desc_scores: Vec<u64> = threshold_scored_rows(&desc)
+        .iter()
+        .map(|(_, score)| score.to_bits())
+        .collect();
+    desc_scores.sort_unstable();
+    let mut asc_scores: Vec<u64> = rows.iter().map(|(_, _, score)| score.to_bits()).collect();
+    asc_scores.sort_unstable();
+    assert_eq!(asc_scores, desc_scores, "ASC and DESC rank the same rows");
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_ASC_QUERY,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        candidate_rows(&replay),
+        rows,
+        "ascending rank is deterministic"
+    );
+}
+
 // ──── Candidate-scoped non-leading threshold ────
 
 const CANDIDATE_THRESHOLD_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
@@ -3483,6 +3556,133 @@ fn non_leading_text_candidate_nested_nulls_last_lifecycle() {
         nested_scored_rows(&replay),
         rows,
         "nulls-last replay is deterministic"
+    );
+}
+
+const CANDIDATE_NESTED_ASC_FIRST_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, p.pno AS pno, text_score(d.bio,$q) AS s ORDER BY s ASC NULLS FIRST LIMIT 44";
+
+/// Ascending nulls-first over the nested shape: the two miss rows head in
+/// prefix order, then the 42 scored rows ascend. The head/tail split pins the
+/// sweep contract — a nulls-last mis-rank would bury the misses at positions
+/// 42..43, and a descending mis-rank would invert the scored tail.
+#[test]
+fn non_leading_text_candidate_nested_asc_nulls_first_lifecycle() {
+    let fixture = seed_nested_score_fixture();
+    let env = fixture.env;
+
+    // The barrier-free prefix order, observed without scoring.
+    let prefix = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_PREFIX_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let prefix_blob = prefix.rows_blob.as_ref().expect("rows blob present");
+    let prefix_nulls: Vec<(Option<i64>, Option<i64>)> = GqlWireRows::decode_blob(prefix_blob)
+        .expect("decode rows")
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let int_or_null = |name: &str| match columns.get(name).expect("column present") {
+                GqlWireValue::Int64(v) => Some(*v),
+                GqlWireValue::Null => None,
+                other => panic!("{name} must be Int64 or Null, got {other:?}"),
+            };
+            let rank = int_or_null("rank");
+            if rank.is_none() {
+                Some((rank, int_or_null("pno")))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        prefix_nulls.len(),
+        2,
+        "two empty projects contribute one miss each"
+    );
+
+    let result = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_ASC_FIRST_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        result.row_count, 44,
+        "LIMIT counts null slots from the head"
+    );
+    assert_eq!(
+        result.truncated,
+        Some(false),
+        "exact rank is never truncated"
+    );
+    let rows = nested_scored_rows(&result);
+    assert_eq!(rows.len(), 44);
+    // Null head in prefix order.
+    assert_eq!(
+        (rows[0].0, rows[0].1, rows[0].2),
+        (prefix_nulls[0].0, prefix_nulls[0].1, None),
+        "first miss heads in prefix order"
+    );
+    assert_eq!(
+        (rows[1].0, rows[1].1, rows[1].2),
+        (prefix_nulls[1].0, prefix_nulls[1].1, None),
+        "second miss follows in prefix order"
+    );
+    // Scored tail ascends with positive scores.
+    for window in rows[2..].windows(2) {
+        assert!(
+            window[0].2.is_some() && window[1].2.is_some(),
+            "tail is fully scored"
+        );
+        assert!(
+            window[0].2 <= window[1].2,
+            "tail scores ascend: {:?} before {:?}",
+            window[0].2,
+            window[1].2
+        );
+        assert!(
+            window[0].2.unwrap() > 0.0,
+            "matching rows carry positive scores"
+        );
+    }
+    // The scored tail ranks the same rows as the DESC nested frame.
+    let desc = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_SCORED_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    let mut desc_keys: Vec<(Option<i64>, Option<i64>)> = nested_scored_rows(&desc)
+        .iter()
+        .filter(|(_, _, score)| score.is_some())
+        .map(|(rank, pno, _)| (*rank, *pno))
+        .collect();
+    desc_keys.sort();
+    let mut asc_keys: Vec<(Option<i64>, Option<i64>)> = rows[2..]
+        .iter()
+        .map(|(rank, pno, _)| (*rank, *pno))
+        .collect();
+    asc_keys.sort();
+    assert_eq!(
+        asc_keys, desc_keys,
+        "ASC and DESC nest the same scored rows"
+    );
+
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_NESTED_ASC_FIRST_QUERY,
+        dual_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(
+        nested_scored_rows(&replay),
+        rows,
+        "nulls-head replay is deterministic"
     );
 }
 

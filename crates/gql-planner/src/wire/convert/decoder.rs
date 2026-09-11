@@ -123,19 +123,22 @@ impl<'a> Decoder<'a> {
                             bound: decode_scan_value(bound)?,
                         }
                     }
-                    crate::wire::convert::types::TextScanModeWire::TopK { limit } => {
+                    crate::wire::convert::types::TextScanModeWire::TopK { limit, rank } => {
                         crate::plan::TextScanMode::TopK {
                             limit: decode_scan_value(limit)?,
+                            rank: decode_topk_rank(rank),
                         }
                     }
                     crate::wire::convert::types::TextScanModeWire::ThresholdTopK {
                         cmp,
                         bound,
                         limit,
+                        rank,
                     } => crate::plan::TextScanMode::ThresholdTopK {
                         cmp: *cmp,
                         bound: decode_scan_value(bound)?,
                         limit: decode_scan_value(limit)?,
+                        rank: decode_topk_rank(rank),
                     },
                 },
                 property_projection: decode_str_slice(property_projection),
@@ -614,6 +617,15 @@ impl<'a> Decoder<'a> {
 
 fn decode_opt_label_expr(dec: &Decoder<'_>, id: Option<u32>) -> Result<Option<LabelExpr>, String> {
     id.map(|i| dec.label_expr(i)).transpose()
+}
+
+fn decode_topk_rank(rank: &super::types::TextTopkRankWire) -> crate::plan::TextTopkRank {
+    use super::types::TextTopkRankWire;
+    match rank {
+        TextTopkRankWire::DescNullsLast => crate::plan::TextTopkRank::ScoreDescNullsLast,
+        TextTopkRankWire::AscNullsLast => crate::plan::TextTopkRank::ScoreAscNullsLast,
+        TextTopkRankWire::AscNullsFirst => crate::plan::TextTopkRank::ScoreAscNullsFirst,
+    }
 }
 
 fn decode_inline_procedure_scope(scope: &InlineProcedureScopeWire) -> InlineProcedureScope {

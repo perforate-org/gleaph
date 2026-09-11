@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashSet};
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
 use gleaph_gql_planner::expr_children::for_each_immediate_child_expr;
 use gleaph_gql_planner::plan::{
-    NodeLabelRef, PhysicalPlan, PlanOp, ProjectColumn, ScanValue, TextScanMode,
+    NodeLabelRef, PhysicalPlan, PlanOp, ProjectColumn, ScanValue, TextScanMode, TextTopkRank,
 };
 use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
@@ -146,8 +146,11 @@ pub(crate) async fn try_execute_gql_text_scan(
     sort_hits_deterministically(&mut hits);
     let raw_window = hits.len();
     let mut truncated = raw_window == MAX_TEXT_SEARCH_K as usize;
+    // The leading seed path ignores the barrier rank: the TEXT top-k window is
+    // inherently descending, and the planner only lowers DESC here (ASC stays
+    // residual and fails closed downstream).
     let requested_top_k: Option<u32> = match &shape.mode {
-        TextScanMode::TopK { limit } => {
+        TextScanMode::TopK { limit, .. } => {
             let requested_k = resolve_scan_limit(limit, &params)?;
             let request_k = requested_k.min(MAX_TEXT_SEARCH_K);
             hits.truncate(request_k as usize);
@@ -160,7 +163,9 @@ pub(crate) async fn try_execute_gql_text_scan(
             retain_threshold(&mut hits, *cmp, bound);
             None
         }
-        TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+        TextScanMode::ThresholdTopK {
+            cmp, bound, limit, ..
+        } => {
             // Order is the correctness core: retain the threshold on the score-ranked
             // window FIRST, then truncate to the limit, so the survivors are exactly the
             // top-k of the threshold-filtered set.
@@ -220,18 +225,23 @@ pub(crate) async fn try_execute_gql_text_scan(
 /// Barrier ranking mode: row-capped top-k, or uncapped threshold filtering.
 #[derive(Clone, Copy)]
 enum CandidateBarrierMode {
-    /// Deliver the `limit` highest-scoring rows (`TopK` scan mode).
-    TopK { limit: u32 },
+    /// Deliver the `limit` rows under the `rank` contract (`TopK` scan mode).
+    TopK { limit: u32, rank: TextTopkRank },
     /// Keep every row whose candidate score satisfies `cmp bound` (`Threshold`
     /// scan mode). Candidate scoring is all-match, so filtering is complete and
     /// the result is never truncated.
     Threshold { cmp: CmpOp, bound: f64 },
-    /// Keep the `limit` highest-scoring rows of the threshold-filtered set
-    /// (`ThresholdTopK` scan mode fused after a prefix). The threshold applies
-    /// first on the complete candidate hit set, then ranking truncates — the
-    /// candidate-scoped plan 0329 order — so the result is exact and never
+    /// Keep the `limit` rows of the threshold-filtered set under the `rank`
+    /// contract (`ThresholdTopK` scan mode fused after a prefix). The threshold
+    /// applies first on the complete candidate hit set, then ranking truncates —
+    /// the candidate-scoped plan 0329 order — so the result is exact and never
     /// truncated.
-    Compound { cmp: CmpOp, bound: f64, limit: u32 },
+    Compound {
+        cmp: CmpOp,
+        bound: f64,
+        limit: u32,
+        rank: TextTopkRank,
+    },
 }
 
 /// Second residual score on a different (variable, property, label) triple:
@@ -319,20 +329,25 @@ fn analyze_candidate_barrier_shape(
         unreachable!("position matched TextScan");
     };
     let mode = match mode {
-        TextScanMode::TopK { limit } => {
+        TextScanMode::TopK { limit, rank } => {
             let limit = resolve_scan_limit(limit, params)?;
             if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
                 return Err(unsupported(
                     "row LIMIT must be within 1..=1024 in this slice",
                 ));
             }
-            CandidateBarrierMode::TopK { limit }
+            CandidateBarrierMode::TopK { limit, rank: *rank }
         }
         TextScanMode::Threshold { cmp, bound } => {
             let bound = resolve_scan_bound(bound, params)?;
             CandidateBarrierMode::Threshold { cmp: *cmp, bound }
         }
-        TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+        TextScanMode::ThresholdTopK {
+            cmp,
+            bound,
+            limit,
+            rank,
+        } => {
             let bound = resolve_scan_bound(bound, params)?;
             let limit = resolve_scan_limit(limit, params)?;
             if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
@@ -344,6 +359,7 @@ fn analyze_candidate_barrier_shape(
                 cmp: *cmp,
                 bound,
                 limit,
+                rank: *rank,
             }
         }
     };
@@ -415,11 +431,20 @@ fn analyze_candidate_barrier_shape(
                 "the second residual call is accepted at most once",
             ));
         }
-        // The second join is TopK-only in both slices: threshold and compound
-        // barriers plus DISTINCT tails stay single-score and fail closed.
-        if !matches!(mode, CandidateBarrierMode::TopK { .. }) || distinct {
+        // The second join is TopK-DESC-only in both slices: threshold and
+        // compound barriers plus DISTINCT tails stay single-score and fail
+        // closed, and an ASC second score would reorder the s1-ranked frame
+        // the join keys off — so ASC + second rejects here.
+        if !matches!(
+            mode,
+            CandidateBarrierMode::TopK {
+                rank: TextTopkRank::ScoreDescNullsLast,
+                ..
+            }
+        ) || distinct
+        {
             return Err(unsupported(
-                "a second text_score call is supported in the top-k form only, without DISTINCT",
+                "a second text_score call is supported in the descending top-k form only, without DISTINCT",
             ));
         }
         if var2 == variable.to_string() {
@@ -615,7 +640,7 @@ fn second_join_key(row: &CandidatePrefixRow, two_variable: bool) -> Option<u64> 
 /// exactly `k`; saturating for hand-built shapes). Pure: unit-tested without I/O.
 fn barrier_row_window(mode: &CandidateBarrierMode, distinct: bool, skip: u32) -> (usize, usize) {
     let window = match mode {
-        CandidateBarrierMode::TopK { limit } | CandidateBarrierMode::Compound { limit, .. } => {
+        CandidateBarrierMode::TopK { limit, .. } | CandidateBarrierMode::Compound { limit, .. } => {
             *limit as usize
         }
         // Threshold keeps every surviving row: filtering already happened above.
@@ -638,10 +663,11 @@ fn dedup_wire_rows(rows: &mut Vec<gleaph_gql_ic::GqlWireRow>) {
     }
     *rows = unique;
 }
-/// Join TEXT scores onto prefix rows and rank: scored rows order
-/// `(score desc, key asc)` (stable within identical triples, preserving prefix
-/// order); rows with a null identity (OPTIONAL MATCH misses) keep their prefix
-/// order after the scored group — the nulls-last barrier contract. Rows with a
+/// Join TEXT scores onto prefix rows and rank under the barrier `rank`
+/// contract: scored rows order `(score, key asc)` in the ranked direction
+/// (stable within identical triples, preserving prefix order); rows with a
+/// null identity (OPTIONAL MATCH misses) keep their prefix order in the null
+/// group — trailing for nulls-last, heading for nulls-first. Rows with a
 /// non-null key that never scored still drop. Truncates to the row limit, which
 /// therefore counts null rows: `LIMIT k` consumes null slots. Pure:
 /// unit-tested without I/O.
@@ -649,6 +675,7 @@ fn rank_candidate_rows(
     rows: Vec<CandidatePrefixRow>,
     scores: &BTreeMap<u64, u32>,
     limit: usize,
+    rank: TextTopkRank,
 ) -> Vec<(Option<u32>, CandidatePrefixRow)> {
     let mut ranked: Vec<(Option<u32>, usize, CandidatePrefixRow)> = Vec::new();
     for (order, row) in rows.into_iter().enumerate() {
@@ -657,12 +684,24 @@ fn rank_candidate_rows(
             ranked.push((scored, order, row));
         }
     }
+    let nulls_first = matches!(rank, TextTopkRank::ScoreAscNullsFirst);
+    let ascending = matches!(
+        rank,
+        TextTopkRank::ScoreAscNullsLast | TextTopkRank::ScoreAscNullsFirst
+    );
     ranked.sort_by(|a, b| match (&a.0, &b.0) {
-        (Some(score_a), Some(score_b)) => score_b
-            .cmp(score_a)
-            .then_with(|| a.2.key.cmp(&b.2.key))
-            .then_with(|| a.1.cmp(&b.1)),
+        (Some(score_a), Some(score_b)) => {
+            let ord = if ascending {
+                score_a.cmp(score_b)
+            } else {
+                score_b.cmp(score_a)
+            };
+            ord.then_with(|| a.2.key.cmp(&b.2.key))
+                .then_with(|| a.1.cmp(&b.1))
+        }
+        (Some(_), None) if nulls_first => std::cmp::Ordering::Greater,
         (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) if nulls_first => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         // Null-null compares equal: `sort_by` is stable, so the null group
         // keeps prefix order with no key available to tie-break.
@@ -1071,12 +1110,21 @@ async fn try_execute_candidate_text_scan(
     }
 
     let (row_cap, take) = barrier_row_window(&barrier.mode, barrier.distinct, barrier.skip);
+    // Threshold barriers carry no rank contract (filtering, not ordering); the
+    // rank call below only runs for TopK/Compound modes, so the DESC default
+    // here is dead — but explicit, never inferred.
+    let rank = match barrier.mode {
+        CandidateBarrierMode::TopK { rank, .. } | CandidateBarrierMode::Compound { rank, .. } => {
+            rank
+        }
+        CandidateBarrierMode::Threshold { .. } => TextTopkRank::ScoreDescNullsLast,
+    };
     // The skip applies AFTER ranking on the fully ordered rows (never before):
     // the barrier scan already carries the inflated `k + skip` window, and scoring
     // is all-match, so skipping here yields exactly rows `skip..skip + k`. A
     // DISTINCT tail skips nothing here: dedup runs before skip/take below.
     let ranked: Vec<(Option<u32>, CandidatePrefixRow)> =
-        rank_candidate_rows(prefix_rows, &scores, row_cap)
+        rank_candidate_rows(prefix_rows, &scores, row_cap, rank)
             .into_iter()
             .skip(if barrier.distinct {
                 0
@@ -2206,6 +2254,7 @@ mod tests {
                 cmp: CmpOp::Gt,
                 bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(2)),
+                rank: TextTopkRank::ScoreDescNullsLast,
             },
             property_projection: None,
         }
@@ -2405,6 +2454,10 @@ mod candidate_barrier_tests {
     }
 
     fn barrier_scan(limit: i64) -> PlanOp {
+        barrier_scan_with_rank(limit, TextTopkRank::ScoreDescNullsLast)
+    }
+
+    fn barrier_scan_with_rank(limit: i64, rank: TextTopkRank) -> PlanOp {
         PlanOp::TextScan {
             variable: "d".into(),
             label: NodeLabelRef::from("Document"),
@@ -2412,6 +2465,7 @@ mod candidate_barrier_tests {
             query: ScanValue::Literal(gleaph_gql::Value::Text("hello".into())),
             mode: TextScanMode::TopK {
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(limit)),
+                rank,
             },
             property_projection: None,
         }
@@ -2455,6 +2509,7 @@ mod candidate_barrier_tests {
                 cmp: CmpOp::Gt,
                 bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                rank: TextTopkRank::ScoreDescNullsLast,
             },
             property_projection: None,
         }
@@ -2514,7 +2569,10 @@ mod candidate_barrier_tests {
         assert_eq!(shape.variable, "d");
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::TopK { limit: 20 }
+            CandidateBarrierMode::TopK {
+                limit: 20,
+                rank: TextTopkRank::ScoreDescNullsLast
+            }
         ));
         assert_eq!(shape.score_col_idx, Some(1));
         assert_eq!(shape.user_col_count, 1);
@@ -2609,12 +2667,13 @@ mod candidate_barrier_tests {
             cmp: CmpOp::Gt,
             bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            rank: TextTopkRank::ScoreDescNullsLast,
         };
         let plan = test_plan(vec![node_scan_d(), scan, tail_project_no_score()]);
         let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::Compound { bound, limit: 10, .. } if bound == 0.5
+            CandidateBarrierMode::Compound { bound, limit: 10, rank: TextTopkRank::ScoreDescNullsLast, .. } if bound == 0.5
         ));
         // The row LIMIT cap is reapplied to the compound limit: 0 and >1024
         // fail closed, exactly like the TopK admission gate.
@@ -2627,6 +2686,7 @@ mod candidate_barrier_tests {
                 cmp: CmpOp::Gt,
                 bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(bad_limit)),
+                rank: TextTopkRank::ScoreDescNullsLast,
             };
             let bad_plan = test_plan(vec![node_scan_d(), bad_scan, tail_project_no_score()]);
             assert!(
@@ -2656,7 +2716,10 @@ mod candidate_barrier_tests {
         assert_eq!(shape.skip, 5);
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::TopK { limit: 15 }
+            CandidateBarrierMode::TopK {
+                limit: 15,
+                rank: TextTopkRank::ScoreDescNullsLast
+            }
         ));
         // A row count is a second cap, not a skip.
         let plan = test_plan(vec![
@@ -2715,7 +2778,10 @@ mod candidate_barrier_tests {
         assert!(shape.distinct);
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::TopK { limit: 20 }
+            CandidateBarrierMode::TopK {
+                limit: 20,
+                rank: TextTopkRank::ScoreDescNullsLast
+            }
         ));
         // Threshold + DISTINCT opens together: the dedup stage is mode-agnostic.
         let plan = test_plan(vec![
@@ -2745,6 +2811,7 @@ mod candidate_barrier_tests {
             cmp: CmpOp::Gt,
             bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            rank: TextTopkRank::ScoreDescNullsLast,
         };
         let PlanOp::Project { columns, .. } = tail_project_no_score() else {
             panic!("tail");
@@ -2761,7 +2828,11 @@ mod candidate_barrier_tests {
         assert!(shape.distinct);
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::Compound { limit: 10, .. }
+            CandidateBarrierMode::Compound {
+                limit: 10,
+                rank: TextTopkRank::ScoreDescNullsLast,
+                ..
+            }
         ));
         // DISTINCT + skip is accepted (dedup runs before skip); threshold +
         // skip stays rejected with or without DISTINCT.
@@ -2793,18 +2864,39 @@ mod candidate_barrier_tests {
     fn barrier_row_window_bypasses_cap_for_distinct() {
         // Plain tails keep the `k + skip` window as the row cap.
         assert_eq!(
-            barrier_row_window(&CandidateBarrierMode::TopK { limit: 10 }, false, 0),
+            barrier_row_window(
+                &CandidateBarrierMode::TopK {
+                    limit: 10,
+                    rank: TextTopkRank::ScoreDescNullsLast
+                },
+                false,
+                0
+            ),
             (10, 10)
         );
         // A DISTINCT tail ranks the full candidate set and takes after dedup.
         assert_eq!(
-            barrier_row_window(&CandidateBarrierMode::TopK { limit: 10 }, true, 0),
+            barrier_row_window(
+                &CandidateBarrierMode::TopK {
+                    limit: 10,
+                    rank: TextTopkRank::ScoreDescNullsLast
+                },
+                true,
+                0
+            ),
             (usize::MAX, 10)
         );
         // With a parked skip the take is the fused window minus the skip
         // (LIMIT k OFFSET n fuses to a k + n window), never the window.
         assert_eq!(
-            barrier_row_window(&CandidateBarrierMode::TopK { limit: 15 }, true, 5),
+            barrier_row_window(
+                &CandidateBarrierMode::TopK {
+                    limit: 15,
+                    rank: TextTopkRank::ScoreDescNullsLast
+                },
+                true,
+                5
+            ),
             (usize::MAX, 10)
         );
         assert_eq!(
@@ -2812,7 +2904,8 @@ mod candidate_barrier_tests {
                 &CandidateBarrierMode::Compound {
                     cmp: CmpOp::Gt,
                     bound: 0.5,
-                    limit: 15
+                    limit: 15,
+                    rank: TextTopkRank::ScoreDescNullsLast,
                 },
                 true,
                 5
@@ -2939,6 +3032,39 @@ mod candidate_barrier_tests {
     }
 
     #[test]
+    fn barrier_shape_accepts_asc_topk_and_rejects_asc_second_call() {
+        // ASC barriers admit the same shapes as DESC — except the second
+        // join: an ASC second score would reorder the s1-ranked frame the
+        // join keys off, so ASC + second fails closed while DESC + second
+        // stays composed (see `barrier_shape_accepts_second_same_variable_call`).
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_with_rank(20, TextTopkRank::ScoreAscNullsLast),
+            tail_project(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK {
+                limit: 20,
+                rank: TextTopkRank::ScoreAscNullsLast
+            }
+        ));
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_with_rank(20, TextTopkRank::ScoreAscNullsLast),
+            tail_project_dual(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_with_rank(20, TextTopkRank::ScoreAscNullsFirst),
+            tail_project_dual(),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
     fn barrier_shape_rejects_second_call_violations() {
         // The scanned call twice is not a dual score.
         let PlanOp::Project { columns, .. } = tail_project() else {
@@ -2999,6 +3125,7 @@ mod candidate_barrier_tests {
                 cmp: CmpOp::Gt,
                 bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                rank: TextTopkRank::ScoreDescNullsLast,
             };
             scan
         }] {
@@ -3138,6 +3265,7 @@ mod candidate_barrier_tests {
                 cmp: CmpOp::Gt,
                 bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
                 limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                rank: TextTopkRank::ScoreDescNullsLast,
             };
             scan
         }] {
@@ -3180,7 +3308,10 @@ mod candidate_barrier_tests {
         assert_eq!(shape.scan_idx, 2);
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::TopK { limit: 20 }
+            CandidateBarrierMode::TopK {
+                limit: 20,
+                rank: TextTopkRank::ScoreDescNullsLast
+            }
         ));
     }
 
@@ -3224,6 +3355,7 @@ mod candidate_barrier_tests {
             cmp: CmpOp::Gt,
             bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            rank: TextTopkRank::ScoreDescNullsLast,
         };
         let plan = test_plan(vec![
             node_scan_d(),
@@ -3234,7 +3366,11 @@ mod candidate_barrier_tests {
         let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::Compound { limit: 10, .. }
+            CandidateBarrierMode::Compound {
+                limit: 10,
+                rank: TextTopkRank::ScoreDescNullsLast,
+                ..
+            }
         ));
         assert_eq!(shape.skip, 0);
         assert!(!shape.distinct);
@@ -3300,6 +3436,7 @@ mod candidate_barrier_tests {
             cmp: CmpOp::Gt,
             bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
             limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            rank: TextTopkRank::ScoreDescNullsLast,
         };
         let plan = test_plan(vec![
             node_scan_d(),
@@ -3342,7 +3479,10 @@ mod candidate_barrier_tests {
         assert!(shape.distinct);
         assert!(matches!(
             shape.mode,
-            CandidateBarrierMode::TopK { limit: 20 }
+            CandidateBarrierMode::TopK {
+                limit: 20,
+                rank: TextTopkRank::ScoreDescNullsLast
+            }
         ));
     }
 
@@ -3362,7 +3502,7 @@ mod candidate_barrier_tests {
             row(Some(3)),
             row(Some(9)),
         ];
-        let ranked = rank_candidate_rows(rows, &scores, 20);
+        let ranked = rank_candidate_rows(rows, &scores, 20, TextTopkRank::ScoreDescNullsLast);
         // Scored first by (score desc, key asc); unscored non-null key 9 still
         // drops; null rows trail in prefix order.
         assert_eq!(ranked.len(), 4);
@@ -3374,11 +3514,75 @@ mod candidate_barrier_tests {
         assert_eq!(ranked[3].1.key, None);
         // Truncation counts null slots: a window of 3 keeps one null row.
         let rows = vec![row(None), row(Some(1)), row(None), row(Some(3))];
-        let ranked = rank_candidate_rows(rows, &scores, 3);
+        let ranked = rank_candidate_rows(rows, &scores, 3, TextTopkRank::ScoreDescNullsLast);
         assert_eq!(ranked.len(), 3);
         assert_eq!(ranked[0].0, Some(30));
         assert_eq!(ranked[1].0, Some(10));
         assert_eq!(ranked[2].0, None);
+    }
+
+    #[test]
+    fn rank_candidate_rows_orders_ascending_with_null_placement() {
+        use gleaph_gql_ic::GqlWireValue;
+        let row = |key: Option<u64>| CandidatePrefixRow {
+            key,
+            key2: None,
+            values: vec![GqlWireValue::Null],
+        };
+        // Equal scores tie-break key-ascending under both directions (the
+        // fixture lists key 2 before key 1 so a stable-only sort would fail).
+        let scores: BTreeMap<u64, u32> = [(1, 10), (2, 10), (3, 30)].into_iter().collect();
+        let rows = vec![
+            row(None),
+            row(Some(2)),
+            row(Some(1)),
+            row(None),
+            row(Some(3)),
+            row(Some(9)),
+        ];
+        // ASC nulls-last: scored ascending with key-ascending ties, unscored
+        // non-null key 9 still drops, nulls trail in prefix order.
+        let ranked = rank_candidate_rows(rows, &scores, 20, TextTopkRank::ScoreAscNullsLast);
+        assert_eq!(ranked.len(), 5);
+        assert_eq!(ranked[0].0, Some(10));
+        assert_eq!(ranked[0].1.key, Some(1));
+        assert_eq!(ranked[1].0, Some(10));
+        assert_eq!(ranked[1].1.key, Some(2));
+        assert_eq!(ranked[2].0, Some(30));
+        assert_eq!(ranked[3].0, None);
+        assert_eq!(ranked[4].0, None);
+        // ASC nulls-first: the null group heads in prefix order, then the
+        // scored rows ascend exactly as above.
+        let rows = vec![
+            row(None),
+            row(Some(2)),
+            row(Some(1)),
+            row(None),
+            row(Some(3)),
+            row(Some(9)),
+        ];
+        let ranked = rank_candidate_rows(rows, &scores, 20, TextTopkRank::ScoreAscNullsFirst);
+        assert_eq!(ranked.len(), 5);
+        assert_eq!(ranked[0].0, None);
+        assert_eq!(ranked[1].0, None);
+        assert_eq!(ranked[2].1.key, Some(1));
+        assert_eq!(ranked[3].1.key, Some(2));
+        assert_eq!(ranked[4].0, Some(30));
+        // LIMIT consumes null slots from the placed side: a window of 3 over
+        // [scored, null, scored] keeps one null under nulls-last …
+        let rows = vec![row(Some(3)), row(None), row(Some(1))];
+        let ranked = rank_candidate_rows(rows, &scores, 2, TextTopkRank::ScoreAscNullsLast);
+        assert_eq!(
+            ranked.iter().map(|(score, _)| *score).collect::<Vec<_>>(),
+            vec![Some(10), Some(30)]
+        );
+        // … and two nulls under nulls-first.
+        let rows = vec![row(Some(3)), row(None), row(Some(1))];
+        let ranked = rank_candidate_rows(rows, &scores, 2, TextTopkRank::ScoreAscNullsFirst);
+        assert_eq!(
+            ranked.iter().map(|(score, _)| *score).collect::<Vec<_>>(),
+            vec![None, Some(10)]
+        );
     }
 
     #[test]
@@ -3422,7 +3626,7 @@ mod candidate_barrier_tests {
         assert_eq!(rows[0].key, Some(11));
         // Ranking stays on the first score: s2 never reorders.
         let scores: BTreeMap<u64, u32> = [(11, 30), (12, 90)].into_iter().collect();
-        let ranked = rank_candidate_rows(rows, &scores, 10);
+        let ranked = rank_candidate_rows(rows, &scores, 10, TextTopkRank::ScoreDescNullsLast);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, Some(30));
     }
@@ -3473,7 +3677,7 @@ mod candidate_barrier_tests {
             },
         ];
         let scores: BTreeMap<u64, u32> = [(1, 10), (3, 30)].into_iter().collect();
-        let ranked = rank_candidate_rows(rows, &scores, 20);
+        let ranked = rank_candidate_rows(rows, &scores, 20, TextTopkRank::ScoreDescNullsLast);
         // Key 9 unmatched (dropped); key 3 twice (both prefix paths survive).
         assert_eq!(ranked.len(), 3);
         assert_eq!(ranked[0].1.key, Some(3));
@@ -3495,7 +3699,7 @@ mod candidate_barrier_tests {
                 values: vec![],
             },
         ];
-        let ranked = rank_candidate_rows(rows, &scores, 1);
+        let ranked = rank_candidate_rows(rows, &scores, 1, TextTopkRank::ScoreDescNullsLast);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, Some(30));
     }
@@ -3516,7 +3720,7 @@ mod candidate_barrier_tests {
             },
         ];
         let scores: BTreeMap<u64, u32> = [(7, 5), (2, 5)].into_iter().collect();
-        let ranked = rank_candidate_rows(rows, &scores, 10);
+        let ranked = rank_candidate_rows(rows, &scores, 10, TextTopkRank::ScoreDescNullsLast);
         assert_eq!(ranked[0].1.key, Some(2));
         assert_eq!(ranked[1].1.key, Some(7));
     }
