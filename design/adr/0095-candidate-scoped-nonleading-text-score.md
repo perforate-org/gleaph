@@ -382,3 +382,12 @@ Covered live by two PocketIC tests reusing the candidate and nested fixtures:
 bare-ASC over the full 42-row frame ascends with the DESC frame's score
 multiset, and nested `ASC NULLS FIRST` heads the two prefix-ordered misses
 before the ascending scored tail, both with replay determinism.
+
+## Addendum: aggregates over text_score (deferred 2026-09-11)
+
+Aggregates over `text_score` (global `AVG`/`MAX`/`MIN`/`SUM`/`COUNT`) stay
+deferred: no demand exists in-repo, and industry demand (e.g.
+Elasticsearch per-bucket average score) points at the grouped form, which
+would need a separate score-by-group-key slice — not the cheap global
+window fold. Current shape fails closed safely (no barrier, residual
+rejected). If demand appears, design from the grouped form.
