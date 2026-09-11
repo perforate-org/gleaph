@@ -64,7 +64,8 @@ enum TopLevelCommand {
     /// Validate, plan, and apply immutable schema migrations.
     #[command(subcommand)]
     Migration(MigrationCommand),
-    /// Load initial vertices and edges into an existing logical graph.
+    /// Load initial vertices and edges into an existing logical graph (`--mode update`
+    /// applies vertex property SET rows instead of inserting).
     Load(LoadArgs),
     /// Push deterministic vertex embeddings into a registered vector index.
     #[command(subcommand)]
@@ -1506,6 +1507,7 @@ mod tests {
     use super::config::{ConfigEnv, LoadedConfig};
     use super::{Cli, is_dispatchable_top_level, resolve_codegen, resolve_load, run, run_with_env};
     use crate::load::LoadArgs;
+    use crate::load::LoadMode;
     use clap::CommandFactory as _;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1774,6 +1776,8 @@ mod tests {
                 format: None,
                 vertices: None,
                 edges: None,
+                updates: None,
+                mode: LoadMode::Insert,
                 fresh: false,
                 state_file: None,
             },

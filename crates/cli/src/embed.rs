@@ -710,6 +710,7 @@ mod tests {
                 logical_edge_count: 0,
                 allocated_vertex_ids: ids.iter().map(|id| id.to_vec()).collect(),
             },
+            updated_row_count: 0,
         }
     }
 
@@ -723,6 +724,7 @@ mod tests {
                 logical_edge_count: 1,
                 allocated_vertex_ids: Vec::new(),
             },
+            updated_row_count: 0,
         }
     }
 

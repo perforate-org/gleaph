@@ -178,6 +178,7 @@ impl BulkLoadGraphReceiptV1 {
 pub enum BulkLoadChunkEnvelopeV1 {
     Vertices(Vec<crate::types::AtomicInsertVertexV1>),
     Edges(Vec<BulkLoadEdgeV1>),
+    Updates(Vec<crate::types::BulkLoadUpdateV1>),
 }
 
 impl BulkLoadChunkEnvelopeV1 {
@@ -204,10 +205,20 @@ impl BulkLoadChunkEnvelopeV1 {
                     });
                 }
             }
+            BulkLoadChunkV1::Updates(items) => {
+                for item in items {
+                    item.set_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
         }
         match normalized {
             BulkLoadChunkV1::Vertices(items) => Self::Vertices(items),
             BulkLoadChunkV1::Edges(items) => Self::Edges(items),
+            BulkLoadChunkV1::Updates(items) => Self::Updates(items),
         }
     }
 
@@ -215,6 +226,7 @@ impl BulkLoadChunkEnvelopeV1 {
         match self {
             Self::Vertices(items) => BulkLoadChunkV1::Vertices(items.clone()),
             Self::Edges(items) => BulkLoadChunkV1::Edges(items.clone()),
+            Self::Updates(items) => BulkLoadChunkV1::Updates(items.clone()),
         }
     }
 
@@ -230,6 +242,7 @@ impl BulkLoadChunkEnvelopeV1 {
         match self {
             Self::Vertices(items) => items.len(),
             Self::Edges(items) => items.len(),
+            Self::Updates(items) => items.len(),
         }
     }
 }
@@ -252,6 +265,10 @@ pub struct BulkLoadChunkReceiptRecordV1 {
     pub public_receipt: Option<AtomicInsertReceiptV1>,
     pub graph_receipt: Option<BulkLoadGraphReceiptV1>,
     pub completed_at_ns: Option<u64>,
+    /// `Some(n)` marks an update chunk with `n` committed rows. Insert chunks always use
+    /// `None`; update chunks never carry a Graph request or insert receipts (their durability
+    /// is the per-row GQL mutation journal plus this count).
+    pub updated_row_count: Option<u64>,
 }
 
 impl BulkLoadChunkReceiptRecordV1 {
@@ -279,24 +296,45 @@ impl BulkLoadChunkReceiptRecordV1 {
         }
         match self.progress {
             BulkLoadChunkProgressV1::CanonicalPending => {
-                if self.graph_request.is_none() {
-                    return Err(
-                        "bulk-load CanonicalPending row must retain the Graph request".into(),
-                    );
-                }
-                if self.public_receipt.is_some()
-                    || self.graph_receipt.is_some()
-                    || self.completed_at_ns.is_some()
-                {
-                    return Err(
-                        "bulk-load CanonicalPending row must not carry a receipt or completion time"
-                            .into(),
-                    );
+                if self.updated_row_count.is_some() {
+                    // Update chunks resolve through the GQL mutation journal, not the ordered
+                    // Graph batch, so they retain no Graph request.
+                    if self.graph_request.is_some()
+                        || self.public_receipt.is_some()
+                        || self.graph_receipt.is_some()
+                        || self.completed_at_ns.is_some()
+                    {
+                        return Err(
+                            "bulk-load update CanonicalPending row must not carry a request, receipt, or completion time"
+                                .into(),
+                        );
+                    }
+                } else {
+                    if self.graph_request.is_none() {
+                        return Err(
+                            "bulk-load CanonicalPending row must retain the Graph request".into(),
+                        );
+                    }
+                    if self.public_receipt.is_some()
+                        || self.graph_receipt.is_some()
+                        || self.completed_at_ns.is_some()
+                    {
+                        return Err(
+                            "bulk-load CanonicalPending row must not carry a receipt or completion time"
+                                .into(),
+                        );
+                    }
                 }
             }
             BulkLoadChunkProgressV1::CanonicalCommitted
             | BulkLoadChunkProgressV1::ProjectionPending
             | BulkLoadChunkProgressV1::RetirementPending => {
+                if self.updated_row_count.is_some() {
+                    return Err(
+                        "bulk-load update row must never enter the ordered-batch progress states"
+                            .into(),
+                    );
+                }
                 if self.graph_request.is_none() {
                     return Err(
                         "bulk-load non-terminal row must retain the Graph request for replay"
@@ -323,6 +361,19 @@ impl BulkLoadChunkReceiptRecordV1 {
                     return Err(
                         "completed bulk-load row must be compacted (Graph request removed)".into(),
                     );
+                }
+                if self.updated_row_count.is_some() {
+                    if self.public_receipt.is_some() || self.graph_receipt.is_some() {
+                        return Err(
+                            "completed bulk-load update row must not carry insert receipts".into(),
+                        );
+                    }
+                    if self.completed_at_ns.is_none() {
+                        return Err(
+                            "completed bulk-load update row requires completion time".into()
+                        );
+                    }
+                    return Ok(());
                 }
                 let graph_receipt = self
                     .graph_receipt
@@ -450,6 +501,7 @@ mod tests {
             public_receipt: None,
             graph_receipt: None,
             completed_at_ns: None,
+            updated_row_count: None,
         };
         row.validate().unwrap();
         (BulkLoadChunkReceiptKey::new(1, 0), row)
@@ -481,6 +533,7 @@ mod tests {
             public_receipt: Some(public_receipt),
             graph_receipt: Some(graph_receipt),
             completed_at_ns: Some(10),
+            updated_row_count: None,
         };
         row.validate().unwrap();
         (BulkLoadChunkReceiptKey::new(1, 0), row)

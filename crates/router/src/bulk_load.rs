@@ -37,10 +37,12 @@ use crate::graph_client::{
 use crate::index_lookup::RouterIndexLookup;
 use crate::state::RouterError;
 use crate::types::{
-    AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertRequest, AtomicInsertRequestV1,
-    BulkLoadChunkReceiptV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadEndpointV1,
-    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertReceiptV1, AtomicInsertRequest,
+    AtomicInsertRequestV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1, BulkLoadCommand,
+    BulkLoadEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    BulkLoadUpdateV1,
 };
+use gleaph_gql::{Value, value_to_index_key_bytes};
 
 fn invalid(message: impl Into<String>) -> RouterError {
     RouterError::InvalidArgument(message.into())
@@ -156,6 +158,11 @@ fn atomic_request_from_chunk(
                 ))
             })
             .collect::<Result<Vec<_>, RouterError>>()?,
+        BulkLoadChunkV1::Updates(_) => {
+            return Err(invalid(
+                "bulk-load update chunks never build ordered atomic-insert requests",
+            ));
+        }
     };
     Ok(AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: client_bulk_key.to_owned(),
@@ -221,8 +228,35 @@ async fn resolve_by_property_endpoints(
             }
         }
     }
+    let resolved = resolve_property_refs(store, graph_id, encoding_key, &distinct).await?;
+
+    let items = items
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            item.source = resolve_endpoint(item.source, &resolved)?;
+            item.target = resolve_endpoint(item.target, &resolved)?;
+            Ok(item)
+        })
+        .collect::<Result<Vec<_>, RouterError>>()?;
+    Ok(BulkLoadChunkV1::Edges(items))
+}
+
+/// Resolve a set of distinct `(vertex_label, property_name, index-key value)` references
+/// through the graph property index. The whole candidate set is rejected when any value is
+/// missing or non-unique, or when the required converged property index on
+/// `(vertex_label, property_name)` does not exist. References are grouped by `(label,
+/// property)` and resolved with one batched equality request per group, following the index
+/// resume cursor until every bucket is answered. Shared by edge-endpoint and update-match-key
+/// resolution so both reject identically before any operation executes.
+async fn resolve_property_refs(
+    store: &RouterStore,
+    graph_id: GraphId,
+    encoding_key: &ElementIdEncodingKey,
+    distinct: &BTreeSet<ByPropertyRef>,
+) -> Result<BTreeMap<ByPropertyRef, Vec<u8>>, RouterError> {
     let mut groups: BTreeMap<(String, String), Vec<Vec<u8>>> = BTreeMap::new();
-    for reference in &distinct {
+    for reference in distinct {
         groups
             .entry((
                 reference.vertex_label.clone(),
@@ -272,17 +306,7 @@ async fn resolve_by_property_endpoints(
             );
         }
     }
-
-    let items = items
-        .iter()
-        .cloned()
-        .map(|mut item| {
-            item.source = resolve_endpoint(item.source, &resolved)?;
-            item.target = resolve_endpoint(item.target, &resolved)?;
-            Ok(item)
-        })
-        .collect::<Result<Vec<_>, RouterError>>()?;
-    Ok(BulkLoadChunkV1::Edges(items))
+    Ok(resolved)
 }
 
 /// Replace a resolved `ByProperty` endpoint with its encoded `Existing` vertex ID.
@@ -306,6 +330,193 @@ fn resolve_endpoint(
             Ok(BulkLoadEndpointV1::Existing(encoded.clone()))
         }
     }
+}
+
+/// One match-key-resolved update row ready for GQL journal execution.
+struct ResolvedUpdateRow {
+    vertex_label: String,
+    property_name: String,
+    match_value: Value,
+    set_properties: Vec<(String, Value)>,
+}
+
+/// Resolve every update match key in the chunk through the graph property index. The whole
+/// candidate chunk is rejected before any row executes when any match key is missing or
+/// non-unique, when a match value is not index-comparable, or when the required converged
+/// property index on `(vertex_label, property_name)` does not exist. Match-key catalog names
+/// (labels plus match and SET property names) are additionally pre-checked against the label
+/// and property catalogs so unknown names reject before admission; SET values decode with the
+/// row so malformed binaries never reach dispatch.
+async fn resolve_update_match_keys(
+    store: &RouterStore,
+    graph_id: GraphId,
+    encoding_key: &ElementIdEncodingKey,
+    items: &[BulkLoadUpdateV1],
+) -> Result<Vec<ResolvedUpdateRow>, RouterError> {
+    let mut label_names = BTreeSet::new();
+    let mut property_names = BTreeSet::new();
+    for item in items {
+        label_names.insert(item.vertex_label.clone());
+        property_names.insert(item.property_name.clone());
+        for set in &item.set_properties {
+            property_names.insert(set.property_name.clone());
+        }
+    }
+    store.resolve_ordered_vertex_catalogs(graph_id, label_names, property_names)?;
+
+    let mut distinct = BTreeSet::new();
+    let mut decoded: Vec<(ByPropertyRef, Value, Vec<(String, Value)>)> =
+        Vec::with_capacity(items.len());
+    for item in items {
+        let match_value = Value::from_binary_bytes(&item.match_value).map_err(|error| {
+            invalid(format!(
+                "bulk-load update match value is not a binary-encoded GQL value: {error}"
+            ))
+        })?;
+        let Some(index_key) = value_to_index_key_bytes(&match_value).map_err(|error| {
+            invalid(format!(
+                "bulk-load update match value is not supported by property index keys: {error}"
+            ))
+        })?
+        else {
+            return Err(invalid(
+                "bulk-load update match value is not index-comparable",
+            ));
+        };
+        let mut set_properties = Vec::with_capacity(item.set_properties.len());
+        for set in &item.set_properties {
+            let value = Value::from_binary_bytes(&set.value).map_err(|error| {
+                invalid(format!(
+                    "bulk-load update SET value for {} is not a binary-encoded GQL value: {error}",
+                    set.property_name
+                ))
+            })?;
+            set_properties.push((set.property_name.clone(), value));
+        }
+        let reference = ByPropertyRef {
+            vertex_label: item.vertex_label.clone(),
+            property_name: item.property_name.clone(),
+            value: index_key,
+        };
+        distinct.insert(reference.clone());
+        decoded.push((reference, match_value, set_properties));
+    }
+    let resolved = resolve_property_refs(store, graph_id, encoding_key, &distinct).await?;
+    decoded
+        .into_iter()
+        .map(|(reference, match_value, set_properties)| {
+            if !resolved.contains_key(&reference) {
+                return Err(RouterError::Internal(
+                    "resolved update match-key map is missing a reference".into(),
+                ));
+            }
+            Ok(ResolvedUpdateRow {
+                vertex_label: reference.vertex_label,
+                property_name: reference.property_name,
+                match_value,
+                set_properties,
+            })
+        })
+        .collect()
+}
+
+/// Quote a label or property name for embedding in a generated GQL statement.
+fn quote_gql_name(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// Execute every resolved update row through the durable per-row GQL mutation journal and
+/// complete the child row. Resolution happens before admission, so match-key failures never
+/// surface as a partial commit; per-row journal keys make re-execution after a crash converge
+/// without double application (SET is an absolute assignment).
+async fn append_bulk_load_updates(
+    graph_name: Option<String>,
+    client_bulk_key: String,
+    chunk_index: u32,
+    chunk_fingerprint: [u8; 32],
+    items: Vec<BulkLoadUpdateV1>,
+) -> Result<BulkLoadResponse, RouterError> {
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
+    let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
+    let parent_mutation_id = record.as_v1().mutation_id;
+    let coordinator = bulk_parent(&record)?.clone();
+    if coordinator.receipt_gc_cursor.is_some() {
+        return Err(RouterError::Conflict(
+            "client_bulk_key expired while bulk-load receipt GC is active".into(),
+        ));
+    }
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    if let Some(child) = store.bulk_load_chunk_receipt(parent_mutation_id, chunk_index)
+        && child.chunk_fingerprint != chunk_fingerprint
+    {
+        return Err(RouterError::Conflict(
+            "bulk-load chunk fingerprint conflicts with the durable row".into(),
+        ));
+    }
+
+    let resolved = resolve_update_match_keys(&store, graph_id, &encoding_key, &items).await?;
+    store.admit_bulk_load_update_child(
+        caller,
+        graph_id,
+        &client_bulk_key,
+        parent_mutation_id,
+        chunk_index,
+        chunk_fingerprint,
+    )?;
+    for (row_ordinal, row) in resolved.iter().enumerate() {
+        let mut assignments = Vec::with_capacity(row.set_properties.len());
+        let mut fields = Vec::with_capacity(row.set_properties.len() + 1);
+        fields.push(("k".to_string(), row.match_value.clone()));
+        for (position, (name, value)) in row.set_properties.iter().enumerate() {
+            let param = format!("s{position}");
+            assignments.push(format!("v.{} = ${param}", quote_gql_name(name)));
+            fields.push((param.clone(), value.clone()));
+        }
+        let statement = format!(
+            "MATCH (v:{}) WHERE v.{} = $k SET {} RETURN v.{}",
+            quote_gql_name(&row.vertex_label),
+            quote_gql_name(&row.property_name),
+            assignments.join(", "),
+            quote_gql_name(&row.property_name),
+        );
+        let params = gleaph_gql_ic::encode_gql_params_blob(fields)
+            .map_err(|error| invalid(format!("bulk-load update params encode failed: {error}")))?;
+        let row_key = format!("{client_bulk_key}:{chunk_index}:u{row_ordinal}");
+        if row_key.len() > 256 {
+            return Err(invalid(
+                "bulk-load update row mutation key exceeds 256 bytes; use a shorter client_bulk_key",
+            ));
+        }
+        // NB: GQL mutations report `row_count` 0 even when the write lands (RETURN rows are
+        // not projected through the write path — the literal-SET probe in
+        // `adr0057_durable_bulk_load` covers this), so the outcome is only checked for errors.
+        // Exactly-one matching is already guaranteed by the resolve-before-admit pre-pass
+        // (missing/non-unique keys reject the whole chunk), and the statement re-selects by
+        // the identical match key; the E2E verifies the end state with follow-up reads.
+        let _outcome =
+            crate::gql::gql_execute_idempotent_with_batch(statement, params, row_key).await?;
+    }
+    let updated_row_count = u64::try_from(resolved.len())
+        .map_err(|_| RouterError::Internal("bulk-load update row count exceeds u64".into()))?;
+    store.complete_bulk_load_update_child(
+        caller,
+        graph_id,
+        &client_bulk_key,
+        parent_mutation_id,
+        chunk_index,
+        chunk_fingerprint,
+        updated_row_count,
+        time(),
+    )?;
+    Ok(BulkLoadResponse::Updated {
+        chunk_index,
+        next_offset: u32::try_from(resolved.len())
+            .map_err(|_| RouterError::Internal("bulk-load update row count exceeds u32".into()))?,
+        updated_row_count,
+    })
 }
 
 /// Classify one group's per-value postings: exactly one live posting resolves the value, zero is
@@ -774,6 +985,20 @@ async fn append_bulk_load(
     chunk_index: u32,
     chunk: BulkLoadChunkV1,
 ) -> Result<BulkLoadResponse, RouterError> {
+    if let BulkLoadChunkV1::Updates(items) = chunk {
+        let chunk_fingerprint =
+            BulkLoadChunkEnvelopeV1::from_chunk(&BulkLoadChunkV1::Updates(items.clone()))
+                .fingerprint()
+                .map_err(invalid)?;
+        return append_bulk_load_updates(
+            graph_name,
+            client_bulk_key,
+            chunk_index,
+            chunk_fingerprint,
+            items,
+        )
+        .await;
+    }
     let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
     let chunk_fingerprint = chunk_envelope.fingerprint().map_err(invalid)?;
     let caller = msg_caller();
@@ -841,6 +1066,7 @@ async fn append_bulk_load(
         chunk_fingerprint,
         graph_request: Some(graph_request),
         graph_request_fingerprint: Some(graph_request_fingerprint),
+        updated_row_count: None,
         child_mutation_id: 1,
         progress: BulkLoadChunkProgressV1::CanonicalPending,
         public_receipt: None,
@@ -918,6 +1144,14 @@ async fn abort_bulk_load(
             .bulk_load_chunk_receipt(parent_mutation_id, active_chunk)
             .ok_or_else(|| RouterError::Internal("bulk-load abort child row is missing".into()))?;
         let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+        if child.updated_row_count.is_some() {
+            // Update chunks persist only the fingerprint, not the match-key payload, so an
+            // in-flight update child cannot be finished from durable state. Re-append the same
+            // chunk first (idempotent journal replay completes it), then abort.
+            return Err(RouterError::Conflict(
+                "bulk-load abort is blocked by an in-flight update chunk; re-append the chunk to complete it, then abort".into(),
+            ));
+        }
         drive_bulk_child(
             &store,
             caller,
@@ -993,11 +1227,26 @@ pub(crate) fn bulk_load_status_public(
     let receipts = rows
         .iter()
         .filter_map(|(chunk_index, row)| {
+            if let Some(updated_row_count) = row.updated_row_count {
+                // Update chunks carry no insert receipt; report a zero receipt plus the
+                // committed row count.
+                return Some(BulkLoadChunkReceiptV1 {
+                    chunk_index: *chunk_index,
+                    receipt: AtomicInsertReceiptV1 {
+                        logical_operation_count: 0,
+                        logical_vertex_count: 0,
+                        logical_edge_count: 0,
+                        allocated_vertex_ids: Vec::new(),
+                    },
+                    updated_row_count,
+                });
+            }
             row.public_receipt
                 .clone()
                 .map(|receipt| BulkLoadChunkReceiptV1 {
                     chunk_index: *chunk_index,
                     receipt,
+                    updated_row_count: 0,
                 })
         })
         .collect::<Vec<_>>();

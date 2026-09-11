@@ -1118,6 +1118,7 @@ fn bulk_bench_receipt_row(
         public_receipt,
         graph_receipt,
         completed_at_ns,
+        updated_row_count: None,
     };
     row.validate().expect("valid bulk-load benchmark row");
     (

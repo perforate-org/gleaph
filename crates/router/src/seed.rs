@@ -1397,8 +1397,12 @@ fn expr_literal_or_param<'a>(
 ) -> Result<&'a Value, RouterError> {
     match &expr.kind {
         ExprKind::Literal(value) => Ok(value),
+        // The parser stores parameter names with the `$` sigil (`Parameter("$k")`) while the
+        // wire params map is keyed by the bare name (the convention shared by the Graph
+        // executor, text_score, and search resolutions). Strip the sigil so a Router seed
+        // anchor and the downstream Graph dispatch resolve the same blob.
         ExprKind::Parameter(name) => params
-            .get(name.as_str())
+            .get(name.strip_prefix('$').unwrap_or(name.as_str()))
             .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into())),
         _ => Err(RouterError::InvalidArgument(
             "seed filter expects literal or parameter".into(),
@@ -1644,7 +1648,7 @@ pub(crate) fn resolve_scan_value(
         })?,
         ScanValue::Parameter(name) => {
             let v = parameters
-                .get(name.as_ref())
+                .get(name.strip_prefix('$').unwrap_or(name.as_ref()))
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             value_to_index_key_bytes(v).map_err(|_| {
                 RouterError::InvalidArgument("seed filter value is not indexable".into())
@@ -1899,7 +1903,7 @@ mod tests {
         assert_eq!(probe.property_id, 1);
         assert!(!probe.payload_bytes.is_empty());
 
-        params.insert("$x".into(), Value::Text("alice".into()));
+        params.insert("x".into(), Value::Text("alice".into()));
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
             variable: Rc::from("u"),
             property: Rc::from("uid"),
@@ -2062,7 +2066,7 @@ mod tests {
             ordered_by_sort: None,
         }]);
         let mut params = BTreeMap::new();
-        params.insert("$rest".to_string(), Value::Text("EU".into()));
+        params.insert("rest".to_string(), Value::Text("EU".into()));
 
         let set = SeedAnchorSet::from_plans(std::slice::from_ref(&plan), &params, &store, &stats)
             .expect("anchors")
@@ -2167,7 +2171,7 @@ mod tests {
             },
         ]);
         let mut params = BTreeMap::new();
-        params.insert("$pre".to_string(), Value::Text("StrPred".into()));
+        params.insert("pre".to_string(), Value::Text("StrPred".into()));
 
         let set = SeedAnchorSet::from_plans(std::slice::from_ref(&plan), &params, &store, &stats)
             .expect("anchors")
@@ -2524,7 +2528,7 @@ mod tests {
             },
         ]);
         let mut params = BTreeMap::new();
-        params.insert("$rest".to_string(), Value::Int64(9));
+        params.insert("rest".to_string(), Value::Int64(9));
 
         let anchor =
             IndexAnchor::from_plans(std::slice::from_ref(&plan), &params, &store, graph_id)

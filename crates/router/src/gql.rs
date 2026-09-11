@@ -10473,8 +10473,8 @@ mod tests {
         let plan_indexed =
             build_router_block_plan(block, &NoSchema, &stats_indexed).expect("plan indexed");
         let mut params = BTreeMap::new();
-        params.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
-        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
+        params.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
+        params.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
         let indexed_set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan_indexed),
             &params,

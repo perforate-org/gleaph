@@ -491,6 +491,185 @@ impl RouterStore {
         Ok(child_mutation_id)
     }
 
+    /// Admit an update chunk child row. Unlike insert children, update rows carry no Graph
+    /// request: match-key resolution and per-row GQL journal execution happen after admission,
+    /// and [`Self::complete_bulk_load_update_child`] finalizes the row once every row is
+    /// committed. A replayed admission with the same fingerprint is accepted so a retried
+    /// `Append` re-executes idempotently instead of conflicting.
+    pub(crate) fn admit_bulk_load_update_child(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        parent_mutation_id: MutationId,
+        chunk_index: u32,
+        chunk_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        validate_client_mutation_key(client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        let mut parent = ROUTER_MUTATION_BY_CLIENT_KEY
+            .with_borrow(|map| map.get(&key))
+            .ok_or_else(|| RouterError::NotFound(client_key.to_owned()))?;
+        if parent.as_v1().mutation_id != parent_mutation_id {
+            return Err(RouterError::Conflict(
+                "bulk-load parent mutation id mismatch".into(),
+            ));
+        }
+        let mut coordinator = bulk_parent(&parent)?.clone();
+        if coordinator.receipt_gc_cursor.is_some() {
+            return Err(RouterError::Conflict(
+                "client_mutation_key expired while bulk-load receipt GC is active".into(),
+            ));
+        }
+        let existing_key = receipt_key(parent_mutation_id, chunk_index);
+        if let Some(existing) =
+            ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| map.get(&existing_key))
+        {
+            if existing.chunk_fingerprint == chunk_fingerprint
+                && existing.updated_row_count.is_some()
+            {
+                existing.validate().unwrap_or_else(|error| {
+                    panic!("invalid durable bulk-load child receipt: {error}")
+                });
+                return Ok(());
+            }
+            return Err(RouterError::Conflict(
+                "bulk-load chunk index was already used for a different fingerprint".into(),
+            ));
+        }
+        if !matches!(coordinator.lifecycle, BulkLoadLifecycleV1::Open)
+            || chunk_index != coordinator.next_chunk_index
+        {
+            return Err(RouterError::Conflict(
+                "bulk-load append is not the next admissible chunk".into(),
+            ));
+        }
+        let child_mutation_id = ROUTER_MUTATION_COUNTER.with_borrow(|counter| {
+            counter
+                .get()
+                .checked_add(1)
+                .filter(|next| *next != 0 && *next != parent_mutation_id)
+                .ok_or_else(|| RouterError::IdExhausted("mutation_id".into()))
+        })?;
+        let child = BulkLoadChunkReceiptRecordV1 {
+            chunk_fingerprint,
+            graph_request: None,
+            graph_request_fingerprint: None,
+            child_mutation_id,
+            progress: BulkLoadChunkProgressV1::CanonicalPending,
+            public_receipt: None,
+            graph_receipt: None,
+            completed_at_ns: None,
+            updated_row_count: Some(0),
+        };
+        child.validate().map_err(RouterError::InvalidArgument)?;
+        coordinator.lifecycle = BulkLoadLifecycleV1::AppendPending {
+            chunk_index,
+            fingerprint: chunk_fingerprint,
+            child_mutation_id,
+        };
+        coordinator.validate()?;
+        *bulk_parent_mut(&mut parent)? = coordinator;
+        ensure_record_bound(&parent);
+        ensure_receipt_bound(&child);
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id));
+        ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.insert(existing_key, child));
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, parent));
+        Ok(())
+    }
+
+    /// Complete an update chunk child row after every row of the candidate batch committed.
+    /// `updated_row_count` is the committed prefix length; completing an already-`Completed`
+    /// row is a no-op so `Append` replay converges. Committed and completed counters advance
+    /// together, preserving the finalize aggregate invariant.
+    pub(crate) fn complete_bulk_load_update_child(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        parent_mutation_id: MutationId,
+        chunk_index: u32,
+        chunk_fingerprint: [u8; 32],
+        updated_row_count: u64,
+        now: u64,
+    ) -> Result<(), RouterError> {
+        self.with_bulk_child_transition(
+            caller,
+            graph_id,
+            client_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+            Some(now),
+            move |child, coordinator| {
+                if child.updated_row_count.is_none() {
+                    return Err(RouterError::Conflict(
+                        "bulk-load update completion targets an insert child row".into(),
+                    ));
+                }
+                if child.progress == BulkLoadChunkProgressV1::Completed {
+                    if let BulkLoadLifecycleV1::AbortPending { .. } = coordinator.lifecycle {
+                        coordinator.completed_chunk_count = coordinator
+                            .completed_chunk_count
+                            .checked_add(1)
+                            .ok_or_else(|| {
+                                RouterError::InvalidArgument(
+                                    "bulk-load completed count overflow".into(),
+                                )
+                            })?;
+                        coordinator.next_chunk_index =
+                            coordinator.next_chunk_index.checked_add(1).ok_or_else(|| {
+                                RouterError::InvalidArgument(
+                                    "bulk-load chunk index overflow".into(),
+                                )
+                            })?;
+                        coordinator.lifecycle = BulkLoadLifecycleV1::Aborted;
+                    }
+                    return Ok(());
+                }
+                if child.progress != BulkLoadChunkProgressV1::CanonicalPending {
+                    return Err(RouterError::Busy {
+                        operation: "bulk_load.append".into(),
+                    });
+                }
+                child.progress = BulkLoadChunkProgressV1::Completed;
+                child.completed_at_ns = Some(now);
+                child.updated_row_count = Some(updated_row_count);
+                coordinator.committed_chunk_count = coordinator
+                    .committed_chunk_count
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        RouterError::InvalidArgument("bulk-load committed count overflow".into())
+                    })?;
+                coordinator.completed_chunk_count = coordinator
+                    .completed_chunk_count
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        RouterError::InvalidArgument("bulk-load completed count overflow".into())
+                    })?;
+                coordinator.next_chunk_index =
+                    coordinator.next_chunk_index.checked_add(1).ok_or_else(|| {
+                        RouterError::InvalidArgument("bulk-load chunk index overflow".into())
+                    })?;
+                match coordinator.lifecycle {
+                    BulkLoadLifecycleV1::AppendPending { .. } => {
+                        coordinator.lifecycle = BulkLoadLifecycleV1::Open;
+                    }
+                    BulkLoadLifecycleV1::AbortPending { .. } => {
+                        coordinator.lifecycle = BulkLoadLifecycleV1::Aborted;
+                    }
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "bulk-load child completion has no matching active parent".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+
     fn with_bulk_child_transition<F>(
         &self,
         caller: Principal,
@@ -1131,8 +1310,97 @@ mod tests {
             public_receipt: None,
             graph_receipt: None,
             completed_at_ns: None,
+            updated_row_count: None,
         };
         (row, graph_receipt, public_receipt)
+    }
+
+    #[test]
+    fn bulk_load_update_child_admit_complete_and_replay() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([31; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let admission = store
+            .start_bulk_load_job(caller, graph_id, "update-job", fixture_target(), 1)
+            .expect("start update job");
+        let parent_id = match admission {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            BulkLoadStartAdmission::Replay { .. } => panic!("first Start must create"),
+        };
+        let fingerprint = [9u8; 32];
+        store
+            .admit_bulk_load_update_child(caller, graph_id, "update-job", parent_id, 0, fingerprint)
+            .expect("admit update child");
+        // Exact replay of the same fingerprint replays without allocating a second child.
+        store
+            .admit_bulk_load_update_child(caller, graph_id, "update-job", parent_id, 0, fingerprint)
+            .expect("replay update child");
+        assert!(
+            store.bulk_load_chunk_receipt(parent_id, 1).is_none(),
+            "replay must not allocate a second row"
+        );
+        // A different fingerprint on the same chunk is a conflict, never a second row.
+        let conflict = store.admit_bulk_load_update_child(
+            caller,
+            graph_id,
+            "update-job",
+            parent_id,
+            0,
+            [10u8; 32],
+        );
+        assert!(
+            matches!(conflict, Err(RouterError::Conflict(_))),
+            "divergent update chunk must conflict, got {conflict:?}"
+        );
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                "update-job",
+                parent_id,
+                0,
+                fingerprint,
+                3,
+                2,
+            )
+            .expect("complete update child");
+        let row = store
+            .bulk_load_chunk_receipt(parent_id, 0)
+            .expect("update receipt row");
+        assert_eq!(row.progress, BulkLoadChunkProgressV1::Completed);
+        assert_eq!(row.updated_row_count, Some(3));
+        assert!(
+            row.graph_request.is_none(),
+            "updates persist no Graph request"
+        );
+        // Completing the terminal row again is a no-op (replay-safe Finalize path).
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                "update-job",
+                parent_id,
+                0,
+                fingerprint,
+                3,
+                3,
+            )
+            .expect("replayed complete");
+        let parent = store
+            .router_mutation_record(&crate::facade::store::idempotency::client_mutation_key(
+                caller,
+                graph_id,
+                "update-job",
+            ))
+            .expect("parent record");
+        let coordinator = match parent.payload() {
+            RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) => coordinator.clone(),
+            other => panic!("bulk parent payload, got {other:?}"),
+        };
+        assert_eq!(coordinator.committed_chunk_count, 1);
+        assert_eq!(coordinator.completed_chunk_count, 1);
+        assert_eq!(coordinator.next_chunk_index, 1);
     }
 
     #[test]

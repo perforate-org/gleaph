@@ -32,8 +32,8 @@ pub use gleaph_bulk_load_api::{
     AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertPropertyV1,
     AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
     BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1, BulkLoadPropertyEndpointV1,
-    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, MAX_ATOMIC_INSERT_OPERATIONS,
-    MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, BulkLoadUpdateV1,
+    MAX_ATOMIC_INSERT_OPERATIONS, MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
 };
 
 /// Registry-local summary row for one logical graph (ADR 0056 §7). Computed from Router stable
@@ -320,6 +320,7 @@ pub(crate) fn validate_max_receipts(max_receipts: u32) -> Result<(), String> {
             .map(|chunk_index| BulkLoadChunkReceiptV1 {
                 chunk_index,
                 receipt: receipt.clone(),
+                updated_row_count: 0,
             })
             .collect(),
         next_receipt_cursor: Some(u32::MAX),

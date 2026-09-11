@@ -127,13 +127,32 @@ pub enum BulkLoadCommand {
     },
 }
 
-/// Self-contained vertex-only or existing-ID edge-only chunk.
+/// Self-contained vertex-only, existing-ID edge-only, or vertex-property-update chunk.
+/// Update chunks carry one `{ label, property, value }` match key per row plus absolute
+/// SET assignments; the Router resolves every match key before any row executes.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BulkLoadChunkV1 {
     Vertices(Vec<AtomicInsertVertexV1>),
     Edges(Vec<BulkLoadEdgeV1>),
+    Updates(Vec<BulkLoadUpdateV1>),
 }
 
+/// One vertex-property update in a durable bulk-load chunk.
+///
+/// `match_value` is the binary-encoded GQL value (`Value::to_binary_bytes`) compared for
+/// equality against `property_name`; the Router derives the sortable index key from it, so the
+/// wire carries a single source of truth. Resolution runs through the converged property index
+/// for (`vertex_label`, `property_name`) before the chunk is admitted: the index must exist
+/// (same requirement as [`BulkLoadEndpointV1::ByProperty`]) or the whole chunk rejects.
+/// `set_properties` reuses the atomic-insert property encoding: absolute assignments applied
+/// when the match key resolves to exactly one vertex.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BulkLoadUpdateV1 {
+    pub vertex_label: String,
+    pub property_name: String,
+    pub match_value: Vec<u8>,
+    pub set_properties: Vec<AtomicInsertPropertyV1>,
+}
 /// One edge in a durable bulk-load chunk.
 ///
 /// Endpoints reference existing vertices either by their graph-scoped encoded ID
@@ -182,6 +201,13 @@ pub enum BulkLoadResponse {
         next_offset: u32,
         receipt: AtomicInsertReceiptV1,
     },
+    Updated {
+        chunk_index: u32,
+        /// Update rows of this candidate batch committed as this chunk. The client resumes the
+        /// remainder at `chunk_index + 1`, mirroring `Appended.next_offset`.
+        next_offset: u32,
+        updated_row_count: u64,
+    },
     FinalizeAccepted {
         state: BulkLoadPublicStateV1,
     },
@@ -208,6 +234,8 @@ pub enum BulkLoadPublicStateV1 {
 pub struct BulkLoadChunkReceiptV1 {
     pub chunk_index: u32,
     pub receipt: AtomicInsertReceiptV1,
+    /// Rows committed by an update chunk. Insert chunks always report zero.
+    pub updated_row_count: u64,
 }
 
 /// Bounded status response for one graph-scoped durable bulk-load job.
@@ -270,6 +298,7 @@ impl BulkLoadChunkV1 {
         match self {
             Self::Vertices(items) => items.len(),
             Self::Edges(items) => items.len(),
+            Self::Updates(items) => items.len(),
         }
     }
 
@@ -312,6 +341,26 @@ impl BulkLoadChunkV1 {
                     validate_batch_properties(ordinal, &item.initial_edge_properties)?;
                 }
             }
+            Self::Updates(items) => {
+                for (ordinal, item) in items.iter().enumerate() {
+                    if item.vertex_label.is_empty() || item.vertex_label.len() > 256 {
+                        return Err(format!(
+                            "bulk-load update {ordinal} vertex label must be 1..=256 bytes"
+                        ));
+                    }
+                    if item.property_name.is_empty() || item.property_name.len() > 256 {
+                        return Err(format!(
+                            "bulk-load update {ordinal} match property name must be 1..=256 bytes"
+                        ));
+                    }
+                    if item.set_properties.is_empty() {
+                        return Err(format!(
+                            "bulk-load update {ordinal} must set at least one property"
+                        ));
+                    }
+                    validate_batch_properties(ordinal, &item.set_properties)?;
+                }
+            }
         }
         let encoded = Encode!(self).map_err(|error| format!("bulk-load chunk encode: {error}"))?;
         if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
@@ -339,6 +388,15 @@ impl BulkLoadChunkV1 {
             Self::Edges(items) => {
                 for item in items {
                     item.initial_edge_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
+            Self::Updates(items) => {
+                for item in items {
+                    item.set_properties.sort_by(|left, right| {
                         left.property_name
                             .as_bytes()
                             .cmp(right.property_name.as_bytes())

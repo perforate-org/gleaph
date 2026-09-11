@@ -3103,6 +3103,7 @@ fn bulk_load_gc_fixture_row(
         public_receipt,
         graph_receipt,
         completed_at_ns,
+        updated_row_count: None,
     };
     row.validate().expect("valid bulk-load fixture row");
     (

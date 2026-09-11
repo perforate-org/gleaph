@@ -26,7 +26,7 @@ use clap::Args;
 use gleaph_bulk_load_api::{
     AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
     BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1, BulkLoadPropertyEndpointV1,
-    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, BulkLoadUpdateV1,
 };
 use gleaph_gql::value::Value;
 use gleaph_gql::value_to_index_key_bytes;
@@ -60,6 +60,13 @@ pub enum Format {
     Yaml,
     Json,
     Jsonl,
+}
+
+/// Insert/update mode for `gleaph load`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum LoadMode {
+    Insert,
+    Update,
 }
 
 /// `gleaph load` command-line arguments (mirrors the `migration` remote conventions).
@@ -98,6 +105,15 @@ pub struct LoadArgs {
     /// in the same artifact.
     #[arg(long, value_name = "FILE")]
     pub edges: Option<PathBuf>,
+    /// NDJSON update rows only (no inserts). Each row updates one existing vertex matched by
+    /// `{ label, property, value }`. Only valid with `--mode update`.
+    #[arg(long, value_name = "FILE")]
+    pub updates: Option<PathBuf>,
+    /// Load mode: `insert` appends new vertices/edges, `update` applies absolute SET
+    /// assignments to existing vertices matched by `{ label, property, value }` (NDJSON
+    /// `--updates` only; the match property needs a converged property index).
+    #[arg(long, value_enum, default_value_t = LoadMode::Insert)]
+    pub mode: LoadMode,
     /// Start a new job under a derived key instead of resuming or skipping; the effective key is
     /// printed and recorded in `--state-file` when given.
     #[arg(long)]
@@ -230,6 +246,18 @@ struct PropertyEndpointRow {
     value: Value,
 }
 
+/// One vertex-property update row in an NDJSON `--updates` artifact. The `{ label, property,
+/// value }` match key must resolve to exactly one existing vertex through the converged
+/// property index; `set` holds the absolute SET assignments applied to it.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+struct UpdateRow {
+    label: String,
+    property: String,
+    value: Value,
+    set: Properties,
+}
+
 fn default_directed() -> bool {
     true
 }
@@ -257,9 +285,11 @@ enum PreparedLoad {
     Njson {
         vertices: Option<PathBuf>,
         edges: Option<PathBuf>,
+        updates: Option<PathBuf>,
         digest: String,
         vertex_count: usize,
         edge_count: usize,
+        update_count: usize,
         property_names: BTreeSet<String>,
     },
 }
@@ -282,6 +312,13 @@ impl PreparedLoad {
         match self {
             PreparedLoad::SingleFile { artifact, .. } => artifact.edges.len(),
             PreparedLoad::Njson { edge_count, .. } => *edge_count,
+        }
+    }
+
+    fn update_count(&self) -> usize {
+        match self {
+            PreparedLoad::SingleFile { .. } => 0,
+            PreparedLoad::Njson { update_count, .. } => *update_count,
         }
     }
 
@@ -322,6 +359,19 @@ impl PreparedLoad {
             PreparedLoad::Njson { edges: None, .. } => Ok(RowStream::Empty),
         }
     }
+
+    /// Row source for the update phase, starting at the first row of the artifact; the phase
+    /// skips rows committed by a prior run. Only `--mode update` (NDJSON) populates it.
+    fn update_stream(&self) -> Result<RowStream<'_, UpdateRow>, LoadError> {
+        match self {
+            PreparedLoad::SingleFile { .. } => Ok(RowStream::Empty),
+            PreparedLoad::Njson {
+                updates: Some(path),
+                ..
+            } => Ok(RowStream::File(NjsonRowReader::new(path)?)),
+            PreparedLoad::Njson { updates: None, .. } => Ok(RowStream::Empty),
+        }
+    }
 }
 
 // ──── format detection and reading ────
@@ -338,9 +388,42 @@ enum ArtifactInput {
     VerticesOnly { path: PathBuf },
     /// NDJSON edges file only.
     EdgesOnly { path: PathBuf },
+    /// NDJSON update rows only (`--mode update`).
+    UpdatesOnly { path: PathBuf },
 }
 
 fn resolve_input(args: &LoadArgs) -> Result<ArtifactInput, LoadError> {
+    if args.mode == LoadMode::Update {
+        if !args.artifacts.is_empty() || args.vertices.is_some() || args.edges.is_some() {
+            return Err(LoadError::Usage(
+                "--mode update accepts only --updates FILE (NDJSON)".into(),
+            ));
+        }
+        let Some(updates) = &args.updates else {
+            return Err(LoadError::Usage(
+                "--mode update requires --updates FILE (NDJSON)".into(),
+            ));
+        };
+        if let Some(format) = args.format
+            && format != Format::Jsonl
+        {
+            return Err(LoadError::Usage(format!(
+                "--format {format:?} does not apply to --updates (NDJSON)"
+            )));
+        }
+        let ext = extension(updates)?;
+        if !matches!(ext.as_str(), "jsonl" | "ndjson") {
+            return Err(LoadError::Usage(format!(
+                "--updates requires an NDJSON (.jsonl) file; got extension {ext:?}"
+            )));
+        }
+        return Ok(ArtifactInput::UpdatesOnly {
+            path: updates.to_owned(),
+        });
+    }
+    if args.updates.is_some() {
+        return Err(LoadError::Usage("--updates requires --mode update".into()));
+    }
     if args.vertices.is_some() || args.edges.is_some() {
         if !args.artifacts.is_empty() {
             return Err(LoadError::Usage(
@@ -587,12 +670,17 @@ struct NjsonScan {
     digest: String,
     vertex_count: usize,
     edge_count: usize,
+    update_count: usize,
     property_names: BTreeSet<String>,
 }
 
 /// Stream-validate every NDJSON row and hash the raw file bytes (the state-file digest). No row
 /// is materialized; only the vertex `source_id` set is retained for cross-row checks.
-fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan, LoadError> {
+fn scan_njson(
+    vertices: Option<&Path>,
+    edges: Option<&Path>,
+    updates: Option<&Path>,
+) -> Result<NjsonScan, LoadError> {
     let mut hasher = Sha256::new();
     let mut source_ids = HashSet::new();
     let mut property_names = BTreeSet::new();
@@ -624,10 +712,26 @@ fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan
             Ok(())
         })?;
     }
+    let mut update_count = 0usize;
+    if let Some(path) = updates {
+        for_each_njson_line(path, &mut hasher, |index, line| {
+            let row: UpdateRow = serde_json::from_str(line).map_err(|error| {
+                LoadError::Artifact(format!("parse {path:?} line {}: {error}", index + 1))
+            })?;
+            property_names.insert(row.property.clone());
+            for (name, _) in &row.set.0 {
+                property_names.insert(name.clone());
+            }
+            validate_update_row(update_count, &row)?;
+            update_count += 1;
+            Ok(())
+        })?;
+    }
     Ok(NjsonScan {
         digest: hex_digest(&hasher.finalize()),
         vertex_count,
         edge_count,
+        update_count,
         property_names,
     })
 }
@@ -692,35 +796,54 @@ fn prepare_artifact(
             })
         }
         ArtifactInput::Both { vertices, edges } => {
-            let scan = scan_njson(Some(vertices), Some(edges))?;
+            let scan = scan_njson(Some(vertices), Some(edges), None)?;
             Ok(PreparedLoad::Njson {
                 vertices: Some(vertices.clone()),
                 edges: Some(edges.clone()),
+                updates: None,
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
                 edge_count: scan.edge_count,
+                update_count: 0,
                 property_names: scan.property_names,
             })
         }
         ArtifactInput::VerticesOnly { path } => {
-            let scan = scan_njson(Some(path), None)?;
+            let scan = scan_njson(Some(path), None, None)?;
             Ok(PreparedLoad::Njson {
                 vertices: Some(path.clone()),
                 edges: None,
+                updates: None,
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
                 edge_count: scan.edge_count,
+                update_count: 0,
                 property_names: scan.property_names,
             })
         }
         ArtifactInput::EdgesOnly { path } => {
-            let scan = scan_njson(None, Some(path))?;
+            let scan = scan_njson(None, Some(path), None)?;
             Ok(PreparedLoad::Njson {
                 vertices: None,
                 edges: Some(path.clone()),
+                updates: None,
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
                 edge_count: scan.edge_count,
+                update_count: 0,
+                property_names: scan.property_names,
+            })
+        }
+        ArtifactInput::UpdatesOnly { path } => {
+            let scan = scan_njson(None, None, Some(path))?;
+            Ok(PreparedLoad::Njson {
+                vertices: None,
+                edges: None,
+                updates: Some(path.clone()),
+                digest: scan.digest,
+                vertex_count: 0,
+                edge_count: 0,
+                update_count: scan.update_count,
                 property_names: scan.property_names,
             })
         }
@@ -853,6 +976,38 @@ fn validate_edge_endpoint(
     }
 }
 
+/// Validate one update row. The match key must name a non-empty label/property and carry an
+/// index-comparable value (the Router resolves it through the converged property index and
+/// rejects non-unique matches); `set` must hold at least one absolute assignment.
+fn validate_update_row(index: usize, row: &UpdateRow) -> Result<(), LoadError> {
+    if row.label.is_empty() || row.label.len() > 256 {
+        return Err(LoadError::Artifact(format!(
+            "updates[{index}] label must be 1..=256 bytes"
+        )));
+    }
+    if row.property.is_empty() || row.property.len() > 256 {
+        return Err(LoadError::Artifact(format!(
+            "updates[{index}] property must be 1..=256 bytes"
+        )));
+    }
+    if value_to_index_key_bytes(&row.value)
+        .map_err(|error| {
+            LoadError::Artifact(format!("updates[{index}] match value encode: {error}"))
+        })?
+        .is_none()
+    {
+        return Err(LoadError::Artifact(format!(
+            "updates[{index}] match value is not a sortable (indexable) type"
+        )));
+    }
+    if row.set.0.is_empty() {
+        return Err(LoadError::Artifact(format!(
+            "updates[{index}] set must hold at least one property"
+        )));
+    }
+    validate_properties(index, &row.set)
+}
+
 fn validate_properties(index: usize, properties: &Properties) -> Result<(), LoadError> {
     let mut names = HashSet::new();
     for (name, _) in &properties.0 {
@@ -945,7 +1100,7 @@ trait BulkLoadTransport {
 
     /// Intern the data-driven property vocabulary before the first chunk. `bulk_load` admission
     /// resolves every property name against the Router catalog and rejects missing properties,
-/// so the CLI declares the artifact's property names up front in one batch call.
+    /// so the CLI declares the artifact's property names up front in one batch call.
     fn ensure_properties(
         &mut self,
         graph: &str,
@@ -1018,6 +1173,7 @@ impl BulkLoadTransport for RemoteBulkLoadTransport {
 struct Resume {
     committed_vertices: usize,
     committed_edges: usize,
+    committed_updates: usize,
     next_chunk_index: u32,
     encoded_ids: Vec<Vec<u8>>,
 }
@@ -1054,11 +1210,13 @@ fn status_paged(
 fn resume_point(page: &BulkLoadStatusPage, receipts: &[BulkLoadChunkReceiptV1]) -> Resume {
     let mut committed_vertices = 0usize;
     let mut committed_edges = 0usize;
+    let mut committed_updates = 0usize;
     let mut encoded_ids = Vec::new();
     for row in receipts {
         let receipt = &row.receipt;
         committed_vertices += receipt.logical_vertex_count as usize;
         committed_edges += receipt.logical_edge_count as usize;
+        committed_updates += row.updated_row_count as usize;
         if receipt.logical_vertex_count > 0 {
             encoded_ids.extend(receipt.allocated_vertex_ids.iter().cloned());
         }
@@ -1066,6 +1224,7 @@ fn resume_point(page: &BulkLoadStatusPage, receipts: &[BulkLoadChunkReceiptV1]) 
     Resume {
         committed_vertices,
         committed_edges,
+        committed_updates,
         next_chunk_index: page.next_chunk_index,
         encoded_ids,
     }
@@ -1097,6 +1256,7 @@ fn run_load(
     graph: Option<&str>,
     key: &str,
     state_file: Option<&Path>,
+    update_mode: bool,
 ) -> Result<LoadOutcome, LoadError> {
     let digest = prepared.digest();
     if let Some((page, _)) = status_paged(transport, graph, key)? {
@@ -1188,50 +1348,70 @@ fn run_load(
     let Resume {
         committed_vertices,
         committed_edges,
+        committed_updates,
         next_chunk_index,
         encoded_ids,
     } = resume_point(&page, &receipts);
     let mut chunk_index = next_chunk_index;
-    let mut id_by_source: HashMap<String, Vec<u8>> =
-        HashMap::with_capacity(prepared.vertex_count());
-
-    // Vertex phase: stream rows into budget-fitted chunks; each Append commits a budget-fitting
-    // prefix and the uncommitted tail stays buffered for the next chunk. Rows committed by a
-    // prior run are matched to their recorded ids instead of being re-dispatched.
     let tty = std::io::stdout().is_terminal();
-    let mut vertex_phase =
-        PhaseProgress::new("vertices", prepared.vertex_count(), committed_vertices, tty);
-    let mut vertex_stream = prepared.vertex_stream()?;
-    run_vertex_phase(
-        &mut vertex_stream,
-        transport,
-        graph,
-        key,
-        CommittedVertices {
-            rows: committed_vertices,
-            ids: encoded_ids,
-        },
-        &mut chunk_index,
-        &mut id_by_source,
-        &mut vertex_phase,
-    )?;
-    vertex_phase.finish();
+    if update_mode {
+        // Update phase: stream update rows into budget-fitted chunks; the Router resolves every
+        // match key before any row executes. Rows committed by a prior run are skipped.
+        let mut update_phase =
+            PhaseProgress::new("updates", prepared.update_count(), committed_updates, tty);
+        let mut update_stream = prepared.update_stream()?;
+        run_update_phase(
+            &mut update_stream,
+            transport,
+            graph,
+            key,
+            committed_updates,
+            &mut chunk_index,
+            &mut update_phase,
+        )?;
+        update_phase.finish();
+    } else {
+        let mut id_by_source: HashMap<String, Vec<u8>> =
+            HashMap::with_capacity(prepared.vertex_count());
 
-    // Edge phase: stream edge rows and resolve each endpoint against the vertex ids allocated in
-    // vertex order.
-    let mut edge_phase = PhaseProgress::new("edges", prepared.edge_count(), committed_edges, tty);
-    let mut edge_stream = prepared.edge_stream()?;
-    run_edge_phase(
-        &mut edge_stream,
-        transport,
-        graph,
-        key,
-        committed_edges,
-        &mut chunk_index,
-        &id_by_source,
-        &mut edge_phase,
-    )?;
-    edge_phase.finish();
+        // Vertex phase: stream rows into budget-fitted chunks; each Append commits a budget-fitting
+        // prefix and the uncommitted tail stays buffered for the next chunk. Rows committed by a
+        // prior run are matched to their recorded ids instead of being re-dispatched.
+        let mut vertex_phase =
+            PhaseProgress::new("vertices", prepared.vertex_count(), committed_vertices, tty);
+        let mut vertex_stream = prepared.vertex_stream()?;
+        run_vertex_phase(
+            &mut vertex_stream,
+            transport,
+            graph,
+            key,
+            CommittedVertices {
+                rows: committed_vertices,
+                ids: encoded_ids,
+            },
+            &mut chunk_index,
+            &mut id_by_source,
+            &mut vertex_phase,
+        )?;
+        vertex_phase.finish();
+
+        // Edge phase: stream edge rows and resolve each endpoint against the vertex ids allocated in
+        // vertex order.
+        let mut edge_phase =
+            PhaseProgress::new("edges", prepared.edge_count(), committed_edges, tty);
+        let mut edge_stream = prepared.edge_stream()?;
+        run_edge_phase(
+            &mut edge_stream,
+            transport,
+            graph,
+            key,
+            committed_edges,
+            &mut chunk_index,
+            &id_by_source,
+            &mut edge_phase,
+        )?;
+        edge_phase.finish();
+    }
 
     let finalized = send_command(
         transport,
@@ -1520,6 +1700,74 @@ fn run_edge_phase(
     Ok(())
 }
 
+/// Stream update rows into budget-fitted chunks. Rows committed by a prior run are skipped
+/// without parsing; the Router resolves every match key before any row executes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "phase context passed explicitly for testability"
+)]
+fn run_update_phase(
+    source: &mut RowStream<'_, UpdateRow>,
+    transport: &mut impl BulkLoadTransport,
+    graph: Option<&str>,
+    key: &str,
+    committed_rows: usize,
+    chunk_index: &mut u32,
+    progress: &mut PhaseProgress,
+) -> Result<(), LoadError> {
+    source.skip(committed_rows)?;
+    let mut buffer: Vec<UpdateRow> = Vec::new();
+    let mut hint: Option<SizeHint> = None;
+    loop {
+        let target = chunk_accumulation_target(hint);
+        let mut accumulated_bytes = 0usize;
+        while buffer.len() < target && accumulated_bytes < MAX_ACCUMULATED_RAW_BYTES {
+            match source.next_row_with_bytes()? {
+                Some((row, bytes)) => {
+                    accumulated_bytes += bytes;
+                    buffer.push(row);
+                }
+                None => break,
+            }
+        }
+        if buffer.is_empty() {
+            break;
+        }
+        let candidate_count = fit_candidate(buffer.len(), hint, |count| {
+            let chunk = update_chunk(&buffer[..count])?;
+            encode_append_command(graph, key, *chunk_index, chunk)
+        })?;
+        let chunk = update_chunk(&buffer[..candidate_count])?;
+        let response = send_command(
+            transport,
+            BulkLoadCommand::Append {
+                graph_name: graph.map(str::to_owned),
+                client_bulk_key: key.to_owned(),
+                chunk_index: *chunk_index,
+                chunk,
+            },
+        )?;
+        let next_offset = match response {
+            BulkLoadResponse::Updated { next_offset, .. } => next_offset,
+            other => {
+                return Err(LoadError::Remote(format!(
+                    "unexpected Append response: {other:?}"
+                )));
+            }
+        };
+        if next_offset == 0 {
+            return Err(LoadError::Remote(
+                "bulk-load Append committed zero operations".into(),
+            ));
+        }
+        buffer.drain(..next_offset as usize);
+        *chunk_index += 1;
+        progress.advance(next_offset as usize);
+        hint = Some(SizeHint::new(candidate_count));
+    }
+    Ok(())
+}
+
 /// Fit the next candidate batch to the inter-canister payload bound using measured encoded sizes.
 fn fit_candidate(
     remaining: usize,
@@ -1608,6 +1856,21 @@ fn edge_chunk(
     Ok(BulkLoadChunkV1::Edges(items))
 }
 
+fn update_chunk(rows: &[UpdateRow]) -> Result<BulkLoadChunkV1, LoadError> {
+    let items = rows
+        .iter()
+        .map(|row| {
+            Ok(BulkLoadUpdateV1 {
+                vertex_label: row.label.clone(),
+                property_name: row.property.clone(),
+                match_value: encode_value(&row.value)?,
+                set_properties: encode_properties(&row.set)?,
+            })
+        })
+        .collect::<Result<Vec<_>, LoadError>>()?;
+    Ok(BulkLoadChunkV1::Updates(items))
+}
+
 /// Build one wire endpoint: a `source_id` reference becomes an encoded existing vertex ID from
 /// the vertices loaded in this artifact; a property endpoint carries the sortable index key.
 fn resolve_edge_endpoint(
@@ -1692,6 +1955,7 @@ pub fn execute(args: &LoadArgs, project_root: Option<&Path>) -> Result<LoadOutco
         args.graph.as_deref(),
         &key,
         args.state_file.as_deref(),
+        args.mode == LoadMode::Update,
     )?;
     Ok(outcome)
 }
@@ -1728,6 +1992,8 @@ mod tests {
             format: None,
             vertices: None,
             edges: None,
+            updates: None,
+            mode: LoadMode::Insert,
             fresh: false,
             state_file: None,
         }
@@ -1835,7 +2101,7 @@ mod tests {
         let edges_content = "{\"source\":\"v1\",\"target\":\"v2\",\"label\":\"KNOWS\"}\n";
         write_temp(&vertices, vertices_content);
         write_temp(&edges, edges_content);
-        let scan = scan_njson(Some(&vertices), Some(&edges)).expect("scan NDJSON artifacts");
+        let scan = scan_njson(Some(&vertices), Some(&edges), None).expect("scan NDJSON artifacts");
         assert_eq!(scan.vertex_count, 2);
         // The digest hashes the raw file bytes in vertex-then-edge order (state-file identity).
         let mut hasher = Sha256::new();
@@ -1853,8 +2119,8 @@ mod tests {
             &vertices,
             "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\nnot-json\n",
         );
-        let error =
-            scan_njson(Some(&vertices), None).expect_err("a malformed NDJSON row must be rejected");
+        let error = scan_njson(Some(&vertices), None, None)
+            .expect_err("a malformed NDJSON row must be rejected");
         assert!(error.to_string().contains("line 2"), "{error}");
         fs::remove_file(vertices).expect("cleanup");
     }
@@ -2134,11 +2400,37 @@ mod tests {
                     let total = match &chunk {
                         BulkLoadChunkV1::Vertices(items) => items.len(),
                         BulkLoadChunkV1::Edges(items) => items.len(),
+                        BulkLoadChunkV1::Updates(items) => items.len(),
                     };
+                    if let BulkLoadChunkV1::Updates(_) = &chunk {
+                        // The fake transport trusts the candidate chunk (the Router would resolve
+                        // every match key first); update chunks always commit their full prefix.
+                        let commit = total;
+                        job.receipts.push(BulkLoadChunkReceiptV1 {
+                            chunk_index,
+                            receipt: AtomicInsertReceiptV1 {
+                                logical_operation_count: 0,
+                                logical_vertex_count: 0,
+                                logical_edge_count: 0,
+                                allocated_vertex_ids: Vec::new(),
+                            },
+                            updated_row_count: commit as u64,
+                        });
+                        job.next_chunk_index += 1;
+                        job.state = BulkLoadPublicStateV1::AppendPending;
+                        return Ok(Ok(BulkLoadResponse::Updated {
+                            chunk_index,
+                            next_offset: commit as u32,
+                            updated_row_count: commit as u64,
+                        }));
+                    }
                     let commit = total.min(self.budget);
                     let (vertex_count, edge_count) = match &chunk {
                         BulkLoadChunkV1::Vertices(_) => (commit as u64, 0),
                         BulkLoadChunkV1::Edges(_) => (0, commit as u64),
+                        BulkLoadChunkV1::Updates(_) => {
+                            unreachable!("update chunks return before the insert path")
+                        }
                     };
                     let mut ids = Vec::new();
                     if matches!(chunk, BulkLoadChunkV1::Vertices(_)) {
@@ -2157,6 +2449,7 @@ mod tests {
                     job.receipts.push(BulkLoadChunkReceiptV1 {
                         chunk_index,
                         receipt: receipt.clone(),
+                        updated_row_count: 0,
                     });
                     job.next_chunk_index += 1;
                     job.state = BulkLoadPublicStateV1::AppendPending;
@@ -2220,8 +2513,8 @@ mod tests {
             budget: 3, // forces multiple Append calls per phase
             interned: Vec::new(),
         };
-        let outcome =
-            run_load(&mut transport, &prepared, None, "k", None).expect("load should complete");
+        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
+            .expect("load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         let vertex_chunks = job
@@ -2256,7 +2549,8 @@ mod tests {
             budget: usize::MAX,
             interned: Vec::new(),
         };
-        run_load(&mut transport, &prepared, Some("social"), "k", None).expect("load completes");
+        run_load(&mut transport, &prepared, Some("social"), "k", None, false)
+            .expect("load completes");
         assert_eq!(
             transport.interned,
             vec![(
@@ -2285,7 +2579,7 @@ mod tests {
             budget: usize::MAX,
             interned: Vec::new(),
         };
-        let error = run_load(&mut transport, &prepared, None, "k", None)
+        let error = run_load(&mut transport, &prepared, None, "k", None, false)
             .expect_err("interning requires a graph name");
         assert!(error.to_string().contains("no graph name"));
         assert!(transport.interned.is_empty());
@@ -2310,6 +2604,7 @@ mod tests {
                             logical_edge_count: 0,
                             allocated_vertex_ids: vec![vec![0], vec![1]],
                         },
+                        updated_row_count: 0,
                     },
                     BulkLoadChunkReceiptV1 {
                         chunk_index: 1,
@@ -2319,6 +2614,7 @@ mod tests {
                             logical_edge_count: 0,
                             allocated_vertex_ids: vec![vec![2], vec![3]],
                         },
+                        updated_row_count: 0,
                     },
                 ],
                 state: BulkLoadPublicStateV1::AppendPending,
@@ -2327,8 +2623,8 @@ mod tests {
             budget: usize::MAX,
             interned: Vec::new(),
         };
-        let outcome =
-            run_load(&mut transport, &prepared, None, "k", None).expect("resume should complete");
+        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
+            .expect("resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         // The vertex phase resumes at 4 committed vertices: one more vertex chunk.
@@ -2340,6 +2636,65 @@ mod tests {
         assert_eq!(vertex_chunks, 3);
         // The edge chunk endpoints resolve to ids allocated across the resume and this run.
         assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
+    }
+
+    #[test]
+    fn update_phase_resumes_past_receipt_counted_rows() {
+        // One committed update chunk (2 rows) is already on the job; only the tail row may
+        // dispatch. This exercises the `updated_row_count` resume path (not vertex/edge counts).
+        let updates = temp_path("updates-resume.jsonl");
+        write_temp(
+            &updates,
+            concat!(
+                r#"{"label":"Person","property":"name","value":{"Text":"alice"},"set":{"nick":{"Text":"ally"}}}"#,
+                "\n",
+                r#"{"label":"Person","property":"name","value":{"Text":"bob"},"set":{"nick":{"Text":"bobby"}}}"#,
+                "\n",
+                r#"{"label":"Person","property":"name","value":{"Text":"cara"},"set":{"nick":{"Text":"caz"}}}"#,
+                "\n",
+            ),
+        );
+        let prepared = PreparedLoad::Njson {
+            vertices: None,
+            edges: None,
+            updates: Some(updates.clone()),
+            digest: "digest".into(),
+            vertex_count: 0,
+            edge_count: 0,
+            update_count: 3,
+            property_names: BTreeSet::from(["nick".to_owned()]),
+        };
+        let mut transport = FakeBulkLoadTransport {
+            job: Some(FakeJob {
+                next_chunk_index: 1,
+                receipts: vec![BulkLoadChunkReceiptV1 {
+                    chunk_index: 0,
+                    receipt: AtomicInsertReceiptV1 {
+                        logical_operation_count: 0,
+                        logical_vertex_count: 0,
+                        logical_edge_count: 0,
+                        allocated_vertex_ids: Vec::new(),
+                    },
+                    updated_row_count: 2,
+                }],
+                state: BulkLoadPublicStateV1::AppendPending,
+                next_vertex_ordinal: 0,
+            }),
+            budget: usize::MAX,
+            interned: Vec::new(),
+        };
+        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
+            .expect("resume should complete");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
+        let job = transport.job.expect("job exists");
+        assert_eq!(
+            job.receipts.len(),
+            2,
+            "only the uncommitted tail dispatches"
+        );
+        let updated: u64 = job.receipts.iter().map(|row| row.updated_row_count).sum();
+        assert_eq!(updated, 3, "2 resumed + 1 tail row");
+        fs::remove_file(updates).expect("cleanup");
     }
 
     #[test]
@@ -2360,7 +2715,7 @@ mod tests {
             &state,
             r#"{"format_version": 1, "artifact_sha256": "digest", "bulk_key": "k", "graph": null}"#,
         );
-        let outcome = run_load(&mut transport, &prepared, None, "k", Some(&state))
+        let outcome = run_load(&mut transport, &prepared, None, "k", Some(&state), false)
             .expect("matching completed job must skip");
         assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
         fs::remove_file(state).expect("cleanup");
@@ -2388,10 +2743,118 @@ mod tests {
             &state,
             r#"{"format_version": 1, "artifact_sha256": "old-digest", "bulk_key": "k", "graph": null}"#,
         );
-        let error = run_load(&mut transport, &prepared, None, "k", Some(&state))
+        let error = run_load(&mut transport, &prepared, None, "k", Some(&state), false)
             .expect_err("changed artifact must not be silently skipped");
         assert_eq!(error.exit_code(), 1);
         fs::remove_file(state).expect("cleanup");
+    }
+
+    fn update_row(label: &str, property: &str, value: Value, set: &[(&str, Value)]) -> UpdateRow {
+        UpdateRow {
+            label: label.into(),
+            property: property.into(),
+            value,
+            set: Properties(set.iter().map(|(k, v)| ((*k).into(), v.clone())).collect()),
+        }
+    }
+
+    #[test]
+    fn update_row_validation_rejects_bad_match_key_and_empty_set() {
+        let good_set = vec![("nick", Value::Text("ally".into()))];
+        let error = validate_update_row(
+            0,
+            &update_row("", "name", Value::Text("a".into()), &good_set),
+        )
+        .expect_err("empty label must be rejected");
+        assert!(error.to_string().contains("updates[0] label"), "{error}");
+        let error = validate_update_row(
+            0,
+            &update_row("Person", "", Value::Text("a".into()), &good_set),
+        )
+        .expect_err("empty property must be rejected");
+        assert!(error.to_string().contains("updates[0] property"), "{error}");
+        let error = validate_update_row(0, &update_row("Person", "name", Value::Null, &good_set))
+            .expect_err("NULL match value is not indexable");
+        assert!(error.to_string().contains("not a sortable"), "{error}");
+        let error = validate_update_row(
+            0,
+            &update_row("Person", "name", Value::Text("a".into()), &[]),
+        )
+        .expect_err("empty set must be rejected");
+        assert!(error.to_string().contains("set must hold"), "{error}");
+        validate_update_row(
+            0,
+            &update_row("Person", "name", Value::Text("a".into()), &good_set),
+        )
+        .expect("well-formed update row");
+    }
+
+    #[test]
+    fn update_mode_requires_updates_file_and_rejects_vertex_flags() {
+        let args = LoadArgs {
+            artifacts: vec![PathBuf::from("u.jsonl")],
+            canister: None,
+            graph: None,
+            key: None,
+            network: None,
+            identity: None,
+            fetch_root_key: None,
+            format: None,
+            vertices: None,
+            edges: None,
+            updates: None,
+            mode: LoadMode::Update,
+            fresh: false,
+            state_file: None,
+        };
+        let error = resolve_input(&args).expect_err("update mode needs --updates");
+        assert!(error.to_string().contains("--updates"), "{error}");
+    }
+
+    #[test]
+    fn update_phase_dispatches_update_chunks_and_resumes_past_committed_rows() {
+        let updates = temp_path("updates.jsonl");
+        write_temp(
+            &updates,
+            concat!(
+                r#"{"label":"Person","property":"name","value":{"Text":"alice"},"set":{"nick":{"Text":"ally"}}}"#,
+                "\n",
+                r#"{"label":"Person","property":"name","value":{"Text":"bob"},"set":{"nick":{"Text":"bobby"}}}"#,
+                "\n",
+                r#"{"label":"Person","property":"name","value":{"Text":"cara"},"set":{"nick":{"Text":"caz"}}}"#,
+                "\n",
+            ),
+        );
+        let prepared = PreparedLoad::Njson {
+            vertices: None,
+            edges: None,
+            updates: Some(updates.clone()),
+            digest: "digest".into(),
+            vertex_count: 0,
+            edge_count: 0,
+            update_count: 3,
+            property_names: BTreeSet::from(["nick".to_owned()]),
+        };
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+        };
+        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
+            .expect("update load should complete");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
+        let job = transport.job.as_ref().expect("job exists");
+        let updated: u64 = job.receipts.iter().map(|row| row.updated_row_count).sum();
+        assert_eq!(updated, 3, "all three update rows must commit");
+        assert_eq!(job.receipts.len(), 1, "one budget-fitting update chunk");
+        assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
+        // A resumed run observes the completed job and skips without dispatching another chunk.
+        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
+            .expect("resume should complete");
+        assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
+        let job = transport.job.as_ref().expect("job exists");
+        assert_eq!(job.receipts.len(), 1, "resumed run dispatches no new chunk");
+        fs::remove_file(updates).expect("cleanup");
     }
 
     #[test]
@@ -2409,7 +2872,7 @@ mod tests {
             budget: usize::MAX,
             interned: Vec::new(),
         };
-        let error = run_load(&mut transport, &prepared, None, "k", None)
+        let error = run_load(&mut transport, &prepared, None, "k", None, false)
             .expect_err("terminal failed job must be reported");
         assert!(error.to_string().contains("use a new --key"));
         assert_eq!(error.exit_code(), 1);
@@ -2453,7 +2916,7 @@ mod tests {
             budget: 3, // forces multiple Append calls per phase
             interned: Vec::new(),
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None)
+        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
             .expect("streaming load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
@@ -2498,6 +2961,7 @@ mod tests {
                             logical_edge_count: 0,
                             allocated_vertex_ids: vec![vec![0], vec![1]],
                         },
+                        updated_row_count: 0,
                     },
                     BulkLoadChunkReceiptV1 {
                         chunk_index: 1,
@@ -2507,6 +2971,7 @@ mod tests {
                             logical_edge_count: 0,
                             allocated_vertex_ids: vec![vec![2], vec![3]],
                         },
+                        updated_row_count: 0,
                     },
                 ],
                 state: BulkLoadPublicStateV1::AppendPending,
@@ -2515,7 +2980,7 @@ mod tests {
             budget: usize::MAX,
             interned: Vec::new(),
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None)
+        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
             .expect("streaming resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");

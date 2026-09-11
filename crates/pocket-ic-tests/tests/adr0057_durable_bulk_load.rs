@@ -3,17 +3,21 @@
 use std::time::Duration;
 
 use candid::{Decode, Encode};
+use gleaph_gql::value::Value;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_HOME_NAME, GRAPH_NAME, GRAPH_REMOTE_NAME, arm_router_fault,
     bulk_load_as_admin, bulk_load_as_admin_expect_trap, bulk_load_gc_probe_as_admin,
     bulk_load_gc_step_as_admin, bulk_load_start_probe_as_admin, bulk_load_status_as_admin,
-    ensure_vertex_label, install_single_shard_federation, install_two_graph_federation,
+    ensure_property, ensure_vertex_label, gql_query_as_admin, index_vertex_property,
+    install_single_shard_federation, install_two_graph_federation,
     seed_bulk_load_gc_fixture_as_admin, start_graph_shard, stop_graph_shard, sweep_mutation_keys,
     wasm_bytes,
 };
 use gleaph_router::types::{
-    AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadPublicStateV1, BulkLoadResponse,
+    AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadUpdateV1,
 };
 
 fn vertices(labels: &[&str], count: usize) -> BulkLoadChunkV1 {
@@ -518,4 +522,148 @@ fn bulk_load_same_textual_key_is_independent_per_graph() {
     assert_state(&remote, BulkLoadPublicStateV1::Completed);
     assert_eq!(home.committed_chunk_count, 1);
     assert_eq!(remote.committed_chunk_count, 1);
+}
+
+fn named_vertex(name: &str) -> AtomicInsertVertexV1 {
+    AtomicInsertVertexV1 {
+        vertex_labels: vec!["Person".to_owned()],
+        initial_properties: vec![AtomicInsertPropertyV1 {
+            property_name: "name".to_owned(),
+            value: Value::Text(name.to_owned())
+                .to_binary_bytes()
+                .expect("encode name property"),
+        }],
+    }
+}
+
+fn update_row(name: &str, nick: &str) -> BulkLoadUpdateV1 {
+    BulkLoadUpdateV1 {
+        vertex_label: "Person".to_owned(),
+        property_name: "name".to_owned(),
+        match_value: Value::Text(name.to_owned())
+            .to_binary_bytes()
+            .expect("encode match value"),
+        set_properties: vec![AtomicInsertPropertyV1 {
+            property_name: "nick".to_owned(),
+            value: Value::Text(nick.to_owned())
+                .to_binary_bytes()
+                .expect("encode set value"),
+        }],
+    }
+}
+
+fn nick_of(env: &FederationEnv, name: &str) -> String {
+    let result = gql_query_as_admin(
+        env,
+        &format!("MATCH (p:Person) WHERE p.name = '{name}' RETURN p.nick AS nick"),
+    );
+    assert_eq!(result.row_count, 1, "one row for name `{name}`");
+    let wire =
+        GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("rows_blob for nick query"))
+            .expect("decode rows_blob");
+    let row = wire
+        .rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row");
+    match row.get("nick").expect("nick column") {
+        Value::Text(nick) => nick.clone(),
+        other => panic!("expected nick text, got {other:?}"),
+    }
+}
+
+/// `gleaph load --mode update` runtime contract: update chunks resolve every match key through
+/// the converged property index before any row executes, apply absolute SET assignments, and
+/// record the committed row count in the durable receipt (resume skips by that count).
+#[test]
+fn bulk_load_update_applies_vertex_set_and_rejects_missing_match() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+
+    // Seed three indexed vertices through a plain insert job.
+    let seed_key = "adr0057-update-seed";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, seed_key)).expect("start seed");
+    bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            seed_key,
+            0,
+            BulkLoadChunkV1::Vertices(vec![
+                named_vertex("alice"),
+                named_vertex("bob"),
+                named_vertex("cara"),
+            ]),
+        ),
+    )
+    .expect("append seed");
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, seed_key)).expect("finalize seed");
+    let seed = bulk_load_status_as_admin(&env, GRAPH_NAME, seed_key, None, 8).expect("seed status");
+    assert_state(&seed, BulkLoadPublicStateV1::Completed);
+
+    // DEBUG probe: read-WHERE vs mutate-WHERE to isolate the filter path.
+    // The update chunk commits both rows with one absolute SET each.
+    let key = "adr0057-update-lifecycle";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+    let updated = bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            0,
+            BulkLoadChunkV1::Updates(vec![
+                update_row("alice", "ally"),
+                update_row("bob", "bobby"),
+            ]),
+        ),
+    )
+    .expect("append update");
+    assert_eq!(
+        updated,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 2,
+            updated_row_count: 2,
+        },
+        "update Append must report the committed row count"
+    );
+    assert_eq!(nick_of(&env, "alice"), "ally");
+    assert_eq!(nick_of(&env, "bob"), "bobby");
+
+    // A match key that resolves to no vertex rejects the whole chunk before any row executes.
+    let missing = bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            1,
+            BulkLoadChunkV1::Updates(vec![update_row("ghost", "spooky")]),
+        ),
+    )
+    .expect_err("missing match value must reject the whole chunk");
+    let RouterError::InvalidArgument(missing_message) = &missing else {
+        panic!("missing match value must reject with InvalidArgument: {missing:?}");
+    };
+    assert!(
+        missing_message.contains("does not resolve"),
+        "{missing_message}"
+    );
+
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize update");
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("update status");
+    assert_state(&status, BulkLoadPublicStateV1::Completed);
+    let updated_total: u64 = status
+        .receipts
+        .iter()
+        .map(|row| row.updated_row_count)
+        .sum();
+    assert_eq!(
+        updated_total, 2,
+        "durable receipts must record the committed update rows for resume"
+    );
 }
