@@ -41,6 +41,23 @@ pub(crate) enum InjectedFault {
     /// Drop a successful Vector frontier response after watermark/GC work but before the Router
     /// retires its captured frontier snapshot. The armed fault remains active until clear.
     DropAfterFrontierReply,
+    /// Return an application error (not a trap) before dispatching a bulk-load update row that
+    /// follows at least one committed row. The durable committed prefix and the returned error
+    /// must therefore be mutually consistent: the job stays resumable/abortable at that prefix.
+    /// The armed fault remains active until `test_arm_fault(0)`.
+    FailBeforeBulkUpdateRow,
+    /// Trap in the callback that follows a successful bulk-load update row dispatch, i.e. after
+    /// the Graph's applied/zero-effect receipt is durable but before Router accounts for it in the bulk
+    /// chunk's committed prefix. The enclosing callback's Router-side writes roll back (including
+    /// the row's own saga confirm), so the Router keeps only the pre-dispatch saga record while
+    /// the Graph holds the write: the exact "response lost after canonical commit" boundary that
+    /// the row journal must resolve instead of re-resolving a match property the row rewrote.
+    /// The armed fault remains active until `test_arm_fault(0)`.
+    TrapAfterBulkUpdateRowDispatch,
+    /// Run real Abort after resolving or restoring update targets, but before admission.
+    /// Exercises stale-snapshot admission without relying on a failed dependency. A retry uses
+    /// saved IDs and does not suspend on another property lookup.
+    AbortBeforeBulkUpdateAdmission,
 }
 
 thread_local! {
@@ -63,6 +80,9 @@ pub(crate) fn fault_from_code(code: u8) -> Option<InjectedFault> {
         7 => Some(InjectedFault::TrapAfterBulkStartParent),
         8 => Some(InjectedFault::DropAfterVectorBatchResult),
         9 => Some(InjectedFault::DropAfterFrontierReply),
+        10 => Some(InjectedFault::FailBeforeBulkUpdateRow),
+        11 => Some(InjectedFault::TrapAfterBulkUpdateRowDispatch),
+        12 => Some(InjectedFault::AbortBeforeBulkUpdateAdmission),
         _ => None,
     }
 }
@@ -123,4 +143,29 @@ pub(crate) fn drop_after_vector_batch_result() -> bool {
 /// retirement. This is intentionally persistent; only `test_arm_fault(0)` clears it.
 pub(crate) fn drop_after_frontier_reply() -> bool {
     armed() == InjectedFault::DropAfterFrontierReply
+}
+
+/// Return a recoverable error before dispatching `row_ordinal` of a bulk-load update chunk when
+/// [`InjectedFault::FailBeforeBulkUpdateRow`] is armed and at least one row already committed.
+/// Whether the injected failure is armed for this row ordinal (callers return a recoverable
+/// error rather than dispatching the mutation).
+pub(crate) fn bulk_update_row_failure_armed(row_ordinal: usize) -> bool {
+    row_ordinal > 0 && armed() == InjectedFault::FailBeforeBulkUpdateRow
+}
+
+/// Consume the one-shot Abort interleaving at the successful resolution/admission boundary.
+pub(crate) fn take_bulk_update_abort_before_admission() -> bool {
+    if armed() != InjectedFault::AbortBeforeBulkUpdateAdmission {
+        return false;
+    }
+    arm(InjectedFault::None);
+    true
+}
+
+/// Trap after a successful bulk-load update row dispatch (Graph write durable, Router prefix
+/// record not yet durable). Only reachable through the armed test ingress.
+pub(crate) fn maybe_trap_after_bulk_update_row_dispatch() {
+    if armed() == InjectedFault::TrapAfterBulkUpdateRowDispatch {
+        ic_cdk::trap("pocket-ic-e2e injected fault: trap after bulk-load update row dispatch");
+    }
 }

@@ -717,6 +717,7 @@ fn posted_seeds(count: usize) -> Vec<SeedBindingsWire> {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         });
     }
     out
@@ -738,6 +739,7 @@ fn posted_seed_rows(count: usize) -> SeedBindingsWire {
             })
             .collect(),
         complete_prefix_rows: true,
+        mutation_target: None,
     }
 }
 
@@ -809,6 +811,7 @@ mod seed_transport_tests {
             entries: Vec::new(),
             rows: Vec::new(),
             complete_prefix_rows: true,
+            mutation_target: None,
         };
         let nested = encode_nested(std::slice::from_ref(&empty));
         let typed = encode_typed(std::slice::from_ref(&empty));
@@ -1117,6 +1120,7 @@ fn bulk_bench_receipt_row(
         progress,
         public_receipt,
         graph_receipt,
+        resolved_update_vertex_ids: None,
         completed_at_ns,
         updated_row_count: None,
     };
@@ -1214,6 +1218,106 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
             )
             .expect("bulk-load benchmark child admission");
         black_box(child_id);
+    })
+}
+
+/// Measures pending-child re-admission, including comparison against 64 saved target IDs.
+/// Initial admission and caller-side target construction are outside the measurement.
+#[bench(raw)]
+fn bench_bulk_load_update_readmission_64_rows() -> canbench_rs::BenchResult {
+    use crate::facade::store::bulk_load::BulkLoadUpdateAdmission;
+    use gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES;
+    let store = crate::facade::store::RouterStore::new();
+    seed_bulk_bench_parent(BulkLoadLifecycleV1::Open, 0);
+    ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
+    let ids = vec![vec![1; ENCODED_VERTEX_ID_BYTES]; 64];
+    let admit = |ids| {
+        store.admit_bulk_load_update_child(
+            Principal::anonymous(),
+            BULK_BENCH_GRAPH_ID,
+            BULK_BENCH_CLIENT_KEY,
+            BULK_BENCH_PARENT_ID,
+            0,
+            [1; 32],
+            Some(ids),
+        )
+    };
+    assert_eq!(admit(ids.clone()), Ok(BulkLoadUpdateAdmission::Granted));
+    assert_eq!(admit(ids.clone()), Ok(BulkLoadUpdateAdmission::Granted));
+    let mut different = ids.clone();
+    different[63][0] = 2;
+    assert_eq!(
+        admit(different),
+        Err(crate::state::RouterError::Conflict(
+            "bulk-load update targets differ from the admitted chunk".into()
+        ))
+    );
+    canbench_rs::bench_fn(|| {
+        black_box(admit(black_box(ids)).expect("readmit benchmark chunk"));
+    })
+}
+
+/// Measures the durable per-row dispatch-gate read and committed-prefix write for a 64-row
+/// update chunk. Catalog resolution, GQL execution, journal RPCs, and setup are not measured.
+#[bench(raw)]
+fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
+    use crate::facade::store::bulk_load::BulkLoadUpdateDispatchGate;
+    use gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES;
+    const ROWS: u64 = 64;
+    let store = crate::facade::store::RouterStore::new();
+    let caller = Principal::anonymous();
+    let setup = || {
+        seed_bulk_bench_parent(BulkLoadLifecycleV1::Open, 0);
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
+        store
+            .admit_bulk_load_update_child(
+                caller,
+                BULK_BENCH_GRAPH_ID,
+                BULK_BENCH_CLIENT_KEY,
+                BULK_BENCH_PARENT_ID,
+                0,
+                [1; 32],
+                Some(vec![vec![1; ENCODED_VERTEX_ID_BYTES]; ROWS as usize]),
+            )
+            .expect("admit benchmark update chunk");
+    };
+    let advance = |count| {
+        let gate = store
+            .bulk_load_update_dispatch_gate(
+                caller,
+                BULK_BENCH_GRAPH_ID,
+                BULK_BENCH_CLIENT_KEY,
+                BULK_BENCH_PARENT_ID,
+                0,
+            )
+            .expect("read update dispatch gate");
+        store
+            .record_bulk_load_update_progress(
+                caller,
+                BULK_BENCH_GRAPH_ID,
+                BULK_BENCH_CLIENT_KEY,
+                BULK_BENCH_PARENT_ID,
+                0,
+                [1; 32],
+                count,
+            )
+            .expect("record update prefix");
+        gate
+    };
+    setup();
+    assert_eq!(advance(1), BulkLoadUpdateDispatchGate::Open);
+    assert_eq!(
+        store
+            .bulk_load_chunk_receipt(BULK_BENCH_PARENT_ID, 0)
+            .unwrap()
+            .updated_row_count,
+        Some(1)
+    );
+    setup();
+    canbench_rs::bench_fn(|| {
+        for count in 1..=ROWS {
+            black_box(advance(black_box(count)));
+        }
     })
 }
 

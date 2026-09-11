@@ -264,6 +264,10 @@ pub struct BulkLoadChunkReceiptRecordV1 {
     pub progress: BulkLoadChunkProgressV1,
     pub public_receipt: Option<AtomicInsertReceiptV1>,
     pub graph_receipt: Option<BulkLoadGraphReceiptV1>,
+    /// Vertex IDs resolved before admission. These are the execution targets for every initial
+    /// dispatch and retry, not merely guards against changes to a mutable match key.
+    #[serde(default)]
+    pub resolved_update_vertex_ids: Option<Vec<Vec<u8>>>,
     pub completed_at_ns: Option<u64>,
     /// `Some(n)` marks an update chunk with `n` committed rows. Insert chunks always use
     /// `None`; update chunks never carry a Graph request or insert receipts (their durability
@@ -363,6 +367,11 @@ impl BulkLoadChunkReceiptRecordV1 {
                     );
                 }
                 if self.updated_row_count.is_some() {
+                    if self.resolved_update_vertex_ids.is_some() {
+                        return Err(
+                            "completed bulk-load update row must compact its update payload".into(),
+                        );
+                    }
                     if self.public_receipt.is_some() || self.graph_receipt.is_some() {
                         return Err(
                             "completed bulk-load update row must not carry insert receipts".into(),
@@ -500,6 +509,7 @@ mod tests {
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
             graph_receipt: None,
+            resolved_update_vertex_ids: None,
             completed_at_ns: None,
             updated_row_count: None,
         };
@@ -532,6 +542,7 @@ mod tests {
             progress: BulkLoadChunkProgressV1::Completed,
             public_receipt: Some(public_receipt),
             graph_receipt: Some(graph_receipt),
+            resolved_update_vertex_ids: None,
             completed_at_ns: Some(10),
             updated_row_count: None,
         };

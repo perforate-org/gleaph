@@ -3110,6 +3110,7 @@ mod tests {
             }],
             rows: Vec::new(),
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
         (plan_blob, seed_blob, local_vid)
@@ -3824,6 +3825,133 @@ mod tests {
     }
 
     #[test]
+    fn exact_vertex_scalar_journal_records_zero_or_one_and_never_retargets() {
+        use gleaph_graph_kernel::plan_exec::SeedVertexBinding;
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        for (case, expected) in [
+            ("live", 1),
+            ("missing", 0),
+            ("tombstone", 0),
+            ("label", 0),
+            ("policy", 0),
+        ] {
+            let label = if case == "label" {
+                "OtherExactVertex"
+            } else {
+                "ExactVertex"
+            };
+            let target = store
+                .insert_vertex_named([label], [("nick", Value::Text("old".into()))])
+                .unwrap();
+            let decoy = store
+                .insert_vertex_named(["ExactVertex"], [("nick", Value::Text("decoy".into()))])
+                .unwrap();
+            let property = store.property_id("nick").unwrap();
+            if case == "tombstone" {
+                store.delete_vertex(target).unwrap();
+            }
+            let local_vertex_id = if case == "missing" {
+                u32::MAX
+            } else {
+                u32::try_from(u64::from(target)).unwrap()
+            };
+            let predicate = if case == "policy" {
+                " WHERE v.nick = 'allowed'"
+            } else {
+                ""
+            };
+            let program = gleaph_gql::parser::parse(&format!(
+                "MATCH (v:ExactVertex){predicate} SET v.nick = 'written' RETURN v.nick"
+            ))
+            .unwrap();
+            let block = program
+                .transaction_activity
+                .as_ref()
+                .unwrap()
+                .body
+                .as_ref()
+                .unwrap();
+            let plan = gleaph_gql_planner::build_block_plan_with_schema(
+                block,
+                None,
+                &gleaph_gql::type_check::NoSchema,
+            )
+            .unwrap();
+            let seeds = SeedBindingsWire {
+                entries: Vec::new(),
+                rows: Vec::new(),
+                complete_prefix_rows: false,
+                // Leave hydration labels empty to prove the original NodeScan label is checked,
+                // independently of the Router's optional hydration constraints.
+                mutation_target: Some(SeedVertexBinding {
+                    variable: "v".into(),
+                    local_vertex_id,
+                    required_vertex_label_ids: Vec::new(),
+                }),
+            };
+            let mutation_id = 80_000 + u64::from(target);
+            let args = ExecutePlanArgs {
+                target_shard_id: TEST_SHARD_ID,
+                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+                mutation_id: Some(mutation_id),
+                plan_blob: encode_block_plans(&[plan], true).unwrap(),
+                params_blob: encode_gql_params_blob(vec![]).unwrap(),
+                mode: GqlExecutionMode::Update,
+                seed_bindings_blob: Some(Encode!(&seeds).unwrap()),
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+                unique_claims: None,
+                constrained_properties: None,
+                local_unique_claims: None,
+                local_constrained_properties: None,
+                indexed_embeddings: None,
+                resolved_search_blob: None,
+            };
+            let first = pollster::block_on(execute_plan_update(args.clone())).expect(case);
+            assert_eq!(first.row_count, expected, "{case}");
+            let journal = store.mutation_journal_entry(mutation_id).unwrap();
+            assert!(journal.is_completed(), "{case}");
+            assert_eq!(journal.row_count(), expected, "{case}");
+            assert_eq!(
+                store.vertex_property(decoy, property),
+                Some(Value::Text("decoy".into())),
+                "{case}: no scan fallback"
+            );
+            if case != "tombstone" {
+                assert_eq!(
+                    store.vertex_property(target, property),
+                    Some(Value::Text(
+                        if expected == 1 { "written" } else { "old" }.into()
+                    )),
+                    "{case}"
+                );
+                // Change canonical state after the receipt: neither positive nor zero-effect
+                // replay may execute the SET again, even when eligibility changes.
+                store
+                    .set_vertex_property(target, property, Value::Text("after-receipt".into()))
+                    .unwrap();
+                if case == "label" {
+                    let label_id = store.vertex_labels(decoy, store.vertex(decoy).unwrap())[0];
+                    store
+                        .add_vertex_label(target, store.vertex(target).unwrap(), label_id)
+                        .unwrap();
+                }
+            }
+            let replay = pollster::block_on(execute_plan_update(args)).expect("receipt replay");
+            assert_eq!(replay.row_count, expected, "{case}");
+            if case != "tombstone" {
+                assert_eq!(
+                    store.vertex_property(target, property),
+                    Some(Value::Text("after-receipt".into())),
+                    "{case}: journal-first replay"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn execute_plan_query_seed_bindings_skip_label_intersection() {
         attach_test_federation(TEST_SHARD_ID);
         let store = GraphStore::new();
@@ -3894,6 +4022,7 @@ mod tests {
             }],
             rows: Vec::new(),
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");

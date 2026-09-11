@@ -1485,6 +1485,7 @@ fn build_search_seeds(
                 entries: Vec::new(),
                 rows,
                 complete_prefix_rows: false,
+                mutation_target: None,
             };
             (shard_id, wire)
         })
@@ -1624,6 +1625,7 @@ pub(crate) async fn dispatch_search_read_plan(
         entries: Vec::new(),
         rows: Vec::new(),
         complete_prefix_rows: false,
+        mutation_target: None,
     };
     let mut dispatched_any = false;
     for shard in shards {

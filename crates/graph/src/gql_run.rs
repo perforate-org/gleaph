@@ -1125,6 +1125,21 @@ fn seed_initial_rows(
     use crate::facade::EdgeHandle;
     use crate::plan::EdgeBinding;
 
+    seeds
+        .validate_mutation_target()
+        .map_err(|e| GqlRunError::Plan(e.into()))?;
+    let target_row =
+        seeds
+            .mutation_target
+            .as_ref()
+            .map(|target| gleaph_graph_kernel::plan_exec::SeedRowWire {
+                vertex_bindings: vec![target.clone()],
+                float64_bindings: Vec::new(),
+            });
+    let rows = target_row
+        .as_ref()
+        .map(std::slice::from_ref)
+        .unwrap_or(&seeds.rows);
     let mut all_rows = Vec::new();
     for entry in &seeds.entries {
         for &vid in &entry.local_vertex_ids {
@@ -1159,7 +1174,7 @@ fn seed_initial_rows(
             all_rows.push(row);
         }
     }
-    'rows: for row in &seeds.rows {
+    'rows: for row in rows {
         let mut plan_row = PlanQueryRow::new();
         for vertex in &row.vertex_bindings {
             let vertex_id = VertexId::from(vertex.local_vertex_id);
@@ -1434,6 +1449,12 @@ async fn run_wire_plans_inner(
         ));
     }
 
+    let mutation_target = seeds.as_ref().and_then(|s| s.mutation_target.as_ref());
+    if let Some(target) = mutation_target {
+        crate::plan_wire_guard::validate_mutation_target_plan(plans, target)
+            .map_err(|e| GqlRunError::Plan(e.0))?;
+    }
+
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
@@ -1451,7 +1472,11 @@ async fn run_wire_plans_inner(
 
     let (mut seed_rows, mut skip_index, mut complete_prefix_rows) = if let Some(ref s) = seeds {
         let (rows, skip) = seed_initial_rows(store, s)?;
-        (rows, skip, s.complete_prefix_rows)
+        (
+            rows,
+            skip,
+            s.complete_prefix_rows || mutation_target.is_some(),
+        )
     } else {
         (Vec::new(), false, false)
     };
@@ -1471,16 +1496,48 @@ async fn run_wire_plans_inner(
             bench_scope!("canonical_read_phase_seed_rows", _scope_read_phase);
             let router_seed = (skip_index && !seed_rows.is_empty())
                 .then(|| (std::mem::take(&mut seed_rows), true));
-            let mutation_seed_rows = read_phase_seed_rows(
-                store,
-                plan,
-                parameters,
-                index,
-                &execution,
-                router_seed,
-                complete_prefix_rows,
-            )
-            .await?;
+            // An exact input is authoritative even when hydration dropped it. Do not replace a
+            // missing/tombstoned target with an ordinary MATCH scan.
+            let mut mutation_seed_rows = if mutation_target.is_some() && router_seed.is_none() {
+                Some(Vec::new())
+            } else {
+                read_phase_seed_rows(
+                    store,
+                    plan,
+                    parameters,
+                    index,
+                    &execution,
+                    router_seed,
+                    complete_prefix_rows,
+                )
+                .await?
+            };
+            let target_row_count = if let Some(target) = mutation_target {
+                let rows = mutation_seed_rows.as_mut().ok_or_else(|| {
+                    GqlRunError::Plan("mutation_target requires a read prefix".into())
+                })?;
+                if rows.len() > 1
+                    || rows.iter().any(|row| {
+                        row.vertices.get(&target.variable)
+                            != Some(&VertexId::from(target.local_vertex_id))
+                    })
+                {
+                    return Err(GqlRunError::Plan(
+                        "mutation_target read prefix changed the fixed vertex".into(),
+                    ));
+                }
+                // Recheck liveness after the read phase, immediately before the no-RPC write
+                // segment. Hydration preceded that phase and is not a write-time existence proof.
+                if !store
+                    .vertex(VertexId::from(target.local_vertex_id))
+                    .is_some_and(|vertex| !vertex.is_tombstone())
+                {
+                    rows.clear();
+                }
+                Some(rows.len())
+            } else {
+                None
+            };
             bench_scope_end!(_scope_read_phase);
             let _phase_r1 = current_instruction_counter();
             log_wire_phase(
@@ -1540,6 +1597,10 @@ async fn run_wire_plans_inner(
                 &mut last_read_row_count,
                 &mut last_read_plan_rows,
             );
+            if let Some(count) = target_row_count {
+                // The scalar handler persists this 0/1 result before any derived-index await.
+                last_read_row_count = count;
+            }
             skip_index = false;
             seed_rows.clear();
             complete_prefix_rows = false;
@@ -2800,6 +2861,7 @@ mod tests {
             }],
             rows: Vec::new(),
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let params = BTreeMap::new();
 
@@ -2868,6 +2930,7 @@ mod tests {
             }],
             rows: Vec::new(),
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let params = BTreeMap::new();
 
@@ -2955,6 +3018,7 @@ mod tests {
                 }],
             }],
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let params = BTreeMap::new();
 
@@ -3066,6 +3130,7 @@ mod tests {
                 },
             ],
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let params = BTreeMap::new();
 
@@ -3179,6 +3244,7 @@ mod tests {
                 },
             ],
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let params = BTreeMap::new();
 
@@ -3932,6 +3998,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4030,6 +4097,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4115,6 +4183,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4207,6 +4276,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4289,6 +4359,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4378,6 +4449,7 @@ mod wave_4_regression_tests {
                 float64_bindings: Vec::new(),
             }],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
@@ -4495,6 +4567,7 @@ mod wave_4_regression_tests {
                 },
             ],
             complete_prefix_rows: true,
+            mutation_target: None,
         };
 
         pollster::block_on(run_wire_plan_last_read_row_count(

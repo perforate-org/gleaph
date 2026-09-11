@@ -10,10 +10,10 @@ use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_HOME_NAME, GRAPH_NAME, GRAPH_REMOTE_NAME, arm_router_fault,
     bulk_load_as_admin, bulk_load_as_admin_expect_trap, bulk_load_gc_probe_as_admin,
     bulk_load_gc_step_as_admin, bulk_load_start_probe_as_admin, bulk_load_status_as_admin,
-    ensure_property, ensure_vertex_label, gql_query_as_admin, index_vertex_property,
-    install_single_shard_federation, install_two_graph_federation,
-    seed_bulk_load_gc_fixture_as_admin, start_graph_shard, stop_graph_shard, sweep_mutation_keys,
-    wasm_bytes,
+    ensure_property, ensure_vertex_label, gql_mutate_as_admin, gql_query_as_admin,
+    index_vertex_property, install_single_shard_federation, install_two_graph_federation,
+    mutation_status_as_admin, seed_bulk_load_gc_fixture_as_admin, start_graph_shard,
+    stop_graph_shard, sweep_mutation_keys, test_declare_unique_constraint, wasm_bytes,
 };
 use gleaph_router::types::{
     AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand,
@@ -91,6 +91,14 @@ fn assert_state(
     expected: BulkLoadPublicStateV1,
 ) {
     assert_eq!(status.state, expected);
+}
+
+fn drive_to_completed(env: &FederationEnv, graph: &str, key: &str, chunks: Vec<BulkLoadChunkV1>) {
+    bulk_load_as_admin(env, start(graph, key)).expect("start");
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        bulk_load_as_admin(env, append(graph, key, index as u32, chunk)).expect("append");
+    }
+    bulk_load_as_admin(env, finalize(graph, key)).expect("finalize");
 }
 
 #[test]
@@ -620,6 +628,1106 @@ fn remove_row(name: &str, set: Vec<(&str, &str)>, remove: Vec<&str>) -> BulkLoad
     }
 }
 
+/// Catalog setup for a graph named explicitly instead of the single-shard fixture default.
+fn ensure_property_in(env: &FederationEnv, graph: &str, name: &str) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "ensure_properties",
+            Encode!(&graph.to_string(), &vec![name.to_string()]).expect("encode ensure_properties"),
+        )
+        .unwrap_or_else(|e| panic!("ensure_properties on {graph}: {e:?}"));
+    Decode!(
+        &bytes,
+        Result<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError>
+    )
+    .expect("decode ensure_properties")
+    .unwrap_or_else(|e| panic!("ensure_properties on {graph}: {e:?}"));
+}
+
+fn ensure_vertex_label_in(env: &FederationEnv, graph: &str, name: &str) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "ensure_vertex_label",
+            Encode!(&graph.to_string(), &name.to_string()).expect("encode ensure_vertex_label"),
+        )
+        .unwrap_or_else(|e| panic!("ensure_vertex_label on {graph}: {e:?}"));
+    Decode!(&bytes, Result<gleaph_graph_kernel::entry::VertexLabelId, RouterError>)
+        .expect("decode ensure_vertex_label")
+        .unwrap_or_else(|e| panic!("ensure_vertex_label on {graph}: {e:?}"));
+}
+
+fn index_vertex_property_in(env: &FederationEnv, graph: &str, label: &str, property: &str) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "index_vertex_property",
+            Encode!(
+                &graph.to_string(),
+                &label.to_string(),
+                &property.to_string()
+            )
+            .expect("encode index_vertex_property"),
+        )
+        .unwrap_or_else(|e| panic!("index_vertex_property on {graph}: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("index_vertex_property on {graph} rejected: {err:?}"),
+        Err(err) => panic!("decode index_vertex_property: {err}"),
+    }
+}
+
+/// Read one vertex property inside one explicitly named logical graph.
+fn prop_of_in(env: &FederationEnv, graph: &str, name: &str, property: &str) -> Option<String> {
+    let result = gql_query_as_admin(
+        env,
+        &format!(
+            "SESSION SET GRAPH {graph} MATCH (p:Person) WHERE p.name = '{name}' RETURN p.`{property}` AS hit"
+        ),
+    );
+    assert_eq!(result.row_count, 1, "one row for name `{name}` in {graph}");
+    let wire =
+        GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("rows_blob for prop query"))
+            .expect("decode rows_blob");
+    let row = wire
+        .rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row");
+    match row.get("hit").expect("hit column") {
+        Value::Text(text) => Some(text.clone()),
+        Value::Null => None,
+        other => panic!("expected text or NULL for {property}, got {other:?}"),
+    }
+}
+
+/// A durable bulk-load update establishes its own authorized graph before admission. The
+/// generated `MATCH … SET` statement must therefore execute against that graph, not against the
+/// caller's HOME/session graph re-resolved at GQL ingress: with two graphs holding the same
+/// label/property/endpoint values, only the commanded graph may change.
+#[test]
+fn bulk_load_update_writes_only_the_commanded_graph() {
+    let env = install_two_graph_federation();
+    for graph in [GRAPH_HOME_NAME, GRAPH_REMOTE_NAME] {
+        ensure_vertex_label_in(&env, graph, "Person");
+        ensure_property_in(&env, graph, "name");
+        ensure_property_in(&env, graph, "nick");
+        index_vertex_property_in(&env, graph, "Person", "name");
+        let seed_key = format!("adr0057-update-graph-scope-seed-{graph}");
+        drive_to_completed(
+            &env,
+            graph,
+            &seed_key,
+            vec![BulkLoadChunkV1::Vertices(vec![named_vertex("alice")])],
+        );
+    }
+
+    let key = "adr0057-update-graph-scope";
+    bulk_load_as_admin(&env, start(GRAPH_REMOTE_NAME, key)).expect("start remote update");
+    assert_eq!(
+        bulk_load_as_admin(
+            &env,
+            append(
+                GRAPH_REMOTE_NAME,
+                key,
+                0,
+                BulkLoadChunkV1::Updates(vec![update_row("alice", "ally")]),
+            ),
+        ),
+        Ok(BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        })
+    );
+    bulk_load_as_admin(&env, finalize(GRAPH_REMOTE_NAME, key)).expect("finalize remote update");
+
+    assert_eq!(
+        prop_of_in(&env, GRAPH_REMOTE_NAME, "alice", "nick"),
+        Some("ally".to_owned()),
+        "the commanded graph must receive the update"
+    );
+    assert_eq!(
+        prop_of_in(&env, GRAPH_HOME_NAME, "alice", "nick"),
+        None,
+        "the caller's HOME graph must not be mutated by a remote bulk-load update"
+    );
+}
+
+/// Update-chunk durability contract: a row failure after the chunk was admitted keeps the
+/// committed prefix durable and the job resumable/abortable at that prefix, and a completed chunk/// R1: an admitted-but-unfinished update chunk is resumable. The public projection hides its
+/// partial prefix, a resuming client re-sends the identical payload at `next_chunk_index`, and
+/// the Router re-resolves only the uncommitted suffix — so a prefix row may rewrite its own match
+/// property without making the chunk unresolvable.
+#[test]
+fn bulk_load_update_resumes_an_admitted_chunk_after_its_committed_prefix() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-resume-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![
+            named_vertex("alice"),
+            named_vertex("bob"),
+        ])],
+    );
+
+    // Row 0 rewrites its *own* match property, so a retry that re-resolved the applied prefix
+    // would find no `name = 'alice'` vertex and could never resume. Row 1 targets `bob`.
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        BulkLoadUpdateV1 {
+            vertex_label: "Person".to_owned(),
+            property_name: "name".to_owned(),
+            match_value: Value::Text("alice".to_owned())
+                .to_binary_bytes()
+                .expect("encode match value"),
+            set_properties: vec![AtomicInsertPropertyV1 {
+                property_name: "name".to_owned(),
+                value: Value::Text("ally".to_owned())
+                    .to_binary_bytes()
+                    .expect("encode name"),
+            }],
+            remove_properties: Vec::new(),
+        },
+        update_row("bob", "bobby"),
+    ]);
+
+    let key = "adr0057-update-resume";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+    // Injected post-admission row failure: row 0 commits, then the Router returns a recoverable
+    // error instead of dispatching row 1, leaving an admitted chunk with a committed prefix.
+    arm_router_fault(&env, 10);
+    let failed = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect_err("the injected row failure must surface as a recoverable Append error");
+    arm_router_fault(&env, 0);
+    assert!(
+        format!("{failed:?}").contains("injected fault"),
+        "unexpected failure: {failed:?}"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "ally", "name"),
+        Some("ally".to_owned()),
+        "the committed prefix row must be applied"
+    );
+
+    let pending =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("pending status");
+    assert_state(&pending, BulkLoadPublicStateV1::AppendPending);
+    assert_eq!(
+        pending.next_chunk_index, 0,
+        "an unfinished chunk must not advance the accepted chunk index"
+    );
+    assert_eq!(pending.committed_chunk_count, 0);
+    assert_eq!(pending.completed_chunk_count, 0);
+    assert!(
+        pending.receipts.is_empty(),
+        "an unfinished update chunk must not project a partial receipt: {:?}",
+        pending.receipts
+    );
+
+    // A different payload for the same index is rejected: the retry contract requires the
+    // identical authored chunk, not merely a compatible one.
+    let conflicting = bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            0,
+            BulkLoadChunkV1::Updates(vec![update_row("bob", "other")]),
+        ),
+    )
+    .expect_err("a different payload for a pending chunk must conflict");
+    assert!(
+        matches!(conflicting, RouterError::Conflict(ref message) if message.contains("fingerprint")),
+        "unexpected conflict: {conflicting:?}"
+    );
+
+    // Mutate the uncommitted row's key too. Retry must use its admitted ID, not require the
+    // original property value to remain resolvable.
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (p:Person) WHERE p.name = 'bob' SET p.name = 'robert'",
+        "adr0057-rename-admitted-bob",
+    );
+    let resumed = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect("the identical payload must resume the admitted chunk");
+    assert_eq!(
+        resumed,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 2,
+            updated_row_count: 2,
+        }
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "robert", "nick"),
+        Some("bobby".to_owned()),
+        "the uncommitted suffix must be applied exactly once to its original vertex"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "ally", "name"),
+        Some("ally".to_owned()),
+        "the resumed chunk must not re-apply or roll back its committed prefix"
+    );
+
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize resumed update");
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("resumed status");
+    assert_state(&status, BulkLoadPublicStateV1::Completed);
+    assert_eq!(status.receipts.len(), 1);
+    assert_eq!(status.receipts[0].chunk_index, 0);
+    assert_eq!(
+        status.receipts[0].updated_row_count, 2,
+        "the resumed chunk records its complete authored row count once"
+    );
+    let total: u64 = status
+        .receipts
+        .iter()
+        .map(|row| row.updated_row_count)
+        .sum();
+    assert_eq!(total, 2, "exactly the two authored rows are accounted for");
+
+    // A completed chunk replays its stored receipt and is not re-resolved or re-applied.
+    let replay = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk))
+        .expect("completed chunk replay must return the stored receipt");
+    assert_eq!(replay, resumed);
+    assert_eq!(maybe_prop_of(&env, "ally", "name"), Some("ally".to_owned()));
+}
+
+/// A retry holding an admitted chunk's stale snapshot must not start an unwritten row after
+/// Abort closes the job. A one-shot owner-boundary hook runs real Abort before re-admission;
+/// retry no longer performs a property lookup. Exact receipt assertions protect the dispatch
+/// grant separately from completed replay.
+#[test]
+fn bulk_load_update_abort_before_readmission_blocks_the_suspended_row_write() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-resolve-race-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![
+            named_vertex("alice"),
+            named_vertex("bob"),
+        ])],
+    );
+
+    let key = "adr0057-update-resolve-race";
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        update_row("alice", "ally"),
+        update_row("bob", "bobby"),
+    ]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+
+    // Leave an admitted chunk whose prefix is exactly row 0 (row 0 commits, row 1 does not run).
+    arm_router_fault(&env, 10);
+    bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect_err("the injected row failure must leave row 1 unwritten");
+    arm_router_fault(&env, 0);
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "nick"), None);
+
+    // Reach admission with a stale snapshot, not an unrelated index/transport error.
+    arm_router_fault(&env, 12);
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+            .expect("late callback replays the receipt after Abort"),
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    let aborted =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("aborted status");
+    assert_state(&aborted, BulkLoadPublicStateV1::Aborted);
+    assert_eq!(aborted.committed_chunk_count, 1);
+    assert_eq!(aborted.receipts.len(), 1);
+    assert_eq!(
+        aborted.receipts[0].updated_row_count, 1,
+        "the terminal receipt must claim exactly the rows that were written"
+    );
+
+    assert_eq!(
+        maybe_prop_of(&env, "bob", "nick"),
+        None,
+        "the never-written row must not be applied by the suspended retry"
+    );
+
+    // The terminal state and its receipt are unchanged by the late caller.
+    let terminal =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("terminal status");
+    assert_state(&terminal, BulkLoadPublicStateV1::Aborted);
+    assert_eq!(terminal.receipts.len(), 1);
+    assert_eq!(terminal.receipts[0].updated_row_count, 1);
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+
+    // A fresh retry of the same payload replays the receipt and still writes nothing.
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk))
+            .expect("post-abort retry must replay the stored receipt"),
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "nick"), None);
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+}
+
+/// T3: a genuinely rejected row (the shard's Graph call is refused while the shard is stopped) is
+/// a *real* failure, not an injected one, and the row keeps a durable Router saga record. The
+/// classification must therefore treat it as unsettled rather than write-free. Two contracts:
+///
+/// (a) without an Abort, the identical re-`Append` settles the row through its journal key and
+///     completes the chunk, applying each row exactly once;
+/// (b) once an `Abort` is admitted, the unwritten suffix is never started: the `Abort` is
+///     retryably `Busy` while a row is unsettled, a re-`Append` may still settle the row that was
+///     already dispatched, and the next `Abort` terminalizes at exactly that settled prefix.
+///
+/// This tests retryable transport failure. Deterministic constrained-SET rejection is covered
+/// separately, without a transport failure or fault hook.
+#[test]
+fn bulk_load_update_settles_a_rejected_row_and_aborts_at_its_true_prefix() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-rejected-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![
+            named_vertex("alice"),
+            named_vertex("bob"),
+            named_vertex("carol"),
+            named_vertex("dave"),
+        ])],
+    );
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        update_row("alice", "ally"),
+        update_row("bob", "bobby"),
+    ]);
+    // Scenario (b) runs on its own vertices so scenario (a)'s writes cannot be mistaken for its
+    // verdicts.
+    let abort_chunk = BulkLoadChunkV1::Updates(vec![
+        update_row("carol", "caz"),
+        update_row("dave", "davey"),
+    ]);
+
+    // ── (a) rejection then a plain retry: the chunk completes exactly once ──
+    let retry_key = "adr0057-update-rejected-retry";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, retry_key)).expect("start retry job");
+    stop_graph_shard(&env, env.graph_source);
+    let rejected_message = submit_bulk_load(&env, append(GRAPH_NAME, retry_key, 0, chunk.clone()));
+    env.pic.tick();
+    start_graph_shard(&env, env.graph_source);
+    let rejected = await_bulk_load(&env, rejected_message);
+    let RouterError::InvalidArgument(message) = rejected.as_ref().expect_err("rejected") else {
+        panic!("the stopped shard must reject the row's Graph call: {rejected:?}");
+    };
+    assert!(
+        message.contains("execute_plan_update") && message.contains("is stopped"),
+        "exact Graph rejection changed: {message}"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        None,
+        "a rejected row must not have applied its write"
+    );
+    let settled = bulk_load_as_admin(&env, append(GRAPH_NAME, retry_key, 0, chunk.clone()))
+        .expect("the identical payload must settle the rejected row and finish the chunk");
+    assert_eq!(
+        settled,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 2,
+            updated_row_count: 2,
+        }
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "nick"), Some("bobby".to_owned()));
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, retry_key, 0, chunk.clone()))
+            .expect("completed replay"),
+        settled,
+        "a completed chunk replays its stored receipt"
+    );
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, retry_key)).expect("finalize retry job");
+    let retry_status =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, retry_key, None, 8).expect("retry status");
+    assert_state(&retry_status, BulkLoadPublicStateV1::Completed);
+    assert_eq!(
+        retry_status
+            .receipts
+            .iter()
+            .map(|row| row.updated_row_count)
+            .sum::<u64>(),
+        2,
+        "each authored row must be counted exactly once"
+    );
+
+    // ── (b) rejection then an Abort: the unwritten suffix is never started ──
+    let abort_key = "adr0057-update-rejected-abort";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, abort_key)).expect("start abort job");
+    stop_graph_shard(&env, env.graph_source);
+    let failed_message =
+        submit_bulk_load(&env, append(GRAPH_NAME, abort_key, 0, abort_chunk.clone()));
+    env.pic.tick();
+    let failed = await_bulk_load(&env, failed_message).expect_err("stopped Graph rejects dispatch");
+    let RouterError::InvalidArgument(message) = failed else {
+        panic!("unexpected dispatch rejection: {failed:?}");
+    };
+    assert!(
+        message.contains("is stopped"),
+        "unexpected rejection: {message}"
+    );
+
+    // Unknown (journal unreadable) and then Unresolved (readable but absent) must both keep
+    // the child pending. No successful prefix or terminal receipt may be invented in either case.
+    for journal_readable in [false, true] {
+        if journal_readable {
+            start_graph_shard(&env, env.graph_source);
+        }
+        assert_eq!(
+            bulk_load_as_admin(&env, abort(GRAPH_NAME, abort_key)),
+            Err(RouterError::Busy {
+                operation: "bulk_load.append".into()
+            }),
+            "journal_readable={journal_readable}"
+        );
+        let aborting = bulk_load_status_as_admin(&env, GRAPH_NAME, abort_key, None, 8)
+            .expect("status while aborting");
+        assert_state(&aborting, BulkLoadPublicStateV1::AbortPending);
+        assert_eq!(aborting.next_chunk_index, 0);
+        assert_eq!(aborting.committed_chunk_count, 0);
+        assert_eq!(aborting.completed_chunk_count, 0);
+        assert!(aborting.receipts.is_empty());
+    }
+
+    // The re-Append settles the row that was already dispatched and refuses to start the row that
+    // never was; the job stays aborting.
+    let settling = bulk_load_as_admin(&env, append(GRAPH_NAME, abort_key, 0, abort_chunk.clone()))
+        .expect_err("a winding-down job must not start the unwritten row");
+    assert!(
+        matches!(
+            settling,
+            RouterError::Busy { ref operation } if operation == "bulk_load.append"
+        ),
+        "unexpected settle error: {settling:?}"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "carol", "nick"),
+        Some("caz".to_owned()),
+        "the already-dispatched row must be settled exactly once"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "dave", "nick"),
+        None,
+        "the never-dispatched row must not be started after Abort"
+    );
+
+    // The next Abort terminalizes at the settled prefix, and its receipt matches the writes.
+    assert_eq!(
+        bulk_load_as_admin(&env, abort(GRAPH_NAME, abort_key)).expect("second abort"),
+        BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted,
+        }
+    );
+    let terminal =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, abort_key, None, 8).expect("terminal status");
+    assert_state(&terminal, BulkLoadPublicStateV1::Aborted);
+    assert_eq!(terminal.receipts.len(), 1);
+    assert_eq!(
+        terminal.receipts[0].updated_row_count, 1,
+        "the terminal receipt must count exactly the applied row"
+    );
+    let applied = u64::from(maybe_prop_of(&env, "carol", "nick").is_some())
+        + u64::from(maybe_prop_of(&env, "dave", "nick").is_some());
+    assert_eq!(
+        terminal
+            .receipts
+            .iter()
+            .map(|row| row.updated_row_count)
+            .sum::<u64>(),
+        applied,
+        "a terminal abort must never leave a write outside its receipts"
+    );
+    assert_eq!(applied, 1);
+    // A further retry replays the terminal receipt and still writes nothing.
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, abort_key, 0, abort_chunk.clone()))
+            .expect("post-abort replay"),
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    assert_eq!(maybe_prop_of(&env, "dave", "nick"), None);
+    assert_eq!(
+        bulk_load_as_admin(&env, abort(GRAPH_NAME, abort_key)).expect("repeat abort"),
+        BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted,
+        }
+    );
+}
+
+/// A constrained SET is rejected by the real GQL admission owner after a valid prefix.
+/// The released routing reservation proves the failed row never dispatched; Abort closes at
+/// the exact prefix without changing the constraint, clearing a fault, or changing the payload.
+#[test]
+fn bulk_load_update_deterministic_row_failure_converges_to_a_terminal_abort() {
+    let env = install_single_shard_federation();
+    test_declare_unique_constraint(&env, GRAPH_NAME, "person_name", "Person", "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    for name in ["alice", "bob"] {
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:Person {{name: '{name}'}})"),
+            &format!("adr0057-update-deterministic-seed-{name}"),
+        );
+    }
+
+    let key = "adr0057-update-deterministic";
+    let mut rejected_row = update_row("bob", "bobby");
+    rejected_row.set_properties[0].property_name = "name".to_owned();
+    let chunk = BulkLoadChunkV1::Updates(vec![update_row("alice", "ally"), rejected_row]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+    let first = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect_err("the constrained row must be rejected");
+    assert_eq!(
+        first,
+        RouterError::NotImplemented(
+            "SET on a uniqueness-constrained property or label requires the two-phase \
+         acquire/release protocol, which is not yet implemented (ADR 0030); refused \
+         rather than risk writing a duplicate value"
+                .to_owned()
+        )
+    );
+    let row_status = mutation_status_as_admin(&env, GRAPH_NAME, &format!("{key}:0:u1"))
+        .expect("rejected row retains its released routing reservation");
+    assert_eq!(
+        row_status.phase,
+        gleaph_graph_kernel::plan_exec::MutationLifecyclePhase::Failed
+    );
+    let (journal,): (Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire>,) =
+        pocket_ic::update_candid_as(
+            &env.pic,
+            env.graph_source,
+            env.router,
+            "get_mutation_journal_entry",
+            (row_status.mutation_id,),
+        )
+        .expect("read the Graph-owned journal");
+    assert!(
+        journal.is_none(),
+        "the rejected row must not have a Graph write"
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "name"), Some("bob".to_owned()));
+    assert_eq!(
+        gql_query_as_admin(
+            &env,
+            "MATCH (p:Person) WHERE p.name = 'bobby' RETURN p.name"
+        )
+        .row_count,
+        0
+    );
+    // The valid prefix row is applied, and the failing row did not change anything.
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "nick"), None);
+    // The same payload (still failing) reports the same deterministic error, never a different
+    // fingerprint/conflict error and never a silent success.
+    let second = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect_err("the same failing payload must report the same deterministic error");
+    assert_eq!(second, first, "a deterministic row failure must be stable");
+
+    // Abort converges finitely: the failing row is proven write-free, so the chunk closes at its
+    // one-row prefix.
+    let aborted = bulk_load_as_admin(&env, abort(GRAPH_NAME, key)).expect("abort must terminate");
+    assert_eq!(
+        aborted,
+        BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted,
+        }
+    );
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("aborted status");
+    assert_state(&status, BulkLoadPublicStateV1::Aborted);
+    assert_eq!(status.committed_chunk_count, 1);
+    assert_eq!(status.completed_chunk_count, 1);
+    assert_eq!(status.receipts.len(), 1);
+    assert_eq!(
+        status.receipts[0].updated_row_count, 1,
+        "the abort must record exactly the committed prefix"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned())
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "bob", "nick"),
+        None,
+        "the write-free row must stay unapplied"
+    );
+    // Re-Abort and a replayed Append stay consistent with the terminal state.
+    assert_eq!(
+        bulk_load_as_admin(&env, abort(GRAPH_NAME, key)).expect("re-abort"),
+        BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted,
+        }
+    );
+    let replayed = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk))
+        .expect("the accepted chunk stays replayable after abort");
+    assert_eq!(
+        replayed,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    assert_eq!(maybe_prop_of(&env, "bob", "name"), Some("bob".to_owned()));
+    assert_eq!(
+        gql_query_as_admin(
+            &env,
+            "MATCH (p:Person) WHERE p.name = 'bobby' RETURN p.name"
+        )
+        .row_count,
+        0,
+        "replay after a terminal abort must not resurrect the rejected SET"
+    );
+}
+
+/// S1 scenario 2 (counterexample B): the Graph canonical write landed but the Router lost the
+/// bulk prefix record, and the row rewrote its own match property. A resend must settle the row
+/// from the durable journal instead of re-resolving the stale property, apply it exactly once,
+/// and record it exactly once.
+#[test]
+fn bulk_load_update_resumes_a_row_whose_canonical_write_lost_its_prefix_record() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-lost-prefix-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![named_vertex("alice")])],
+    );
+
+    // The single row rewrites the property it matches on: after the write there is no vertex
+    // with `name = 'alice'`, so any implementation that re-resolves before consulting the journal
+    // fails here instead of converging.
+    let key = "adr0057-update-lost-prefix";
+    let chunk = BulkLoadChunkV1::Updates(vec![BulkLoadUpdateV1 {
+        vertex_label: "Person".to_owned(),
+        property_name: "name".to_owned(),
+        match_value: Value::Text("alice".to_owned())
+            .to_binary_bytes()
+            .expect("encode match value"),
+        set_properties: vec![AtomicInsertPropertyV1 {
+            property_name: "name".to_owned(),
+            value: Value::Text("ally".to_owned())
+                .to_binary_bytes()
+                .expect("encode name"),
+        }],
+        remove_properties: Vec::new(),
+    }]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+
+    // The Graph write commits, then the enclosing callback traps before the prefix record, so the
+    // Router keeps only the pre-dispatch saga record while the Graph holds the write.
+    arm_router_fault(&env, 11);
+    bulk_load_as_admin_expect_trap(&env, append(GRAPH_NAME, key, 0, chunk.clone()));
+    arm_router_fault(&env, 0);
+    let row_status = mutation_status_as_admin(&env, GRAPH_NAME, &format!("{key}:0:u0"))
+        .expect("pre-dispatch row journal survives the callback trap");
+    let (journal,): (Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire>,) =
+        pocket_ic::update_candid_as(
+            &env.pic,
+            env.graph_source,
+            env.router,
+            "get_mutation_journal_entry",
+            (row_status.mutation_id,),
+        )
+        .expect("read the Graph-owned journal");
+    assert_eq!(
+        journal
+            .expect("canonical write has a journal receipt")
+            .state(),
+        gleaph_graph_kernel::plan_exec::MutationJournalState::Completed,
+        "scalar execute_plan_update persists only a completed receipt, not Incomplete"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "ally", "name"),
+        Some("ally".to_owned()),
+        "the trap must leave the Graph canonical write durable"
+    );
+    let lost = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+        .expect("status after the lost prefix record");
+    assert_eq!(
+        lost.next_chunk_index, 0,
+        "the chunk must still be pending at index 0"
+    );
+    assert!(
+        lost.receipts.is_empty(),
+        "no receipt may claim the unrecorded prefix: {:?}",
+        lost.receipts
+    );
+
+    // The identical payload must converge from the journal: no re-resolution of `name = 'alice'`,
+    // exactly one application, and exactly one receipt row.
+    let resumed = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+        .expect("the journal must settle the row instead of re-resolving the rewritten property");
+    assert_eq!(
+        resumed,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "ally", "name"),
+        Some("ally".to_owned()),
+        "the settled row must not be applied a second time"
+    );
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize resumed update");
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("resumed status");
+    assert_state(&status, BulkLoadPublicStateV1::Completed);
+    assert_eq!(status.receipts.len(), 1);
+    assert_eq!(
+        status
+            .receipts
+            .iter()
+            .map(|row| row.updated_row_count)
+            .sum::<u64>(),
+        1,
+        "the settled row must be counted exactly once"
+    );
+    // Replay of the completed chunk returns the stored receipt and applies nothing.
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk)).expect("completed replay"),
+        resumed
+    );
+    assert_eq!(maybe_prop_of(&env, "ally", "name"), Some("ally".to_owned()));
+}
+
+/// R2/S1 scenario 3: an update chunk that was admitted and partially applied must not be silently
+/// abandoned. Abort cannot terminalize at the recorded prefix while the running append can still
+/// commit a row; it stays `AbortPending` (exact retryable diagnostic) and the documented
+/// convergence is that same-payload re-Append, whose completion terminalizes the abort at the
+/// true prefix. The terminal invariant is asserted as `recorded == applied`, so an abort can
+/// never leave a write outside the receipts.
+#[test]
+fn bulk_load_update_abort_does_not_claim_a_partially_applied_chunk() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-abort-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![
+            named_vertex("alice"),
+            named_vertex("bob"),
+        ])],
+    );
+
+    let key = "adr0057-update-abort-race";
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        update_row("alice", "ally"),
+        update_row("bob", "bobby"),
+    ]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+
+    // Suspend the Append inside its first row's Graph call, then interleave an Abort ingress.
+    stop_graph_shard(&env, env.graph_source);
+    let append_message = submit_bulk_load(&env, append(GRAPH_NAME, key, 0, chunk.clone()));
+    env.pic.tick();
+    let suspended = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+        .expect("status while the update row is in flight");
+    assert_state(&suspended, BulkLoadPublicStateV1::AppendPending);
+    assert!(
+        suspended.receipts.is_empty(),
+        "an in-flight update chunk must not project a partial receipt"
+    );
+
+    let abort_error = await_bulk_load(&env, submit_bulk_load(&env, abort(GRAPH_NAME, key)))
+        .expect_err("Abort must not terminalize a chunk whose row may still commit");
+    assert!(
+        matches!(
+            abort_error,
+            RouterError::Busy { ref operation } if operation == "bulk_load.append"
+        ),
+        "unexpected abort error: {abort_error:?}"
+    );
+    let abort_pending = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+        .expect("status while abort is pending");
+    assert_state(&abort_pending, BulkLoadPublicStateV1::AbortPending);
+    assert!(
+        abort_pending.receipts.is_empty(),
+        "a pending abort must not claim an uncommitted prefix"
+    );
+    assert!(matches!(
+        bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)),
+        Err(RouterError::Busy { .. })
+    ));
+
+    // Resume the shard so the suspended row can settle, then await the Append outcome.
+    start_graph_shard(&env, env.graph_source);
+    let append_outcome = await_bulk_load(&env, append_message);
+    let after_append = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+        .expect("status after the suspended append settled");
+    let mut recorded: u64 = after_append
+        .receipts
+        .iter()
+        .map(|row| row.updated_row_count)
+        .sum();
+    if !matches!(after_append.state, BulkLoadPublicStateV1::Aborted) {
+        // The suspended row's Graph call was rejected while the shard was stopped, so this
+        // attempt committed nothing. Assert that positively rather than treating "Err" as proof
+        // of no commit.
+        assert!(
+            append_outcome.is_err(),
+            "the stopped shard must reject the suspended append: {append_outcome:?}"
+        );
+        assert_state(&after_append, BulkLoadPublicStateV1::AbortPending);
+        assert_eq!(
+            after_append
+                .receipts
+                .iter()
+                .map(|row| row.updated_row_count)
+                .sum::<u64>(),
+            0,
+            "no receipt may claim rows from a rejected append attempt"
+        );
+        // The row does have a durable saga record, so it is unsettled rather than write-free: the
+        // job may only terminalize once that settles or is proven write-free.
+        let settling = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+            .expect_err("a winding-down job must not start its never-dispatched first row");
+        assert!(
+            matches!(
+                settling,
+                RouterError::Busy { ref operation } if operation == "bulk_load.append"
+            ),
+            "unexpected settle outcome: {settling:?}"
+        );
+        // The already-dispatched first row may still be settled (that is the intended
+        // reconciliation), but the never-dispatched second row must not be started.
+        assert_eq!(
+            maybe_prop_of(&env, "bob", "nick"),
+            None,
+            "the never-dispatched row must not be started while the job winds down"
+        );
+        let converged = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+            .expect("status after the settle attempt");
+        assert_state(&converged, BulkLoadPublicStateV1::AbortPending);
+        // With the rejected row proven write-free by the owners, the next Abort terminalizes at
+        // the zero prefix.
+        let terminal_abort = bulk_load_as_admin(&env, abort(GRAPH_NAME, key))
+            .expect("the second Abort must terminalize the write-free chunk");
+        assert_eq!(
+            terminal_abort,
+            BulkLoadResponse::AbortAccepted {
+                state: BulkLoadPublicStateV1::Aborted,
+            }
+        );
+        let converged = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8)
+            .expect("status after the converged abort");
+        assert_state(&converged, BulkLoadPublicStateV1::Aborted);
+        assert_eq!(
+            converged.receipts.len(),
+            1,
+            "the converged abort records exactly one completed chunk"
+        );
+        recorded = converged
+            .receipts
+            .iter()
+            .map(|row| row.updated_row_count)
+            .sum();
+    }
+
+    // The invariant: every applied row is counted, and the terminal state is Aborted.
+    let alice = maybe_prop_of(&env, "alice", "nick");
+    let bob = maybe_prop_of(&env, "bob", "nick");
+    let applied = u64::from(alice.is_some()) + u64::from(bob.is_some());
+    assert_eq!(
+        recorded, applied,
+        "an abort must never leave a write outside the recorded prefix (recorded {recorded}, applied {applied})"
+    );
+    // The terminal prefix must describe exactly the applied rows: a row count that exceeds what
+    // is visible (or vice versa) is the defect this contract exists to prevent.
+    assert_eq!(
+        (alice.as_deref(), bob.as_deref()),
+        match recorded {
+            0 => (None, None),
+            1 => (Some("ally"), None),
+            2 => (Some("ally"), Some("bobby")),
+            other => panic!("terminal prefix {other} has no consistent applied state"),
+        },
+        "the terminal prefix must match the applied values (recorded {recorded})"
+    );
+    let terminal =
+        bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("terminal status");
+    assert_state(&terminal, BulkLoadPublicStateV1::Aborted);
+    assert_eq!(
+        bulk_load_as_admin(&env, abort(GRAPH_NAME, key)),
+        Ok(BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted,
+        })
+    );
+
+    // Reuse this fixture for deletion after admission, both with an acknowledged zero-effect
+    // receipt and with that response lost. A replacement Bob is a decoy, never a new target.
+    for lose_response in [false, true] {
+        let key = if lose_response {
+            "adr0057-deleted-target-lost"
+        } else {
+            "adr0057-deleted-target"
+        };
+        let chunk = BulkLoadChunkV1::Updates(vec![
+            update_row("alice", "kept-prefix"),
+            update_row("bob", "must-not-land"),
+        ]);
+        bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start deletion case");
+        arm_router_fault(&env, 10);
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone()))
+            .expect_err("stop before row one");
+        arm_router_fault(&env, 0);
+        assert_eq!(nick_of(&env, "alice"), "kept-prefix");
+        gql_mutate_as_admin(
+            &env,
+            "MATCH (p:Person) WHERE p.name = 'bob' DELETE p",
+            &format!("{key}-delete"),
+        );
+        gql_mutate_as_admin(
+            &env,
+            "INSERT (:Person {name: 'bob'})",
+            &format!("{key}-decoy"),
+        );
+        let rejected =
+            RouterError::NotFound("bulk-load update target is no longer eligible".into());
+        if lose_response {
+            arm_router_fault(&env, 11);
+            bulk_load_as_admin_expect_trap(&env, append(GRAPH_NAME, key, 0, chunk.clone()));
+            arm_router_fault(&env, 0);
+        } else {
+            for _ in 0..2 {
+                assert_eq!(
+                    bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone())),
+                    Err(rejected.clone())
+                );
+            }
+        }
+        let row = mutation_status_as_admin(&env, GRAPH_NAME, &format!("{key}:0:u1"))
+            .expect("row journal");
+        let (journal,): (Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire>,) =
+            pocket_ic::update_candid_as(
+                &env.pic,
+                env.graph_source,
+                env.router,
+                "get_mutation_journal_entry",
+                (row.mutation_id,),
+            )
+            .expect("Graph journal");
+        let journal = journal.expect("durable zero-effect receipt");
+        assert_eq!(
+            journal.state(),
+            gleaph_graph_kernel::plan_exec::MutationJournalState::Completed
+        );
+        assert_eq!(
+            journal.row_count(),
+            0,
+            "a deleted target is not a completed bulk row"
+        );
+        assert_eq!(
+            maybe_prop_of(&env, "bob", "nick"),
+            None,
+            "the replacement Bob must be untouched"
+        );
+        let pending = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("pending");
+        assert_state(&pending, BulkLoadPublicStateV1::AppendPending);
+        assert_eq!(
+            (
+                pending.next_chunk_index,
+                pending.committed_chunk_count,
+                pending.completed_chunk_count
+            ),
+            (0, 0, 0)
+        );
+        assert!(pending.receipts.is_empty());
+        // No re-Append is needed in the lost-response case: the Graph's zero receipt is itself
+        // conclusive evidence. The never-written row cannot become eligible after this Abort.
+        for _ in 0..2 {
+            assert_eq!(
+                bulk_load_as_admin(&env, abort(GRAPH_NAME, key)),
+                Ok(BulkLoadResponse::AbortAccepted {
+                    state: BulkLoadPublicStateV1::Aborted
+                })
+            );
+        }
+        let terminal = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("terminal");
+        assert_state(&terminal, BulkLoadPublicStateV1::Aborted);
+        assert_eq!(
+            (
+                terminal.next_chunk_index,
+                terminal.committed_chunk_count,
+                terminal.completed_chunk_count
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(terminal.receipts.len(), 1);
+        assert_eq!(terminal.receipts[0].updated_row_count, 1);
+        assert_eq!(
+            bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk)),
+            Ok(BulkLoadResponse::Updated {
+                chunk_index: 0,
+                next_offset: 1,
+                updated_row_count: 1
+            })
+        );
+        assert_eq!(maybe_prop_of(&env, "bob", "nick"), None);
+        assert_eq!(nick_of(&env, "alice"), "kept-prefix");
+    }
+}
+
 /// `gleaph load --mode update` runtime contract: update chunks resolve every match key through
 /// the converged property index before any row executes, apply absolute SET assignments, and
 /// record the committed row count in the durable receipt (resume skips by that count).
@@ -652,7 +1760,6 @@ fn bulk_load_update_applies_vertex_set_and_rejects_missing_match() {
     let seed = bulk_load_status_as_admin(&env, GRAPH_NAME, seed_key, None, 8).expect("seed status");
     assert_state(&seed, BulkLoadPublicStateV1::Completed);
 
-    // DEBUG probe: read-WHERE vs mutate-WHERE to isolate the filter path.
     // The update chunk commits both rows with one absolute SET each.
     let key = "adr0057-update-lifecycle";
     bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
@@ -711,6 +1818,59 @@ fn bulk_load_update_applies_vertex_set_and_rejects_missing_match() {
     assert_eq!(
         updated_total, 2,
         "durable receipts must record the committed update rows for resume"
+    );
+
+    // Both keys initially resolve uniquely. Renaming Alice to Bob in row zero must not broaden
+    // row one's target from the original Bob to both vertices. Compare values by immutable ID.
+    let key = "adr0057-update-pinned-target";
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        remove_row("alice", vec![("name", "bob")], vec![]),
+        update_row("bob", "only-original-bob"),
+    ]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start pinned-target job");
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk.clone())),
+        Ok(BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 2,
+            updated_row_count: 2
+        })
+    );
+    let result = gql_query_as_admin(
+        &env,
+        "MATCH (p:Person) RETURN element_id(p) AS id, p.nick AS nick",
+    );
+    let wire = GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("identity projection"))
+        .expect("decode identity projection");
+    let actual: std::collections::BTreeMap<_, _> = wire
+        .rows
+        .into_iter()
+        .map(|row| {
+            let row = row.try_into_value_row().expect("value row");
+            let Value::Bytes(id) = row.get("id").expect("id") else {
+                panic!("binary vertex ID required")
+            };
+            (id.clone(), row.get("nick").expect("nick").clone())
+        })
+        .collect();
+    let ids = &seed.receipts[0].receipt.allocated_vertex_ids;
+    assert_eq!(
+        actual,
+        std::collections::BTreeMap::from([
+            (ids[0].clone(), Value::Text("ally".into())),
+            (ids[1].clone(), Value::Text("only-original-bob".into())),
+            (ids[2].clone(), Value::Null),
+        ]),
+        "renaming a match key must not change another row's admitted target"
+    );
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize pinned-target job");
+    assert_eq!(
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk)),
+        Ok(BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 2,
+            updated_row_count: 2
+        })
     );
 }
 

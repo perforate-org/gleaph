@@ -1748,6 +1748,7 @@ pub fn seeds_for_local_shard(
         }],
         rows: Vec::new(),
         complete_prefix_rows: false,
+        mutation_target: None,
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }
@@ -1778,6 +1779,7 @@ pub fn seeds_for_local_shard_edges(
         }],
         rows: Vec::new(),
         complete_prefix_rows: false,
+        mutation_target: None,
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }

@@ -50,6 +50,31 @@ pub(crate) enum BulkLoadStartAdmission {
     Replay { record: Box<RouterMutationRecord> },
 }
 
+/// Outcome of admitting one bulk-load update chunk: either permission to dispatch its rows, or a
+/// signal that the chunk already finished and may only be replayed from its stored receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BulkLoadUpdateAdmission {
+    /// The job is still working on this chunk with the caller's targets. The caller must consult
+    /// [`BulkLoadUpdateDispatchGate`] before dispatching each row.
+    Granted,
+    /// The chunk is durably completed. The caller must return the stored receipt and must not
+    /// dispatch any row, even when its own fingerprint matches.
+    AlreadyCompleted,
+}
+
+/// Dispatch permission for one in-flight update chunk, re-read from durable state before each
+/// row so an `Abort` cannot be overtaken by a suspended retry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BulkLoadUpdateDispatchGate {
+    /// The job is appending this chunk: any not-yet-written row may start.
+    Open,
+    /// The job is aborting this chunk: rows already dispatched may be settled, no new row may
+    /// start.
+    SettleOnly,
+    /// The job is terminal, finalizing, or on another chunk: no row may start or settle here.
+    Closed,
+}
+
 /// Result of one bounded receipt-GC step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BulkLoadGcStepResult {
@@ -491,11 +516,19 @@ impl RouterStore {
         Ok(child_mutation_id)
     }
 
-    /// Admit an update chunk child row. Unlike insert children, update rows carry no Graph
-    /// request: match-key resolution and per-row GQL journal execution happen after admission,
-    /// and [`Self::complete_bulk_load_update_child`] finalizes the row once every row is
-    /// committed. A replayed admission with the same fingerprint is accepted so a retried
-    /// `Append` re-executes idempotently instead of conflicting.
+    /// Admit an update chunk child row and grant (or refuse) permission to dispatch its rows.
+    /// Unlike insert children, update rows carry resolved target identities rather than a Graph
+    /// request. Resolution precedes admission; per-row GQL execution follows it. Completion
+    /// publishes the full count, or the settled prefix when Abort discards an unwritten suffix.
+    ///
+    /// This is the canonical **dispatch-permission** boundary for the update lane. Dispatch may
+    /// only be granted while the parent job is still open for this chunk and the child is not
+    /// finished, so an `Abort` that has already closed the job (`AbortPending`/`Aborted`, both
+    /// durable) can never be overtaken by a retry that was suspended earlier. A finished child
+    /// returns [`BulkLoadUpdateAdmission::AlreadyCompleted`] — a receipt replay, *not* permission
+    /// — so a stale caller cannot keep writing rows under a terminal job. Pending grants also
+    /// require the caller's ordered targets to equal the durable list: another first Append may
+    /// have won admission while this caller was resolving mutable match keys.
     pub(crate) fn admit_bulk_load_update_child(
         &self,
         caller: Principal,
@@ -504,7 +537,8 @@ impl RouterStore {
         parent_mutation_id: MutationId,
         chunk_index: u32,
         chunk_fingerprint: [u8; 32],
-    ) -> Result<(), RouterError> {
+        resolved_update_vertex_ids: Option<Vec<Vec<u8>>>,
+    ) -> Result<BulkLoadUpdateAdmission, RouterError> {
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         let mut parent = ROUTER_MUTATION_BY_CLIENT_KEY
@@ -525,17 +559,52 @@ impl RouterStore {
         if let Some(existing) =
             ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| map.get(&existing_key))
         {
-            if existing.chunk_fingerprint == chunk_fingerprint
-                && existing.updated_row_count.is_some()
+            if existing.chunk_fingerprint != chunk_fingerprint
+                || existing.updated_row_count.is_none()
             {
-                existing.validate().unwrap_or_else(|error| {
-                    panic!("invalid durable bulk-load child receipt: {error}")
-                });
-                return Ok(());
+                return Err(RouterError::Conflict(
+                    "bulk-load chunk index was already used for a different fingerprint".into(),
+                ));
             }
-            return Err(RouterError::Conflict(
-                "bulk-load chunk index was already used for a different fingerprint".into(),
-            ));
+            existing
+                .validate()
+                .unwrap_or_else(|error| panic!("invalid durable bulk-load child receipt: {error}"));
+            // A finished chunk may only be *replayed*; it never re-opens dispatch permission,
+            // because the enclosing job may already be terminal.
+            if existing.progress.is_completed() {
+                return Ok(BulkLoadUpdateAdmission::AlreadyCompleted);
+            }
+            if existing.resolved_update_vertex_ids != resolved_update_vertex_ids {
+                return Err(RouterError::Conflict(
+                    "bulk-load update targets differ from the admitted chunk".into(),
+                ));
+            }
+            // A pending chunk keeps its grant only while the job is still working on this exact
+            // chunk. `AppendPending` grants full dispatch; `AbortPending` grants only the
+            // settle-only path, which [`Self::bulk_load_update_dispatch_gate`] enforces row by
+            // row (an already-dispatched row may be settled, a never-started row may not). Every
+            // other state — terminal, finalizing, another chunk, expired — refuses, so an Abort
+            // ingressed while this caller was suspended cannot be overtaken by new row writes.
+            match coordinator.lifecycle {
+                BulkLoadLifecycleV1::AppendPending {
+                    chunk_index: active,
+                    child_mutation_id: active_child,
+                    ..
+                } if active == chunk_index && existing.child_mutation_id == active_child => {}
+                BulkLoadLifecycleV1::AbortPending { active_chunk }
+                    if active_chunk == chunk_index => {}
+                BulkLoadLifecycleV1::AppendPending { .. } => {
+                    return Err(RouterError::Conflict(
+                        "bulk-load append is not the active chunk of this job".into(),
+                    ));
+                }
+                _ => {
+                    return Err(RouterError::Busy {
+                        operation: "bulk_load.append".into(),
+                    });
+                }
+            }
+            return Ok(BulkLoadUpdateAdmission::Granted);
         }
         if !matches!(coordinator.lifecycle, BulkLoadLifecycleV1::Open)
             || chunk_index != coordinator.next_chunk_index
@@ -559,6 +628,7 @@ impl RouterStore {
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
             graph_receipt: None,
+            resolved_update_vertex_ids,
             completed_at_ns: None,
             updated_row_count: Some(0),
         };
@@ -575,7 +645,111 @@ impl RouterStore {
         ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id));
         ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.insert(existing_key, child));
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, parent));
-        Ok(())
+        Ok(BulkLoadUpdateAdmission::Granted)
+    }
+
+    /// Current dispatch permission for one update chunk, read fresh from durable state. The bulk
+    /// update loop re-checks this before every row so an `Abort` that ingressed while a previous
+    /// row's Graph call was in flight cannot be followed by new row writes.
+    ///
+    /// `SettleOnly` means the job is winding down (`AbortPending` for this chunk): rows that were
+    /// already dispatched may still be settled, but no never-dispatched row may start.
+    pub(crate) fn bulk_load_update_dispatch_gate(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        parent_mutation_id: MutationId,
+        chunk_index: u32,
+    ) -> Result<BulkLoadUpdateDispatchGate, RouterError> {
+        let key = client_mutation_key(caller, graph_id, client_key);
+        let gate = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| {
+            let Some(record) = map.get(&key) else {
+                return BulkLoadUpdateDispatchGate::Closed;
+            };
+            if record.as_v1().mutation_id != parent_mutation_id {
+                return BulkLoadUpdateDispatchGate::Closed;
+            }
+            let Ok(coordinator) = bulk_parent(&record) else {
+                return BulkLoadUpdateDispatchGate::Closed;
+            };
+            match coordinator.lifecycle {
+                BulkLoadLifecycleV1::AppendPending {
+                    chunk_index: active,
+                    ..
+                } if active == chunk_index => BulkLoadUpdateDispatchGate::Open,
+                BulkLoadLifecycleV1::AbortPending { active_chunk }
+                    if active_chunk == chunk_index =>
+                {
+                    BulkLoadUpdateDispatchGate::SettleOnly
+                }
+                _ => BulkLoadUpdateDispatchGate::Closed,
+            }
+        });
+        Ok(gate)
+    }
+
+    /// Persist the committed prefix while retaining the pending child's fixed target identities.
+    /// The client resends the fingerprint-identical payload; row journals settle the unrecorded
+    /// suffix. The authored payload itself is not stored here.
+    pub(crate) fn record_bulk_load_update_progress(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        parent_mutation_id: MutationId,
+        chunk_index: u32,
+        chunk_fingerprint: [u8; 32],
+        updated_row_count: u64,
+    ) -> Result<(), RouterError> {
+        self.with_bulk_child_transition(
+            caller,
+            graph_id,
+            client_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+            None,
+            move |child, _| {
+                if child.updated_row_count.is_none() {
+                    return Err(RouterError::Conflict(
+                        "bulk-load update progress targets an insert child row".into(),
+                    ));
+                }
+                // The authored batch size is already durable in the retry guard, so the upper
+                // bound needs no new field: a progress value can never exceed the rows that were
+                // admitted. On a completed row the guard is compacted, so its recorded receipt
+                // count is the bound instead.
+                let admitted = match &child.resolved_update_vertex_ids {
+                    Some(identities) => identities.len() as u64,
+                    None => child.updated_row_count.unwrap_or(0),
+                };
+                if updated_row_count > admitted {
+                    return Err(RouterError::Conflict(format!(
+                        "bulk-load update progress {updated_row_count} exceeds the {admitted} admitted rows"
+                    )));
+                }
+                if !matches!(child.progress, BulkLoadChunkProgressV1::CanonicalPending) {
+                    // A terminal child never rewinds: an equal count is an idempotent replay,
+                    // and a stale smaller notification cannot lower the durable prefix. A larger
+                    // value contradicts the completed receipt, so it fails closed.
+                    return match child.updated_row_count {
+                        Some(recorded) if updated_row_count <= recorded => Ok(()),
+                        _ => Err(RouterError::Conflict(
+                            "bulk-load update progress conflicts with the completed chunk receipt"
+                                .into(),
+                        )),
+                    };
+                }
+                // Monotonic within a pending child: a duplicate or delayed notification is a
+                // no-op rather than a prefix rewind.
+                if updated_row_count <= child.updated_row_count.unwrap_or(0) {
+                    return Ok(());
+                }
+                child.updated_row_count = Some(updated_row_count);
+                Ok(())
+            },
+        )
     }
 
     /// Complete an update chunk child row after every row of the candidate batch committed.
@@ -635,6 +809,9 @@ impl RouterStore {
                 child.progress = BulkLoadChunkProgressV1::Completed;
                 child.completed_at_ns = Some(now);
                 child.updated_row_count = Some(updated_row_count);
+                // The payload and resolved identities are only needed while this child is
+                // resumable. A completed receipt is authoritative and intentionally compact.
+                child.resolved_update_vertex_ids = None;
                 coordinator.committed_chunk_count = coordinator
                     .committed_chunk_count
                     .checked_add(1)
@@ -1309,10 +1486,464 @@ mod tests {
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
             graph_receipt: None,
+            resolved_update_vertex_ids: None,
             completed_at_ns: None,
             updated_row_count: None,
         };
         (row, graph_receipt, public_receipt)
+    }
+
+    /// T1: admission grants dispatch permission only while the job is still appending this exact
+    /// chunk. A completed child is a receipt replay; an aborting or terminal job refuses, so a
+    /// caller suspended before admission cannot start new row writes.
+    #[test]
+    fn update_admission_grants_permission_only_while_the_job_accepts_this_chunk() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([61; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let parent_id = match store
+            .start_bulk_load_job(caller, graph_id, "gate-job", fixture_target(), 1)
+            .expect("start update job")
+        {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            BulkLoadStartAdmission::Replay { .. } => panic!("first Start must create"),
+        };
+        let fingerprint = [14u8; 32];
+        let admit = || {
+            store.admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "gate-job",
+                parent_id,
+                0,
+                fingerprint,
+                Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+            )
+        };
+        let gate = || {
+            store
+                .bulk_load_update_dispatch_gate(caller, graph_id, "gate-job", parent_id, 0)
+                .expect("read dispatch gate")
+        };
+
+        // Fresh admission grants, and the gate is open.
+        assert_eq!(admit(), Ok(BulkLoadUpdateAdmission::Granted));
+        assert_eq!(gate(), BulkLoadUpdateDispatchGate::Open);
+        // A retry of the same in-flight chunk is still a grant (resume).
+        assert_eq!(admit(), Ok(BulkLoadUpdateAdmission::Granted));
+        assert_eq!(gate(), BulkLoadUpdateDispatchGate::Open);
+
+        // While aborting, a retry may only settle already-dispatched rows: the store grants the
+        // attempt, and the per-row gate is what refuses to start a never-dispatched row.
+        store
+            .begin_bulk_load_abort(caller, graph_id, "gate-job", 4)
+            .expect("abort with a pending child");
+        assert_eq!(gate(), BulkLoadUpdateDispatchGate::SettleOnly);
+        assert_eq!(
+            admit(),
+            Ok(BulkLoadUpdateAdmission::Granted),
+            "a settle-only attempt is granted at admission"
+        );
+        assert!(matches!(
+            store.admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "gate-job",
+                parent_id,
+                0,
+                [99u8; 32],
+                Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+            ),
+            Err(RouterError::Conflict(_))
+        ));
+
+        // Completing the chunk under the pending abort terminalizes the job; a stale retry with
+        // the identical fingerprint now gets a receipt replay, never permission.
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                "gate-job",
+                parent_id,
+                0,
+                fingerprint,
+                2,
+                5,
+            )
+            .expect("complete the chunk");
+        assert_eq!(gate(), BulkLoadUpdateDispatchGate::Closed);
+        assert_eq!(
+            admit(),
+            Ok(BulkLoadUpdateAdmission::AlreadyCompleted),
+            "a finished chunk replays its receipt and grants nothing"
+        );
+    }
+
+    #[test]
+    fn bulk_load_update_admission_rejects_concurrent_suffix_retargeting() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([62; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let client_key = "target-race";
+        let parent_key = client_mutation_key(caller, graph_id, client_key);
+        let parent_id = match store
+            .start_bulk_load_job(caller, graph_id, client_key, fixture_target(), 1)
+            .unwrap()
+        {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            BulkLoadStartAdmission::Replay { .. } => panic!("first Start must create"),
+        };
+        let fingerprint = [15u8; 32];
+        let admit = |ids| {
+            store.admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                client_key,
+                parent_id,
+                0,
+                fingerprint,
+                ids,
+            )
+        };
+        // Two first-Append contenders saw no child before resolution yielded. They resolved
+        // the same authored payload differently only at the still-unstarted suffix ordinal.
+        assert!(store.bulk_load_chunk_receipt(parent_id, 0).is_none());
+        let winner = vec![vec![1u8; 8], vec![2u8; 8]];
+        let contender = vec![winner[0].clone(), vec![3u8; 8]];
+        assert_eq!(
+            admit(Some(winner.clone())),
+            Ok(BulkLoadUpdateAdmission::Granted)
+        );
+        // Model the winning prefix at this store boundary. Only row zero has a reservation;
+        // no target-bound row fingerprint exists to protect row one from the contender.
+        store
+            .reserve_mutation_id_for_client_key(caller, graph_id, "target-race:0:u0", vec![4; 32])
+            .unwrap();
+        store
+            .record_bulk_load_update_progress(
+                caller,
+                graph_id,
+                client_key,
+                parent_id,
+                0,
+                fingerprint,
+                1,
+            )
+            .unwrap();
+        let prefix_key = client_mutation_key(caller, graph_id, "target-race:0:u0");
+        let suffix_key = client_mutation_key(caller, graph_id, "target-race:0:u1");
+        assert!(store.router_mutation_record(&prefix_key).is_some());
+        assert!(store.router_mutation_record(&suffix_key).is_none());
+
+        for aborting in [false, true] {
+            if aborting {
+                store
+                    .begin_bulk_load_abort(caller, graph_id, client_key, 4)
+                    .unwrap();
+            }
+            let parent_before = store.router_mutation_record(&parent_key);
+            let child_before = store.bulk_load_chunk_receipt(parent_id, 0);
+            let prefix_before = store.router_mutation_record(&prefix_key);
+            let counter_before = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
+            assert_eq!(child_before.as_ref().unwrap().updated_row_count, Some(1));
+            assert_eq!(
+                child_before.as_ref().unwrap().resolved_update_vertex_ids,
+                Some(winner.clone())
+            );
+            for ids in [
+                Some(contender.clone()),
+                Some(vec![winner[1].clone(), winner[0].clone()]),
+                Some(vec![winner[0].clone()]),
+                None,
+            ] {
+                assert_eq!(
+                    admit(ids),
+                    Err(RouterError::Conflict(
+                        "bulk-load update targets differ from the admitted chunk".into()
+                    )),
+                    "stale resolution must not grant dispatch or settlement permission"
+                );
+                assert_eq!(store.router_mutation_record(&parent_key), parent_before);
+                assert_eq!(store.bulk_load_chunk_receipt(parent_id, 0), child_before);
+                assert_eq!(store.router_mutation_record(&prefix_key), prefix_before);
+                assert!(store.router_mutation_record(&suffix_key).is_none());
+                assert_eq!(
+                    ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get()),
+                    counter_before
+                );
+            }
+            assert_eq!(
+                admit(Some(winner.clone())),
+                Ok(BulkLoadUpdateAdmission::Granted)
+            );
+            assert_eq!(
+                store.bulk_load_update_dispatch_gate(caller, graph_id, client_key, parent_id, 0),
+                Ok(if aborting {
+                    BulkLoadUpdateDispatchGate::SettleOnly
+                } else {
+                    BulkLoadUpdateDispatchGate::Open
+                })
+            );
+        }
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                client_key,
+                parent_id,
+                0,
+                fingerprint,
+                1,
+                5,
+            )
+            .unwrap();
+        let completed = store.bulk_load_chunk_receipt(parent_id, 0).unwrap();
+        assert_eq!(completed.resolved_update_vertex_ids, None);
+        assert_eq!(completed.updated_row_count, Some(1));
+        // Compacted target IDs are not needed for receipt replay, which grants no dispatch.
+        assert_eq!(
+            admit(Some(contender)),
+            Ok(BulkLoadUpdateAdmission::AlreadyCompleted)
+        );
+        assert_eq!(admit(None), Ok(BulkLoadUpdateAdmission::AlreadyCompleted));
+        assert_eq!(
+            store.bulk_load_update_dispatch_gate(caller, graph_id, client_key, parent_id, 0),
+            Ok(BulkLoadUpdateDispatchGate::Closed)
+        );
+        assert!(store.router_mutation_record(&suffix_key).is_none());
+    }
+
+    #[test]
+    fn bulk_load_update_progress_is_monotonic_bounded_and_terminal_safe() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([51; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let parent_id = match store
+            .start_bulk_load_job(caller, graph_id, "progress-job", fixture_target(), 1)
+            .expect("start update job")
+        {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            BulkLoadStartAdmission::Replay { .. } => panic!("first Start must create"),
+        };
+        let fingerprint = [13u8; 32];
+        let progress = |count: u64| {
+            store.record_bulk_load_update_progress(
+                caller,
+                graph_id,
+                "progress-job",
+                parent_id,
+                0,
+                fingerprint,
+                count,
+            )
+        };
+        let recorded = || {
+            store
+                .bulk_load_chunk_receipt(parent_id, 0)
+                .expect("update row")
+                .updated_row_count
+                .expect("recorded prefix")
+        };
+        // A prefix for a chunk that was never admitted is refused, not written.
+        let unadmitted = progress(1).expect_err("progress before admission must be refused");
+        assert!(
+            matches!(
+                unadmitted,
+                RouterError::Busy { .. } | RouterError::Internal(_) | RouterError::NotFound(_)
+            ),
+            "unexpected pre-admission error: {unadmitted:?}"
+        );
+        assert!(
+            store.bulk_load_chunk_receipt(parent_id, 0).is_none(),
+            "a refused progress notification must not create a child row"
+        );
+        store
+            .admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "progress-job",
+                parent_id,
+                0,
+                fingerprint,
+                Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+            )
+            .expect("admit update child");
+        assert_eq!(recorded(), 0);
+        // 0 -> 1 -> 2 is a forward prefix.
+        progress(1).expect("first row");
+        assert_eq!(recorded(), 1);
+        progress(2).expect("second row");
+        assert_eq!(recorded(), 2);
+        // A delayed 2 -> 1 notification must not rewind the durable prefix.
+        progress(1).expect("duplicate/stale notification is a no-op");
+        assert_eq!(
+            recorded(),
+            2,
+            "the durable prefix must never move backwards"
+        );
+        progress(2).expect("same-prefix replay is idempotent");
+        assert_eq!(recorded(), 2);
+        // Exceeding the admitted row count is rejected and leaves the prefix unchanged.
+        let over = progress(3).expect_err("a prefix beyond the admitted rows must reject");
+        assert!(
+            matches!(over, RouterError::Conflict(ref message) if message.contains("admitted rows")),
+            "unexpected bound error: {over:?}"
+        );
+        assert_eq!(recorded(), 2, "a rejected bound must not change the prefix");
+        // Terminal boundary: the row completes with the admitted count, and later notifications
+        // can neither rewind nor extend it.
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                "progress-job",
+                parent_id,
+                0,
+                fingerprint,
+                2,
+                9,
+            )
+            .expect("complete the chunk");
+        assert_eq!(recorded(), 2);
+        progress(1).expect("a late smaller notification is a no-op on a completed row");
+        assert_eq!(recorded(), 2);
+        progress(2).expect("a late equal notification is idempotent on a completed row");
+        assert_eq!(recorded(), 2);
+        let late_larger =
+            progress(3).expect_err("a late larger notification contradicts the receipt");
+        assert!(
+            matches!(late_larger, RouterError::Conflict(_)),
+            "unexpected completed-row error: {late_larger:?}"
+        );
+        assert_eq!(recorded(), 2);
+    }
+
+    #[test]
+    fn bulk_load_update_abort_pending_terminalizes_only_after_the_chunk_completes() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([41; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let admission = store
+            .start_bulk_load_job(caller, graph_id, "prefix-job", fixture_target(), 1)
+            .expect("start update job");
+        let parent_id = match admission {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            BulkLoadStartAdmission::Replay { .. } => panic!("first Start must create"),
+        };
+        let fingerprint = [12u8; 32];
+        store
+            .admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "prefix-job",
+                parent_id,
+                0,
+                fingerprint,
+                Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+            )
+            .expect("admit update child");
+        // Row one committed: the prefix is durable while the child stays pending.
+        store
+            .record_bulk_load_update_progress(
+                caller,
+                graph_id,
+                "prefix-job",
+                parent_id,
+                0,
+                fingerprint,
+                1,
+            )
+            .expect("record committed prefix");
+        let pending = store
+            .bulk_load_chunk_receipt(parent_id, 0)
+            .expect("pending update row");
+        assert_eq!(pending.progress, BulkLoadChunkProgressV1::CanonicalPending);
+        assert_eq!(pending.updated_row_count, Some(1));
+        assert_eq!(
+            pending.resolved_update_vertex_ids,
+            Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+            "the retry target-identity guard must survive the prefix record"
+        );
+        // Finalize cannot proceed with a pending child, and Abort must not terminalize by
+        // claiming the recorded prefix: a row of the still-running append can commit after the
+        // abort ingress, which would leave a write on a terminal job that no receipt counts.
+        assert!(matches!(
+            store.begin_bulk_load_finalize(caller, graph_id, "prefix-job"),
+            Err(RouterError::Busy { .. })
+        ));
+        let aborting = store
+            .begin_bulk_load_abort(caller, graph_id, "prefix-job", 4)
+            .expect("abort with a committed-prefix child");
+        assert!(matches!(
+            aborting.lifecycle,
+            BulkLoadLifecycleV1::AbortPending { active_chunk: 0 }
+        ));
+        let still_pending = store
+            .bulk_load_chunk_receipt(parent_id, 0)
+            .expect("pending update row during abort");
+        assert_eq!(
+            still_pending.progress,
+            BulkLoadChunkProgressV1::CanonicalPending,
+            "abort must leave the in-flight update chunk open for its own rows to land"
+        );
+        // A further row of the running append still records its result while AbortPending.
+        store
+            .record_bulk_load_update_progress(
+                caller,
+                graph_id,
+                "prefix-job",
+                parent_id,
+                0,
+                fingerprint,
+                2,
+            )
+            .expect("a row result must never be dropped by a pending abort");
+        let recorded = store
+            .bulk_load_chunk_receipt(parent_id, 0)
+            .expect("update row after prefix record");
+        assert_eq!(
+            recorded.updated_row_count,
+            Some(2),
+            "the committed prefix must only move forward"
+        );
+        // Only the chunk's own completion terminalizes the abort, and it uses the true prefix.
+        store
+            .complete_bulk_load_update_child(
+                caller,
+                graph_id,
+                "prefix-job",
+                parent_id,
+                0,
+                fingerprint,
+                recorded.updated_row_count.expect("committed prefix"),
+                5,
+            )
+            .expect("complete the chunk that the pending abort was waiting for");
+        let closed = store
+            .router_mutation_record(&crate::facade::store::idempotency::client_mutation_key(
+                caller,
+                graph_id,
+                "prefix-job",
+            ))
+            .expect("parent after prefix abort");
+        let coordinator = bulk_parent(&closed).expect("coordinator");
+        assert!(
+            matches!(coordinator.lifecycle, BulkLoadLifecycleV1::Aborted),
+            "abort must complete at the committed prefix, got {:?}",
+            coordinator.lifecycle
+        );
+        let completed = store
+            .bulk_load_chunk_receipt(parent_id, 0)
+            .expect("completed row");
+        assert_eq!(completed.updated_row_count, Some(2));
+        assert!(
+            completed.resolved_update_vertex_ids.is_none(),
+            "completion must compact the retry guard"
+        );
     }
 
     #[test]
@@ -1330,11 +1961,27 @@ mod tests {
         };
         let fingerprint = [9u8; 32];
         store
-            .admit_bulk_load_update_child(caller, graph_id, "update-job", parent_id, 0, fingerprint)
+            .admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "update-job",
+                parent_id,
+                0,
+                fingerprint,
+                Some(Vec::new()),
+            )
             .expect("admit update child");
         // Exact replay of the same fingerprint replays without allocating a second child.
         store
-            .admit_bulk_load_update_child(caller, graph_id, "update-job", parent_id, 0, fingerprint)
+            .admit_bulk_load_update_child(
+                caller,
+                graph_id,
+                "update-job",
+                parent_id,
+                0,
+                fingerprint,
+                Some(Vec::new()),
+            )
             .expect("replay update child");
         assert!(
             store.bulk_load_chunk_receipt(parent_id, 1).is_none(),
@@ -1348,11 +1995,14 @@ mod tests {
             parent_id,
             0,
             [10u8; 32],
+            Some(Vec::new()),
         );
         assert!(
             matches!(conflict, Err(RouterError::Conflict(_))),
             "divergent update chunk must conflict, got {conflict:?}"
         );
+        // A completed row replays its stored receipt and rejects neither re-resolution nor a
+        // second completion with a different count.
         store
             .complete_bulk_load_update_child(
                 caller,

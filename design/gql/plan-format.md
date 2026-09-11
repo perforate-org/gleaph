@@ -146,8 +146,8 @@ Wire policy: this field addition follows the pre-stability plan-wire no-bump rul
 
 ## Router seed contract
 
-`ExecutePlanArgs.seed_bindings_blob` is an opaque Router-to-Graph relation transport. Three
-contracts must be distinguished.
+`ExecutePlanArgs.seed_bindings_blob` is an opaque Router-to-Graph input transport. Candidate
+relations and fixed mutation inputs have distinct contracts.
 
 **Current implemented contract:**
 
@@ -157,6 +157,24 @@ contracts must be distinguished.
   operators, and executes the remaining read prefix; and
 - `SeedAnchorSet` does not emit a partial seed when the supported leading prefix binds more than one
   variable. Such a plan executes without that Router seed or uses the current sequential fallback.
+
+**Exact vertex mutation input (ADR 0057, implemented):**
+
+- `SeedBindingsWire.mutation_target: Option<SeedVertexBinding>` pins one shard-local vertex and
+  variable. It excludes `entries`, `rows`, and `complete_prefix_rows`; mixed forms reject.
+- Graph admits one labeled NodeScan followed by residual predicates, property SET/REMOVE on that
+  variable, and an optional terminal Project. It revalidates labels/predicates on the supplied
+  vertex and checks liveness at the canonical write boundary. An empty hydrated input cannot
+  trigger a scan or select a replacement vertex.
+- The scalar completed journal and result count eligible mutation inputs: **0** or **1**, not
+  RETURN rows. Missing/tombstoned/filtered targets complete with zero effect; the bulk Router
+  rejects that row and can close Abort at its true prefix. Completed replay precedes mutable
+  state reads. Ordinary GQL retains its existing zero-match and projection-count semantics.
+- The Router binds target placement into the existing request fingerprint and saves this seed
+  in the existing row mutation envelope. No new journal or memory region is introduced. Fresh
+  Router/Graph state is required; old pending seed/count semantics are not supported.
+- [ADR 0057](../adr/0057-router-operation-api-and-durable-bulk-load.md) owns the bulk admission,
+  authorization, row counting, replay, and Abort contract.
 
 **ADR 0046 Phase 1/2 contract (implemented):**
 

@@ -95,7 +95,7 @@ fn seeds_are_effective(seeds: Option<&SeedBindingsWire>) -> bool {
         let grouped_effective = wire.entries.iter().any(|entry| {
             !entry.local_vertex_ids.is_empty() || !entry.local_edge_postings.is_empty()
         });
-        grouped_effective || !wire.rows.is_empty()
+        grouped_effective || !wire.rows.is_empty() || wire.mutation_target.is_some()
     })
 }
 
@@ -116,6 +116,46 @@ pub fn ensure_federated_seeds_for_index_anchors(
     Ok(())
 }
 
+/// Exact-target receipts count one property mutation input, not arbitrary GQL output rows.
+/// Keep this lane single-plan/single-binding and leave ordinary zero-match GQL unchanged.
+pub(crate) fn validate_mutation_target_plan(
+    plans: &[PhysicalPlan],
+    target: &gleaph_graph_kernel::plan_exec::SeedVertexBinding,
+) -> Result<(), PlanWireGuardError> {
+    use gleaph_gql_planner::plan::{RemovePlanItem, SetPlanItem};
+    let mutation_start = plans
+        .first()
+        .and_then(|plan| plan.ops.iter().position(PlanOp::is_dml));
+    let valid = plans.len() == 1
+        && plans[0].has_dml()
+        && matches!(plans[0].ops.first(), Some(PlanOp::NodeScan { variable, label: Some(_), .. }) if variable.as_ref() == target.variable)
+        && plans[0].ops[1..]
+            .iter()
+            .enumerate()
+            .all(|(index, op)| match op {
+                PlanOp::PropertyFilter { .. } => {
+                    mutation_start.is_some_and(|start| index + 1 < start)
+                }
+                PlanOp::Project { .. } => index + 2 == plans[0].ops.len(),
+                PlanOp::SetProperties { items } => items.iter().all(|item| {
+                    matches!(item,
+                SetPlanItem::Property { variable, .. } if variable.as_ref() == target.variable)
+                }),
+                PlanOp::RemoveProperties { items } => items.iter().all(|item| {
+                    matches!(item,
+                RemovePlanItem::Property { variable, .. } if variable.as_ref() == target.variable)
+                }),
+                _ => false,
+            });
+    if valid {
+        Ok(())
+    } else {
+        Err(PlanWireGuardError(
+            "mutation_target requires one labeled SET/REMOVE property plan".into(),
+        ))
+    }
+}
+
 /// Full wire-plan gate used by [`crate::gql_run::run_wire_plans`].
 pub fn validate_wire_plan_execution(
     mode: GqlExecutionMode,
@@ -134,6 +174,71 @@ pub fn validate_wire_plan_execution(
 mod tests {
     use super::*;
     use gleaph_gql_planner::plan::PlanOp;
+
+    #[test]
+    fn exact_vertex_guard_rejects_broad_or_cross_binding_mutations() {
+        use gleaph_gql_planner::plan::RemovePlanItem;
+        let target = gleaph_graph_kernel::plan_exec::SeedVertexBinding {
+            variable: "v".into(),
+            local_vertex_id: 7,
+            required_vertex_label_ids: Vec::new(),
+        };
+        let scan = PlanOp::NodeScan {
+            variable: "v".into(),
+            label: Some("Person".into()),
+            property_projection: None,
+        };
+        let remove = PlanOp::RemoveProperties {
+            items: vec![RemovePlanItem::Property {
+                variable: "v".into(),
+                property: "nick".into(),
+            }],
+        };
+        let valid = PhysicalPlan::from_ops(vec![scan.clone(), remove.clone()]);
+        assert!(validate_mutation_target_plan(std::slice::from_ref(&valid), &target).is_ok());
+        let expected = "mutation_target requires one labeled SET/REMOVE property plan";
+        assert_eq!(
+            validate_mutation_target_plan(&[valid.clone(), valid], &target)
+                .unwrap_err()
+                .0,
+            expected
+        );
+        for ops in [
+            vec![scan.clone()],
+            vec![
+                scan.clone(),
+                PlanOp::DeleteVertex {
+                    variable: "v".into(),
+                },
+            ],
+            vec![
+                scan.clone(),
+                PlanOp::RemoveProperties {
+                    items: vec![RemovePlanItem::Label {
+                        variable: "v".into(),
+                        label: "Person".into(),
+                    }],
+                },
+            ],
+            vec![
+                scan.clone(),
+                PlanOp::RemoveProperties {
+                    items: vec![RemovePlanItem::Property {
+                        variable: "other".into(),
+                        property: "nick".into(),
+                    }],
+                },
+            ],
+            vec![scan.clone(), scan, remove],
+        ] {
+            assert_eq!(
+                validate_mutation_target_plan(&[PhysicalPlan::from_ops(ops)], &target)
+                    .unwrap_err()
+                    .0,
+                expected
+            );
+        }
+    }
 
     fn plan_with_dml() -> PhysicalPlan {
         PhysicalPlan {

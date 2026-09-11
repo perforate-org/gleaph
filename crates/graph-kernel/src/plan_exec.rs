@@ -2035,6 +2035,24 @@ pub struct SeedBindingsWire {
     /// semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
     #[serde(default)]
     pub complete_prefix_rows: bool,
+    /// A fixed single-vertex SET/REMOVE input, not a candidate relation. Mutually exclusive with
+    /// entries/rows/complete_prefix_rows. The Graph must not scan if this target is unavailable.
+    /// Its completed scalar journal counts applied targets (0 or 1), not RETURN projection rows.
+    pub mutation_target: Option<SeedVertexBinding>,
+}
+
+impl SeedBindingsWire {
+    pub fn validate_mutation_target(&self) -> Result<(), &'static str> {
+        if let Some(target) = &self.mutation_target
+            && (target.variable.is_empty()
+                || !self.entries.is_empty()
+                || !self.rows.is_empty()
+                || self.complete_prefix_rows)
+        {
+            return Err("mutation_target must be the sole seed with a nonempty variable");
+        }
+        Ok(())
+    }
 }
 
 /// One vertex hit inside a Router-resolved non-leading `SEARCH` relation (ADR 0034 Slice 5).
@@ -2064,6 +2082,45 @@ mod tests {
     use crate::entry::EdgeInlinePropertyEncoding;
     use crate::federation::ElementIdEncodingKey;
     use candid::{Decode, Encode};
+
+    #[test]
+    fn mutation_target_roundtrips_and_rejects_mixed_seed_forms() {
+        let wire = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: Vec::new(),
+            complete_prefix_rows: false,
+            mutation_target: Some(SeedVertexBinding {
+                variable: "v".into(),
+                local_vertex_id: 7,
+                required_vertex_label_ids: vec![3],
+            }),
+        };
+        assert_eq!(wire.validate_mutation_target(), Ok(()));
+        assert_eq!(
+            Decode!(&Encode!(&wire).unwrap(), SeedBindingsWire).unwrap(),
+            wire
+        );
+        for form in 0..4 {
+            let mut invalid = wire.clone();
+            match form {
+                0 => invalid.complete_prefix_rows = true,
+                1 => invalid.rows.push(SeedRowWire {
+                    vertex_bindings: Vec::new(),
+                    float64_bindings: Vec::new(),
+                }),
+                2 => invalid.entries.push(SeedBindingEntry {
+                    variable: "v".into(),
+                    local_vertex_ids: vec![9],
+                    local_edge_postings: Vec::new(),
+                }),
+                _ => invalid.mutation_target.as_mut().unwrap().variable.clear(),
+            }
+            assert_eq!(
+                invalid.validate_mutation_target(),
+                Err("mutation_target must be the sole seed with a nonempty variable")
+            );
+        }
+    }
 
     #[test]
     fn execute_plan_result_roundtrip_with_hot_forward_vertices() {
@@ -2679,6 +2736,7 @@ mod tests {
                 }],
             }],
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
@@ -2888,6 +2946,7 @@ mod tests {
                 }],
             }],
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
@@ -2916,6 +2975,7 @@ mod tests {
             }],
             rows: Vec::new(),
             complete_prefix_rows: false,
+            mutation_target: None,
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");

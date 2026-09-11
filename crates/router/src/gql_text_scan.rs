@@ -1868,6 +1868,7 @@ fn build_text_scan_seeds(
             entries: Vec::new(),
             rows,
             complete_prefix_rows: false,
+            mutation_target: None,
         },
     );
     Ok(by_shard)

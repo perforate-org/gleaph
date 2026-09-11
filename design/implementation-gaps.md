@@ -47,6 +47,67 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-11-004 — Bulk-load edge property update has no replicated-mode edge read to gate its exactly-one target
+
+- **Status:** Open — prerequisite slice. Recorded 2026-09-11 after the edge-property SET review
+  round withdrew the implemented surface (wire variant, CLI mode, Router path, docs section) from
+  its slice rather than shipping a weakening contract. Edge-property SET through bulk load is
+  **not implemented**. The vertex update lane's journal-first resume/abort work in the same round
+  did not re-add any edge surface, identity, or lock substrate.
+- **Owner:** Router bulk-load workflow (`crates/router/src/bulk_load.rs`) and the Router→Graph
+  read contract (`crates/graph/src/lib.rs`); a Graph-side resolution path would be owned by the
+  Graph canister and its planner lowering.
+- **Observed behavior (confirmed):** Router ingress handlers execute in replicated mode. The
+  Router's Router→Graph read of *edge state* resolves to the composite query
+  `execute_plan_query` (`#[query(composite = true, guard = "router_canister")]`), which a
+  replicated-mode handler cannot call. A PocketIC run of the withdrawn edge-update lifecycle
+  failed with `InvalidArgument("graph execute_plan_query call failed: call rejected: 5 - IC0527:
+  Composite query cannot be called in replicated mode")`, so an `Append` handler could not
+  evaluate the required exactly-one count before admission.
+- **Observed behavior (what already exists, confirmed):** Edge property indexes and Router-side
+  edge index lookup are implemented: `indexed_catalog::active_edge_physical_index`,
+  `router/src/index_lookup.rs` `collect_edge_equal_hits_paged` (`lookup_edge_equal_page`) and
+  `collect_edge_range_hits_paged` (`lookup_edge_range_page`), the Router wire helpers
+  `lookup_edge_equal_wires`/`lookup_edge_range_wires` (`router/src/gql.rs`), and the planner's
+  `PlanOp::EdgeIndexScan` (`gql-planner/src/plan.rs`). Edge identity inside the Graph is an
+  internal handle (`graph/src/facade/store/handle.rs` `EdgeHandle { owner_vertex_id, label_id,
+  slot_index }`); the only read-projection identity is `GraphPathEdgeId`. So the earlier
+  statement that no edge property index exists was wrong.
+- **Unverified (do not assume either way):** whether the existing edge index surface can supply
+  the exactly-one *target identity* for a `(from endpoint, edge label, to endpoint)` update —
+  i.e. whether an edge posting hit denotes one mutation-addressable edge, whether postings are
+  complete enough to prove "exactly one", and whether an update statement can address that edge
+  without a Graph-side identity. Also unverified: whether the existing index lookups can run from
+  a replicated-mode ingress (they call the index canister, not the Graph read path, so this is
+  plausible but untested for a write handler).
+- **Caution for the next decision:** an in-statement multiplicity filter such as
+  `MATCH … WHERE NOT EXISTS { MATCH … e2 <> e } SET …` can restrict a row to a single matched
+  edge, but it cannot turn a **zero-match** row into an error: a pattern with no matches produces
+  no rows, so nothing is rejected and the row would silently no-op. The zero-match leg needs
+  either a read or a construct that errors on emptiness.
+- **Expected or needed behavior:** A durable bulk-load edge-property update must reject a row whose
+  `(from endpoint, edge label, to endpoint)` triple matches zero edges and must reject (without
+  modifying anything) a row that matches more than one, matching the fail-closed contract that
+  vertex updates enforce through converged property indexes. Multi-edges are legal, so no
+  uniqueness invariant can make the mutation exactly-one by construction.
+- **Evidence:** `crates/graph/src/lib.rs:80` (composite-query graph read),
+  `crates/router/src/graph_client.rs:100-119` (mode→method mapping),
+  `crates/router/src/gql_search.rs:1637` (query-mode dispatch),
+  `crates/router/src/index_lookup.rs:185,216` (edge equality/range lookup),
+  `crates/router/src/facade/stable/indexed_catalog.rs:267` (`active_edge_physical_index`),
+  `crates/gql-planner/src/plan.rs:414` (`PlanOp::EdgeIndexScan`),
+  `crates/graph/src/facade/store/handle.rs:10` (internal edge handle), and the failing PocketIC
+  run recorded in this review round.
+- **Impact:** Edge-property bulk updates cannot be delivered fail-closed today. The alternatives
+  each need an independent decision and their own validation: (a) an in-statement multiplicity
+  guard plus a separate zero-match error construct; (b) resolving one edge before admission from
+  the existing edge index surface (including whether an edge posting hit is a usable update
+  target); (c) a replicated-mode-safe (non-composite) Router→Graph read API. Bulk-load edge
+  inserts, vertex SET/REMOVE, and single-statement GQL edge `SET` are unaffected.
+- **Next decision:** Establish whether the existing edge index surface can prove exactly-one and
+  address that one edge for mutation; if not, decide between (a) and (c). Scope a prerequisite
+  slice with its own ADR-level review before re-adding public wire or CLI surface.
+
 ### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
 
 - **Status:** Open — non-blocking follow-up recorded 2026-09-11 during the GQL-execution

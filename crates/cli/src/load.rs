@@ -367,7 +367,6 @@ impl PreparedLoad {
     }
 
     /// Row source for the update phase, starting at the first row of the artifact; the phase
-    /// skips rows committed by a prior run. Only `--mode update` (NDJSON) populates it.
     fn update_stream(&self) -> Result<RowStream<'_, UpdateRow>, LoadError> {
         match self {
             PreparedLoad::SingleFile { .. } => Ok(RowStream::Empty),
@@ -1268,14 +1267,13 @@ fn send_command(
     }
 }
 
-/// Drive one durable bulk-load job to `Completed` (the client-side loop).
-fn run_load(
+fn run_load_with_mode(
     transport: &mut impl BulkLoadTransport,
     prepared: &PreparedLoad,
     graph: Option<&str>,
     key: &str,
     state_file: Option<&Path>,
-    update_mode: bool,
+    mode: LoadMode,
 ) -> Result<LoadOutcome, LoadError> {
     let digest = prepared.digest();
     if let Some((page, _)) = status_paged(transport, graph, key)? {
@@ -1373,7 +1371,7 @@ fn run_load(
     } = resume_point(&page, &receipts);
     let mut chunk_index = next_chunk_index;
     let tty = std::io::stdout().is_terminal();
-    if update_mode {
+    if mode == LoadMode::Update {
         // Update phase: stream update rows into budget-fitted chunks; the Router resolves every
         // match key before any row executes. Rows committed by a prior run are skipped.
         let mut update_phase =
@@ -1721,6 +1719,15 @@ fn run_edge_phase(
 
 /// Stream update rows into budget-fitted chunks. Rows committed by a prior run are skipped
 /// without parsing; the Router resolves every match key before any row executes.
+///
+/// Update-lane chunk formation is deliberately **deterministic**: it never carries a size hint
+/// from the previous chunk, so chunk boundaries are a pure function of the row stream and the
+/// starting offset. A durable update chunk that was admitted but not completed is invisible to
+/// the public receipt projection, so a restarted run re-reads from the boundary after the last
+/// completed chunk and must reproduce the in-flight chunk's payload byte-for-byte for the Router
+/// to accept the same `chunk_index` fingerprint and resume after its committed prefix. The
+/// insert lanes keep the adaptive hint because the Router replays their persisted Graph request
+/// instead of re-deriving the payload.
 #[allow(
     clippy::too_many_arguments,
     reason = "phase context passed explicitly for testability"
@@ -1736,9 +1743,8 @@ fn run_update_phase(
 ) -> Result<(), LoadError> {
     source.skip(committed_rows)?;
     let mut buffer: Vec<UpdateRow> = Vec::new();
-    let mut hint: Option<SizeHint> = None;
     loop {
-        let target = chunk_accumulation_target(hint);
+        let target = chunk_accumulation_target(None);
         let mut accumulated_bytes = 0usize;
         while buffer.len() < target && accumulated_bytes < MAX_ACCUMULATED_RAW_BYTES {
             match source.next_row_with_bytes()? {
@@ -1752,7 +1758,7 @@ fn run_update_phase(
         if buffer.is_empty() {
             break;
         }
-        let candidate_count = fit_candidate(buffer.len(), hint, |count| {
+        let candidate_count = fit_candidate(buffer.len(), None, |count| {
             let chunk = update_chunk(&buffer[..count])?;
             encode_append_command(graph, key, *chunk_index, chunk)
         })?;
@@ -1782,7 +1788,6 @@ fn run_update_phase(
         buffer.drain(..next_offset as usize);
         *chunk_index += 1;
         progress.advance(next_offset as usize);
-        hint = Some(SizeHint::new(candidate_count));
     }
     Ok(())
 }
@@ -1969,13 +1974,13 @@ pub fn execute(args: &LoadArgs, project_root: Option<&Path>) -> Result<LoadOutco
         args.fetch_root_key.unwrap_or(false),
         project_root,
     )?;
-    let outcome = run_load(
+    let outcome = run_load_with_mode(
         &mut transport,
         &prepared,
         args.graph.as_deref(),
         &key,
         args.state_file.as_deref(),
-        args.mode == LoadMode::Update,
+        args.mode,
     )?;
     Ok(outcome)
 }
@@ -2335,11 +2340,54 @@ mod tests {
 
     // ──── loader with a fake durable transport ────
 
+    #[derive(Clone)]
     struct FakeJob {
         next_chunk_index: u32,
         receipts: Vec<BulkLoadChunkReceiptV1>,
         state: BulkLoadPublicStateV1,
         next_vertex_ordinal: u64,
+        /// In-flight update chunk, mirroring the Router's pending child: admitted with its
+        /// committed prefix, invisible to the public receipt projection, and holding the payload
+        /// identity that any retry must reproduce byte-for-byte.
+        pending_update: Option<FakePendingUpdate>,
+        /// Every applied update row as `(match value, set property, set value)` in dispatch
+        /// order, so a test can prove exact row identity, order, and single application.
+        applied_updates: Vec<(String, String, String)>,
+    }
+
+    #[derive(Clone)]
+    struct FakePendingUpdate {
+        chunk_index: u32,
+        payload: Vec<u8>,
+        applied: usize,
+    }
+
+    fn fake_payload(chunk: &BulkLoadChunkV1) -> Vec<u8> {
+        candid::Encode!(chunk).expect("encode candidate chunk identity")
+    }
+
+    fn fake_update_rows(chunk: &BulkLoadChunkV1) -> Vec<(String, String, String)> {
+        let BulkLoadChunkV1::Updates(items) = chunk else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .map(|item| {
+                let text = |bytes: &[u8]| match Value::from_binary_bytes(bytes) {
+                    Ok(Value::Text(value)) => value,
+                    other => panic!("fake transport expects text values, got {other:?}"),
+                };
+                let set = item
+                    .set_properties
+                    .first()
+                    .expect("update row carries a SET assignment");
+                (
+                    text(&item.match_value),
+                    set.property_name.clone(),
+                    text(&set.value),
+                )
+            })
+            .collect()
     }
 
     struct FakeBulkLoadTransport {
@@ -2348,6 +2396,15 @@ mod tests {
         budget: usize,
         /// `(graph, names)` recorded by every `ensure_properties` call, in call order.
         interned: Vec<(String, Vec<String>)>,
+        /// Every dispatched Append command as `(encoded byte width, graph name, client key)`, in
+        /// dispatch order. Graph and key are recorded from the received command, so a payload
+        /// assertion cannot measure a re-encoded envelope that dropped them.
+        appends: Vec<(usize, Option<String>, String)>,
+        /// One-shot injected row failure: `(completed update chunks, rows to apply)` — the
+        /// update chunk that follows exactly that many completed chunks applies that many rows,
+        /// keeps its child pending, and returns an error, mirroring a Router row failure after a
+        /// committed prefix.
+        update_fail_at: Option<(usize, usize)>,
     }
 
     impl BulkLoadTransport for FakeBulkLoadTransport {
@@ -2390,6 +2447,22 @@ mod tests {
             &mut self,
             command: BulkLoadCommand,
         ) -> Result<Result<BulkLoadResponse, RouterError>, String> {
+            // S3: record the exact wire width of the command that was actually sent, before any
+            // destructuring, so the graph name and client key are part of the measurement.
+            if let BulkLoadCommand::Append {
+                graph_name,
+                client_bulk_key,
+                ..
+            } = &command
+            {
+                self.appends.push((
+                    candid::Encode!(&command)
+                        .expect("encode dispatched Append command")
+                        .len(),
+                    graph_name.clone(),
+                    client_bulk_key.clone(),
+                ));
+            }
             match command {
                 BulkLoadCommand::Start { .. } => match &self.job {
                     Some(job) => Ok(Ok(BulkLoadResponse::Started {
@@ -2401,6 +2474,8 @@ mod tests {
                             receipts: Vec::new(),
                             state: BulkLoadPublicStateV1::Open,
                             next_vertex_ordinal: 0,
+                            pending_update: None,
+                            applied_updates: Vec::new(),
                         });
                         Ok(Ok(BulkLoadResponse::Started {
                             next_chunk_index: 0,
@@ -2410,22 +2485,72 @@ mod tests {
                 BulkLoadCommand::Append {
                     chunk_index, chunk, ..
                 } => {
-                    let job = self.job.as_mut().ok_or("append without start")?;
-                    if chunk_index != job.next_chunk_index {
-                        return Err(format!(
-                            "chunk_index {chunk_index} != next {}",
-                            job.next_chunk_index
-                        ));
-                    }
                     let total = match &chunk {
                         BulkLoadChunkV1::Vertices(items) => items.len(),
                         BulkLoadChunkV1::Edges(items) => items.len(),
                         BulkLoadChunkV1::Updates(items) => items.len(),
                     };
-                    if let BulkLoadChunkV1::Updates(_) = &chunk {
-                        // The fake transport trusts the candidate chunk (the Router would resolve
-                        // every match key first); update chunks always commit their full prefix.
-                        let commit = total;
+                    if matches!(&chunk, BulkLoadChunkV1::Updates(_)) {
+                        // Mirror the Router: an admitted update chunk is a pending child at
+                        // `chunk_index` whose payload identity is fixed and whose committed prefix
+                        // is durable. A retry must reproduce the identical payload; the prefix is
+                        // skipped and the remainder is applied. Only completion advances
+                        // `next_chunk_index`, and the pending row is invisible in `status`.
+                        let payload = fake_payload(&chunk);
+                        let job = self.job.as_mut().ok_or("append without start")?;
+                        // A failure injection applies only to a *fresh* chunk, never to the
+                        // resume of an already-admitted one.
+                        let fails_here = job.pending_update.is_none()
+                            && self
+                                .update_fail_at
+                                .is_some_and(|(chunks, _)| chunks == job.receipts.len());
+                        let resume_from = match &job.pending_update {
+                            Some(pending) => {
+                                if pending.chunk_index != chunk_index {
+                                    return Err(format!(
+                                        "pending update chunk {} cannot be replaced by {chunk_index}",
+                                        pending.chunk_index
+                                    ));
+                                }
+                                if pending.payload != payload {
+                                    return Err(format!(
+                                        "update chunk {chunk_index} payload conflicts with the pending fingerprint"
+                                    ));
+                                }
+                                pending.applied
+                            }
+                            None => {
+                                if chunk_index != job.next_chunk_index {
+                                    return Err(format!(
+                                        "chunk_index {chunk_index} != next {}",
+                                        job.next_chunk_index
+                                    ));
+                                }
+                                job.pending_update = Some(FakePendingUpdate {
+                                    chunk_index,
+                                    payload,
+                                    applied: 0,
+                                });
+                                0
+                            }
+                        };
+                        let rows = fake_update_rows(&chunk);
+                        let failed = fails_here
+                            .then(|| self.update_fail_at.take().expect("armed failure"))
+                            .map(|(_, rows)| rows.min(total))
+                            .filter(|stop| *stop < total);
+                        let commit = failed.unwrap_or(total);
+                        let applied_rows = rows[resume_from..commit].to_vec();
+                        job.applied_updates.extend(applied_rows);
+                        job.state = BulkLoadPublicStateV1::AppendPending;
+                        if failed.is_some() {
+                            let pending = job.pending_update.as_mut().expect("pending update row");
+                            pending.applied = commit;
+                            return Err(format!(
+                                "fake Router row failure after {commit} of {total} rows"
+                            ));
+                        }
+                        job.pending_update = None;
                         job.receipts.push(BulkLoadChunkReceiptV1 {
                             chunk_index,
                             receipt: AtomicInsertReceiptV1 {
@@ -2434,15 +2559,21 @@ mod tests {
                                 logical_edge_count: 0,
                                 allocated_vertex_ids: Vec::new(),
                             },
-                            updated_row_count: commit as u64,
+                            updated_row_count: total as u64,
                         });
                         job.next_chunk_index += 1;
-                        job.state = BulkLoadPublicStateV1::AppendPending;
                         return Ok(Ok(BulkLoadResponse::Updated {
                             chunk_index,
-                            next_offset: commit as u32,
-                            updated_row_count: commit as u64,
+                            next_offset: total as u32,
+                            updated_row_count: total as u64,
                         }));
+                    }
+                    let job = self.job.as_mut().ok_or("append without start")?;
+                    if chunk_index != job.next_chunk_index {
+                        return Err(format!(
+                            "chunk_index {chunk_index} != next {}",
+                            job.next_chunk_index
+                        ));
                     }
                     let commit = total.min(self.budget);
                     let (vertex_count, edge_count) = match &chunk {
@@ -2532,9 +2663,12 @@ mod tests {
             job: None,
             budget: 3, // forces multiple Append calls per phase
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect("load should complete");
+        let outcome =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect("load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         let vertex_chunks = job
@@ -2568,9 +2702,18 @@ mod tests {
             job: None,
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        run_load(&mut transport, &prepared, Some("social"), "k", None, false)
-            .expect("load completes");
+        run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Insert,
+        )
+        .expect("load completes");
         assert_eq!(
             transport.interned,
             vec![(
@@ -2598,9 +2741,12 @@ mod tests {
             job: None,
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let error = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect_err("interning requires a graph name");
+        let error =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect_err("interning requires a graph name");
         assert!(error.to_string().contains("no graph name"));
         assert!(transport.interned.is_empty());
         assert!(
@@ -2639,12 +2785,17 @@ mod tests {
                 ],
                 state: BulkLoadPublicStateV1::AppendPending,
                 next_vertex_ordinal: 4,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect("resume should complete");
+        let outcome =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect("resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         // The vertex phase resumes at 4 committed vertices: one more vertex chunk.
@@ -2699,12 +2850,23 @@ mod tests {
                 }],
                 state: BulkLoadPublicStateV1::AppendPending,
                 next_vertex_ordinal: 0,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
-            .expect("resume should complete");
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        )
+        .expect("resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         assert_eq!(
@@ -2717,6 +2879,386 @@ mod tests {
         fs::remove_file(updates).expect("cleanup");
     }
 
+    /// S3: the payload assertion must measure the command that was actually sent. A non-empty
+    /// graph name and a long legal client key are both part of the Append envelope, so a
+    /// measurement that replaces them with blanks understates the real payload. This test also
+    /// pins the split/no-gap/no-duplicate contract for a mixed row stream.
+    #[test]
+    fn update_phase_payload_measurement_includes_graph_and_client_key() {
+        let updates = temp_path("graph-key-payload-updates.jsonl");
+        // A mix of wide and narrow rows, so chunk formation must split at a real payload
+        // boundary rather than at a fixed row count.
+        let wide = "g".repeat(700_000);
+        let mut contents = String::new();
+        for index in 0..4 {
+            contents.push_str(&format!(
+                r#"{{"label":"Person","property":"name","value":{{"Text":"w{index}"}},"set":{{"nick":{{"Text":"{wide}"}}}}}}"#
+            ));
+            contents.push('\n');
+        }
+        for index in 0..6 {
+            contents.push_str(&format!(
+                r#"{{"label":"Person","property":"name","value":{{"Text":"n{index}"}},"set":{{"nick":{{"Text":"n{index}-set"}}}}}}"#
+            ));
+            contents.push('\n');
+        }
+        write_temp(&updates, &contents);
+        let prepared = PreparedLoad::Njson {
+            vertices: None,
+            edges: None,
+            updates: Some(updates.clone()),
+            digest: "digest".into(),
+            vertex_count: 0,
+            edge_count: 0,
+            update_count: 10,
+            property_names: BTreeSet::from(["nick".to_owned()]),
+        };
+        // A long but legal client key (256 bytes is the limit) so the envelope overhead is
+        // non-trivial and a blank-key measurement cannot accidentally look correct.
+        let key = "k".repeat(200);
+        let graph = "a.reasonably.long.logical.graph.name";
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
+        };
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some(graph),
+            &key,
+            None,
+            LoadMode::Update,
+        )
+        .expect("the mixed update stream must load");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: key.clone() });
+        let job = transport.job.expect("job exists");
+        assert!(
+            job.receipts.len() > 1,
+            "700 KB rows cannot fit ten updates in one Append payload"
+        );
+        let authored: Vec<(String, String, String)> = (0..4)
+            .map(|index| (format!("w{index}"), "nick".to_owned(), wide.clone()))
+            .chain((0..6).map(|index| {
+                (
+                    format!("n{index}"),
+                    "nick".to_owned(),
+                    format!("n{index}-set"),
+                )
+            }))
+            .collect();
+        assert_eq!(
+            job.applied_updates, authored,
+            "every authored row must be applied exactly once, in authored order"
+        );
+        let mut dispatched = 0u64;
+        for (expected_index, receipt) in job.receipts.iter().enumerate() {
+            assert_eq!(receipt.chunk_index, expected_index as u32);
+            assert!(receipt.updated_row_count > 0);
+            dispatched += receipt.updated_row_count;
+        }
+        assert_eq!(dispatched, 10);
+        assert_eq!(
+            transport.appends.len(),
+            job.receipts.len(),
+            "one measured Append per committed chunk"
+        );
+        let envelope_floor = candid::Encode!(&BulkLoadCommand::Append {
+            graph_name: Some(graph.to_owned()),
+            client_bulk_key: key.clone(),
+            chunk_index: 0,
+            chunk: BulkLoadChunkV1::Updates(Vec::new()),
+        })
+        .expect("encode real append overhead")
+        .len();
+        let blank_floor = candid::Encode!(&BulkLoadCommand::Append {
+            graph_name: None,
+            client_bulk_key: String::new(),
+            chunk_index: 0,
+            chunk: BulkLoadChunkV1::Updates(Vec::new()),
+        })
+        .expect("encode blank append overhead")
+        .len();
+        assert!(
+            envelope_floor > blank_floor,
+            "the fixture must exercise a non-empty graph/key envelope"
+        );
+        for (bytes, measured_graph, measured_key) in &transport.appends {
+            // The discriminator: the measurement must describe the envelope actually sent. An
+            // implementation that re-encodes with a blank graph/key records `None`/`""` and
+            // fails here no matter how large the chunk is.
+            assert_eq!(
+                measured_graph.as_deref(),
+                Some(graph),
+                "the measured Append envelope dropped or changed the graph name"
+            );
+            assert_eq!(
+                measured_key, &key,
+                "the measured Append envelope dropped or changed the client key"
+            );
+            assert!(
+                *bytes <= gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+                "Append payload {bytes} exceeds the inter-canister bound"
+            );
+            assert!(
+                *bytes >= envelope_floor,
+                "Append payload {bytes} is below the real graph/key envelope floor {envelope_floor}"
+            );
+        }
+        fs::remove_file(updates).expect("cleanup");
+    }
+
+    #[test]
+    fn update_phase_fits_large_rows_to_the_payload_bound_and_resumes_without_gaps() {
+        // Large SET values must split into payload-fitting Append chunks instead of a fixed row
+        // count, and the per-chunk receipt offsets must resume exactly where the previous chunk
+        // stopped (no dropped or duplicated row).
+        let updates = temp_path("large-updates.jsonl");
+        let big = "x".repeat(600_000);
+        let mut contents = String::new();
+        for index in 0..5 {
+            contents.push_str(&format!(
+                r#"{{"label":"Person","property":"name","value":{{"Text":"p{index}"}},"set":{{"nick":{{"Text":"{big}"}}}}}}"#
+            ));
+            contents.push('\n');
+        }
+        write_temp(&updates, &contents);
+        let prepared = PreparedLoad::Njson {
+            vertices: None,
+            edges: None,
+            updates: Some(updates.clone()),
+            digest: "digest".into(),
+            vertex_count: 0,
+            edge_count: 0,
+            update_count: 5,
+            property_names: BTreeSet::from(["nick".to_owned()]),
+        };
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
+        };
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        )
+        .expect("large update rows must load");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
+        let job = transport.job.expect("job exists");
+        assert!(
+            job.receipts.len() > 1,
+            "600 KB rows cannot fit five updates in one Append payload"
+        );
+        // Exact authored row identity and dispatch order: a gap or a repeated row fails here,
+        // which a bare total count would not catch.
+        let authored: Vec<(String, String, String)> = (0..5)
+            .map(|index| (format!("p{index}"), "nick".to_owned(), big.clone()))
+            .collect();
+        assert_eq!(
+            job.applied_updates, authored,
+            "every authored row must be applied exactly once, in authored order"
+        );
+        let mut dispatched = 0u64;
+        for (expected_index, receipt) in job.receipts.iter().enumerate() {
+            assert_eq!(
+                receipt.chunk_index, expected_index as u32,
+                "chunk indices must be contiguous from zero"
+            );
+            assert!(
+                receipt.updated_row_count > 0,
+                "a completed update chunk must record at least one row"
+            );
+            dispatched += receipt.updated_row_count;
+        }
+        assert_eq!(
+            dispatched, 5,
+            "every authored row is dispatched exactly once"
+        );
+        assert!(
+            !transport.appends.is_empty(),
+            "payload widths must be measured for the dispatched chunks"
+        );
+        for (bytes, _, _) in &transport.appends {
+            assert!(
+                *bytes <= gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+                "Append payload {bytes} exceeds the inter-canister bound"
+            );
+        }
+        fs::remove_file(updates).expect("cleanup");
+    }
+
+    /// R1 regression: a durable update chunk that was admitted but not completed must be
+    /// resumable. The pending row is invisible in the public projection, so the restarted run
+    /// re-reads from the boundary after the last completed chunk and must reproduce the in-flight
+    /// payload byte-for-byte for the Router (modelled here) to accept the same `chunk_index`
+    /// fingerprint and apply only the uncommitted suffix.
+    #[test]
+    fn update_phase_resumes_an_admitted_pending_chunk_without_reapplying_or_dropping_rows() {
+        // Varied row widths so the pending chunk is a *later* chunk whose boundary a carried
+        // size hint would have changed: 5 wide rows then 20 narrow ones.
+        let updates = temp_path("resume-pending-updates.jsonl");
+        let wide = "w".repeat(700_000);
+        let mut contents = String::new();
+        for index in 0..5 {
+            contents.push_str(&format!(
+                r#"{{"label":"Person","property":"name","value":{{"Text":"w{index}"}},"set":{{"nick":{{"Text":"{wide}"}}}}}}"#
+            ));
+            contents.push('\n');
+        }
+        for index in 0..20 {
+            contents.push_str(&format!(
+                r#"{{"label":"Person","property":"name","value":{{"Text":"n{index}"}},"set":{{"nick":{{"Text":"n{index}-set"}}}}}}"#
+            ));
+            contents.push('\n');
+        }
+        write_temp(&updates, &contents);
+        let prepared = PreparedLoad::Njson {
+            vertices: None,
+            edges: None,
+            updates: Some(updates.clone()),
+            digest: "digest".into(),
+            vertex_count: 0,
+            edge_count: 0,
+            update_count: 25,
+            property_names: BTreeSet::from(["nick".to_owned()]),
+        };
+        let authored: Vec<(String, String, String)> = (0..5)
+            .map(|index| {
+                (
+                    "w".to_owned() + &index.to_string(),
+                    "nick".to_owned(),
+                    wide.clone(),
+                )
+            })
+            .chain((0..20).map(|index| {
+                (
+                    format!("n{index}"),
+                    "nick".to_owned(),
+                    format!("n{index}-set"),
+                )
+            }))
+            .collect();
+
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+            appends: Vec::new(),
+            // Fail one row into the *third* chunk: that chunk's boundary is the one a carried
+            // size hint would have shrunk, so this also traps a non-deterministic re-chunk.
+            update_fail_at: Some((2, 1)),
+        };
+        let first = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        );
+        let Err(first_error) = first else {
+            panic!("the injected row failure must surface: {first:?}");
+        };
+        let job = transport.job.clone().expect("job exists");
+        let pending = job
+            .pending_update
+            .clone()
+            .expect("an update failure must leave the admitted chunk pending");
+        assert_eq!(
+            pending.applied, 1,
+            "the injected failure leaves exactly the applied prefix on the pending chunk"
+        );
+        let pending_index = pending.chunk_index;
+        let pending_payload = pending.payload.clone();
+        let completed_before_restart = job.receipts.len();
+        assert_eq!(
+            completed_before_restart, 2,
+            "the pending chunk must be a later chunk, not the first"
+        );
+        let applied_before_restart = job.applied_updates.clone();
+        assert_eq!(
+            applied_before_restart,
+            authored[..applied_before_restart.len()].to_vec(),
+            "the applied rows must be an authored-order prefix with no gap or repetition"
+        );
+        assert!(
+            applied_before_restart.len() > pending.applied,
+            "the completed chunk's rows precede the pending chunk's own applied prefix"
+        );
+
+        // Restart: same artifact and key must resume the exact pending chunk.
+        let mut resumed = FakeBulkLoadTransport {
+            update_fail_at: None,
+            ..transport
+        };
+        let outcome = run_load_with_mode(
+            &mut resumed,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        );
+        let job = resumed.job.as_ref().expect("job exists");
+        let _ = first_error;
+        assert_eq!(
+            job.applied_updates, authored,
+            "every authored row must be applied exactly once, in authored order"
+        );
+        assert!(
+            job.applied_updates.len() > applied_before_restart.len(),
+            "the restart must apply the pending chunk's uncommitted suffix"
+        );
+        assert_eq!(
+            job.receipts[..completed_before_restart]
+                .iter()
+                .map(|row| row.updated_row_count)
+                .sum::<u64>() as usize,
+            applied_before_restart.len() - pending.applied,
+            "completed chunk receipts survive the restart unchanged"
+        );
+        assert_eq!(
+            pending_index, completed_before_restart as u32,
+            "the pending chunk is the next index after the completed chunks"
+        );
+        assert!(
+            !pending_payload.is_empty(),
+            "the pending chunk identity is a real encoded payload"
+        );
+        assert_eq!(job.state, BulkLoadPublicStateV1::Completed);
+        for (expected_index, receipt) in job.receipts.iter().enumerate() {
+            assert_eq!(receipt.chunk_index, expected_index as u32);
+        }
+        assert_eq!(
+            job.receipts
+                .iter()
+                .map(|row| row.updated_row_count)
+                .sum::<u64>(),
+            25
+        );
+        assert!(
+            job.pending_update.is_none(),
+            "the resumed chunk must complete instead of staying pending"
+        );
+        assert!(
+            finished_without_pending(&outcome),
+            "the restarted run must finish: {outcome:?}"
+        );
+        fs::remove_file(updates).expect("cleanup");
+    }
+
+    fn finished_without_pending(outcome: &Result<LoadOutcome, LoadError>) -> bool {
+        matches!(outcome, Ok(LoadOutcome::Loaded { .. }))
+    }
+
     #[test]
     fn loader_skips_a_completed_job_with_matching_digest() {
         let prepared = prepared_single(sample_artifact(1, 0));
@@ -2726,17 +3268,28 @@ mod tests {
                 receipts: Vec::new(),
                 state: BulkLoadPublicStateV1::Completed,
                 next_vertex_ordinal: 1,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
         let state = temp_path("state.json");
         write_temp(
             &state,
             r#"{"format_version": 1, "artifact_sha256": "digest", "bulk_key": "k", "graph": null}"#,
         );
-        let outcome = run_load(&mut transport, &prepared, None, "k", Some(&state), false)
-            .expect("matching completed job must skip");
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            None,
+            "k",
+            Some(&state),
+            LoadMode::Insert,
+        )
+        .expect("matching completed job must skip");
         assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
         fs::remove_file(state).expect("cleanup");
     }
@@ -2754,17 +3307,28 @@ mod tests {
                 receipts: Vec::new(),
                 state: BulkLoadPublicStateV1::Completed,
                 next_vertex_ordinal: 1,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
         let state = temp_path("state.json");
         write_temp(
             &state,
             r#"{"format_version": 1, "artifact_sha256": "old-digest", "bulk_key": "k", "graph": null}"#,
         );
-        let error = run_load(&mut transport, &prepared, None, "k", Some(&state), false)
-            .expect_err("changed artifact must not be silently skipped");
+        let error = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            None,
+            "k",
+            Some(&state),
+            LoadMode::Insert,
+        )
+        .expect_err("changed artifact must not be silently skipped");
         assert_eq!(error.exit_code(), 1);
         fs::remove_file(state).expect("cleanup");
     }
@@ -2888,9 +3452,18 @@ mod tests {
             job: None,
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
-            .expect("update load should complete");
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        )
+        .expect("update load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.as_ref().expect("job exists");
         let updated: u64 = job.receipts.iter().map(|row| row.updated_row_count).sum();
@@ -2898,8 +3471,15 @@ mod tests {
         assert_eq!(job.receipts.len(), 1, "one budget-fitting update chunk");
         assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
         // A resumed run observes the completed job and skips without dispatching another chunk.
-        let outcome = run_load(&mut transport, &prepared, Some("social"), "k", None, true)
-            .expect("resume should complete");
+        let outcome = run_load_with_mode(
+            &mut transport,
+            &prepared,
+            Some("social"),
+            "k",
+            None,
+            LoadMode::Update,
+        )
+        .expect("resume should complete");
         assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
         let job = transport.job.as_ref().expect("job exists");
         assert_eq!(job.receipts.len(), 1, "resumed run dispatches no new chunk");
@@ -2917,12 +3497,17 @@ mod tests {
                     reason: "boom".into(),
                 },
                 next_vertex_ordinal: 3,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let error = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect_err("terminal failed job must be reported");
+        let error =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect_err("terminal failed job must be reported");
         assert!(error.to_string().contains("use a new --key"));
         assert_eq!(error.exit_code(), 1);
     }
@@ -2964,9 +3549,12 @@ mod tests {
             job: None,
             budget: 3, // forces multiple Append calls per phase
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect("streaming load should complete");
+        let outcome =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect("streaming load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         let vertex_chunks = job
@@ -3025,12 +3613,17 @@ mod tests {
                 ],
                 state: BulkLoadPublicStateV1::AppendPending,
                 next_vertex_ordinal: 4,
+                pending_update: None,
+                applied_updates: Vec::new(),
             }),
             budget: usize::MAX,
             interned: Vec::new(),
+            appends: Vec::new(),
+            update_fail_at: None,
         };
-        let outcome = run_load(&mut transport, &prepared, None, "k", None, false)
-            .expect("streaming resume should complete");
+        let outcome =
+            run_load_with_mode(&mut transport, &prepared, None, "k", None, LoadMode::Insert)
+                .expect("streaming resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         let vertex_chunks = job

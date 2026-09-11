@@ -11,12 +11,12 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, MutationId, OrderedBatchExecutionModeV1,
-    OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedMutationRetirementAck,
-    OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
-    OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexMutationRetirementAck,
-    OrderedVertexMutationRetirementAckV1, OrderedVertexMutationRetirementArgs,
-    OrderedVertexMutationRetirementArgsV1, ShardEventSeq,
+    GraphOrderedVertexBatchResultV1, MutationId, MutationJournalState, MutationLifecyclePhase,
+    OrderedBatchExecutionModeV1, OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1,
+    OrderedMutationRetirementAck, OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs,
+    OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1,
+    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1,
+    OrderedVertexMutationRetirementArgs, OrderedVertexMutationRetirementArgsV1, ShardEventSeq,
 };
 use ic_cdk::api::{msg_caller, time};
 
@@ -29,10 +29,13 @@ use crate::facade::stable::label_stats::{
     RouterMutationPayloadV1, RouterMutationRecord, RouterMutationRequestIdentityV1,
 };
 use crate::facade::store::RouterStore;
-use crate::facade::store::bulk_load::BulkLoadStartAdmission;
+use crate::facade::store::bulk_load::{
+    BulkLoadStartAdmission, BulkLoadUpdateAdmission, BulkLoadUpdateDispatchGate,
+};
 use crate::graph_client::{
     execute_ordered_edge_batch_on_graph, execute_ordered_vertex_batch_on_graph,
-    retire_ordered_mutation_on_graph, retire_ordered_vertex_mutation_on_graph,
+    get_mutation_journal_entry, retire_ordered_mutation_on_graph,
+    retire_ordered_vertex_mutation_on_graph,
 };
 use crate::index_lookup::RouterIndexLookup;
 use crate::state::RouterError;
@@ -332,29 +335,36 @@ fn resolve_endpoint(
     }
 }
 
-/// One match-key-resolved update row ready for GQL journal execution.
+/// One match-key-resolved update row ready for GQL journal execution. `ordinal` is the authored
+/// row index inside the candidate batch, which is also the durable per-row journal ordinal: a
+/// retry that resumes after a committed prefix therefore reuses the identical journal key.
 struct ResolvedUpdateRow {
+    ordinal: usize,
+    vertex_id: Vec<u8>,
     vertex_label: String,
     property_name: String,
-    match_value: Value,
     set_properties: Vec<(String, Value)>,
     remove_properties: Vec<String>,
 }
 
-/// Resolve every update match key in the chunk through the graph property index. The whole
-/// candidate chunk is rejected before any row executes when any match key is missing or
-/// non-unique, when a match value is not index-comparable, or when the required converged
-/// property index on `(vertex_label, property_name)` does not exist. Catalog names (labels
+/// Decode the uncommitted rows, resolving match keys only on initial admission. A pending child
+/// supplies its saved identities instead; neither its committed prefix nor its unwritten suffix
+/// may be retargeted by property changes. The candidate batch is
+/// rejected before any row executes when any initial match key is missing or non-unique, when a
+/// match value is not index-comparable, or when the required converged property index on
+/// `(vertex_label, property_name)` does not exist. Catalog names (labels
 /// plus match, SET, and REMOVE property names) are additionally pre-checked against the
 /// label and property catalogs so unknown names reject before admission; a never-registered
 /// REMOVE name therefore rejects with `NotFound` exactly like the seed-time `ReadExisting`
 /// resolution single-statement GQL `REMOVE` performs, while removing a registered-but-absent
-/// value is a no-op success inside the Graph executor. SET values decode with the row so with the row so malformed binaries never reach dispatch.
+/// value is a no-op success inside the Graph executor. SET values decode with the row so malformed binaries never reach dispatch.
 async fn resolve_update_match_keys(
     store: &RouterStore,
     graph_id: GraphId,
     encoding_key: &ElementIdEncodingKey,
+    from_ordinal: usize,
     items: &[BulkLoadUpdateV1],
+    pinned: Option<&[Vec<u8>]>,
 ) -> Result<Vec<ResolvedUpdateRow>, RouterError> {
     let mut label_names = BTreeSet::new();
     let mut property_names = BTreeSet::new();
@@ -375,9 +385,9 @@ async fn resolve_update_match_keys(
     store.resolve_ordered_vertex_catalogs(graph_id, label_names, property_names)?;
 
     let mut distinct = BTreeSet::new();
-    let mut decoded: Vec<(ByPropertyRef, Value, Vec<(String, Value)>, Vec<String>)> =
-        Vec::with_capacity(items.len());
-    for item in items {
+    let mut decoded: Vec<(usize, ByPropertyRef, Vec<(String, Value)>, Vec<String>)> =
+        Vec::with_capacity(items.len().saturating_sub(from_ordinal));
+    for (ordinal, item) in items.iter().enumerate().skip(from_ordinal) {
         let match_value = Value::from_binary_bytes(&item.match_value).map_err(|error| {
             invalid(format!(
                 "bulk-load update match value is not a binary-encoded GQL value: {error}"
@@ -410,31 +420,37 @@ async fn resolve_update_match_keys(
         };
         distinct.insert(reference.clone());
         decoded.push((
+            ordinal,
             reference,
-            match_value,
             set_properties,
             item.remove_properties.clone(),
         ));
     }
-    let resolved = resolve_property_refs(store, graph_id, encoding_key, &distinct).await?;
+    let resolved = if pinned.is_none() {
+        resolve_property_refs(store, graph_id, encoding_key, &distinct).await?
+    } else {
+        BTreeMap::new()
+    };
     decoded
         .into_iter()
-        .map(
-            |(reference, match_value, set_properties, remove_properties)| {
-                if !resolved.contains_key(&reference) {
-                    return Err(RouterError::Internal(
-                        "resolved update match-key map is missing a reference".into(),
-                    ));
-                }
-                Ok(ResolvedUpdateRow {
-                    vertex_label: reference.vertex_label,
-                    property_name: reference.property_name,
-                    match_value,
-                    set_properties,
-                    remove_properties,
-                })
-            },
-        )
+        .map(|(ordinal, reference, set_properties, remove_properties)| {
+            let vertex_id = match pinned {
+                Some(ids) => ids.get(ordinal),
+                None => resolved.get(&reference),
+            }
+            .cloned()
+            .ok_or_else(|| {
+                RouterError::Internal("resolved update vertex identity missing".into())
+            })?;
+            Ok(ResolvedUpdateRow {
+                ordinal,
+                vertex_id,
+                vertex_label: reference.vertex_label,
+                property_name: reference.property_name,
+                set_properties,
+                remove_properties,
+            })
+        })
         .collect()
 }
 
@@ -443,11 +459,211 @@ fn quote_gql_name(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
+/// Outcome evidence from the row's existing ADR 0029 Router saga and Graph journal.
+/// Routing/CanonicalPending records require a Graph read; a failed read leaves the row Unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateRowOutcome {
+    /// No dispatch exists, routing was released, or the exact-target journal completed with 0.
+    /// This is safe to abandon only after the parent has closed permission to start new rows.
+    NotWritten,
+    /// The row's canonical write is durable. Either the Router confirmed it, or the Graph's own
+    /// journal entry proves it landed even though the Router lost the confirmation.
+    Committed,
+    /// A dispatch may have committed and the outcome is not settled yet. `Append` settles it by
+    /// re-running the *same* row key (journal-first idempotent, so a re-dispatch replays rather
+    /// than re-applies), while `Abort` must not terminalize on it.
+    Unresolved,
+    /// The Router records that a dispatch may be outstanding but cannot read the journal that
+    /// would settle it (shard stopped, transport fault). Nothing may be re-dispatched, re-resolved,
+    /// or terminalized until a later attempt can read the journal.
+    Unknown,
+}
+
+/// Classify one update row from the durable owners that already record its outcome.
+///
+/// The Router record is authoritative for three cases, and its absence is itself the ownership
+/// proof that matters most: an ADR 0029 saga record is persisted *before* the first dispatch
+/// await, so a row with no record cannot have reached the Graph. `Failed` means routing was
+/// released without a durable dispatch envelope (or the mutation is terminally failed), which
+/// likewise proves no canonical write. Only `CanonicalPending`/`Routing` are genuinely ambiguous,
+/// and there the Graph's own mutation journal decides. For exact-target execution, a completed
+/// receipt proves application with count 1 or a write-free outcome with count 0.
+async fn classify_update_row(
+    store: &RouterStore,
+    caller: Principal,
+    graph_id: GraphId,
+    row_key: &str,
+) -> Result<UpdateRowOutcome, RouterError> {
+    let key = ClientMutationKey::new(caller, graph_id, row_key.to_owned());
+    let Some(record) = store.router_mutation_record(&key) else {
+        return Ok(UpdateRowOutcome::NotWritten);
+    };
+    match record.lifecycle_phase() {
+        MutationLifecyclePhase::Failed => return Ok(UpdateRowOutcome::NotWritten),
+        MutationLifecyclePhase::CanonicalCommitted
+        | MutationLifecyclePhase::ProjectionPending
+        | MutationLifecyclePhase::Completed => {
+            let count = match record.as_v1().completed_row_count {
+                Some(count) => count,
+                None => match record.shards() {
+                    [shard] if shard.completed() => shard.row_count(),
+                    _ => {
+                        return Err(RouterError::Internal(
+                            "exact vertex mutation lacks its scalar outcome".into(),
+                        ));
+                    }
+                },
+            };
+            return applied_target_outcome(count);
+        }
+        MutationLifecyclePhase::Routing | MutationLifecyclePhase::CanonicalPending => {}
+    }
+    let mut journal_observed = false;
+    for shard in record.shards() {
+        let Ok(entry) =
+            get_mutation_journal_entry(shard.graph_canister(), record.as_v1().mutation_id).await
+        else {
+            // The journal is unreadable (shard stopped, transport fault, ...). The Router cannot
+            // prove the write's absence and cannot drive the row either, so it reports a
+            // retryable busy state instead of re-dispatching, re-resolving, or terminalizing.
+            // The underlying fault remains visible on the row's own saga record.
+            return Ok(UpdateRowOutcome::Unknown);
+        };
+        journal_observed = true;
+        if let Some(entry) = entry
+            && matches!(entry.state(), MutationJournalState::Completed)
+        {
+            return applied_target_outcome(entry.row_count());
+        }
+    }
+    if !journal_observed {
+        // A routing reservation may still be resolving its shard. Its owner has permission
+        // to dispatch, so absence of an envelope is not yet proof of a write-free outcome.
+        return Ok(UpdateRowOutcome::Unresolved);
+    }
+    Ok(UpdateRowOutcome::Unresolved)
+}
+
+fn applied_target_outcome(count: u64) -> Result<UpdateRowOutcome, RouterError> {
+    match count {
+        0 => Ok(UpdateRowOutcome::NotWritten),
+        1 => Ok(UpdateRowOutcome::Committed),
+        _ => Err(RouterError::Internal(
+            "exact vertex mutation reported more than one target".into(),
+        )),
+    }
+}
+
+/// Settlement of an update chunk's authored rows, derived purely from per-row journal outcomes so
+/// the decision is owned in one place and is exhaustively testable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UpdateSettlement {
+    /// Exclusive end of the committed prefix, including rows recorded before this settlement.
+    committed: usize,
+    /// Rows whose Router record exists but whose outcome is not yet settled. `Append` may settle
+    /// them by re-running the identical journal key; `Abort` must wait for that to happen.
+    unresolved: Vec<usize>,
+    /// Rows whose journal could not be read, so their outcome is unknown in both directions.
+    /// Nothing may be dispatched or terminalized past one of these.
+    unreadable: Vec<usize>,
+    /// A committed row was found past a non-committed one, violating authored dispatch order.
+    /// Fail closed rather than claim a prefix that skips an unaccounted row.
+    committed_after_gap: bool,
+}
+
+impl UpdateSettlement {
+    /// Abort may publish a receipt only when every row outside the prefix is proven unwritten.
+    /// Check before changing the child or parent, so unreadable evidence leaves both pending.
+    fn abort_prefix(&self) -> Result<usize, RouterError> {
+        if !self.unresolved.is_empty() || !self.unreadable.is_empty() {
+            return Err(RouterError::Busy {
+                operation: "bulk_load.append".into(),
+            });
+        }
+        if self.committed_after_gap {
+            return Err(RouterError::Internal(
+                "bulk-load abort found a committed update row beyond a non-committed one".into(),
+            ));
+        }
+        Ok(self.committed)
+    }
+}
+
+/// Fold per-row outcomes (in authored order, starting at `from`) into a [`UpdateSettlement`].
+/// Exhaustive by construction: only `NotWritten` counts as proven-write-free, `Committed` extends
+/// the contiguous prefix, and everything else is unsettled.
+fn settle_outcomes(
+    from: usize,
+    outcomes: impl IntoIterator<Item = UpdateRowOutcome>,
+) -> UpdateSettlement {
+    let mut committed = from;
+    let mut unresolved = Vec::new();
+    let mut unreadable = Vec::new();
+    let mut committed_after_gap = false;
+    let mut gap = false;
+    for (offset, outcome) in outcomes.into_iter().enumerate() {
+        let ordinal = from + offset;
+        match outcome {
+            UpdateRowOutcome::Committed => {
+                if gap {
+                    committed_after_gap = true;
+                } else {
+                    committed = ordinal + 1;
+                }
+            }
+            UpdateRowOutcome::NotWritten => gap = true,
+            UpdateRowOutcome::Unresolved => {
+                gap = true;
+                unresolved.push(ordinal);
+            }
+            UpdateRowOutcome::Unknown => {
+                gap = true;
+                unreadable.push(ordinal);
+            }
+        }
+    }
+    UpdateSettlement {
+        committed,
+        unresolved,
+        unreadable,
+        committed_after_gap,
+    }
+}
+
+/// Classify rows `from..row_count` from the durable owners and fold them into a settlement.
+async fn settle_update_rows(
+    store: &RouterStore,
+    caller: Principal,
+    graph_id: GraphId,
+    client_bulk_key: &str,
+    chunk_index: u32,
+    from: usize,
+    row_count: usize,
+) -> Result<UpdateSettlement, RouterError> {
+    let mut outcomes = Vec::with_capacity(row_count.saturating_sub(from));
+    for ordinal in from..row_count {
+        let row_key = update_row_key(client_bulk_key, chunk_index, ordinal);
+        outcomes.push(classify_update_row(store, caller, graph_id, &row_key).await?);
+    }
+    Ok(settle_outcomes(from, outcomes))
+}
+
+/// Durable per-row journal key for one authored row of one bulk-load update chunk. Shared by
+/// dispatch and by journal classification so the two can never disagree.
+fn update_row_key(client_bulk_key: &str, chunk_index: u32, ordinal: usize) -> String {
+    format!("{client_bulk_key}:{chunk_index}:u{ordinal}")
+}
+
 /// Execute every resolved update row through the durable per-row GQL mutation journal and
-/// complete the child row. Resolution happens before admission, so match-key failures never
-/// surface as a partial commit; per-row journal keys make re-execution after a crash converge
-/// without double application (SET is an absolute assignment, REMOVE of an absent property is
-/// a no-op).
+/// complete the child row. Match-key failures reject the whole candidate batch before admission.
+/// After admission one row is the atomic unit and the chunk is a durable committed prefix: each
+/// committed row advances `updated_row_count` on the pending child before the next row
+/// dispatches, so a later row error leaves the job resumable at that prefix instead of reporting
+/// a prefix that excludes writes the chunk already applied. `Abort` deliberately refuses to
+/// terminalize such a chunk (see `abort_bulk_load`) until its rows are accounted for. Per-row journal keys make
+/// re-execution of an in-flight chunk converge without double application (SET is an absolute
+/// assignment, REMOVE of an absent property is a no-op), and the statement is scoped to the
+/// job's resolved `graph_id` rather than the caller's HOME/session graph.
 async fn append_bulk_load_updates(
     graph_name: Option<String>,
     client_bulk_key: String,
@@ -468,27 +684,170 @@ async fn append_bulk_load_updates(
         ));
     }
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
-    if let Some(child) = store.bulk_load_chunk_receipt(parent_mutation_id, chunk_index)
-        && child.chunk_fingerprint != chunk_fingerprint
-    {
-        return Err(RouterError::Conflict(
-            "bulk-load chunk fingerprint conflicts with the durable row".into(),
-        ));
+    let existing_child = store.bulk_load_chunk_receipt(parent_mutation_id, chunk_index);
+    if let Some(child) = &existing_child {
+        if child.chunk_fingerprint != chunk_fingerprint {
+            return Err(RouterError::Conflict(
+                "bulk-load chunk fingerprint conflicts with the durable row".into(),
+            ));
+        }
+        if child.progress.is_completed() {
+            let updated_row_count = child.updated_row_count.ok_or_else(|| {
+                RouterError::Internal("completed update child lacks its receipt count".into())
+            })?;
+            return Ok(BulkLoadResponse::Updated {
+                chunk_index,
+                next_offset: u32::try_from(updated_row_count).map_err(|_| {
+                    RouterError::Internal("bulk-load update row count exceeds u32".into())
+                })?,
+                updated_row_count,
+            });
+        }
     }
 
-    let resolved = resolve_update_match_keys(&store, graph_id, &encoding_key, &items).await?;
-    store.admit_bulk_load_update_child(
+    // A retry resumes at the durable prefix, and the durable per-row journal settles it: a row
+    // whose write is already durable advances the prefix without being re-resolved (a prefix row
+    // may have changed its own match property) and without being re-dispatched, so the per-row
+    // journal ordinal and the authored payload stay identical. Admitted suffix rows reuse saved
+    // identities too; only initial admission resolves match keys.
+    let recorded_prefix = existing_child
+        .as_ref()
+        .and_then(|child| child.updated_row_count)
+        .unwrap_or(0) as usize;
+    let settlement = settle_update_rows(
+        &store,
+        caller,
+        graph_id,
+        &client_bulk_key,
+        chunk_index,
+        recorded_prefix,
+        items.len(),
+    )
+    .await?;
+    let committed_prefix = settlement.committed;
+    if settlement.committed_after_gap {
+        return Err(RouterError::Internal(
+            "bulk-load update chunk has a committed row beyond a non-committed one".into(),
+        ));
+    }
+    if committed_prefix > recorded_prefix {
+        store.record_bulk_load_update_progress(
+            caller,
+            graph_id,
+            &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+            u64::try_from(committed_prefix).map_err(|_| {
+                RouterError::Internal("bulk-load update row count exceeds u64".into())
+            })?,
+        )?;
+    }
+    if !settlement.unreadable.is_empty() {
+        // A row's journal could not be read, so its outcome is unknown in both directions:
+        // dispatching it could double-apply and leaving it could hide a write. Retry later.
+        return Err(RouterError::Busy {
+            operation: "bulk_load.append".into(),
+        });
+    }
+    let identities = existing_child
+        .as_ref()
+        .map(|child| {
+            let ids = child.resolved_update_vertex_ids.clone().ok_or_else(|| {
+                RouterError::Internal("pending update child lacks its target identities".into())
+            })?;
+            if ids.len() != items.len() {
+                return Err(RouterError::Internal(
+                    "pending update identities do not match the authored chunk".into(),
+                ));
+            }
+            Ok(ids)
+        })
+        .transpose()?;
+    let resolved = resolve_update_match_keys(
+        &store,
+        graph_id,
+        &encoding_key,
+        committed_prefix,
+        &items,
+        identities.as_deref(),
+    )
+    .await?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::take_bulk_update_abort_before_admission() {
+        // Targets were resolved/restored; inject the competing transition before re-admission
+        // of the stale child snapshot. Use the real Abort path and its journal checks.
+        abort_bulk_load(graph_name.clone(), client_bulk_key.clone()).await?;
+    }
+    let identities =
+        identities.unwrap_or_else(|| resolved.iter().map(|row| row.vertex_id.clone()).collect());
+    let admission = store.admit_bulk_load_update_child(
         caller,
         graph_id,
         &client_bulk_key,
         parent_mutation_id,
         chunk_index,
         chunk_fingerprint,
+        Some(identities),
     )?;
-    for (row_ordinal, row) in resolved.iter().enumerate() {
+    match admission {
+        BulkLoadUpdateAdmission::Granted => {}
+        // The chunk finished while this caller was suspended (for example an `Abort` closed the
+        // job at the prefix the owners could prove). Replay the stored receipt; do not dispatch.
+        BulkLoadUpdateAdmission::AlreadyCompleted => {
+            let updated_row_count = store
+                .bulk_load_chunk_receipt(parent_mutation_id, chunk_index)
+                .and_then(|child| child.updated_row_count)
+                .ok_or_else(|| {
+                    RouterError::Internal("completed update child lacks its receipt count".into())
+                })?;
+            return Ok(BulkLoadResponse::Updated {
+                chunk_index,
+                next_offset: u32::try_from(updated_row_count).map_err(|_| {
+                    RouterError::Internal("bulk-load update row count exceeds u32".into())
+                })?,
+                updated_row_count,
+            });
+        }
+    }
+    for row in resolved.iter() {
+        let row_ordinal = row.ordinal;
+        match store.bulk_load_update_dispatch_gate(
+            caller,
+            graph_id,
+            &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+        )? {
+            BulkLoadUpdateDispatchGate::Open => {}
+            // Abort is winding this chunk down. Only a row that was already dispatched may be
+            // settled (re-running its identical idempotent journal key); a row that was never
+            // started must not write.
+            // Settling a row that was already dispatched is exactly the journal-first idempotent
+            // path, so it stays allowed while the job winds down; starting a never-dispatched row
+            // does not.
+            BulkLoadUpdateDispatchGate::SettleOnly
+                if settlement.unresolved.contains(&row_ordinal) => {}
+            BulkLoadUpdateDispatchGate::SettleOnly => {
+                return Err(RouterError::Busy {
+                    operation: "bulk_load.append".into(),
+                });
+            }
+            BulkLoadUpdateDispatchGate::Closed => {
+                return Err(RouterError::Busy {
+                    operation: "bulk_load.append".into(),
+                });
+            }
+        }
+        #[cfg(feature = "pocket-ic-e2e")]
+        if crate::test_fault::bulk_update_row_failure_armed(row_ordinal) {
+            return Err(RouterError::Internal(
+                "pocket-ic-e2e injected fault: bulk-load update row failure after a committed prefix"
+                    .into(),
+            ));
+        }
         let mut assignments = Vec::with_capacity(row.set_properties.len());
-        let mut fields = Vec::with_capacity(row.set_properties.len() + 1);
-        fields.push(("k".to_string(), row.match_value.clone()));
+        let mut fields = Vec::with_capacity(row.set_properties.len());
         for (position, (name, value)) in row.set_properties.iter().enumerate() {
             let param = format!("s{position}");
             assignments.push(format!("v.{} = ${param}", quote_gql_name(name)));
@@ -497,11 +856,7 @@ async fn append_bulk_load_updates(
         // SET and REMOVE ride one linear GQL statement so a mixed row applies atomically to
         // the matched vertex; at least one clause is present (wire validation rejects empty
         // rows) and overlap rejects at the wire boundary, so clause order is unambiguous.
-        let mut statement = format!(
-            "MATCH (v:{}) WHERE v.{} = $k",
-            quote_gql_name(&row.vertex_label),
-            quote_gql_name(&row.property_name),
-        );
+        let mut statement = format!("MATCH (v:{})", quote_gql_name(&row.vertex_label));
         if !assignments.is_empty() {
             statement.push_str(&format!(" SET {}", assignments.join(", ")));
         }
@@ -514,25 +869,53 @@ async fn append_bulk_load_updates(
                 .join(", ");
             statement.push_str(&format!(" REMOVE {removals}"));
         }
+        // Retain match-property READ authorization without using its mutable value as a filter.
+        // Exact-target execution counts applied inputs, independent of this RETURN projection.
         statement.push_str(&format!(" RETURN v.{}", quote_gql_name(&row.property_name)));
         let params = gleaph_gql_ic::encode_gql_params_blob(fields)
             .map_err(|error| invalid(format!("bulk-load update params encode failed: {error}")))?;
-        let row_key = format!("{client_bulk_key}:{chunk_index}:u{row_ordinal}");
+        let row_key = update_row_key(&client_bulk_key, chunk_index, row_ordinal);
         if row_key.len() > 256 {
             return Err(invalid(
                 "bulk-load update row mutation key exceeds 256 bytes; use a shorter client_bulk_key",
             ));
         }
-        // NB: GQL mutations report `row_count` 0 even when the write lands (RETURN rows are
-        // not projected through the write path — the literal-SET probe in
-        // `adr0057_durable_bulk_load` covers this), so the outcome is only checked for errors.
-        // Exactly-one matching is already guaranteed by the resolve-before-admit pre-pass
-        // (missing/non-unique keys reject the whole chunk), and the statement re-selects by
-        // the identical match key; the E2E verifies the end state with follow-up reads.
-        let _outcome =
-            crate::gql::gql_execute_idempotent_with_batch(statement, params, row_key).await?;
+        let target = gleaph_graph_kernel::federation::decode_global_vertex_id(
+            &encoding_key,
+            gleaph_graph_kernel::federation::EncodedVertexId(
+                row.vertex_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RouterError::Internal("invalid saved bulk vertex ID".into()))?,
+            ),
+        );
+        let outcome = crate::gql::gql_execute_idempotent_on_vertex(
+            statement, params, row_key, graph_id, target,
+        )
+        .await?;
+        #[cfg(feature = "pocket-ic-e2e")]
+        crate::test_fault::maybe_trap_after_bulk_update_row_dispatch();
+        // Only this exact-target execution mode reports applied targets, durably as 0 or 1.
+        if applied_target_outcome(outcome.row_count)? != UpdateRowOutcome::Committed {
+            return Err(RouterError::NotFound(
+                "bulk-load update target is no longer eligible".into(),
+            ));
+        }
+        store.record_bulk_load_update_progress(
+            caller,
+            graph_id,
+            &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+            u64::try_from(row_ordinal + 1).map_err(|_| {
+                RouterError::Internal("bulk-load update row ordinal exceeds u64".into())
+            })?,
+        )?;
     }
-    let updated_row_count = u64::try_from(resolved.len())
+    // Normal completion counts the whole authored batch, including the prefix already recorded.
+    // This receipt does not imply that the independently committed rows were chunk-atomic.
+    let updated_row_count = u64::try_from(committed_prefix + resolved.len())
         .map_err(|_| RouterError::Internal("bulk-load update row count exceeds u64".into()))?;
     store.complete_bulk_load_update_child(
         caller,
@@ -546,7 +929,7 @@ async fn append_bulk_load_updates(
     )?;
     Ok(BulkLoadResponse::Updated {
         chunk_index,
-        next_offset: u32::try_from(resolved.len())
+        next_offset: u32::try_from(updated_row_count)
             .map_err(|_| RouterError::Internal("bulk-load update row count exceeds u32".into()))?,
         updated_row_count,
     })
@@ -554,7 +937,10 @@ async fn append_bulk_load_updates(
 
 /// Classify one group's per-value postings: exactly one live posting resolves the value, zero is
 /// missing, and more than one (or a truncated bucket) is non-unique. The whole candidate chunk is
-/// rejected before any operation executes, so failures never surface as a partial commit.
+/// rejected before any operation executes. Shared by `ByProperty` edge-insert endpoints and
+/// bulk-load update match keys, so the diagnostic names the property reference rather than one
+/// caller's surface. After admission, each successful row advances the
+/// durable committed prefix, and a later failure leaves the child resumable at that prefix.
 fn classify_resolved_values(
     vertex_label: &str,
     property_name: &str,
@@ -565,12 +951,12 @@ fn classify_resolved_values(
         let unique = result.hits.len() == 1 && result.complete;
         if result.hits.is_empty() {
             return Err(invalid(format!(
-                "bulk-load edge endpoint by property ({vertex_label}, {property_name}) value does not resolve to a vertex"
+                "bulk-load property reference ({vertex_label}, {property_name}) value does not resolve to a vertex"
             )));
         }
         if !unique {
             return Err(invalid(format!(
-                "bulk-load edge endpoint by property ({vertex_label}, {property_name}) value resolves to multiple vertices"
+                "bulk-load property reference ({vertex_label}, {property_name}) value resolves to multiple vertices"
             )));
         }
         resolved.insert(result.value, result.hits[0]);
@@ -1104,6 +1490,7 @@ async fn append_bulk_load(
         progress: BulkLoadChunkProgressV1::CanonicalPending,
         public_receipt: None,
         graph_receipt: None,
+        resolved_update_vertex_ids: None,
         completed_at_ns: None,
     };
     store.admit_bulk_load_child(
@@ -1178,25 +1565,82 @@ async fn abort_bulk_load(
             .ok_or_else(|| RouterError::Internal("bulk-load abort child row is missing".into()))?;
         let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
         if child.updated_row_count.is_some() {
-            // Update chunks persist only the fingerprint, not the match-key payload, so an
-            // in-flight update child cannot be finished from durable state. Re-append the same
-            // chunk first (idempotent journal replay completes it), then abort.
-            return Err(RouterError::Conflict(
-                "bulk-load abort is blocked by an in-flight update chunk; re-append the chunk to complete it, then abort".into(),
-            ));
+            // An update chunk's durable count is its committed prefix, and its authored payload
+            // is deliberately not persisted (receipt rows stay bounded for status pagination),
+            // so Abort cannot itself re-drive the unexecuted suffix. It does not need to: the
+            // per-row journal already answers whether any row outside the prefix wrote.
+            if !child.progress.is_completed() {
+                // The authored row count is durable in the retry guard, so Abort can classify
+                // every row by its derived key without the (deliberately unpersisted) payload.
+                let row_count = child
+                    .resolved_update_vertex_ids
+                    .as_ref()
+                    .map(|identities| identities.len())
+                    .ok_or_else(|| {
+                        RouterError::Internal(
+                            "pending update child lacks its admitted row count".into(),
+                        )
+                    })?;
+                // Settle first: a row whose write is durable but not yet recorded must move the
+                // prefix forward rather than be abandoned.
+                let settlement = settle_update_rows(
+                    &store,
+                    caller,
+                    graph_id,
+                    &client_bulk_key,
+                    active_chunk,
+                    child.updated_row_count.unwrap_or(0) as usize,
+                    row_count,
+                )
+                .await?;
+                let settled = settlement.abort_prefix()?;
+                if settled > child.updated_row_count.unwrap_or(0) as usize {
+                    store.record_bulk_load_update_progress(
+                        caller,
+                        graph_id,
+                        &client_bulk_key,
+                        parent_mutation_id,
+                        active_chunk,
+                        child.chunk_fingerprint,
+                        settled as u64,
+                    )?;
+                }
+                store.complete_bulk_load_update_child(
+                    caller,
+                    graph_id,
+                    &client_bulk_key,
+                    parent_mutation_id,
+                    active_chunk,
+                    child.chunk_fingerprint,
+                    settled as u64,
+                    time(),
+                )?;
+            } else {
+                store.complete_bulk_load_update_child(
+                    caller,
+                    graph_id,
+                    &client_bulk_key,
+                    parent_mutation_id,
+                    active_chunk,
+                    child.chunk_fingerprint,
+                    child.updated_row_count.unwrap_or(0),
+                    time(),
+                )?;
+            }
+        } else {
+            drive_bulk_child(
+                &store,
+                caller,
+                graph_id,
+                &client_bulk_key,
+                parent_mutation_id,
+                active_chunk,
+                child.chunk_fingerprint,
+                &bulk_parent(&record)?.target,
+                &encoding_key,
+            )
+            .await?;
         }
-        drive_bulk_child(
-            &store,
-            caller,
-            graph_id,
-            &client_bulk_key,
-            parent_mutation_id,
-            active_chunk,
-            child.chunk_fingerprint,
-            &bulk_parent(&record)?.target,
-            &encoding_key,
-        )
-        .await?;
     }
     let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
     let coordinator = bulk_parent(&record)?;
@@ -1261,6 +1705,14 @@ pub(crate) fn bulk_load_status_public(
         .iter()
         .filter_map(|(chunk_index, row)| {
             if let Some(updated_row_count) = row.updated_row_count {
+                // Only a completed update chunk is public. A pending one is invisible exactly
+                // like a pending insert child (whose `public_receipt` is `None`), so a client
+                // resuming from this projection re-sends the whole in-flight chunk at
+                // `next_chunk_index` from the boundary after the last completed chunk instead of
+                // skipping the in-flight prefix and mis-slicing the payload.
+                if !row.progress.is_completed() {
+                    return None;
+                }
                 // Update chunks carry no insert receipt; report a zero receipt plus the
                 // committed row count.
                 return Some(BulkLoadChunkReceiptV1 {
@@ -1306,6 +1758,245 @@ mod tests {
     use super::*;
     use crate::facade::store::tests::test_init_args;
     use crate::index_lookup::ResolvedEqualValue;
+
+    /// T3: the row classifier reads the durable owners rather than inferring from an error.
+    /// A released routing reservation (`Failed`) is proven write-free, a committed phase is
+    /// write-durable only with an applied target, and an unreadable journal is `Unknown`.
+    #[test]
+    fn update_row_classifier_uses_the_owners_not_the_error() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::self_authenticating([71; 32]);
+        let graph_id = GraphId::from_raw(1);
+        let key = "row-journal";
+
+        // No router record at all: the row cannot have been dispatched, because the reservation
+        // is persisted before the first dispatch await.
+        assert_eq!(
+            futures::executor::block_on(classify_update_row(&store, caller, graph_id, key))
+                .expect("classify"),
+            UpdateRowOutcome::NotWritten
+        );
+
+        // The owner's own routing release (ADR 0029 Phase 4) leaves an empty envelope and no
+        // completed rows, which is the documented "no canonical write committed" state.
+        let client_key = ClientMutationKey::new(caller, graph_id, key.to_owned());
+        store
+            .reserve_mutation_id_for_client_key(caller, graph_id, key, vec![7u8; 32])
+            .expect("reserve");
+        store
+            .abandon_router_mutation_routing_reservation(&client_key)
+            .expect("release routing");
+        assert_eq!(
+            futures::executor::block_on(classify_update_row(&store, caller, graph_id, key))
+                .expect("classify"),
+            UpdateRowOutcome::NotWritten,
+            "a released routing reservation proves no canonical write"
+        );
+
+        // A committed phase is write-durable without consulting any journal.
+        let record = store
+            .router_mutation_record(&client_key)
+            .expect("record after reservation");
+        store
+            .record_router_mutation_completed_without_shards(
+                &client_key,
+                record.as_v1().resolved_labels.clone().unwrap_or_default(),
+                record
+                    .as_v1()
+                    .resolved_properties
+                    .clone()
+                    .unwrap_or_default(),
+                1,
+            )
+            .expect("record completion");
+        assert_eq!(
+            futures::executor::block_on(classify_update_row(&store, caller, graph_id, key))
+                .expect("classify"),
+            UpdateRowOutcome::Committed,
+            "a completed row is write-durable"
+        );
+
+        // Completed is not synonymous with an applied exact target: a durable zero-effect
+        // result is write-free, including after the shard envelope has been compacted.
+        let zero = ClientMutationKey::new(caller, graph_id, "row-zero".into());
+        store
+            .reserve_mutation_id_for_client_key(caller, graph_id, "row-zero", vec![8u8; 32])
+            .unwrap();
+        store
+            .record_router_mutation_completed_without_shards(
+                &zero,
+                Default::default(),
+                Default::default(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .router_mutation_record(&zero)
+                .unwrap()
+                .lifecycle_phase(),
+            MutationLifecyclePhase::Completed
+        );
+        assert_eq!(
+            futures::executor::block_on(classify_update_row(&store, caller, graph_id, "row-zero"))
+                .unwrap(),
+            UpdateRowOutcome::NotWritten
+        );
+        assert_eq!(
+            applied_target_outcome(2),
+            Err(RouterError::Internal(
+                "exact vertex mutation reported more than one target".into()
+            ))
+        );
+
+        // A record whose graph journal cannot be read is never write-free. Native (unit) builds
+        // have no graph call, so the read fails: the classifier must report `Unknown`, and Abort
+        // must therefore refuse to terminalize on it (asserted by the settlement owner).
+        // A dispatched row is keyed by its authored ordinal, so the classifier and the lane must
+        // agree on the derived key.
+        let pending_key = update_row_key("row-journal-pending", 0, 0);
+        store
+            .reserve_mutation_id_for_client_key(caller, graph_id, &pending_key, vec![9u8; 32])
+            .expect("reserve pending");
+        store
+            .record_router_mutation_shards(
+                &ClientMutationKey::new(caller, graph_id, pending_key.clone()),
+                gleaph_graph_kernel::plan_exec::ResolvedLabelTable::default(),
+                gleaph_graph_kernel::plan_exec::ResolvedPropertyTable::default(),
+                vec![
+                    crate::facade::stable::label_stats::RouterMutationShardV1::new(
+                        ShardId::new(0),
+                        Principal::from_slice(&[0xCD; 29]),
+                        None,
+                    ),
+                ],
+            )
+            .expect("persist envelope");
+        assert_eq!(
+            futures::executor::block_on(classify_update_row(
+                &store,
+                caller,
+                graph_id,
+                &pending_key
+            ))
+            .expect("classify"),
+            UpdateRowOutcome::Unknown,
+            "an unreadable journal must stay unknown, never write-free"
+        );
+        let settlement = futures::executor::block_on(settle_update_rows(
+            &store,
+            caller,
+            graph_id,
+            "row-journal-pending",
+            0,
+            0,
+            1,
+        ))
+        .expect("settle");
+        assert_eq!(settlement.unreadable, vec![0]);
+        assert_eq!(settlement.committed, 0);
+        assert!(settlement.unresolved.is_empty());
+    }
+
+    /// T2: only `NotWritten` is proven write-free. `Committed` extends the contiguous prefix,
+    /// `Unresolved` must be settled by re-dispatch, `Unknown` blocks everything, and a committed
+    /// row behind a gap fails closed.
+    #[test]
+    fn settle_outcomes_is_exhaustive_over_row_journal_states() {
+        use UpdateRowOutcome::{Committed, NotWritten, Unknown, Unresolved};
+
+        // All rows proven write-free: nothing committed, nothing to settle.
+        let all_free = settle_outcomes(2, vec![NotWritten, NotWritten]);
+        assert_eq!(all_free.committed, 2, "the recorded prefix is preserved");
+        assert!(all_free.unresolved.is_empty());
+        assert!(all_free.unreadable.is_empty());
+        assert!(!all_free.committed_after_gap);
+
+        // A proven-unwritten gap must not hide an unsettled tail. In particular, stopping at
+        // the first NotWritten row or treating every non-Completed journal as write-free is unsafe.
+        for tail in [NotWritten, Committed, Unresolved, Unknown] {
+            let settlement = settle_outcomes(2, [NotWritten, tail]);
+            assert_eq!(settlement.committed, 2);
+            assert_eq!(settlement.committed_after_gap, tail == Committed);
+            assert_eq!(
+                settlement.unresolved,
+                if tail == Unresolved { vec![3] } else { vec![] }
+            );
+            assert_eq!(
+                settlement.unreadable,
+                if tail == Unknown { vec![3] } else { vec![] }
+            );
+            let expected = match tail {
+                NotWritten => Ok(2),
+                Committed => Err(RouterError::Internal(
+                    "bulk-load abort found a committed update row beyond a non-committed one"
+                        .into(),
+                )),
+                Unresolved | Unknown => Err(RouterError::Busy {
+                    operation: "bulk_load.append".into(),
+                }),
+            };
+            assert_eq!(settlement.abort_prefix(), expected, "tail {tail:?}");
+        }
+
+        // A committed tail extends the prefix; the fold starts at the recorded prefix.
+        let extended = settle_outcomes(1, vec![Committed, Committed]);
+        assert_eq!(extended.committed, 3);
+        assert!(extended.unresolved.is_empty());
+        assert!(!extended.committed_after_gap);
+
+        // Unresolved rows are settleable by re-dispatch; Unknown rows are not. Each is reported by
+        // its authored ordinal, and the prefix stops at the first non-committed row.
+        for (outcome, ordinal, outcomes) in [
+            (Unresolved, 0usize, vec![Unresolved, NotWritten]),
+            (Unknown, 0, vec![Unknown, NotWritten]),
+            (Unresolved, 1, vec![Committed, Unresolved]),
+            (Unknown, 1, vec![Committed, Unknown]),
+        ] {
+            let settlement = settle_outcomes(0, outcomes);
+            match outcome {
+                Unresolved => assert_eq!(
+                    settlement.unresolved,
+                    vec![ordinal],
+                    "{outcome:?} at {ordinal} must be the only unresolved row: {settlement:?}"
+                ),
+                Unknown => assert_eq!(
+                    settlement.unreadable,
+                    vec![ordinal],
+                    "{outcome:?} at {ordinal} must be the only unreadable row: {settlement:?}"
+                ),
+                other => panic!("unexpected fixture state {other:?}"),
+            }
+            assert_eq!(
+                settlement.committed, ordinal,
+                "the prefix must stop at the unsettled row: {settlement:?}"
+            );
+            assert!(
+                !settlement.committed_after_gap,
+                "an unsettled row is a gap, not a committed-beyond-gap: {settlement:?}"
+            );
+        }
+
+        // NotWritten then Committed violates authored dispatch order: fail closed rather
+        // than claim a prefix that skips an unaccounted row.
+        let torn = settle_outcomes(0, vec![NotWritten, Committed]);
+        assert_eq!(torn.committed, 0);
+        assert!(torn.committed_after_gap);
+        assert!(torn.unresolved.is_empty() && torn.unreadable.is_empty());
+
+        // A committed prefix followed by a write-free tail still advances the prefix.
+        let prefix_then_free = settle_outcomes(0, vec![Committed, NotWritten, NotWritten]);
+        assert_eq!(prefix_then_free.committed, 1);
+        assert!(prefix_then_free.unresolved.is_empty());
+        assert!(!prefix_then_free.committed_after_gap);
+
+        // A committed row behind an unsettled gap is both unsettled and inconsistent, so the
+        // caller must fail closed instead of choosing either interpretation.
+        let behind_gap = settle_outcomes(0, vec![Unresolved, Committed]);
+        assert_eq!(behind_gap.unresolved, vec![0]);
+        assert!(behind_gap.committed_after_gap);
+    }
 
     #[test]
     fn classify_resolved_values_resolves_unique_and_rejects_missing_or_non_unique() {

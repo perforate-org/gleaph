@@ -54,6 +54,7 @@ fn complete_seed_rows(count: usize, local_vertex_id: u32) -> SeedBindingsWire {
             })
             .collect(),
         complete_prefix_rows: true,
+        mutation_target: None,
     }
 }
 

@@ -17,7 +17,9 @@ use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::entry::VertexLabelId;
-use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
+use gleaph_graph_kernel::federation::{
+    ClaimId, EffectId, GlobalVertexId, ShardId, ShardRegistryEntry,
+};
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PhysicalIndexId,
     PostingHit, PostingRangeRequest, ValuePostingCount,
@@ -1598,6 +1600,7 @@ pub async fn gql_query(
         None,
         read_mode,
         None,
+        None,
     )
     .await
 }
@@ -3092,6 +3095,29 @@ async fn execute_ordered_mixed_batch_classified(
     Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
+pub(crate) async fn gql_execute_idempotent_on_vertex(
+    query: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+    graph_id: GraphId,
+    vertex_id: GlobalVertexId,
+) -> Result<GqlQueryResult, RouterError> {
+    let result = run_gql(
+        &query,
+        &params,
+        GqlExecutionMode::Update,
+        "gql_mutate",
+        false,
+        Some(&client_mutation_key),
+        ReadMode::Eventual,
+        None,
+        Some((graph_id, vertex_id)),
+    )
+    .await;
+    crate::recovery::arm_if_needed();
+    result
+}
+
 pub(crate) async fn gql_execute_idempotent_with_batch(
     query: String,
     params: Vec<u8>,
@@ -3117,6 +3143,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         Some(&client_mutation_key),
         ReadMode::Eventual,
         preflight,
+        None,
     )
     .await;
     // ADR 0029 Phase 4: a federated mutation that committed canonically but could not
@@ -3235,6 +3262,7 @@ async fn run_gql(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     preflight: Option<&PreflightContext>,
+    bound_vertex: Option<(GraphId, GlobalVertexId)>,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = run_gql_unchecked(
         query,
@@ -3245,6 +3273,7 @@ async fn run_gql(
         client_mutation_key,
         read_mode,
         preflight,
+        bound_vertex,
     )
     .await?;
     ensure_gql_query_result_payload(&result, entrypoint)?;
@@ -3411,6 +3440,7 @@ async fn run_gql_unchecked(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     preflight: Option<&PreflightContext>,
+    bound_vertex: Option<(GraphId, GlobalVertexId)>,
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(result) =
         try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
@@ -3583,7 +3613,10 @@ async fn run_gql_unchecked(
     }
 
     let store = RouterStore::new();
-    let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
+    let resolved = match bound_vertex {
+        Some((graph_id, _)) => crate::graph_context::ResolvedGraphContext { graph_id },
+        None => crate::graph_context::resolve_graph_context(&store, &program, caller)?,
+    };
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
     gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
@@ -3866,6 +3899,53 @@ async fn run_gql_unchecked(
 
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+    if let Some((graph_id, vertex_id)) = bound_vertex {
+        let crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } = &v2 else {
+            return Err(RouterError::InvalidArgument(
+                "bound vertex mutation cannot change graph context".into(),
+            ));
+        };
+        let shards = store.list_live_shards_for_graph_id(graph_id)?;
+        let index = RouterIndexLookup::from_shards(graph_id, &shards)
+            .map_err(RouterError::InvalidArgument)?;
+        // Authorization/policy lowering above is unchanged. The ordinary mutation owner below
+        // reserves the row before any routing await and journals this exact seed for recovery.
+        let prepared = prepare_mutation_for_batch(
+            graph_id,
+            &plan_blob,
+            std::slice::from_ref(plan),
+            &pmap,
+            params,
+            mode,
+            client_mutation_key,
+            &store,
+            shards,
+            &index,
+            caller,
+            &stats,
+            None,
+            None,
+            None,
+            true,
+            Some(vertex_id),
+        )
+        .await?;
+        return match prepared {
+            PrepareOutcome::Early(result) => Ok(result),
+            PrepareOutcome::Prepared(prepared) => {
+                execute_prepared_mutation(
+                    *prepared,
+                    &store,
+                    caller,
+                    graph_id,
+                    client_mutation_key,
+                    None,
+                )
+                .await
+            }
+        };
+    }
 
     match v2 {
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
@@ -4320,6 +4400,45 @@ pub(crate) enum PrepareOutcome {
     Prepared(Box<crate::batch_wave::PreparedMutation>),
 }
 
+/// Bind an already-resolved vertex without consulting a mutable index. The Graph revalidates
+/// the NodeScan label and residual policy predicates against this one canonical vertex.
+fn bound_vertex_dispatch(
+    target: GlobalVertexId,
+    plans: &[PhysicalPlan],
+    shards: &[ShardRegistryEntry],
+) -> Result<ShardDispatch, RouterError> {
+    let [plan] = plans else {
+        return Err(RouterError::InvalidArgument(
+            "bound vertex requires one mutation plan".into(),
+        ));
+    };
+    let Some(PlanOp::NodeScan { variable, .. }) = plan.ops.first() else {
+        return Err(RouterError::InvalidArgument(
+            "bound vertex requires a leading NodeScan".into(),
+        ));
+    };
+    let shard = shards
+        .iter()
+        .find(|shard| shard.shard_id == target.shard_id)
+        .ok_or(RouterError::ShardNotRegistered)?;
+    let seed = gleaph_graph_kernel::plan_exec::SeedBindingsWire {
+        entries: Vec::new(),
+        rows: Vec::new(),
+        complete_prefix_rows: false,
+        mutation_target: Some(gleaph_graph_kernel::plan_exec::SeedVertexBinding {
+            variable: variable.to_string(),
+            local_vertex_id: target.local_vertex_id,
+            required_vertex_label_ids: Vec::new(),
+        }),
+    };
+    Ok(ShardDispatch {
+        shard_id: shard.shard_id,
+        graph_canister: shard.graph_canister,
+        seed_bindings_blob: Some(Encode!(&seed).map_err(|e| RouterError::Internal(e.to_string()))?),
+        resolved_search_blob: None,
+    })
+}
+
 /// Prepare a mutation for batch execution. Returns either an early result (for DDL,
 /// reads, or already-completed mutations) or a [`PreparedMutation`] ready for the
 /// coalesced Graph dispatch phase.
@@ -4341,6 +4460,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     preflight: Option<&PreflightContext>,
     pre_reserved_mutation: Option<ClientMutationReservation>,
     persist_dispatch_envelope: bool,
+    bound_vertex: Option<GlobalVertexId>,
 ) -> Result<PrepareOutcome, RouterError> {
     let mut _instr_logger = PrepareInstrLogger::new(client_mutation_key);
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
@@ -4384,7 +4504,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                 caller,
                 graph_id,
                 key,
-                request_fingerprint(plan_blob, params, mode),
+                request_fingerprint(plan_blob, params, mode, bound_vertex),
             )?)
         }
     } else {
@@ -4604,6 +4724,20 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                 resolved_search_blob: None,
             })
             .collect()
+    } else if let Some(target) = bound_vertex {
+        match bound_vertex_dispatch(target, plans, &shards) {
+            Ok(dispatch) => vec![dispatch],
+            Err(error) => {
+                release_routing_if_owner(
+                    store,
+                    caller,
+                    graph_id,
+                    client_mutation_key,
+                    mutation_reservation,
+                )?;
+                return Err(error);
+            }
+        }
     } else {
         let seed_anchors = match SeedAnchorSet::from_plans(plans, pmap, store, stats) {
             Ok(seed_anchors) => seed_anchors,
@@ -5498,6 +5632,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         preflight,
         None,
         true,
+        None,
     )
     .await?;
     match prepared {
@@ -5727,7 +5862,12 @@ fn reconcile_releases_collect_acks(
     acked_effects
 }
 
-fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) -> Vec<u8> {
+fn request_fingerprint(
+    plan_blob: &[u8],
+    params: &[u8],
+    mode: GqlExecutionMode,
+    bound_vertex: Option<GlobalVertexId>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + 8 + plan_blob.len() + 8 + params.len());
     out.push(match mode {
         GqlExecutionMode::Query => 0,
@@ -5737,6 +5877,11 @@ fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) 
     out.extend_from_slice(plan_blob);
     out.extend_from_slice(&(params.len() as u64).to_le_bytes());
     out.extend_from_slice(params);
+    if let Some(target) = bound_vertex {
+        // The ordinary request is length-delimited; this suffix cannot equal an unbound request.
+        out.push(2);
+        out.extend_from_slice(&target.to_le_bytes());
+    }
     out
 }
 
@@ -6899,6 +7044,54 @@ mod tests {
 
     fn store_with_one_shard() -> RouterStore {
         store_with_shards_spec(&[(ShardId::new(0), 1u8)])
+    }
+
+    #[test]
+    fn bound_vertex_routing_and_fingerprint_pin_the_exact_shard_and_id() {
+        use super::{GlobalVertexId, bound_vertex_dispatch};
+        let store = store_with_shards();
+        let shards = store
+            .list_live_shards_for_graph_id(tenant_main_graph_id())
+            .unwrap();
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
+            variable: "v".into(),
+            label: Some("Person".into()),
+            property_projection: None,
+        }]);
+        let target = GlobalVertexId::new(ShardId::new(1), 42);
+        let dispatch = bound_vertex_dispatch(target, std::slice::from_ref(&plan), &shards).unwrap();
+        assert_eq!(dispatch.shard_id, target.shard_id);
+        assert_eq!(dispatch.graph_canister, graph_principal(4));
+        let wire = candid::Decode!(
+            dispatch.seed_bindings_blob.as_ref().unwrap(),
+            gleaph_graph_kernel::plan_exec::SeedBindingsWire
+        )
+        .unwrap();
+        assert!(wire.entries.is_empty() && wire.rows.is_empty() && !wire.complete_prefix_rows);
+        let binding = wire.mutation_target.unwrap();
+        assert_eq!(
+            (binding.variable.as_str(), binding.local_vertex_id),
+            ("v", 42)
+        );
+        assert_eq!(
+            bound_vertex_dispatch(GlobalVertexId::new(ShardId::new(99), 42), &[plan], &shards)
+                .unwrap_err(),
+            RouterError::ShardNotRegistered
+        );
+        let identities: std::collections::BTreeSet<_> = [
+            None,
+            Some(target),
+            Some(GlobalVertexId::new(ShardId::new(0), 42)),
+            Some(GlobalVertexId::new(ShardId::new(1), 43)),
+        ]
+        .into_iter()
+        .map(|target| request_fingerprint(&[1, 2], &[3], GqlExecutionMode::Update, target))
+        .collect();
+        assert_eq!(
+            identities.len(),
+            4,
+            "ordinary GQL, another shard, and another ID must not share replay identity"
+        );
     }
 
     fn ordered_test_caller() -> Principal {
@@ -9238,7 +9431,7 @@ mod tests {
         assert_eq!(record.as_v1().mutation_id, 1);
         assert_eq!(
             record.as_v1().request_identity.request_fingerprint(),
-            request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update)
+            request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update, None)
         );
         assert!(!record.as_v1().routing_in_progress);
         assert!(record.shards().is_empty());
@@ -9249,7 +9442,7 @@ mod tests {
                 Principal::anonymous(),
                 tenant_main_graph_id(),
                 "client-key-1",
-                request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update),
+                request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update, None),
             )
             .expect("retry reservation");
         assert_eq!(retry.mutation_id, record.as_v1().mutation_id);
@@ -9965,7 +10158,7 @@ mod tests {
             }],
         }]);
         let plan_blob = seeded_dml_bundle(&plan);
-        let fingerprint = request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update);
+        let fingerprint = request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update, None);
 
         // Seed a 2-shard saga envelope under this key so dispatch resolves to two dispatches.
         let reservation: ClientMutationReservation = store

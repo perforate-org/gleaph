@@ -220,8 +220,130 @@ BulkLoadEdgeV1 = {
 }
 ```
 
+Bulk-load update chunks (`BulkLoadChunkV1::Updates(Vec<BulkLoadUpdateV1>)`, CLI
+`gleaph load --mode update --updates FILE`) extend the same job with vertex property updates
+instead of inserts. A row carries one `{ vertex_label, property_name, match_value }` match key,
+absolute `set_properties`, and `remove_properties`; the Router resolves every match key through the
+converged property index before admission (missing, non-unique, non-comparable, or unknown
+catalog/mutation-name rows reject the whole candidate batch), then applies one linear
+`MATCH … [SET …] [REMOVE …] RETURN …` statement per row through the existing GQL authorization
+and per-row mutation journal. The saved vertex ID, not the mutable match property, supplies the
+execution input.
+
+Update-lane contracts that differ from insert chunks:
+
+- the generated statement executes against the resolved `graph_id` of the job, not the caller's
+  HOME/session graph re-resolved at GQL ingress, so a bulk-load update can never write another
+  logical graph;
+- `resolved_update_vertex_ids` pins every authored row at initial admission. Each dispatch and
+  retry passes that ID through `SeedBindingsWire.mutation_target` in the existing scalar journal
+  envelope. No property lookup or match-value predicate reselects an admitted target. Thus Alice
+  renamed to Bob in one row cannot broaden the following row from the original Bob to both
+  vertices. Target placement participates in the scalar request fingerprint, distinct from
+  ordinary unbound GQL. The retained RETURN property preserves match-property READ authorization
+  without filtering by its changing value;
+- one **row** is the atomic unit and one chunk is the client's candidate batch. Each row that
+  returns successfully advances `updated_row_count` on the pending child before the next row
+  dispatches, so the durable count is always a committed prefix of the authored batch;
+- the public projection reports an update chunk only once it is `Completed`. An admitted-but-
+  unfinished chunk is invisible, exactly like a pending insert child (whose `public_receipt` is
+  `None`), so a resuming client re-sends the whole in-flight chunk at `next_chunk_index` from the
+  boundary after the last completed chunk rather than skipping its prefix. For the retry to be
+  accepted the payload must be byte-identical (the same chunk-index fingerprint rule as inserts),
+  which is why the CLI's update-lane chunk formation is deliberately hint-free and therefore a
+  pure function of the row stream;
+- the resume boundary is the **durable per-row journal**, not the recorded count alone. Each
+  update row key is itself an idempotent ADR 0029 `client_mutation_key`, so the Router already
+  owns a per-row saga record and, while a row is in flight, the Graph owns a mutation-journal
+  entry for the same mutation id. `Append` classifies rows from the recorded prefix upward:
+  a completed exact-target outcome with count **1** advances the prefix without re-resolution
+  or re-dispatch, whether confirmed by the Router or recovered from Graph. Count **0** is a
+  terminal write-free outcome, not a committed bulk row. An absent or released-routing record
+  is also write-free and may be dispatched while permission remains open; unreadable journals
+  report retryable `Busy`. Both the prefix and the uncommitted suffix retain their original IDs
+  when their own or another row's match property changes. Authored ordinals and payload remain
+  unchanged;
+- Graph's exact-target lane is restricted to one labeled vertex, property SET/REMOVE, residual
+  predicates before mutation, and an optional terminal projection. It rechecks the original
+  NodeScan label and policy predicates, and checks liveness immediately before the no-RPC
+  canonical segment. Missing/tombstoned/filtered targets yield a completed scalar journal with
+  count 0; an empty seed never falls back to a label scan. Router returns
+  `NotFound("bulk-load update target is no longer eligible")` for this zero-effect result.
+  The same journal replays zero rather than writing a replacement vertex or becoming eligible
+  again. Abort can discard that proven-write-free row, including after response loss. An eligible
+  target counts as 1 even for an unchanged SET or a registered-but-unset REMOVE. Ordinary GQL
+  seed and zero-match semantics are unchanged;
+- the recorded prefix is **monotonic and bounded** at its owning write boundary: a progress
+  notification above the admitted row count is rejected, and a duplicate or delayed smaller
+  notification is an idempotent no-op, so a re-entrant or retried callback can never rewind the
+  prefix or claim rows the chunk was not admitted with;
+- `Updated { next_offset, updated_row_count }` reports the completed row count, including the
+  prefix a retry did not re-dispatch. It equals the authored batch size on normal completion, or
+  the settled prefix length when Abort abandons an unwritten suffix;
+- a `Completed` update chunk replays from its stored receipt: the Router returns the recorded
+  `Updated { … }` without re-resolving the chunk or re-applying rows, so later graph changes cannot
+  turn a completed append into an error or a second mutation;
+- **dispatch permission is an explicit durable grant, not a side effect of a retry.**
+  `admit_bulk_load_update_child` is that grant: it returns dispatch permission only while the job
+  is still working on that exact chunk (`AppendPending` for full permission, `AbortPending` for the
+  settle-only path), and a finished chunk returns "replay the stored receipt" instead — never
+  permission — so a caller that was suspended before admission can never start a row under a
+  terminal job. Before granting a pending attempt, admission compares the caller's complete
+  ordered target-ID list with the saved list. Concurrent first Append attempts can resolve mutable
+  keys differently; a losing contender with different IDs receives
+  `Conflict("bulk-load update targets differ from the admitted chunk")`, without changing the
+  parent, child, or prefix. An identical-payload retry reads the winning saved IDs. This also
+  protects an unstarted suffix row that has no scalar request fingerprint yet. Completed receipt
+  replay does not require the compacted IDs. Every row is additionally re-checked against the durable gate
+  (`bulk_load_update_dispatch_gate`) immediately before its dispatch, which is the boundary that
+  stops an append from starting *new* rows after an `Abort` ingressed during a previous row's
+  Graph call;
+- the generated row uses the scalar `execute_plan_update` handler. That handler disables
+  intermediate `Incomplete` journal writes and persists `Completed` before draining the derived
+  index outbox. Its completed receipt records 0 or 1 eligible mutation inputs, independently of
+  RETURN projection rows. Callback loss therefore leaves either no canonical outcome or a
+  completed positive/zero-effect Graph receipt, not an intermediate multi-statement journal. The bulk classifier must not generalize
+  this rule to arbitrary GQL bundles or count an `Incomplete` journal as a completed row;
+- `Abort` first closes new-row dispatch permission (`AbortPending`), then classifies every row
+  outside the recorded prefix. Only `NotWritten` is write-free. `Committed` extends the contiguous
+  prefix; a committed row behind a gap fails closed. `Unknown` (unreadable journal) and
+  `Unresolved` (no completed receipt for an admitted dispatch) both return
+  `Busy { operation: "bulk_load.append" }` without publishing a terminal receipt or advancing the
+  bulk prefix. An identical re-Append may settle an already-admitted dispatch under `AbortPending`,
+  but cannot start a never-dispatched row. After settlement, another Abort closes at the true
+  prefix. An absent or released-routing row needs no retry: Abort discards its unwritten suffix.
+  The authored payload is not persisted, so Abort itself cannot re-drive a row;
+- `Finalize` requires `committed_chunk_count == completed_chunk_count`, so a pending child must be
+  completed (or the job aborted) before it can finalize. Update chunks advance both counters
+  together at completion: unlike inserts there is no earlier "canonical commit" event to report,
+  because each row is its own GQL mutation-journal commit.
+
+**Failure and convergence:** a GQL error alone is not proof of a write-free row. The existing
+mutation owner supplies that evidence. For example, SET on a uniqueness-constrained property is
+rejected with `NotImplemented` by `reject_unsupported_constrained_writes`; its routing reservation
+is released without dispatch. A batch with an earlier successful row and this deterministic later
+failure can be aborted at that prefix without removing the constraint or changing the payload.
+Transport failures differ: an admitted row with an unknown outcome remains pending until its
+journal is readable and its outcome can be settled. Convergence requires available dependencies
+and a successful retry/recovery; it has no unconditional time bound. Authorization failures and
+other GQL admission checks retain their owning contracts.
+
+There is no whole-chunk rollback or compensating-write contract. A terminal receipt counts
+completed row statements, and an aborted chunk's unwritten suffix is abandoned, not re-driven.
+The authored payload cannot be changed under the same chunk fingerprint; corrected input belongs
+to a new job after closing the old one. The pending receipt layout, exact-target seed blobs,
+request fingerprints, and scalar row-count interpretation require fresh Router/Graph state or
+reinstall. No old-layout decoder or compatibility path is provided. Existing ADR 0029 journal
+retention and recovery contracts still apply; no new journal or retention mechanism is introduced.
+
+Edge-property SET through bulk load is **not** part of this contract: the proposed exactly-one
+pre-read used a Graph composite query, which cannot be called from the Router's replicated update
+path. Alternative edge targeting designs remain unimplemented. The prerequisite decision is recorded in
+[implementation-gaps.md](../implementation-gaps.md) GAP-2026-09-11-004.
+
 `BulkLoadEdgeV1.source` and `.target` are encoded existing vertex IDs only. `BulkLoadResponse` is an
-exhaustive `Started | Appended { receipt } | FinalizeAccepted | AbortAccepted` variant.
+exhaustive `Started | Appended { receipt } | Updated { next_offset, updated_row_count } |
+FinalizeAccepted | AbortAccepted` variant, matching the public enum one-for-one.
 `BulkLoadStatusPage` contains job state, next accepted chunk index, committed/completed counts,
 retention deadline when terminal, a bounded ordered receipt page, and the next receipt cursor.
 `max_receipts` is nonzero and capped by the Router before stable iteration or response construction.

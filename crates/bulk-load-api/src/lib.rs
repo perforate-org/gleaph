@@ -128,8 +128,8 @@ pub enum BulkLoadCommand {
 }
 
 /// Self-contained vertex-only, existing-ID edge-only, or vertex-property-update chunk.
-/// Update chunks carry one `{ label, property, value }` match key per row plus absolute
-/// SET assignments; the Router resolves every match key before any row executes.
+/// Update chunks carry one `{ label, property, value }` match key per row plus absolute SET
+/// assignments; the Router resolves every match key before any row executes.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BulkLoadChunkV1 {
     Vertices(Vec<AtomicInsertVertexV1>),
@@ -160,7 +160,6 @@ pub struct BulkLoadUpdateV1 {
     pub set_properties: Vec<AtomicInsertPropertyV1>,
     pub remove_properties: Vec<String>,
 }
-/// One edge in a durable bulk-load chunk.
 ///
 /// Endpoints reference existing vertices either by their graph-scoped encoded ID
 /// ([`BulkLoadEndpointV1::Existing`]) or by vertex label + property equality
@@ -350,44 +349,49 @@ impl BulkLoadChunkV1 {
             }
             Self::Updates(items) => {
                 for (ordinal, item) in items.iter().enumerate() {
-                    if item.vertex_label.is_empty() || item.vertex_label.len() > 256 {
-                        return Err(format!(
-                            "bulk-load update {ordinal} vertex label must be 1..=256 bytes"
-                        ));
-                    }
-                    if item.property_name.is_empty() || item.property_name.len() > 256 {
-                        return Err(format!(
-                            "bulk-load update {ordinal} match property name must be 1..=256 bytes"
-                        ));
-                    }
-                    if item.set_properties.is_empty() && item.remove_properties.is_empty() {
-                        return Err(format!(
-                            "bulk-load update {ordinal} must set or remove at least one property"
-                        ));
-                    }
-                    validate_batch_properties(ordinal, &item.set_properties)?;
-                    for name in &item.remove_properties {
-                        if name.is_empty() || name.len() > 256 {
-                            return Err(format!(
-                                "bulk-load update {ordinal} remove property name must be 1..=256 bytes"
-                            ));
-                        }
-                        if item
-                            .set_properties
-                            .iter()
-                            .any(|set| set.property_name == *name)
-                        {
-                            return Err(format!(
-                                "bulk-load update {ordinal} property {name:?} is both set and removed"
-                            ));
-                        }
-                    }
+                    Self::validate_update_row(ordinal, item)?;
                 }
             }
         }
         let encoded = Encode!(self).map_err(|error| format!("bulk-load chunk encode: {error}"))?;
         if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("bulk-load chunk exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+
+    fn validate_update_row(ordinal: usize, item: &BulkLoadUpdateV1) -> Result<(), String> {
+        if item.vertex_label.is_empty() || item.vertex_label.len() > 256 {
+            return Err(format!(
+                "bulk-load update {ordinal} vertex label must be 1..=256 bytes"
+            ));
+        }
+        if item.property_name.is_empty() || item.property_name.len() > 256 {
+            return Err(format!(
+                "bulk-load update {ordinal} match property name must be 1..=256 bytes"
+            ));
+        }
+        if item.set_properties.is_empty() && item.remove_properties.is_empty() {
+            return Err(format!(
+                "bulk-load update {ordinal} must set or remove at least one property"
+            ));
+        }
+        validate_batch_properties(ordinal, &item.set_properties)?;
+        for name in &item.remove_properties {
+            if name.is_empty() || name.len() > 256 {
+                return Err(format!(
+                    "bulk-load update {ordinal} remove property name must be 1..=256 bytes"
+                ));
+            }
+            if item
+                .set_properties
+                .iter()
+                .any(|set| set.property_name == *name)
+            {
+                return Err(format!(
+                    "bulk-load update {ordinal} property {name:?} is both set and removed"
+                ));
+            }
         }
         Ok(())
     }

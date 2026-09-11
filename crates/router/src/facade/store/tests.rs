@@ -3102,6 +3102,7 @@ fn bulk_load_gc_fixture_row(
         progress,
         public_receipt,
         graph_receipt,
+        resolved_update_vertex_ids: None,
         completed_at_ns,
         updated_row_count: None,
     };

@@ -2303,6 +2303,75 @@ fn insert_edge_mutation_plan() -> PhysicalPlan {
     ])
 }
 
+/// Exact-target scalar SET, including plan decode and completed journal, excluding Router/index
+/// RPCs and fixture construction. Decoys detect accidental dependence on label population size.
+fn bench_exact_vertex_set(decoy_count: usize) -> canbench_rs::BenchResult {
+    use gleaph_gql_planner::plan::SetPlanItem;
+    use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedVertexBinding};
+    let store = GraphStore::new();
+    let target = store
+        .insert_vertex_named(["BenchExactVertex"], [("weight", Value::Int64(0))])
+        .unwrap();
+    for _ in 0..decoy_count {
+        store
+            .insert_vertex_named(["BenchExactVertex"], [("weight", Value::Int64(0))])
+            .unwrap();
+    }
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "v".into(),
+            label: Some("BenchExactVertex".into()),
+            property_projection: None,
+        },
+        PlanOp::SetProperties {
+            items: vec![SetPlanItem::Property {
+                variable: "v".into(),
+                property: "weight".into(),
+                value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+            }],
+        },
+    ]);
+    let blob = encode_block_plans(&[plan], true).unwrap();
+    let seeds = SeedBindingsWire {
+        entries: Vec::new(),
+        rows: Vec::new(),
+        complete_prefix_rows: false,
+        mutation_target: Some(SeedVertexBinding {
+            variable: "v".into(),
+            local_vertex_id: u32::try_from(u64::from(target)).unwrap(),
+            required_vertex_label_ids: Vec::new(),
+        }),
+    };
+    canbench_rs::bench_fn(|| {
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            black_box(store),
+            black_box(&blob),
+            &params(),
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext {
+                write_journal: false,
+                ..GqlExecutionContext::default()
+            },
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("exact-target canonical SET");
+        assert_eq!(result.row_count, 1);
+        black_box(result);
+    })
+}
+
+#[bench(raw)]
+fn bench_graph_exact_vertex_set_1_decoy() -> canbench_rs::BenchResult {
+    bench_exact_vertex_set(1)
+}
+
+#[bench(raw)]
+fn bench_graph_exact_vertex_set_1024_decoys() -> canbench_rs::BenchResult {
+    bench_exact_vertex_set(1024)
+}
+
 /// Canonical segment: insert one labeled vertex (no properties).
 #[bench(raw)]
 fn bench_graph_canonical_segment_insert_vertex() -> canbench_rs::BenchResult {
