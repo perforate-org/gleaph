@@ -143,11 +143,18 @@ pub enum ExprKind {
 
     // ── String predicates (§20.10) ──
     /// String predicate: STARTS WITH, ENDS WITH, CONTAINS, LIKE, ILIKE.
+    /// `escape` carries the optional SQL `ESCAPE <char>` clause (LIKE/ILIKE
+    /// only; the parser never produces it for other kinds): `None` selects
+    /// the default backslash escape, `Some(expr)` must evaluate to a
+    /// single-character Text at execution (NULL yields UNKNOWN, anything
+    /// else fails closed). A `$param` escape stays residual-only — prefix
+    /// fusion requires a Text-literal escape.
     StringPredicate {
         expr: Box<Expr>,
         kind: StringPredicateKind,
         pattern: Box<Expr>,
         negated: bool,
+        escape: Option<Box<Expr>>,
     },
 
     // ── Normalization predicate (§20.11) ──

@@ -443,10 +443,19 @@ impl QueryExprEvaluator<'_> {
                 kind,
                 pattern,
                 negated,
+                escape,
             } => {
                 let left = self.eval_expr(row, expr)?;
                 let pattern = self.eval_expr(row, pattern)?;
-                let matched = eval_string_predicate_expr(left, *kind, pattern)?;
+                // A missing ESCAPE clause evaluates to no escape value
+                // (default backslash); an explicit clause — including `$param`
+                // — evaluates per row, so single-character enforcement stays
+                // in `eval_string_predicate_expr` and fails closed there.
+                let escape = escape
+                    .as_ref()
+                    .map(|e| self.eval_expr(row, e))
+                    .transpose()?;
+                let matched = eval_string_predicate_expr(left, *kind, pattern, escape)?;
                 if *negated {
                     eval_not_expr(matched).map_err(PlanQueryError::from)
                 } else {
@@ -2869,7 +2878,7 @@ mod tests {
         store
     }
 
-    /// `lhs <kind> pattern` predicate with optional NOT.
+    /// `lhs <kind> pattern` predicate with optional NOT and optional ESCAPE.
     #[cfg(feature = "cypher")]
     fn string_pred(lhs: Expr, kind: StringPredicateKind, pattern: Expr, negated: bool) -> Expr {
         Expr::new(ExprKind::StringPredicate {
@@ -2877,6 +2886,7 @@ mod tests {
             kind,
             pattern: Box::new(pattern),
             negated,
+            escape: None,
         })
     }
 
@@ -3174,6 +3184,54 @@ mod tests {
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute cypher ilike query");
         assert_eq!(text_column(&result, "name"), vec!["StrPred Ada Lovelace"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_like_escape_query_end_to_end() {
+        // ESCAPE-clause plumbing parse → plan → execute: an explicit
+        // backslash escape behaves like the default, while `#` turns `#%`
+        // into a literal `%` (GQL text has no `\%` string escape, so `#`
+        // is the ergonomic literal matcher). The NULL-name vertex stays out
+        // in all cases.
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name LIKE 'StrPred Ada%' ESCAPE '\\\\' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher like-escape query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred Ada Lovelace"]);
+        // `#%` is a literal percent: no name contains one, so this is empty.
+        // (Without the clause, `#` would be an ordinary scalar and the
+        // pattern would equally match nothing — the matcher unit tests pin
+        // the literal semantics on `%`-bearing data instead.)
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name LIKE 'StrPred Ada#%' ESCAPE '#' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher like-hash-escape query");
+        assert!(text_column(&result, "name").is_empty());
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_not_like_escape_query_end_to_end() {
+        // NOT LIKE rides the existing `negated` flag with the escape clause
+        // threaded through: nothing contains a literal `%`, so both named
+        // vertices survive while the NULL-name vertex stays UNKNOWN (out).
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE NOT n.name LIKE 'StrPred Ada#%' ESCAPE '#' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher not-like-escape query");
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["StrPred Ada Lovelace", "StrPred bob"]
+        );
     }
 
     #[cfg(feature = "cypher")]

@@ -2959,9 +2959,62 @@ fn match_like_escaped_prefix_fuses_on_resolved_literal() {
 
 #[test]
 #[cfg(feature = "cypher")]
+fn match_like_escape_clause_fuses_on_resolved_prefix() {
+    // An explicit `ESCAPE '#'`: `#%` contributes a literal `%`, so the
+    // interval narrows on `a%b` — and the residual keeps the escape clause
+    // for rechecking.
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name LIKE 'a#%b%' ESCAPE '#' RETURN n",
+        &string_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
+        )),
+        "expected TEXT prefix IndexScan on ESCAPE-resolved LIKE prefix, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    &p.kind,
+                    ExprKind::StringPredicate {
+                        kind: StringPredicateKind::Like,
+                        negated: false,
+                        escape: Some(_),
+                        ..
+                    }
+                ))
+        )),
+        "ESCAPE LIKE predicate must stay residual with its clause, got: {:?}",
+        plan.ops
+    );
+    // Backslash is ordinary under `#`: the prefix stops at the `%`.
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name LIKE 'a\\\\%b%' ESCAPE '#' RETURN n",
+        &string_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if **pattern == ScanValue::Literal(Value::Text("a\\".into()))
+        )),
+        "backslash must stay ordinary under ESCAPE '#', got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
 fn match_unfusible_like_shapes_stay_residual_only() {
     // Kill: leading `%`/`_` (empty prefix), NOT LIKE, ILIKE, `$param`
-    // patterns, and the empty pattern must never emit an IndexScan.
+    // patterns, the empty pattern, a `$param` escape, and an empty or
+    // multi-scalar literal escape must never emit an IndexScan.
     let cases = [
         "MATCH (n:User) WHERE n.name LIKE '%str' RETURN n",
         "MATCH (n:User) WHERE n.name LIKE '_tr' RETURN n",
@@ -2969,6 +3022,9 @@ fn match_unfusible_like_shapes_stay_residual_only() {
         "MATCH (n:User) WHERE n.name ILIKE 'Str%' RETURN n",
         "MATCH (n:User) WHERE n.name LIKE $pat RETURN n",
         "MATCH (n:User) WHERE n.name LIKE '' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE 'Str%' ESCAPE $esc RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE 'Str%' ESCAPE '' RETURN n",
+        "MATCH (n:User) WHERE n.name LIKE 'Str%' ESCAPE '##' RETURN n",
     ];
     for input in cases {
         let plan = plan_query_with_stats(input, &string_prefix_stats());
@@ -3002,25 +3058,33 @@ fn match_unfusible_like_shapes_stay_residual_only() {
 fn like_literal_prefix_resolves_escapes_and_stops_at_wildcards() {
     use gleaph_gql_planner::anchor::like_literal_prefix;
 
-    // (pattern, expected resolved prefix)
-    for (pattern, expected) in [
-        ("abc%", "abc"),
-        ("abc", "abc"),
-        ("%abc", ""),
-        ("_abc", ""),
-        ("", ""),
-        ("a\\%b%", "a%b"),
-        ("a\\_b%", "a_b"),
-        ("a\\\\b%", "a\\b"),
-        ("ab\\", "ab\\"),
-        ("\\", "\\"),
-        ("M_ller%", "M"),
-        ("M\u{f6}ller%", "M\u{f6}ller"),
+    // (pattern, escape, expected resolved prefix). `None` selects the
+    // default backslash; an explicit escape replaces it — a backslash is
+    // then an ordinary scalar, and `#` sequences resolve instead.
+    for (pattern, escape, expected) in [
+        ("abc%", None, "abc"),
+        ("abc", None, "abc"),
+        ("%abc", None, ""),
+        ("_abc", None, ""),
+        ("", None, ""),
+        ("a\\%b%", None, "a%b"),
+        ("a\\_b%", None, "a_b"),
+        ("a\\\\b%", None, "a\\b"),
+        ("ab\\", None, "ab\\"),
+        ("\\", None, "\\"),
+        ("M_ller%", None, "M"),
+        ("M\u{f6}ller%", None, "M\u{f6}ller"),
+        ("a#%b%", Some('#'), "a%b"),
+        ("a#_b%", Some('#'), "a_b"),
+        ("a##b%", Some('#'), "a#b"),
+        ("a\\%b%", Some('#'), "a\\"),
+        ("#abc%", Some('#'), "abc"),
+        ("ab#", Some('#'), "ab#"),
     ] {
         assert_eq!(
-            like_literal_prefix(pattern).as_ref(),
+            like_literal_prefix(pattern, escape).as_ref(),
             expected,
-            "like_literal_prefix({pattern:?})"
+            "like_literal_prefix({pattern:?}, {escape:?})"
         );
     }
 }

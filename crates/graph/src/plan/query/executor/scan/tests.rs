@@ -861,6 +861,7 @@ fn executes_like_prefix_fusion_agrees_with_residual_only_scan() {
             "StrPred A_a%".into(),
         )))),
         negated: false,
+        escape: None,
     });
     let project_name = || PlanOp::Project {
         columns: vec![project(prop("n", "name"), "name")],

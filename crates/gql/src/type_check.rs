@@ -1234,12 +1234,17 @@ fn check_expr_constraints(env: &mut TypeEnv<'_>, expr: &Expr) {
         }
         ExprKind::StringPredicate {
             expr: target,
+            kind,
             pattern,
+            escape,
             ..
         } => {
             check_expr_constraints(env, target);
             check_expr_constraints(env, pattern);
-            check_string_predicate(env, target, pattern);
+            if let Some(escape) = escape {
+                check_expr_constraints(env, escape);
+            }
+            check_string_predicate(env, target, pattern, *kind, escape.as_deref());
         }
         ExprKind::Concat(l, r) => {
             check_expr_constraints(env, l);

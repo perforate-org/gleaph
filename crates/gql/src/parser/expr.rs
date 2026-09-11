@@ -1375,6 +1375,21 @@ impl Parser<'_> {
 
         if let Some(kind) = kind {
             let pattern = self.parse_expr_prec(Prec::Concat)?;
+            // SQL `ESCAPE <char>` is a LIKE/ILIKE-only clause. Other kinds
+            // leave a trailing ESCAPE unconsumed so parsing fails closed
+            // instead of silently accepting a meaningless escape. Without
+            // `cypher` no string-predicate kind exists, so there is no
+            // clause to accept.
+            #[cfg(feature = "cypher")]
+            let escape = if matches!(kind, StringPredicateKind::Like | StringPredicateKind::ILike)
+                && self.eat_keyword("ESCAPE")
+            {
+                Some(Box::new(self.parse_expr_prec(Prec::Concat)?))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "cypher"))]
+            let escape: Option<Box<Expr>> = None;
             Ok(Some(Expr {
                 span: self.span_since(start),
                 kind: ExprKind::StringPredicate {
@@ -1382,6 +1397,7 @@ impl Parser<'_> {
                     kind,
                     pattern: Box::new(pattern),
                     negated,
+                    escape,
                 },
             }))
         } else {

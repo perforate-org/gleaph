@@ -1188,9 +1188,17 @@ pub(super) fn expr_is_group_compatible(expr: &Expr, group_items: &[Expr]) -> boo
                     .iter()
                     .all(|item| expr_is_group_compatible(item, group_items))
         }
-        ExprKind::StringPredicate { expr, pattern, .. } => {
+        ExprKind::StringPredicate {
+            expr,
+            pattern,
+            escape,
+            ..
+        } => {
             expr_is_group_compatible(expr, group_items)
                 && expr_is_group_compatible(pattern, group_items)
+                && escape
+                    .as_ref()
+                    .is_none_or(|inner| expr_is_group_compatible(inner, group_items))
         }
         ExprKind::FoldString { expr, chars, .. } => {
             expr_is_group_compatible(expr, group_items)

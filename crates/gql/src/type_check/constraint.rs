@@ -353,12 +353,17 @@ impl ConstraintSet {
             ExprKind::StringPredicate {
                 expr: target,
                 pattern,
+                escape,
                 ..
             } => {
                 self.collect_from_expr_constraints(env, target);
                 self.collect_from_expr_constraints(env, pattern);
                 self.record_parameter_constraint(env, target, pattern);
                 self.record_parameter_constraint(env, pattern, target);
+                if let Some(escape) = escape {
+                    self.collect_from_expr_constraints(env, escape);
+                    self.record_parameter_constraint(env, escape, target);
+                }
             }
             ExprKind::Concat(l, r) | ExprKind::NullIf(l, r) => {
                 self.collect_from_expr_constraints(env, l);

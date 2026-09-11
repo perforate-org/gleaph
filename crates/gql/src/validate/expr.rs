@@ -166,9 +166,18 @@ pub(super) fn validate_expr(
             Ok(())
         }
 
-        ExprKind::StringPredicate { expr, pattern, .. } => {
+        ExprKind::StringPredicate {
+            expr,
+            pattern,
+            escape,
+            ..
+        } => {
             validate_expr(expr, scope, graph_scope)?;
-            validate_expr(pattern, scope, graph_scope)
+            validate_expr(pattern, scope, graph_scope)?;
+            if let Some(escape) = escape {
+                validate_expr(escape, scope, graph_scope)?;
+            }
+            Ok(())
         }
 
         ExprKind::ListLiteral(items)

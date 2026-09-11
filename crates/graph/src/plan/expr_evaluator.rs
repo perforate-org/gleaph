@@ -127,45 +127,93 @@ pub(crate) fn compare_property_values(left: &Value, right: &Value) -> Option<Ord
 /// same [`ExprEvaluationError::IncomparableValues`] path as comparisons: type
 /// inference only warns on non-string operands, so execution must reject what
 /// inference merely flags. `Like` implements SQL wildcard semantics over Unicode
-/// scalars (`%` any run, `_` one scalar, `\` escapes the next pattern scalar —
-/// a trailing `\` is a literal backslash); `ILike` folds both operands with
-/// `str::to_lowercase` and runs the same matcher (GAP-2026-08-24-009 resolved:
-/// `%`/`_` are wildcards now, use `\%`/`\_` for literals).
+/// scalars (`%` any run, `_` one scalar, the escape character escapes the next
+/// pattern scalar — a trailing escape is a literal escape character); `ILike`
+/// folds both operands with `str::to_lowercase` and runs the same matcher
+/// (GAP-2026-08-24-009 resolved: `%`/`_` are wildcards now). The escape
+/// character is `\` when `escape` is `None` (no `ESCAPE` clause); an explicit
+/// `ESCAPE` clause replaces it — `\` then becomes an ordinary scalar. A
+/// `NULL` escape yields `Null` (SQL 3VL); a non-`Text` or non-single-scalar
+/// escape fails closed. For `ILike` the escape scalar is folded together with
+/// both operands, so a cased escape matches its folded form.
 #[cfg(feature = "cypher")]
 pub(crate) fn eval_string_predicate_expr(
     left: Value,
     kind: StringPredicateKind,
     pattern: Value,
+    escape: Option<Value>,
 ) -> Result<Value, ExprEvaluationError> {
     if left == Value::Null || pattern == Value::Null {
+        return Ok(Value::Null);
+    }
+    if escape == Some(Value::Null) {
         return Ok(Value::Null);
     }
     let (Value::Text(left), Value::Text(pattern)) = (&left, &pattern) else {
         return Err(ExprEvaluationError::IncomparableValues);
     };
+    let escape = resolve_like_escape(escape)?;
     let matched = match kind {
         StringPredicateKind::StartsWith => left.starts_with(pattern.as_str()),
         StringPredicateKind::EndsWith => left.ends_with(pattern.as_str()),
         StringPredicateKind::Contains => left.contains(pattern.as_str()),
-        StringPredicateKind::Like => sql_like_match(left.as_str(), pattern.as_str()),
-        StringPredicateKind::ILike => sql_like_match(&left.to_lowercase(), &pattern.to_lowercase()),
+        StringPredicateKind::Like => sql_like_match(left.as_str(), pattern.as_str(), escape),
+        StringPredicateKind::ILike => {
+            // The escape scalar folds with both operands; a fold that no
+            // longer resolves to one scalar (e.g. `İ` folds to two) fails
+            // closed instead of silently reverting to the default escape.
+            let folded_escape = match escape {
+                None => None,
+                Some(e) => {
+                    // `char::to_lowercase` yields the folded scalar sequence
+                    // directly (no intermediate `String`).
+                    let mut folded = e.to_lowercase();
+                    match (folded.next(), folded.next()) {
+                        (Some(single), None) => Some(single),
+                        _ => return Err(ExprEvaluationError::IncomparableValues),
+                    }
+                }
+            };
+            sql_like_match(&left.to_lowercase(), &pattern.to_lowercase(), folded_escape)
+        }
     };
     Ok(Value::Bool(matched))
 }
 
+/// Resolve the `ESCAPE` clause value to its single escape scalar: `None` (no
+/// clause) selects the default backslash. A `NULL` never reaches here (it
+/// returns UNKNOWN above); non-`Text` or empty/multi-scalar values fail
+/// closed — including `$param` escapes the static check could not verify.
+fn resolve_like_escape(escape: Option<Value>) -> Result<Option<char>, ExprEvaluationError> {
+    let Some(value) = escape else {
+        return Ok(None);
+    };
+    let Value::Text(literal) = &value else {
+        return Err(ExprEvaluationError::IncomparableValues);
+    };
+    let mut chars = literal.chars();
+    match (chars.next(), chars.next()) {
+        (Some(single), None) => Ok(Some(single)),
+        _ => Err(ExprEvaluationError::IncomparableValues),
+    }
+}
+
 /// SQL LIKE match over Unicode scalars, case-sensitive. `%` matches any
-/// (possibly empty) scalar run, `_` matches exactly one scalar, and `\`
-/// escapes the next pattern scalar so `\%`/`\_` match literals. A trailing
-/// `\` is a literal backslash. No regex engine, no new dependency: the
-/// classic two-pointer scan with `%` backtracking.
-fn sql_like_match(text: &str, pattern: &str) -> bool {
+/// (possibly empty) scalar run, `_` matches exactly one scalar, and the
+/// escape character escapes the next pattern scalar. `None` selects the
+/// default backslash escape; an explicit `Some` replaces it (a backslash is
+/// then ordinary). A trailing escape is a literal escape character. No regex
+/// engine, no new dependency: the classic two-pointer scan with `%`
+/// backtracking.
+fn sql_like_match(text: &str, pattern: &str, escape: Option<char>) -> bool {
+    let esc = escape.unwrap_or('\\');
     let text: Vec<char> = text.chars().collect();
     let pattern: Vec<char> = pattern.chars().collect();
     let (mut ti, mut pi) = (0usize, 0usize);
     let (mut star_pi, mut star_ti) = (None::<usize>, None::<usize>);
     while ti < text.len() {
         if pi < pattern.len() {
-            if pattern[pi] == '\\' && pi + 1 < pattern.len() {
+            if pattern[pi] == esc && pi + 1 < pattern.len() {
                 if pattern[pi + 1] == text[ti] {
                     pi += 2;
                     ti += 1;
@@ -1106,7 +1154,7 @@ mod tests {
             (K::ILike, "ada", false),
         ] {
             assert_eq!(
-                eval_string_predicate_expr(text.clone(), kind, Value::Text(pattern.into()))
+                eval_string_predicate_expr(text.clone(), kind, Value::Text(pattern.into()), None)
                     .unwrap_or_else(|err| panic!("{kind:?} '{pattern}' must evaluate: {err:?}")),
                 Value::Bool(expected),
                 "{kind:?} '{pattern}'"
@@ -1121,13 +1169,13 @@ mod tests {
         for kind in [K::StartsWith, K::EndsWith, K::Contains, K::ILike, K::Like] {
             // Either side Null makes the predicate UNKNOWN.
             assert_eq!(
-                eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()))
+                eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()), None)
                     .expect("null left operand"),
                 Value::Null,
                 "{kind:?} null left operand"
             );
             assert_eq!(
-                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Null)
+                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Null, None)
                     .expect("null pattern"),
                 Value::Null,
                 "{kind:?} null pattern"
@@ -1145,18 +1193,21 @@ mod tests {
                 Value::Text("Ada".into()),
                 kind,
                 Value::Text("Ada".into()),
+                None,
             )
             .expect("matched operand");
             let unmatched = eval_string_predicate_expr(
                 Value::Text("Ada".into()),
                 kind,
                 Value::Text("zzz-never".into()),
+                None,
             )
             .expect("unmatched operand");
             assert_eq!(negate(matched), Value::Bool(false), "{kind:?} true->false");
             assert_eq!(negate(unmatched), Value::Bool(true), "{kind:?} false->true");
-            let unknown = eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()))
-                .expect("unknown operand");
+            let unknown =
+                eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()), None)
+                    .expect("unknown operand");
             assert_eq!(
                 negate(unknown),
                 Value::Null,
@@ -1174,9 +1225,11 @@ mod tests {
         // Differential fuzz: a LIKE match must start with the planner's
         // extracted prefix, or the fused interval could miss rows (fail
         // direction: over-narrow is fatal, over-wide is just slow). The
-        // alphabet is heavy on wildcards, escapes, and multi-byte scalars to
-        // stress escape resolution and char-boundary slicing.
-        let pieces = ["a", "%", "_", "\\", "\u{e9}", "b"];
+        // alphabet is heavy on wildcards, both escapes, and multi-byte scalars
+        // to stress escape resolution and char-boundary slicing. Each case
+        // runs under the default backslash escape and under an explicit `#`
+        // escape (where `\` is ordinary and `#` is special).
+        let pieces = ["a", "%", "_", "\\", "#", "\u{e9}", "b"];
         let mut state: u64 = 0x1234_5678_9abc_def1;
         let mut next = || {
             state ^= state << 13;
@@ -1194,19 +1247,23 @@ mod tests {
             let text: String = (0..tlen)
                 .map(|_| pieces[(next() as usize) % pieces.len()])
                 .collect();
-            let matched = eval_string_predicate_expr(
-                Value::Text(text.clone().into()),
-                K::Like,
-                Value::Text(pattern.clone().into()),
-            )
-            .expect("LIKE fuzz inputs are always Text");
-            if matched == Value::Bool(true) {
-                checked += 1;
-                let prefix = like_literal_prefix(&pattern);
-                assert!(
-                    text.starts_with(prefix.as_ref()),
-                    "LIKE match text={text:?} pattern={pattern:?} must start with {prefix:?}"
-                );
+            for escape in [None, Some('#')] {
+                let escape_value = escape.map(|e| Value::Text(e.to_string()));
+                let matched = eval_string_predicate_expr(
+                    Value::Text(text.clone()),
+                    K::Like,
+                    Value::Text(pattern.clone()),
+                    escape_value,
+                )
+                .expect("LIKE fuzz inputs are always Text");
+                if matched == Value::Bool(true) {
+                    checked += 1;
+                    let prefix = like_literal_prefix(&pattern, escape);
+                    assert!(
+                        text.starts_with(prefix.as_ref()),
+                        "LIKE match text={text:?} pattern={pattern:?} escape={escape:?} must start with {prefix:?}"
+                    );
+                }
             }
         }
         assert!(checked > 100, "fuzz must exercise matches, got {checked}");
@@ -1241,7 +1298,8 @@ mod tests {
                 eval_string_predicate_expr(
                     Value::Text(text.into()),
                     K::Like,
-                    Value::Text(pattern.into())
+                    Value::Text(pattern.into()),
+                    None
                 )
                 .unwrap_or_else(|err| panic!("LIKE '{text}' '{pattern}': {err:?}")),
                 Value::Bool(like_expected),
@@ -1260,7 +1318,8 @@ mod tests {
                 eval_string_predicate_expr(
                     Value::Text(text.into()),
                     K::ILike,
-                    Value::Text(pattern.into())
+                    Value::Text(pattern.into()),
+                    None
                 )
                 .unwrap_or_else(|err| panic!("ILIKE '{text}' '{pattern}': {err:?}")),
                 Value::Bool(expected),
@@ -1277,7 +1336,8 @@ mod tests {
             eval_string_predicate_expr(
                 Value::Text("Müller".into()),
                 K::ILike,
-                Value::Text("MÜLLER".into())
+                Value::Text("MÜLLER".into()),
+                None
             )
             .expect("unicode case folding"),
             Value::Bool(true)
@@ -1290,16 +1350,99 @@ mod tests {
         use gleaph_gql::ast::StringPredicateKind as K;
         for kind in [K::StartsWith, K::EndsWith, K::Contains, K::ILike, K::Like] {
             assert_eq!(
-                eval_string_predicate_expr(Value::Int64(1), kind, Value::Text("1".into())),
+                eval_string_predicate_expr(Value::Int64(1), kind, Value::Text("1".into()), None),
                 Err(ExprEvaluationError::IncomparableValues),
                 "{kind:?} non-text left operand"
             );
             assert_eq!(
-                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Int64(1)),
+                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Int64(1), None),
                 Err(ExprEvaluationError::IncomparableValues),
                 "{kind:?} non-text pattern"
             );
         }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn like_escape_clause_replaces_default_escape() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        let text = |s: &str| Value::Text(s.into());
+        // (text, pattern, escape, expected)
+        for (t, p, e, expected) in [
+            ("100%", "100#%", Some("#"), true), // kill: `#%` is a literal `%`
+            ("100x", "100#%", Some("#"), false),
+            ("a_b", "a#_b", Some("#"), true), // kill: `#_` is a literal `_`
+            ("axb", "a#_b", Some("#"), false),
+            ("a#b", "a##b", Some("#"), true),  // escaped escape char
+            ("a\\b", "a\\b", Some("#"), true), // backslash ordinary, not special
+            ("100%", "100\\%", None, true),    // omitted clause keeps the default
+            ("100%", "100\\%", Some("#"), false), // kill: replacement, not addition
+            ("a#", "a#", Some("#"), true),     // trailing escape is literal
+            ("", "%", Some("#"), true),
+        ] {
+            assert_eq!(
+                eval_string_predicate_expr(text(t), K::Like, text(p), e.map(text))
+                    .unwrap_or_else(|err| panic!("LIKE '{t}' '{p}' ESCAPE {e:?}: {err:?}")),
+                Value::Bool(expected),
+                "LIKE '{t}' '{p}' ESCAPE {e:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn like_escape_clause_fail_closed() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        let text = |s: &str| Value::Text(s.into());
+        // Empty, multi-scalar, and non-Text escapes never match — they error.
+        for escape in [
+            Some(Value::Text("".into())),
+            Some(Value::Text("##".into())),
+            Some(Value::Int64(1)),
+        ] {
+            assert_eq!(
+                eval_string_predicate_expr(text("100%"), K::Like, text("100%"), escape),
+                Err(ExprEvaluationError::IncomparableValues),
+                "bad escape must fail closed"
+            );
+        }
+        // A NULL escape is UNKNOWN under 3VL, like a NULL pattern.
+        assert_eq!(
+            eval_string_predicate_expr(text("100%"), K::Like, text("100%"), Some(Value::Null))
+                .expect("null escape"),
+            Value::Null
+        );
+        // NULL operands stay UNKNOWN even with an explicit escape.
+        assert_eq!(
+            eval_string_predicate_expr(Value::Null, K::Like, text("100%"), Some(text("#")))
+                .expect("null left with escape"),
+            Value::Null
+        );
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn ilike_escape_clause_folds_with_operands() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        let text = |s: &str| Value::Text(s.into());
+        assert_eq!(
+            eval_string_predicate_expr(text("100% X"), K::ILike, text("100#% x"), Some(text("#")))
+                .expect("ILIKE with ESCAPE"),
+            Value::Bool(true)
+        );
+        // A cased escape folds with the operands: `K` matches `k`.
+        assert_eq!(
+            eval_string_predicate_expr(text("100% x"), K::ILike, text("100K% X"), Some(text("k")))
+                .expect("ILIKE with cased ESCAPE"),
+            Value::Bool(true)
+        );
+        // Kill: a fold that stops being one scalar (`İ` folds to two)
+        // fails closed instead of silently reverting to the default escape.
+        assert_eq!(
+            eval_string_predicate_expr(text("100%"), K::ILike, text("100%"), Some(text("İ"))),
+            Err(ExprEvaluationError::IncomparableValues),
+            "fold-collapsed escape must fail closed"
+        );
     }
 
     #[test]

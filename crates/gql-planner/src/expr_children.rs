@@ -40,10 +40,14 @@ pub fn for_each_immediate_child_expr(expr: &Expr, mut visit: impl FnMut(&Expr)) 
         ExprKind::StringPredicate {
             expr: target,
             pattern,
+            escape,
             ..
         } => {
             visit(target);
             visit(pattern);
+            if let Some(escape) = escape {
+                visit(escape);
+            }
         }
         ExprKind::ListLiteral(elems)
         | ExprKind::ListConstructor { items: elems, .. }

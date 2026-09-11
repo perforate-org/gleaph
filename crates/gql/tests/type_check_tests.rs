@@ -1078,6 +1078,33 @@ fn string_predicate_strings_ok() {
 
 #[cfg(feature = "cypher")]
 #[test]
+fn like_escape_single_character_contract_warns() {
+    // A single-character Text escape is statically clean; empty and
+    // multi-scalar literals warn (strict mode turns this into `TypeError`)
+    // and always fail closed per-row at execution.
+    let clean = parse_and_check("MATCH (n) WHERE '100%' LIKE '100#%' ESCAPE '#' RETURN n");
+    assert!(
+        !clean
+            .iter()
+            .any(|w| w.kind == WarningKind::ComparisonMismatch),
+        "single-character ESCAPE must not warn: {clean:?}"
+    );
+    for query in [
+        "MATCH (n) WHERE '100%' LIKE '100%' ESCAPE '' RETURN n",
+        "MATCH (n) WHERE '100%' LIKE '100%' ESCAPE '##' RETURN n",
+        "MATCH (n) WHERE '100%' ILIKE '100%' ESCAPE '##' RETURN n",
+    ] {
+        assert!(
+            parse_and_check(query)
+                .iter()
+                .any(|w| w.kind == WarningKind::ComparisonMismatch),
+            "empty/multi-character ESCAPE must warn for {query}"
+        );
+    }
+}
+
+#[cfg(feature = "cypher")]
+#[test]
 fn like_and_not_like_parse_without_mismatch_warning() {
     // LIKE is the case-sensitive SQL-wildcard predicate; NOT LIKE rides the
     // existing `negated` flag. Neither may warn on string operands.

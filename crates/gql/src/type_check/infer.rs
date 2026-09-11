@@ -845,8 +845,44 @@ pub(crate) fn check_unary_op(env: &mut TypeEnv<'_>, op: UnaryOp, inner: &Expr) {
     }
 }
 
-/// Check string predicate operands are string-compatible.
-pub(crate) fn check_string_predicate(env: &mut TypeEnv<'_>, expr: &Expr, pattern: &Expr) {
+/// Check string predicate operands are string-compatible, plus the SQL
+/// `ESCAPE <char>` single-character contract for LIKE/ILIKE: a Text-literal
+/// escape must be exactly one scalar (empty or multi-scalar literals warn
+/// here — strict mode turns this into `TypeError` — and always fail closed
+/// at execution). Non-literal escapes (`$param`, concatenation) skip static
+/// validation and are enforced per-row by the executor.
+pub(crate) fn check_string_predicate(
+    env: &mut TypeEnv<'_>,
+    expr: &Expr,
+    pattern: &Expr,
+    kind: StringPredicateKind,
+    escape: Option<&Expr>,
+) {
+    check_string_predicate_operands(env, expr, pattern);
+    #[cfg(not(feature = "cypher"))]
+    let _ = (kind, escape);
+    #[cfg(feature = "cypher")]
+    {
+        if !matches!(kind, StringPredicateKind::Like | StringPredicateKind::ILike) {
+            return;
+        }
+        let Some(escape) = escape else { return };
+        let ExprKind::Literal(crate::Value::Text(literal)) = &escape.kind else {
+            return;
+        };
+        if literal.chars().count() != 1 {
+            env.warn_at(
+                WarningKind::ComparisonMismatch,
+                format!(
+                    "LIKE ESCAPE must be a single character, got {literal:?} (empty or multi-character escapes fail closed at execution)"
+                ),
+                escape.span,
+            );
+        }
+    }
+}
+
+fn check_string_predicate_operands(env: &mut TypeEnv<'_>, expr: &Expr, pattern: &Expr) {
     let lt = infer_expr(env, expr);
     let rt = infer_expr(env, pattern);
     if is_unknown(&lt)

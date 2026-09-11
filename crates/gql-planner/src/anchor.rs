@@ -370,6 +370,7 @@ pub(crate) fn extract_string_prefix_predicate(expr: &Expr) -> Option<(String, St
         kind: StringPredicateKind::StartsWith,
         pattern,
         negated: false,
+        ..
     } = &expr.kind
         && let Some((var, prop)) = extract_property_access(lhs)
         && let Some(pattern_bound) = string_prefix_pattern_scan_value(pattern)
@@ -393,17 +394,21 @@ pub(crate) fn string_prefix_pattern_scan_value(pattern: &Expr) -> Option<ScanVal
 
 /// Longest escape-resolved literal prefix of a SQL LIKE pattern: consume
 /// characters until the first unescaped `%` (any run) or `_` (one scalar).
-/// `\x` contributes the literal `x`, so the returned prefix never contains
-/// backslashes; a trailing lone `\` is a literal backslash, matching the
-/// Graph executor's `sql_like_match`. The result is what a TEXT prefix
-/// interval may safely narrow on — every LIKE match starts with it — while
-/// the full pattern stays residual for rechecking.
+/// `escape` carries the `ESCAPE` clause scalar (`None` selects the default
+/// backslash); an explicit escape replaces the default — a backslash is then
+/// an ordinary scalar. `\x`-style sequences contribute the literal `x`, so
+/// the returned prefix never contains escape characters; a trailing lone
+/// escape is a literal escape character, matching the Graph executor's
+/// `sql_like_match`. The result is what a TEXT prefix interval may safely
+/// narrow on — every LIKE match starts with it — while the full pattern
+/// stays residual for rechecking.
 ///
 /// `pub` (unlike its `pub(crate)` siblings) because the Graph crate's
 /// differential fuzz test ties this extraction to the executor matcher;
 /// planner-internal callers use [`extract_like_prefix_predicate`].
 #[cfg(feature = "cypher")]
-pub fn like_literal_prefix(pattern: &str) -> std::borrow::Cow<'_, str> {
+pub fn like_literal_prefix(pattern: &str, escape: Option<char>) -> std::borrow::Cow<'_, str> {
+    let esc = escape.unwrap_or('\\');
     // Phase 1: byte length of the raw literal run (escapes included).
     let mut chars = pattern.char_indices();
     let mut raw_end = 0;
@@ -413,7 +418,7 @@ pub fn like_literal_prefix(pattern: &str) -> std::borrow::Cow<'_, str> {
                 raw_end = i;
                 break;
             }
-            '\\' => match chars.next() {
+            c if c == esc => match chars.next() {
                 Some((j, escaped)) => raw_end = j + escaped.len_utf8(),
                 None => {
                     raw_end = i + 1;
@@ -425,17 +430,17 @@ pub fn like_literal_prefix(pattern: &str) -> std::borrow::Cow<'_, str> {
     }
     let raw = &pattern[..raw_end];
     // Phase 2: resolve escapes (fast path when there are none).
-    if !raw.contains('\\') {
+    if !raw.contains(esc) {
         return std::borrow::Cow::Borrowed(raw);
     }
     let mut resolved = String::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
-        if c == '\\' {
+        if c == esc {
             match chars.next() {
                 Some(escaped) => resolved.push(escaped),
-                // Trailing lone `\` is a literal backslash.
-                None => resolved.push('\\'),
+                // Trailing lone escape is a literal escape character.
+                None => resolved.push(esc),
             }
         } else {
             resolved.push(c);
@@ -445,11 +450,16 @@ pub fn like_literal_prefix(pattern: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Extract `(variable, property, derived TextPrefix bound)` from a non-negated
-/// `var.prop LIKE <Text literal>` whose escape-resolved literal prefix is
-/// non-empty. Deliberately separate from [`extract_string_prefix_predicate`]:
-/// edge fusion and `$param` patterns stay out of this slice (vertex, Text
-/// literal only); ILIKE, NOT LIKE, and leading-wildcard patterns never match.
-/// The full LIKE predicate stays residual — the bound only narrows candidates.
+/// `var.prop LIKE <Text literal> [ESCAPE <Text literal>]` whose escape-resolved
+/// literal prefix is non-empty. Deliberately separate from
+/// [`extract_string_prefix_predicate`]: edge fusion and `$param` patterns stay
+/// out of this slice (vertex, Text literal only); ILIKE, NOT LIKE, and
+/// leading-wildcard patterns never match. A non-literal escape (`$param`,
+/// concatenation) cannot resolve statically, so it stays residual-only — the
+/// same fail-closed direction as `$param` patterns. An empty or multi-scalar
+/// literal escape likewise never fuses; the residual recheck fails closed
+/// per-row at execution. The full LIKE predicate stays residual — the bound
+/// only narrows candidates.
 #[cfg(feature = "cypher")]
 pub(crate) fn extract_like_prefix_predicate(expr: &Expr) -> Option<(String, String, ScanValue)> {
     use gleaph_gql::ast::StringPredicateKind;
@@ -459,11 +469,28 @@ pub(crate) fn extract_like_prefix_predicate(expr: &Expr) -> Option<(String, Stri
         kind: StringPredicateKind::Like,
         pattern,
         negated: false,
+        escape,
     } = &expr.kind
         && let Some((var, prop)) = extract_property_access(lhs)
         && let ExprKind::Literal(gleaph_gql::Value::Text(literal)) = &pattern.kind
     {
-        let prefix = like_literal_prefix(literal);
+        // Resolve the escape clause statically: absent means the default
+        // backslash; a single-scalar Text literal replaces it. Anything else
+        // (including `$param`) keeps the predicate residual-only.
+        let escape = match escape {
+            None => None,
+            Some(escape) => match &escape.kind {
+                ExprKind::Literal(gleaph_gql::Value::Text(literal)) => {
+                    let mut chars = literal.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(single), None) => Some(single),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            },
+        };
+        let prefix = like_literal_prefix(literal, escape);
         if !prefix.is_empty() {
             return Some((
                 var,

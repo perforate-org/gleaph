@@ -115,11 +115,13 @@ pub(crate) fn map_immediate_children_expr(
             kind,
             pattern,
             negated,
+            escape,
         } => ExprKind::StringPredicate {
             expr: Box::new(map_child(target)),
             kind: *kind,
             pattern: Box::new(map_child(pattern)),
             negated: *negated,
+            escape: escape.as_ref().map(|e| Box::new(map_child(e))),
         },
         ExprKind::ListLiteral(elems) => {
             ExprKind::ListLiteral(elems.iter().map(&mut map_child).collect())

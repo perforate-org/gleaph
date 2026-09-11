@@ -2817,3 +2817,50 @@ fn explain_authorization_by_without_principal_is_a_distinct_error() {
 fn explain_authorization_by_with_missing_string_literal_fails() {
     parse_err("EXPLAIN AUTHORIZATION FOR PREPARED QUERY q BY PRINCIPAL");
 }
+
+#[test]
+#[cfg(feature = "cypher")]
+fn like_escape_clause_parses_and_stays_like_ilike_only() {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    // LIKE ... ESCAPE '#': the escape clause is captured as an expression.
+    let program = parse_program_ok("MATCH (n) WHERE n.name LIKE 'a#%' ESCAPE '#' RETURN n");
+    match &where_expr_of_first_match(&program).kind {
+        ExprKind::StringPredicate {
+            kind,
+            escape,
+            negated,
+            ..
+        } => {
+            assert_eq!(*kind, StringPredicateKind::Like);
+            assert!(!negated, "plain LIKE must not be negated");
+            let escape = escape.as_ref().expect("ESCAPE clause must be captured");
+            assert!(
+                matches!(&escape.kind, ExprKind::Literal(gleaph_gql::Value::Text(s)) if s == "#"),
+                "escape must be the '#' literal, got {:?}",
+                escape.kind
+            );
+        }
+        other => panic!("expected StringPredicate, got {other:?}"),
+    }
+    // ILIKE takes ESCAPE symmetrically; omitting the clause leaves `escape` None.
+    let program = parse_program_ok("MATCH (n) WHERE n.name ILIKE 'a%' ESCAPE '#' RETURN n");
+    match &where_expr_of_first_match(&program).kind {
+        ExprKind::StringPredicate { kind, escape, .. } => {
+            assert_eq!(*kind, StringPredicateKind::ILike);
+            assert!(escape.is_some(), "ILIKE ESCAPE must be captured");
+        }
+        other => panic!("expected StringPredicate, got {other:?}"),
+    }
+    let program = parse_program_ok("MATCH (n) WHERE n.name LIKE 'a%' RETURN n");
+    match &where_expr_of_first_match(&program).kind {
+        ExprKind::StringPredicate { escape, .. } => {
+            assert!(escape.is_none(), "omitted ESCAPE must stay None");
+        }
+        other => panic!("expected StringPredicate, got {other:?}"),
+    }
+    // ESCAPE after a non-LIKE predicate fails closed at parse instead of
+    // silently accepting a meaningless escape.
+    parse_err("MATCH (n) WHERE n.name CONTAINS 'a' ESCAPE '#' RETURN n");
+    parse_err("MATCH (n) WHERE n.name STARTS WITH 'a' ESCAPE '#' RETURN n");
+}
