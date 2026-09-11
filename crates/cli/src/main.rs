@@ -65,7 +65,7 @@ enum TopLevelCommand {
     #[command(subcommand)]
     Migration(MigrationCommand),
     /// Load initial vertices and edges into an existing logical graph (`--mode update`
-    /// applies vertex property SET rows instead of inserting).
+    /// applies vertex property SET/REMOVE rows instead of inserting).
     Load(LoadArgs),
     /// Push deterministic vertex embeddings into a registered vector index.
     #[command(subcommand)]

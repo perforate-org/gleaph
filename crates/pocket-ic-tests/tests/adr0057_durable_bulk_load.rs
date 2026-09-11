@@ -549,6 +549,7 @@ fn update_row(name: &str, nick: &str) -> BulkLoadUpdateV1 {
                 .to_binary_bytes()
                 .expect("encode set value"),
         }],
+        remove_properties: Vec::new(),
     }
 }
 
@@ -571,6 +572,51 @@ fn nick_of(env: &FederationEnv, name: &str) -> String {
     match row.get("nick").expect("nick column") {
         Value::Text(nick) => nick.clone(),
         other => panic!("expected nick text, got {other:?}"),
+    }
+}
+
+/// Read one vertex property as text, returning `None` when the property is absent (GQL
+/// projects a missing property as NULL). Used to assert REMOVE cleared the value.
+fn maybe_prop_of(env: &FederationEnv, name: &str, property: &str) -> Option<String> {
+    let result = gql_query_as_admin(
+        env,
+        &format!("MATCH (p:Person) WHERE p.name = '{name}' RETURN p.`{property}` AS hit"),
+    );
+    assert_eq!(result.row_count, 1, "one row for name `{name}`");
+    let wire =
+        GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("rows_blob for prop query"))
+            .expect("decode rows_blob");
+    let row = wire
+        .rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row");
+    match row.get("hit").expect("hit column") {
+        Value::Text(text) => Some(text.clone()),
+        Value::Null => None,
+        other => panic!("expected text or NULL for {property}, got {other:?}"),
+    }
+}
+
+fn remove_row(name: &str, set: Vec<(&str, &str)>, remove: Vec<&str>) -> BulkLoadUpdateV1 {
+    BulkLoadUpdateV1 {
+        vertex_label: "Person".to_owned(),
+        property_name: "name".to_owned(),
+        match_value: Value::Text(name.to_owned())
+            .to_binary_bytes()
+            .expect("encode match value"),
+        set_properties: set
+            .into_iter()
+            .map(|(property, value)| AtomicInsertPropertyV1 {
+                property_name: property.to_owned(),
+                value: Value::Text(value.to_owned())
+                    .to_binary_bytes()
+                    .expect("encode set value"),
+            })
+            .collect(),
+        remove_properties: remove.into_iter().map(str::to_owned).collect(),
     }
 }
 
@@ -665,5 +711,188 @@ fn bulk_load_update_applies_vertex_set_and_rejects_missing_match() {
     assert_eq!(
         updated_total, 2,
         "durable receipts must record the committed update rows for resume"
+    );
+}
+
+/// REMOVE contract for `--mode update` rows: a row clears listed vertex properties through the
+/// same `RemoveProperties` primitive as single-statement GQL `REMOVE`, so removing a
+/// registered-but-absent value is a no-op success while a never-registered name rejects with
+/// `NotFound` (plan-declared `ReadExisting` seed resolution, identical to single `REMOVE`);
+/// SET+REMOVE mix on distinct properties applies atomically to the matched vertex;
+/// re-execution converges (REMOVE is a no-op on the second pass, SET is absolute); and naming
+/// one property in both clauses rejects the chunk at the wire boundary.
+#[test]
+fn bulk_load_update_remove_clears_properties_and_mixes_with_set() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    ensure_property(&env, "temp");
+    // `spare` stays registered but is never set on any vertex: removing it must no-op.
+    ensure_property(&env, "spare");
+    // NB: `never_existed` is deliberately never registered: removing it must reject with
+    // `NotFound`, exactly like single-statement GQL `REMOVE`.
+    index_vertex_property(&env, "Person", "name");
+
+    let seed_key = "adr0057-update-remove-seed";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, seed_key)).expect("start seed");
+    bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            seed_key,
+            0,
+            BulkLoadChunkV1::Vertices(vec![named_vertex("alice"), named_vertex("bob")]),
+        ),
+    )
+    .expect("append seed");
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, seed_key)).expect("finalize seed");
+
+    // Give both vertices removable state through a plain SET update first.
+    let key = "adr0057-update-remove-lifecycle";
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+    bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            0,
+            BulkLoadChunkV1::Updates(vec![
+                remove_row("alice", vec![("nick", "ally"), ("temp", "t1")], vec![]),
+                remove_row("bob", vec![("nick", "bobby"), ("temp", "t2")], vec![]),
+            ]),
+        ),
+    )
+    .expect("append set baseline");
+
+    // Mixed row (SET nick + REMOVE present temp + REMOVE registered-but-absent spare) and
+    // remove-only row.
+    let chunk = BulkLoadChunkV1::Updates(vec![
+        remove_row("alice", vec![("nick", "ally2")], vec!["temp", "spare"]),
+        remove_row("bob", vec![], vec!["nick", "temp"]),
+    ]);
+    let updated =
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 1, chunk.clone())).expect("append remove");
+    assert_eq!(
+        updated,
+        BulkLoadResponse::Updated {
+            chunk_index: 1,
+            next_offset: 2,
+            updated_row_count: 2,
+        },
+        "remove rows count toward the committed row count like SET rows"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally2".to_owned()),
+        "SET in a mixed row still applies"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "temp"),
+        None,
+        "REMOVE clears a present property"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "spare"),
+        None,
+        "REMOVE of a registered-but-absent value is a no-op success"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "bob", "nick"),
+        None,
+        "remove-only row clears the property"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "bob", "temp"),
+        None,
+        "remove-only row clears every listed property"
+    );
+
+    // Re-execution with the same fingerprint converges: REMOVE is a no-op on the second pass.
+    let replayed =
+        bulk_load_as_admin(&env, append(GRAPH_NAME, key, 1, chunk)).expect("replay same chunk");
+    assert_eq!(
+        replayed,
+        BulkLoadResponse::Updated {
+            chunk_index: 1,
+            next_offset: 2,
+            updated_row_count: 2,
+        },
+        "replayed chunk must converge to the same receipt"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally2".to_owned()),
+        "replay must not disturb converged state"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "temp"),
+        None,
+        "replay keeps the removed property absent"
+    );
+
+    // A never-registered remove name rejects with `NotFound`, like single-statement REMOVE.
+    let unknown = bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            2,
+            BulkLoadChunkV1::Updates(vec![remove_row("alice", vec![], vec!["never_existed"])]),
+        ),
+    )
+    .expect_err("never-registered remove name must reject");
+    let RouterError::NotFound(unknown_message) = &unknown else {
+        panic!("never-registered remove name must reject with NotFound: {unknown:?}");
+    };
+    assert!(
+        unknown_message.contains("never_existed"),
+        "{unknown_message}"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally2".to_owned()),
+        "rejected chunk must leave state untouched"
+    );
+
+    // One property named in both clauses rejects the whole chunk at the wire boundary.
+    let overlap = bulk_load_as_admin(
+        &env,
+        append(
+            GRAPH_NAME,
+            key,
+            3,
+            BulkLoadChunkV1::Updates(vec![remove_row(
+                "alice",
+                vec![("nick", "ally3")],
+                vec!["nick"],
+            )]),
+        ),
+    )
+    .expect_err("set/remove overlap must reject the whole chunk");
+    let RouterError::InvalidArgument(overlap_message) = &overlap else {
+        panic!("set/remove overlap must reject with InvalidArgument: {overlap:?}");
+    };
+    assert!(
+        overlap_message.contains("both set and removed"),
+        "{overlap_message}"
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally2".to_owned()),
+        "rejected chunk must leave state untouched"
+    );
+
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize update");
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("update status");
+    assert_state(&status, BulkLoadPublicStateV1::Completed);
+    let updated_total: u64 = status
+        .receipts
+        .iter()
+        .map(|row| row.updated_row_count)
+        .sum();
+    assert_eq!(
+        updated_total, 4,
+        "receipts record SET and REMOVE rows alike for resume"
     );
 }

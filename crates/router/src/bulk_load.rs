@@ -338,15 +338,18 @@ struct ResolvedUpdateRow {
     property_name: String,
     match_value: Value,
     set_properties: Vec<(String, Value)>,
+    remove_properties: Vec<String>,
 }
 
 /// Resolve every update match key in the chunk through the graph property index. The whole
 /// candidate chunk is rejected before any row executes when any match key is missing or
 /// non-unique, when a match value is not index-comparable, or when the required converged
-/// property index on `(vertex_label, property_name)` does not exist. Match-key catalog names
-/// (labels plus match and SET property names) are additionally pre-checked against the label
-/// and property catalogs so unknown names reject before admission; SET values decode with the
-/// row so malformed binaries never reach dispatch.
+/// property index on `(vertex_label, property_name)` does not exist. Catalog names (labels
+/// plus match, SET, and REMOVE property names) are additionally pre-checked against the
+/// label and property catalogs so unknown names reject before admission; a never-registered
+/// REMOVE name therefore rejects with `NotFound` exactly like the seed-time `ReadExisting`
+/// resolution single-statement GQL `REMOVE` performs, while removing a registered-but-absent
+/// value is a no-op success inside the Graph executor. SET values decode with the row so with the row so malformed binaries never reach dispatch.
 async fn resolve_update_match_keys(
     store: &RouterStore,
     graph_id: GraphId,
@@ -361,11 +364,18 @@ async fn resolve_update_match_keys(
         for set in &item.set_properties {
             property_names.insert(set.property_name.clone());
         }
+        // REMOVE names join the same pre-check: a never-registered name rejects the chunk
+        // here with `NotFound` (identical outcome to the seed-time `ReadExisting` resolution
+        // single-statement GQL `REMOVE` performs, but before admission so a bad name can never
+        // strand an admitted-but-incomplete child or surface as a partial commit).
+        for name in &item.remove_properties {
+            property_names.insert(name.clone());
+        }
     }
     store.resolve_ordered_vertex_catalogs(graph_id, label_names, property_names)?;
 
     let mut distinct = BTreeSet::new();
-    let mut decoded: Vec<(ByPropertyRef, Value, Vec<(String, Value)>)> =
+    let mut decoded: Vec<(ByPropertyRef, Value, Vec<(String, Value)>, Vec<String>)> =
         Vec::with_capacity(items.len());
     for item in items {
         let match_value = Value::from_binary_bytes(&item.match_value).map_err(|error| {
@@ -399,24 +409,32 @@ async fn resolve_update_match_keys(
             value: index_key,
         };
         distinct.insert(reference.clone());
-        decoded.push((reference, match_value, set_properties));
+        decoded.push((
+            reference,
+            match_value,
+            set_properties,
+            item.remove_properties.clone(),
+        ));
     }
     let resolved = resolve_property_refs(store, graph_id, encoding_key, &distinct).await?;
     decoded
         .into_iter()
-        .map(|(reference, match_value, set_properties)| {
-            if !resolved.contains_key(&reference) {
-                return Err(RouterError::Internal(
-                    "resolved update match-key map is missing a reference".into(),
-                ));
-            }
-            Ok(ResolvedUpdateRow {
-                vertex_label: reference.vertex_label,
-                property_name: reference.property_name,
-                match_value,
-                set_properties,
-            })
-        })
+        .map(
+            |(reference, match_value, set_properties, remove_properties)| {
+                if !resolved.contains_key(&reference) {
+                    return Err(RouterError::Internal(
+                        "resolved update match-key map is missing a reference".into(),
+                    ));
+                }
+                Ok(ResolvedUpdateRow {
+                    vertex_label: reference.vertex_label,
+                    property_name: reference.property_name,
+                    match_value,
+                    set_properties,
+                    remove_properties,
+                })
+            },
+        )
         .collect()
 }
 
@@ -428,7 +446,8 @@ fn quote_gql_name(name: &str) -> String {
 /// Execute every resolved update row through the durable per-row GQL mutation journal and
 /// complete the child row. Resolution happens before admission, so match-key failures never
 /// surface as a partial commit; per-row journal keys make re-execution after a crash converge
-/// without double application (SET is an absolute assignment).
+/// without double application (SET is an absolute assignment, REMOVE of an absent property is
+/// a no-op).
 async fn append_bulk_load_updates(
     graph_name: Option<String>,
     client_bulk_key: String,
@@ -475,13 +494,27 @@ async fn append_bulk_load_updates(
             assignments.push(format!("v.{} = ${param}", quote_gql_name(name)));
             fields.push((param.clone(), value.clone()));
         }
-        let statement = format!(
-            "MATCH (v:{}) WHERE v.{} = $k SET {} RETURN v.{}",
+        // SET and REMOVE ride one linear GQL statement so a mixed row applies atomically to
+        // the matched vertex; at least one clause is present (wire validation rejects empty
+        // rows) and overlap rejects at the wire boundary, so clause order is unambiguous.
+        let mut statement = format!(
+            "MATCH (v:{}) WHERE v.{} = $k",
             quote_gql_name(&row.vertex_label),
             quote_gql_name(&row.property_name),
-            assignments.join(", "),
-            quote_gql_name(&row.property_name),
         );
+        if !assignments.is_empty() {
+            statement.push_str(&format!(" SET {}", assignments.join(", ")));
+        }
+        if !row.remove_properties.is_empty() {
+            let removals = row
+                .remove_properties
+                .iter()
+                .map(|name| format!("v.{}", quote_gql_name(name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            statement.push_str(&format!(" REMOVE {removals}"));
+        }
+        statement.push_str(&format!(" RETURN v.{}", quote_gql_name(&row.property_name)));
         let params = gleaph_gql_ic::encode_gql_params_blob(fields)
             .map_err(|error| invalid(format!("bulk-load update params encode failed: {error}")))?;
         let row_key = format!("{client_bulk_key}:{chunk_index}:u{row_ordinal}");

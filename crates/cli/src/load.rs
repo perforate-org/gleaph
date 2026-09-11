@@ -248,14 +248,20 @@ struct PropertyEndpointRow {
 
 /// One vertex-property update row in an NDJSON `--updates` artifact. The `{ label, property,
 /// value }` match key must resolve to exactly one existing vertex through the converged
-/// property index; `set` holds the absolute SET assignments applied to it.
+/// property index; `set` holds the absolute SET assignments applied to it and `remove` names
+/// the properties cleared by the same row (SET+REMOVE mix allowed, naming one property in both
+/// rejects). Removal mirrors single-statement GQL `REMOVE`: a never-registered name rejects
+/// with `NotFound`, a registered-but-absent value is a no-op success.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 struct UpdateRow {
     label: String,
     property: String,
     value: Value,
+    #[serde(default)]
     set: Properties,
+    #[serde(default)]
+    remove: Vec<String>,
 }
 
 fn default_directed() -> bool {
@@ -978,7 +984,8 @@ fn validate_edge_endpoint(
 
 /// Validate one update row. The match key must name a non-empty label/property and carry an
 /// index-comparable value (the Router resolves it through the converged property index and
-/// rejects non-unique matches); `set` must hold at least one absolute assignment.
+/// rejects non-unique matches); at least one of `set`/`remove` must be present, remove names
+/// must be 1..=256 bytes, and a property named in both rejects (ambiguous order fails closed).
 fn validate_update_row(index: usize, row: &UpdateRow) -> Result<(), LoadError> {
     if row.label.is_empty() || row.label.len() > 256 {
         return Err(LoadError::Artifact(format!(
@@ -1000,10 +1007,22 @@ fn validate_update_row(index: usize, row: &UpdateRow) -> Result<(), LoadError> {
             "updates[{index}] match value is not a sortable (indexable) type"
         )));
     }
-    if row.set.0.is_empty() {
+    if row.set.0.is_empty() && row.remove.is_empty() {
         return Err(LoadError::Artifact(format!(
-            "updates[{index}] set must hold at least one property"
+            "updates[{index}] set or remove must hold at least one property"
         )));
+    }
+    for name in &row.remove {
+        if name.is_empty() || name.len() > 256 {
+            return Err(LoadError::Artifact(format!(
+                "updates[{index}] remove property name must be 1..=256 bytes"
+            )));
+        }
+        if row.set.0.iter().any(|(key, _)| key == name) {
+            return Err(LoadError::Artifact(format!(
+                "updates[{index}] property {name:?} is both set and removed"
+            )));
+        }
     }
     validate_properties(index, &row.set)
 }
@@ -1865,6 +1884,7 @@ fn update_chunk(rows: &[UpdateRow]) -> Result<BulkLoadChunkV1, LoadError> {
                 property_name: row.property.clone(),
                 match_value: encode_value(&row.value)?,
                 set_properties: encode_properties(&row.set)?,
+                remove_properties: row.remove.clone(),
             })
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
@@ -2755,6 +2775,7 @@ mod tests {
             property: property.into(),
             value,
             set: Properties(set.iter().map(|(k, v)| ((*k).into(), v.clone())).collect()),
+            remove: Vec::new(),
         }
     }
 
@@ -2780,13 +2801,41 @@ mod tests {
             0,
             &update_row("Person", "name", Value::Text("a".into()), &[]),
         )
-        .expect_err("empty set must be rejected");
-        assert!(error.to_string().contains("set must hold"), "{error}");
+        .expect_err("empty set with no remove must be rejected");
+        assert!(
+            error.to_string().contains("set or remove must hold"),
+            "{error}"
+        );
         validate_update_row(
             0,
             &update_row("Person", "name", Value::Text("a".into()), &good_set),
         )
         .expect("well-formed update row");
+    }
+
+    #[test]
+    fn update_row_validation_accepts_remove_only_and_rejects_overlap() {
+        let text = |s: &str| Value::Text(s.into());
+        let mut remove_only = update_row("Person", "name", text("a"), &[]);
+        remove_only.remove = vec!["temp".into()];
+        validate_update_row(0, &remove_only).expect("remove-only row is valid");
+        let mut mixed = update_row("Person", "name", text("a"), &[("nick", text("ally"))]);
+        mixed.remove = vec!["temp".into()];
+        validate_update_row(0, &mixed).expect("SET+REMOVE mix on distinct properties is valid");
+        let mut overlap = update_row("Person", "name", text("a"), &[("nick", text("ally"))]);
+        overlap.remove = vec!["nick".into()];
+        let error = validate_update_row(0, &overlap).expect_err("set/remove overlap must reject");
+        assert!(
+            error.to_string().contains("both set and removed"),
+            "{error}"
+        );
+        let mut bad_name = update_row("Person", "name", text("a"), &[]);
+        bad_name.remove = vec![String::new()];
+        let error = validate_update_row(0, &bad_name).expect_err("empty remove name must reject");
+        assert!(
+            error.to_string().contains("remove property name"),
+            "{error}"
+        );
     }
 
     #[test]

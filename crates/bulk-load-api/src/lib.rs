@@ -145,13 +145,20 @@ pub enum BulkLoadChunkV1 {
 /// for (`vertex_label`, `property_name`) before the chunk is admitted: the index must exist
 /// (same requirement as [`BulkLoadEndpointV1::ByProperty`]) or the whole chunk rejects.
 /// `set_properties` reuses the atomic-insert property encoding: absolute assignments applied
-/// when the match key resolves to exactly one vertex.
+/// when the match key resolves to exactly one vertex. `remove_properties` names vertex
+/// properties cleared by the same row through the `RemoveProperties` execution primitive,
+/// mirroring single-statement GQL `REMOVE`: a never-registered name rejects the chunk with
+/// `NotFound` (plan-declared `ReadExisting` intent, resolved in the Router seed), while
+/// removing a registered-but-absent value is a no-op success. At least one of the two lists
+/// must be non-empty, and a property named in both rejects (ambiguous SET-vs-REMOVE order
+/// fails closed).
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BulkLoadUpdateV1 {
     pub vertex_label: String,
     pub property_name: String,
     pub match_value: Vec<u8>,
     pub set_properties: Vec<AtomicInsertPropertyV1>,
+    pub remove_properties: Vec<String>,
 }
 /// One edge in a durable bulk-load chunk.
 ///
@@ -353,12 +360,28 @@ impl BulkLoadChunkV1 {
                             "bulk-load update {ordinal} match property name must be 1..=256 bytes"
                         ));
                     }
-                    if item.set_properties.is_empty() {
+                    if item.set_properties.is_empty() && item.remove_properties.is_empty() {
                         return Err(format!(
-                            "bulk-load update {ordinal} must set at least one property"
+                            "bulk-load update {ordinal} must set or remove at least one property"
                         ));
                     }
                     validate_batch_properties(ordinal, &item.set_properties)?;
+                    for name in &item.remove_properties {
+                        if name.is_empty() || name.len() > 256 {
+                            return Err(format!(
+                                "bulk-load update {ordinal} remove property name must be 1..=256 bytes"
+                            ));
+                        }
+                        if item
+                            .set_properties
+                            .iter()
+                            .any(|set| set.property_name == *name)
+                        {
+                            return Err(format!(
+                                "bulk-load update {ordinal} property {name:?} is both set and removed"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -401,6 +424,7 @@ impl BulkLoadChunkV1 {
                             .as_bytes()
                             .cmp(right.property_name.as_bytes())
                     });
+                    item.remove_properties.sort();
                 }
             }
         }
