@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-26
+Last updated: 2026-09-11
 Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
@@ -46,6 +46,80 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
+
+- **Status:** Open — non-blocking follow-up recorded 2026-09-11 during the GQL-execution
+  Unsupported-path survey. Fail-closed only; no wrong results. Low priority; a docs-only
+  disposition is acceptable.
+- **Owner:** Graph aggregate executor (`crates/graph/src/plan/query/aggregate.rs`).
+- **Observed behavior:** Three error paths are reachable through grammatical queries:
+  (1) `aggregate.rs:591` "aggregate: percentile fraction must be constant per group"
+  for `PERCENTILE_CONT(x, <row-varying expr>)` such as `PERCENTILE_CONT(x, n.k)`;
+  (2) `aggregate.rs:719` "aggregate: percentile fraction missing" for
+  `PERCENTILE_CONT(x, NULL)` (fraction NULL on every row of a non-empty group);
+  (3) `percentile_fraction_from_value` (`aggregate.rs:215-227`)
+  `InvalidExpressionValue` for non-finite or out-of-`[0, 1]` fractions such as
+  `PERCENTILE_CONT(x, 1.5)`. The constant-fraction requirement itself is SQL-consistent;
+  the contract is simply undocumented.
+- **Evidence:** source paths above; aggregate happy-path tests (`percentile_cont_median`
+  et al.) cover no error path; no `percentile` mention in
+  `design/gql/extension-syntax.md` or this ledger.
+- **Expected or needed behavior:** The fraction contract (constant per group, non-NULL,
+  finite, within `[0, 1]`) stated in `extension-syntax.md`, or error-path unit tests
+  locking the three fail-closed arms.
+- **Impact:** Users hitting these shapes get an execution error against an undocumented
+  contract; nothing unsafe or misleading is returned.
+- **Next decision:** Document the fraction contract in `extension-syntax.md` (smallest);
+  add the three error-path unit tests only if the contract is ever relaxed.
+
+### GAP-2026-09-11-002 — Cross-shard traversal fails closed on remote-vertex expand (federated scan limitation)
+
+- **Status:** Open — non-blocking; single-shard execution (the only exercised topology)
+  is unaffected. Recorded 2026-09-11 as one bundled entry during the GQL-execution
+  Unsupported-path survey.
+- **Owner:** Graph federation expand (`crates/graph/src/federation/expand.rs`) together
+  with the streaming expand and WCOJ paths.
+- **Observed behavior:** A traversal touching a vertex placed on another shard fails
+  closed: `UnsupportedOp("cross-shard expand (remote vertex binding)")`
+  (`federation/expand.rs:93`; sibling arms `:38,43,64,97,122`),
+  `UnsupportedOp("Expand.var_len.remote")`
+  (`plan/query/executor/scan/streaming.rs:570`), the limited-streaming remote-source
+  arm (`streaming.rs:525`), and `WorstCaseOptimalJoin.remote_vertex` / `.var_len`
+  (`plan/query/executor/wcoj.rs:21,154`). Relation to GAP-2026-08-25-003: that entry
+  covers cross-shard *ordering* (concatenated sorted fragments); this entry covers
+  cross-shard *traversal* (no remote-vertex resolution). Both stem from shard-local
+  execution without a cross-shard fan-out.
+- **Evidence:** source paths above; PocketIC fixtures are single-shard, so no E2E
+  coverage exists for any of these arms.
+- **Expected or needed behavior:** Either a remote-vertex resolution fan-out or an
+  explicit documented federated-traversal limitation.
+- **Impact:** Multi-shard deployments cannot traverse shard boundaries; queries fail
+  with an explicit error rather than silently dropping rows.
+- **Next decision:** Resolve inside the slice that introduces cross-shard resolution,
+  if ever demanded; until then no action.
+
+### GAP-2026-09-11-003 — Federated aggregate merge errors on all-NULL partials instead of yielding NULL/skip
+
+- **Status:** Open — non-blocking, low priority. Fail-closed error direction (never a
+  wrong result); single-shard execution unaffected; `Avg` excluded (already
+  non-mergeable UnionRows). Recorded 2026-09-11 during the GQL-execution
+  Unsupported-path survey.
+- **Owner:** Router federation aggregate merge
+  (`crates/router/src/federation/aggregate_merge.rs`).
+- **Observed behavior:** For mergeable `COUNT`/`SUM`/`MIN`/`MAX`, when the
+  first-ingested shard partial for a group is `Null` — e.g. grouped `SUM(x)` where one
+  shard holds the group's rows but every value is NULL, so the Graph partial is Null —
+  `merge_add_values` (`:345`) / `merge_extreme_value` (`:381`) return
+  `Err("aggregate merge on null")` instead of skipping the NULL partial. All shards
+  empty produces no rows and does not trigger.
+- **Evidence:** source paths above; merge tests (`merge_aggregate_blobs_*`) cover valued
+  partials only.
+- **Expected or needed behavior:** SQL-consistent outcome: skip NULL partials and emit
+  NULL when every partial is NULL.
+- **Impact:** A rare multi-shard-only query error; the error direction is safe.
+- **Next decision:** Smallest fix is "skip NULL partials, emit NULL when all partials
+  are NULL" plus a two-shard unit test; open only on demand.
 
 ### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
 
@@ -2487,6 +2561,12 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   PocketIC, including upgrade reopen; the migration endpoint's resumption contract is documented
   rather than gated. [ADR 0059](adr/0059-create-index-migration-backfill.md) remains the source of
   truth.
+- **Follow-up observation (2026-09-11):** the executor-side guard for the same transient —
+  `IndexScan` / `ConditionalIndexScan` / `IndexIntersection (no unique physical index
+  namespace)` (`crates/graph/src/plan/query/executor/scan/index.rs:250,336,384`) — fails
+  closed when more than one physical index is active for a property. Left as an observation
+  under this closed entry; promote to its own GAP only if the transient is observed live.
+  No wrong results (fail-closed); no error-path test exists.
 
 ### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work
 
