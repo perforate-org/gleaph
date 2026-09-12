@@ -2,9 +2,10 @@
 
 ## Error Handling
 
-Do not fight repeated errors.
-
-When you encounter the same error twice, research the web and identify 3-5 plausible fixes. Then choose the most efficient solution and implement it.
+When a failure recurs, stop speculative retries. Inspect diagnostics, owning code, and
+dependency versions; choose the smallest evidence-backed fix that preserves the contract.
+Research external sources only when relevant external facts cannot be established locally.
+If blocked, report the missing evidence rather than keep guessing.
 
 ## Skills
 
@@ -45,8 +46,9 @@ APIs, modules, helpers, flags, parameters, or abstractions. Keep responsibilitie
 invalid public states and excessive argument lists, remove superseded paths, and reject accidental
 complexity or code growth that is disproportionate to the behavior delivered.
 
-Use the `implementation-integrity` skill for architecture-sensitive implementation work so boundary,
-atomicity, variant, test-contract, and code-quality checks happen before handoff to review.
+Use [implementation-integrity](.agents/skills/implementation-integrity/SKILL.md#when-to-use) when
+implementing persisted-state, write-atomicity, schema/enum-variant, or ownership/API-boundary
+changes, or fixing concrete implementation review findings.
 
 ## Design Documents
 
@@ -62,7 +64,9 @@ Use the `adr-review` skill for major architectural decisions, especially storage
 
 ## Date Accuracy in Documents
 
-Use the `document-date-accuracy` skill when creating, editing, or reviewing documents with dates, relative time, or words like `today`, `recent`, `latest`, `current`, `now`, `as of`, `last`, or `next`. Never rely on model memory for the current date — get it with `date -u +"%Y-%m-%d %H:%M:%S UTC %z"`.
+Use [document-date-accuracy](.agents/skills/document-date-accuracy/SKILL.md#when-to-use) when adding,
+changing, or verifying calendar dates, deadlines, or time-dependent release/update claims.
+A document's type or incidental words such as `current` and `next` are not triggers.
 
 ## Test-First Contract
 
@@ -84,65 +88,17 @@ Benchmark regressions should be investigated and fixed unless they are justified
 
 Use the `benchmark` skill when modifying traversal, storage layout, indexing, parsing, planning, serialization, or canister-facing execution paths.
 
-## PocketIC E2E and Canbench Execution
+## Validation
 
-Use the underlying commands directly by default:
+After meaningful code changes, run formatting, affected tests, and relevant benchmarks.
+Before Rust implementation checks or assigned Rust/PocketIC/canbench validation, read
+[rust-workflow](.agents/skills/rust-workflow/SKILL.md). It is the source of truth for command
+selection, execution budgets, direct-command fallbacks, independent-validation restrictions,
+and completion evidence.
 
-- `cargo test -p gleaph-pocket-ic-tests` — run the full PocketIC E2E suite.
-- `cargo test -p gleaph-pocket-ic-tests --test <test-name>` — run one PocketIC test target.
-- Run `canbench [PATTERN]` from the affected crate for focused benchmark work.
-- Run unfiltered `canbench --persist` from every affected crate when updating final benchmark artifacts.
-
-Do not route ordinary PocketIC or canbench runs through `just` when the direct commands work.
-
-When the direct command fails for an unrelated code, build, or test reason, diagnose that failure normally; do not use `just` merely to bypass it.
-
-Use the `pocketic-just-fallback` skill when direct execution fails due to macOS sandbox issues.
-
-### Long-running validation budget
-
-Keep the implementation/review loop responsive. Do not spend tens of minutes waiting synchronously
-for PocketIC, full-workspace tests, or canbench.
-
-- Prefer the smallest affected PocketIC target and focused canbench pattern during development.
-- Do not start the full PocketIC suite, full workspace test suite, or unfiltered canbench merely for
-  extra confidence unless the task, plan, or user explicitly requires it. Unfiltered
-  `canbench --persist` remains required when intentionally updating final benchmark artifacts.
-- After starting a long-running command, observe it for at most 5 minutes without meaningful output
-  and at most 10 minutes total in the active agent turn. If it has not completed, stop it when safe;
-  do not keep polling for tens of minutes.
-- A command that exceeds this observation budget is **not** a pass. Report it as incomplete or
-  deferred, including the last observed state and the exact command the user or a later environment
-  can resume.
-- Do not replace a timed-out direct run with another long synchronous fallback. Use Terminal.app
-  delegation only for a known editor-hosted process-chain failure, then continue other useful work
-  instead of waiting for the delegated run.
-- Never claim completion based only on `--no-run`, successful compilation, or a background/delegated
-  process that has not returned a result. Distinguish build verification from runtime verification.
-
-## Format, Test, and Benchmark
-
-After completing a meaningful code change, explicitly run formatting, tests, and relevant benchmarks.
-
-Use the `rust-workflow` skill for the expected local validation sequence.
-
-### Focused local test loop
-
-The workspace uses `debug = "line-tables-only"` for `[profile.dev]` and
-`[profile.test]` to reduce debug-artifact size and link work while keeping
-line-level backtraces. Release, bench, and canister profiles are intentionally
-unchanged.
-
-During iterative development prefer focused, scoped commands:
-
-- `cargo test -p <crate> --lib <filter>`
-- `cargo check -p <crate> --tests`
-- `cargo clippy -p <crate> --all-targets --all-features -- -D warnings`
-
-Reserve full-workspace validation, PocketIC E2E runtime, and unfiltered
-canbench runs for explicitly required final validation. Use ordinary
-`cargo test` for PocketIC/canbench targets and doctest-sensitive paths; use
-`cargo nextest run` only where compatibility with the suite is known.
+For test placement and fixture cost, use
+[cost-aware-validation](.agents/skills/cost-aware-validation/SKILL.md); it does not define a
+separate execution sequence.
 
 ## gql and gql-planner
 
@@ -150,14 +106,14 @@ gleaph-gql and gleaph-gql-planner must remain general-purpose GQL crates (ISO/IE
 
 ## Internet Computer
 
-Tested implementation patterns for ICP development are available as agent skills.
-Before writing any ICP code, fetch the skills index and remember each skill's name and description:
+When a change depends on ICP-specific APIs, configuration, lifecycle, or persistence behavior,
+consult the relevant official ICP skill. Use the index only when needed to find that skill:
 https://skills.internetcomputer.org/.well-known/skills/index.json
 
-When a task matches a skill's description, fetch its content on-demand from:
+Fetch only the task-relevant skill content:
 https://skills.internetcomputer.org/.well-known/skills/{name}/SKILL.md
 
-Skills contain correct dependency versions, configuration formats, and common pitfalls that prevent build failures.
-Always prefer skill guidance over general documentation when both cover the same topic.
+Check guidance against the repository's dependency versions. Resolve missing or conflicting
+guidance using the official specification or API documentation for the relevant version.
 
 

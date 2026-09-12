@@ -1,6 +1,6 @@
 ---
 name: document-date-accuracy
-description: Use when creating, editing, or reviewing documents that contain dates, relative time, timelines, deadlines, schedules, release dates, changelogs, design docs, reports, plans, or words such as today, yesterday, tomorrow, recent, latest, current, now, as of, last, next, soon. Ensures date-sensitive claims are anchored to the OS current date in UTC, converted to exact calendar dates, and verified when they may be stale.
+description: Use when adding, changing, or verifying document dates, deadlines, or time-dependent release/update claims.
 ---
 
 # Document Date Accuracy
@@ -9,9 +9,14 @@ description: Use when creating, editing, or reviewing documents that contain dat
 
 Make dates in documents exact, current, UTC-based, and honest.
 
-Use this skill before writing or reviewing any document that includes calendar dates,
-relative time, timelines, release notes, milestones, deadlines, schedules, or
-current-state claims.
+## When to Use
+
+Use when a task adds, changes, or verifies calendar dates (including relative dates), deadlines,
+or time-dependent release/update claims, such as the latest released SDK version or an
+implementation status as of a stated date.
+
+A document's type, unrelated dates elsewhere in it, or non-temporal phrases such as
+`current node` and `next item` do not trigger this skill.
 
 ## Anchor Timestamp
 
@@ -56,7 +61,8 @@ Avoid:
 
 ## Date-Sensitive Terms
 
-Search for and review terms such as:
+Once this skill applies, inspect these terms in context. They are search hints, not activation
+triggers; keep non-temporal uses unchanged:
 
 - today
 - tomorrow

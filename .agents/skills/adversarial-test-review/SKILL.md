@@ -157,9 +157,9 @@ See also `implementation-integrity` for the implementation-side contract.
 
 When a slice introduces a new stable-memory region, a new `StableBTreeMap`, or
 a new `StableCell` singleton, the slice's adversarial test suite must include
-explicit regression tests for the stable-storage layout. These tests are
-non-substitutable by request-path or PocketIC E2E tests; the latter cover
-ingress behavior, not durable storage correctness.
+explicit unit regression tests for the stable-storage layout and reopening path.
+Request-path or PocketIC E2E coverage does not replace these focused tests;
+an actual PocketIC upgrade additionally checks canister lifecycle wiring.
 
 Required tests for any new stable region:
 
@@ -174,12 +174,18 @@ Required tests for any new stable region:
    `get_authority` returns. The wrong implementation that ignores the second
    write MUST fail this test.
 
-3. **Upgrade persistence.** A test that seeds the singleton via `init`, then
-   re-initializes with the same args (simulating an upgrade) and asserts the
-   singleton value is unchanged. The test must exercise the real stable-memory
-   lifecycle of the facade, not a freshly constructed in-memory mock. A
-   PocketIC E2E that performs an upgrade and re-queries the singleton is an
-   acceptable forward-test in addition to the unit test.
+3. **Stable-state reopen and upgrade persistence.** A unit test must seed a
+   non-default singleton value, rerun the real stable-collection constructors
+   over the same backing memory without reseeding, and assert the exact
+   persisted value. Reusing live collections or constructing a fresh in-memory
+   mock does not test reopening.
+
+   Reopening storage is not an IC upgrade. To claim upgrade coverage, add a
+   PocketIC E2E that performs an actual upgrade (not reinstall), then re-queries
+   and asserts the exact persisted value. This complements the unit test;
+   calling the canister's init handler again is not a substitute. See
+   [Durable authority](../gleaph-architecture/SKILL.md#durable-authority)
+   for the lifecycle contract.
 
 4. **Storable value type and wrapper.** When a `StableBTreeMap<_, V>` value is
    a wrapper such as `Vec<T>` or `BootstrapAuthHistory(Vec<T>)`, a test that

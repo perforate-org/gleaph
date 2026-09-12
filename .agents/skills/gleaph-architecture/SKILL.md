@@ -188,8 +188,12 @@ the canonical state is lost and the authorized path becomes unusable.
 
 Bootstrap bindings are seeded via init args. The `init` handler accepts a typed
 `bootstrap_bindings: Vec<DeploymentBinding>` and writes each binding to the durable trust
-store directly. The init-time seed is durable (init runs on every install / upgrade) and
-the bindings become the source of truth for later authorization.
+store directly. The seed is durable because it is stored in stable memory. The
+[IC lifecycle](https://docs.internetcomputer.org/references/ic-interface-spec/canister-interface/#system-api-upgrades)
+calls `canister_init` on install or reinstall, not on upgrade; upgrades preserve stable
+memory and call `canister_post_upgrade` if exported. Reopen the existing trust store
+without reseeding persisted bindings from init args; those bindings remain the source
+of truth for later authorization.
 
 A separate durable bootstrap authority region is its own prerequisite slice. If a slice
 needs a durable bootstrap authority stored in a separate stable-memory region, that

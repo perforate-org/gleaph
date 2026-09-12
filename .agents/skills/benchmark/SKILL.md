@@ -19,21 +19,9 @@ For crates that are not directly tied to the Internet Computer, such as gleaph-g
 
 ## Running Benchmarks
 
-canbench can run benchmarks whose names contain a specific pattern:
-
-```sh
-canbench [PATTERN]
-```
-
-At the moment, multiple patterns cannot be specified in one command.
-
-Use pattern-based runs for focused local investigation.
-
-For final benchmark result updates, run `canbench --persist` for every affected crate that has canbench benchmarks.
-
-Do not use pattern matching with --persist.
-
-Update canbench_results.yml comprehensively for all affected benchmark suites.
+Follow [rust-workflow — PocketIC and Canbench](../rust-workflow/SKILL.md#pocketic-and-canbench)
+for focused commands and complete final-artifact updates. Its execution budget and completion
+evidence rules apply to benchmark runs.
 
 ## Regression Policy
 

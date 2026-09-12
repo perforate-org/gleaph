@@ -1,12 +1,19 @@
 ---
 name: implementation-integrity
-description: Prevent correctness, boundary, persistence, atomicity, and test-contract defects while implementing Gleaph plans and review fixes. Use for architecture-sensitive code changes, new enum variants or schema forms, storage and index updates, Router/Graph/GQL execution changes, public APIs, parsers, major refactors, or any implementation expected to pass independent review with minimal findings.
+description: Use when implementing changes to persisted state, write atomicity, schema/enum variants, or ownership/API boundaries, or fixing concrete implementation review findings.
 ---
 
 # Implementation Integrity
 
 Implement from invariants outward. Do not wait for review to discover missing owners, asymmetric
 guards, partial writes, duplicated canonical data, or tests that exercise the wrong path.
+
+## When to Use
+
+Use when implementing changes to persisted state, write atomicity, schema/enum variants,
+or ownership/API boundaries, or fixing concrete implementation review findings.
+A task's crate or module name, routine refactoring, or expectation of future review is not
+a trigger by itself.
 
 ## Review-fix operating mode
 
@@ -81,9 +88,9 @@ matches are better than wildcard arms when a new variant must force a decision.
 - Deferred functionality must produce a deliberate error before side effects or fallback, not an
   accidental success through an older path.
 
-Use `architecture-integrity`, `gleaph-architecture`, `code-quality`, `design-sync`, and
-`test-contract` for their specialized rules; this skill coordinates those rules during
-implementation.
+Use the applicability conditions in [AGENTS.md](../../../AGENTS.md) to select specialized
+guidance from `architecture-integrity`, `gleaph-architecture`, `code-quality`, `design-sync`,
+or `test-contract`. Load only the matching skills, not the whole list.
 
 ## 5. Make tests prove the advertised path
 
@@ -114,15 +121,16 @@ Review the actual diff as if it came from another agent:
 2. Search old variant names and old contract wording again; new edits often create missed call sites.
 3. Inspect every error return after the first mutation and every persisted derived field.
 4. Check public comments, active design docs, stable-memory inventory, and UTC anchors.
-5. Check benchmarks with `benchmark` and validation cost with `cost-aware-validation`: assertions and
+5. When performance-sensitive paths or benchmarks change, consult `benchmark`: assertions and
    setup stay outside measured closures; persisted artifacts are complete and unrelated noise is
-   reverted.
-6. Run `cargo fmt --all -- --check`, `git diff --check`, the narrowest owning tests, and scoped
-   clippy. Do not launch broad or long suites for reassurance.
+   reverted. Consult `cost-aware-validation` when choosing test layers, adding or changing fixtures,
+   or consolidating tests/benchmarks.
+6. Follow [rust-workflow](../rust-workflow/SKILL.md) for affected validation, execution budgets,
+   and completion evidence.
 7. Inspect `git status --short` and the full diff for unrelated files, ignored plan status, unfinished
    processes, and inaccurate validation claims.
-8. Apply `code-quality`: review new signatures, flags, visibility, nesting, helper count, obsolete
-   paths, net code growth, and whether a smaller existing abstraction can express the same contract.
+8. Review new signatures, flags, visibility, nesting, helper count, obsolete paths, net code growth,
+   and whether a smaller existing abstraction can express the same contract.
 9. For review fixes, re-run the original finding as a counterexample against the final code and inspect each
    required assertion literally. If any checklist item is still absent, do not notify the reviewer.
 
@@ -146,8 +154,8 @@ When a later slice resolves a ledger entry, update the same entry with the fixin
 regression test. Do not create a second roadmap or duplicate an ADR's normative design in the ledger;
 link to the authoritative document instead.
 
-Do not mark a TODO complete from `--no-run`, a background process, or an interrupted runtime. Report
-completed, failed, incomplete, and deferred checks separately.
+Keep plan TODOs consistent with the
+[validation evidence](../rust-workflow/SKILL.md#completion-evidence), including outstanding checks.
 
 
 ## Implementation rules

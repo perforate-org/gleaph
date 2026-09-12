@@ -12,8 +12,8 @@ Review encapsulation, separation of concerns, invariants, consistency, fitness f
 
 ## implementation-integrity
 
-Implement architecture-sensitive changes with invariant mapping, complete variant audits, atomic
-write validation, exact review-fix checklists, adversarial tests, and final-diff self-inspection.
+Use for persisted-state, atomicity, variant, or ownership/API-boundary implementation and concrete
+implementation review fixes. See [applicability](implementation-integrity/SKILL.md#when-to-use).
 
 ## code-quality
 
@@ -44,9 +44,8 @@ or open external terminals in this mode.
 
 ## cost-aware-validation
 
-Design tests, PocketIC fixtures, Rust validation loops, and canbench benchmarks for high signal at
-bounded compile and runtime cost. In independent validation mode, obey a strict command allowlist and never
-edit, retry through fallbacks, manage processes, or broaden scope.
+Use when choosing test layers or adding or consolidating test and benchmark fixtures.
+For execution policy, including independent validation, use `rust-workflow`.
 
 ## benchmark
 
@@ -54,9 +53,10 @@ Review benchmark impact, performance regressions, invariant-preserving measureme
 
 ## rust-workflow
 
-Format, type-check, clippy, test, benchmark, and completion reporting for Rust changes.
+Use for Rust/PocketIC/canbench command selection, execution budgets, independent validation,
+and completion evidence.
 
 ## document-date-accuracy
 
-Ensure document dates, relative dates, timelines, release dates, deadlines, and
-latest/current claims are anchored to the OS date and verified when unstable.
+Use when adding, changing, or verifying calendar dates, deadlines, or time-dependent release/update
+claims. See [applicability](document-date-accuracy/SKILL.md#when-to-use).
