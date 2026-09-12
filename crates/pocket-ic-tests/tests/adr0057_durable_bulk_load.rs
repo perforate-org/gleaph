@@ -1872,6 +1872,132 @@ fn bulk_load_update_applies_vertex_set_and_rejects_missing_match() {
             updated_row_count: 2
         })
     );
+    assert_bulk_update_policy_and_expired_row_replay(&env);
+}
+
+/// Property-policy lowering and row retention share this fixture so time advancement does not
+/// require another federation. The blocked row becomes eligible only after its zero receipt.
+fn assert_bulk_update_policy_and_expired_row_replay(env: &FederationEnv) {
+    let caller = candid::Principal::from_slice(&[0xD1; 29]);
+    drive_to_completed(
+        env,
+        GRAPH_NAME,
+        "policy-row-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![
+            named_vertex("policy-allowed"),
+            named_vertex("policy-blocked"),
+        ])],
+    );
+    for (i, statement) in [
+        format!("GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Person FOR (p:Person) WHERE p.name = 'policy-allowed' TO PRINCIPAL '{}'", caller.to_text()),
+        format!("GRANT READ ON GRAPH {GRAPH_NAME} NODES Person {{ name, nick }} TO PRINCIPAL '{}'", caller.to_text()),
+        format!("GRANT UPDATE ON GRAPH {GRAPH_NAME} NODES Person TO PRINCIPAL '{}'", caller.to_text()),
+    ].into_iter().enumerate() {
+        gql_mutate_as_admin(env, &statement, &format!("policy-row-grant-{i}"));
+    }
+    let submit = |command| {
+        let bytes = env
+            .pic
+            .update_call(env.router, caller, "bulk_load", Encode!(&command).unwrap())
+            .unwrap();
+        Decode!(&bytes, Result<BulkLoadResponse, RouterError>).unwrap()
+    };
+    let allowed = "policy-row-allowed";
+    submit(start(GRAPH_NAME, allowed)).unwrap();
+    assert_eq!(
+        submit(append(
+            GRAPH_NAME,
+            allowed,
+            0,
+            BulkLoadChunkV1::Updates(vec![update_row("policy-allowed", "allowed-write"),])
+        )),
+        Ok(BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1
+        })
+    );
+    assert_eq!(nick_of(env, "policy-allowed"), "allowed-write");
+    submit(finalize(GRAPH_NAME, allowed)).unwrap();
+
+    let blocked = "policy-row-blocked";
+    let chunk = BulkLoadChunkV1::Updates(vec![update_row("policy-blocked", "must-stay-empty")]);
+    submit(start(GRAPH_NAME, blocked)).unwrap();
+    let zero = Err(RouterError::NotFound(
+        "bulk-load update target is no longer eligible".into(),
+    ));
+    assert_eq!(submit(append(GRAPH_NAME, blocked, 0, chunk.clone())), zero);
+    assert_eq!(maybe_prop_of(env, "policy-blocked", "nick"), None);
+    let row_key = format!("{blocked}:0:u0");
+    let status = || {
+        let bytes = env
+            .pic
+            .query_call(
+                env.router,
+                caller,
+                "mutation_status",
+                Encode!(&Some(GRAPH_NAME.to_owned()), &row_key).unwrap(),
+            )
+            .unwrap();
+        Decode!(&bytes, Result<gleaph_router::types::MutationStatus, RouterError>)
+            .unwrap()
+            .unwrap()
+    };
+    let before = status();
+    assert_eq!(
+        before.phase,
+        gleaph_graph_kernel::plan_exec::MutationLifecyclePhase::Completed
+    );
+    env.pic.advance_time(Duration::from_secs(8 * 24 * 60 * 60));
+    assert!(
+        sweep_mutation_keys(env, 1000) > 0,
+        "expired ordinary records must actually be swept"
+    );
+    let retained = status();
+    assert_eq!(retained.mutation_id, before.mutation_id);
+    assert_eq!(retained.phase, before.phase);
+    // Change eligibility without changing the grant or authored row payload. Fixed-ID replay
+    // must return the saved zero, not select the other allowed vertex or apply a fresh write.
+    gql_mutate_as_admin(
+        env,
+        "MATCH (p:Person {name: 'policy-blocked'}) SET p.name = 'policy-allowed'",
+        "policy-row-make-eligible",
+    );
+    assert_eq!(submit(append(GRAPH_NAME, blocked, 0, chunk.clone())), zero);
+    assert_eq!(status().mutation_id, before.mutation_id);
+    let query = gql_query_as_admin(
+        env,
+        "MATCH (p:Person) WHERE p.name = 'policy-allowed' RETURN p.nick AS nick",
+    );
+    let wire = GqlWireRows::decode_blob(query.rows_blob.as_ref().unwrap()).unwrap();
+    let values: Vec<_> = wire
+        .rows
+        .into_iter()
+        .map(|row| {
+            row.try_into_value_row()
+                .unwrap()
+                .get("nick")
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    assert_eq!(values.len(), 2);
+    assert!(values.contains(&Value::Null));
+    assert!(values.contains(&Value::Text("allowed-write".into())));
+    assert_eq!(
+        submit(abort(GRAPH_NAME, blocked)),
+        Ok(BulkLoadResponse::AbortAccepted {
+            state: BulkLoadPublicStateV1::Aborted
+        })
+    );
+    assert_eq!(
+        submit(append(GRAPH_NAME, blocked, 0, chunk)),
+        Ok(BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 0,
+            updated_row_count: 0
+        })
+    );
 }
 
 /// REMOVE contract for `--mode update` rows: a row clears listed vertex properties through the

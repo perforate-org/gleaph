@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
@@ -46,6 +46,28 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
+
+- **Status:** Open — deferred capability, recorded 2026-09-12.
+- **Observed behavior:** Fixed-vertex SET/REMOVE admits a labeled NodeScan and property residuals.
+  EXISTS policy lowering needs SemiApply/reverse-seed joins, outside that Graph input contract.
+  Router deliberately rejects applicable target-label chain policies before scalar reservation
+  or Graph dispatch with `NotImplemented("bulk vertex updates with EXISTS policies are not supported")`.
+  Property-only conditional grants, including indexed equality, are supported. The policy is never
+  ignored, and the rejected row leaves no scalar dispatch for Abort to settle.
+- **Owner:** Router `policy_pushdown.rs` / `gql::lower_for_execution`; Graph
+  `plan_wire_guard::validate_mutation_target_plan` owns exact-input admission.
+- **Evidence:** `pure_exists_row_lowers_to_one_bounded_semi_apply_probe` checks ordinary chain
+  lowering and the bound-input rejection; `bound_vertex_keeps_indexed_policy_as_a_full_residual`
+  checks the supported property form. These are native tests, not an EXISTS bulk E2E claim.
+- **Impact / needed behavior:** A non-tenant whose target-label visibility needs a chain cannot
+  perform bulk vertex updates under that policy. Ordinary GQL policy execution is unchanged.
+- **Next decision:** Specify bounded chain evaluation over the one saved vertex and its replicated
+  execution path before extending the exact-input shape. Do not substitute an index-selected target
+  or drop residual authorization checks.
+- **Contract:** [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md), update-lane
+  policy and exact-target constraints; [plan format](gql/plan-format.md), exact vertex mutation input.
 
 ### GAP-2026-09-11-004 — Bulk-load edge property update has no replicated-mode edge read to gate its exactly-one target
 

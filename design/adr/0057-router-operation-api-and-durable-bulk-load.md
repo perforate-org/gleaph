@@ -242,6 +242,13 @@ Update-lane contracts that differ from insert chunks:
   vertices. Target placement participates in the scalar request fingerprint, distinct from
   ordinary unbound GQL. The retained RETURN property preserves match-property READ authorization
   without filtering by its changing value;
+- fixed-vertex policy lowering preserves the labeled NodeScan and every applicable property
+  predicate as a residual, even when an equality property has an index. Ordinary GQL may still
+  replace its scan with that index. A real non-tenant conditional grant therefore filters the
+  saved vertex rather than choosing a new candidate set. EXISTS-chain policies on the target
+  label remain unsupported in this lane: Router returns
+  `NotImplemented("bulk vertex updates with EXISTS policies are not supported")` before scalar
+  reservation or Graph dispatch. It does not drop the policy or relax Graph's plan guard;
 - one **row** is the atomic unit and one chunk is the client's candidate batch. Each row that
   returns successfully advances `updated_row_count` on the pending child before the next row
   dispatches, so the durable count is always a committed prefix of the authored batch;
@@ -263,6 +270,16 @@ Update-lane contracts that differ from insert chunks:
   report retryable `Busy`. Both the prefix and the uncommitted suffix retain their original IDs
   when their own or another row's match property changes. Authored ordinals and payload remain
   unchanged;
+- each scalar row reservation atomically stores its owning `(bulk_job_mutation_id, chunk_index)`
+  in `PlanExecution.bulk_load_chunk`, alongside request identity. Compaction retains that link.
+  While the referenced update child is unfinished, both ordinary terminal GC and client-key
+  retry expiry preserve the row, including completed zero and terminal failures. Thus an old
+  zero receipt cannot disappear and become a new write after target eligibility changes.
+  Retry cannot change or remove the owner; a fresh owned reservation requires a pending child.
+  Child completion releases the pin: completed Append replay uses the compact chunk receipt,
+  so scalar rows may then expire normally without waiting for parent completion. This changes
+  Router region 7's persisted identity and requires fresh Router state or reinstall; no migration
+  or additional journal/map is introduced;
 - Graph's exact-target lane is restricted to one labeled vertex, property SET/REMOVE, residual
   predicates before mutation, and an optional terminal projection. It rechecks the original
   NodeScan label and policy predicates, and checks liveness immediately before the no-RPC
@@ -408,7 +425,8 @@ While cleanup is in progress, status continues to project the preserved `Complet
 `Failed` outcome; after retention expires, its receipt page may be partial as rows are removed. GC
 removes the parent and client-key binding only after the entire receipt range is gone. Graph chunk
 evidence follows the existing retirement-then-nine-day policy. Open and recoverable jobs are not
-removed by ordinary terminal GC.
+removed by ordinary terminal GC. Update-row journals additionally follow the pending-child pin
+above; their seven-day age alone never removes evidence required to settle an unfinished chunk.
 
 If duplicate Append calls interleave, the first message has already persisted the parent/child
 identity before awaiting Graph. A same-index/same-fingerprint call resumes that exact child; a

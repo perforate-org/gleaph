@@ -483,9 +483,9 @@ enum UpdateRowOutcome {
 ///
 /// The Router record is authoritative for three cases, and its absence is itself the ownership
 /// proof that matters most: an ADR 0029 saga record is persisted *before* the first dispatch
-/// await, so a row with no record cannot have reached the Graph. `Failed` means routing was
-/// released without a durable dispatch envelope (or the mutation is terminally failed), which
-/// likewise proves no canonical write. Only `CanonicalPending`/`Routing` are genuinely ambiguous,
+/// await and retained while its chunk is pending, so absence cannot hide an expired outcome.
+/// `Failed` means routing was released without a durable dispatch envelope (or the mutation is
+/// terminally failed), which likewise proves no canonical write. Only `CanonicalPending`/`Routing` are genuinely ambiguous,
 /// and there the Graph's own mutation journal decides. For exact-target execution, a completed
 /// receipt proves application with count 1 or a write-free outcome with count 0.
 async fn classify_update_row(
@@ -890,7 +890,15 @@ async fn append_bulk_load_updates(
             ),
         );
         let outcome = crate::gql::gql_execute_idempotent_on_vertex(
-            statement, params, row_key, graph_id, target,
+            statement,
+            params,
+            row_key,
+            graph_id,
+            target,
+            crate::facade::stable::bulk_load::BulkLoadChunkReceiptKey::new(
+                parent_mutation_id,
+                chunk_index,
+            ),
         )
         .await?;
         #[cfg(feature = "pocket-ic-e2e")]

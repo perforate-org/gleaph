@@ -2,7 +2,7 @@
 
 use super::super::stable::label_stats::{
     ClientMutationKey, MutationReservationIndexEntry, RouterMutationPayloadV1,
-    RouterMutationRecord, RouterMutationShardV1,
+    RouterMutationRecord, RouterMutationRequestIdentityV1, RouterMutationShardV1,
 };
 use super::super::stable::{
     ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER, ROUTER_MUTATION_RESERVATION_INDEX,
@@ -198,6 +198,18 @@ fn ordered_replay_target_active(record: &RouterMutationRecord) -> bool {
     ) && !record.is_terminal()
 }
 
+/// A pending update chunk still needs every row outcome, including completed zero-effect rows.
+/// The persisted request identity is the link; no key parsing or scan over unrelated jobs.
+fn bulk_load_update_replay_required(identity: &RouterMutationRequestIdentityV1) -> bool {
+    identity.bulk_load_chunk().is_some_and(|key| {
+        RouterStore::new()
+            .bulk_load_chunk_receipt(key.job_mutation_id, key.chunk_index)
+            .is_some_and(|child| {
+                child.updated_row_count.is_some() && !child.progress.is_completed()
+            })
+    })
+}
+
 /// Scan up to `budget` records starting strictly after `start_after`, removing those
 /// past [`CLIENT_MUTATION_KEY_TTL_NS`] that are not actively routing. Returns
 /// `(scanned, removed, last_examined_key)`. Terminal records use their durable
@@ -250,6 +262,7 @@ fn evict_expired_client_mutation_keys(
                 // empty.
                 expired_bulk_loads.push(key.clone());
             } else if expired_terminal
+                && !bulk_load_update_replay_required(&record.as_v1().request_identity)
                 && !reservation_slot_pinned_raw(record.as_v1().mutation_id)
                 && !pending_effect_pinned_raw(key.graph_id, record.as_v1().mutation_id)
             {
@@ -280,8 +293,8 @@ fn evict_expired_client_mutation_keys(
 /// Drop the heavy fields of a fully completed + projected record. The resolved
 /// label/property tables and the shard fan-out are never read again once replay
 /// short-circuits on `completed_row_count` (ADR 0025, mechanism E); `mutation_id`,
-/// `created_at_ns`, `terminal_at_ns`, `request_fingerprint`, and `completed_row_count` remain for
-/// idempotent replay and TTL eviction.
+/// `created_at_ns`, `terminal_at_ns`, request identity (including its bulk chunk owner), and
+/// `completed_row_count` remain for idempotent replay and retention decisions.
 pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
     use crate::facade::stable::label_stats::RouterMutationPayloadV1;
     record.as_v1_mut().resolved_labels = None;
@@ -344,6 +357,54 @@ impl RouterStore {
         request_fingerprint: Vec<u8>,
         now: u64,
     ) -> Result<ClientMutationReservation, RouterError> {
+        self.reserve_plan_mutation_at(
+            caller,
+            graph_id,
+            client_key,
+            RouterMutationRequestIdentityV1::PlanExecution {
+                request_fingerprint,
+                bulk_load_chunk: None,
+            },
+            now,
+        )
+    }
+
+    pub(crate) fn reserve_bulk_load_update_row(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        request_fingerprint: Vec<u8>,
+        chunk: crate::facade::stable::bulk_load::BulkLoadChunkReceiptKey,
+    ) -> Result<ClientMutationReservation, RouterError> {
+        self.reserve_plan_mutation_at(
+            caller,
+            graph_id,
+            client_key,
+            RouterMutationRequestIdentityV1::PlanExecution {
+                request_fingerprint,
+                bulk_load_chunk: Some(chunk),
+            },
+            ic_time_ns(),
+        )
+    }
+
+    pub(super) fn reserve_plan_mutation_at(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        identity: RouterMutationRequestIdentityV1,
+        now: u64,
+    ) -> Result<ClientMutationReservation, RouterError> {
+        if !matches!(
+            identity,
+            RouterMutationRequestIdentityV1::PlanExecution { .. }
+        ) {
+            return Err(RouterError::InvalidArgument(
+                "scalar reservation requires plan execution identity".into(),
+            ));
+        }
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
@@ -352,12 +413,16 @@ impl RouterStore {
                     now.saturating_sub(terminal_at) > CLIENT_MUTATION_KEY_TTL_NS
                 })
                 && !ordered_replay_target_active(&record)
+                && !bulk_load_update_replay_required(&record.as_v1().request_identity)
             {
                 return Err(RouterError::InvalidArgument(
                     "client_mutation_key expired; use a new key for a new mutation".into(),
                 ));
             }
-            if record.as_v1().request_identity.request_fingerprint() != request_fingerprint {
+            if record.as_v1().request_identity.request_fingerprint()
+                != identity.request_fingerprint()
+                || record.as_v1().request_identity.bulk_load_chunk() != identity.bulk_load_chunk()
+            {
                 return Err(RouterError::Conflict(
                     "client_mutation_key was already used for a different request".into(),
                 ));
@@ -427,13 +492,15 @@ impl RouterStore {
                 routing_owner: false,
             });
         }
+        if identity.bulk_load_chunk().is_some() && !bulk_load_update_replay_required(&identity) {
+            return Err(RouterError::Conflict(
+                "bulk-load update row requires a pending chunk".into(),
+            ));
+        }
         let mutation_id = self.allocate_mutation_id()?;
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            m.insert(
-                key,
-                RouterMutationRecord::new(mutation_id, now, request_fingerprint),
-            );
-        });
+        let mut record = RouterMutationRecord::new(mutation_id, now, Vec::new());
+        record.as_v1_mut().request_identity = identity;
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key, record));
         // Amortized GC (ADR 0025, mechanism B): every new reservation evicts a bounded
         // slice of expired records, so the journal stays bounded automatically without a
         // timer or a separate time-ordered index.

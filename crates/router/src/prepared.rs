@@ -836,7 +836,12 @@ fn lower_prepared_for_execution(
     }
     let ctx = crate::policy_pushdown::LoweringContext::new(store, graph_id);
     let mut plan = base_plan.clone();
-    crate::policy_pushdown::lower_into_plan(&ctx, &mut plan, &lowered);
+    crate::policy_pushdown::lower_into_plan(
+        &ctx,
+        &mut plan,
+        &lowered,
+        crate::policy_pushdown::PolicyInput::Scan,
+    );
     let plans = vec![plan.clone()];
     let plan_blob = encode_block_plans(&plans, requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;

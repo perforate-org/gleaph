@@ -248,6 +248,9 @@ pub enum RouterMutationRequestIdentityV1 {
     BulkLoadJob,
     PlanExecution {
         request_fingerprint: Vec<u8>,
+        /// An update row's owning chunk. Retained through scalar compaction so pending bulk
+        /// work never loses terminal row evidence to ordinary mutation TTL/GC.
+        bulk_load_chunk: Option<super::bulk_load::BulkLoadChunkReceiptKey>,
     },
     OrderedEdgeBatch {
         public_fingerprint: [u8; 32],
@@ -291,6 +294,7 @@ impl RouterMutationRequestIdentityV1 {
             Self::BulkLoadJob => &BULK_LOAD_JOB_IDENTITY_FINGERPRINT,
             Self::PlanExecution {
                 request_fingerprint,
+                ..
             } => request_fingerprint,
             Self::OrderedEdgeBatch {
                 public_fingerprint, ..
@@ -301,6 +305,15 @@ impl RouterMutationRequestIdentityV1 {
             Self::OrderedMixedBatch {
                 public_fingerprint, ..
             } => public_fingerprint,
+        }
+    }
+
+    pub(crate) fn bulk_load_chunk(&self) -> Option<super::bulk_load::BulkLoadChunkReceiptKey> {
+        match self {
+            Self::PlanExecution {
+                bulk_load_chunk, ..
+            } => *bulk_load_chunk,
+            _ => None,
         }
     }
 
@@ -873,6 +886,7 @@ impl RouterMutationRecord {
             created_at_ns,
             request_identity: RouterMutationRequestIdentityV1::PlanExecution {
                 request_fingerprint,
+                bulk_load_chunk: None,
             },
             resolved_labels: None,
             resolved_properties: None,

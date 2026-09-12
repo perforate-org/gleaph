@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::facade::stable::bulk_load::BulkLoadChunkReceiptKey;
 use candid::{Encode, Principal};
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind, SetOp};
@@ -948,17 +949,29 @@ pub(crate) fn lower_for_execution(
     graph_id: GraphId,
     mut plans: Vec<PhysicalPlan>,
     pass_through_blob: Vec<u8>,
-    requires_write_path: bool,
+    input: crate::policy_pushdown::PolicyInput,
 ) -> Result<(Vec<PhysicalPlan>, Vec<u8>), RouterError> {
     let ctx = crate::policy_pushdown::LoweringContext::new(store, graph_id);
     let lowered = crate::policy_pushdown::effective_policies(store, caller, graph_id)?;
+    if input == crate::policy_pushdown::PolicyInput::BoundVertex
+        && plans.iter().any(|plan| {
+            matches!(plan.ops.first(),
+            Some(PlanOp::NodeScan { label: Some(label), .. }) if lowered.has_chains_for(label))
+        })
+    {
+        // Reject unsupported read probes before reserving/dispatching a scalar mutation, so
+        // Abort can discard this unwritten row instead of waiting on a rejected Graph plan.
+        return Err(RouterError::NotImplemented(
+            "bulk vertex updates with EXISTS policies are not supported".into(),
+        ));
+    }
     if lowered.is_empty() {
         return Ok((plans, pass_through_blob));
     }
     for plan in &mut plans {
-        crate::policy_pushdown::lower_into_plan(&ctx, plan, &lowered);
+        crate::policy_pushdown::lower_into_plan(&ctx, plan, &lowered, input);
     }
-    let blob = encode_block_plans(&plans, requires_write_path)
+    let blob = encode_block_plans(&plans, plans.iter().any(PhysicalPlan::has_dml))
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     Ok((plans, blob))
 }
@@ -3101,6 +3114,7 @@ pub(crate) async fn gql_execute_idempotent_on_vertex(
     client_mutation_key: String,
     graph_id: GraphId,
     vertex_id: GlobalVertexId,
+    bulk_load_chunk: BulkLoadChunkReceiptKey,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = run_gql(
         &query,
@@ -3111,7 +3125,7 @@ pub(crate) async fn gql_execute_idempotent_on_vertex(
         Some(&client_mutation_key),
         ReadMode::Eventual,
         None,
-        Some((graph_id, vertex_id)),
+        Some((graph_id, vertex_id, bulk_load_chunk)),
     )
     .await;
     crate::recovery::arm_if_needed();
@@ -3262,7 +3276,7 @@ async fn run_gql(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     preflight: Option<&PreflightContext>,
-    bound_vertex: Option<(GraphId, GlobalVertexId)>,
+    bound_vertex: Option<(GraphId, GlobalVertexId, BulkLoadChunkReceiptKey)>,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = run_gql_unchecked(
         query,
@@ -3440,7 +3454,7 @@ async fn run_gql_unchecked(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     preflight: Option<&PreflightContext>,
-    bound_vertex: Option<(GraphId, GlobalVertexId)>,
+    bound_vertex: Option<(GraphId, GlobalVertexId, BulkLoadChunkReceiptKey)>,
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(result) =
         try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
@@ -3614,7 +3628,7 @@ async fn run_gql_unchecked(
 
     let store = RouterStore::new();
     let resolved = match bound_vertex {
-        Some((graph_id, _)) => crate::graph_context::ResolvedGraphContext { graph_id },
+        Some((graph_id, _, _)) => crate::graph_context::ResolvedGraphContext { graph_id },
         None => crate::graph_context::resolve_graph_context(&store, &program, caller)?,
     };
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
@@ -3651,14 +3665,13 @@ async fn run_gql_unchecked(
                     entry.dispatch_graph_id,
                     &plan,
                 )?;
-                let requires_write_path = plan.has_dml();
                 let (plans, plan_blob) = lower_for_execution(
                     &store,
                     &caller,
                     entry.dispatch_graph_id,
                     vec![plan],
                     entry.plan_blob,
-                    requires_write_path,
+                    crate::policy_pushdown::PolicyInput::Scan,
                 )?;
                 let stats = graph_stats_for(entry.dispatch_graph_id);
                 dispatch_plan_blob_with_batch(
@@ -3676,14 +3689,13 @@ async fn run_gql_unchecked(
             }
             crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
                 crate::authz::enforce_data_plane_authorization(&store, &caller, graph_id, &plan)?;
-                let requires_write_path = plan.has_dml();
                 let (plans, plan_blob) = lower_for_execution(
                     &store,
                     &caller,
                     graph_id,
                     vec![plan],
                     entry.plan_blob,
-                    requires_write_path,
+                    crate::policy_pushdown::PolicyInput::Scan,
                 )?;
                 let stats = graph_stats_for(graph_id);
                 dispatch_plan_blob_with_batch(
@@ -3786,7 +3798,11 @@ async fn run_gql_unchecked(
         dispatch.dispatch_graph_id,
         vec![plan],
         cached_plan_blob,
-        requires_write_path,
+        if bound_vertex.is_some() {
+            crate::policy_pushdown::PolicyInput::BoundVertex
+        } else {
+            crate::policy_pushdown::PolicyInput::Scan
+        },
     )?;
     let plan = plans.pop().expect("one lowered plan");
 
@@ -3900,7 +3916,7 @@ async fn run_gql_unchecked(
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
 
-    if let Some((graph_id, vertex_id)) = bound_vertex {
+    if let Some((graph_id, vertex_id, chunk)) = bound_vertex {
         let crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } = &v2 else {
             return Err(RouterError::InvalidArgument(
                 "bound vertex mutation cannot change graph context".into(),
@@ -3928,7 +3944,7 @@ async fn run_gql_unchecked(
             None,
             None,
             true,
-            Some(vertex_id),
+            Some((vertex_id, chunk)),
         )
         .await?;
         return match prepared {
@@ -4460,7 +4476,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     preflight: Option<&PreflightContext>,
     pre_reserved_mutation: Option<ClientMutationReservation>,
     persist_dispatch_envelope: bool,
-    bound_vertex: Option<GlobalVertexId>,
+    bound_vertex: Option<(GlobalVertexId, BulkLoadChunkReceiptKey)>,
 ) -> Result<PrepareOutcome, RouterError> {
     let mut _instr_logger = PrepareInstrLogger::new(client_mutation_key);
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
@@ -4500,12 +4516,20 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                         .into(),
                 )
             })?;
-            Some(store.reserve_mutation_id_for_client_key(
-                caller,
-                graph_id,
-                key,
-                request_fingerprint(plan_blob, params, mode, bound_vertex),
-            )?)
+            let fingerprint = request_fingerprint(
+                plan_blob,
+                params,
+                mode,
+                bound_vertex.map(|(target, _)| target),
+            );
+            Some(match bound_vertex {
+                Some((_, chunk)) => {
+                    store.reserve_bulk_load_update_row(caller, graph_id, key, fingerprint, chunk)?
+                }
+                None => {
+                    store.reserve_mutation_id_for_client_key(caller, graph_id, key, fingerprint)?
+                }
+            })
         }
     } else {
         None
@@ -4724,7 +4748,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                 resolved_search_blob: None,
             })
             .collect()
-    } else if let Some(target) = bound_vertex {
+    } else if let Some((target, _)) = bound_vertex {
         match bound_vertex_dispatch(target, plans, &shards) {
             Ok(dispatch) => vec![dispatch],
             Err(error) => {

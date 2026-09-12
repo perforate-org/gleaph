@@ -166,12 +166,18 @@ relations and fixed mutation inputs have distinct contracts.
   variable, and an optional terminal Project. It revalidates labels/predicates on the supplied
   vertex and checks liveness at the canonical write boundary. An empty hydrated input cannot
   trigger a scan or select a replacement vertex.
+- Router lowers indexed property policies as complete residual predicates for this input, not
+  an IndexScan replacement. Ordinary unbound lowering retains that optimization. EXISTS-chain
+  policies on the target label reject before scalar reservation/dispatch; they require a separate
+  exact-input read-probe contract, not a relaxation of the Graph guard.
 - The scalar completed journal and result count eligible mutation inputs: **0** or **1**, not
   RETURN rows. Missing/tombstoned/filtered targets complete with zero effect; the bulk Router
   rejects that row and can close Abort at its true prefix. Completed replay precedes mutable
   state reads. Ordinary GQL retains its existing zero-match and projection-count semantics.
 - The Router binds target placement into the existing request fingerprint and saves this seed
-  in the existing row mutation envelope. No new journal or memory region is introduced. Fresh
+  in the existing row mutation envelope. Its request identity also references the owning bulk
+  child so row evidence survives GC and remains replayable until child completion (ADR 0057).
+  No new journal or memory region is introduced. Fresh
   Router/Graph state is required; old pending seed/count semantics are not supported.
 - [ADR 0057](../adr/0057-router-operation-api-and-durable-bulk-load.md) owns the bulk admission,
   authorization, row counting, replay, and Abort contract.

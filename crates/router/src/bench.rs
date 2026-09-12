@@ -1221,6 +1221,75 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
     })
 }
 
+/// Bounded ordinary mutation GC over a pending chunk's 64 completed row outcomes. Includes
+/// durable chunk-reference reads; setup, Graph execution, and policy lowering are excluded.
+#[bench(raw)]
+fn bench_bulk_load_update_row_gc_64_rows() -> canbench_rs::BenchResult {
+    use crate::facade::stable::bulk_load::BulkLoadChunkReceiptKey;
+    use crate::facade::stable::label_stats::RouterMutationRequestIdentityV1;
+    let store = crate::facade::store::RouterStore::new();
+    seed_bulk_bench_parent(BulkLoadLifecycleV1::Open, 0);
+    ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
+    store
+        .admit_bulk_load_update_child(
+            Principal::anonymous(),
+            BULK_BENCH_GRAPH_ID,
+            BULK_BENCH_CLIENT_KEY,
+            BULK_BENCH_PARENT_ID,
+            0,
+            [1; 32],
+            Some(vec![vec![1; 8]; 64]),
+        )
+        .unwrap();
+    for ordinal in 0..=64 {
+        let mut row = RouterMutationRecord::new(1000 + ordinal, 0, vec![1]);
+        row.as_v1_mut().routing_in_progress = false;
+        row.as_v1_mut().completed_row_count = Some(ordinal % 2);
+        row.mark_terminal_at_ns(0);
+        if ordinal < 64 {
+            row.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::PlanExecution {
+                request_fingerprint: vec![1],
+                bulk_load_chunk: Some(BulkLoadChunkReceiptKey::new(BULK_BENCH_PARENT_ID, 0)),
+            };
+        }
+        let key = ClientMutationKey::new(
+            Principal::anonymous(),
+            BULK_BENCH_GRAPH_ID,
+            format!("gc-row-{ordinal}"),
+        );
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, row));
+    }
+    let sweep = || {
+        // Amortized GC examines at most two records per step. Enough steps cover the parent
+        // plus every row while keeping the production scan budget unchanged.
+        for _ in 0..34 {
+            black_box(store.gc_expired_client_mutation_keys(
+                crate::facade::store::CLIENT_MUTATION_KEY_TTL_NS * 2,
+            ));
+        }
+    };
+    sweep();
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| {
+        assert_eq!(
+            map.len(),
+            65,
+            "parent and owned rows survive, ordinary expired row does not"
+        );
+        for ordinal in 0..64 {
+            let key = ClientMutationKey::new(
+                Principal::anonymous(),
+                BULK_BENCH_GRAPH_ID,
+                format!("gc-row-{ordinal}"),
+            );
+            assert_eq!(
+                map.get(&key).unwrap().as_v1().completed_row_count,
+                Some(ordinal % 2)
+            );
+        }
+    });
+    canbench_rs::bench_fn(sweep)
+}
+
 /// Measures pending-child re-admission, including comparison against 64 saved target IDs.
 /// Initial admission and caller-side target construction are outside the measurement.
 #[bench(raw)]

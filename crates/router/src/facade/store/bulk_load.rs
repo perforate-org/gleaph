@@ -1716,6 +1716,172 @@ mod tests {
     }
 
     #[test]
+    fn bulk_load_update_row_gc_keeps_pending_outcomes_and_unpins_completed_chunks() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([63; 32]);
+        crate::facade::auth::grant_admins(&[admin]);
+        let graph = GraphId::from_raw(1);
+        let job = "row-retention";
+        let parent = match store
+            .start_bulk_load_job(admin, graph, job, fixture_target(), 0)
+            .unwrap()
+        {
+            BulkLoadStartAdmission::Created { mutation_id } => mutation_id,
+            _ => panic!("new job"),
+        };
+        let chunk = BulkLoadChunkReceiptKey::new(parent, 0);
+        store
+            .admit_bulk_load_update_child(
+                admin,
+                graph,
+                job,
+                parent,
+                0,
+                [1; 32],
+                Some(vec![vec![1; 8], vec![2; 8]]),
+            )
+            .unwrap();
+        let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+        let mut rows = Vec::new();
+        for (ordinal, count) in [(0, 1), (1, 0)] {
+            let key = client_mutation_key(admin, graph, &format!("{job}:0:u{ordinal}"));
+            let mut record = RouterMutationRecord::new(100 + ordinal, 0, vec![count as u8]);
+            record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::PlanExecution {
+                request_fingerprint: vec![count as u8],
+                bulk_load_chunk: Some(chunk),
+            };
+            record.as_v1_mut().routing_in_progress = false;
+            record.as_v1_mut().completed_row_count = Some(count);
+            record.mark_terminal_at_ns(0);
+            super::super::idempotency::compact_completed_record(&mut record);
+            // Exercise the persisted identity, not a live heap-only ownership marker.
+            let record = RouterMutationRecord::from_bytes(record.to_bytes());
+            assert_eq!(
+                record.as_v1().request_identity.bulk_load_chunk(),
+                Some(chunk)
+            );
+            ROUTER_MUTATION_BY_CLIENT_KEY
+                .with_borrow_mut(|map| map.insert(key.clone(), record.clone()));
+            rows.push((key, record));
+        }
+        store
+            .record_bulk_load_update_progress(admin, graph, job, parent, 0, [1; 32], 1)
+            .unwrap();
+        let ordinary_key = client_mutation_key(admin, graph, "ordinary-expired");
+        let mut ordinary = RouterMutationRecord::new(200, 0, vec![3]);
+        ordinary.as_v1_mut().routing_in_progress = false;
+        ordinary.as_v1_mut().completed_row_count = Some(0);
+        ordinary.mark_terminal_at_ns(0);
+        ROUTER_MUTATION_BY_CLIENT_KEY
+            .with_borrow_mut(|map| map.insert(ordinary_key.clone(), ordinary));
+        for aborting in [false, true] {
+            if aborting {
+                store.begin_bulk_load_abort(admin, graph, job, now).unwrap();
+            }
+            store
+                .admin_sweep_expired_client_mutation_keys_at(admin, None, 1000, now)
+                .unwrap();
+            assert!(
+                store.router_mutation_record(&ordinary_key).is_none(),
+                "the GC must actually run"
+            );
+            for (key, expected) in &rows {
+                assert_eq!(
+                    store.router_mutation_record(key).as_ref(),
+                    Some(expected),
+                    "pending bulk work must retain its exact zero/positive receipt beyond row TTL"
+                );
+                let reservation = store
+                    .reserve_plan_mutation_at(
+                        admin,
+                        graph,
+                        &key.client_key,
+                        expected.as_v1().request_identity.clone(),
+                        now,
+                    )
+                    .expect("pending bulk rows remain replayable beyond ordinary TTL");
+                assert_eq!(reservation.mutation_id, expected.as_v1().mutation_id);
+                assert!(!reservation.routing_owner);
+                for owner in [None, Some(BulkLoadChunkReceiptKey::new(parent, 99))] {
+                    assert_eq!(
+                        store.reserve_plan_mutation_at(
+                            admin,
+                            graph,
+                            &key.client_key,
+                            RouterMutationRequestIdentityV1::PlanExecution {
+                                request_fingerprint: expected
+                                    .as_v1()
+                                    .request_identity
+                                    .request_fingerprint()
+                                    .to_vec(),
+                                bulk_load_chunk: owner,
+                            },
+                            now,
+                        ),
+                        Err(RouterError::Conflict(
+                            "client_mutation_key was already used for a different request".into()
+                        ))
+                    );
+                }
+                assert_eq!(store.router_mutation_record(key).as_ref(), Some(expected));
+            }
+        }
+        store
+            .complete_bulk_load_update_child(admin, graph, job, parent, 0, [1; 32], 1, now)
+            .unwrap();
+        for (key, expected) in &rows {
+            assert_eq!(
+                store.reserve_plan_mutation_at(
+                    admin,
+                    graph,
+                    &key.client_key,
+                    expected.as_v1().request_identity.clone(),
+                    now
+                ),
+                Err(RouterError::InvalidArgument(
+                    "client_mutation_key expired; use a new key for a new mutation".into()
+                ))
+            );
+        }
+        let counter = ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get());
+        assert_eq!(
+            store.reserve_bulk_load_update_row(
+                admin,
+                graph,
+                "new-after-completion",
+                vec![9],
+                chunk
+            ),
+            Err(RouterError::Conflict(
+                "bulk-load update row requires a pending chunk".into()
+            ))
+        );
+        assert_eq!(
+            ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get()),
+            counter
+        );
+        assert!(
+            store
+                .router_mutation_record(&client_mutation_key(admin, graph, "new-after-completion"))
+                .is_none()
+        );
+        store
+            .admin_sweep_expired_client_mutation_keys_at(admin, None, 1000, now)
+            .unwrap();
+        for (key, _) in rows {
+            assert!(store.router_mutation_record(&key).is_none());
+        }
+        assert!(
+            store
+                .bulk_load_chunk_receipt(parent, 0)
+                .unwrap()
+                .progress
+                .is_completed()
+        );
+    }
+
+    #[test]
     fn bulk_load_update_progress_is_monotonic_bounded_and_terminal_safe() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());

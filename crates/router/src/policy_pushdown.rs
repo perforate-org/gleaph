@@ -135,6 +135,11 @@ impl ResolvedPolicies {
     pub(crate) fn is_empty(&self) -> bool {
         self.groups.is_empty()
     }
+
+    pub(crate) fn has_chains_for(&self, label: &NodeLabelRef) -> bool {
+        find_group(self, label)
+            .is_some_and(|group| group.rows.iter().any(|row| row.chain.is_some()))
+    }
 }
 
 /// Collects every conditional-policy predicate applicable to `caller ∪ PUBLIC` on
@@ -424,16 +429,25 @@ impl<'a> LoweringContext<'a> {
     }
 }
 
-/// Lower `policies` into `plan` in place. No-op when no policy applies.
+/// Whether the root must discover its input or already has an exact vertex binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PolicyInput {
+    Scan,
+    BoundVertex,
+}
+
+/// Lower `policies` into `plan` in place. Bound inputs retain every predicate as a residual;
+/// replacing their root with an index scan would discard the input's identity contract.
 pub(crate) fn lower_into_plan(
     ctx: &LoweringContext<'_>,
     plan: &mut PhysicalPlan,
     policies: &ResolvedPolicies,
+    input: PolicyInput,
 ) {
     if policies.groups.is_empty() {
         return;
     }
-    lower_ops_slice(ctx, &mut plan.ops, policies, true);
+    lower_ops_slice(ctx, &mut plan.ops, policies, input == PolicyInput::Scan);
 }
 
 /// Lowers one ops pipeline. Insertions go directly after their binding site; nested
@@ -1480,7 +1494,7 @@ mod tests {
             label: Some(NodeLabelRef::from("Post")),
             property_projection: None,
         }]);
-        lower_into_plan(&ctx, &mut plan, &policies_state);
+        lower_into_plan(&ctx, &mut plan, &policies_state, PolicyInput::Scan);
         assert_eq!(plan.ops.len(), 2, "filter inserted after the scan");
         assert!(
             matches!(
@@ -1503,7 +1517,7 @@ mod tests {
             label: Some(NodeLabelRef::from("Post")),
             property_projection: None,
         }]);
-        lower_into_plan(&ctx, &mut untouched, &empty);
+        lower_into_plan(&ctx, &mut untouched, &empty, PolicyInput::Scan);
         assert_eq!(untouched.ops.len(), 1);
     }
 
@@ -1547,7 +1561,7 @@ mod tests {
         };
         let store = RouterStore::new();
         let ctx = LoweringContext::new(&store, GraphId::from_raw(7));
-        lower_into_plan(&ctx, &mut parsed, &policies);
+        lower_into_plan(&ctx, &mut parsed, &policies, PolicyInput::Scan);
 
         // Every comparison conjunct lands in a chain-stage PropertyFilter directly
         // after the expansion; the dst_filter keeps only the planner label fact.
@@ -1723,6 +1737,57 @@ mod tests {
     }
 
     #[test]
+    fn bound_vertex_keeps_indexed_policy_as_a_full_residual() {
+        let (graph, label, props) = fixture();
+        grant_conditional(
+            GrantSubject::Principal(principal(1)),
+            graph.raw(),
+            label,
+            vec![comparison(
+                props[0],
+                PredicateOp::Eq,
+                PredicateValue::Literal(PredicateLiteral::String("public".into())),
+            )],
+            None,
+        );
+        crate::facade::stable::indexed_catalog::create_named_index(
+            graph,
+            gleaph_graph_kernel::entry::IndexNameId::from_raw(1),
+            crate::planner_stats::IndexCatalogEntry {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                vertex_label: Some("Post".into()),
+                edge_label: None,
+                property: "visibility".into(),
+                edge_direction: None,
+            },
+            PropertyId::from_raw(props[0]),
+            label.try_into().unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
+        let store = RouterStore::new();
+        let policies = effective_policies(&store, &principal(1), graph).unwrap();
+        let ctx = LoweringContext::new(&store, graph);
+        let mut scan = post_scan();
+        lower_into_plan(&ctx, &mut scan, &policies, PolicyInput::Scan);
+        assert!(
+            matches!(&scan.ops[0], PlanOp::IndexScan { property, .. } if property.as_ref() == "visibility")
+        );
+        let mut bound = post_scan();
+        lower_into_plan(&ctx, &mut bound, &policies, PolicyInput::BoundVertex);
+        assert_eq!(bound.ops.len(), 2);
+        assert!(
+            matches!(&bound.ops[0], PlanOp::NodeScan { label: Some(label), .. } if label == &NodeLabelRef::from("Post"))
+        );
+        let PlanOp::PropertyFilter { predicates, .. } = &bound.ops[1] else {
+            panic!("full residual required")
+        };
+        assert_eq!(predicates, &vec![label_filter("p", &policies.groups[0])]);
+        clear_grants(graph);
+    }
+
+    #[test]
     fn pure_exists_row_lowers_to_one_bounded_semi_apply_probe() {
         let (graph, post, acct, edge, props) = chain_fixture();
         grant_chain_row(
@@ -1736,9 +1801,23 @@ mod tests {
         let resolved =
             effective_policies(&RouterStore::new(), &principal(1), graph).expect("resolves");
         let store = RouterStore::new();
+        assert_eq!(
+            crate::gql::lower_for_execution(
+                &store,
+                &principal(1),
+                graph,
+                vec![post_scan()],
+                Vec::new(),
+                PolicyInput::BoundVertex
+            )
+            .unwrap_err(),
+            RouterError::NotImplemented(
+                "bulk vertex updates with EXISTS policies are not supported".into()
+            )
+        );
         let ctx = LoweringContext::new(&store, graph);
         let mut plan = post_scan();
-        lower_into_plan(&ctx, &mut plan, &resolved);
+        lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
         assert_eq!(plan.ops.len(), 2, "scan + semi-apply, no outer filter");
         let PlanOp::SemiApply {
@@ -1798,7 +1877,7 @@ mod tests {
         let store = RouterStore::new();
         let ctx = LoweringContext::new(&store, graph);
         let mut plan = post_scan();
-        lower_into_plan(&ctx, &mut plan, &resolved);
+        lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
         assert_eq!(plan.ops.len(), 3);
         // Outer filter: the PLAIN row's conjunction only.
@@ -1891,7 +1970,7 @@ mod tests {
         let store = RouterStore::new();
         let ctx = LoweringContext::new(&store, graph);
         let mut plan = post_scan();
-        lower_into_plan(&ctx, &mut plan, &resolved);
+        lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
         // The anchor scan is preserved as the join's left input; the right side drives
         // from the terminal index and reverse-expands to candidate sources.
@@ -1946,7 +2025,7 @@ mod tests {
         let store = RouterStore::new();
         let ctx = LoweringContext::new(&store, graph);
         let mut plan = post_scan();
-        lower_into_plan(&ctx, &mut plan, &resolved);
+        lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
         assert_eq!(plan.ops.len(), 2);
         assert!(matches!(&plan.ops[1], PlanOp::SemiApply { .. }));

@@ -1,6 +1,6 @@
 # Stable-memory inventory
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, the exact derived-index pending floor at 52, and the ADR 0088 LTB block stores at 53 (forward) / 54 (reverse), with reserved holes 35, 44–45, and 47–50 = 55 numbered regions, 0–54; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 + the ADR-0033-implementation rebuild pool region at MemoryId 18 = 17 allocated regions across 19 numbered slots, 0–18 (holes 8 and 10); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) + plan 0335 dictionary catalog (MemoryId 13), compressed chunk rows (MemoryId 14), and per-principal dict audit log (MemoryId 15) = 16 regions, 0–15)
 Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
@@ -371,6 +371,11 @@ Router **54 regions** total (0–53).
 
 ADR 0057 exact-target updates reuse the scalar envelope in region 7: the request fingerprint
 includes target placement, and its seed blob carries `SeedBindingsWire.mutation_target`.
+`PlanExecution` identity also stores `bulk_load_chunk: Option<BulkLoadChunkReceiptKey>`:
+ordinary scalar requests use None, bulk update rows reference their region 49 child. The link is
+co-written with scalar reservation and survives compaction; unfinished child completion state
+pins row evidence against both terminal GC and retry expiry. Child completion unpins it. This
+identity-layout change requires fresh Router state/reinstall, not a new region or migration.
 The existing Graph journal (Graph region 39) records a completed 0/1 input count; its storage
 format and allocation do not change. See [ADR 0057](../adr/0057-router-operation-api-and-durable-bulk-load.md)
 for interpretation and recovery. The seed/count contract requires fresh Router/Graph state;
