@@ -728,6 +728,12 @@ where
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             for bucket in buckets {
+                // ADR 0096 §5: tiny buckets occupy zero physical geometry (no
+                // span/log/values); like bypass rows they are counted for
+                // occupancy only where they hold bytes — here, nowhere.
+                if bucket.is_tiny_mode() {
+                    continue;
+                }
                 stats.total_stored_edge_slots = stats
                     .total_stored_edge_slots
                     .checked_add(u64::from(bucket.stored_slots))
@@ -780,6 +786,22 @@ where
         }
         match self.find_bucket(src, &vertex, label_id)? {
             BucketSearch::Found { bucket, .. } => {
+                // ADR 0096 §5: tiny buckets hold live edges but zero reserved
+                // capacity (no span/log/values). Degree is honest; the rest
+                // reports the empty geometry so planners never size from
+                // payload bytes.
+                if bucket.is_tiny_mode() {
+                    return Ok(Some(LabelBucketPlacementInfo {
+                        degree: bucket.degree,
+                        stored_edge_slots: 0,
+                        edge_overflow_log_head: -1,
+                        edge_overflow_log_len: 0,
+                        inline_property_byte_width: 0,
+                        inline_property_bytes_slab_slots: 0,
+                        inline_property_bytes_overflow_log_head: -1,
+                        inline_property_bytes_overflow_log_len: 0,
+                    }));
+                }
                 let header = self.edges.header();
                 let leaf = Self::leaf_index_for_vid(src, header.segment_size);
                 let edge_overflow_log_len = if bucket.overflow_log_head() >= 0 {
@@ -834,32 +856,53 @@ where
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<u64, LabeledOperationError> {
-        if bucket_index + 1 < vertex.degree() {
-            let next_ix = bucket_index
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // ADR 0096 §5: tiny successors occupy zero slab slots (anchors, not
+        // storage) — clamping to a tiny anchor would collapse the window to
+        // empty. Skip forward to the next non-tiny bucket (usually one step).
+        let mut next_ix = bucket_index
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        while next_ix < vertex.degree() {
             let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
             let next = self
                 .buckets
                 .read_label_bucket_slot(next_slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            // Proportional slack placement does not guarantee strictly increasing
-            // `edge_start` across bucket slots; CSR slab-window geometry requires a
-            // non-decreasing neighbor base, so clamp the successor boundary.
-            return Ok(next.edge_start().max(bucket.edge_start()));
+            if !next.is_tiny_mode() {
+                // Proportional slack placement does not guarantee strictly increasing
+                // `edge_start` across bucket slots; CSR slab-window geometry requires a
+                // non-decreasing neighbor base, so clamp the successor boundary.
+                return Ok(next.edge_start().max(bucket.edge_start()));
+            }
+            next_ix = next_ix
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
 
         if vertex.degree() == 0 {
             return Ok(0);
         }
 
-        let first_edge_start = if bucket_index == 0 {
-            bucket.edge_start()
-        } else {
-            self.buckets
-                .read_label_bucket_slot(vertex.base_slot_start())
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                .edge_start()
+        // ADR 0096 §5: the tail anchors at the first NON-TINY bucket (a tiny
+        // first bucket's anchor is a placeholder). Scan back from the queried
+        // bucket (itself slab in all caller paths, so this terminates there
+        // at the latest); fall back to its own start (fail-closed empty).
+        let mut base_ix = bucket_index;
+        let first_edge_start = loop {
+            let slot = Self::labeled_vertex_bucket_slot(vertex, base_ix)?;
+            let candidate = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if !candidate.is_tiny_mode() {
+                break candidate.edge_start();
+            }
+            if base_ix == 0 {
+                break bucket.edge_start();
+            }
+            base_ix = base_ix
+                .checked_sub(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         };
         crate::labeled::slot_index::checked_add_slot_index(
             first_edge_start,
@@ -881,16 +924,25 @@ where
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<u64, LabeledOperationError> {
-        if bucket_index + 1 < vertex.degree() {
-            let next_ix = bucket_index
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // ADR 0096 §5: tiny successors occupy zero slab slots — clamping to a
+        // tiny anchor would collapse the window to empty. Skip forward to the
+        // next non-tiny bucket (usually one step); all-remaining-tiny falls
+        // through to the own-span tail below.
+        let mut next_ix = bucket_index
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        while next_ix < vertex.degree() {
             let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
             let next = self
                 .buckets
                 .read_label_bucket_slot(next_slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            return Ok(next.edge_start().max(bucket.edge_start()));
+            if !next.is_tiny_mode() {
+                return Ok(next.edge_start().max(bucket.edge_start()));
+            }
+            next_ix = next_ix
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
 
         crate::labeled::slot_index::checked_add_slot_index(
@@ -937,6 +989,11 @@ where
             .buckets
             .read_label_bucket_slot(prev_slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // ADR 0096 §5: a tiny predecessor occupies zero slab slots — the new
+        // bucket anchors at the tiny anchor itself, not anchor + degree.
+        if prev.is_tiny_mode() {
+            return Ok(prev.edge_start());
+        }
         crate::labeled::slot_index::checked_add_slot_index(
             prev.edge_start(),
             u64::from(prev.stored_slots),
@@ -949,6 +1006,11 @@ where
         vertex: &LabeledVertex,
         buckets: &[LabelBucket],
     ) -> Result<bool, LabeledOperationError> {
+        // ADR 0096 §5: tiny buckets have no slab bytes to bulk-copy (their
+        // anchor spans would alias neighbor ranges in the contiguity check).
+        if buckets.iter().any(|b| b.is_tiny_mode()) {
+            return Ok(false);
+        }
         if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
             return Ok(false);
         }
@@ -1403,19 +1465,33 @@ mod tests {
     fn labeled_leaf_segment_is_dense_uses_pma_not_geometry_when_pinned() {
         let graph = test_graph();
         let vid = VertexId::from(0);
-        graph
-            .insert_edge(
-                vid,
-                BucketLabelKey::from_raw(99),
-                TestEdge { target: 999 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // ADR 0096 §4: tiny birth holds edges inline (no span, no log, no pin).
+        // Seed past promotion into log spill (5th edge) so the leaf pins with
+        // slab geometry plus log-only PMA contributions.
+        for target in [999u32, 1000, 1001, 1002, 1003] {
+            graph
+                .insert_edge(
+                    vid,
+                    BucketLabelKey::from_raw(99),
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
         let pma = graph.labeled_leaf_pma_density(vid);
         let geometry = graph.labeled_leaf_geometry_density(vid);
-        assert_eq!(geometry, 0.0, "a new bucket owns no slab geometry");
-        assert!(pma > geometry, "live log edges contribute to PMA density");
+        let counts = graph.leaf_segment_counts_for_vid(vid);
+        assert_eq!(
+            counts.actual, 5,
+            "PMA actual counts the log-spilled edge too"
+        );
+        assert!(geometry > 0.0, "promoted bucket owns slab geometry");
+        // ADR 0096 §4: the pin floor (whole block) dilutes PMA below geometry
+        // (inverted from quota birth, where geometry was zero). The dense
+        // verdict still follows PMA, not geometry: spans are full
+        // (geometry > threshold) yet the leaf is not dense.
+        assert!(pma < geometry, "pin floor dilutes PMA below geometry");
         assert_eq!(
             graph.labeled_leaf_segment_is_dense(vid),
             pma >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
@@ -1423,7 +1499,6 @@ mod tests {
         assert!(!graph.labeled_leaf_segment_is_dense(vid));
     }
 
-    #[test]
     fn labeled_leaf_rebalance_preserves_scan() {
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -1476,23 +1551,39 @@ mod tests {
             .unwrap();
         let road = BucketLabelKey::from_raw(2);
         let pma_before = graph.labeled_leaf_pma_density(vid);
-        graph
-            .insert_edge_skip_leaf_cascade(
-                vid,
-                road,
-                TestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // ADR 0096 §4: tiny edges are invisible to PMA (no slots reserved).
+        // Promote (span 4) then spill one edge to the log: PMA actual must
+        // rise (log edges count!) while reservations (geometry denominator)
+        // stay flat — the log/span firewall the dense decision relies on.
+        for target in [1u32, 2, 3, 4, 5] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         let pma_after = graph.labeled_leaf_pma_density(vid);
         assert!(
             pma_after > pma_before,
             "PMA actual/total should rise with live edges"
         );
+        let counts = graph.leaf_segment_counts_for_vid(vid);
         assert_eq!(
-            graph.labeled_leaf_geometry_density(vid),
-            0.0,
-            "log-only buckets own no slab geometry"
+            counts.actual, 5,
+            "PMA actual counts slab and log-spilled edges"
+        );
+        assert_eq!(
+            graph.labeled_leaf_geometry_stored_slots(crate::labeled::graph::LabeledLaraGraph::<
+                crate::labeled::graph::test_support::TestEdge,
+                crate::VectorMemory,
+            >::leaf_index_for_vid(
+                vid, graph.edges().header().segment_size
+            )),
+            4,
+            "log spill reserves no new slab geometry"
         );
     }
 }

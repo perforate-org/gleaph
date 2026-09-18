@@ -75,7 +75,11 @@ where
     /// Edge-slab spans `[base, base + stored_slots)` owned by other labeled vertices in
     /// `vid`'s PMA leaf. Used to place a new vertex's edge span without overlapping a
     /// leaf-mate whose weighted span exceeds the fixed per-vertex quota.
-    fn labeled_leaf_occupied_spans(&self, vid: VertexId, exclude: VertexId) -> Vec<(u64, u64)> {
+    pub(super) fn labeled_leaf_occupied_spans(
+        &self,
+        vid: VertexId,
+        exclude: VertexId,
+    ) -> Vec<(u64, u64)> {
         let header = self.edges.header();
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(vid, seg);
@@ -102,7 +106,10 @@ where
             let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
                 continue;
             };
-            let Some(first) = buckets.first() else {
+            // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors
+            // are placeholders, not storage). Vertices without slab spans
+            // contribute nothing below (their stored_slots is 0).
+            let Some(first) = buckets.iter().find(|bucket| !bucket.is_tiny_mode()) else {
                 continue;
             };
             let base = first.edge_start();
@@ -319,7 +326,11 @@ where
             checked_add_slot_index(leaf_start, vertex_offset)?
         } else {
             let buckets = self.read_vertex_label_buckets(&vertex).ok()?;
-            buckets.first()?.edge_start()
+            // ADR 0096 §5: anchor at the first non-tiny bucket (see above).
+            buckets
+                .iter()
+                .find(|bucket| !bucket.is_tiny_mode())?
+                .edge_start()
         };
         let end = checked_add_slot_index(base, u64::from(new_alloc))?;
         if end > leaf_end {
@@ -348,7 +359,14 @@ where
         } else {
             // `unwrap_or` would eagerly run the (now occupancy-aware) pin on every call;
             // only resolve a pin when the vertex genuinely has no first bucket.
-            match self.read_vertex_label_buckets(&vertex)?.first() {
+            // ADR 0096 §5: anchor at the first non-tiny bucket (tiny anchors
+            // are placeholders); an all-tiny vertex has no slab base, so fall
+            // through to pin resolution like the bucket-less case.
+            match self
+                .read_vertex_label_buckets(&vertex)?
+                .iter()
+                .find(|bucket| !bucket.is_tiny_mode())
+            {
                 Some(bucket) => bucket.edge_start(),
                 None => self.ensure_labeled_leaf_edge_physical_pin(vid)?,
             }
@@ -498,7 +516,9 @@ where
             let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
                 continue;
             };
-            let Some(first) = buckets.first() else {
+            // ADR 0096 §5: same first-non-tiny rule (see above); spanless
+            // vertices contribute nothing to overlap detection.
+            let Some(first) = buckets.iter().find(|bucket| !bucket.is_tiny_mode()) else {
                 continue;
             };
             let base = first.edge_start();
@@ -526,9 +546,20 @@ where
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
         }
-        let (leaf_start, leaf_len) = self
-            .labeled_leaf_physical_range(vid)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid) {
+            Some(range) => range,
+            // Unpinned leaf: spanless (tiny-only) vertices are vacuously
+            // within; slab spans without a pin are a genuine violation.
+            None => {
+                let buckets = self
+                    .read_vertex_label_buckets(&vertex)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                if buckets.iter().all(|bucket| bucket.is_tiny_mode()) {
+                    return Ok(());
+                }
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            }
+        };
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
@@ -540,6 +571,12 @@ where
                 .buckets
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            // ADR 0096 §5: tiny buckets hold no slab bytes; there is no span
+            // to contain. (An unpinned leaf with only tiny buckets returns
+            // Ok below — promotion/maintenance pins it once spans exist.)
+            if bucket.is_tiny_mode() {
+                continue;
+            }
             let bucket_end = Self::labeled_bucket_edge_end_exclusive(&bucket)?;
             assert!(
                 bucket.edge_start() >= leaf_start && bucket_end <= leaf_end,
@@ -587,6 +624,9 @@ mod tests {
 
     #[test]
     fn labeled_span_meta_assigned_on_first_leaf_edge_write() {
+        // ADR 0096 §5: tiny birth writes no slab bytes, so the first tiny
+        // edge leaves the leaf unpinned; relocate pins it once spans exist.
+        // (Pre-tiny, the first edge write pinned via quota reservation.)
         let graph = hub_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -602,16 +642,38 @@ mod tests {
                 .physical_start,
             SPAN_PHYSICAL_UNASSIGNED
         );
+        for target in [u32::from(dst), u32::from(dst) + 1, u32::from(dst) + 2] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    hub,
+                    BucketLabelKey::from_raw(10),
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            graph
+                .edges()
+                .span_meta_store()
+                .get(u64::from(leaf))
+                .physical_start,
+            SPAN_PHYSICAL_UNASSIGNED,
+            "tiny inserts must not pin the leaf"
+        );
         graph
             .insert_edge_skip_leaf_cascade(
                 hub,
                 BucketLabelKey::from_raw(10),
                 TestEdge {
-                    target: u32::from(dst),
+                    target: u32::from(dst) + 3,
                 },
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        graph
+            .relocate_labeled_leaf_physical_block(hub)
+            .expect("relocate pins the leaf");
         assert_ne!(
             graph
                 .edges()
@@ -629,26 +691,23 @@ mod tests {
         let neighbor = graph.push_vertex(LabeledVertex::default()).unwrap();
         let label_a = BucketLabelKey::from_raw(10);
         let label_b = BucketLabelKey::from_raw(11);
+        // ADR 0096 §5: promote past tiny (4 edges per bucket) so spans exist,
+        // then relocate to pin (tiny birth pins nothing).
+        for (vid, label) in [(hub, label_a), (neighbor, label_b)] {
+            for target in [10u32, 11, 12, 13] {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        vid,
+                        label,
+                        TestEdge { target },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+        }
         graph
-            .insert_edge_skip_leaf_cascade(
-                hub,
-                label_a,
-                TestEdge {
-                    target: u32::from(neighbor),
-                },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
-        graph
-            .insert_edge_skip_leaf_cascade(
-                neighbor,
-                label_b,
-                TestEdge {
-                    target: u32::from(hub),
-                },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+            .relocate_labeled_leaf_physical_block(hub)
+            .expect("relocate pins the leaf");
         let (leaf_start, leaf_len) = graph
             .labeled_leaf_physical_range(hub)
             .expect("leaf pinned after labeled insert");
@@ -668,20 +727,30 @@ mod tests {
     fn labeled_leaf_physical_block_covers_all_label_buckets() {
         let graph = hub_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let mut dsts = Vec::new();
+        for _ in 0..4 {
+            dsts.push(graph.push_vertex(LabeledVertex::default()).unwrap());
+        }
+        // ADR 0096 §5: promote each bucket past tiny (spans exist), pin via
+        // relocate, then every slab span must lie in the pinned block.
         for label_idx in 0..4u16 {
             let label = BucketLabelKey::from_raw(20_000 + label_idx);
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    hub,
-                    label,
-                    TestEdge {
-                        target: u32::from(dst),
-                    },
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
+            for dst in &dsts {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        hub,
+                        label,
+                        TestEdge {
+                            target: u32::from(*dst),
+                        },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
         }
+        graph
+            .relocate_labeled_leaf_physical_block(hub)
+            .expect("relocate pins the leaf");
         graph
             .assert_labeled_buckets_within_leaf_physical(hub)
             .unwrap();
@@ -733,17 +802,26 @@ mod tests {
         )
         .unwrap();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        // ADR 0096 §5: promote past tiny (spans exist), pin via relocate
+        // (tiny birth pins nothing), then the pin must survive reopen.
+        let mut dsts = Vec::new();
+        for _ in 0..4 {
+            let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+            dsts.push(u32::from(dst));
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    hub,
+                    BucketLabelKey::from_raw(42),
+                    TestEdge {
+                        target: u32::from(dst),
+                    },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         graph
-            .insert_edge_skip_leaf_cascade(
-                hub,
-                BucketLabelKey::from_raw(42),
-                TestEdge {
-                    target: u32::from(dst),
-                },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+            .relocate_labeled_leaf_physical_block(hub)
+            .expect("relocate pins the leaf");
         let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap();
 
         let reopened = LabeledLaraGraph::init(
@@ -787,8 +865,11 @@ mod tests {
             )
             .map(|_| ())
             .unwrap();
-        assert_eq!(edges_out.len(), 1);
-        assert_eq!(edges_out[0].target, u32::from(dst));
+        assert_eq!(edges_out.len(), 4);
+        let mut targets: Vec<u32> = edges_out.iter().map(|e| e.target).collect();
+        targets.sort_unstable();
+        dsts.sort_unstable();
+        assert_eq!(targets, dsts);
     }
 
     #[test]
@@ -821,15 +902,20 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::from_raw(7);
+        // ADR 0096 §5: promote past tiny so both vertices own real slab spans
+        // (corrupting a tiny anchor is meaningless — the guard skips spanless
+        // buckets by construction).
         for vid_u in 0..2u32 {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    VertexId::from(vid_u),
-                    label,
-                    TestEdge { target: 1 },
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
+            for target in [1u32, 2, 3, 4] {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        VertexId::from(vid_u),
+                        label,
+                        TestEdge { target },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
             graph
                 .compact_vertex_edge_span(VertexId::from(vid_u), 0)
                 .unwrap();
@@ -868,6 +954,7 @@ mod tests {
     /// the same stable memories (as `post_upgrade` does); and require every
     /// per-label adjacency plus every structural invariant to survive — then
     /// mutate again to prove the reopened graph is fully operational.
+
     #[test]
     fn labeled_heavy_relocation_survives_reopen_without_corruption() {
         const VERTICES: u32 = 3;

@@ -3,11 +3,11 @@
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
-    OVERFLOW_LOG_NONE, bucket_word_has_zero_reserved_bits, checked_add_slot_index,
-    decode_bucket_label_key, decode_bucket_overflow_log_head, decode_meta28,
-    decode_overflow_log_byte, decode_slot_index, encode_locator_word, encode_overflow_log_byte,
-    read_u40, replace_bucket_label_key, replace_bucket_overflow_log_head, slot_index_fits,
-    try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
+    BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, bucket_word_has_zero_reserved_bits,
+    checked_add_slot_index, decode_bucket_label_key, decode_bucket_overflow_log_head,
+    decode_meta28, decode_overflow_log_byte, decode_slot_index, encode_locator_word,
+    encode_overflow_log_byte, read_u40, replace_bucket_label_key, replace_bucket_overflow_log_head,
+    slot_index_fits, try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
     try_replace_slot_index, write_u40,
 };
 use crate::slab_index::byte_offset_fits;
@@ -25,6 +25,28 @@ use std::borrow::Cow;
 /// layouts are independent: [`Self::stored_slots`] counts edge slab slots, while
 /// [`Self::inline_property_bytes_slab_slots`] counts inline-property-bytes slab slots. Each store has
 /// its own overflow-log metadata and may fold or relocate without moving the other.
+///
+/// Per-mode field semantics (ADR 0096 §7.2 — every repurposed or constrained
+/// field documents all three modes; a missing tiny meaning here is a review
+/// rejection):
+///
+/// - `degree`: live count in ALL modes (tiny: 0..=3, see `TINY_MAX_DEGREE`).
+/// - `stored_slots`: slab width for slab/tree; on tiny MUST equal `degree`
+///   (dense prefix, no tombstones — wire rule, `try_read_from` enforces).
+/// - `edge_start` (word bits 0..36): span start for slab, root region for
+///   tree, EMPTY-SPAN ANCHOR for tiny (valid successor boundary, §5).
+/// - log-head (word bits 52..60): log head or NONE for slab/tree; on tiny
+///   MUST be NONE (a zero decodes as a live log).
+/// - `inline_property_bytes_slab_slots` (bytes 16..20): value-slab width for
+///   slab/tree (always 0 at width 0); T0 inline target payload on tiny.
+/// - `inline_property_bytes_offset` (bytes 20..24 + hi byte): value offset
+///   for slab/tree; T1 (low-32) + T2-high-byte on tiny (hi-zero rule).
+/// - `inline_property_byte_width` (bytes 25..26): value width for slab/tree;
+///   T2 middle bytes on tiny (payload, never schema).
+/// - `inline_property_bytes_log_byte` (byte 27): value-log head for
+///   slab/tree; T2 top byte on tiny (payload, never schema).
+/// - `inline_property_bytes_log_len` (byte 28): value-log length for
+///   slab/tree; reserved zero on tiny (tail-zero rule).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     word: u64,
@@ -221,6 +243,167 @@ impl LabelBucket {
         self
     }
 
+    /// Maximum live edges for a tiny-mode bucket (ADR 0096 §3).
+    ///
+    /// Wire truth (validated at `try_read_from` and `try_enable_tiny_mode`),
+    /// not policy: raising K needs new descriptor bytes, i.e. a layout ADR.
+    pub(crate) const TINY_MAX_DEGREE: u32 = 3;
+
+    /// Bit 60 of the packed `word`: 1 = tiny mode (descriptor-resident inline
+    /// targets), 0 = slab/tree interpretation. ADR 0096 §1.
+    pub(crate) const TINY_MODE_BIT: u64 = BUCKET_TINY_MODE_BIT;
+
+    /// Returns `true` if this bucket is in tiny mode (inline targets, zero slab
+    /// slots, no overflow log, no inline-property schema). ADR 0096 §1.
+    ///
+    /// Single bit-test on the packed `word`; the 29-byte wire format is unchanged.
+    #[inline]
+    pub fn is_tiny_mode(&self) -> bool {
+        (self.word & Self::TINY_MODE_BIT) != 0
+    }
+
+    /// Inline edge target at position `index` (0..3) for a tiny-mode bucket.
+    ///
+    /// Payload map (ADR 0096 §1): T0 ≡ `inline_property_bytes_slab_slots` value,
+    /// T1 ≡ `inline_property_bytes_offset` low-32 (+hi-zero rule), T2 ≡ raw
+    /// composition of offset-hi byte, `inline_property_byte_width`, and
+    /// `inline_property_bytes_log_byte`. Meaningful only for tiny buckets:
+    /// callers dispatch on [`Self::is_tiny_mode`] first (the bytes are inline
+    /// property state on slab buckets). Debug-asserts tiny mode; the G6
+    /// mode-matrix tests cover behavioral misuse.
+    #[inline]
+    pub fn tiny_target(self, index: u32) -> u32 {
+        debug_assert!(
+            self.is_tiny_mode(),
+            "tiny_target requires a tiny-mode bucket"
+        );
+        debug_assert!(index < 3, "tiny target index out of range");
+        match index {
+            0 => self.inline_property_bytes_slab_slots,
+            1 => (self.inline_property_bytes_offset & 0xFFFF_FFFF) as u32,
+            _ => {
+                let hi = ((self.inline_property_bytes_offset >> 32) & 0xFF) as u32;
+                hi | ((u32::from(self.inline_property_byte_width)) << 8)
+                    | ((u32::from(self.inline_property_bytes_log_byte)) << 24)
+            }
+        }
+    }
+
+    /// Returns a copy with inline tiny target `index` (0..3) set to `target`.
+    ///
+    /// Panics on `index >= 3` (programmer error, mirroring the `from_parts`
+    /// convention). Does not zero the tail past `degree` and does not validate
+    /// tiny invariants — callers maintain the dense prefix explicitly and
+    /// publish through paths validated by `try_read_from` /
+    /// `try_enable_tiny_mode`.
+    #[inline]
+    pub fn with_tiny_target(self, index: u32, target: u32) -> Self {
+        assert!(
+            index < 3,
+            "LabelBucket::with_tiny_target: index out of range"
+        );
+        debug_assert!(
+            self.is_tiny_mode(),
+            "with_tiny_target requires a tiny-mode bucket"
+        );
+        match index {
+            0 => Self {
+                inline_property_bytes_slab_slots: target,
+                ..self
+            },
+            1 => Self {
+                inline_property_bytes_offset: (self.inline_property_bytes_offset & !0xFFFF_FFFF)
+                    | u64::from(target),
+                ..self
+            },
+            _ => Self {
+                inline_property_bytes_offset: (self.inline_property_bytes_offset & 0xFFFF_FFFF)
+                    | ((u64::from(target & 0xFF)) << 32),
+                inline_property_byte_width: ((target >> 8) & 0xFFFF) as u16,
+                inline_property_bytes_log_byte: (target >> 24) as u8,
+                ..self
+            },
+        }
+    }
+
+    /// Enables tiny mode on a compatible bucket, validating the checkable subset.
+    ///
+    /// Pre-checks (slab semantics, all checkable): tree bit clear, `degree ≤
+    /// TINY_MAX_DEGREE`, `stored == degree`, word log-head NONE, and no live
+    /// inline-property value state (width/slots/offset/log all empty — targets
+    /// are set after enabling). The no-log sentinel is normalized into the zero
+    /// tail the tiny wire rules require; a live value log is rejected, never
+    /// destroyed. NOT checkable here: the pre-existing width for degree 3
+    /// (those bytes become T2 payload) — but a width-carrying bucket fails the
+    /// value-state check first via its width field, which is still meaningful
+    /// pre-enable. R2b dispatch additionally guarantees width-0 callers.
+    /// Already-tiny input revalidates idempotently.
+    pub fn try_enable_tiny_mode(self) -> Result<Self, LabelBucketFieldError> {
+        if self.is_tiny_mode() {
+            self.check_tiny_invariants()?;
+            return Ok(self);
+        }
+        if self.is_tree_mode() {
+            return Err(LabelBucketFieldError::TinyTreeModeConflict);
+        }
+        if self.degree > Self::TINY_MAX_DEGREE {
+            return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
+        }
+        if self.stored_slots != self.degree {
+            return Err(LabelBucketFieldError::TinyStoredDegreeMismatch);
+        }
+        if self.overflow_log_head() >= 0 {
+            return Err(LabelBucketFieldError::TinyLogHeadPresent);
+        }
+        let mut out = self;
+        if out.inline_property_bytes_log_byte == OVERFLOW_LOG_NONE
+            && out.inline_property_bytes_log_len == 0
+        {
+            out.inline_property_bytes_log_byte = 0;
+        }
+        if out.inline_property_byte_width != 0
+            || out.inline_property_bytes_slab_slots != 0
+            || out.inline_property_bytes_offset != 0
+            || out.inline_property_bytes_log_byte != 0
+            || out.inline_property_bytes_log_len != 0
+        {
+            return Err(LabelBucketFieldError::TinyValueStatePresent);
+        }
+        out.word |= Self::TINY_MODE_BIT;
+        out.check_tiny_invariants()?;
+        Ok(out)
+    }
+
+    /// Validates the checkable tiny-mode invariants; requires the tiny bit set.
+    /// Shared by `try_read_from` (wire) and `try_enable_tiny_mode` (memory).
+    fn check_tiny_invariants(&self) -> Result<(), LabelBucketFieldError> {
+        debug_assert!(
+            self.is_tiny_mode(),
+            "check_tiny_invariants requires the tiny bit"
+        );
+        if self.is_tree_mode() {
+            return Err(LabelBucketFieldError::TinyTreeModeConflict);
+        }
+        if self.degree > Self::TINY_MAX_DEGREE {
+            return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
+        }
+        if self.stored_slots != self.degree {
+            return Err(LabelBucketFieldError::TinyStoredDegreeMismatch);
+        }
+        if self.overflow_log_head() >= 0 {
+            return Err(LabelBucketFieldError::TinyLogHeadPresent);
+        }
+        for i in self.degree..3 {
+            if self.tiny_target(i) != 0 {
+                return Err(LabelBucketFieldError::TinyTailNotZero);
+            }
+        }
+        if self.inline_property_bytes_log_len != 0 {
+            return Err(LabelBucketFieldError::TinyTailNotZero);
+        }
+        Ok(())
+    }
+
     /// Plan 0318 §Step 7: physical depth of the tree-mode layout, in
     /// the range `1..=MAX_DEPTH = 3`. For a freshly-promoted bucket
     /// (no `tree_mode_deepen` call) the physical depth equals
@@ -348,6 +531,14 @@ impl LabelBucket {
     /// Returns `true` when this bucket owns a non-empty value span.
     #[inline]
     pub fn is_inline_property_bytes_allocated(self) -> bool {
+        // ADR 0096 §5 value funnel: tiny buckets hold no value state by
+        // construction, so they report unallocated here. This single arm covers
+        // every `!allocated || width == 0` early-return path (values reads,
+        // writes, compaction, residents) without further arms; direct width
+        // readers outside those paths are diverted at §5 entry points instead.
+        if self.is_tiny_mode() {
+            return false;
+        }
         self.inline_property_byte_width != 0 && self.degree != 0
     }
 
@@ -547,12 +738,32 @@ impl LabelBucket {
         }
         let inline_property_byte_width = u16::from_le_bytes(chunk[25..27].try_into().unwrap());
         let inline_property_bytes_log_byte = chunk[27];
+        let inline_property_bytes_log_len = chunk[28];
+        // ADR 0096 §1: tiny buckets carry targets (not value/log state) in the
+        // inline-property bytes. Validate the tiny wire rules here and return
+        // before the slab/tree consistency rules below, which would misread
+        // payload as schema (e.g. a T2 top byte in 170..254 is not a log head,
+        // and live targets are not value slots). Wire truth: TINY_MAX_DEGREE,
+        // NONE log-head, stored == degree, zero tail (see check_tiny_invariants).
+        let bucket = Self {
+            word,
+            degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
+            stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
+            inline_property_bytes_slab_slots,
+            inline_property_bytes_offset,
+            inline_property_byte_width,
+            inline_property_bytes_log_byte,
+            inline_property_bytes_log_len,
+        };
+        if bucket.is_tiny_mode() {
+            bucket.check_tiny_invariants()?;
+            return Ok(bucket);
+        }
         if inline_property_bytes_log_byte != OVERFLOW_LOG_NONE
             && inline_property_bytes_log_byte >= 170
         {
             return Err(LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange);
         }
-        let inline_property_bytes_log_len = chunk[28];
         if inline_property_bytes_log_len > 170 {
             return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
         }
@@ -594,23 +805,15 @@ impl LabelBucket {
                 return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
             }
         }
-        Ok(Self {
-            word,
-            degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
-            stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
-            inline_property_bytes_slab_slots,
-            inline_property_bytes_offset,
-            inline_property_byte_width,
-            inline_property_bytes_log_byte,
-            inline_property_bytes_log_len,
-        })
+        Ok(bucket)
     }
 }
 
 /// Invalid [`LabelBucket`] wire or field combinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelBucketFieldError {
-    /// Bits 60–63 of the packed word are reserved and must be zero.
+    /// Bits 61–62 of the packed word are reserved and must be zero (bit 60 is
+    /// the tiny-mode flag, bit 63 the tree-mode flag).
     ReservedBitsSet,
     /// `edge_start` does not fit in the 36-bit slot index.
     SlotIndexOverflow,
@@ -626,12 +829,25 @@ pub enum LabelBucketFieldError {
     InlinePropertyBytesLogStateMismatch,
     /// InlinePropertyBytes slots/log entries require a non-zero inline property schema width.
     InlinePropertyBytesStateWithoutSchema,
+    /// Tiny-mode bit set together with the tree-mode bit (ADR 0096 §1).
+    TinyTreeModeConflict,
+    /// Tiny-mode bucket with `degree > TINY_MAX_DEGREE`.
+    TinyDegreeOutOfRange,
+    /// Tiny-mode bucket with `stored_slots != degree`.
+    TinyStoredDegreeMismatch,
+    /// Tiny-mode bucket with a live word overflow-log head (must be NONE).
+    TinyLogHeadPresent,
+    /// Tiny-mode bucket with nonzero payload past `degree` or nonzero byte 28.
+    TinyTailNotZero,
+    /// Enabling tiny mode on a bucket with live inline-property value state
+    /// (width, slots, offset, or log entries present). ADR 0096 §1.
+    TinyValueStatePresent,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::ReservedBitsSet => write!(f, "label bucket reserved bits 60-63 must be zero"),
+            Self::ReservedBitsSet => write!(f, "label bucket reserved bits 61-62 must be zero"),
             Self::SlotIndexOverflow => {
                 write!(f, "label bucket edge_start exceeds 36-bit slot index")
             }
@@ -667,6 +883,24 @@ impl core::fmt::Display for LabelBucketFieldError {
                     f,
                     "label bucket inline property bytes state requires a non-zero byte width"
                 )
+            }
+            Self::TinyTreeModeConflict => {
+                write!(f, "label bucket tiny bit conflicts with tree mode")
+            }
+            Self::TinyDegreeOutOfRange => {
+                write!(f, "label bucket tiny degree exceeds TINY_MAX_DEGREE")
+            }
+            Self::TinyStoredDegreeMismatch => {
+                write!(f, "label bucket tiny stored_slots must equal degree")
+            }
+            Self::TinyLogHeadPresent => {
+                write!(f, "label bucket tiny overflow log head must be none")
+            }
+            Self::TinyTailNotZero => {
+                write!(f, "label bucket tiny payload past degree must be zero")
+            }
+            Self::TinyValueStatePresent => {
+                write!(f, "label bucket tiny enable requires empty value state")
             }
         }
     }
@@ -1510,7 +1744,9 @@ mod tests {
 
     #[test]
     fn label_bucket_rejects_each_set_reserved_bit() {
-        for (byte_mask, word_bit) in [(0x10u8, 60u32), (0x20, 61), (0x40, 62)] {
+        // ADR 0096 §1: bit 60 is the tiny-mode flag, not reserved. Bits 61-62
+        // remain reserved.
+        for (byte_mask, word_bit) in [(0x20, 61), (0x40, 62)] {
             let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
             let mut bytes = [0u8; LabelBucket::BYTES];
             bucket.write_to(&mut bytes);
@@ -1523,6 +1759,22 @@ mod tests {
                 "word bit {word_bit} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn label_bucket_tiny_bit_takes_tiny_validation_not_reserved() {
+        // ADR 0096 §1: bit 60 selects tiny mode. A fresh slab descriptor plus
+        // the tiny bit is an INVALID tiny bucket (the NONE log sentinel is a
+        // nonzero tail), rejected with the precise tiny error — not ReservedBitsSet.
+        // Removing the tail rule would wrongly accept this shape.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        bytes[7] |= 0x10; // bit 60
+        assert_eq!(
+            LabelBucket::try_read_from(&bytes),
+            Err(LabelBucketFieldError::TinyTailNotZero)
+        );
     }
 
     #[test]
@@ -1734,5 +1986,204 @@ mod tests {
             .after_slab_tombstone_delete();
         assert_eq!(bucket.degree, 1);
         assert_eq!(bucket.stored_slots, 5);
+    }
+
+    // ADR 0096 §1 (R2a): inline-tiny wire rules. No dispatch arms exist yet, so
+    // these tests pin the wire contract the R2b arms will rely on.
+
+    fn tiny_bucket_degree2() -> LabelBucket {
+        LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 2, 2, -1)
+            .try_enable_tiny_mode()
+            .expect("fresh degree-2 bucket enables tiny")
+            .with_tiny_target(0, 7)
+            .with_tiny_target(1, 9)
+    }
+
+    #[test]
+    fn tiny_wire_bytes_golden() {
+        let bucket = tiny_bucket_degree2();
+        assert!(bucket.is_tiny_mode());
+        assert!(!bucket.is_tree_mode());
+        assert_eq!(bucket.degree, 2);
+        assert_eq!(bucket.stored_slots, 2);
+        assert_eq!(bucket.tiny_target(0), 7);
+        assert_eq!(bucket.tiny_target(1), 9);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        let word = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        assert_eq!(word & 0xFFFF_FFFF, 100); // anchor preserved
+        assert_eq!(((word >> 36) & 0xFFFF) as u16, 5); // label intact
+        assert_eq!(((word >> 52) & 0xFF) as u8, 0xFF); // log-head NONE
+        assert_ne!(word & (1u64 << 60), 0); // tiny bit
+        assert_eq!(word & (1u64 << 63), 0); // tree bit clear
+        assert_eq!(bytes[8..12], 2u32.to_le_bytes());
+        assert_eq!(bytes[12..16], 2u32.to_le_bytes());
+        assert_eq!(bytes[16..20], 7u32.to_le_bytes()); // T0
+        assert_eq!(bytes[20..24], 9u32.to_le_bytes()); // T1
+        assert!(bytes[24..29].iter().all(|&b| b == 0)); // T2 tail + spare zero
+        assert_eq!(LabelBucket::read_from(&bytes), bucket);
+    }
+
+    #[test]
+    fn tiny_roundtrip_degrees_0_to_3() {
+        for degree in 0..=3u32 {
+            let mut bucket =
+                LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, degree, degree, -1)
+                    .try_enable_tiny_mode()
+                    .expect("fresh bucket enables tiny");
+            for i in 0..degree {
+                bucket = bucket.with_tiny_target(i, 1000 + i);
+            }
+            let mut bytes = [0u8; LabelBucket::BYTES];
+            bucket.write_to(&mut bytes);
+            let back = LabelBucket::try_read_from(&bytes).expect("tiny round-trip");
+            assert_eq!(back, bucket);
+            assert!(back.is_tiny_mode());
+            for i in 0..degree {
+                assert_eq!(back.tiny_target(i), 1000 + i);
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_target_t2_splits_across_three_fields() {
+        // T2 = offset-hi byte | width LE | log byte — byte-exact composition.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 3, 3, -1)
+            .try_enable_tiny_mode()
+            .expect("enable")
+            .with_tiny_target(2, 0xAABBCCDD);
+        assert_eq!(bucket.tiny_target(2), 0xAABBCCDD);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        assert_eq!(bytes[24], 0xDD);
+        assert_eq!(bytes[25..27], 0xBBCCu16.to_le_bytes());
+        assert_eq!(bytes[27], 0xAA);
+        assert_eq!(bytes[28], 0); // spare zero even at degree 3
+        assert_eq!(LabelBucket::read_from(&bytes), bucket);
+    }
+
+    #[test]
+    fn try_enable_tiny_mode_is_idempotent() {
+        let bucket = tiny_bucket_degree2();
+        let again = bucket.try_enable_tiny_mode().expect("re-enable");
+        assert_eq!(again, bucket);
+    }
+
+    #[test]
+    fn try_enable_tiny_mode_rejects_each_rule() {
+        // Tree bit set.
+        let tree =
+            LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, -1).with_tree_mode(true);
+        assert_eq!(
+            tree.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyTreeModeConflict)
+        );
+        // Degree 4.
+        let big = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 4, -1);
+        assert_eq!(
+            big.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyDegreeOutOfRange)
+        );
+        // Stored != degree.
+        let wide = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 2, -1);
+        assert_eq!(
+            wide.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyStoredDegreeMismatch)
+        );
+        // Live log head.
+        let logged = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, 3);
+        assert_eq!(
+            logged.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyLogHeadPresent)
+        );
+        // Live value state (width).
+        let valued = LabelBucket::from_parts_with_inline_property(
+            BucketLabelKey::default(),
+            0,
+            1,
+            1,
+            -1,
+            4,
+            0,
+            0,
+            -1,
+            0,
+        );
+        assert_eq!(
+            valued.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyValueStatePresent)
+        );
+        // Nonzero tail past degree (memory + wire sides).
+        let tail = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, -1)
+            .try_enable_tiny_mode()
+            .expect("enable")
+            .with_tiny_target(1, 42);
+        assert_eq!(
+            tail.try_enable_tiny_mode(),
+            Err(LabelBucketFieldError::TinyTailNotZero)
+        );
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        tail.write_to(&mut bytes);
+        assert_eq!(
+            LabelBucket::try_read_from(&bytes),
+            Err(LabelBucketFieldError::TinyTailNotZero)
+        );
+    }
+
+    #[test]
+    fn try_read_from_rejects_each_tiny_rule() {
+        // Valid tiny degree-1 bytes; corrupt one rule at a time.
+        fn valid_tiny_bytes() -> [u8; LabelBucket::BYTES] {
+            let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 1, 1, -1)
+                .try_enable_tiny_mode()
+                .expect("enable")
+                .with_tiny_target(0, 11);
+            let mut bytes = [0u8; LabelBucket::BYTES];
+            bucket.write_to(&mut bytes);
+            bytes
+        }
+        // Tiny ∧ tree.
+        let mut bad = valid_tiny_bytes();
+        bad[7] |= 0x80;
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyTreeModeConflict)
+        );
+        // Degree 4.
+        let mut bad = valid_tiny_bytes();
+        bad[8..12].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyDegreeOutOfRange)
+        );
+        // Stored != degree.
+        let mut bad = valid_tiny_bytes();
+        bad[12..16].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyStoredDegreeMismatch)
+        );
+        // Live word log head (byte 6 high nibble + byte 7 low nibble).
+        let mut bad = valid_tiny_bytes();
+        bad[6] = (bad[6] & 0x0F) | 0x70;
+        bad[7] = (bad[7] & 0xF0) | 0x07;
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyLogHeadPresent)
+        );
+        // Nonzero T1 past degree 1.
+        let mut bad = valid_tiny_bytes();
+        bad[20..24].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyTailNotZero)
+        );
+        // Nonzero spare byte 28.
+        let mut bad = valid_tiny_bytes();
+        bad[28] = 7;
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyTailNotZero)
+        );
     }
 }

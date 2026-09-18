@@ -30,6 +30,10 @@ pub enum LaraOperationError {
     VertexDeleted,
     /// Overflow-log folding ended before enough edges were read.
     LogChainShort,
+    /// A complete read would examine more physical slots than the caller permits.
+    ReadLimitExceeded,
+    /// A complete value read exceeds the caller's admitted body-byte allowance.
+    ReadByteLimitExceeded,
     /// `degree * E::BYTES` overflowed when sizing a collect buffer.
     CollectAllocationOverflow,
     /// A CSR row degree reached the representable `u32` limit.
@@ -68,6 +72,8 @@ impl fmt::Display for LaraOperationError {
             Self::VertexAccess(e) => write!(f, "{e}"),
             Self::VertexDeleted => write!(f, "vertex deleted"),
             Self::LogChainShort => write!(f, "log chain short"),
+            Self::ReadLimitExceeded => write!(f, "physical edge read limit exceeded"),
+            Self::ReadByteLimitExceeded => write!(f, "property body read byte limit exceeded"),
             Self::CollectAllocationOverflow => write!(f, "collect overflow"),
             Self::RowDegreeOverflow => write!(f, "row degree overflow"),
             Self::RemoveRequiresSlabOnlyRow => write!(f, "remove requires slab-only row"),

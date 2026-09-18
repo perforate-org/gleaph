@@ -1567,6 +1567,32 @@ mod tests {
     }
 
     #[test]
+    fn drained_store_reopens_and_allocates() {
+        // Draining the final span (exact-fit take) must leave reopenable
+        // store state, and the reopened store must allocate again. Covers the
+        // leaf-relocate path that grows a block in place by consuming the
+        // adjacent free span whole, then crosses an upgrade boundary.
+        let s = test_store();
+        s.release_span(1000, 16).unwrap();
+        let taken = s.take_prefix_at(1000, 16).unwrap();
+        assert_eq!(
+            taken,
+            Some(super::FreeSpan {
+                start_slot: 1000,
+                len: 16
+            })
+        );
+        assert!(s.spans().is_empty());
+        let (meta, bs) = s.into_memories();
+        let reopened = super::FreeSpanStore::init(meta, bs).expect("drained store must reopen");
+        assert!(reopened.spans().is_empty());
+        reopened.release_span(2000, 32).unwrap();
+        let taken = reopened.take_best_fit(16).unwrap().unwrap();
+        assert_eq!((taken.start_slot, taken.len), (2000, 16));
+        assert_allocator_stats_match_spans(&reopened);
+    }
+
+    #[test]
     fn allocator_summary_matches_every_mutation_shape() {
         let s = test_store();
 

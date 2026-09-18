@@ -30,6 +30,16 @@ pub use log::{
     InlinePropertyBytesLogStore as ValueOverflowLogStore,
 };
 
+/// Reserve room for a malformed wide blob before invoking the B-tree getter, which
+/// decodes its whole body before the width can be checked. A mismatch stops the read.
+pub(crate) fn inline_property_blob_read_headroom(width: u16) -> usize {
+    if inline_property_bytes_log_uses_blob(width) {
+        blobs::MAX_BLOB_BYTES - usize::from(width)
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Number of successful inline property bytes slab allocations (`append_byte_span` or
@@ -750,6 +760,49 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
     }
 
+    /// Reconstruct exactly the descriptor's property-log extent, or fail without a prefix.
+    /// The u8 descriptor count bounds reads/indices independently of other rows in the leaf.
+    pub(crate) fn inline_property_bytes_log_chain_exact(
+        &self,
+        leaf_segment: u32,
+        log_head: i32,
+        expected_len: u8,
+    ) -> Result<Vec<u32>, crate::LaraOperationError> {
+        use crate::LaraOperationError;
+        if expected_len == 0 {
+            return if log_head == -1 {
+                Ok(Vec::new())
+            } else {
+                Err(LaraOperationError::LogChainShort)
+            };
+        }
+        let h = self.log.header();
+        let allocated = self.log.read_idx_with_header(&h, leaf_segment);
+        if allocated < 0
+            || allocated as u32 > h.max_log_entries
+            || i32::from(expected_len) > allocated
+        {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        let mut chain = Vec::with_capacity(usize::from(expected_len));
+        let mut current = log_head;
+        for _ in 0..expected_len {
+            if current < 0 || current >= allocated {
+                return Err(LaraOperationError::LogChainShort);
+            }
+            chain.push(current as u32);
+            let mut cell = [0; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
+            current = self
+                .log
+                .read_entry_with_header(&h, leaf_segment, current as u32, &mut cell);
+        }
+        if current != -1 {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
     /// Returns value-log entry indices from oldest to newest by walking `log_head`.
     pub(crate) fn inline_property_bytes_log_chain_asc_indices(
         &self,
@@ -1100,6 +1153,53 @@ mod tests {
     fn test_store() -> EdgeInlinePropertyBytesStore<VectorMemory> {
         EdgeInlinePropertyBytesStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1)
             .expect("store")
+    }
+
+    #[test]
+    fn exact_inline_property_log_requires_its_declared_extent() {
+        use crate::LaraOperationError;
+        let store = test_store();
+        store
+            .write_inline_property_bytes_log_entries(0, 0, -1, 2, &[1, 2, 3, 4])
+            .unwrap();
+        assert_eq!(
+            store
+                .inline_property_bytes_log_chain_exact(0, 1, 2)
+                .unwrap(),
+            vec![0, 1]
+        );
+        for (head, len) in [(1, 1), (1, 3), (-1, 1), (-2, 0), (1, 0)] {
+            assert!(matches!(
+                store.inline_property_bytes_log_chain_exact(0, head, len),
+                Err(LaraOperationError::LogChainShort)
+            ));
+        }
+        assert!(
+            store
+                .inline_property_bytes_log_chain_exact(0, -1, 0)
+                .unwrap()
+                .is_empty()
+        );
+        // A next pointer beyond the admitted chain must never be followed.
+        store
+            .write_inline_property_bytes_log_entry(0, 0, i32::MAX, 2, &[1, 2])
+            .unwrap();
+        assert!(matches!(
+            store.inline_property_bytes_log_chain_exact(0, 1, 2),
+            Err(LaraOperationError::LogChainShort)
+        ));
+        // A cycle does not become a successful truncated chain.
+        store
+            .write_inline_property_bytes_log_entry(0, 0, 1, 2, &[1, 2])
+            .unwrap();
+        assert!(matches!(
+            store.inline_property_bytes_log_chain_exact(0, 1, 2),
+            Err(LaraOperationError::LogChainShort)
+        ));
+        assert!(matches!(
+            store.inline_property_bytes_log_chain_exact(0, i32::MAX, 2),
+            Err(LaraOperationError::LogChainShort)
+        ));
     }
 
     #[test]

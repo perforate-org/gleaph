@@ -12,16 +12,23 @@ const BUCKET_LOG_SHIFT: u32 = 52;
 const BUCKET_RESERVED_BITS_SHIFT: u32 = 60;
 const BUCKET_LABEL_MASK: u64 = 0xFFFF << BUCKET_LABEL_SHIFT;
 const BUCKET_LOG_MASK: u64 = 0xFF << BUCKET_LOG_SHIFT;
-/// Reserved bits 60-62 of the bucket word (must be zero on the wire).
+/// Reserved bits 61-62 of the bucket word (must be zero on the wire).
 ///
 /// Bit 63 is intentionally excluded: it carries the tree-mode flag bit defined
 /// by [`super::record::LabelBucket::is_tree_mode`] / [`super::record::LabelBucket::with_tree_mode`].
 /// Existing slab-mode buckets (pre-Plan 0318) all have bit 63 = 0 and reopen
 /// without change. See Plan 0318 §Step 1.
-const BUCKET_RESERVED_BITS_MASK: u64 = 0x7 << BUCKET_RESERVED_BITS_SHIFT;
+/// Bit 60 is intentionally excluded: it carries the tiny-mode flag bit defined
+/// by [`super::record::LabelBucket::is_tiny_mode`] (ADR 0096 §1). Buckets
+/// written before tiny existed all have bit 60 = 0 and reopen without change.
+const BUCKET_RESERVED_BITS_MASK: u64 = 0x3 << (BUCKET_RESERVED_BITS_SHIFT + 1);
 /// Bit 63 of the bucket word: tree-mode flag (1 = tree mode / LTB-backed,
 /// 0 = slab mode). See Plan 0318 §Step 1 and ADR 0088 §1.
 pub const BUCKET_TREE_MODE_BIT: u64 = 1u64 << 63;
+/// Bit 60 of the bucket word: tiny-mode flag (1 = descriptor-resident inline
+/// targets, 0 = slab/tree interpretation). ADR 0096 §1. Tiny∧tree is invalid
+/// (rejected by validation); pre-tiny buckets all have bit 60 = 0.
+pub const BUCKET_TINY_MODE_BIT: u64 = 1u64 << 60;
 
 /// Packs a [`super::record::LabelBucket`] wire word.
 #[inline]
@@ -77,11 +84,12 @@ pub fn decode_bucket_overflow_log_head(word: u64) -> i32 {
     decode_overflow_log_byte(((word >> BUCKET_LOG_SHIFT) & 0xFF) as u8)
 }
 
-/// Returns `true` when the bucket word's reserved bits 60–62 are zero.
+/// Returns `true` when the bucket word's reserved bits 61–62 are zero.
 ///
-/// Bit 63 is the tree-mode flag (see [`BUCKET_TREE_MODE_BIT`]) and is excluded
-/// from this check. Pre-Plan 0318 callers (slab-mode) always have bit 63 = 0 and
-/// reopen without change.
+/// Bit 63 is the tree-mode flag (see [`BUCKET_TREE_MODE_BIT`]) and bit 60 is
+/// the tiny-mode flag (see [`BUCKET_TINY_MODE_BIT`]); both are excluded from
+/// this check. Pre-Plan 0318 callers (slab-mode) always have bits 60 and 63 = 0
+/// and reopen without change.
 #[inline]
 pub fn bucket_word_has_zero_reserved_bits(word: u64) -> bool {
     word & BUCKET_RESERVED_BITS_MASK == 0
@@ -101,11 +109,12 @@ mod tests {
     }
 
     #[test]
-    fn bucket_word_reserved_bits_cover_60_to_62_only() {
+    fn bucket_word_reserved_bits_cover_61_to_62_only() {
         // Plan 0318 §Step 1: bit 63 is the tree-mode flag and is NOT reserved.
-        // Only bits 60-62 are still reserved (must be zero on the wire).
+        // ADR 0096 §1: bit 60 is the tiny-mode flag and is NOT reserved.
+        // Only bits 61-62 are still reserved (must be zero on the wire).
         let word = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5), 169);
-        for bit in [60u32, 61, 62] {
+        for bit in [61u32, 62] {
             assert!(
                 !bucket_word_has_zero_reserved_bits(word | (1 << bit)),
                 "reserved bit {bit} must not read as zero"
@@ -115,6 +124,11 @@ mod tests {
         assert!(
             bucket_word_has_zero_reserved_bits(word | BUCKET_TREE_MODE_BIT),
             "tree-mode bit 63 must not trigger ReservedBitsSet"
+        );
+        // Bit 60 (tiny-mode flag) must NOT be flagged as a reserved-bit error.
+        assert!(
+            bucket_word_has_zero_reserved_bits(word | BUCKET_TINY_MODE_BIT),
+            "tiny-mode bit 60 must not trigger ReservedBitsSet"
         );
         assert!(!bucket_word_has_zero_reserved_bits(
             word | BUCKET_RESERVED_BITS_MASK

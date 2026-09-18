@@ -41,7 +41,8 @@ mod bench_workload;
 mod bench_tree;
 
 use super::{
-    BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, OutEdgeOrder, error::LabeledOperationError,
+    BucketMode, BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, OutEdgeOrder,
+    error::LabeledOperationError,
 };
 
 use super::iter::{
@@ -304,6 +305,7 @@ where
         self.read_edge_state_internal(owner, label, slot)
     }
 
+    #[allow(clippy::needless_return)]
     /// Visits live edges in ascending logical slot order, stopping when the visitor breaks.
     ///
     /// This is a local helper for rank/select primitives over the logical slot extent; it does
@@ -329,28 +331,50 @@ where
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(owner),
-                bucket.overflow_log_head(),
-            )
-        });
-        for slot_index in 0..logical_slots {
-            if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
-                owner,
-                &vertex,
-                bucket_index,
-                &bucket,
-                slot_index,
-                label,
-                overflow_chain.as_deref(),
-            )? && let ControlFlow::Break(value) = visit(slot_index, edge)
-            {
-                return Ok(ControlFlow::Break(value));
+        // ADR 0096 §5 + §7: match-first — tiny slots iterate inline
+        // (ordinals are slots, tombstone-free). The slab path below would
+        // misread the anchor via `read_edge_state_at_slot`.
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                for slot_index in 0..logical_slots.min(bucket.degree()) {
+                    let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
+                        .with_slot_index(slot_index)
+                        .with_label_id(label.raw());
+                    if let ControlFlow::Break(value) = visit(slot_index, edge) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+                return Ok(ControlFlow::Continue(()));
+            }
+            BucketMode::Tree | BucketMode::Slab => {
+                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+                    self.edges.overflow_log_chain_asc_indices(
+                        self.inline_property_bytes_log_leaf(owner),
+                        bucket.overflow_log_head(),
+                    )
+                });
+                for slot_index in 0..logical_slots {
+                    if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
+                        owner,
+                        &vertex,
+                        bucket_index,
+                        &bucket,
+                        slot_index,
+                        label,
+                        overflow_chain.as_deref(),
+                    )? && let ControlFlow::Break(value) = visit(slot_index, edge)
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
             }
         }
-        Ok(ControlFlow::Continue(()))
     }
 
     /// Counts live edges with `neighbor` that precede `before_slot` in ascending
@@ -396,12 +420,18 @@ where
         if info.degree == 1 {
             return Ok(0);
         }
-        let logical_slots = info
-            .stored_edge_slots
-            .checked_add(info.edge_overflow_log_len)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
+        // ADR 0096 §5: tiny buckets hold live edges but zero reserved
+        // capacity (placement reports stored 0); the logical width is the
+        // dense prefix itself. Without this the scan below covers 0 slots.
+        let logical_slots = if info.stored_edge_slots == 0 && info.edge_overflow_log_len == 0 {
+            info.degree
+        } else {
+            info.stored_edge_slots
+                .checked_add(info.edge_overflow_log_len)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?
+        };
         let mut count = 0u32;
         let _ = self.visit_live_edge_slots_until(owner, label, logical_slots, |slot, edge| {
             if slot >= before_slot.raw() {
@@ -491,12 +521,18 @@ where
         {
             return Ok(Some(BucketEntryPosition::new(0)));
         }
-        let logical_slots = info
-            .stored_edge_slots
-            .checked_add(info.edge_overflow_log_len)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
+        // ADR 0096 §5: tiny buckets hold live edges but zero reserved
+        // capacity (placement reports stored 0); the logical width is the
+        // dense prefix itself. Without this the scan below covers 0 slots.
+        let logical_slots = if info.stored_edge_slots == 0 && info.edge_overflow_log_len == 0 {
+            info.degree
+        } else {
+            info.stored_edge_slots
+                .checked_add(info.edge_overflow_log_len)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?
+        };
         let mut matching = 0u32;
         let mut selected: Option<BucketEntryPosition> = None;
         let _ = self.visit_live_edge_slots_until(owner, label, logical_slots, |slot, edge| {
@@ -679,6 +715,7 @@ where
         }
         Ok(ControlFlow::Continue(()))
     }
+    #[allow(clippy::needless_return)]
     /// Visits every live edge for one label in the requested order.
     /// Build a single-bucket [`LabeledSpanIter`] for the sparse / hybrid traversal paths.
     fn single_bucket_span_iter<'a>(
@@ -696,49 +733,111 @@ where
         if bucket.degree() == 0 {
             return Ok(super::iter::LabeledSpanIter::Empty);
         }
-        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
-        let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-        let successor_start =
-            self.bucket_slab_window_end_exclusive_after_bucket(vertex, bucket_index, bucket)?;
-        let acc =
-            LabelEdgeSpanAccess::with_bucket(&self.buckets, slot, *bucket, successor_start, src);
-        let log_chains = if attach_inline_property_bytes {
-            self.bucket_inline_property_bytes_log_chain_opt(src, bucket)
-        } else {
-            None
-        };
-        match order {
-            OutEdgeOrder::Descending => {
-                let iter = self.edges.desc_out_edges_iter(&acc, VertexId::from(0))?;
-                Ok(super::iter::LabeledSpanIter::desc(
-                    self,
-                    src,
-                    *vertex,
-                    bucket_index,
-                    *bucket,
-                    bucket.bucket_label_key(),
-                    log_chains,
-                    attach_inline_property_bytes,
-                    iter,
-                ))
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(bucket) {
+            // ADR 0096 §5: tiny buckets scan inline (no slab/log/value reads).
+            // Tombstone-free dense prefix, so ordinals are slots. Attach flag is
+            // irrelevant (width ≡ 0 → always empty values); property entries divert
+            // here and interpret the bare edges with empty values.
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                let mut edges = Vec::with_capacity(bucket.degree() as usize);
+                for ordinal in 0..bucket.degree() {
+                    let target = bucket.tiny_target(ordinal);
+                    let edge = E::read_from(&target.to_le_bytes()).with_slot_index(ordinal);
+                    edges.push((ordinal, edge));
+                }
+                return Ok(super::iter::LabeledSpanIter::inline(edges, order));
             }
-            OutEdgeOrder::Ascending => {
-                let iter = self.edges.out_edges_iter(&acc, VertexId::from(0))?;
-                Ok(super::iter::LabeledSpanIter::asc(
+            // Slow core iterators read LEG slab+log geometry, which misreads
+            // tree roots (GAP-2026-09-02-001). Tree+w>0 diverts upstream (LPB);
+            // tree+w=0 lands here: materialize topology via the tree
+            // collector. Attach is vacuous (no values reach slow path for
+            // tree buckets); Inline carries bare edges like the tiny arm.
+            BucketMode::Tree => {
+                debug_assert_eq!(
+                    bucket.inline_property_byte_width(),
+                    0,
+                    "tree buckets reaching slow scan carry no values (w>0 diverts upstream)"
+                );
+                let mut tree_edges = Vec::with_capacity(bucket.degree() as usize);
+                let flow: ControlFlow<()> = super::tree_read::visit_tree_mode_label_bucket_edges(
                     self,
-                    src,
-                    *vertex,
+                    bucket.bucket_label_key().raw(),
+                    bucket,
+                    bucket.degree(),
+                    OutEdgeOrder::Ascending,
+                    |slot, edge| {
+                        tree_edges.push((slot, edge));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )?;
+                debug_assert!(
+                    matches!(flow, ControlFlow::Continue(())),
+                    "tree collector never breaks (Continue-only closure)"
+                );
+                return Ok(super::iter::LabeledSpanIter::inline(tree_edges, order));
+            }
+            // Slab arm: existing core-iterator construction below.
+            BucketMode::Slab => {
+                let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
+                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
+                let successor_start = self.bucket_slab_window_end_exclusive_after_bucket(
+                    vertex,
                     bucket_index,
+                    bucket,
+                )?;
+                let acc = LabelEdgeSpanAccess::with_bucket(
+                    &self.buckets,
+                    slot,
                     *bucket,
-                    bucket.bucket_label_key(),
-                    log_chains,
-                    attach_inline_property_bytes,
-                    iter,
-                ))
+                    successor_start,
+                    src,
+                );
+                let log_chains = if attach_inline_property_bytes {
+                    self.bucket_inline_property_bytes_log_chain_opt(src, bucket)
+                } else {
+                    None
+                };
+                match order {
+                    OutEdgeOrder::Descending => {
+                        let iter = self.edges.desc_out_edges_iter(&acc, VertexId::from(0))?;
+                        Ok(super::iter::LabeledSpanIter::desc(
+                            self,
+                            src,
+                            *vertex,
+                            bucket_index,
+                            *bucket,
+                            bucket.bucket_label_key(),
+                            log_chains,
+                            attach_inline_property_bytes,
+                            iter,
+                        ))
+                    }
+                    OutEdgeOrder::Ascending => {
+                        let iter = self.edges.out_edges_iter(&acc, VertexId::from(0))?;
+                        Ok(super::iter::LabeledSpanIter::asc(
+                            self,
+                            src,
+                            *vertex,
+                            bucket_index,
+                            *bucket,
+                            bucket.bucket_label_key(),
+                            log_chains,
+                            attach_inline_property_bytes,
+                            iter,
+                        ))
+                    }
+                }
             }
         }
     }
 
+    #[allow(clippy::needless_return)]
     pub(crate) fn visit_edges<B>(
         &self,
         owner: VertexId,
@@ -786,69 +885,86 @@ where
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
-        // Tree-mode buckets (Plan 0318) live in the LTB: `bucket.edge_start()`
-        // is the LEG root region (block_id array), NOT the LTB payload
-        // blocks. The dense fast path below bulk-reads `degree × E::BYTES`
-        // bytes from `edge_start` and would OOB at every tree-mode degree
-        // (GAP-2026-09-02-001). Materialize via the tree-mode collector
-        // and re-visit, so the `ControlFlow<B>` semantics of the
-        // `visit_edges` API are preserved.
-        //
-        // The dense condition is more selective than the tree check; we
-        // test it first so slab-mode buckets skip the tree branch entirely
-        // (avoids a 2% perf regression on existing slab benches).
-        // The `!is_tree_mode()` guard is REQUIRED: tree-mode buckets
-        // match the dense condition (overflow_log_head = -1, reserved =
-        // stored = degree) but must NOT take this path.
-        if bucket.overflow_log_head() < 0
-            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-            && !bucket.is_tree_mode()
-        {
-            return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
-        }
-        if bucket.is_tree_mode() {
-            // Tree-mode visits yield tombstone-inclusive slot positions
-            // (ADR 0088 §2: `BucketEntryPosition` is bucket-local, so
-            // tombstones consume slots in the position space). The
-            // `visit_tree_mode_label_bucket_edges` primitive yields
-            // `FnMut(u32, E)` with the tombstone-inclusive slot; we
-            // forward it directly into `BucketEntryPosition::new(slot)`.
-            //
-            // The primitive returns `Result<(), LabeledOperationError>`,
-            // not `ControlFlow<B>`, so we capture `Break` via a mutable
-            // cell and convert at the end. This preserves the
-            // `visit_edges` API contract (early termination on
-            // `ControlFlow::Break`) without materializing a full Vec.
-            let mut break_value: Option<B> = None;
-            super::tree_read::visit_tree_mode_label_bucket_edges(
-                self,
-                label.raw(),
-                &bucket,
-                bucket.degree(),
-                order,
-                |slot, edge| {
-                    if break_value.is_some() {
-                        return;
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Slab arm: dense fast path (2% bench parity)
+        // first, then the slow span walk below. Tree has its own arm.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
+            // not storage); the slow funnel serves them inline.
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                // Tombstone-free dense prefix: ordinals are slots in both orders.
+                // (Duplicated asc/desc loops mirror the dense-path style; the
+                // shared closure would need `impl Trait` in closure position.)
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for ordinal in 0..bucket.degree() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                                .with_slot_index(ordinal);
+                            if let ControlFlow::Break(value) =
+                                visit(BucketEntryPosition::new(ordinal), edge)
+                            {
+                                return Ok(ControlFlow::Break(value));
+                            }
+                        }
                     }
+                    OutEdgeOrder::Descending => {
+                        for ordinal in (0..bucket.degree()).rev() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                                .with_slot_index(ordinal);
+                            if let ControlFlow::Break(value) =
+                                visit(BucketEntryPosition::new(ordinal), edge)
+                            {
+                                return Ok(ControlFlow::Break(value));
+                            }
+                        }
+                    }
+                }
+                return Ok(ControlFlow::Continue(()));
+            }
+            BucketMode::Slab => {
+                // Dense fast path first so slab buckets skip tree handling
+                // (2% bench parity); arm-guaranteed slab-only, no mode guards.
+                if bucket.overflow_log_head() < 0
+                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+                {
+                    return self
+                        .visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
+                }
+                let mut iter = self.single_bucket_span_iter(
+                    owner,
+                    &vertex,
+                    _bucket_slot,
+                    &bucket,
+                    order,
+                    false,
+                )?;
+                while let Some(result) = iter.next_with_slot() {
+                    let (slot, edge) = result?;
                     if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        break_value = Some(value);
+                        return Ok(ControlFlow::Break(value));
                     }
-                },
-            )?;
-            if let Some(value) = break_value {
-                return Ok(ControlFlow::Break(value));
+                }
+                Ok(ControlFlow::Continue(()))
             }
-            return Ok(ControlFlow::Continue(()));
-        }
-        let mut iter =
-            self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, false)?;
-        while let Some(result) = iter.next_with_slot() {
-            let (slot, edge) = result?;
-            if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                return Ok(ControlFlow::Break(value));
+            // Tree arm: LTB walk (arm-guaranteed tree-only).
+            BucketMode::Tree => {
+                // Tree-mode visits yield tombstone-inclusive slot positions
+                // (ADR 0088 §2). Forward Break directly; the ControlFlow<B>
+                // primitive propagates it.
+                return super::tree_read::visit_tree_mode_label_bucket_edges(
+                    self,
+                    label.raw(),
+                    &bucket,
+                    bucket.degree(),
+                    order,
+                    |slot, edge| visit(BucketEntryPosition::new(slot), edge),
+                );
             }
         }
-        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits every live logical slot for one label in the requested order.
@@ -1517,6 +1633,7 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    #[allow(clippy::needless_return)]
     /// Visits a bounded window of live edges for one label in the requested order.
     ///
     /// The window cuts the bucket's **tombstone-inclusive position space**
@@ -1618,164 +1735,276 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // Tree-mode buckets (Plan 0318) live in the LTB; the dense bulk-read
-        // path below would OOB at `bucket.edge_start()` (GAP-2026-09-02-001).
-        // Walk the LTB explicitly and apply the window.
-        //
-        // The dense condition (next branch) is more selective than the
-        // tree check; we test it first so slab-mode buckets skip the
-        // tree branch entirely (avoids a 2% perf regression on the
-        // existing `bench_t_v_window` slab bench).
-        // The `!is_tree_mode()` guard is REQUIRED: tree-mode buckets
-        // match the dense condition (overflow_log_head = -1, reserved =
-        // stored = degree) but must NOT take this path (GAP-2026-09-02-001).
-        if bucket.overflow_log_head() < 0
-            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-            && !bucket.is_tree_mode()
-        {
-            let degree = bucket.degree();
-            let edge_bytes_len =
-                (degree as usize)
-                    .checked_mul(E::BYTES)
-                    .ok_or(LabeledOperationError::from(
-                        LaraOperationError::CollectAllocationOverflow,
-                    ))?;
-            let mut raw_edges = vec![0u8; edge_bytes_len];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
-
-            // Window positions are tombstone-inclusive (ADR 0088 §2). The
-            // dense condition guarantees a tombstone-free bucket, so slot
-            // ids are the position space and the window is a plain range.
-            let offset = window.offset.min(degree);
-            let limit = window
-                .limit
-                .map(|l| l.min(degree - offset))
-                .unwrap_or(degree - offset);
-
-            match order {
-                OutEdgeOrder::Ascending => {
-                    for slot in offset..offset + limit {
-                        let off = slot as usize * E::BYTES;
-                        let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                            .with_slot_index(slot)
-                            .with_label_id(label.raw());
-                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                            continue;
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Tiny arm: self-contained inline window
+        // (ordinals are slots, tombstone-free). Slab arm: dense fast path
+        // first (2% bench parity), then sparse. Tree has its own arm below.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny window is a plain ordinal range cut — no slab,
+            // log, or tombstone reads (dense bulk path would misread the anchor).
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                let degree = bucket.degree();
+                let offset = window.offset.min(degree);
+                let limit = window
+                    .limit
+                    .map(|l| l.min(degree - offset))
+                    .unwrap_or(degree - offset);
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for slot in offset..offset + limit {
+                            let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
+                                .with_slot_index(slot);
+                            if let ControlFlow::Break(value) =
+                                visit(BucketEntryPosition::new(slot), edge)
+                            {
+                                return Ok(ControlFlow::Break(value));
+                            }
                         }
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), edge)
-                        {
-                            return Ok(ControlFlow::Break(value));
+                    }
+                    OutEdgeOrder::Descending => {
+                        let start = degree.saturating_sub(offset + limit);
+                        let end = degree.saturating_sub(offset);
+                        for slot in (start..end).rev() {
+                            let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
+                                .with_slot_index(slot);
+                            if let ControlFlow::Break(value) =
+                                visit(BucketEntryPosition::new(slot), edge)
+                            {
+                                return Ok(ControlFlow::Break(value));
+                            }
                         }
                     }
                 }
-                OutEdgeOrder::Descending => {
-                    let start = degree.saturating_sub(offset + limit);
-                    let end = degree.saturating_sub(offset);
-                    for slot in (start..end).rev() {
-                        let off = slot as usize * E::BYTES;
-                        let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                            .with_slot_index(slot)
-                            .with_label_id(label.raw());
-                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                            continue;
-                        }
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), edge)
-                        {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                }
+                return Ok(ControlFlow::Continue(()));
             }
-            return Ok(ControlFlow::Continue(()));
-        }
+            BucketMode::Slab => {
+                // Dense fast path first so slab buckets skip tree handling
+                // (2% bench parity); arm-guaranteed slab-only, no mode guards.
+                if bucket.overflow_log_head() < 0
+                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+                {
+                    let degree = bucket.degree();
+                    let edge_bytes_len = (degree as usize).checked_mul(E::BYTES).ok_or(
+                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
+                    )?;
+                    let mut raw_edges = vec![0u8; edge_bytes_len];
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
 
-        // Tree-mode buckets (Plan 0318) live in the LTB; the dense bulk-read
-        // path above would OOB at `bucket.edge_start()` (GAP-2026-09-02-001).
-        // Walk the LTB explicitly and apply the window.
-        //
-        // The dense condition above is more selective than the tree check;
-        // we test it first so slab-mode buckets skip the tree branch entirely
-        // (avoids a 2% perf regression on the existing `bench_t_v_window`
-        // slab bench).
-        if bucket.is_tree_mode() {
-            // Tree-mode visits yield tombstone-inclusive slot positions
-            // (ADR 0088 §2, Plan 0327 contract). The window's offset/limit
-            // apply in this same space: ascending position == slot id,
-            // descending position == `extent - 1 - slot`.
-            //
-            // S1 (ADR 0094 §4): only the blocks overlapping the window's
-            // position range are resolved and walked. The start/end block
-            // indices follow the ADR 0088 §2 depth-generic addressing
-            // (`block_index = position / B` through `resolve_leaf_block_id`).
-            //
-            // S2 (ADR 0094 §4): a block whose FULL slot range lies strictly
-            // inside the window range is header-first: when its
-            // `tombstone_count == block used slots` the block is fully dead
-            // and its payload is skipped entirely; otherwise the payload is
-            // scanned and the scanned marker count must equal the header
-            // count (fail closed on mismatch). Boundary blocks always scan
-            // their payload; the position accounting is unchanged because
-            // skipped positions are entirely inside the window.
-            //
-            // Capture `ControlFlow::Break` via a mutable cell to preserve
-            // the `visit_edges_window` API contract.
-            let extent = bucket.stored_slots;
-            let offset = window.offset.min(extent);
-            let limit = window
-                .limit
-                .map(|l| l.min(extent - offset))
-                .unwrap_or(extent - offset);
-            let end = offset + limit;
-            // The window maps to a SLOT range in the tombstone-inclusive
-            // position space (Plan 0327): ascending position == slot id, so
-            // the slot range is [offset, end); descending position =
-            // `extent - 1 - slot`, so positions [offset, end) map to slots
-            // [extent - end, extent - offset). S1 resolves only the blocks
-            // overlapping this slot range.
-            let (range_lo, range_hi) = match order {
-                OutEdgeOrder::Ascending => (offset, end),
-                OutEdgeOrder::Descending => (extent - end, extent - offset),
-            };
-            let block_b = crate::labeled::tree_csr::B as u32;
-            let start_block = range_lo / block_b;
-            let end_block_exclusive = u64::from(range_hi).div_ceil(u64::from(block_b)) as u32;
-            let leaf_count = u32::try_from(u64::from(extent).div_ceil(u64::from(block_b)))
-                .expect("leaf_count fits u32 for MAX_DEPTH=3");
-            let end_block = end_block_exclusive.min(leaf_count);
-            let mut break_value: Option<B> = None;
-            let block_slots = |block_index: u32| -> (u32, u32) {
-                let first_slot = block_index * block_b;
-                let used = (extent - first_slot).min(block_b);
-                (first_slot, first_slot + used)
-            };
-            match order {
-                OutEdgeOrder::Ascending => {
-                    for block_index in start_block..end_block {
-                        let (block_first_slot, block_end_slot) = block_slots(block_index);
-                        let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
-                            self,
-                            &bucket,
-                            block_index,
-                        )?;
-                        let scan_lo = block_first_slot.max(offset);
-                        let scan_hi = block_end_slot.min(end);
-                        // S2: a block fully inside the window position range
-                        // is header-first. Boundary (partial-overlap) blocks
-                        // always scan.
-                        let fully_inside = block_first_slot >= offset && block_end_slot <= end;
-                        if fully_inside {
-                            let header = self.ltb().read_block_header(block_id);
-                            let used = block_end_slot - block_first_slot;
-                            if u32::from(header.tombstone_count) == used {
-                                // Fully dead: skip the payload entirely.
+                    // Window positions are tombstone-inclusive (ADR 0088 §2). The
+                    // dense condition guarantees a tombstone-free bucket, so slot
+                    // ids are the position space and the window is a plain range.
+                    let offset = window.offset.min(degree);
+                    let limit = window
+                        .limit
+                        .map(|l| l.min(degree - offset))
+                        .unwrap_or(degree - offset);
+
+                    match order {
+                        OutEdgeOrder::Ascending => {
+                            for slot in offset..offset + limit {
+                                let off = slot as usize * E::BYTES;
+                                let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                                    .with_slot_index(slot)
+                                    .with_label_id(label.raw());
+                                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                                    continue;
+                                }
+                                if let ControlFlow::Break(value) =
+                                    visit(BucketEntryPosition::new(slot), edge)
+                                {
+                                    return Ok(ControlFlow::Break(value));
+                                }
+                            }
+                        }
+                        OutEdgeOrder::Descending => {
+                            let start = degree.saturating_sub(offset + limit);
+                            let end = degree.saturating_sub(offset);
+                            for slot in (start..end).rev() {
+                                let off = slot as usize * E::BYTES;
+                                let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                                    .with_slot_index(slot)
+                                    .with_label_id(label.raw());
+                                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                                    continue;
+                                }
+                                if let ControlFlow::Break(value) =
+                                    visit(BucketEntryPosition::new(slot), edge)
+                                {
+                                    return Ok(ControlFlow::Break(value));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(ControlFlow::Continue(()));
+                }
+
+                // Sparse path (tombstoned slab buckets): the window cuts the
+                // tombstone-inclusive position space (ADR 0088 §2), matching the
+                // tree path. Positions run in the requested order over the
+                // bucket's full slot extent (span slots + overflow-log suffix);
+                // the span iterator yields only live rows with their absolute
+                // slot ids, so the cut maps slot ids to positions per order —
+                // tombstoned positions inside the window contribute no yield
+                // but still consume position space.
+                let offset = window.offset;
+                let limit = window.limit.unwrap_or(u32::MAX - offset);
+                // Ascending position == slot id. Descending position ==
+                // `extent - 1 - slot`, so the descending cut needs the extent.
+                let extent = match order {
+                    OutEdgeOrder::Ascending => 0,
+                    OutEdgeOrder::Descending => {
+                        let log_len = if bucket.overflow_log_head() >= 0 {
+                            let leaf =
+                                Self::leaf_index_for_vid(owner, self.edges.header().segment_size);
+                            self.edges
+                                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+                        } else {
+                            0
+                        };
+                        bucket.stored_slots.checked_add(log_len).ok_or(
+                            LabeledOperationError::from(
+                                LaraOperationError::CollectAllocationOverflow,
+                            ),
+                        )?
+                    }
+                };
+                let mut iter = self.single_bucket_span_iter(
+                    owner,
+                    &vertex,
+                    _bucket_slot,
+                    &bucket,
+                    order,
+                    false,
+                )?;
+                while let Some(result) = iter.next_with_slot() {
+                    let (slot, edge) = result?;
+                    let position = match order {
+                        OutEdgeOrder::Ascending => u64::from(slot),
+                        OutEdgeOrder::Descending => u64::from(extent)
+                            .saturating_sub(1)
+                            .saturating_sub(u64::from(slot)),
+                    };
+                    // Both orders walk request-order positions monotonically
+                    // upward from the traversal start, so the cut is uniform.
+                    if position < u64::from(offset) {
+                        continue;
+                    }
+                    if position >= u64::from(offset).saturating_add(u64::from(limit)) {
+                        break;
+                    }
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
+            }
+            // Tree arm: LTB walk with window (arm-guaranteed tree-only).
+            BucketMode::Tree => {
+                // Tree-mode visits yield tombstone-inclusive slot positions
+                // (ADR 0088 §2, Plan 0327 contract). The window's offset/limit
+                // apply in this same space: ascending position == slot id,
+                // descending position == `extent - 1 - slot`.
+                //
+                // S1 (ADR 0094 §4): only the blocks overlapping the window's
+                // position range are resolved and walked. The start/end block
+                // indices follow the ADR 0088 §2 depth-generic addressing
+                // (`block_index = position / B` through `resolve_leaf_block_id`).
+                //
+                // S2 (ADR 0094 §4): a block whose FULL slot range lies strictly
+                // inside the window range is header-first: when its
+                // `tombstone_count == block used slots` the block is fully dead
+                // and its payload is skipped entirely; otherwise the payload is
+                // scanned and the scanned marker count must equal the header
+                // count (fail closed on mismatch). Boundary blocks always scan
+                // their payload; the position accounting is unchanged because
+                // skipped positions are entirely inside the window.
+                //
+                // Capture `ControlFlow::Break` via a mutable cell to preserve
+                // the `visit_edges_window` API contract.
+                let extent = bucket.stored_slots;
+                let offset = window.offset.min(extent);
+                let limit = window
+                    .limit
+                    .map(|l| l.min(extent - offset))
+                    .unwrap_or(extent - offset);
+                let end = offset + limit;
+                // The window maps to a SLOT range in the tombstone-inclusive
+                // position space (Plan 0327): ascending position == slot id, so
+                // the slot range is [offset, end); descending position =
+                // `extent - 1 - slot`, so positions [offset, end) map to slots
+                // [extent - end, extent - offset). S1 resolves only the blocks
+                // overlapping this slot range.
+                let (range_lo, range_hi) = match order {
+                    OutEdgeOrder::Ascending => (offset, end),
+                    OutEdgeOrder::Descending => (extent - end, extent - offset),
+                };
+                let block_b = crate::labeled::tree_csr::B as u32;
+                let start_block = range_lo / block_b;
+                let end_block_exclusive = u64::from(range_hi).div_ceil(u64::from(block_b)) as u32;
+                let leaf_count = u32::try_from(u64::from(extent).div_ceil(u64::from(block_b)))
+                    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+                let end_block = end_block_exclusive.min(leaf_count);
+                let mut break_value: Option<B> = None;
+                let block_slots = |block_index: u32| -> (u32, u32) {
+                    let first_slot = block_index * block_b;
+                    let used = (extent - first_slot).min(block_b);
+                    (first_slot, first_slot + used)
+                };
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for block_index in start_block..end_block {
+                            let (block_first_slot, block_end_slot) = block_slots(block_index);
+                            let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
+                                self,
+                                &bucket,
+                                block_index,
+                            )?;
+                            let scan_lo = block_first_slot.max(offset);
+                            let scan_hi = block_end_slot.min(end);
+                            // S2: a block fully inside the window position range
+                            // is header-first. Boundary (partial-overlap) blocks
+                            // always scan.
+                            let fully_inside = block_first_slot >= offset && block_end_slot <= end;
+                            if fully_inside {
+                                let header = self.ltb().read_block_header(block_id);
+                                let used = block_end_slot - block_first_slot;
+                                if u32::from(header.tombstone_count) == used {
+                                    // Fully dead: skip the payload entirely.
+                                    continue;
+                                }
+                                // Fully inside the window ⇒ the scan covers the
+                                // whole block ⇒ the scan self-verifies against
+                                // the header count (fail closed).
+                                super::tree_read::scan_tree_block_range(
+                                    self,
+                                    label.raw(),
+                                    block_id,
+                                    block_first_slot,
+                                    block_end_slot,
+                                    scan_lo,
+                                    scan_hi,
+                                    header.tombstone_count,
+                                    &mut |slot, edge| {
+                                        if let ControlFlow::Break(value) =
+                                            visit(BucketEntryPosition::new(slot), edge)
+                                        {
+                                            break_value = Some(value);
+                                        }
+                                    },
+                                )?;
+                                if break_value.is_some() {
+                                    break;
+                                }
                                 continue;
                             }
-                            // Fully inside the window ⇒ the scan covers the
-                            // whole block ⇒ the scan self-verifies against
-                            // the header count (fail closed).
+                            // Boundary block: payload scan over the window cut;
+                            // the in-closure position cut remains exact. Partial
+                            // scans carry no header verification.
                             super::tree_read::scan_tree_block_range(
                                 self,
                                 label.raw(),
@@ -1784,7 +2013,7 @@ where
                                 block_end_slot,
                                 scan_lo,
                                 scan_hi,
-                                header.tombstone_count,
+                                0,
                                 &mut |slot, edge| {
                                     if let ControlFlow::Break(value) =
                                         visit(BucketEntryPosition::new(slot), edge)
@@ -1796,57 +2025,54 @@ where
                             if break_value.is_some() {
                                 break;
                             }
-                            continue;
-                        }
-                        // Boundary block: payload scan over the window cut;
-                        // the in-closure position cut remains exact. Partial
-                        // scans carry no header verification.
-                        super::tree_read::scan_tree_block_range(
-                            self,
-                            label.raw(),
-                            block_id,
-                            block_first_slot,
-                            block_end_slot,
-                            scan_lo,
-                            scan_hi,
-                            0,
-                            &mut |slot, edge| {
-                                if let ControlFlow::Break(value) =
-                                    visit(BucketEntryPosition::new(slot), edge)
-                                {
-                                    break_value = Some(value);
-                                }
-                            },
-                        )?;
-                        if break_value.is_some() {
-                            break;
                         }
                     }
-                }
-                OutEdgeOrder::Descending => {
-                    // Descending position = extent - 1 - slot: the window
-                    // positions [range_lo, range_hi) map to the SLOT range
-                    // [extent - range_hi, extent - range_lo). Blocks are
-                    // derived from the SLOT range and walked downward
-                    // (ascending positions = descending slots).
-                    for block_index in (start_block..end_block).rev() {
-                        let (block_first_slot, block_end_slot) = block_slots(block_index);
-                        let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
-                            self,
-                            &bucket,
-                            block_index,
-                        )?;
-                        let fully_inside =
-                            block_first_slot >= range_lo && block_end_slot <= range_hi;
-                        let scan_slot_lo = block_first_slot.max(range_lo);
-                        let scan_slot_hi = block_end_slot.min(range_hi);
-                        if fully_inside {
-                            let header = self.ltb().read_block_header(block_id);
-                            let used = block_end_slot - block_first_slot;
-                            if u32::from(header.tombstone_count) == used {
+                    OutEdgeOrder::Descending => {
+                        // Descending position = extent - 1 - slot: the window
+                        // positions [range_lo, range_hi) map to the SLOT range
+                        // [extent - range_hi, extent - range_lo). Blocks are
+                        // derived from the SLOT range and walked downward
+                        // (ascending positions = descending slots).
+                        for block_index in (start_block..end_block).rev() {
+                            let (block_first_slot, block_end_slot) = block_slots(block_index);
+                            let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
+                                self,
+                                &bucket,
+                                block_index,
+                            )?;
+                            let fully_inside =
+                                block_first_slot >= range_lo && block_end_slot <= range_hi;
+                            let scan_slot_lo = block_first_slot.max(range_lo);
+                            let scan_slot_hi = block_end_slot.min(range_hi);
+                            if fully_inside {
+                                let header = self.ltb().read_block_header(block_id);
+                                let used = block_end_slot - block_first_slot;
+                                if u32::from(header.tombstone_count) == used {
+                                    continue;
+                                }
+                                // Fully inside ⇒ full-block scan ⇒ self-verified.
+                                super::tree_read::scan_tree_block_range_desc(
+                                    self,
+                                    label.raw(),
+                                    block_id,
+                                    block_first_slot,
+                                    block_end_slot,
+                                    scan_slot_lo,
+                                    scan_slot_hi,
+                                    header.tombstone_count,
+                                    &mut |slot, edge| {
+                                        if let ControlFlow::Break(value) =
+                                            visit(BucketEntryPosition::new(slot), edge)
+                                        {
+                                            break_value = Some(value);
+                                        }
+                                    },
+                                )?;
+                                if break_value.is_some() {
+                                    break;
+                                }
                                 continue;
                             }
-                            // Fully inside ⇒ full-block scan ⇒ self-verified.
                             super::tree_read::scan_tree_block_range_desc(
                                 self,
                                 label.raw(),
@@ -1855,7 +2081,7 @@ where
                                 block_end_slot,
                                 scan_slot_lo,
                                 scan_slot_hi,
-                                header.tombstone_count,
+                                0,
                                 &mut |slot, edge| {
                                     if let ControlFlow::Break(value) =
                                         visit(BucketEntryPosition::new(slot), edge)
@@ -1867,90 +2093,15 @@ where
                             if break_value.is_some() {
                                 break;
                             }
-                            continue;
-                        }
-                        super::tree_read::scan_tree_block_range_desc(
-                            self,
-                            label.raw(),
-                            block_id,
-                            block_first_slot,
-                            block_end_slot,
-                            scan_slot_lo,
-                            scan_slot_hi,
-                            0,
-                            &mut |slot, edge| {
-                                if let ControlFlow::Break(value) =
-                                    visit(BucketEntryPosition::new(slot), edge)
-                                {
-                                    break_value = Some(value);
-                                }
-                            },
-                        )?;
-                        if break_value.is_some() {
-                            break;
                         }
                     }
                 }
-            }
-            if let Some(value) = break_value {
-                return Ok(ControlFlow::Break(value));
-            }
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        // Sparse path (tombstoned slab buckets): the window cuts the
-        // tombstone-inclusive position space (ADR 0088 §2), matching the
-        // tree path. Positions run in the requested order over the
-        // bucket's full slot extent (span slots + overflow-log suffix);
-        // the span iterator yields only live rows with their absolute
-        // slot ids, so the cut maps slot ids to positions per order —
-        // tombstoned positions inside the window contribute no yield
-        // but still consume position space.
-        let offset = window.offset;
-        let limit = window.limit.unwrap_or(u32::MAX - offset);
-        // Ascending position == slot id. Descending position ==
-        // `extent - 1 - slot`, so the descending cut needs the extent.
-        let extent = match order {
-            OutEdgeOrder::Ascending => 0,
-            OutEdgeOrder::Descending => {
-                let log_len = if bucket.overflow_log_head() >= 0 {
-                    let leaf = Self::leaf_index_for_vid(owner, self.edges.header().segment_size);
-                    self.edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                } else {
-                    0
-                };
-                bucket
-                    .stored_slots
-                    .checked_add(log_len)
-                    .ok_or(LabeledOperationError::from(
-                        LaraOperationError::CollectAllocationOverflow,
-                    ))?
-            }
-        };
-        let mut iter =
-            self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, false)?;
-        while let Some(result) = iter.next_with_slot() {
-            let (slot, edge) = result?;
-            let position = match order {
-                OutEdgeOrder::Ascending => u64::from(slot),
-                OutEdgeOrder::Descending => u64::from(extent)
-                    .saturating_sub(1)
-                    .saturating_sub(u64::from(slot)),
-            };
-            // Both orders walk request-order positions monotonically
-            // upward from the traversal start, so the cut is uniform.
-            if position < u64::from(offset) {
-                continue;
-            }
-            if position >= u64::from(offset).saturating_add(u64::from(limit)) {
-                break;
-            }
-            if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                return Ok(ControlFlow::Break(value));
+                if let Some(value) = break_value {
+                    return Ok(ControlFlow::Break(value));
+                }
+                return Ok(ControlFlow::Continue(()));
             }
         }
-        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits a bounded logical-slot window and attaches the edge-inline bytes to each row.
@@ -2060,6 +2211,7 @@ where
         self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
     }
 
+    #[allow(clippy::needless_return)]
     fn visit_edges_with_inline_property_impl<B>(
         &self,
         owner: VertexId,
@@ -2182,40 +2334,26 @@ where
         // and break the contract).
         if bucket.is_tree_mode() && width > 0 {
             use super::tree_read::visit_tree_mode_label_bucket_edges_with_property;
-            let mut value_buf = vec![0u8; usize::from(width)];
-            // Mirror the Plan 0324 REWORK-3 break-cell pattern.
-            // The visit closure signature is `FnMut` (no `?`/early
-            // return from inside the closure), so we capture a
-            // `ControlFlow::Break(B)` via a mutable cell.
-            let mut break_value: Option<B> = None;
-            visit_tree_mode_label_bucket_edges_with_property(
+            // LPB tree walk: forward Break directly (ControlFlow<B> primitive).
+            return visit_tree_mode_label_bucket_edges_with_property(
                 self,
                 label.raw(),
                 &bucket,
                 bucket.degree(),
                 order,
                 |slot, edge, value_bytes| {
-                    if break_value.is_some() {
-                        return; // already broken; skip
-                    }
-                    value_buf.clear();
-                    value_buf.extend_from_slice(&value_bytes);
-                    let flow = visit(
+                    visit(
                         BucketEntryPosition::new(slot),
                         EdgeWithInlinePropertyRef {
                             edge,
-                            inline_property: InlinePropertyBytesRef::from_parts(width, &value_buf),
+                            inline_property: InlinePropertyBytesRef::from_parts(
+                                width,
+                                &value_bytes,
+                            ),
                         },
-                    );
-                    if let ControlFlow::Break(value) = flow {
-                        break_value = Some(value);
-                    }
+                    )
                 },
-            )?;
-            if let Some(value) = break_value {
-                return Ok(ControlFlow::Break(value));
-            }
-            return Ok(ControlFlow::Continue(()));
+            );
         }
         let mut iter =
             self.single_bucket_span_iter(owner, vertex, bucket_slot, &bucket, order, false)?;
@@ -2293,6 +2431,7 @@ where
         self.visit_edges_for_label_impl(owner, &vertex, label, order, &mut visit)
     }
 
+    #[allow(clippy::needless_return)]
     fn visit_edges_for_label_impl<Visit>(
         &self,
         owner: VertexId,
@@ -2336,88 +2475,120 @@ where
             return Ok(());
         }
 
-        // Single dispatch point for tree-mode buckets (Plan 0318 §Step 5).
-        // The tree path uses LTB-backed reads; the slab path below is
-        // unchanged. Rope / PMA / placement / leaf-pin code does not see
-        // this branch.
-        if bucket.is_tree_mode() {
-            return super::tree_read::visit_tree_mode_label_bucket_edges(
-                self,
-                label.raw(),
-                &bucket,
-                bucket.degree(),
-                order,
-                |slot_idx, edge| {
-                    // Mirror the slab path's visit semantics: yield the
-                    // edge with the slot index attached. The visitor
-                    // signature is `FnMut(E)` (no slot index), so we
-                    // drop the slot index here; callers that need it use
-                    // `visit_edges_with_inline_property` instead.
-                    let _ = slot_idx;
-                    visit(edge);
-                },
-            );
-        }
-
-        if bucket.inline_property_bytes_log_head() < 0
-            && bucket.overflow_log_head() < 0
-            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-        {
-            let width = bucket.inline_property_byte_width();
-            let inline_property_bytes = if width > 0 {
-                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?
-            } else {
-                Vec::new()
-            };
-            let degree = bucket.degree();
-            let edge_bytes_len =
-                (degree as usize)
-                    .checked_mul(E::BYTES)
-                    .ok_or(LabeledOperationError::from(
-                        LaraOperationError::CollectAllocationOverflow,
-                    ))?;
-            let mut raw_edges = vec![0u8; edge_bytes_len];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
-            let mut visit_slot = |slot| {
-                let off = slot as usize * E::BYTES;
-                let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                    .with_slot_index(slot)
-                    .with_label_id(label.raw());
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    return;
-                }
-                if width > 0 {
-                    let start = slot as usize * usize::from(width);
-                    let end = start + usize::from(width);
-                    edge = edge.with_stored_inline_property_bytes(
-                        width,
-                        &inline_property_bytes[start..end],
-                    );
-                }
-                visit(edge);
-            };
-            match order {
-                OutEdgeOrder::Ascending => {
-                    for slot in 0..degree {
-                        visit_slot(slot);
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Slab arm: dense bulk + slow span below;
+        // tree has its own arm (LTB reads).
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
+            // not storage); the slow funnel serves them inline.
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                // Tombstone-free dense prefix: ordinals are slots; no values.
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for ordinal in 0..bucket.degree() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
+                            visit(edge.with_label_id(label.raw()));
+                        }
+                    }
+                    OutEdgeOrder::Descending => {
+                        for ordinal in (0..bucket.degree()).rev() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
+                            visit(edge.with_label_id(label.raw()));
+                        }
                     }
                 }
-                OutEdgeOrder::Descending => {
-                    for slot in (0..degree).rev() {
-                        visit_slot(slot);
-                    }
-                }
+                return Ok(());
             }
-            return Ok(());
-        }
+            BucketMode::Slab => {
+                if bucket.inline_property_bytes_log_head() < 0
+                    && bucket.overflow_log_head() < 0
+                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+                {
+                    let width = bucket.inline_property_byte_width();
+                    let inline_property_bytes = if width > 0 {
+                        self.read_bucket_inline_property_bytes_span(
+                            owner,
+                            &bucket,
+                            0,
+                            bucket.degree(),
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    let degree = bucket.degree();
+                    let edge_bytes_len = (degree as usize).checked_mul(E::BYTES).ok_or(
+                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
+                    )?;
+                    let mut raw_edges = vec![0u8; edge_bytes_len];
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+                    let mut visit_slot = |slot| {
+                        let off = slot as usize * E::BYTES;
+                        let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label.raw());
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            return;
+                        }
+                        if width > 0 {
+                            let start = slot as usize * usize::from(width);
+                            let end = start + usize::from(width);
+                            edge = edge.with_stored_inline_property_bytes(
+                                width,
+                                &inline_property_bytes[start..end],
+                            );
+                        }
+                        visit(edge);
+                    };
+                    match order {
+                        OutEdgeOrder::Ascending => {
+                            for slot in 0..degree {
+                                visit_slot(slot);
+                            }
+                        }
+                        OutEdgeOrder::Descending => {
+                            for slot in (0..degree).rev() {
+                                visit_slot(slot);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
 
-        let mut iter = self.single_bucket_span_iter(owner, vertex, slot, &bucket, order, true)?;
-        while let Some(result) = iter.next_with_slot() {
-            let (_, edge) = result?;
-            visit(edge.with_label_id(label.raw()));
+                let mut iter =
+                    self.single_bucket_span_iter(owner, vertex, slot, &bucket, order, true)?;
+                while let Some(result) = iter.next_with_slot() {
+                    let (_, edge) = result?;
+                    visit(edge.with_label_id(label.raw()));
+                }
+                Ok(())
+            }
+            // Tree arm: LTB-backed reads (arm-guaranteed tree-only).
+            BucketMode::Tree => {
+                super::tree_read::visit_tree_mode_label_bucket_edges(
+                    self,
+                    label.raw(),
+                    &bucket,
+                    bucket.degree(),
+                    order,
+                    |slot_idx, edge| {
+                        // Mirror the slab path's visit semantics: yield the
+                        // edge with the slot index attached. The visitor
+                        // signature is `FnMut(E)` (no slot index), so we
+                        // drop the slot index here; callers that need it use
+                        // `visit_edges_with_inline_property` instead.
+                        let _ = slot_idx;
+                        visit(edge);
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
+            }
         }
-        Ok(())
     }
 
     /// Visits every live edge together with its inline-property bytes in a slab-only
@@ -3759,6 +3930,7 @@ where
     // Internal helpers
     // ------------------------------------------------------------------
 
+    #[allow(clippy::needless_return)]
     fn read_edge_state_internal(
         &self,
         owner: VertexId,
@@ -3798,26 +3970,48 @@ where
         else {
             return Ok(EdgeSlotState::Missing);
         };
-        let slot_index = slot.raw();
-        if slot_index >= self.bucket_reserved_edge_slots(owner, &bucket) {
-            return Ok(EdgeSlotState::Missing);
+        // ADR 0096 §5 + §7: match-first — tiny slots read inline (ordinals
+        // are slots, tombstone-free). Reserved-slots math below would still
+        // pass for tiny (stored==degree) but the slab read would misread the
+        // anchor, so tiny diverges structurally here.
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                let slot_index = slot.raw();
+                if slot_index >= bucket.degree() {
+                    return Ok(EdgeSlotState::Missing);
+                }
+                let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
+                    .with_slot_index(slot_index)
+                    .with_label_id(label.raw());
+                return Ok(EdgeSlotState::Live(edge));
+            }
+            BucketMode::Tree | BucketMode::Slab => {
+                let slot_index = slot.raw();
+                if slot_index >= self.bucket_reserved_edge_slots(owner, &bucket) {
+                    return Ok(EdgeSlotState::Missing);
+                }
+                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, _bucket_slot)?;
+                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+                    self.edges.overflow_log_chain_asc_indices(
+                        self.inline_property_bytes_log_leaf(owner),
+                        bucket.overflow_log_head(),
+                    )
+                });
+                self.read_edge_state_at_slot(
+                    owner,
+                    &vertex,
+                    bucket_index,
+                    &bucket,
+                    slot_index,
+                    label,
+                    overflow_chain.as_deref(),
+                )
+            }
         }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, _bucket_slot)?;
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(owner),
-                bucket.overflow_log_head(),
-            )
-        });
-        self.read_edge_state_at_slot(
-            owner,
-            &vertex,
-            bucket_index,
-            &bucket,
-            slot_index,
-            label,
-            overflow_chain.as_deref(),
-        )
     }
 
     /// Reads the state of one logical slot in a label bucket, including slab and overflow-log rows.
@@ -6020,21 +6214,25 @@ mod tests {
     #[test]
     fn normal_labeled_edges_update_pma_leaf_segment_counts() {
         let graph = test_graph();
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                BucketLabelKey::from_raw(2),
-                TestEdge { target: 10 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // ADR 0096 §4: tiny edges reserve no slots (invisible to PMA counts).
+        // Promote so slab spans and counts materialize.
+        for target in [10u32, 11, 12, 13] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    BucketLabelKey::from_raw(2),
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
 
         let header = graph.edges().header();
         let first_leaf = graph
             .edges()
             .counts_store()
             .get(u64::from(header.segment_count));
-        assert_eq!(first_leaf.actual, 1);
+        assert_eq!(first_leaf.actual, 4);
         assert!(first_leaf.total > 0);
         crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
             graph.vertices(),

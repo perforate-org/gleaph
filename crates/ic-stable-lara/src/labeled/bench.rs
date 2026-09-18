@@ -3748,3 +3748,405 @@ fn tcsr_65536_property_read_w32() -> canbench_rs::BenchResult {
         let _ = black_box(count);
     })
 }
+
+// ---------------------------------------------------------------------------
+// Threshold A/B benches (T_PROMOTE sweep support, 2026-09-17).
+//
+// All sizing derives from T_PROMOTE/T_DEMOTE (or is fixed with a regime
+// assertion), so the same bench measures the corresponding regime under any
+// const value. Run at T_PROMOTE=4096 and T_PROMOTE=1024 (const patch, no
+// production change) and compare totals + scopes + stable_memory_increase.
+// Never --persist these comparison runs; they are decision inputs, not gates.
+// ---------------------------------------------------------------------------
+
+use crate::labeled::graph::{T_DEMOTE, T_PROMOTE};
+
+/// M1: full-path hub growth 0 → 8192 through the production insert path
+/// (`insert_edge`: impl + dense-check + cascade), 4-byte edges, Insertion
+/// policy. At T=4096 the bench promotes once at 4096 mid-growth; at T=1024 it
+/// promotes once at 1024 mid-growth. Equal work in both arms — the comparison
+/// isolates threshold placement (promotion timing + post-promotion regime).
+#[bench(raw)]
+fn thresh_hub_grow_8192() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    const GROW_N: u32 = 8192;
+    let result = bench_fn(|| {
+        for target in 0..GROW_N {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: black_box(target),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("hub grow insert");
+        }
+        black_box(GROW_N);
+    });
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        _ => panic!("expected bucket after 8192 inserts"),
+    };
+    assert!(
+        bucket.is_tree_mode(),
+        "8192-bucket must promote in both arms"
+    );
+    assert_eq!(bucket.degree(), GROW_N);
+    result
+}
+
+/// M2a: full descending scan of a 2048-edge bucket. Regime flips with the
+/// threshold: slab under T=4096, tree under T=1024 (asserted). Seed is outside
+/// the measured closure.
+#[bench(raw)]
+fn thresh_scan_2048() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        _ => panic!("expected bucket at 2048"),
+    };
+    assert_eq!(
+        bucket.is_tree_mode(),
+        T_PROMOTE <= 2048,
+        "2048-bucket must flip regime with the threshold"
+    );
+    bench_fn(|| {
+        let mut count = 0u64;
+        let _ = graph.visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+            count = count.wrapping_add(1);
+            ControlFlow::<()>::Continue(())
+        });
+        black_box(count);
+    })
+}
+
+/// M2b: single production-path insert into a 2048-edge bucket (regime flips
+/// with the threshold, asserted as in M2a). Seed is outside the closure.
+#[bench(raw)]
+fn thresh_insert_2048() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
+    let result = bench_fn(|| {
+        graph
+            .insert_edge(
+                vid,
+                label,
+                OneMTestEdge {
+                    target: black_box(2_000_000),
+                },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("threshold insert");
+    });
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        _ => panic!("expected bucket after threshold insert"),
+    };
+    assert_eq!(bucket.degree(), 2049);
+    result
+}
+
+/// M2c: single production-path delete (slot 0) from a 2048-edge bucket
+/// (regime flips with the threshold, asserted as in M2a). Seed is outside.
+#[bench(raw)]
+fn thresh_delete_2048() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
+    let result = bench_fn(|| {
+        graph
+            .remove_edge_at_slot(vid, label, black_box(0))
+            .expect("threshold delete")
+            .expect("deleted");
+    });
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        _ => panic!("expected bucket after threshold delete"),
+    };
+    assert_eq!(bucket.degree(), 2047);
+    result
+}
+
+/// M4: full promote/demote/re-promote round-trip through the production path.
+/// Grow 0 → 2T (promotes once), delete down to T_DEMOTE (demote fires at
+/// degree <= T_DEMOTE — asserted mid-closure so a no-op demote cannot pass),
+/// re-grow past T (re-promotes). One oscillation contract, threshold-relative
+/// sizing; compare round-trip totals + scopes across arms.
+#[bench(raw)]
+fn thresh_churn_roundtrip() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    let grow_n = T_PROMOTE * 2;
+    let delete_n = T_PROMOTE * 2 - T_DEMOTE;
+    // Re-grow from T_DEMOTE to T+1 stored so the promote trigger
+    // (`stored_slots >= T_PROMOTE`, checked pre-insert) fires once more.
+    let regrow_n = T_PROMOTE - T_DEMOTE + 1;
+    let result = bench_fn(|| {
+        for target in 0..grow_n {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: black_box(target),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("churn grow insert");
+        }
+        for _ in 0..delete_n {
+            graph
+                .remove_edge_at_slot(vid, label, 0)
+                .expect("churn delete")
+                .expect("deleted");
+        }
+        // Mid-closure regime check (one bucket read): the point of the
+        // round-trip is the demote; without it this bench is meaningless.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("expected bucket mid-churn"),
+        };
+        assert!(
+            !bucket.is_tree_mode(),
+            "bucket must demote at degree <= T_DEMOTE mid-churn"
+        );
+        for target in 0..regrow_n {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: black_box(3_000_000 + target),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("churn regrow insert");
+        }
+    });
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        _ => panic!("expected bucket after churn round-trip"),
+    };
+    assert!(
+        bucket.is_tree_mode(),
+        "bucket must re-promote by T+1 stored"
+    );
+    assert_eq!(bucket.degree(), T_PROMOTE + 1);
+    result
+}
+
+// ---------------------------------------------------------------------------
+// ADR 0096 G1/G2/G3 micro-gates: 4-byte tiny-bucket insert/scan/delete cost.
+//
+// Fixtures seed through production inserts, so post-flip all buckets are
+// tiny-born (the E::BYTES == 4 birth gate). Setup runs outside the measured
+// closure; directory/warmup effects are shared across the three gates.
+// Controls: same-layer slab small-bucket inserts (`bench_l_ins_sb_1024`,
+// committed baseline) and the core row floor (`bench_r_ed_st_si_1024` /
+// `bench_r_ed_st_oi_1024`). These use different fixtures, so read direction
+// and order of magnitude, not exact deltas.
+// ---------------------------------------------------------------------------
+
+/// G1: steady tiny append (degree 1 -> 2; no birth, no promotion).
+#[bench(raw)]
+fn tiny_append_d1_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(4096);
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        graph
+            .insert_edge(
+                VertexId::from(v),
+                label,
+                OneMTestEdge { target: v },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("seed");
+    }
+    bench_fn(|| {
+        for v in 0..helper::MEDIUM_N as u32 {
+            let v = black_box(v);
+            graph
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    OneMTestEdge {
+                        target: v.wrapping_add(1_000_000),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("append");
+        }
+        black_box(graph.vertex_count());
+    })
+}
+
+/// G2: tiny scan (1024 degree-2 buckets, ascending visit, per-edge count).
+#[bench(raw)]
+fn tiny_scan_d2_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(4096);
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        for k in 0..2u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    OneMTestEdge {
+                        target: v.wrapping_add(k * 1_000_000),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("seed");
+        }
+    }
+    bench_fn(|| {
+        let mut count = 0u64;
+        for v in 0..helper::MEDIUM_N as u32 {
+            let v = black_box(v);
+            graph
+                .visit_edges(
+                    VertexId::from(v),
+                    label,
+                    OutEdgeOrder::Ascending,
+                    |_slot, _edge| {
+                        count += 1;
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .expect("scan");
+        }
+        black_box(count);
+    })
+}
+
+/// G3-adjacent: tiny promotion (degree 3 -> 4: span reserve + transcribe).
+#[bench(raw)]
+fn tiny_promote_d3_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(8192);
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        for k in 0..3u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    OneMTestEdge {
+                        target: v.wrapping_add(k * 1_000_000),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("seed");
+        }
+    }
+    bench_fn(|| {
+        for v in 0..helper::MEDIUM_N as u32 {
+            let v = black_box(v);
+            graph
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    OneMTestEdge {
+                        target: v.wrapping_add(3_000_000),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("promote");
+        }
+        black_box(graph.vertex_count());
+    })
+}
+
+/// G3 workload control (ADR 0096 D2 input): 1024 bare vertices, then ALL 4096
+/// inserts (birth → appends → promotion → cascades) inside the measured closure.
+/// Measured twice with identical code: birth gate ON (tiny) vs OFF (slab, via a
+/// local UNCOMMITTED inversion of the `E::BYTES == 4` birth gate — reverted
+/// immediately after measuring, never committed). Setup pushes bare vertices
+/// only so both modes start from identical state; per-edge totals decide G3.
+#[bench(raw)]
+fn tiny_workload_4x1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(8192);
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    bench_fn(|| {
+        for v in 0..helper::MEDIUM_N as u32 {
+            let v = black_box(v);
+            for k in 0..4u32 {
+                graph
+                    .insert_edge(
+                        VertexId::from(v),
+                        label,
+                        OneMTestEdge {
+                            target: v.wrapping_add(k * 1_000_000),
+                        },
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .expect("insert");
+            }
+        }
+        black_box(graph.vertex_count());
+    })
+}
+
+/// Tiny delete (positional remove of the first edge of degree-2 buckets).
+#[bench(raw)]
+fn tiny_delete_d2_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(4096);
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        for k in 0..2u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    OneMTestEdge {
+                        target: v.wrapping_add(k * 1_000_000),
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("seed");
+        }
+    }
+    bench_fn(|| {
+        for v in 0..helper::MEDIUM_N as u32 {
+            let v = black_box(v);
+            let mut first: Option<u32> = None;
+            graph
+                .visit_edges(
+                    VertexId::from(v),
+                    label,
+                    OutEdgeOrder::Ascending,
+                    |slot, _edge| {
+                        if first.is_none() {
+                            first = Some(u32::from(slot));
+                        }
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .expect("locate");
+            graph
+                .remove_edge_at_slot(VertexId::from(v), label, first.expect("edge"))
+                .expect("remove")
+                .expect("live edge");
+        }
+        black_box(graph.vertex_count());
+    })
+}

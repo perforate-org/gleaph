@@ -145,6 +145,49 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     test_graph_with_default(BucketLabelKey::directed_from_index(1))
 }
 
+/// Builds a tiny-mode bucket with the given inline targets for R2b tests
+/// (ADR 0096). Birth-tiny flips separately; tests construct explicitly so the
+/// suite stays green with zero production behavior change meanwhile.
+///
+/// The bucket is created through the normal slab birth path (quota side
+/// effects included and harmless here), then converted in place. Anchor keeps
+/// the slab-placed span start; R2b arms never read spans for tiny buckets.
+/// Returns the bucket descriptor slot.
+pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone>(
+    graph: &LabeledLaraGraph<E, crate::VectorMemory>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    targets: &[u32],
+) -> u64 {
+    use crate::labeled::record::LabelBucket;
+    assert!(
+        targets.len() <= LabelBucket::TINY_MAX_DEGREE as usize,
+        "force_tiny_bucket: at most K=3 targets"
+    );
+    let vertex = graph.vertices().get(vid);
+    let (slot, bucket) = graph
+        .find_or_create_bucket(vid, &vertex, label)
+        .expect("create bucket");
+    let mut bucket = bucket.try_enable_tiny_mode().expect("enable tiny");
+    for (i, target) in targets.iter().enumerate() {
+        bucket = bucket.with_tiny_target(i as u32, *target);
+    }
+    let degree = targets.len() as u32;
+    let bucket = bucket.with_degree_field(degree).with_stored_slots(degree);
+    graph
+        .buckets()
+        .write_label_bucket_slot(slot, bucket)
+        .expect("publish tiny bucket");
+    // Census honesty (same principle as production write boundaries):
+    // helper-created edges are live, so the global live-edge census must count
+    // them. Leaf `actual` stays untouched (tiny edges occupy no leaf slots).
+    let header = graph.edges().header();
+    graph
+        .edges()
+        .set_num_edges(header.num_edges + targets.len() as u64);
+    slot
+}
+
 pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::VectorMemory> {
     LabeledLaraGraph::new_with_segment_size(
         mem(),

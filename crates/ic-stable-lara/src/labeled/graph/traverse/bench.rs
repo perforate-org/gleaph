@@ -1007,6 +1007,82 @@ fn bench_t_v_at_replay() -> canbench_rs::BenchResult {
     })
 }
 
+fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchResult {
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .unwrap();
+    for i in 0..degree {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    graph
+        .rebalance_edge_log_leaf_for_labeled(src, true, true)
+        .unwrap();
+    let crate::labeled::graph::BucketSearch::Found { bucket, .. } = graph
+        .find_bucket(src, &graph.vertices().get(src), label)
+        .unwrap()
+    else {
+        panic!("missing bucket")
+    };
+    assert!(!bucket.is_tree_mode());
+    assert_eq!(bucket.inline_property_bytes_log_len(), 0);
+    assert_eq!(bucket.stored_slots, degree);
+    let check = graph.collect_edges_with_inline_property_bounded(src, label, degree, value_bytes);
+    if value_bytes < degree as usize * usize::from(INLINE_VALUE_WIDTH) {
+        assert!(matches!(
+            check,
+            Err(crate::labeled::graph::error::LabeledOperationError::Store(
+                crate::LaraOperationError::ReadByteLimitExceeded
+            ))
+        ));
+    } else {
+        let rows = check.expect("complete inline read");
+        assert_eq!(rows.len(), degree as usize);
+        for (i, (slot, edge, value)) in rows.into_iter().enumerate() {
+            assert_eq!(slot.raw(), i as u32);
+            assert_eq!(edge.target, i as u32 + 10);
+            assert_eq!(value.width(), INLINE_VALUE_WIDTH);
+            assert_eq!(value.bytes(), (i as u64).to_le_bytes());
+        }
+    }
+    bench_fn(|| {
+        // Include private result allocation and destruction, but not fixture setup/assertions.
+        let _ = black_box(graph.collect_edges_with_inline_property_bounded(
+            src,
+            label,
+            degree,
+            value_bytes,
+        ));
+    })
+}
+
+/// Complete eight-byte inline values from a small slab.
+#[bench(raw)]
+fn bounded_inline_64_full() -> canbench_rs::BenchResult {
+    bounded_inline_bench(64, 64 * 8)
+}
+
+/// Complete eight-byte inline values from a promotion-sized slab.
+#[bench(raw)]
+fn bounded_inline_4k_full() -> canbench_rs::BenchResult {
+    bounded_inline_bench(4096, 4096 * 8)
+}
+
+/// One-byte-short admission rejects after topology and before any value read.
+#[bench(raw)]
+fn bounded_inline_4k_rejected() -> canbench_rs::BenchResult {
+    bounded_inline_bench(4096, 4096 * 8 - 1)
+}
+
 fn bench_selected_inline_property_case(
     selected: Vec<BucketEntryPosition>,
     order: OutEdgeOrder,

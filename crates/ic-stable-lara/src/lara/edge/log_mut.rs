@@ -12,6 +12,47 @@ use super::log::HeaderV1 as LogHeaderV1;
 use super::{DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Read only linked entries, head-first, including tombstones. Never prefetch the leaf table.
+    /// An unfinished chain is an error, not a successful prefix. Capacity and reads are bounded
+    /// by `max_entries`, independently of the leaf's allocation cursor or unrelated rows.
+    pub(crate) fn read_overflow_log_bounded(
+        &self,
+        leaf: u32,
+        head: i32,
+        max_entries: u32,
+    ) -> Result<Vec<E>, LaraOperationError> {
+        if head == -1 {
+            return Ok(Vec::new());
+        }
+        if max_entries == 0 {
+            return Err(LaraOperationError::ReadLimitExceeded);
+        }
+        let h = self.log.header();
+        let allocated = self.log.read_idx_with_header(&h, leaf);
+        if allocated < 0 || allocated as u32 > h.max_log_entries {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        let capacity = max_entries.min(allocated as u32) as usize;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(capacity)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let mut current = head;
+        while current != -1 {
+            if entries.len() >= max_entries as usize {
+                return Err(LaraOperationError::ReadLimitExceeded);
+            }
+            if current < 0 || current >= allocated || entries.len() >= capacity {
+                return Err(LaraOperationError::LogChainShort);
+            }
+            let (prev, edge) =
+                self.read_log_edge_from_table_or_store(&h, leaf, current as u32, None);
+            entries.push(edge);
+            current = prev;
+        }
+        Ok(entries)
+    }
+
     pub(crate) fn overflow_log_chain_len(&self, leaf: u32, head: i32) -> u32 {
         if head < 0 {
             return 0;
@@ -484,9 +525,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::VertexCount;
     use crate::test_support::{TestEdge, vector_memory};
-    use crate::traits::CsrEdge;
+    use crate::traits::{CsrEdge, CsrEdgeTombstone};
+    use crate::{LaraOperationError, VertexCount};
 
     fn fresh_edges() -> EdgeStore<TestEdge, crate::VectorMemory> {
         let edges = EdgeStore::new(
@@ -511,6 +552,121 @@ mod tests {
         let mut buf = vec![0u8; TestEdge::BYTES];
         TestEdge(value).write_to(&mut buf);
         buf
+    }
+
+    #[test]
+    fn bounded_overflow_skips_unrelated_leaf_entries() {
+        #[derive(Clone, Default)]
+        struct ReadMemory {
+            inner: crate::VectorMemory,
+            bytes: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl ic_stable_structures::Memory for ReadMemory {
+            fn size(&self) -> u64 {
+                self.inner.size()
+            }
+            fn grow(&self, pages: u64) -> i64 {
+                self.inner.grow(pages)
+            }
+            fn read(&self, offset: u64, dst: &mut [u8]) {
+                self.bytes.set(self.bytes.get() + dst.len());
+                self.inner.read(offset, dst);
+            }
+            fn write(&self, offset: u64, src: &[u8]) {
+                self.inner.write(offset, src);
+            }
+        }
+        let log = ReadMemory::default();
+        let edges = EdgeStore::new(
+            ReadMemory::default(),
+            ReadMemory::default(),
+            log.clone(),
+            ReadMemory::default(),
+            ReadMemory::default(),
+            ReadMemory::default(),
+            8,
+            1,
+            0,
+        )
+        .unwrap();
+        let entries = (0..64).map(|i| (-1, TestEdge(i))).collect::<Vec<_>>();
+        edges.write_overflow_log_entries(0, 0, &entries).unwrap();
+        log.bytes.set(0);
+        let selected = edges.read_overflow_log_bounded(0, 63, 1).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, 63);
+        assert_eq!(
+            log.bytes.get(),
+            12,
+            "allocation cursor, one prev pointer and one topology record, no leaf table"
+        );
+        log.bytes.set(0);
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 63, 0),
+            Err(LaraOperationError::ReadLimitExceeded)
+        ));
+        assert_eq!(log.bytes.get(), 0);
+        // Positive control: the ordinary prefetch path really reads all 64 allocated entries.
+        edges
+            .prefetch_log_entries_head_first(&edges.log.header(), 0, 63)
+            .unwrap();
+        assert!(log.bytes.get() >= 64 * 8);
+    }
+
+    #[test]
+    fn bounded_overflow_requires_termination_and_counts_tombstones() {
+        let edges = fresh_edges();
+        let tombstone = TestEdge::tombstone_edge();
+        edges
+            .write_overflow_log_entries(
+                0,
+                0,
+                &[(-1, TestEdge(7)), (0, tombstone), (1, TestEdge(7))],
+            )
+            .unwrap();
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 2, 2),
+            Err(LaraOperationError::ReadLimitExceeded)
+        ));
+        let all = edges.read_overflow_log_bounded(0, 2, 3).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, 7);
+        assert!(all[1].is_deleted_slot());
+        assert_eq!(all[2].0, 7);
+        assert!(
+            edges
+                .read_overflow_log_bounded(0, -1, 0)
+                .unwrap()
+                .is_empty()
+        );
+        // After two permitted reads the next pointer is invalid. The limit must win;
+        // with another slot available the malformed chain must fail, not look complete.
+        edges
+            .write_overflow_log_entries(0, 1, &[(i32::MAX, tombstone), (1, TestEdge(7))])
+            .unwrap();
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 2, 2),
+            Err(LaraOperationError::ReadLimitExceeded)
+        ));
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 2, 3),
+            Err(LaraOperationError::LogChainShort)
+        ));
+        edges
+            .write_overflow_log_entries(0, 0, &[(1, TestEdge(7)), (0, tombstone)])
+            .unwrap();
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 1, 1),
+            Err(LaraOperationError::ReadLimitExceeded)
+        ));
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, 1, 4),
+            Err(LaraOperationError::LogChainShort)
+        ));
+        assert!(matches!(
+            edges.read_overflow_log_bounded(0, -2, 3),
+            Err(LaraOperationError::LogChainShort)
+        ));
     }
 
     #[test]

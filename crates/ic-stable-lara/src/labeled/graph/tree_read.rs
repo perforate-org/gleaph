@@ -36,6 +36,7 @@
 //! other tree-mode invariants.
 
 use ic_stable_structures::Memory;
+use std::ops::ControlFlow;
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
 use crate::VertexId;
@@ -119,19 +120,20 @@ where
 /// `out_degree` is the live-edge count (the bucket's `degree()`); the
 /// `visit` callback receives the slot index (in iteration order, not
 /// physical order) and the 4-byte target. Tombstone filtering is the
-/// caller's responsibility; this helper yields the raw targets.
-pub(crate) fn visit_tree_mode_label_bucket_edges<E, M, Visit>(
+/// caller's responsibility; this helper yields the raw targets. `Break` stops the
+/// walk immediately; the current edge leaf has already been read into a 4 KiB buffer.
+pub(crate) fn visit_tree_mode_label_bucket_edges<E, M, Visit, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     bucket: &LabelBucket,
     out_degree: u32,
     order: OutEdgeOrder,
     mut visit: Visit,
-) -> Result<(), LabeledOperationError>
+) -> Result<ControlFlow<B>, LabeledOperationError>
 where
     E: CsrEdge,
     M: Memory,
-    Visit: FnMut(u32, E),
+    Visit: FnMut(u32, E) -> ControlFlow<B>,
 {
     debug_assert_eq!(
         E::BYTES,
@@ -140,7 +142,7 @@ where
     );
     debug_assert!(bucket.is_tree_mode());
     if out_degree == 0 {
-        return Ok(());
+        return Ok(ControlFlow::Continue(()));
     }
     // **Plan 0326**: accept `w > 0` (the demote path handles the
     // property stream separately in Phase 3.5; this visit only
@@ -196,7 +198,11 @@ where
                     let byte = (slot_in_block as usize) * E::BYTES;
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
-                    visit(block_first_slot as u32 + slot_in_block, edge);
+                    if let ControlFlow::Break(value) =
+                        visit(block_first_slot as u32 + slot_in_block, edge)
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
                 }
             }
         }
@@ -216,12 +222,16 @@ where
                     let byte = (slot_in_block as usize) * E::BYTES;
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
-                    visit(block_first_slot as u32 + slot_in_block, edge);
+                    if let ControlFlow::Break(value) =
+                        visit(block_first_slot as u32 + slot_in_block, edge)
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
                 }
             }
         }
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Tree-mode out-edge collector: materializes every live slot of a
@@ -244,7 +254,7 @@ where
     let mut out: Vec<E> = Vec::new();
     out.try_reserve_exact(out_degree as usize)
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    visit_tree_mode_label_bucket_edges(
+    let _ = visit_tree_mode_label_bucket_edges(
         graph,
         label_raw,
         bucket,
@@ -252,6 +262,7 @@ where
         order,
         |_slot, edge| {
             out.push(edge);
+            ControlFlow::<()>::Continue(())
         },
     )?;
     Ok(out)
@@ -323,9 +334,7 @@ pub(crate) fn property_leaf_fanout(w: u16) -> Option<u32> {
 ///
 /// **Failure modes** (typed):
 /// - `w == 0` or `w > payload` → `InlinePropertyBytesWidthMismatch`
-/// - `slot >= stored_slots` → caller must check; this function
-///   returns `Ok(0)` for out-of-range as a defensive fallback
-///   (callers should bounds-check first).
+/// - `slot >= stored_slots` → `EdgeSlotOutOfRange`, before any root or payload read.
 pub(crate) fn resolve_property_leaf_block_id<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     bucket: &LabelBucket,
@@ -347,10 +356,7 @@ where
     };
     let stored_slots = bucket.stored_slots;
     if slot >= stored_slots {
-        // Caller is out of bounds; return a defensive sentinel
-        // (caller must bounds-check). We do not panic to keep
-        // this a pure read helper.
-        return Ok(0);
+        return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
     }
     let property_leaf_index = u64::from(slot / k);
     // Edge root length: same formula as bucket_span_region_len for
@@ -514,14 +520,15 @@ where
 /// (per ADR 0088 §2). The visit closure receives ALL slots, including
 /// tombstoned ones (the property bytes of a tombstoned slot are kept
 /// alongside the tombstone). The closure can filter on `E::is_tombstone_edge`.
-pub(crate) fn visit_tree_mode_label_bucket_edges_with_property<E, M>(
+/// `Break` stops before decoding another edge or reading another property value.
+pub(crate) fn visit_tree_mode_label_bucket_edges_with_property<E, M, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     bucket: &LabelBucket,
     out_degree: u32,
     order: OutEdgeOrder,
-    mut visit: impl FnMut(u32, E, Vec<u8>),
-) -> Result<(), LabeledOperationError>
+    mut visit: impl FnMut(u32, E, Vec<u8>) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>, LabeledOperationError>
 where
     E: CsrEdge,
     M: Memory,
@@ -536,7 +543,7 @@ where
         });
     }
     if out_degree == 0 {
-        return Ok(());
+        return Ok(ControlFlow::Continue(()));
     }
     let stored_slots = bucket.stored_slots;
     let leaf_count =
@@ -562,7 +569,9 @@ where
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
                     read_property_value_at_slot::<E, M>(graph, bucket, slot, &mut property_buf)?;
-                    visit(slot, edge, property_buf.clone());
+                    if let ControlFlow::Break(value) = visit(slot, edge, property_buf.clone()) {
+                        return Ok(ControlFlow::Break(value));
+                    }
                 }
             }
         }
@@ -584,12 +593,14 @@ where
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
                     read_property_value_at_slot::<E, M>(graph, bucket, slot, &mut property_buf)?;
-                    visit(slot, edge, property_buf.clone());
+                    if let ControlFlow::Break(value) = visit(slot, edge, property_buf.clone()) {
+                        return Ok(ControlFlow::Break(value));
+                    }
                 }
             }
         }
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Constant-time accessor for the LTB payload byte count, used to
@@ -760,6 +771,251 @@ mod tests {
         promote::tests::force_bucket_to_stored_slots(graph, vid, label, stored);
         // Promotion itself.
         promote::promote_bypass_to_tree_mode(graph, vid, label).expect("promote");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_property_slot_bound_rejects_block_zero_alias() {
+        let graph = make_test_graph();
+        let bucket = LabelBucket::from_parts_with_inline_property(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            1,
+            1,
+            -1,
+            4,
+            0,
+            1,
+            -1,
+            0,
+        )
+        .with_tree_mode(true);
+        let error = resolve_property_leaf_block_id(&graph, &bucket, 1)
+            .expect_err("an out-of-range property slot must not alias minted block zero");
+        assert!(matches!(
+            &error,
+            LabeledOperationError::EdgeSlotOutOfRange {
+                slot: 1,
+                stored_slots: 1
+            }
+        ));
+        assert_eq!(error.to_string(), "edge slot 1 is outside stored extent 1");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_visit_break_stops_topology_reads() {
+        use crate::labeled::ltb_raw_block_store::BlockError;
+        use std::ops::ControlFlow;
+
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            for visits in [1, 1024, 1025] {
+                let graph = make_test_graph();
+                let vid = VertexId::from(0);
+                let label = BucketLabelKey::directed_from_index(1);
+                let stored = 4096;
+                promote_bucket(&graph, vid, stored);
+                let (bucket_slot, bucket) = match graph
+                    .find_bucket(vid, &graph.vertices().get(vid), label)
+                    .expect("bucket")
+                {
+                    super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+                    _ => panic!("promoted bucket missing"),
+                };
+                let stop_slot = match order {
+                    OutEdgeOrder::Ascending => visits - 1,
+                    OutEdgeOrder::Descending => stored - visits,
+                };
+                super::super::tree_write::tree_mode_remove_edge_at_slot(
+                    &graph,
+                    vid,
+                    bucket_slot,
+                    &bucket,
+                    stop_slot,
+                )
+                .expect("remove")
+                .expect("stop slot exists");
+                let unread_block = match order {
+                    OutEdgeOrder::Ascending => stop_slot / BLOCK_B as u32 + 1,
+                    OutEdgeOrder::Descending => stop_slot / BLOCK_B as u32 - 1,
+                };
+                graph
+                    .edges()
+                    .write_slots_contiguous(
+                        bucket.edge_start() + u64::from(unread_block),
+                        &u32::MAX.to_le_bytes(),
+                    )
+                    .expect("poison later edge root");
+
+                let mut seen = Vec::new();
+                let result = graph.visit_edges(vid, label, order, |slot, edge| {
+                    seen.push((slot.raw(), edge.target));
+                    if slot.raw() == stop_slot {
+                        ControlFlow::Break(String::from("stopped at tombstone"))
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                });
+                assert_eq!(
+                    result.expect("must not read past Break"),
+                    ControlFlow::Break(String::from("stopped at tombstone"))
+                );
+                let expected: Vec<_> = (0..visits)
+                    .map(|ordinal| {
+                        let slot = match order {
+                            OutEdgeOrder::Ascending => ordinal,
+                            OutEdgeOrder::Descending => stored - 1 - ordinal,
+                        };
+                        (
+                            slot,
+                            if slot == stop_slot {
+                                u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL)
+                            } else {
+                                slot + 100
+                            },
+                        )
+                    })
+                    .collect();
+                assert_eq!(seen, expected);
+                assert!(
+                    matches!(
+                        graph.visit_edges(
+                            vid,
+                            label,
+                            order,
+                            |_, _| ControlFlow::<()>::Continue(())
+                        ),
+                        Err(LabeledOperationError::LtbBlock(BlockError::NotMinted {
+                            id: u32::MAX
+                        }))
+                    ),
+                    "uninterrupted walk must reach the poisoned root"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_visit_break_stops_property_reads() {
+        use crate::labeled::graph::{compact, promote};
+        use crate::labeled::ltb_raw_block_store::BlockError;
+        use std::ops::ControlFlow;
+
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            let graph = make_test_graph();
+            let vid = VertexId::from(0);
+            let label = BucketLabelKey::directed_from_index(1);
+            let stored = 4096;
+            let width = 32;
+            promote::tests::force_bucket_to_stored_slots(&graph, vid, label, stored);
+            let (bucket_slot, bucket) = match graph
+                .find_bucket(vid, &graph.vertices().get(vid), label)
+                .expect("bucket")
+            {
+                super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("slab bucket missing"),
+            };
+            promote::tests::fill_leg_slab_prefix(&graph, bucket.edge_start(), stored);
+            let values: Vec<u8> = (0..stored)
+                .flat_map(|slot| {
+                    let mut bytes = [0u8; 32];
+                    bytes[..4].copy_from_slice(&(slot + 1000).to_le_bytes());
+                    bytes
+                })
+                .collect();
+            let offset = graph
+                .values()
+                .allocate_byte_span(values.len() as u64)
+                .expect("allocate values");
+            graph.values().write_bytes(offset, &values).expect("values");
+            graph
+                .buckets()
+                .write_label_bucket_slot(
+                    bucket_slot,
+                    LabelBucket::try_from_parts(
+                        label,
+                        bucket.edge_start(),
+                        stored,
+                        stored,
+                        -1,
+                        width,
+                        offset,
+                        stored,
+                        -1,
+                        0,
+                    )
+                    .expect("property bucket"),
+                )
+                .expect("write bucket");
+            promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+            let bucket = graph
+                .buckets()
+                .read_label_bucket_slot(bucket_slot)
+                .expect("tree bucket");
+            assert!(bucket.is_tree_mode());
+            let fanout = property_leaf_fanout(width).expect("property fanout");
+            let (stop_slot, unread_property_block) = match order {
+                OutEdgeOrder::Ascending => (fanout - 1, 1),
+                OutEdgeOrder::Descending => (stored - fanout, stored / fanout - 2),
+            };
+            // The next property's block is unreadable, while the next edge is still in the
+            // already-read edge leaf. Suppressing only later edge-leaf reads is insufficient.
+            let property_root =
+                bucket.edge_start() + u64::from(compact::bucket_span_region_len(&bucket));
+            graph
+                .edges()
+                .write_slots_contiguous(
+                    property_root + u64::from(unread_property_block),
+                    &u32::MAX.to_le_bytes(),
+                )
+                .expect("poison later property root");
+            let mut seen = Vec::new();
+            let result = graph.visit_edges_with_inline_property(vid, label, order, |slot, item| {
+                seen.push((
+                    slot.raw(),
+                    item.edge.target,
+                    item.inline_property.bytes().to_vec(),
+                ));
+                if slot.raw() == stop_slot {
+                    ControlFlow::Break(String::from("property stop"))
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            assert_eq!(
+                result.expect("must not read properties past Break"),
+                ControlFlow::Break(String::from("property stop"))
+            );
+            let expected: Vec<_> = (0..fanout)
+                .map(|ordinal| {
+                    let slot = match order {
+                        OutEdgeOrder::Ascending => ordinal,
+                        OutEdgeOrder::Descending => stored - 1 - ordinal,
+                    };
+                    (
+                        slot,
+                        slot + 100,
+                        values[slot as usize * 32..(slot as usize + 1) * 32].to_vec(),
+                    )
+                })
+                .collect();
+            assert_eq!(seen, expected);
+            assert!(
+                matches!(
+                    graph.visit_edges_with_inline_property(
+                        vid,
+                        label,
+                        order,
+                        |_, _| ControlFlow::<()>::Continue(())
+                    ),
+                    Err(LabeledOperationError::LtbBlock(BlockError::NotMinted {
+                        id: u32::MAX
+                    }))
+                ),
+                "uninterrupted property walk must reach the poisoned root"
+            );
+        }
     }
 
     #[test]

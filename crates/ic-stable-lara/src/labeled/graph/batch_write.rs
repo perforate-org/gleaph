@@ -53,7 +53,7 @@ use ic_stable_structures::Memory;
 use super::compact::LabeledLeafRelocationTarget;
 use super::error::LabeledOperationError;
 use super::insert::EdgePlacementPolicy;
-use super::{BucketSearch, LabeledLaraGraph};
+use super::{BucketMode, BucketSearch, LabeledLaraGraph};
 use crate::lara::edge::free_span::FreeSpan;
 
 /// One physical half-edge inside a one-orientation batch plan.
@@ -719,6 +719,15 @@ pub enum OneOrientationBatchError {
         /// Vertex that owns the tree-mode bucket.
         owner_vertex_id: VertexId,
         /// Storage label of the tree-mode bucket.
+        label_id: BucketLabelKey,
+    },
+    /// ADR 0096 §5: tiny-mode bucket runs stay on the scalar path (which
+    /// promotes naturally via the insert dispatcher). Rejected before any run
+    /// math: width bytes are payload on tiny and must never feed planning.
+    TinyBucketRunUnsupported {
+        /// Vertex that owns the tiny-mode bucket.
+        owner_vertex_id: VertexId,
+        /// Storage label of the tiny-mode bucket.
         label_id: BucketLabelKey,
     },
     /// Plan 0321 Step 2 (minimal first slice): the tree-mode
@@ -2042,6 +2051,7 @@ where
         ))
     }
 
+    #[allow(clippy::needless_return)]
     fn preflight_run(
         &self,
         run: &OneOrientationBucketRun<E>,
@@ -2074,246 +2084,270 @@ where
                 }
             },
         };
-        if run.inline_property_width != bucket.inline_property_byte_width() {
-            return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
-                bucket_width: bucket.inline_property_byte_width(),
-                edge_width: run.inline_property_width,
-            });
-        }
-        // Plan 0321 Step 1 (Commit 1): the batch planner has no
-        // tree-mode geometry. Reject tree-mode bucket runs at the
-        // head of `preflight_run` (after find_bucket, before any
-        // edge_start_slot / hole-reuse math) so the caller's
-        // existing scalar fallback (per-edge insert which handles
-        // tree append correctly) takes over. The widening
-        // (Commit 2 of Plan 0321) is the typed follow-up that
-        // ADMITs tree runs.
-        if bucket.is_tree_mode() {
-            // Plan 0321 Step 2: tree-mode batch admission (minimal
-            // first slice — tail-fit only). Compute the tail block
-            // room; if the run fits, admit it. If the run crosses a
-            // block boundary, reject it with a typed error — the
-            // caller falls back to scalar inserts (which handle
-            // root-growth correctly). The follow-up widens to
-            // multi-block + root-growth.
-            //
-            // Tree-mode invariants (4-byte edges, no inline
-            // property bytes) are checked here.
-            if E::BYTES != 4 {
-                return Err(OneOrientationBatchError::TreeModeEdgeWidthUnsupported {
-                    actual: E::BYTES,
-                    expected: 4,
-                });
-            }
-            if run.inline_property_width != 0 {
-                // Plan 0326 LPB-in-tree: tree mode + `w > 0` is
-                // not admitted in batch (the property row writeback
-                // path is per-edge). The caller's scalar fallback
-                // (per-edge insert) handles the new property
-                // tree branch via `tree_mode_insert_edge` +
-                // property row writeback. Typed reject signals
-                // the recorder to route to scalar.
-                return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
-                    bucket_width: 0,
-                    edge_width: run.inline_property_width,
-                });
-            }
-            let run_count = u32::try_from(run.edges.len())
-                .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
-            if run_count == 0 {
-                return Err(OneOrientationBatchError::EmptyRun);
-            }
-            // Tail-block room. The run must fit within the existing
-            // tail block (no new LTB block, no root growth in this
-            // first slice). The follow-up slice widens to
-            // multi-block.
-            //
-            // **F-1 review (2026-09-02)**: when `stored % B == 0`
-            // (the bucket ends exactly on a block boundary, e.g.
-            // immediately after promotion at `stored = T_PROMOTE =
-            // 4096`), `tail_offset == 0` and `tail_room = B*E::BYTES`
-            // looks like the full block is free. But the **next**
-            // block does not exist yet — the root region has
-            // `ceil(stored/B) = stored/B` block ids, so
-            // `tail_block_idx = stored/B` is out of range. The
-            // scalar path (`tree_mode_insert_edge:100`) handles this
-            // by minting a new block when `tail_offset == 0`. The
-            // batch minimal-first-slice does NOT mint, so
-            // `tail_offset == 0` is rejected typed (the caller falls
-            // back to scalar inserts which mint correctly).
-            let block_b: u32 = crate::labeled::tree_csr::B as u32;
-            let stored = bucket.stored_slots;
-            let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
-            let tail_room: u32 = (block_b * (E::BYTES as u32)) - tail_offset;
-            let run_bytes = u32::try_from(run.edges.len())
-                .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?
-                .checked_mul(E::BYTES as u32)
-                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-            if tail_offset == 0 || run_bytes > tail_room {
-                // Tail block is exactly full (`tail_offset == 0`)
-                // OR the run would cross a block boundary. The
-                // widening (follow-up) admits both via new-block
-                // mint + root region growth; the minimal first
-                // slice rejects typed. Caller falls back to scalar
-                // inserts which handle the `tail_offset == 0` case
-                // by minting a new block (Plan 0318 §tree insert).
-                return Err(OneOrientationBatchError::TreeRunExceedsTailBlock {
-                    owner_vertex_id: run.owner_vertex_id,
-                    label_id: run.label_id,
-                    run_bytes: u64::from(run_bytes),
-                    tail_room_bytes: u64::from(tail_room),
-                });
-            }
-            // Resolve the tail block id via the depth-generic
-            // resolver. For depth 1 this is a single LEG read; for
-            // depth 2+ it descends the interior hop chain. The
-            // resolver is `pub(crate)` and lives in tree_write.rs.
-            let tail_block_idx = stored / block_b;
-            let tail_block_id = crate::labeled::graph::tree_write::resolve_leaf_block_id(
-                self,
-                &bucket,
-                tail_block_idx,
-            )
-            .map_err(OneOrientationBatchError::StorageError)?;
-            // Build the PreflightRun for this tree-tail-fit run.
-            return Ok(PreflightRun {
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets stay on the scalar path (which promotes
+            // naturally via the insert dispatcher). Guard BEFORE the width check
+            // below: width bytes are payload on tiny and would misfire
+            // WidthMismatch. Snapshot fields above are harmless pre-guard
+            // (garbage-but-stable compares equal; nothing consumes them past this
+            // rejection).
+            BucketMode::Tiny => Err(OneOrientationBatchError::TinyBucketRunUnsupported {
                 owner_vertex_id: run.owner_vertex_id,
                 label_id: run.label_id,
-                bucket_slot,
-                bucket,
-                edge_slot_count: run_count,
-                inline_property_width: 0,
-                inline_property_bytes_byte_count: 0,
-                inline_property_bytes_allocation: None,
-                destination: RunDestination::Tree {
-                    tail_block_id,
-                    tail_offset_bytes: tail_offset as usize,
-                    run_edge_count: run_count,
-                },
-            });
-        }
-
-        let edge_start_slot =
-            checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
-                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_slot_count = u32::try_from(run.edges.len())
-            .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_end_slot = edge_start_slot
-            .checked_add(u64::from(edge_slot_count))
-            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)
-            .map_err(OneOrientationBatchError::from)?;
-        let successor_start = self
-            .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
-            .map_err(OneOrientationBatchError::from)?;
-        // A bucket with an existing overflow chain must continue through the
-        // log/fold path. Writing directly into its slab would leave the chain
-        // published alongside the new slab prefix and break edge/inline-property-bytes
-        // ordinal alignment.
-        if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
-            return self.preflight_overflow_log_run(
-                run,
-                bucket_slot,
-                bucket,
-                edge_log_leaf_cursors,
-                inline_property_bytes_log_leaf_cursors,
-                leaf_expansion_cursors,
-            );
-        }
-
-        // Unordered placement (ADR 0052 §5): count in-slab tombstone holes as
-        // reusable capacity before reserving tail or log space. Restricted to
-        // chain-free buckets whose inline property bytes are slab-backed: the O(1)
-        // gate `stored_slots > degree` is exact for chain-free buckets, and
-        // log-backed bytes cannot be synchronized at a reused middle ordinal
-        // (ADR 0052 §9, same fallback as the scalar reuse path). The window is read
-        // once and decoded in-buffer; the scan stops once the run is covered. This
-        // branch runs before the tail-fit check because a span that is exactly full
-        // of live edges plus tombstones has no tail room but can still admit the run
-        // through its holes. When holes plus the available tail cannot admit the
-        // whole run, the run keeps the current tail-first/log path (a mixed
-        // slab+log split of one run is out of scope).
-        if run.placement == EdgePlacementPolicy::Unordered && bucket.stored_slots > bucket.degree {
-            let window_len = u64::from(bucket.stored_slots);
-            let mut window = vec![0u8; (window_len as usize).saturating_mul(E::BYTES)];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start(), &mut window);
-            let mut hole_window_indices = Vec::new();
-            for slot_index in 0..bucket.stored_slots {
-                let off = (slot_index as usize).saturating_mul(E::BYTES);
-                let encoded = E::read_from(&window[off..off + E::BYTES]);
-                if encoded.is_tombstone_edge() {
-                    hole_window_indices.push(slot_index);
-                    if hole_window_indices.len() == run.edges.len() {
-                        break;
-                    }
-                }
-            }
-            if !hole_window_indices.is_empty() {
-                let holes = hole_window_indices.len() as u64;
-                let tail_edge_slot_count = edge_slot_count
-                    .checked_sub(hole_window_indices.len() as u32)
-                    .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-                let tail_capacity = successor_start.saturating_sub(edge_start_slot);
-                if tail_capacity >= u64::from(tail_edge_slot_count) {
-                    let (inline_property_bytes_byte_count, inline_property_bytes_allocation) =
-                        self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
-                    let write_strategy =
-                        choose_slab_hole_write_strategy(E::BYTES, window_len, holes);
-                    return Ok(PreflightRun {
-                        owner_vertex_id: run.owner_vertex_id,
-                        label_id: run.label_id,
-                        bucket_slot,
-                        bucket,
-                        edge_slot_count,
-                        inline_property_width: run.inline_property_width,
-                        inline_property_bytes_byte_count,
-                        inline_property_bytes_allocation,
-                        destination: RunDestination::SlabHoles {
-                            edge_start_slot: bucket.edge_start(),
-                            hole_window_indices,
-                            tail_edge_slot_count,
-                            write_strategy,
-                            inline_property_bytes_offset: None,
-                            inline_property_bytes_byte_count,
-                        },
+            }),
+            // Plan 0321 Step 1 (Commit 1): the batch planner has no
+            // tree-mode geometry. Reject tree-mode bucket runs at the
+            // head of `preflight_run` (after find_bucket, before any
+            // edge_start_slot / hole-reuse math) so the caller's
+            // existing scalar fallback (per-edge insert which handles
+            // tree append correctly) takes over. The widening
+            // (Commit 2 of Plan 0321) is the typed follow-up that
+            // ADMITs tree runs.
+            BucketMode::Tree => {
+                // Plan 0321 Step 2: tree-mode batch admission (minimal
+                // first slice — tail-fit only). Compute the tail block
+                // room; if the run fits, admit it. If the run crosses a
+                // block boundary, reject it with a typed error — the
+                // caller falls back to scalar inserts (which handle
+                // root-growth correctly). The follow-up widens to
+                // multi-block + root-growth.
+                //
+                // Tree-mode invariants (4-byte edges, no inline
+                // property bytes) are checked here.
+                if E::BYTES != 4 {
+                    return Err(OneOrientationBatchError::TreeModeEdgeWidthUnsupported {
+                        actual: E::BYTES,
+                        expected: 4,
                     });
                 }
+                if run.inline_property_width != 0 {
+                    // Plan 0326 LPB-in-tree: tree mode + `w > 0` is
+                    // not admitted in batch (the property row writeback
+                    // path is per-edge). The caller's scalar fallback
+                    // (per-edge insert) handles the new property
+                    // tree branch via `tree_mode_insert_edge` +
+                    // property row writeback. Typed reject signals
+                    // the recorder to route to scalar.
+                    return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: 0,
+                        edge_width: run.inline_property_width,
+                    });
+                }
+                let run_count = u32::try_from(run.edges.len())
+                    .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
+                if run_count == 0 {
+                    return Err(OneOrientationBatchError::EmptyRun);
+                }
+                // Tail-block room. The run must fit within the existing
+                // tail block (no new LTB block, no root growth in this
+                // first slice). The follow-up slice widens to
+                // multi-block.
+                //
+                // **F-1 review (2026-09-02)**: when `stored % B == 0`
+                // (the bucket ends exactly on a block boundary, e.g.
+                // immediately after promotion at `stored = T_PROMOTE =
+                // 4096`), `tail_offset == 0` and `tail_room = B*E::BYTES`
+                // looks like the full block is free. But the **next**
+                // block does not exist yet — the root region has
+                // `ceil(stored/B) = stored/B` block ids, so
+                // `tail_block_idx = stored/B` is out of range. The
+                // scalar path (`tree_mode_insert_edge:100`) handles this
+                // by minting a new block when `tail_offset == 0`. The
+                // batch minimal-first-slice does NOT mint, so
+                // `tail_offset == 0` is rejected typed (the caller falls
+                // back to scalar inserts which mint correctly).
+                let block_b: u32 = crate::labeled::tree_csr::B as u32;
+                let stored = bucket.stored_slots;
+                let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
+                let tail_room: u32 = (block_b * (E::BYTES as u32)) - tail_offset;
+                let run_bytes = u32::try_from(run.edges.len())
+                    .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?
+                    .checked_mul(E::BYTES as u32)
+                    .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+                if tail_offset == 0 || run_bytes > tail_room {
+                    // Tail block is exactly full (`tail_offset == 0`)
+                    // OR the run would cross a block boundary. The
+                    // widening (follow-up) admits both via new-block
+                    // mint + root region growth; the minimal first
+                    // slice rejects typed. Caller falls back to scalar
+                    // inserts which handle the `tail_offset == 0` case
+                    // by minting a new block (Plan 0318 §tree insert).
+                    return Err(OneOrientationBatchError::TreeRunExceedsTailBlock {
+                        owner_vertex_id: run.owner_vertex_id,
+                        label_id: run.label_id,
+                        run_bytes: u64::from(run_bytes),
+                        tail_room_bytes: u64::from(tail_room),
+                    });
+                }
+                // Resolve the tail block id via the depth-generic
+                // resolver. For depth 1 this is a single LEG read; for
+                // depth 2+ it descends the interior hop chain. The
+                // resolver is `pub(crate)` and lives in tree_write.rs.
+                let tail_block_idx = stored / block_b;
+                let tail_block_id = crate::labeled::graph::tree_write::resolve_leaf_block_id(
+                    self,
+                    &bucket,
+                    tail_block_idx,
+                )
+                .map_err(OneOrientationBatchError::StorageError)?;
+                // Build the PreflightRun for this tree-tail-fit run.
+                Ok(PreflightRun {
+                    owner_vertex_id: run.owner_vertex_id,
+                    label_id: run.label_id,
+                    bucket_slot,
+                    bucket,
+                    edge_slot_count: run_count,
+                    inline_property_width: 0,
+                    inline_property_bytes_byte_count: 0,
+                    inline_property_bytes_allocation: None,
+                    destination: RunDestination::Tree {
+                        tail_block_id,
+                        tail_offset_bytes: tail_offset as usize,
+                        run_edge_count: run_count,
+                    },
+                })
+            }
+            BucketMode::Slab => {
+                // Width check lives INSIDE the Slab arm (§7.1): tiny diverged
+                // above and tree returns from its arm, so only slab widths
+                // (real schema) ever reach this read.
+                if run.inline_property_width != bucket.inline_property_byte_width() {
+                    return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: bucket.inline_property_byte_width(),
+                        edge_width: run.inline_property_width,
+                    });
+                }
+
+                let edge_start_slot =
+                    checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
+                        .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+                let edge_slot_count = u32::try_from(run.edges.len())
+                    .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
+                let edge_end_slot = edge_start_slot
+                    .checked_add(u64::from(edge_slot_count))
+                    .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+
+                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)
+                    .map_err(OneOrientationBatchError::from)?;
+                let successor_start = self
+                    .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
+                    .map_err(OneOrientationBatchError::from)?;
+                // A bucket with an existing overflow chain must continue through the
+                // log/fold path. Writing directly into its slab would leave the chain
+                // published alongside the new slab prefix and break edge/inline-property-bytes
+                // ordinal alignment.
+                if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
+                    return self.preflight_overflow_log_run(
+                        run,
+                        bucket_slot,
+                        bucket,
+                        edge_log_leaf_cursors,
+                        inline_property_bytes_log_leaf_cursors,
+                        leaf_expansion_cursors,
+                    );
+                }
+
+                // Unordered placement (ADR 0052 §5): count in-slab tombstone holes as
+                // reusable capacity before reserving tail or log space. Restricted to
+                // chain-free buckets whose inline property bytes are slab-backed: the O(1)
+                // gate `stored_slots > degree` is exact for chain-free buckets, and
+                // log-backed bytes cannot be synchronized at a reused middle ordinal
+                // (ADR 0052 §9, same fallback as the scalar reuse path). The window is read
+                // once and decoded in-buffer; the scan stops once the run is covered. This
+                // branch runs before the tail-fit check because a span that is exactly full
+                // of live edges plus tombstones has no tail room but can still admit the run
+                // through its holes. When holes plus the available tail cannot admit the
+                // whole run, the run keeps the current tail-first/log path (a mixed
+                // slab+log split of one run is out of scope).
+                if run.placement == EdgePlacementPolicy::Unordered
+                    && bucket.stored_slots > bucket.degree
+                {
+                    let window_len = u64::from(bucket.stored_slots);
+                    let mut window = vec![0u8; (window_len as usize).saturating_mul(E::BYTES)];
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut window);
+                    let mut hole_window_indices = Vec::new();
+                    for slot_index in 0..bucket.stored_slots {
+                        let off = (slot_index as usize).saturating_mul(E::BYTES);
+                        let encoded = E::read_from(&window[off..off + E::BYTES]);
+                        if encoded.is_tombstone_edge() {
+                            hole_window_indices.push(slot_index);
+                            if hole_window_indices.len() == run.edges.len() {
+                                break;
+                            }
+                        }
+                    }
+                    if !hole_window_indices.is_empty() {
+                        let holes = hole_window_indices.len() as u64;
+                        let tail_edge_slot_count = edge_slot_count
+                            .checked_sub(hole_window_indices.len() as u32)
+                            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+                        let tail_capacity = successor_start.saturating_sub(edge_start_slot);
+                        if tail_capacity >= u64::from(tail_edge_slot_count) {
+                            let (
+                                inline_property_bytes_byte_count,
+                                inline_property_bytes_allocation,
+                            ) =
+                                self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
+                            let write_strategy =
+                                choose_slab_hole_write_strategy(E::BYTES, window_len, holes);
+                            return Ok(PreflightRun {
+                                owner_vertex_id: run.owner_vertex_id,
+                                label_id: run.label_id,
+                                bucket_slot,
+                                bucket,
+                                edge_slot_count,
+                                inline_property_width: run.inline_property_width,
+                                inline_property_bytes_byte_count,
+                                inline_property_bytes_allocation,
+                                destination: RunDestination::SlabHoles {
+                                    edge_start_slot: bucket.edge_start(),
+                                    hole_window_indices,
+                                    tail_edge_slot_count,
+                                    write_strategy,
+                                    inline_property_bytes_offset: None,
+                                    inline_property_bytes_byte_count,
+                                },
+                            });
+                        }
+                    }
+                }
+
+                if edge_end_slot > successor_start {
+                    return self.preflight_overflow_log_run(
+                        run,
+                        bucket_slot,
+                        bucket,
+                        edge_log_leaf_cursors,
+                        inline_property_bytes_log_leaf_cursors,
+                        leaf_expansion_cursors,
+                    );
+                }
+
+                // Verify every inline-property-bearing edge matches the declared width.  This
+                // proves the commit-time assertion cannot fire for malformed input.
+                let (inline_property_bytes_byte_count, inline_property_bytes_allocation) =
+                    self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
+
+                Ok(PreflightRun {
+                    owner_vertex_id: run.owner_vertex_id,
+                    label_id: run.label_id,
+                    bucket_slot,
+                    bucket,
+                    edge_slot_count,
+                    inline_property_width: run.inline_property_width,
+                    inline_property_bytes_byte_count,
+                    inline_property_bytes_allocation,
+                    destination: RunDestination::Slab {
+                        edge_start_slot,
+                        inline_property_bytes_offset: None,
+                        inline_property_bytes_byte_count,
+                    },
+                })
             }
         }
-
-        if edge_end_slot > successor_start {
-            return self.preflight_overflow_log_run(
-                run,
-                bucket_slot,
-                bucket,
-                edge_log_leaf_cursors,
-                inline_property_bytes_log_leaf_cursors,
-                leaf_expansion_cursors,
-            );
-        }
-
-        // Verify every inline-property-bearing edge matches the declared width.  This
-        // proves the commit-time assertion cannot fire for malformed input.
-        let (inline_property_bytes_byte_count, inline_property_bytes_allocation) =
-            self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
-
-        Ok(PreflightRun {
-            owner_vertex_id: run.owner_vertex_id,
-            label_id: run.label_id,
-            bucket_slot,
-            bucket,
-            edge_slot_count,
-            inline_property_width: run.inline_property_width,
-            inline_property_bytes_byte_count,
-            inline_property_bytes_allocation,
-            destination: RunDestination::Slab {
-                edge_start_slot,
-                inline_property_bytes_offset: None,
-                inline_property_bytes_byte_count,
-            },
-        })
     }
 
     fn preflight_overflow_log_run(
@@ -4315,6 +4349,13 @@ impl std::fmt::Display for OneOrientationBatchError {
                 f,
                 "tree-mode bucket run unsupported: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
             ),
+            Self::TinyBucketRunUnsupported {
+                owner_vertex_id,
+                label_id,
+            } => write!(
+                f,
+                "tiny-mode bucket run unsupported: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
+            ),
             Self::TreeRunExceedsTailBlock {
                 owner_vertex_id,
                 label_id,
@@ -4340,6 +4381,10 @@ impl OneOrientationBatchError {
         matches!(
             self,
             Self::MissingPinnedLeafForExpansion | Self::InlinePropertyBytesSpanRequiresRelocation
+            // ADR 0096 §5: tiny-bucket runs fall back to scalar inserts (which
+            // promote naturally). Scalar cost on small buckets is bounded; the
+            // rejection happens pre-write with nothing reserved.
+            | Self::TinyBucketRunUnsupported { .. }
         )
     }
 }
@@ -4765,8 +4810,11 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         // Fill the bucket slab window so the batch must use the overflow log.
+        // ADR 0096 §4: four inserts (promotion materializes an exact span,
+        // which the fourth edge fills) where three quota-spaced inserts
+        // sufficed before.
         let label = BucketLabelKey::directed_from_index(1);
-        for i in 1..=3u32 {
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -4803,12 +4851,12 @@ mod tests {
         let out = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             out.len(),
-            4,
-            "expected four out-edges after overflow append"
+            5,
+            "expected five out-edges after overflow append (four seeds + batch)"
         );
         assert_eq!(
             out.iter().map(|edge| edge.target).collect::<Vec<_>>(),
-            vec![1, 2, 3, 10],
+            vec![1, 2, 3, 4, 10],
             "overflow-log append must preserve ascending live order"
         );
     }
@@ -4925,14 +4973,19 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::directed_from_index(2);
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                label,
-                GraphTestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // ADR 0096 §4: promote past tiny (four seeds) so the source leaf pins
+        // and the bucket owns a slab span for relocation. Seeds avoid target 2
+        // (reserved for the batch edge below).
+        for target in [1u32, 3, 4, 5] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         graph
             .insert_edge(
                 VertexId::from(32),
@@ -4986,7 +5039,7 @@ mod tests {
                 .into_iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![1, 2],
+            vec![1, 3, 4, 5, 2],
             "batch append must remain at the live tail after relocation"
         );
     }
@@ -5051,7 +5104,9 @@ mod tests {
 
         let label = BucketLabelKey::directed_from_index(1);
         // Create a bucket at vertex 0 and fill its slab window.
-        for i in 1..=3u32 {
+        // ADR 0096 §4: four seeds (promotion fills the exact span) where
+        // three quota-spaced seeds sufficed before.
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -5062,15 +5117,17 @@ mod tests {
                 .unwrap();
         }
         // Pin a second leaf after leaf 0 so leaf 0 is not at the allocation tail
-        // and cannot expand via tail growth.
-        graph
-            .insert_edge(
-                VertexId::from(32),
-                label,
-                GraphTestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // and cannot expand via tail growth (promote to slab so the pin sticks).
+        for i in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(32),
+                    label,
+                    GraphTestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
 
         // Fill the per-leaf edge overflow log to capacity (170 entries).
         let header = graph.edges().header();
@@ -5159,6 +5216,20 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: single-edge buckets are born tiny, but the crafted
+        // log/degree state below needs real slab buckets (batch runs reject
+        // tiny). Promote directly: one live edge, exact span, no tombstone
+        // pollution (unlike seed-4-delete-3).
+        // NOTE: vid 16 stays homogeneous-bypass (tail-vertex rule): it owns
+        // no label bucket, so only vid 0's buckets promote here.
+        for (vid, label) in [(VertexId::from(0), label_a), (VertexId::from(0), label_b)] {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).unwrap() {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
 
         let header = graph.edges().header();
         let leaf = LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::leaf_index_for_vid(
@@ -5227,7 +5298,11 @@ mod tests {
                 slot_b,
                 bucket_b
                     .with_overflow_log_head((log_capacity - 1) as i32)
-                    .with_degree_field(b_count as u32),
+                    // ADR 0096 §4: promoted buckets carry their live slab edge
+                    // (degree counts it), unlike zero-quota later-bucket birth
+                    // whose slot the batch run reused. Honest degree keeps
+                    // batch slot math truthful.
+                    .with_degree_field((b_count + 1) as u32),
             )
             .unwrap();
 
@@ -5293,8 +5368,8 @@ mod tests {
         );
         assert_eq!(
             collect(label_b),
-            (0..b_count)
-                .map(|i| 200 + i as u32)
+            (std::iter::once(2u32))
+                .chain((0..b_count).map(|i| 200 + i as u32))
                 .chain([301])
                 .collect::<Vec<_>>()
         );
@@ -5639,16 +5714,25 @@ mod tests {
                 },
             ],
         };
-        let (old_start, _) = graph
+        // ADR 0096 §4: tiny birth and empty width-declared buckets pin nothing.
+        // Establish the pin explicitly via pin-only (NOT relocate: relocate
+        // would fold the crafted overflow logs and break log symmetry).
+        graph
+            .ensure_labeled_leaf_block_pinned(VertexId::from(0))
+            .expect("pin the leaf for batch relocation");
+        let (_old_start, _) = graph
             .labeled_leaf_physical_range(VertexId::from(0))
             .expect("leaf must be pinned before relocation");
         graph
             .insert_one_orientation_batch(&plan)
             .expect("same-leaf inline-property relocation must succeed");
-        let (new_start, _) = graph
+        // ADR 0096 §4: the pin starts at the allocation tail with room to
+        // grow, so the batch may expand in place instead of relocating the
+        // block (same capacity outcome, no move). Assert pinned before/after
+        // plus folds/order below, not block movement.
+        graph
             .labeled_leaf_physical_range(VertexId::from(0))
             .expect("leaf must remain pinned after relocation");
-        assert_ne!(new_start, old_start);
 
         for (label, expected_tail, value_base) in
             [(label_a, 3000, 1000i32), (label_b, 4000, 2000i32)]
@@ -5966,7 +6050,31 @@ mod tests {
 
     #[test]
     fn insertion_batch_never_fills_slab_tombstone() {
-        let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+        // ADR 0096 §4: four seeds (promotion fills the exact span) plus a
+        // middle tombstone, so the span is genuinely full and the batch must
+        // take the overflow-log path (three seeds leave promotion headroom
+        // that a slab append would legitimately consume).
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::directed_from_index(1);
+        for target in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("middle edge must be tombstoned");
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
@@ -5992,7 +6100,7 @@ mod tests {
                 .iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![1, 3, 10],
+            vec![1, 3, 4, 10],
             "insertion placement must append at the live tail, never reuse the tombstone"
         );
         let bucket_slot = graph
@@ -6001,7 +6109,7 @@ mod tests {
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(
-            bucket.stored_slots, 3,
+            bucket.stored_slots, 4,
             "a full slab span keeps Insertion batch on the overflow-log path; no tombstone reuse"
         );
     }

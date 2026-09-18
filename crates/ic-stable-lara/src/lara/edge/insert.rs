@@ -205,20 +205,25 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .base_slot_start()
             .checked_add(u64::from(v.stored_degree()))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
-            let write_end = loc
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if write_end > self.header().elem_capacity {
-                self.set_elem_capacity(write_end)
-                    .map_err(LaraOperationError::ResizeFailed)?;
+        let has_space = { self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) };
+        let location = if has_space {
+            {
+                let write_end = loc
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if write_end > self.header().elem_capacity {
+                    self.set_elem_capacity(write_end)
+                        .map_err(LaraOperationError::ResizeFailed)?;
+                }
+                self.write_slot(loc, edge)
+                    .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             }
-            self.write_slot(loc, edge)
-                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-            let grown = v
-                .try_grow_packed_slab_by_one()
-                .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
-            vertices.set(vid, &grown);
+            {
+                let grown = v
+                    .try_grow_packed_slab_by_one()
+                    .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+                vertices.set(vid, &grown);
+            }
             InsertLocation::Slab(v.stored_degree())
         } else {
             let log_index = self.insert_into_log_with_layout(
@@ -238,8 +243,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 None => InsertLocation::LogOnly { log_index },
             }
         };
-        self.set_num_edges(next_num_edges);
-        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
+        {
+            self.set_num_edges(next_num_edges);
+            self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
+        }
         Ok(location)
     }
 

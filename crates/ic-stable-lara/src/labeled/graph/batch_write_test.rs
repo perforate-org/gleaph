@@ -108,7 +108,9 @@ mod tests {
         }
 
         let label = BucketLabelKey::directed_from_index(1);
-        for i in 1..=3u32 {
+        // ADR 0096 §4: promote to slab (four seeds); tiny buckets take the
+        // scalar fallback and never reach batch reserve.
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -118,15 +120,18 @@ mod tests {
                 )
                 .unwrap();
         }
-        // Pin a second leaf after leaf 0 so expansion cannot use tail growth.
-        graph
-            .insert_edge(
-                VertexId::from(16),
-                label,
-                crate::labeled::graph::test_support::TestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // Pin a second leaf after leaf 0 so expansion cannot use tail growth
+        // (promote so the pin sticks).
+        for i in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(16),
+                    label,
+                    crate::labeled::graph::test_support::TestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
 
         // Fill the edge overflow log to capacity so the batch cannot be reserved.
         let header = graph.edges().header();
@@ -212,6 +217,21 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: single-edge buckets are born tiny; batch reserve needs
+        // slab. Promote directly (exact one-edge spans, no seed pollution for
+        // the allocator-state asserts below).
+        for (vid, label) in [
+            (VertexId::from(0), label_a),
+            (VertexId::from(0), label_b),
+            (VertexId::from(16), label_a),
+        ] {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).unwrap() {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
 
         // Fill the shared edge overflow log to capacity so the second run fails
         // after the first run has already been reserved.
@@ -421,7 +441,9 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        for i in 1..=3u32 {
+        // ADR 0096 §4: four seeds (promotion fills the exact span) so the
+        // batch spills to the log like the quota-filled span before.
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -475,10 +497,10 @@ mod tests {
             .unwrap();
         let out = graph.out_edges(VertexId::from(0)).unwrap();
         let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
-        // The first three scalar edges stay in slab order, the batch edges follow
+        // The first four scalar edges stay in slab order, the batch edges follow
         // in logical ordinal order inside the overflow log, and ascending
         // traversal replays the log oldest-to-newest after the slab prefix.
-        assert_eq!(targets, vec![1, 2, 3, 10, 11, 12]);
+        assert_eq!(targets, vec![1, 2, 3, 4, 10, 11, 12]);
     }
 
     #[test]
@@ -1005,7 +1027,9 @@ mod tests {
 
         let label_a = BucketLabelKey::directed_from_index(1);
         let label_b = BucketLabelKey::directed_from_index(2);
-        for i in 1..=3u32 {
+        // ADR 0096 §4: four seeds per bucket (promotion fills exact spans) so
+        // both batch runs spill to the log.
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1084,7 +1108,10 @@ mod tests {
             .unwrap();
         let out = graph.out_edges(VertexId::from(0)).unwrap();
         let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
-        assert_eq!(targets, vec![1, 2, 3, 100, 101, 11, 12, 13, 200, 201]);
+        assert_eq!(
+            targets,
+            vec![1, 2, 3, 4, 100, 101, 11, 12, 13, 14, 200, 201]
+        );
     }
 
     #[test]
@@ -1211,7 +1238,7 @@ mod tests {
 
         let label_a = BucketLabelKey::directed_from_index(1);
         let label_b = BucketLabelKey::directed_from_index(2);
-        for i in 1..=3u32 {
+        for i in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1239,6 +1266,16 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: label_a promoted via the fourth seed; single-edge
+        // label_b/vid16 buckets promote directly (exact spans).
+        for (vid, label) in [(VertexId::from(0), label_b), (VertexId::from(16), label_a)] {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).unwrap() {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
 
         // Fill the shared edge overflow log so that only the first run can fit.
         let header = graph.edges().header();
@@ -1334,15 +1371,18 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
-        // First edge fills the bucket's one-slot slab window under segment16/quota1.
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                label,
-                crate::labeled::graph::test_support::TestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // Fill the bucket's slab window (promotion materializes an exact span
+        // under tiny birth; one quota-spaced seed sufficed before).
+        for target in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
 
         // Fill the per-leaf overflow log to capacity.
         let header = graph.edges().header();
@@ -1530,6 +1570,8 @@ mod tests {
 
         // Create both buckets. Under segment16/quota1 the first bucket gets the
         // single slab slot; the second bucket starts with no slab.
+        // ADR 0096 §4: single-edge buckets are born tiny; batch reserve needs
+        // slab. Promote directly (exact one-edge spans).
         graph
             .insert_edge(
                 VertexId::from(0),
@@ -1546,6 +1588,14 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        for (vid, label) in [(VertexId::from(0), label_a), (VertexId::from(0), label_b)] {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).unwrap() {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
 
         let header = graph.edges().header();
         let leaf = crate::LabeledLaraGraph::<
@@ -1592,8 +1642,10 @@ mod tests {
             .write_overflow_log_entries(leaf, a_count as u32, &b_entries)
             .expect("fill b log");
 
-        // Update bucket heads and degrees to match the filled chains. label_a has
-        // one edge in its slab slot; label_b has no slab.
+        // Update bucket heads and degrees to match the filled chains. Both
+        // buckets hold one live slab edge (direct promotion above); label_b's
+        // degree honestly counts it (zero-quota later-bucket birth, whose slot
+        // the batch run reused, is gone).
         let vertex = graph.vertices.get(VertexId::from(0));
         let (slot_a, bucket_a) = match graph
             .find_bucket(VertexId::from(0), &vertex, label_a)
@@ -1624,7 +1676,7 @@ mod tests {
                 slot_b,
                 bucket_b
                     .with_overflow_log_head((log_capacity - 1) as i32)
-                    .with_degree_field(b_count as u32),
+                    .with_degree_field((b_count + 1) as u32),
             )
             .expect("set b head");
 
@@ -1692,8 +1744,8 @@ mod tests {
         assert!(targets.contains(&301), "expanded edge 301 must be visible");
         assert_eq!(
             out.len(),
-            3 + log_capacity,
-            "all folded and pending edges must be visible"
+            4 + log_capacity,
+            "all folded and pending edges must be visible (2 seeds + 2 batch + log)"
         );
 
         let mut label_a_targets = Vec::new();
@@ -1718,8 +1770,8 @@ mod tests {
                 |edge| label_b_targets.push(edge.target),
             )
             .unwrap();
-        assert_eq!(label_b_targets.len(), b_count + 1);
-        assert_eq!(label_b_targets.first(), Some(&200));
+        assert_eq!(label_b_targets.len(), b_count + 2);
+        assert_eq!(label_b_targets.first(), Some(&2));
         assert_eq!(label_b_targets.last(), Some(&301));
     }
 
@@ -1932,6 +1984,16 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: single-edge buckets are born tiny; batch reserve needs
+        // slab (and the second-leaf pin must stick). Promote directly.
+        for vid in [VertexId::from(0), VertexId::from(16)] {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).unwrap() {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
 
         // Fill the per-leaf overflow log to capacity.
         let header = graph.edges().header();
@@ -2096,6 +2158,8 @@ mod tests {
         let label_tree = BucketLabelKey::directed_from_index(2);
         force_tree_mode_for_test(&graph, VertexId::from(0), label_tree);
         // Bucket 2: leave as slab (no inserts, no force).
+        // ADR 0096 §4: single-edge buckets are born tiny; the slab run needs
+        // a real slab bucket. Promote directly (exact one-edge span).
         let label_slab = BucketLabelKey::directed_from_index(3);
         graph
             .insert_edge(
@@ -2105,6 +2169,19 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        {
+            let vertex = graph.vertices.get(VertexId::from(0));
+            let (slot, bucket) = match graph
+                .find_bucket(VertexId::from(0), &vertex, label_slab)
+                .unwrap()
+            {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("slab bucket must exist for promotion"),
+            };
+            graph
+                .promote_tiny_to_slab(VertexId::from(0), slot, &bucket)
+                .unwrap();
+        }
         // The plan puts the slab run FIRST; preflight_run walks
         // runs in plan order, so the slab run is admitted and the
         // tree run (second) is rejected.
@@ -2150,10 +2227,14 @@ mod tests {
         );
         // The slab bucket is untouched (no run was admitted because
         // the tree run failure aborts the plan). The slab bucket's
-        // edge count stays at 1.
-        let all_out = graph.out_edges(VertexId::from(0)).unwrap();
-        let slab_count = all_out.iter().filter(|e| e.target == 100).count();
-        assert_eq!(slab_count, 1, "slab bucket unchanged");
+        // edge count stays at 1. (Target 100 also exists in the forced tree
+        // bucket — `out_edges` fans out across labels, so count the slab
+        // bucket directly.)
+        let per_slab = graph
+            .iter_edges_for_label(VertexId::from(0), label_slab)
+            .unwrap();
+        assert_eq!(per_slab.len(), 1, "slab bucket unchanged");
+        assert_eq!(per_slab[0].target, 100);
     }
 
     /// Plan 0321 §Step 2: a batch run targeting a tree-mode bucket
@@ -2478,5 +2559,42 @@ mod tests {
         assert_eq!(bucket.stored_slots, 4096 + 1024);
         assert_eq!(bucket.degree, 4096 + 1024);
         assert!(bucket.is_tree_mode());
+    }
+
+    // ADR 0096 §5 (R2b): batch runs on tiny buckets reject before any run math
+    // (width bytes are payload and would misfire WidthMismatch). Scalar
+    // fallback promotes naturally.
+    #[test]
+    fn tiny_bucket_run_rejected_before_width_check() {
+        use crate::labeled::graph::test_support::{force_tiny_bucket, test_graph};
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(2);
+        force_tiny_bucket(&graph, vid, label, &[7, 8]);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: vid,
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 2,
+                    owner_vertex_id: vid,
+                    neighbor_vertex_id: VertexId::from(9),
+                    label_id: label,
+                    edge: crate::labeled::graph::test_support::TestEdge { target: 9 },
+                }],
+            }],
+        };
+        match graph.reserve_one_orientation_batch(&plan) {
+            Err(OneOrientationBatchError::TinyBucketRunUnsupported {
+                owner_vertex_id,
+                label_id: run_label,
+            }) => {
+                assert_eq!(owner_vertex_id, vid);
+                assert_eq!(run_label, label);
+            }
+            other => panic!("expected TinyBucketRunUnsupported, got {other:?}"),
+        }
     }
 }

@@ -15,7 +15,7 @@ use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
 use super::{
-    BypassRowCompactOutcome, EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph,
+    BucketMode, BypassRowCompactOutcome, EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph,
     VertexEdgeSpanCompactOneStep,
 };
 
@@ -191,6 +191,7 @@ fn next_vertex_edge_span_allocation(
         .ok_or(LaraOperationError::CollectAllocationOverflow)
 }
 
+#[allow(clippy::needless_return)]
 /// Plan 0319 §Step 3: returns the LEG span region length for a label
 /// bucket. For slab-mode buckets, this is `stored_slots` (the
 /// contiguous edge-slab width). For tree-mode buckets, this is the
@@ -210,36 +211,41 @@ fn next_vertex_edge_span_allocation(
 /// cause the rewrite to read past the root region into neighboring
 /// buckets and misread block ids as edge targets (corruption).
 pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
-    if !bucket.is_tree_mode() {
-        return bucket.stored_slots;
+    // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots
+    // (inline targets only); tree/slab keep their region rules.
+    match BucketMode::from_bucket(bucket) {
+        BucketMode::Tiny => 0,
+        BucketMode::Slab => bucket.stored_slots,
+        BucketMode::Tree => {
+            // Tree mode: edge root region length + property root region length
+            // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
+            // `[edge root | property root]`, gap 0 — but the LEG allocator
+            // does not guarantee contiguity, so the property root may live
+            // at an arbitrary LEG offset stored in
+            // `inline_property_bytes_offset`. The edge root is contiguous
+            // at `edge_start`; the property root is at a separate offset,
+            // and `vertex_label_edge_span_end_exclusive` (and friends) sum
+            // the two regions for the compaction rewrite path).
+            let physical_depth = bucket.tree_mode_physical_depth();
+            let stored = bucket.stored_slots;
+            let leaf_count =
+                u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
+                    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+            let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+            let edge_root_len = match physical_depth {
+                1 => leaf_count,
+                2 => leaf_count.div_ceil(k),
+                3 => leaf_count.div_ceil(k).div_ceil(k),
+                _ => unreachable!("tree_mode_physical_depth out of range"),
+            };
+            // Plan 0326: property root length (separate LEG span; the
+            // compact span logic adds the property root via
+            // `property_root_region_len` below, so `bucket_span_region_len`
+            // returns the EDGE root only — the property root is appended
+            // explicitly by the compaction rewrite path).
+            edge_root_len
+        }
     }
-    // Tree mode: edge root region length + property root region length
-    // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
-    // `[edge root | property root]`, gap 0 — but the LEG allocator
-    // does not guarantee contiguity, so the property root may live
-    // at an arbitrary LEG offset stored in
-    // `inline_property_bytes_offset`. The edge root is contiguous
-    // at `edge_start`; the property root is at a separate offset,
-    // and `vertex_label_edge_span_end_exclusive` (and friends) sum
-    // the two regions for the compaction rewrite path).
-    let physical_depth = bucket.tree_mode_physical_depth();
-    let stored = bucket.stored_slots;
-    let leaf_count =
-        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
-            .expect("leaf_count fits u32 for MAX_DEPTH=3");
-    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-    let edge_root_len = match physical_depth {
-        1 => leaf_count,
-        2 => leaf_count.div_ceil(k),
-        3 => leaf_count.div_ceil(k).div_ceil(k),
-        _ => unreachable!("tree_mode_physical_depth out of range"),
-    };
-    // Plan 0326: property root length (separate LEG span; the
-    // compact span logic adds the property root via
-    // `property_root_region_len` below, so `bucket_span_region_len`
-    // returns the EDGE root only — the property root is appended
-    // explicitly by the compaction rewrite path).
-    edge_root_len
 }
 
 /// Plan 0326 LPB-in-tree: property root region length for a
@@ -275,6 +281,7 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
     u32::try_from(r).expect("property root entry count fits u32 (bounded by R_MAX)")
 }
 
+#[allow(clippy::needless_return)]
 /// Plan 0326 LPB-in-tree: combined LEG span length for a tree-mode
 /// bucket. The span holds `[edge root | property root]` (gap 0);
 /// the read path derives the property root start as
@@ -282,15 +289,19 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
 /// this combined length to compute per-vertex span intervals so
 /// the rewrite does not reallocate the property root.
 pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
-    if !bucket.is_tree_mode() {
-        return bucket.stored_slots;
+    // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots.
+    match BucketMode::from_bucket(bucket) {
+        BucketMode::Tiny => 0,
+        BucketMode::Slab => bucket.stored_slots,
+        BucketMode::Tree => {
+            let edge = bucket_span_region_len(bucket);
+            let prop = property_root_region_len(bucket);
+            edge.checked_add(prop).expect(
+                "combined_span_region_len: edge_root_len + property_root_len overflows u32 (impossible: \
+                 both bounded by R_MAX = 1024, so total <= 2048)",
+            )
+        }
     }
-    let edge = bucket_span_region_len(bucket);
-    let prop = property_root_region_len(bucket);
-    edge.checked_add(prop).expect(
-        "combined_span_region_len: edge_root_len + property_root_len overflows u32 (impossible: \
-         both bounded by R_MAX = 1024, so total <= 2048)",
-    )
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -389,7 +400,9 @@ where
         // for both modes.
         let mut bucket_intervals: Vec<(u64, u64)> = buckets
             .iter()
-            .filter(|bucket| bucket.stored_slots > 0)
+            // ADR 0096 §5: tiny buckets occupy zero slab slots; including them
+            // would validate phantom anchor spans against real geometry.
+            .filter(|bucket| bucket.stored_slots > 0 && !bucket.is_tiny_mode())
             .map(|bucket| {
                 // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
                 // buckets, the vertex span is `[edge root | property
@@ -472,8 +485,11 @@ where
     ) -> Result<u64, LabeledOperationError> {
         let vertex = self.vertices.get(src);
         let buckets = self.read_vertex_label_buckets(&vertex)?;
+        // ADR 0096 §5: anchor at the first non-tiny bucket (tiny anchors are
+        // placeholders, not span bases). Spanless vertices have no slab base.
         buckets
-            .first()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
             .map(|bucket| bucket.edge_start())
             .ok_or_else(|| {
                 log_collect_overflow(&format!(
@@ -599,6 +615,15 @@ where
         if span_len == 0 {
             return Ok(());
         }
+        // ADR 0096 §5: spanless vertices (all tiny or all emptied) hold no
+        // slab bytes — a stale width/anchor cover would poison the free store
+        // with live ranges on release. Nothing live, nothing to free.
+        let has_live_slab = buckets
+            .iter()
+            .any(|bucket| !bucket.is_tiny_mode() && bucket.stored_slots > 0);
+        if !has_live_slab {
+            return Ok(());
+        }
         let len = u64::from(span_len);
         if self.edges.release_span(span_start, len).is_ok() {
             return Ok(());
@@ -636,12 +661,21 @@ where
         let segment_size = self.edges.header().segment_size.max(1);
         let buckets = self.read_vertex_label_buckets(vertex)?;
         let old_alloc = vertex.stored_slots;
+        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
+        // placeholders; releasing from an anchor poisons the free store with
+        // live ranges). Spanless vertices resolve to 0 (callers skip release
+        // on empty spans).
         let old_base = buckets
-            .first()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
             .map(|bucket| bucket.edge_start())
             .unwrap_or(0);
         let mut total_live = 0u32;
         for bucket in &buckets {
+            // ADR 0096 §5: tiny edges need no slab space in rewrite sizing.
+            if bucket.is_tiny_mode() {
+                continue;
+            }
             total_live = total_live
                 .checked_add(bucket.degree())
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
@@ -764,12 +798,17 @@ where
             // vertex spans and bucket starts, invalidating this vertex's pre-relocation
             // plan. Restart from the published layout instead of committing stale
             // positions over the relocation result.
+            // Escalation guard: planning just made room (relocate/fold), so the
+            // restart must fit into it, not re-grow from the fresh (tile-inflated)
+            // span. Re-growing would demand a larger quantum than the relocate
+            // sized for, exhaust its retry loop, and fail a healthy span —
+            // force_slack drops on restart (proactive slack accrues later).
             return self.rewrite_vertex_edge_span(
                 src,
                 preferred_bucket,
                 preferred_extra,
                 compact,
-                force_slack_grow,
+                false,
                 in_window_layout,
             );
         }
@@ -808,6 +847,13 @@ where
             } else {
                 let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
                 for (index, _) in buckets.iter().enumerate() {
+                    // ADR 0096 §5: tiny buckets have no slab content to collect;
+                    // push empty runs so per-bucket indices stay aligned. (The
+                    // disjoint bulk path above is gated off for tiny vertices.)
+                    if buckets[index].is_tiny_mode() {
+                        per_bucket.push(Vec::new());
+                        continue;
+                    }
                     let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
                     let bucket_index = index as u32;
                     let successor = self.bucket_slab_window_end_exclusive_after_bucket(
@@ -839,6 +885,16 @@ where
                     let row_start = positions[index];
                     let edges = &per_bucket[index];
                     let el = edges.len() as u32;
+                    // ADR 0096 §5: tiny descriptors keep stored == degree; only
+                    // the anchor advances (content stays inline).
+                    if bucket.is_tiny_mode() {
+                        row_buckets.push(
+                            bucket
+                                .with_edge_range(row_start, bucket.stored_slots)
+                                .with_overflow_log_head(-1),
+                        );
+                        continue;
+                    }
                     if !edges.is_empty() {
                         let run = Self::edge_bytes_for_len(edges.len())?;
                         debug_assert!(run <= buf.len());
@@ -904,6 +960,13 @@ where
             } else {
                 let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
                 for (index, _) in buckets.iter().enumerate() {
+                    // ADR 0096 §5: tiny buckets have no slab content to collect;
+                    // push empty runs so per-bucket indices stay aligned. (The
+                    // bulk path above is gated off for tiny vertices.)
+                    if buckets[index].is_tiny_mode() {
+                        per_bucket.push(Vec::new());
+                        continue;
+                    }
                     let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
                     let bucket_index = index as u32;
                     let successor = self.bucket_slab_window_end_exclusive_after_bucket(
@@ -943,6 +1006,16 @@ where
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
                     let edges = &per_bucket[index];
+                    // ADR 0096 §5: tiny descriptors keep stored == degree; only
+                    // the anchor advances (content stays inline).
+                    if bucket.is_tiny_mode() {
+                        row_buckets.push(
+                            bucket
+                                .with_edge_range(row_start, bucket.stored_slots)
+                                .with_overflow_log_head(-1),
+                        );
+                        continue;
+                    }
                     let run = Self::edge_bytes_for_len(edges.len())?;
                     if run > 0 {
                         let end = pack
@@ -1081,7 +1154,8 @@ where
         let grew_in_place = if pinned_range.is_some() {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_try_expand_in_place");
-            self.try_expand_labeled_leaf_in_place(old_start, old_len, new_len)?
+            let r = self.try_expand_labeled_leaf_in_place(old_start, old_len, new_len);
+            r?
         } else {
             false
         };
@@ -1090,9 +1164,8 @@ where
         } else {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_allocate_span");
-            self.edges
-                .allocate_span(new_len)
-                .map_err(LabeledOperationError::from)?
+            let s = self.edges.allocate_span(new_len);
+            s.map_err(LabeledOperationError::from)?
         };
 
         // Pin the new physical block BEFORE folding the leaf log. Log fold may
@@ -1109,14 +1182,15 @@ where
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_weighted_slide_commit");
-            self.rebalance_labeled_leaf_weighted_slide_in_block(
+            let r = self.rebalance_labeled_leaf_weighted_slide_in_block(
                 src,
                 new_start,
                 new_len,
                 true,
                 true,
                 if grew_in_place { None } else { pinned_range },
-            )?;
+            );
+            r?;
         }
 
         if !grew_in_place && pinned_range.is_some() {
@@ -1183,6 +1257,11 @@ where
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             let mut resident_slots = 0u32;
             for bucket in &buckets {
+                // ADR 0096 §5: tiny buckets occupy zero leaf slots (relocation
+                // sizing covers physical spans only).
+                if bucket.is_tiny_mode() {
+                    continue;
+                }
                 let log_slots = if bucket.overflow_log_head() >= 0 {
                     self.edges
                         .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1266,6 +1345,10 @@ where
                 }
                 let buckets = self.read_vertex_label_buckets(&vertex)?;
                 let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
+                    // ADR 0096 §5: tiny buckets occupy zero leaf slots.
+                    if bucket.is_tiny_mode() {
+                        return Ok(acc);
+                    }
                     let log_slots = if bucket.overflow_log_head() >= 0 {
                         self.edges
                             .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1284,6 +1367,15 @@ where
                 // it in the slide so the relocation capacity planned for `active_vertices`
                 // is actually assigned to it; otherwise an oversized leaf mate consumes
                 // the whole new block and the first bucket cannot obtain an anchor.
+                // ADR 0096 §5: all-tiny vertices are spanless by construction
+                // (no slab bytes to move, no tile to grant). Sliding them stamps
+                // a block-share tile onto vertex.stored, manufacturing phantom
+                // occupancy ([anchor, +tile)) that blocks find_free and corrupts
+                // cover arithmetic. Skip them; stored stays 0 and promotion
+                // places their first span.
+                if !buckets.is_empty() && buckets.iter().all(|bucket| bucket.is_tiny_mode()) {
+                    continue;
+                }
                 total_resident = total_resident.saturating_add(u64::from(resident));
                 slices.push((vid, vertex, buckets, resident));
             }
@@ -1304,9 +1396,19 @@ where
 
         let mut positioned: Vec<(VertexId, LabeledVertex, Vec<LabelBucket>, u64, u32)> =
             Vec::with_capacity(slices.len());
-        for (i, (vid, vertex, buckets, _)) in slices.into_iter().enumerate() {
+        for (i, (vid, vertex, buckets, resident)) in slices.into_iter().enumerate() {
             let v_start = vertex_starts[i];
-            let v_end = vertex_starts.get(i + 1).copied().unwrap_or(leaf_end);
+            // ADR 0096 §5: empty slices (all-tiny-skipped remnants, emptied slab
+            // buckets) own no bytes — granting the leaf-end remainder to an
+            // empty LAST slice manufactures phantom occupancy ([anchor, +tile))
+            // that blocks find_free in fresh blocks. Zero-width keeps them
+            // positioned (anchors) without reserving; the audit floor covers
+            // unassigned tail slack, and commit syncs their vertex.stored to 0.
+            let v_end = if resident == 0 {
+                v_start
+            } else {
+                vertex_starts.get(i + 1).copied().unwrap_or(leaf_end)
+            };
             let span_slots = u32::try_from(v_end.saturating_sub(v_start))
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             positioned.push((vid, vertex, buckets, v_start, span_slots));
@@ -1395,6 +1497,14 @@ where
         let mut per_bucket_edges = Vec::with_capacity(buckets.len());
         let mut per_bucket_raw = Vec::with_capacity(buckets.len());
         for bucket in buckets {
+            // ADR 0096 §5: tiny buckets move zero bytes; the commit path below
+            // stamps their anchor from the running boundary. Push empty runs so
+            // per-bucket indices stay aligned with the resident rebuild.
+            if bucket.is_tiny_mode() {
+                per_bucket_edges.push(None);
+                per_bucket_raw.push(Some(Vec::new()));
+                continue;
+            }
             let log_len = if bucket.overflow_log_head() >= 0 {
                 self.edges
                     .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1466,8 +1576,13 @@ where
         E: CsrEdgeTombstone,
     {
         let old_alloc = vertex.stored_slots;
+        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
+        // placeholders; releasing from an anchor poisons the free store with
+        // live ranges). Spanless vertices resolve to 0 (callers skip release
+        // on empty spans).
         let old_base = buckets
-            .first()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
             .map(|bucket| bucket.edge_start())
             .unwrap_or(0);
         let resident_buckets = {
@@ -1528,6 +1643,17 @@ where
             let _scope = bench_scope("labeled_vertex_write_edge_runs");
             for (index, bucket) in resident_buckets.iter().enumerate() {
                 let row_start = positions[index];
+                // ADR 0096 §5: tiny descriptors keep stored == degree; only the
+                // anchor advances to the running boundary. Publish from the
+                // original (the resident scratch copy zeroed the width).
+                if buckets[index].is_tiny_mode() {
+                    row_buckets.push(
+                        buckets[index]
+                            .with_edge_range(row_start, buckets[index].stored_slots)
+                            .with_overflow_log_head(-1),
+                    );
+                    continue;
+                }
                 let edges = &per_bucket_edges[index];
                 let raw = &per_bucket_raw[index];
                 let run = if let Some(raw) = raw {
@@ -1580,6 +1706,8 @@ where
                     .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
         }
+        // Vertex-level release of the old footprint (cover-contiguous spans;
+        // see R2b triage).
         if !leaf_relocate_commit
             && !suppress_vertex_footprint_release
             && old_alloc > 0
@@ -1611,6 +1739,10 @@ where
         let mut moves = Vec::new();
         for bucket in buckets {
             if bucket.degree() == 0 {
+                continue;
+            }
+            // ADR 0096 §5: dense tiny prefixes have no tombstones and no moves.
+            if bucket.is_tiny_mode() {
                 continue;
             }
             if bucket.overflow_log_head() >= 0 {
@@ -1766,6 +1898,11 @@ where
     /// Any bucket with an inline-property-bytes log or a non-dense value span falls
     /// back to the order-preserving left-pack step for that bucket (ADR 0052 §9).
     pub(super) fn bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+        // ADR 0096 §5: tiny buckets have no slab span to swap within (dense
+        // inline prefix needs no compaction of any kind).
+        if bucket.is_tiny_mode() {
+            return false;
+        }
         bucket.overflow_log_head() < 0
             && (bucket.inline_property_byte_width() == 0
                 || (bucket.inline_property_bytes_log_head() < 0
@@ -1945,6 +2082,11 @@ where
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         let mut total_live = 0u32;
         for bucket in &buckets {
+            // ADR 0096 §5: tiny edges need no slab space; the stepped trigger
+            // below compares slab bytes against slab content.
+            if bucket.is_tiny_mode() {
+                continue;
+            }
             total_live = total_live
                 .checked_add(bucket.degree())
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
@@ -2028,6 +2170,10 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        // ADR 0096 §5: dense tiny prefixes have no tombstones and no moves.
+        if bucket.is_tiny_mode() {
+            return Ok(None);
+        }
         if unordered_swap {
             if let Some(swap) =
                 Self::first_edge_slot_swap_move_in_bucket(bucket, &self.edges, resume_slot_index)?
@@ -2070,12 +2216,19 @@ where
             } else {
                 0
             };
-            let degree = u64::from(
-                bucket
-                    .degree()
-                    .checked_add(extra)
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
-            );
+            // ADR 0096 §5: tiny buckets occupy zero span slots (positions pack
+            // them at the running boundary). Weights below still count them
+            // (gap distribution only, intentionally unchanged).
+            let degree = if bucket.is_tiny_mode() {
+                0u64
+            } else {
+                u64::from(
+                    bucket
+                        .degree()
+                        .checked_add(extra)
+                        .ok_or(LaraOperationError::RowDegreeOverflow)?,
+                )
+            };
             effective_live = effective_live
                 .checked_add(degree)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -2114,12 +2267,17 @@ where
             } else {
                 0
             };
-            let deg = u128::from(
-                bucket
-                    .degree()
-                    .checked_add(extra)
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
-            );
+            // ADR 0096 §5: tiny buckets occupy zero span slots (see above).
+            let deg = if bucket.is_tiny_mode() {
+                0u128
+            } else {
+                u128::from(
+                    bucket
+                        .degree()
+                        .checked_add(extra)
+                        .ok_or(LaraOperationError::RowDegreeOverflow)?,
+                )
+            };
             let start_fp = u128::from(start)
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -2246,14 +2404,26 @@ where
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         let old_alloc = vertex.stored_slots;
+        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
+        // placeholders; releasing from an anchor poisons the free store with
+        // live ranges). Spanless vertices resolve to 0 (callers skip release
+        // on empty spans).
         let old_base = buckets
-            .first()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
             .map(|bucket| bucket.edge_start())
             .unwrap_or(0);
         let mut resident_slots = 0u32;
         for bucket in &buckets {
+            // ADR 0096 §5: tiny buckets occupy zero slab slots (fold planning
+            // sizes physical spans only).
+            let resident = if bucket.is_tiny_mode() {
+                0
+            } else {
+                bucket.stored_slots.max(bucket.degree())
+            };
             resident_slots = resident_slots
-                .checked_add(bucket.stored_slots.max(bucket.degree()))
+                .checked_add(resident)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
         }
         let min_required = resident_slots
@@ -2316,6 +2486,12 @@ where
         // bucket would let an early destination corrupt a later source.
         let mut source_runs = Vec::with_capacity(buckets.len());
         for bucket in &buckets {
+            // ADR 0096 §5: tiny buckets have no slab bytes to snapshot; the
+            // publish loop below stamps their anchor from the running boundary.
+            if bucket.is_tiny_mode() {
+                source_runs.push(Vec::new());
+                continue;
+            }
             let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
             let mut bytes = vec![0u8; run];
             if run > 0 {
@@ -2327,6 +2503,16 @@ where
         let mut row_buckets = Vec::with_capacity(buckets.len());
         for (index, bucket) in buckets.iter().enumerate() {
             let row_start = positions[index];
+            // ADR 0096 §5: tiny descriptors keep stored == degree; only the
+            // anchor advances (content stays inline).
+            if bucket.is_tiny_mode() {
+                row_buckets.push(
+                    bucket
+                        .with_edge_range(row_start, bucket.stored_slots)
+                        .with_overflow_log_head(-1),
+                );
+                continue;
+            }
             if !source_runs[index].is_empty() {
                 self.edges
                     .write_slots_contiguous(row_start, &source_runs[index])?;
@@ -2575,6 +2761,14 @@ where
         bucket_slot: u64,
         bucket: LabelBucket,
     ) -> Result<LabelBucket, LabeledOperationError> {
+        // ADR 0096 §4b capacity contract: value-log fold never serves tiny
+        // buckets (no log, no values). R2b fold planning skips them; this pins
+        // the rule for any future caller. R2b upgrades to a typed guard if a
+        // dispatcher bug could route tiny here.
+        debug_assert!(
+            !bucket.is_tiny_mode(),
+            "tiny bucket must not reach value-log fold"
+        );
         if bucket.inline_property_bytes_log_head() < 0
             || !bucket.is_inline_property_bytes_allocated()
         {
@@ -2699,11 +2893,21 @@ where
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         let old_alloc = vertex.stored_slots;
+        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
+        // placeholders; releasing from an anchor poisons the free store with
+        // live ranges). Spanless vertices resolve to 0 (callers skip release
+        // on empty spans).
         let old_base = buckets
-            .first()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
             .map(|bucket| bucket.edge_start())
             .unwrap_or(0);
         let resident_slots = buckets.iter().try_fold(0u32, |acc, bucket| {
+            // ADR 0096 §5: tiny buckets occupy zero slab slots and hold no
+            // values (fold planning sizes physical spans only).
+            if bucket.is_tiny_mode() {
+                return Ok(acc);
+            }
             acc.checked_add(bucket.stored_slots.max(bucket.degree()))
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
@@ -2713,7 +2917,8 @@ where
         }
         let edge_only = buckets
             .iter()
-            .all(|bucket| bucket.inline_property_byte_width() == 0);
+            // ADR 0096 §5: tiny buckets hold no values (width ≡ 0).
+            .all(|bucket| bucket.is_tiny_mode() || bucket.inline_property_byte_width() == 0);
         let target_alloc = if edge_only {
             next_vertex_edge_span_allocation(old_alloc, resident_slots, segment_size)?
         } else {
@@ -2842,6 +3047,12 @@ where
             }
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             for (bucket_index, bucket) in buckets.iter().enumerate() {
+                // ADR 0096 §5: tiny buckets hold no value log and no values —
+                // skip before the log-head check below (payload bytes are not
+                // log state for degree 3).
+                if bucket.is_tiny_mode() {
+                    continue;
+                }
                 if bucket.inline_property_bytes_log_head() < 0 {
                     continue;
                 }
@@ -4208,12 +4419,19 @@ mod tests {
             labeled_vertex_footprint_release_calls().saturating_sub(vertex_releases_before),
             0
         );
+        // The old footprint must be reclaimed; it may coalesce with adjacent
+        // free spans (promotion/tail spans free and merge), so assert coverage
+        // rather than an exact standalone entry (coverage still catches leaks).
+        let old_end = old_start.saturating_add(old_len);
         assert!(
             graph
                 .edges()
                 .free_span_store()
-                .free_span_starting_at(old_start)
-                .is_some_and(|span| span.len == old_len)
+                .spans()
+                .iter()
+                .any(|span| span.start_slot <= old_start
+                    && span.start_slot.saturating_add(span.len) >= old_end),
+            "relocated old block [{old_start}, {old_end}) must be covered by free spans"
         );
         let counts = graph.leaf_segment_counts_for_vid(vid);
         assert!(counts.total as u64 > old_len);
@@ -4233,7 +4451,9 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
-        for target in [1u32, 2, 3] {
+        // ADR 0096 §4: promote past tiny (four seeds) so the leaf pins with a
+        // real slab span for the in-pinned rewrite below.
+        for target in [1u32, 2, 3, 4] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     src,
@@ -4335,12 +4555,18 @@ mod tests {
         let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap();
         assert_ne!(new_start, old_start);
         assert!(new_len > old_len);
+        // Coverage, not exact entry: the old footprint may coalesce with
+        // adjacent free spans (see releases_single_footprint).
+        let old_end = old_start.saturating_add(old_len);
         assert!(
             graph
                 .edges()
                 .free_span_store()
-                .free_span_starting_at(old_start)
-                .is_some_and(|span| span.len == old_len)
+                .spans()
+                .iter()
+                .any(|span| span.start_slot <= old_start
+                    && span.start_slot.saturating_add(span.len) >= old_end),
+            "relocated old block [{old_start}, {old_end}) must be covered by free spans"
         );
         assert_eq!(materialized_labeled_edges(&graph, vid).len(), 2);
     }
@@ -4398,7 +4624,6 @@ mod tests {
     #[test]
     fn labeled_segment_slide_coalesces_adjacent_free() {
         use super::super::leaf_pin::labeled_leaf_physical_block_len;
-        use crate::lara::edge::free_span::FreeSpan;
 
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -4411,6 +4636,12 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: pin before promotions so spans land in-block (unpinned
+        // cover-extend would tail-grow live spans into the would-be adjacent
+        // free ranges, breaking the void-both-sides coalescing premise).
+        graph
+            .ensure_labeled_leaf_block_pinned(vid)
+            .expect("pin before promotions");
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
         for target in 0..block_len {
             graph
@@ -4433,19 +4664,42 @@ mod tests {
         );
         let left_start = old_start.saturating_sub(left_len);
         let right_start = old_start.saturating_add(old_len);
-        graph.edges().release_span(left_start, left_len).unwrap();
-        graph.edges().release_span(right_start, right_len).unwrap();
+        // ADR 0096 §4: pins land at the allocation tail, so the right-adjacent
+        // range may lie past elem_capacity (unallocated void, not releasable).
+        // Grow the tail first so both sides are in-bounds void, matching the
+        // scattered-pin geometry this coalescing premise needs.
+        graph
+            .edges()
+            .set_elem_capacity(right_start.saturating_add(right_len))
+            .expect("grow tail for right-adjacent free span");
+        // Release only ranges not already free (promotion/relocate churn may
+        // have freed them; re-releasing errors). Coverage preserves intent.
+        let covered = |start: u64, len: u64| {
+            let end = start.saturating_add(len);
+            graph.edges().free_span_store().spans().iter().any(|span| {
+                span.start_slot <= start && span.start_slot.saturating_add(span.len) >= end
+            })
+        };
+        if !covered(left_start, left_len) {
+            graph.edges().release_span(left_start, left_len).unwrap();
+        }
+        if !covered(right_start, right_len) {
+            graph.edges().release_span(right_start, right_len).unwrap();
+        }
 
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
 
-        let merged_len = left_len.saturating_add(old_len).saturating_add(right_len);
+        // Coalescing may absorb pre-existing adjacent free spans (promotion
+        // churn frees around the block), so assert a single covering span
+        // rather than exact bounds (single-span-ness IS the coalescing).
+        let right_end = right_start.saturating_add(right_len);
+        let spans = graph.edges().free_span_store().spans();
         assert_eq!(count_free_spans(&graph), 1);
-        assert_eq!(
-            graph.edges().free_span_store().spans(),
-            vec![FreeSpan {
-                start_slot: left_start,
-                len: merged_len,
-            }]
+        assert_eq!(spans.len(), 1);
+        assert!(
+            spans[0].start_slot <= left_start
+                && spans[0].start_slot.saturating_add(spans[0].len) >= right_end,
+            "coalesced span must cover [{left_start}, {right_end})"
         );
         let (new_start, _) = graph.labeled_leaf_physical_range(vid).unwrap();
         assert_ne!(new_start, old_start);
@@ -4465,6 +4719,19 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0096 §4: single-edge buckets are born tiny (pinless); the
+        // relocation below needs a pinned slab span. Promote directly.
+        {
+            let vertex = graph.vertices.get(vid);
+            let (slot, bucket) = match graph
+                .find_bucket(vid, &vertex, BucketLabelKey::from_raw(99))
+                .unwrap()
+            {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket must exist for promotion"),
+            };
+            graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
+        }
         let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
         let adjacent = old_start.saturating_add(old_len);
         graph.edges().release_span(adjacent, old_len).unwrap();
@@ -4541,7 +4808,8 @@ mod tests {
             .unwrap();
 
         let after = graph.vertices().get(VertexId::from(0));
-        assert_eq!(after.stored_slots, 9);
+        // Shrink packs exactly (promotion headroom is reclaimed, not retained).
+        assert_eq!(after.stored_slots, 8);
         assert_eq!(
             graph
                 .iter_edges_for_label(VertexId::from(0), road)
@@ -4619,30 +4887,29 @@ mod tests {
         let removal = graph
             .remove_edge_matching_with_move(hub, road, |edge| edge.target == 10)
             .unwrap();
-        assert_eq!(
-            removal.unwrap().moves,
-            vec![
-                EdgeSlotMove {
-                    label_id: road,
-                    old_slot_index: 1,
-                    new_slot_index: 0,
-                },
-                EdgeSlotMove {
-                    label_id: road,
-                    old_slot_index: 2,
-                    new_slot_index: 1,
-                },
-            ]
-        );
+        // ADR 0096 §4: post-promotion the removed edge is slab-resident, so the
+        // delete tombstones in place (no log-ordinal renumbering moves); the
+        // bounded move surfaces at fold below instead of at unlink time.
+        assert_eq!(removal.unwrap().moves, vec![]);
 
         let rewritten = graph
             .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
             .unwrap();
 
+        // ADR 0096 §4 (continued): the fold compacts the tombstone with one
+        // bounded move per step (11 into the hole); 12 follows on a later step.
         assert_eq!(
             rewritten,
-            VertexEdgeSpanCompactOneStep::OverflowRewrite(Vec::new())
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: road,
+                old_slot_index: 1,
+                new_slot_index: 0,
+            })
         );
+        // Second step packs 12 into the remaining hole (bounded fold converges).
+        graph
+            .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
+            .unwrap();
         assert_eq!(
             graph
                 .iter_edges_for_label(hub, road)
@@ -4673,11 +4940,17 @@ mod tests {
             .remove_edge_matching_with_move(hub, road, |edge| edge.target == 10)
             .unwrap()
             .unwrap();
-        assert_eq!(removal.moves.len(), 2);
+        // ADR 0096 §4: post-promotion the removed edge is slab-resident, so the
+        // delete tombstones in place (no moves); the rebalance below folds the
+        // tombstone silently (full pack, moves unreported by this entry point).
+        assert_eq!(removal.moves.len(), 0);
 
         graph
             .rebalance_edge_log_leaf_for_labeled(hub, true, true)
             .unwrap();
+        // ADR 0096 §4 (continued): the rebalance above folds logs (none here);
+        // the slab tombstone needs the span compactor to pack to stored 2.
+        graph.compact_vertex_edge_span(hub, 0).unwrap();
 
         let vertex = graph.vertices().get(hub);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -5286,5 +5559,27 @@ mod tests {
             1,
             "depth-2 root region for stored=4096 (after manual deepen to d2) is 1 slot"
         );
+
+        // ADR 0096 §5: tiny buckets hold zero slab slots regardless of degree.
+        let tiny_bucket = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            512, // anchor (not storage)
+            3,
+            3,
+            -1,
+            0,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap()
+        .try_enable_tiny_mode()
+        .expect("enable")
+        .with_tiny_target(0, 7)
+        .with_tiny_target(1, 8)
+        .with_tiny_target(2, 9);
+        assert_eq!(super::bucket_span_region_len(&tiny_bucket), 0);
+        assert_eq!(super::combined_span_region_len(&tiny_bucket), 0);
     }
 }

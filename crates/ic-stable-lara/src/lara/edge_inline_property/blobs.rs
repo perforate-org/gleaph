@@ -6,6 +6,9 @@ use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::cell::RefCell;
 
+/// Largest body representable by the existing u16-length blob encoding.
+pub(super) const MAX_BLOB_BYTES: usize = u16::MAX as usize;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BlobBytes(Vec<u8>);
 
@@ -74,7 +77,7 @@ impl<M: Memory> EdgeInlinePropertyBytesBlobMap<M> {
         id: EdgeInlinePropertyBytesBlobId,
         bytes: &[u8],
     ) -> Result<(), BlobStoreError> {
-        if bytes.len() > usize::from(u16::MAX) {
+        if bytes.len() > MAX_BLOB_BYTES {
             return Err(BlobStoreError::ValueTooLarge);
         }
         self.inner

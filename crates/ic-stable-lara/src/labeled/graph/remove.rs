@@ -17,7 +17,9 @@ use ic_stable_structures::Memory;
 use std::ops::ControlFlow;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder, T_DEMOTE};
+use super::{
+    BucketMode, BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder, T_DEMOTE,
+};
 
 enum BucketEdgeDeleteLocation {
     Slab {
@@ -303,6 +305,7 @@ where
             .map(|removal| removal.removed))
     }
 
+    #[allow(clippy::needless_return)]
     /// Removes one edge and reports the bounded survivor slot shifts produced by overflow unlink.
     pub(crate) fn remove_edge_at_slot_with_move(
         &self,
@@ -321,39 +324,94 @@ where
         let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
             return Ok(None);
         };
-        // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
-        // take the tombstone-rewrite path; slab buckets keep the
-        // existing path. No other module under `graph/` branches on
-        // `bucket.is_tree_mode()`.
-        if bucket.is_tree_mode() {
-            let removed = super::tree_write::tree_mode_remove_edge_at_slot(
-                self, src, slot, &bucket, slot_index,
-            )?;
-            // Plan 0319 §Step 2: after a successful tree-mode removal,
-            // check the degree-hysteresis trigger. If the updated
-            // `degree <= T_DEMOTE`, rebuild the bucket as a fresh
-            // slab. The trigger is best-effort: a successful removal
-            // must not be turned into an error, so a mid-demote
-            // failure is contained (`let _ =`). The next removal
-            // retries the trigger; until then the bucket stays in
-            // tree mode with the same `degree`.
-            if let Some(ref _removed_edge) = removed {
-                let updated = self
-                    .buckets()
-                    .read_label_bucket_slot(slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
-                    let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
-                        self, slot, label_id, &updated,
-                    );
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets graduate to slab before deleting
+            // (promote-then-tombstone): deletes never move survivors inline in
+            // any mode or policy — positional stability across deletes is
+            // load-bearing (slot-keyed counterpart occurrences; moves-dropping
+            // remove APIs). Tiny has no tombstone representation, so the
+            // bucket takes the normal slab tombstone path. Moves are always
+            // empty (nothing moved), matching slab-delete reporting.
+            BucketMode::Tiny => self.remove_tiny_edge_at_slot(src, slot, &bucket, slot_index),
+            // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
+            // take the tombstone-rewrite path; slab buckets keep the
+            // existing path. No other module under `graph/` branches on
+            // `bucket.is_tree_mode()`.
+            BucketMode::Tree => {
+                let removed = super::tree_write::tree_mode_remove_edge_at_slot(
+                    self, src, slot, &bucket, slot_index,
+                )?;
+                // Plan 0319 §Step 2: after a successful tree-mode removal,
+                // check the degree-hysteresis trigger. If the updated
+                // `degree <= T_DEMOTE`, rebuild the bucket as a fresh
+                // slab. The trigger is best-effort: a successful removal
+                // must not be turned into an error, so a mid-demote
+                // failure is contained (`let _ =`). The next removal
+                // retries the trigger; until then the bucket stays in
+                // tree mode with the same `degree`.
+                if let Some(ref _removed_edge) = removed {
+                    let updated = self
+                        .buckets()
+                        .read_label_bucket_slot(slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
+                        let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
+                            self, slot, label_id, &updated,
+                        );
+                    }
                 }
+                Ok(removed.map(|removed| EdgeRemoval {
+                    removed: removed.with_slot_index(slot_index),
+                    moves: Vec::new(),
+                }))
             }
-            return Ok(removed.map(|removed| EdgeRemoval {
-                removed: removed.with_slot_index(slot_index),
-                moves: Vec::new(),
-            }));
+            BucketMode::Slab => {
+                self.remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index)
+            }
         }
-        self.remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index)
+    }
+
+    /// Removes one edge from a tiny-mode bucket by promoting first (ADR 0096
+    /// §5): deletes never move survivors inline in any mode or policy —
+    /// positional stability across deletes is load-bearing (sidecars, postings
+    /// and occurrence ranks key on slots; movement happens only in maintenance
+    /// with reported moves). Tiny has no tombstone representation, so the
+    /// bucket graduates to slab and takes the normal tombstone path. Moves are
+    /// always empty (nothing moved), matching slab-delete reporting.
+    fn remove_tiny_edge_at_slot(
+        &self,
+        src: VertexId,
+        slot: u64,
+        bucket: &LabelBucket,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert!(
+            bucket.is_tiny_mode(),
+            "tiny remove requires a tiny-mode bucket"
+        );
+        if slot_index >= bucket.degree() {
+            return Ok(None);
+        }
+        // ADR 0096 §5: deletes must not fail merely because the leaf has no
+        // free run (slab deletes degrade to log spill under the same pressure).
+        // Retry once after a leaf relocate, which expands the block. Bounded
+        // to one retry; a persistent failure propagates (genuine exhaustion).
+        // The insert path retries the same way (Tombstone-bound); values
+        // paths fail closed (CsrEdge).
+        match self.promote_tiny_to_slab(src, slot, bucket) {
+            Ok(()) => {}
+            Err(LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)) => {
+                self.relocate_labeled_leaf_physical_block(src)?;
+                self.promote_tiny_to_slab(src, slot, bucket)?;
+            }
+            Err(other) => return Err(other),
+        }
+        self.remove_edge_at_slot_with_move(src, bucket.bucket_label_key(), slot_index)
     }
 
     fn remove_bucket_edge_at_slot(
@@ -1055,6 +1113,7 @@ where
             .map(|removal| removal.removed))
     }
 
+    #[allow(clippy::needless_return)]
     pub(crate) fn remove_edge_matching_skip_leaf_cascade_with_move<F>(
         &self,
         src: VertexId,
@@ -1073,165 +1132,197 @@ where
         if let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_remove_edge_skip_leaf");
-            let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-            if bucket.degree() == 0 {
-                return Ok(None);
-            }
-            if bucket.overflow_log_head() >= 0 {
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
-                let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
-                for slot_index in 0..slab_prefix_slots {
-                    let edge_slot =
-                        checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let edge = self.edges.read_slot(edge_slot);
-                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                        continue;
+            // ADR 0096 §7: match-first dispatch — mode decides before any
+            // storage-class read, so a future mode cannot silently inherit a path.
+            match BucketMode::from_bucket(&bucket) {
+                // ADR 0096 §5: tiny buckets match inline (dense prefix, no tombstones
+                // or logs). Predicate input mirrors the slab path (label attached,
+                // no values — tiny width is identically zero).
+                BucketMode::Tiny => {
+                    debug_assert!(
+                        E::BYTES == 4,
+                        "tiny buckets require 4-byte edges (birth gate)"
+                    );
+                    for ordinal in 0..bucket.degree() {
+                        let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                            .with_slot_index(ordinal)
+                            .with_label_id(label_id.raw());
+                        if matches(&edge) {
+                            return self.remove_tiny_edge_at_slot(src, slot, &bucket, ordinal);
+                        }
                     }
-                    let edge_with_value = self.attach_edge_inline_property(
+                    return Ok(None);
+                }
+                // Tree and slab share matching-predicate paths (log chains +
+                // slab prefix generic over both; tree widths are real). One
+                // combined arm keeps them explicitly joint — a future mode
+                // must still choose.
+                BucketMode::Tree | BucketMode::Slab => {
+                    let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+                    if bucket.degree() == 0 {
+                        return Ok(None);
+                    }
+                    if bucket.overflow_log_head() >= 0 {
+                        let log_chains =
+                            self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
+                        let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
+                        for slot_index in 0..slab_prefix_slots {
+                            let edge_slot =
+                                checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            let edge = self.edges.read_slot(edge_slot);
+                            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                                continue;
+                            }
+                            let edge_with_value = self.attach_edge_inline_property(
+                                src,
+                                &vertex,
+                                bucket_index,
+                                bucket,
+                                slot_index,
+                                edge.with_label_id(bucket.bucket_label_key().raw()),
+                                log_chains.as_ref(),
+                            )?;
+                            if matches(&edge_with_value) {
+                                let moves = self.remove_bucket_edge_at_location(
+                                    src,
+                                    &vertex,
+                                    slot,
+                                    bucket,
+                                    slot_index,
+                                    BucketEdgeDeleteLocation::Slab {
+                                        physical_slot: edge_slot,
+                                    },
+                                )?;
+                                return Ok(Some(EdgeRemoval {
+                                    removed: edge_with_value,
+                                    moves,
+                                }));
+                            }
+                        }
+                        let leaf = self.inline_property_bytes_log_leaf(src);
+                        let chain = self
+                            .edges
+                            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+                        for (ordinal, entry_idx) in chain.iter().copied().enumerate() {
+                            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+                            if edge.is_tombstone_edge() {
+                                continue;
+                            }
+                            let slot_index =
+                                bucket
+                                    .stored_slots
+                                    .checked_add(u32::try_from(ordinal).map_err(|_| {
+                                        LaraOperationError::CollectAllocationOverflow
+                                    })?)
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            let edge_with_value = self.attach_edge_inline_property(
+                                src,
+                                &vertex,
+                                bucket_index,
+                                bucket,
+                                slot_index,
+                                edge.with_label_id(bucket.bucket_label_key().raw()),
+                                log_chains.as_ref(),
+                            )?;
+                            if matches(&edge_with_value) {
+                                let moves = self.overflow_chain_slot_moves_after_delete(
+                                    leaf,
+                                    &chain,
+                                    ordinal,
+                                    bucket.stored_slots,
+                                    bucket.bucket_label_key(),
+                                )?;
+                                let newer_entry_idx = chain.get(ordinal + 1).copied();
+                                let committed_moves = self.remove_bucket_edge_at_location(
+                                    src,
+                                    &vertex,
+                                    slot,
+                                    bucket,
+                                    slot_index,
+                                    BucketEdgeDeleteLocation::OverflowLog {
+                                        leaf,
+                                        entry_idx,
+                                        newer_entry_idx,
+                                        moves,
+                                    },
+                                )?;
+                                return Ok(Some(EdgeRemoval {
+                                    removed: edge_with_value,
+                                    moves: committed_moves,
+                                }));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    let stored = bucket.stored_slots;
+                    let mut found = None;
+                    if bucket.is_inline_property_bytes_allocated() {
+                        let log_chains =
+                            self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
+                        for offset in 0..stored {
+                            let edge_slot =
+                                checked_add_slot_index(bucket.edge_start(), u64::from(offset))
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            let edge = self.edges.read_slot(edge_slot);
+                            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                                continue;
+                            }
+                            let edge_with_value = self.attach_edge_inline_property(
+                                src,
+                                &vertex,
+                                bucket_index,
+                                bucket,
+                                offset,
+                                edge,
+                                log_chains.as_ref(),
+                            )?;
+                            if matches(&edge_with_value) {
+                                found = Some((
+                                    offset,
+                                    edge_with_value,
+                                    BucketEdgeDeleteLocation::Slab {
+                                        physical_slot: edge_slot,
+                                    },
+                                ));
+                                break;
+                            }
+                        }
+                    } else {
+                        for offset in 0..stored {
+                            let edge_slot =
+                                checked_add_slot_index(bucket.edge_start(), u64::from(offset))
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            let edge = self.edges.read_slot(edge_slot);
+                            if edge.is_tombstone_edge() {
+                                continue;
+                            }
+                            if matches(&edge) {
+                                found = Some((
+                                    offset,
+                                    edge,
+                                    BucketEdgeDeleteLocation::Slab {
+                                        physical_slot: edge_slot,
+                                    },
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    let Some((local_index, removed, location)) = found else {
+                        return Ok(None);
+                    };
+                    let moves = self.remove_bucket_edge_at_location(
                         src,
                         &vertex,
-                        bucket_index,
+                        slot,
                         bucket,
-                        slot_index,
-                        edge.with_label_id(bucket.bucket_label_key().raw()),
-                        log_chains.as_ref(),
+                        local_index,
+                        location,
                     )?;
-                    if matches(&edge_with_value) {
-                        let moves = self.remove_bucket_edge_at_location(
-                            src,
-                            &vertex,
-                            slot,
-                            bucket,
-                            slot_index,
-                            BucketEdgeDeleteLocation::Slab {
-                                physical_slot: edge_slot,
-                            },
-                        )?;
-                        return Ok(Some(EdgeRemoval {
-                            removed: edge_with_value,
-                            moves,
-                        }));
-                    }
-                }
-                let leaf = self.inline_property_bytes_log_leaf(src);
-                let chain = self
-                    .edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                for (ordinal, entry_idx) in chain.iter().copied().enumerate() {
-                    let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-                    if edge.is_tombstone_edge() {
-                        continue;
-                    }
-                    let slot_index = bucket
-                        .stored_slots
-                        .checked_add(
-                            u32::try_from(ordinal)
-                                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-                        )
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let edge_with_value = self.attach_edge_inline_property(
-                        src,
-                        &vertex,
-                        bucket_index,
-                        bucket,
-                        slot_index,
-                        edge.with_label_id(bucket.bucket_label_key().raw()),
-                        log_chains.as_ref(),
-                    )?;
-                    if matches(&edge_with_value) {
-                        let moves = self.overflow_chain_slot_moves_after_delete(
-                            leaf,
-                            &chain,
-                            ordinal,
-                            bucket.stored_slots,
-                            bucket.bucket_label_key(),
-                        )?;
-                        let newer_entry_idx = chain.get(ordinal + 1).copied();
-                        let committed_moves = self.remove_bucket_edge_at_location(
-                            src,
-                            &vertex,
-                            slot,
-                            bucket,
-                            slot_index,
-                            BucketEdgeDeleteLocation::OverflowLog {
-                                leaf,
-                                entry_idx,
-                                newer_entry_idx,
-                                moves,
-                            },
-                        )?;
-                        return Ok(Some(EdgeRemoval {
-                            removed: edge_with_value,
-                            moves: committed_moves,
-                        }));
-                    }
-                }
-                return Ok(None);
-            }
-            let stored = bucket.stored_slots;
-            let mut found = None;
-            if bucket.is_inline_property_bytes_allocated() {
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
-                for offset in 0..stored {
-                    let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let edge = self.edges.read_slot(edge_slot);
-                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                        continue;
-                    }
-                    let edge_with_value = self.attach_edge_inline_property(
-                        src,
-                        &vertex,
-                        bucket_index,
-                        bucket,
-                        offset,
-                        edge,
-                        log_chains.as_ref(),
-                    )?;
-                    if matches(&edge_with_value) {
-                        found = Some((
-                            offset,
-                            edge_with_value,
-                            BucketEdgeDeleteLocation::Slab {
-                                physical_slot: edge_slot,
-                            },
-                        ));
-                        break;
-                    }
-                }
-            } else {
-                for offset in 0..stored {
-                    let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let edge = self.edges.read_slot(edge_slot);
-                    if edge.is_tombstone_edge() {
-                        continue;
-                    }
-                    if matches(&edge) {
-                        found = Some((
-                            offset,
-                            edge,
-                            BucketEdgeDeleteLocation::Slab {
-                                physical_slot: edge_slot,
-                            },
-                        ));
-                        break;
-                    }
+                    return Ok(Some(EdgeRemoval { removed, moves }));
                 }
             }
-            let Some((local_index, removed, location)) = found else {
-                return Ok(None);
-            };
-            let moves = self.remove_bucket_edge_at_location(
-                src,
-                &vertex,
-                slot,
-                bucket,
-                local_index,
-                location,
-            )?;
-            return Ok(Some(EdgeRemoval { removed, moves }));
         }
         Ok(None)
     }
@@ -1361,8 +1452,11 @@ mod tests {
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 3);
-        assert!(bucket.overflow_log_head() >= 0);
+        // ADR 0096 §4: delete-time promotion reserves degree+1, so the spare
+        // headroom slot absorbs the re-insert (no log spill); the tombstone
+        // itself stays in place until rebalance (positional stability).
+        assert_eq!(bucket.stored_slots, 4);
+        assert!(bucket.overflow_log_head() < 0);
         assert_eq!(bucket.degree(), 3);
     }
 
@@ -1464,7 +1558,10 @@ mod tests {
         let graph = inline_property_test_graph();
         let src = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
-        for target in [10, 11, 12] {
+        // ADR 0096 §4: tiny birth holds the first three edges inline (no log).
+        // Seed past promotion (4th) into log spill (5th) so the bucket owns a
+        // real overflow-log head for the direct-unlink step below.
+        for target in [10, 11, 12, 13, 14] {
             graph
                 .insert_edge(
                     src,
@@ -1477,6 +1574,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
         let leaf = graph.inline_property_bytes_log_leaf(src);
         graph
             .edges()
@@ -1484,7 +1582,7 @@ mod tests {
             .unwrap();
         graph
             .buckets()
-            .write_label_bucket_degree(bucket_slot, 2)
+            .write_label_bucket_degree(bucket_slot, 4)
             .unwrap();
 
         let removal = graph
@@ -1492,14 +1590,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(removal.removed.target, 10);
-        assert_eq!(
-            removal.moves,
-            vec![EdgeSlotMove {
-                label_id: road,
-                old_slot_index: 1,
-                new_slot_index: 0,
-            }]
-        );
+        // ADR 0096 §4: post-promotion the removed edge is slab-resident, so
+        // the delete tombstones in place (no log-ordinal renumbering moves).
+        // The legacy-compat intent (direct log-head unlink + consistent
+        // follow-up remove) holds: moves are empty and adjacency is exact.
+        assert_eq!(removal.moves, vec![]);
         assert_eq!(
             graph
                 .iter_edges_for_label(src, road)
@@ -1507,7 +1602,7 @@ mod tests {
                 .into_iter()
                 .map(|edge| (edge.slot_index, edge.target))
                 .collect::<Vec<_>>(),
-            vec![(0, 11)]
+            vec![(3, 13), (2, 12), (1, 11)]
         );
     }
 
@@ -1785,5 +1880,114 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+    }
+
+    // ADR 0096 §5 (R2b): tiny deletes promote first (positional stability
+    // across deletes is load-bearing); survivors keep tombstone-inclusive
+    // positions exactly like slab deletes.
+    #[test]
+    fn tiny_remove_tombstones_via_promotion() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        crate::labeled::graph::test_support::force_tiny_bucket(&graph, vid, label, &[10, 11, 12]);
+        let actual_before = graph.leaf_segment_counts_for_vid(vid).actual;
+        let num_before = graph.edges().header().num_edges;
+        let removed = graph
+            .remove_edge_at_slot(vid, label, 1)
+            .unwrap()
+            .expect("removed edge");
+        assert_eq!(removed.target, 11);
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        assert!(!bucket.is_tiny_mode(), "delete must promote");
+        // Span holds degree+1 slots (room for a pending edge that never came —
+        // plain slack, reclaimed by rebalance); stored tracks live+slack.
+        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        // Tombstone-inclusive positions preserved (slab contract).
+        let mut seen = Vec::new();
+        graph
+            .visit_edges(
+                vid,
+                label,
+                crate::labeled::OutEdgeOrder::Ascending,
+                |pos, edge| {
+                    seen.push((pos.raw(), u32::from(edge.neighbor_vid())));
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(seen, vec![(0, 10), (2, 12)]);
+        // Promotion counted the transcribed 3 (+3); tombstone decrements (-1).
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(vid).actual,
+            actual_before + 2
+        );
+        assert_eq!(graph.edges().header().num_edges, num_before - 1);
+        // Survivor moves are always empty (nothing moved — tombstoned in place).
+        let removal = graph
+            .remove_edge_at_slot_with_move(vid, label, 0)
+            .unwrap()
+            .expect("removed edge");
+        assert_eq!(removal.removed.target, 10);
+        assert!(removal.moves.is_empty());
+    }
+
+    #[test]
+    fn tiny_remove_out_of_range_is_noop() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        crate::labeled::graph::test_support::force_tiny_bucket(&graph, vid, label, &[10]);
+        let num_before = graph.edges().header().num_edges;
+        assert!(graph.remove_edge_at_slot(vid, label, 5).unwrap().is_none());
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        // Out-of-range delete neither promotes nor mutates.
+        assert!(bucket.is_tiny_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots), (1, 1));
+        assert_eq!(graph.edges().header().num_edges, num_before);
+    }
+
+    #[test]
+    fn tiny_remove_matching_finds_inline_target() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        crate::labeled::graph::test_support::force_tiny_bucket(&graph, vid, label, &[10, 11, 12]);
+        // Unmatched delete is a no-op without promoting.
+        assert!(
+            graph
+                .remove_edge_matching(vid, label, |edge| edge.neighbor_vid() == VertexId::from(99))
+                .unwrap()
+                .is_none()
+        );
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        assert!(bucket.is_tiny_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots), (3, 3));
+        let removed = graph
+            .remove_edge_matching(vid, label, |edge| edge.neighbor_vid() == VertexId::from(11))
+            .unwrap()
+            .expect("matched edge");
+        assert_eq!(u32::from(removed.neighbor_vid()), 11);
+        // Matched delete promotes (positional stability); survivors keep
+        // tombstone-inclusive positions.
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        assert!(!bucket.is_tiny_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
     }
 }

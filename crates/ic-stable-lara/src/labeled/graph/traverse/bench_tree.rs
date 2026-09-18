@@ -177,6 +177,146 @@ fn build_tree_fixture(tombstones: u32) -> TreeFixture {
     }
 }
 
+/// Production tree traversal with a callback-owned stop, not a storage-window shortcut.
+fn tree_visit_stop_walk(fixture: &TreeFixture, stop_after: Option<u32>) -> (u32, u64) {
+    let mut count = 0u32;
+    let mut checksum = 0u64;
+    let _ = fixture
+        .graph
+        .visit_edges(
+            fixture.vid,
+            fixture.label,
+            OutEdgeOrder::Ascending,
+            |slot, edge| {
+                count += 1;
+                checksum += u64::from(slot.raw()) * 31 + u64::from(edge.target);
+                black_box((slot.raw(), edge.target));
+                if stop_after == Some(count) {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            },
+        )
+        .expect("tree visitor");
+    (count, checksum)
+}
+
+fn dense_topology_fixture(stored: u32) -> TreeFixture {
+    let graph = tree_bench_graph(u64::from(stored) * 2);
+    let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let label = BucketLabelKey::from_raw(2);
+    for slot in 0..stored {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                TreeBenchEdge {
+                    target: 10_000_000 + slot,
+                },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("seed tree");
+    }
+    let bucket_slot = match graph
+        .find_bucket(vid, &graph.vertices().get(vid), label)
+        .expect("bucket")
+    {
+        crate::labeled::graph::BucketSearch::Found { slot, bucket } => {
+            assert_eq!(
+                bucket.is_tree_mode(),
+                stored > crate::labeled::graph::T_PROMOTE
+            );
+            assert_eq!(graph.bucket_reserved_edge_slots(vid, &bucket), stored);
+            assert_eq!(bucket.degree, stored);
+            slot
+        }
+        _ => panic!("missing tree bucket"),
+    };
+    TreeFixture {
+        graph,
+        vid,
+        label,
+        bucket_slot,
+    }
+}
+
+fn tree_visit_stop_bench(stored: u32, stop_after: Option<u32>) -> canbench_rs::BenchResult {
+    let fixture = dense_topology_fixture(stored);
+    let count = stop_after.unwrap_or(stored);
+    let checksum = u64::from(count) * 10_000_000 + 32 * u64::from(count) * u64::from(count - 1) / 2;
+    assert_eq!(
+        tree_visit_stop_walk(&fixture, stop_after),
+        (count, checksum)
+    );
+    bench_fn(|| {
+        black_box(tree_visit_stop_walk(&fixture, stop_after));
+    })
+}
+
+fn bounded_topology_bench(stored: u32, max_slots: u32) -> canbench_rs::BenchResult {
+    let fixture = dense_topology_fixture(stored);
+    let read = || {
+        fixture
+            .graph
+            .collect_edge_topology_bounded(fixture.vid, fixture.label, max_slots)
+    };
+    if max_slots < stored {
+        assert!(matches!(
+            read(),
+            Err(crate::labeled::graph::LabeledOperationError::Store(
+                crate::LaraOperationError::ReadLimitExceeded
+            ))
+        ));
+    } else {
+        let all = read().expect("complete topology");
+        assert_eq!(all.len(), stored as usize);
+        for (i, (slot, edge)) in all.into_iter().enumerate() {
+            assert_eq!((slot.raw(), edge.target), (i as u32, 10_000_000 + i as u32));
+        }
+    }
+    bench_fn(|| {
+        drop(black_box(read()));
+    })
+}
+
+#[bench(raw)]
+fn bounded_topology_64_full() -> canbench_rs::BenchResult {
+    bounded_topology_bench(64, 64)
+}
+#[bench(raw)]
+fn bounded_topology_4k_slab_full() -> canbench_rs::BenchResult {
+    bounded_topology_bench(4096, 4096)
+}
+#[bench(raw)]
+fn bounded_topology_4k_tree_full() -> canbench_rs::BenchResult {
+    bounded_topology_bench(4097, 4097)
+}
+#[bench(raw)]
+fn bounded_topology_65k_rejected() -> canbench_rs::BenchResult {
+    bounded_topology_bench(65_537, 4096)
+}
+
+#[bench(raw)]
+fn tree_visit_stop_4k_first() -> canbench_rs::BenchResult {
+    tree_visit_stop_bench(4097, Some(1))
+}
+
+#[bench(raw)]
+fn tree_visit_stop_65k_first() -> canbench_rs::BenchResult {
+    tree_visit_stop_bench(65_537, Some(1))
+}
+
+#[bench(raw)]
+fn tree_visit_stop_4k_full() -> canbench_rs::BenchResult {
+    tree_visit_stop_bench(4097, None)
+}
+
+#[bench(raw)]
+fn tree_visit_stop_65k_full() -> canbench_rs::BenchResult {
+    tree_visit_stop_bench(65_537, None)
+}
+
 /// The exact measured visitor (0336 shape: fixed count/checksum/black_box).
 fn visit_exact(fixture: &TreeFixture, offset: u32) -> (u32, u64) {
     let request = LabeledTraversalRequest {
@@ -562,7 +702,7 @@ fn s0_exact_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32
     let mut count = 0u32;
     let mut checksum = 0u64;
     let mut current: u32 = 0;
-    visit_tree_mode_label_bucket_edges(
+    let _ = visit_tree_mode_label_bucket_edges(
         &fixture.graph,
         fixture.label.raw(),
         &bucket,
@@ -571,20 +711,21 @@ fn s0_exact_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32
         |slot, edge| {
             if current < offset {
                 current += 1;
-                return;
+                return std::ops::ControlFlow::<()>::Continue(());
             }
             if current >= end {
-                return;
+                return std::ops::ControlFlow::Continue(());
             }
             current += 1;
             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return;
+                return std::ops::ControlFlow::Continue(());
             }
             count += 1;
             checksum = checksum
                 .wrapping_add(u64::from(slot).wrapping_mul(31))
                 .wrapping_add(u64::from(edge.target));
             black_box((slot, edge.target));
+            std::ops::ControlFlow::Continue(())
         },
     )
     .expect("s0 walk");

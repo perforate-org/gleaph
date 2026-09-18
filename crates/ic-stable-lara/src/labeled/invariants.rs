@@ -28,6 +28,10 @@ pub(crate) fn bucket_dense_slab_inline_property_bytes_readable(bucket: &LabelBuc
 /// Dense inline property bytes batch traversal: no edge/inline property bytes logs and full slab residency.
 #[inline]
 pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) -> bool {
+    // ADR 0096 §5: tiny buckets hold no values (width bytes are payload).
+    if bucket.is_tiny_mode() {
+        return false;
+    }
     bucket.degree() > 0
         && bucket.inline_property_byte_width() > 0
         && bucket.inline_property_bytes_log_head() < 0
@@ -167,61 +171,117 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 );
             }
             previous_label = Some(bucket.bucket_label_key());
-            span_base.get_or_insert(bucket.edge_start());
-            let mut successor_start = if offset.saturating_add(1) < deg {
-                buckets
+            // ADR 0096 §5: the vertex-span base is the first NON-TINY bucket
+            // (tiny anchors are placeholders, not span bases).
+            if !bucket.is_tiny_mode() {
+                span_base.get_or_insert(bucket.edge_start());
+            }
+            // ADR 0096 §5: tiny successors hold no slab bytes — clamping to a
+            // tiny anchor would zero the gap and exempt real slab spans from
+            // containment. Skip forward to the next non-tiny bucket (tail when
+            // none remains); tail anchors at the first non-tiny bucket.
+            let mut successor_start: Option<u64> = None;
+            let mut scan = offset.saturating_add(1);
+            while scan < deg {
+                let candidate = buckets
                     .read_label_bucket_slot(slot_at(
                         base_start,
-                        offset.saturating_add(1),
+                        scan,
                         &format!("vertex {vidx} bucket successor index"),
                     ))
-                    .expect("bucket slot must exist")
-                    .edge_start()
-            } else {
-                let first = buckets
-                    .read_label_bucket_slot(base_start)
                     .expect("bucket slot must exist");
-                slot_end_exclusive(
-                    first.edge_start(),
-                    vertex.stored_slots,
-                    &format!("vertex {vidx} tail bucket edge span"),
-                )
+                if !candidate.is_tiny_mode() {
+                    successor_start = Some(candidate.edge_start());
+                    break;
+                }
+                scan = scan.saturating_add(1);
+            }
+            let mut successor_start = match successor_start {
+                Some(start) => start,
+                None => {
+                    let mut base = bucket.edge_start();
+                    let mut back = 0u64;
+                    while back <= offset {
+                        let candidate = buckets
+                            .read_label_bucket_slot(slot_at(
+                                base_start,
+                                back,
+                                &format!("vertex {vidx} bucket tail anchor index"),
+                            ))
+                            .expect("bucket slot must exist");
+                        if !candidate.is_tiny_mode() {
+                            base = candidate.edge_start();
+                            break;
+                        }
+                        back = back.saturating_add(1);
+                    }
+                    slot_end_exclusive(
+                        base,
+                        vertex.stored_slots,
+                        &format!("vertex {vidx} tail bucket edge span"),
+                    )
+                }
             };
             successor_start = successor_start.max(bucket.edge_start());
             let gap = successor_start.saturating_sub(bucket.edge_start());
-            let on_slab_len = if bucket.overflow_log_head() < 0 {
+            // ADR 0096 §5: tiny buckets hold no slab bytes (inline targets);
+            // their anchor is not inside any span.
+            let on_slab_len = if bucket.is_tiny_mode() {
+                0
+            } else if bucket.overflow_log_head() < 0 {
                 u64::from(bucket.stored_slots)
             } else {
                 gap.min(u64::from(bucket.stored_slots))
             };
-            let edge_end_physical = checked_add_slot_index(bucket.edge_start(), on_slab_len)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "vertex {vidx} bucket {slot}: on-slab edge range overflow (start={}, len={on_slab_len})",
-                        bucket.edge_start()
-                    )
-                });
-            assert!(
-                edge_end_physical <= edge_cap,
-                "vertex {vidx} bucket {slot}: on-slab edge range [{}, {edge_end_physical}) exceeds edge capacity {edge_cap}",
-                bucket.edge_start()
-            );
-            if let Some(base) = span_base {
-                let span_end = slot_end_exclusive(
-                    base,
-                    vertex.stored_slots,
-                    &format!("vertex {vidx} bucket {slot} VertexEdgeSpan"),
-                );
+            // Spanless buckets (tiny anchors, emptied spans) hold no slab
+            // bytes; containment against capacity and the vertex span is
+            // vacuous (their anchor/edge_start is a placeholder, not storage).
+            // Wire rules below still apply.
+            if on_slab_len > 0 {
+                let edge_end_physical = checked_add_slot_index(bucket.edge_start(), on_slab_len)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "vertex {vidx} bucket {slot}: on-slab edge range overflow (start={}, len={on_slab_len})",
+                            bucket.edge_start()
+                        )
+                    });
                 assert!(
-                    edge_end_physical <= span_end,
-                    "vertex {vidx} bucket {slot}: on-slab edge range [{}, {edge_end_physical}) exceeds VertexEdgeSpan [{base}, {span_end})",
+                    edge_end_physical <= edge_cap,
+                    "vertex {vidx} bucket {slot}: on-slab edge range [{}, {edge_end_physical}) exceeds edge capacity {edge_cap}",
                     bucket.edge_start()
                 );
+                if let Some(base) = span_base {
+                    let span_end = slot_end_exclusive(
+                        base,
+                        vertex.stored_slots,
+                        &format!("vertex {vidx} bucket {slot} VertexEdgeSpan"),
+                    );
+                    assert!(
+                        edge_end_physical <= span_end,
+                        "vertex {vidx} bucket {slot}: on-slab edge range [{}, {edge_end_physical}) exceeds VertexEdgeSpan [{base}, {span_end})",
+                        bucket.edge_start()
+                    );
+                }
             }
             if bucket.is_inline_property_bytes_allocated() {
                 assert!(
                     bucket.inline_property_byte_width() > 0,
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
+                );
+            } else if bucket.is_tiny_mode() {
+                // ADR 0096 §1: tiny wire rules on live state (anchor/width rules
+                // are writer-owned and covered behaviorally; see G6).
+                assert!(
+                    bucket.degree() <= LabelBucket::TINY_MAX_DEGREE,
+                    "vertex {vidx} bucket {slot}: tiny degree exceeds cap"
+                );
+                assert!(
+                    bucket.stored_slots == bucket.degree,
+                    "vertex {vidx} bucket {slot}: tiny stored must equal degree"
+                );
+                assert!(
+                    bucket.overflow_log_head() < 0,
+                    "vertex {vidx} bucket {slot}: tiny log head must be none"
                 );
             }
         }
@@ -277,6 +337,13 @@ where
                 "expected_vertex_pma_contribution bucket index",
             ))
             .expect("bucket slot must exist");
+        // ADR 0096 §5: tiny edges are excluded from leaf `actual` (they occupy
+        // no leaf slots), so the geometry recomputation must skip them too —
+        // otherwise the audit would demand counting what the density contract
+        // forbids.
+        if bucket.is_tiny_mode() {
+            continue;
+        }
         live += i64::from(bucket.degree());
     }
     (live, i64::from(vertex.stored_slots))

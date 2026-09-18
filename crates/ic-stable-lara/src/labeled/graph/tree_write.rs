@@ -2871,7 +2871,7 @@ where
     let mut live: Vec<E> = Vec::new();
     live.try_reserve_exact(degree as usize)
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    super::tree_read::visit_tree_mode_label_bucket_edges(
+    let _ = super::tree_read::visit_tree_mode_label_bucket_edges(
         graph,
         label_raw,
         bucket,
@@ -2881,6 +2881,7 @@ where
             if !edge.is_tombstone_edge() {
                 live.push(edge);
             }
+            std::ops::ControlFlow::<()>::Continue(())
         },
     )?;
     // Sanity: the live count must equal `degree` (every non-tombstone
@@ -2932,7 +2933,7 @@ where
     // the property stream is empty and no restore is needed.
     let new_property_offset: u64 = if w > 0 {
         let mut live_values: Vec<u8> = Vec::with_capacity(degree as usize * usize::from(w));
-        super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
+        let _ = super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
             graph,
             label_raw,
             bucket,
@@ -2940,6 +2941,7 @@ where
             super::OutEdgeOrder::Ascending,
             |_slot, _edge, value_bytes| {
                 live_values.extend_from_slice(&value_bytes);
+                std::ops::ControlFlow::<()>::Continue(())
             },
         )?;
         debug_assert_eq!(

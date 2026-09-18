@@ -30,6 +30,13 @@ pub enum LabeledOperationError {
         /// Current vertex column length.
         len: VertexCount,
     },
+    /// A physical edge/property slot is outside the bucket's stored extent.
+    EdgeSlotOutOfRange {
+        /// Requested physical slot.
+        slot: u32,
+        /// Bucket's exclusive physical-slot bound.
+        stored_slots: u32,
+    },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
     /// Reading an edge-inline-property-bytes overflow-log entry failed.
@@ -175,6 +182,10 @@ pub enum LabeledOperationError {
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EdgeSlotOutOfRange { slot, stored_slots } => write!(
+                f,
+                "edge slot {slot} is outside stored extent {stored_slots}"
+            ),
             Self::VertexOutOfRange { vid, len } => {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
@@ -265,6 +276,7 @@ impl std::error::Error for LabeledOperationError {
             Self::InlinePropertyBytesLogRead(err) => Some(err),
             Self::InlinePropertyBytesLogWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
+            | Self::EdgeSlotOutOfRange { .. }
             | Self::InvalidDefaultBypass
             | Self::InlinePropertyBytesWidthMismatch { .. }
             | Self::InvalidVertexRow(_)
@@ -320,7 +332,13 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogStateMismatch
-            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema => {
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema
+            | crate::labeled::record::LabelBucketFieldError::TinyTreeModeConflict
+            | crate::labeled::record::LabelBucketFieldError::TinyDegreeOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::TinyStoredDegreeMismatch
+            | crate::labeled::record::LabelBucketFieldError::TinyLogHeadPresent
+            | crate::labeled::record::LabelBucketFieldError::TinyTailNotZero
+            | crate::labeled::record::LabelBucketFieldError::TinyValueStatePresent => {
                 Self::CollectAllocationOverflow
             }
         }

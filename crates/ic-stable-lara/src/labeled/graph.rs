@@ -100,12 +100,18 @@ pub enum BucketMode {
     Slab,
     /// Tree mode (LTB-backed, gap-0 invariant).
     Tree,
+    /// Tiny mode (descriptor-resident inline targets, zero slab slots).
+    /// ADR 0096 §1. No bucket reaches this mode until the R2b dispatch arms
+    /// land; the variant exists now so new matches decide explicitly.
+    Tiny,
 }
 
 impl BucketMode {
     #[inline]
     pub fn from_bucket(bucket: &LabelBucket) -> Self {
-        if bucket.is_tree_mode() {
+        if bucket.is_tiny_mode() {
+            Self::Tiny
+        } else if bucket.is_tree_mode() {
             Self::Tree
         } else {
             Self::Slab
@@ -148,9 +154,13 @@ pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
 /// - Tree: `TREE_STRUCTURAL_CAP = 2^30` slots (the `MAX_DEPTH = 3` fail-closed
 ///   boundary). `R_MAX = 1024` is the **root-array fan-out cap** governing
 ///   `deepen` (Step 7), not a slot cap.
+/// - Tiny: `TINY_MAX_DEGREE = 3` slots (ADR 0096 §1; the promote trigger fires
+///   first, so no tiny bucket can approach the slab/tree caps).
 #[inline]
 pub(crate) fn cap_for_mode(bucket: &LabelBucket) -> u32 {
-    if bucket.is_tree_mode() {
+    if bucket.is_tiny_mode() {
+        LabelBucket::TINY_MAX_DEGREE
+    } else if bucket.is_tree_mode() {
         TREE_STRUCTURAL_CAP
     } else {
         T_PROMOTE
@@ -348,6 +358,24 @@ mod cap_enforcement_tests {
         assert_eq!(compute_bucket_allocation(&bucket), T_PROMOTE);
         assert_eq!(cap_for_mode(&bucket), T_PROMOTE);
         assert_eq!(BucketMode::from_bucket(&bucket), BucketMode::Slab);
+    }
+
+    #[test]
+    fn bucket_mode_maps_tiny_and_caps_at_max_degree() {
+        // ADR 0096 §1 (R2a): the Tiny variant exists before any dispatch arm
+        // consumes it, so new matches decide explicitly from day one.
+        // §7.4 registry: one entry per BucketMode variant — extend when a
+        // variant is added (Slab default below, Tree, Tiny here).
+        use crate::labeled::record::LabelBucket;
+        let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2, -1)
+            .try_enable_tiny_mode()
+            .expect("enable");
+        assert_eq!(BucketMode::from_bucket(&tiny), BucketMode::Tiny);
+        assert_eq!(cap_for_mode(&tiny), LabelBucket::TINY_MAX_DEGREE);
+        assert_eq!(LabelBucket::TINY_MAX_DEGREE, 3);
+        // Zero-cap geometry travels with the mode (see §4b).
+        assert_eq!(super::compact::bucket_span_region_len(&tiny), 0);
+        assert_eq!(super::compact::combined_span_region_len(&tiny), 0);
     }
 
     #[test]

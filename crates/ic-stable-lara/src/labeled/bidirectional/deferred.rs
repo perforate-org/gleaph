@@ -1623,6 +1623,12 @@ where
         bucket: &LabelBucket,
         policy: EdgePlacementPolicy,
     ) -> bool {
+        // ADR 0096 §5: tiny buckets have no slab span to compact (dense inline
+        // prefix; stored == degree always, so the slack arithmetic below could
+        // never fire anyway — the explicit arm keeps it that way by construction).
+        if bucket.is_tiny_mode() {
+            return false;
+        }
         if bucket.is_tree_mode() {
             return false;
         }
@@ -4963,6 +4969,51 @@ mod tests {
         sized_graph_with_region_memories(elem_capacity).0
     }
 
+    /// ADR 0096 R2b triage regression: alternating deferred removes over
+    /// tiny-born reverse buckets must stay live (promotion spans are
+    /// cover-contiguous, so leaf relocate/slide release math stays coherent).
+
+    #[test]
+    fn tiny_deferred_alternating_removes_stay_live() {
+        let graph = graph();
+        graph.push_vertex().expect("src");
+        let label = BucketLabelKey::directed_from_index(3);
+        for _ in 0..16u32 {
+            graph.push_vertex().expect("dst");
+        }
+        for dst in 1u32..=16 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(dst),
+                    label,
+                    TestEdge(dst),
+                    TestEdge(0),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph
+            .maintenance(crate::lara::maintenance::MaintenanceBudget {
+                max_instructions: u64::MAX,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("settle");
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15, 2] {
+            graph
+                .remove_directed_deferred(VertexId::from(0), VertexId::from(odd), TestEdge(odd))
+                .unwrap_or_else(|e| panic!("alternating remove odd={odd} stays live: {e:?}"));
+        }
+        graph
+            .forward
+            .relocate_labeled_leaf_physical_block(VertexId::from(0))
+            .expect("relocate after alternating removes");
+    }
+
     fn sized_graph_with_region_memories(
         elem_capacity: u64,
     ) -> (
@@ -7246,6 +7297,15 @@ mod tests {
         graph
             .maintenance(unbounded_budget())
             .expect("settle inserts");
+        // ADR 0096 §5: tiny-born buckets promote at the 4th edge with an exact
+        // span, so post-settle appends are log-resident (stored < degree) where
+        // slab birth grew quota spans. Fold the log into the span so the
+        // fixture delivers its contract (stored=16, degree=16) for the
+        // hysteresis arithmetic below.
+        graph
+            .forward
+            .compact_vertex_edge_span(src, 0)
+            .expect("fold log to slab");
         (src, label)
     }
 
@@ -7440,6 +7500,13 @@ mod tests {
         // Tree-mode excluded.
         assert!(!fire(
             &slab(4, 8).with_tree_mode(true),
+            EdgePlacementPolicy::Insertion
+        ));
+        // ADR 0096 §5: tiny buckets have no slab span to compact (dense inline
+        // prefix; stored == degree always, so the slack arithmetic could never
+        // fire — the explicit arm keeps it that way by construction).
+        assert!(!fire(
+            &slab(2, 2).try_enable_tiny_mode().expect("enable"),
             EdgePlacementPolicy::Insertion
         ));
     }

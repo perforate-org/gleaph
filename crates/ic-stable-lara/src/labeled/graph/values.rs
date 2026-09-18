@@ -2,7 +2,7 @@
 
 use super::error::LabeledOperationError;
 use super::{
-    BucketSearch, LabeledInlinePropertyBytesCompactionResult,
+    BucketMode, BucketSearch, LabeledInlinePropertyBytesCompactionResult,
     LabeledInlinePropertyBytesStorageStats, LabeledLaraGraph,
 };
 use crate::{
@@ -684,6 +684,7 @@ where
     /// Plan 0320 Step 0 audit (0.7).
     pub(crate) const INLINE_MATERIALIZE_BYTE_BUDGET: u64 = 4096;
 
+    #[allow(clippy::needless_return)]
     /// Plan 0320: materializes a dense, tombstone-inclusive w-byte-per-position
     /// inline property stream for a non-empty slab bucket.
     ///
@@ -733,55 +734,70 @@ where
             .buckets
             .read_label_bucket_slot(bucket_slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if bucket.is_tree_mode() {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: bucket.inline_property_byte_width(),
-                edge_inline_property_width: w,
-            });
-        }
-        if bucket.inline_property_byte_width() != 0 {
-            // w1→w2 re-encoding is deferred.
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: bucket.inline_property_byte_width(),
-                edge_inline_property_width: w,
-            });
-        }
-        let s = bucket.degree();
-        if s == 0 {
-            // Empty bucket: caller should use the schema_unset fast path.
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: 0,
-                edge_inline_property_width: w,
-            });
-        }
-        let total_bytes = u64::from(s)
-            .checked_mul(u64::from(w))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if total_bytes <= Self::INLINE_MATERIALIZE_BYTE_BUDGET {
-            // Inline fast path: reserve, fill, publish, update accounting
-            // in one synchronous call.
-            self.materialize_inline_property_stream_inline(
-                src,
-                bucket_slot,
-                w,
-                fill_byte,
-                s,
-                total_bytes,
-            )
-        } else {
-            // Plan 0320 §F-1: the inner graph has no maintenance queue
-            // (the queue is owned by the deferred-maintenance wrapper).
-            // Surface the work-item payload as a typed signal so the
-            // wrapper can intercept, enqueue, drain, and retry.
-            Err(
-                LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
-                    vid: src,
-                    bucket_slot,
-                    width: w,
-                    fill_byte,
-                    degree: s,
-                },
-            )
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §4b capacity contract: value admission never serves tiny
+            // buckets. ADR 0096 §4: materialize on tiny promotes first (tiny
+            // holds no values); the width checks below would otherwise read
+            // payload bytes as schema.
+            BucketMode::Tiny => {
+                self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
+                self.materialize_inline_property_stream(src, bucket_slot, w, fill_byte)
+            }
+            BucketMode::Tree => {
+                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: bucket.inline_property_byte_width(),
+                    edge_inline_property_width: w,
+                });
+            }
+            BucketMode::Slab => {
+                // Width check lives INSIDE the Slab arm (§7.1).
+                if bucket.inline_property_byte_width() != 0 {
+                    // w1→w2 re-encoding is deferred.
+                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: bucket.inline_property_byte_width(),
+                        edge_inline_property_width: w,
+                    });
+                }
+                let s = bucket.degree();
+                if s == 0 {
+                    // Empty bucket: caller should use the schema_unset fast path.
+                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: 0,
+                        edge_inline_property_width: w,
+                    });
+                }
+                let total_bytes = u64::from(s)
+                    .checked_mul(u64::from(w))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if total_bytes <= Self::INLINE_MATERIALIZE_BYTE_BUDGET {
+                    // Inline fast path: reserve, fill, publish, update accounting
+                    // in one synchronous call.
+                    self.materialize_inline_property_stream_inline(
+                        src,
+                        bucket_slot,
+                        w,
+                        fill_byte,
+                        s,
+                        total_bytes,
+                    )
+                } else {
+                    // Plan 0320 §F-1: the inner graph has no maintenance queue
+                    // (the queue is owned by the deferred-maintenance wrapper).
+                    // Surface the work-item payload as a typed signal so the
+                    // wrapper can intercept, enqueue, drain, and retry.
+                    Err(
+                        LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                            vid: src,
+                            bucket_slot,
+                            width: w,
+                            fill_byte,
+                            degree: s,
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -1075,6 +1091,7 @@ where
         plan.bucket
     }
 
+    #[allow(clippy::needless_return)]
     pub(super) fn ensure_bucket_inline_property_byte_width_on_slot(
         &self,
         src: VertexId,
@@ -1082,44 +1099,69 @@ where
         bucket: LabelBucket,
         inline_property_byte_width: u16,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.inline_property_byte_width() == inline_property_byte_width {
-            return Ok(bucket);
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §4: schema declaration on a tiny bucket promotes first
+            // (tiny holds no values); the width comparison below would otherwise
+            // read payload bytes as schema.
+            BucketMode::Tiny => {
+                self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
+                let bucket = self
+                    .buckets
+                    .read_label_bucket_slot(bucket_slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                return self.ensure_bucket_inline_property_byte_width_on_slot(
+                    src,
+                    bucket_slot,
+                    bucket,
+                    inline_property_byte_width,
+                );
+            }
+            // Tree and slab share width-comparison schema logic (both carry
+            // real schema bytes, unlike tiny payload); one combined arm keeps
+            // them explicitly joint — a future mode must still choose.
+            BucketMode::Tree | BucketMode::Slab => {
+                if bucket.inline_property_byte_width() == inline_property_byte_width {
+                    return Ok(bucket);
+                }
+                let schema_unset = bucket.inline_property_byte_width() == 0
+                    && bucket.degree() == 0
+                    && bucket.stored_slots == 0
+                    && bucket.overflow_log_head() < 0
+                    && bucket.inline_property_bytes_log_head() < 0
+                    && bucket.inline_property_bytes_log_len() == 0;
+                if !schema_unset {
+                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: bucket.inline_property_byte_width(),
+                        edge_inline_property_width: inline_property_byte_width,
+                    });
+                }
+                // Plan 0320 §F-3: 0→w on a non-empty bucket that already has
+                // edge rows (`degree > 0` but no schema yet) is a width
+                // addition, not a schema_unset case. Route to
+                // `materialize_inline_property_stream` so the wrapper can
+                // intercept the deferred signal. (The schema_unset branch
+                // above is the case where the bucket is truly empty.)
+                if bucket.inline_property_byte_width() == 0
+                    && inline_property_byte_width > 0
+                    && bucket.degree() > 0
+                {
+                    self.materialize_inline_property_stream(
+                        src,
+                        bucket_slot,
+                        inline_property_byte_width,
+                        0u8,
+                    )?;
+                    let updated = self
+                        .buckets
+                        .read_label_bucket_slot(bucket_slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    return Ok(updated);
+                }
+                Ok(bucket.with_inline_property_byte_width(inline_property_byte_width))
+            }
         }
-        let schema_unset = bucket.inline_property_byte_width() == 0
-            && bucket.degree() == 0
-            && bucket.stored_slots == 0
-            && bucket.overflow_log_head() < 0
-            && bucket.inline_property_bytes_log_head() < 0
-            && bucket.inline_property_bytes_log_len() == 0;
-        if !schema_unset {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: bucket.inline_property_byte_width(),
-                edge_inline_property_width: inline_property_byte_width,
-            });
-        }
-        // Plan 0320 §F-3: 0→w on a non-empty bucket that already has
-        // edge rows (`degree > 0` but no schema yet) is a width
-        // addition, not a schema_unset case. Route to
-        // `materialize_inline_property_stream` so the wrapper can
-        // intercept the deferred signal. (The schema_unset branch
-        // above is the case where the bucket is truly empty.)
-        if bucket.inline_property_byte_width() == 0
-            && inline_property_byte_width > 0
-            && bucket.degree() > 0
-        {
-            self.materialize_inline_property_stream(
-                src,
-                bucket_slot,
-                inline_property_byte_width,
-                0u8,
-            )?;
-            let updated = self
-                .buckets
-                .read_label_bucket_slot(bucket_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            return Ok(updated);
-        }
-        Ok(bucket.with_inline_property_byte_width(inline_property_byte_width))
     }
 
     /// Ensures that the bucket for `label_id` can store inline property bytes slots of `inline_property_byte_width`.
@@ -1155,6 +1197,13 @@ where
         mut bucket: LabelBucket,
         _previous_slab_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
+        // ADR 0096 §4b capacity contract: value-span admission never serves tiny
+        // buckets (width ≡ 0, zero slab). R2b upgrades to a typed guard if a
+        // dispatcher bug could route tiny here.
+        debug_assert!(
+            !bucket.is_tiny_mode(),
+            "tiny bucket must not reach value-span admission"
+        );
         let width = bucket.inline_property_byte_width();
         let needed_slots = bucket
             .degree()

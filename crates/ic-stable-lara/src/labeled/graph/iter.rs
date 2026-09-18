@@ -233,6 +233,13 @@ pub(super) enum LabeledBucketScanKind<'a, E: CsrEdgeTombstone, M: Memory> {
 pub enum LabeledSpanIter<'a, E: CsrEdgeTombstone, M: Memory> {
     Empty,
     Scan(LabeledBucketScan<'a, E, M>),
+    /// Descriptor-resident inline targets (tiny mode, ADR 0096 §5).
+    /// Pre-materialized `(ordinal, edge)` pairs in final visit order; no slab,
+    /// log, or value reads. Tombstone-free dense prefix, so ordinals are slots.
+    Inline {
+        iter: std::vec::IntoIter<(u32, E)>,
+        reverse: bool,
+    },
 }
 
 impl<'a, E, M> Iterator for LabeledOutEdgesIter<'a, E, M>
@@ -469,6 +476,14 @@ where
         match self {
             Self::Empty => None,
             Self::Scan(scan) => scan.next(),
+            Self::Inline { iter, reverse } => {
+                let (_, edge) = if *reverse {
+                    iter.next_back()?
+                } else {
+                    iter.next()?
+                };
+                Some(Ok(edge))
+            }
         }
     }
 
@@ -524,6 +539,24 @@ where
         match self {
             Self::Empty => None,
             Self::Scan(scan) => scan.next_with_slot(),
+            Self::Inline { iter, reverse } => {
+                let item = if *reverse {
+                    iter.next_back()?
+                } else {
+                    iter.next()?
+                };
+                Some(Ok(item))
+            }
+        }
+    }
+
+    /// Builds an inline iterator over pre-materialized tiny-bucket targets
+    /// (ADR 0096 §5). `edges` arrive in ascending ordinal; descending order
+    /// reads them back-to-front. No stable memory is touched.
+    pub(super) fn inline(edges: Vec<(u32, E)>, order: OutEdgeOrder) -> Self {
+        Self::Inline {
+            iter: edges.into_iter(),
+            reverse: order == OutEdgeOrder::Descending,
         }
     }
 
@@ -584,6 +617,23 @@ where
         match self {
             Self::Empty => Err(NonZero::new(n).expect("n > 0")),
             Self::Scan(scan) => scan.try_advance_by(n),
+            // ADR 0096 §5: advance the pre-materialized inline sequence,
+            // mirroring the Scan shortfall contract (Err carries the remainder).
+            Self::Inline { iter, reverse } => {
+                let mut remaining = n;
+                while remaining > 0 {
+                    let advanced = if *reverse {
+                        iter.next_back().is_some()
+                    } else {
+                        iter.next().is_some()
+                    };
+                    if !advanced {
+                        return Err(NonZero::new(remaining).expect("remaining > 0"));
+                    }
+                    remaining -= 1;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -593,4 +643,53 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::labeled::graph::test_support::TestEdge;
+
+    fn inline_edges() -> Vec<(u32, TestEdge)> {
+        vec![(0, TestEdge { target: 5 }), (1, TestEdge { target: 6 })]
+    }
+
+    // ADR 0096 §5 (R2b): the Inline variant walks pre-materialized pairs with
+    // no stable reads, both orders, with exact shortfall accounting.
+    #[test]
+    fn inline_iter_walks_both_orders() {
+        let asc: Vec<u32> = LabeledSpanIter::<TestEdge, crate::VectorMemory>::inline(
+            inline_edges(),
+            OutEdgeOrder::Ascending,
+        )
+        .map(|r| r.unwrap().target)
+        .collect();
+        assert_eq!(asc, vec![5, 6]);
+        let desc: Vec<u32> = LabeledSpanIter::<TestEdge, crate::VectorMemory>::inline(
+            inline_edges(),
+            OutEdgeOrder::Descending,
+        )
+        .map(|r| r.unwrap().target)
+        .collect();
+        assert_eq!(desc, vec![6, 5]);
+    }
+
+    #[test]
+    fn inline_iter_next_with_slot_and_advance() {
+        let mut it = LabeledSpanIter::<TestEdge, crate::VectorMemory>::inline(
+            inline_edges(),
+            OutEdgeOrder::Ascending,
+        );
+        assert_eq!(
+            it.next_with_slot().unwrap().unwrap(),
+            (0, TestEdge { target: 5 })
+        );
+        it.try_advance_by(1).unwrap();
+        assert!(it.next().is_none());
+        let mut it = LabeledSpanIter::<TestEdge, crate::VectorMemory>::inline(
+            inline_edges(),
+            OutEdgeOrder::Ascending,
+        );
+        assert!(it.try_advance_by(5).is_err());
+    }
 }
