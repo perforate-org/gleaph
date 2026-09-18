@@ -351,6 +351,9 @@ where
                 return Ok(ControlFlow::Continue(()));
             }
             BucketMode::Tree | BucketMode::Slab => {
+                // Direct slot-read path below: tiny never reaches here (force-canonical
+                // above routes all tiny selections through the canonical visitor whose
+                // funnel arm serves them inline). No arm needed — documented, not assumed.
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
                 let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
                     self.edges.overflow_log_chain_asc_indices(
@@ -2277,119 +2280,180 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // Tree-mode buckets (Plan 0318) live in the LTB; the dense path
-        // below bulk-reads from `bucket.edge_start()` (the LEG root region
-        // for tree mode) and would OOB. Fall through to the slow path
-        // (`single_bucket_span_iter`) which walks the LTB correctly.
-        // (GAP-2026-09-02-001)
-        if !bucket.is_tree_mode()
-            && bucket.inline_property_bytes_log_head() < 0
-            && bucket.overflow_log_head() < 0
-            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-        {
-            let inline_property_bytes = if width > 0 {
-                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?
-            } else {
-                Vec::new()
-            };
-            return self.visit_dense_label_bucket_edges(
-                owner,
-                label,
-                &bucket,
-                order,
-                |slot, edge| {
-                    let byte_width = usize::from(width);
-                    let start = slot.raw() as usize * byte_width;
-                    let end = start + byte_width;
-                    visit(
-                        slot,
-                        EdgeWithInlinePropertyRef {
-                            edge,
-                            inline_property: InlinePropertyBytesRef::from_parts(
-                                width,
-                                &inline_property_bytes[start..end],
-                            ),
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Tiny arm returns inline (topology + empty
+        // values) before any width read; tree/slab share width-gated paths.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets visit inline (topology + empty values).
+            // Width bytes are payload on tiny and must never feed the dense bulk
+            // path or the value attach below.
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for ordinal in 0..bucket.degree() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                                .with_slot_index(ordinal);
+                            if let ControlFlow::Break(value) = visit(
+                                BucketEntryPosition::new(ordinal),
+                                EdgeWithInlinePropertyRef {
+                                    edge,
+                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                                },
+                            ) {
+                                return Ok(ControlFlow::Break(value));
+                            }
+                        }
+                    }
+                    OutEdgeOrder::Descending => {
+                        for ordinal in (0..bucket.degree()).rev() {
+                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                                .with_slot_index(ordinal);
+                            if let ControlFlow::Break(value) = visit(
+                                BucketEntryPosition::new(ordinal),
+                                EdgeWithInlinePropertyRef {
+                                    edge,
+                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                                },
+                            ) {
+                                return Ok(ControlFlow::Break(value));
+                            }
+                        }
+                    }
+                }
+                return Ok(ControlFlow::Continue(()));
+            }
+            BucketMode::Tree | BucketMode::Slab => {
+                // Width is bucket schema here (both modes carry real schema;
+                // tiny diverged above). Inner routing below is arm-local: dense
+                // bulk reads slab bytes, so tree diverts to LPB/slow; the
+                // `!is_tree_mode()` conjunct is that routing, not a mode guard.
+                if !bucket.is_tree_mode()
+                    && bucket.inline_property_bytes_log_head() < 0
+                    && bucket.overflow_log_head() < 0
+                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+                {
+                    let inline_property_bytes = if width > 0 {
+                        self.read_bucket_inline_property_bytes_span(
+                            owner,
+                            &bucket,
+                            0,
+                            bucket.degree(),
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    return self.visit_dense_label_bucket_edges(
+                        owner,
+                        label,
+                        &bucket,
+                        order,
+                        |slot, edge| {
+                            let byte_width = usize::from(width);
+                            let start = slot.raw() as usize * byte_width;
+                            let end = start + byte_width;
+                            visit(
+                                slot,
+                                EdgeWithInlinePropertyRef {
+                                    edge,
+                                    inline_property: InlinePropertyBytesRef::from_parts(
+                                        width,
+                                        &inline_property_bytes[start..end],
+                                    ),
+                                },
+                            )
                         },
-                    )
-                },
-            );
-        }
+                    );
+                }
 
-        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
-        // Plan 0326 LPB-in-tree: tree-mode path with property
-        // bytes. The dense path above is slab-only (`!is_tree_mode()`);
-        // the slow `single_bucket_span_iter` below is slab-only too
-        // (it reads from the LEG slab + log chain). For tree mode
-        // we walk the LTB edge tree (depth 1) directly via
-        // `visit_tree_mode_label_bucket_edges_with_property`,
-        // reading each slot's property value from the LPB
-        // (depth-1 property tree) via the property root region.
-        //
-        // **Position contract** (Plan 0324 REWORK-3): the visit
-        // callback receives the tombstone-inclusive `BucketEntryPosition`
-        // (slot index, not live ordinal). The closure
-        // `visit_tree_mode_label_bucket_edges_with_property` yields
-        // `(slot, edge, property_value)` directly from the LTB
-        // walk; no `enumerate()` (which would yield live ordinals
-        // and break the contract).
-        if bucket.is_tree_mode() && width > 0 {
-            use super::tree_read::visit_tree_mode_label_bucket_edges_with_property;
-            // LPB tree walk: forward Break directly (ControlFlow<B> primitive).
-            return visit_tree_mode_label_bucket_edges_with_property(
-                self,
-                label.raw(),
-                &bucket,
-                bucket.degree(),
-                order,
-                |slot, edge, value_bytes| {
-                    visit(
+                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+                // Plan 0326 LPB-in-tree: tree-mode path with property
+                // bytes. The dense path above is slab-only (`!is_tree_mode()`);
+                // the slow `single_bucket_span_iter` below is slab-only too
+                // (it reads from the LEG slab + log chain). For tree mode
+                // we walk the LTB edge tree (depth 1) directly via
+                // `visit_tree_mode_label_bucket_edges_with_property`,
+                // reading each slot's property value from the LPB
+                // (depth-1 property tree) via the property root region.
+                //
+                // **Position contract** (Plan 0324 REWORK-3): the visit
+                // callback receives the tombstone-inclusive `BucketEntryPosition`
+                // (slot index, not live ordinal). The closure
+                // `visit_tree_mode_label_bucket_edges_with_property` yields
+                // `(slot, edge, property_value)` directly from the LTB
+                // walk; no `enumerate()` (which would yield live ordinals
+                // and break the contract). Arm-local routing: tree+w>0 takes the
+                // LPB walk; tree+w=0 falls to the slow span walk below (served
+                // via the funnel's own Tree arm).
+                if bucket.is_tree_mode() && width > 0 {
+                    use super::tree_read::visit_tree_mode_label_bucket_edges_with_property;
+                    // LPB tree walk: forward Break directly (ControlFlow<B> primitive).
+                    return visit_tree_mode_label_bucket_edges_with_property(
+                        self,
+                        label.raw(),
+                        &bucket,
+                        bucket.degree(),
+                        order,
+                        |slot, edge, value_bytes| {
+                            visit(
+                                BucketEntryPosition::new(slot),
+                                EdgeWithInlinePropertyRef {
+                                    edge,
+                                    inline_property: InlinePropertyBytesRef::from_parts(
+                                        width,
+                                        &value_bytes,
+                                    ),
+                                },
+                            )
+                        },
+                    );
+                }
+                let mut iter = self.single_bucket_span_iter(
+                    owner,
+                    vertex,
+                    bucket_slot,
+                    &bucket,
+                    order,
+                    false,
+                )?;
+                let mut inline_property_bytes = Vec::new();
+                let mut ordinal = match order {
+                    OutEdgeOrder::Ascending => 0,
+                    OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+                };
+                while let Some(result) = iter.next_with_slot() {
+                    let (slot, edge) = result?;
+                    self.read_bucket_inline_property_bytes_for_slot_into(
+                        owner,
+                        &bucket,
+                        ordinal,
+                        log_chains.as_ref(),
+                        &mut inline_property_bytes,
+                    )?;
+                    let flow = visit(
                         BucketEntryPosition::new(slot),
                         EdgeWithInlinePropertyRef {
                             edge,
                             inline_property: InlinePropertyBytesRef::from_parts(
                                 width,
-                                &value_bytes,
+                                &inline_property_bytes,
                             ),
                         },
-                    )
-                },
-            );
-        }
-        let mut iter =
-            self.single_bucket_span_iter(owner, vertex, bucket_slot, &bucket, order, false)?;
-        let mut inline_property_bytes = Vec::new();
-        let mut ordinal = match order {
-            OutEdgeOrder::Ascending => 0,
-            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
-        };
-        while let Some(result) = iter.next_with_slot() {
-            let (slot, edge) = result?;
-            self.read_bucket_inline_property_bytes_for_slot_into(
-                owner,
-                &bucket,
-                ordinal,
-                log_chains.as_ref(),
-                &mut inline_property_bytes,
-            )?;
-            let flow = visit(
-                BucketEntryPosition::new(slot),
-                EdgeWithInlinePropertyRef {
-                    edge,
-                    inline_property: InlinePropertyBytesRef::from_parts(
-                        width,
-                        &inline_property_bytes,
-                    ),
-                },
-            );
-            if let ControlFlow::Break(value) = flow {
-                return Ok(ControlFlow::Break(value));
-            }
-            match order {
-                OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
+                    );
+                    if let ControlFlow::Break(value) = flow {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                    match order {
+                        OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
+                        OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
             }
         }
-        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits one label's edges while materializing inline properties directly on the edge.
@@ -2712,6 +2776,7 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    #[allow(clippy::needless_return)]
     /// Visits outgoing inline property value bytes for one label in batches.
     pub(crate) fn visit_out_inline_property_batches_for_label_next<B>(
         &self,
@@ -2743,61 +2808,76 @@ where
         else {
             return Ok(ControlFlow::Continue(()));
         };
-        if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        if crate::labeled::invariants::bucket_dense_inline_property_batch_eligible(&bucket) {
-            return self.visit_dense_out_inline_property_batches_for_bucket_next(
-                owner, label, &bucket, order, scratch, &mut visit,
-            );
-        }
-
-        if bucket.overflow_log_head() >= 0 {
-            return self.visit_hybrid_out_inline_property_batches_for_bucket_next(
-                owner, label, &bucket, order, scratch, &mut visit,
-            );
-        }
-
-        let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let mut collected_slot_indices = Vec::new();
-        let mut collected_values = Vec::new();
-        let result = self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
-            if collected_slot_indices.len() == batch_edges {
-                if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id: label,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &collected_slot_indices,
-                    values: &collected_values,
-                    dense: false,
-                }) {
-                    return ControlFlow::Break(value);
-                }
-                scratch.clear();
-                collected_slot_indices.clear();
-                collected_values.clear();
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Tiny buckets hold no values: emit nothing
+        // (bypass precedent for valueless rows). Tree/slab share the
+        // dense/hybrid/slow value paths below (both carry real schema).
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny => {
+                return Ok(ControlFlow::Continue(()));
             }
-            collected_slot_indices.push(slot.raw());
-            collected_values.extend_from_slice(item.inline_property.bytes());
-            ControlFlow::Continue(())
-        })?;
-        if let ControlFlow::Break(value) = result {
-            return Ok(ControlFlow::Break(value));
+            BucketMode::Tree | BucketMode::Slab => {
+                if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                if crate::labeled::invariants::bucket_dense_inline_property_batch_eligible(&bucket)
+                {
+                    return self.visit_dense_out_inline_property_batches_for_bucket_next(
+                        owner, label, &bucket, order, scratch, &mut visit,
+                    );
+                }
+
+                if bucket.overflow_log_head() >= 0 {
+                    return self.visit_hybrid_out_inline_property_batches_for_bucket_next(
+                        owner, label, &bucket, order, scratch, &mut visit,
+                    );
+                }
+
+                let width = usize::from(bucket.inline_property_byte_width());
+                let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
+                let mut collected_slot_indices = Vec::new();
+                let mut collected_values = Vec::new();
+                let result =
+                    self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                        if collected_slot_indices.len() == batch_edges {
+                            if let ControlFlow::Break(value) =
+                                visit(LabeledInlinePropertyValueBatch {
+                                    label_id: label,
+                                    byte_width: bucket.inline_property_byte_width(),
+                                    order,
+                                    slot_indices: &collected_slot_indices,
+                                    values: &collected_values,
+                                    dense: false,
+                                })
+                            {
+                                return ControlFlow::Break(value);
+                            }
+                            scratch.clear();
+                            collected_slot_indices.clear();
+                            collected_values.clear();
+                        }
+                        collected_slot_indices.push(slot.raw());
+                        collected_values.extend_from_slice(item.inline_property.bytes());
+                        ControlFlow::Continue(())
+                    })?;
+                if let ControlFlow::Break(value) = result {
+                    return Ok(ControlFlow::Break(value));
+                }
+                if !collected_slot_indices.is_empty()
+                    && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
+                        label_id: label,
+                        byte_width: bucket.inline_property_byte_width(),
+                        order,
+                        slot_indices: &collected_slot_indices,
+                        values: &collected_values,
+                        dense: false,
+                    })
+                {
+                    return Ok(ControlFlow::Break(value));
+                }
+                Ok(ControlFlow::Continue(()))
+            }
         }
-        if !collected_slot_indices.is_empty()
-            && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                label_id: label,
-                byte_width: bucket.inline_property_byte_width(),
-                order,
-                slot_indices: &collected_slot_indices,
-                values: &collected_values,
-                dense: false,
-            })
-        {
-            return Ok(ControlFlow::Break(value));
-        }
-        Ok(ControlFlow::Continue(()))
     }
 
     fn visit_hybrid_out_inline_property_batches_for_bucket_next<B>(
@@ -3412,11 +3492,14 @@ where
             scratch.clear();
             scratch.slot_indices.reserve(take as usize);
             scratch.values.reserve(take as usize * width);
+            // Value offset is absolute in the whole-span buffer (first_slot +
+            // i), not batch-relative: batch-relative indexing repeats the
+            // first batch's values in every batch (slot/value misalignment).
             match order {
                 OutEdgeOrder::Ascending => {
                     for i in 0..take as usize {
                         let slot = first_slot + i as u32;
-                        let value_off = i * width;
+                        let value_off = (first_slot as usize + i) * width;
                         scratch.slot_indices.push(slot);
                         scratch.values.extend_from_slice(
                             &inline_property_bytes[value_off..value_off + width],
@@ -3426,7 +3509,7 @@ where
                 OutEdgeOrder::Descending => {
                     for i in (0..take as usize).rev() {
                         let slot = first_slot + i as u32;
-                        let value_off = i * width;
+                        let value_off = (first_slot as usize + i) * width;
                         scratch.slot_indices.push(slot);
                         scratch.values.extend_from_slice(
                             &inline_property_bytes[value_off..value_off + width],
@@ -3451,6 +3534,7 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    #[allow(clippy::needless_return)]
     /// Visits outgoing edges and their parallel inline-property-bytes bytes for one label in batches.
     pub(crate) fn visit_out_edge_inline_property_batches_for_label_next<B>(
         &self,
@@ -3483,48 +3567,66 @@ where
         else {
             return Ok(ControlFlow::Continue(()));
         };
-        if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        if crate::labeled::invariants::bucket_dense_inline_property_batch_eligible(&bucket) {
-            return self.visit_dense_out_edge_inline_property_batches_for_bucket_next(
-                owner, label, &bucket, order, scratch, &mut visit,
-            );
-        }
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Tiny buckets hold no values: emit nothing
+        // (bypass precedent for valueless rows). Tree/slab share the
+        // dense/hybrid/slow value paths below (both carry real schema).
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny => {
+                return Ok(ControlFlow::Continue(()));
+            }
+            BucketMode::Tree | BucketMode::Slab => {
+                if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                if crate::labeled::invariants::bucket_dense_inline_property_batch_eligible(&bucket)
+                {
+                    return self.visit_dense_out_edge_inline_property_batches_for_bucket_next(
+                        owner, label, &bucket, order, scratch, &mut visit,
+                    );
+                }
 
-        let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let mut iter =
-            self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, true)?;
-        loop {
-            scratch.clear();
-            scratch.edges.reserve(batch_edges);
-            scratch.inline_property_bytes.reserve(batch_edges * width);
-            for _ in 0..batch_edges {
-                let Some(result) = iter.next_with_slot() else {
-                    break;
-                };
-                let (_, edge) = result?;
-                scratch
-                    .inline_property_bytes
-                    .extend_from_slice(edge.edge_inline_property_bytes());
-                scratch.edges.push(edge.with_label_id(label.raw()));
-            }
-            if scratch.edges.is_empty() {
-                break;
-            }
-            if let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
-                label_id: label,
-                byte_width: bucket.inline_property_byte_width(),
-                order,
-                edges: &scratch.edges,
-                inline_property_bytes: &scratch.inline_property_bytes,
-                dense: false,
-            }) {
-                return Ok(ControlFlow::Break(value));
+                let width = usize::from(bucket.inline_property_byte_width());
+                let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
+                let mut iter = self.single_bucket_span_iter(
+                    owner,
+                    &vertex,
+                    _bucket_slot,
+                    &bucket,
+                    order,
+                    true,
+                )?;
+                loop {
+                    scratch.clear();
+                    scratch.edges.reserve(batch_edges);
+                    scratch.inline_property_bytes.reserve(batch_edges * width);
+                    for _ in 0..batch_edges {
+                        let Some(result) = iter.next_with_slot() else {
+                            break;
+                        };
+                        let (_, edge) = result?;
+                        scratch
+                            .inline_property_bytes
+                            .extend_from_slice(edge.edge_inline_property_bytes());
+                        scratch.edges.push(edge.with_label_id(label.raw()));
+                    }
+                    if scratch.edges.is_empty() {
+                        break;
+                    }
+                    if let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
+                        label_id: label,
+                        byte_width: bucket.inline_property_byte_width(),
+                        order,
+                        edges: &scratch.edges,
+                        inline_property_bytes: &scratch.inline_property_bytes,
+                        dense: false,
+                    }) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
             }
         }
-        Ok(ControlFlow::Continue(()))
     }
 
     fn visit_dense_out_edge_inline_property_batches_for_bucket_next<B>(
@@ -3698,8 +3800,11 @@ where
                 bucket.degree().saturating_sub(selected[selected.len() - 1])
             }
         };
-        let canonical_candidate =
-            bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0;
+        let canonical_candidate = bucket.is_tiny_mode()
+            // ADR 0096 §5: tiny selections route through the canonical visitor
+            // (whose funnel arm serves them inline); the direct slot-read path
+            // below would misread the anchor span.
+            || bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0;
         if canonical_candidate && canonical_scan_len <= (selected.len() as u32).saturating_mul(2) {
             enum SelectedVisitOutcome<B> {
                 User(B),
@@ -4102,6 +4207,7 @@ where
         ))
     }
 
+    #[allow(clippy::needless_return)]
     /// Reads a selected set of raw logical slots, optionally reusing a phase-1 hybrid overflow replay.
     fn read_selected_edge_slots_with_optional_replay(
         &self,
@@ -4129,52 +4235,76 @@ where
         if bucket.degree() == 0 {
             return Ok(());
         }
-        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, _bucket_slot)?;
-        let visit_order = order_slot_indices(raw_slots, order);
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read. Tiny slots read inline (ordinals are slots,
+        // tombstone-free); tree/slab share the replay + slot-read path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny per-slot select reads inline targets.
+            BucketMode::Tiny => {
+                debug_assert!(
+                    E::BYTES == 4,
+                    "tiny buckets require 4-byte edges (birth gate)"
+                );
+                for slot_index in order_slot_indices(raw_slots, order) {
+                    if slot_index >= bucket.degree() {
+                        continue;
+                    }
+                    let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
+                        .with_slot_index(slot_index)
+                        .with_label_id(label.raw());
+                    visit(slot_index, edge);
+                }
+                return Ok(());
+            }
+            BucketMode::Tree | BucketMode::Slab => {
+                let bucket_index = Self::labeled_bucket_descriptor_index(vertex, _bucket_slot)?;
+                let visit_order = order_slot_indices(raw_slots, order);
 
-        // Reuse a matching phase-1 replay when available and consistent.
-        if let Some(replay) = replay
-            && replay.is_active()
-            && bucket.overflow_log_head() >= 0
-            && replay.src == owner
-            && replay.label_id == label
-            && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
-            && replay.degree == bucket.degree()
-            && replay.stored_slots == bucket.stored_slots
-            && replay.overflow_log_head == bucket.overflow_log_head()
-            && replay.edge_start == bucket.edge_start()
-        {
-            return self.read_selected_slots_with_hybrid_replay(
-                &bucket,
-                label,
-                &visit_order,
-                replay,
-                &mut visit,
-            );
-        }
+                // Reuse a matching phase-1 replay when available and consistent.
+                if let Some(replay) = replay
+                    && replay.is_active()
+                    && bucket.overflow_log_head() >= 0
+                    && replay.src == owner
+                    && replay.label_id == label
+                    && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
+                    && replay.degree == bucket.degree()
+                    && replay.stored_slots == bucket.stored_slots
+                    && replay.overflow_log_head == bucket.overflow_log_head()
+                    && replay.edge_start == bucket.edge_start()
+                {
+                    return self.read_selected_slots_with_hybrid_replay(
+                        &bucket,
+                        label,
+                        &visit_order,
+                        replay,
+                        &mut visit,
+                    );
+                }
 
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            #[cfg(test)]
-            crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(owner),
-                bucket.overflow_log_head(),
-            )
-        });
-        for slot_index in visit_order {
-            if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
-                owner,
-                vertex,
-                bucket_index,
-                &bucket,
-                slot_index,
-                label,
-                overflow_chain.as_deref(),
-            )? {
-                visit(slot_index, edge);
+                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+                    #[cfg(test)]
+                    crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
+                    self.edges.overflow_log_chain_asc_indices(
+                        self.inline_property_bytes_log_leaf(owner),
+                        bucket.overflow_log_head(),
+                    )
+                });
+                for slot_index in visit_order {
+                    if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
+                        owner,
+                        vertex,
+                        bucket_index,
+                        &bucket,
+                        slot_index,
+                        label,
+                        overflow_chain.as_deref(),
+                    )? {
+                        visit(slot_index, edge);
+                    }
+                }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     fn read_selected_slots_with_hybrid_replay(

@@ -189,7 +189,7 @@ Changing substrate (e.g. host-side persistent mmap) should preserve the four con
 
 | Layer                                      | Status                                                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Scan (`LabelBucket`, `LabelEdgeSpan`)      | Aligned with DGAP vertex + per-label windows                                                                                    |
+| Scan (`LabelBucket`, `LabelEdgeSpan`)      | Aligned with DGAP vertex + per-label windows; degree ≤ 3 buckets scan descriptor-inline (tiny mode, ADR 0096 — zero slab slots, no log) |
 | Overflow logs                              | Aligned (shared per-leaf log)                                                                                                   |
 | Segment physical (rope) for **edge bytes** | **Implemented** — PMA leaf block per [ADR 0001](../adr/0001-labeled-segment-slide.md); per-vertex sub-ranges inside pinned leaf |
 | Free-span usage for labeled edge bytes     | **Implemented** — segment footprint on leaf relocate; per-vertex peel only for unpinned legacy spans                            |

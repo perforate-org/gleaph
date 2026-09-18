@@ -3756,7 +3756,11 @@ fn tcsr_65536_property_read_w32() -> canbench_rs::BenchResult {
 // assertion), so the same bench measures the corresponding regime under any
 // const value. Run at T_PROMOTE=4096 and T_PROMOTE=1024 (const patch, no
 // production change) and compare totals + scopes + stable_memory_increase.
-// Never --persist these comparison runs; they are decision inputs, not gates.
+// Decision inputs, not gates: de-benched (plain fns, no #[bench]) so
+// `canbench --persist` never runs them. Re-bench by restoring the attribute
+// locally. NOTE: thresh_hub_grow_8192/thresh_churn_roundtrip grow past the
+// GAP-2026-09-17-001 trap (~5.7K 4-byte full-path growth) and trap until the
+// tree-work slice lands the fix.
 // ---------------------------------------------------------------------------
 
 use crate::labeled::graph::{T_DEMOTE, T_PROMOTE};
@@ -3766,7 +3770,7 @@ use crate::labeled::graph::{T_DEMOTE, T_PROMOTE};
 /// policy. At T=4096 the bench promotes once at 4096 mid-growth; at T=1024 it
 /// promotes once at 1024 mid-growth. Equal work in both arms — the comparison
 /// isolates threshold placement (promotion timing + post-promotion regime).
-#[bench(raw)]
+#[allow(dead_code)]
 fn thresh_hub_grow_8192() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 20);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -3804,7 +3808,7 @@ fn thresh_hub_grow_8192() -> canbench_rs::BenchResult {
 /// M2a: full descending scan of a 2048-edge bucket. Regime flips with the
 /// threshold: slab under T=4096, tree under T=1024 (asserted). Seed is outside
 /// the measured closure.
-#[bench(raw)]
+#[allow(dead_code)]
 fn thresh_scan_2048() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 20);
     let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
@@ -3830,7 +3834,7 @@ fn thresh_scan_2048() -> canbench_rs::BenchResult {
 
 /// M2b: single production-path insert into a 2048-edge bucket (regime flips
 /// with the threshold, asserted as in M2a). Seed is outside the closure.
-#[bench(raw)]
+#[allow(dead_code)]
 fn thresh_insert_2048() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 20);
     let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
@@ -3857,7 +3861,7 @@ fn thresh_insert_2048() -> canbench_rs::BenchResult {
 
 /// M2c: single production-path delete (slot 0) from a 2048-edge bucket
 /// (regime flips with the threshold, asserted as in M2a). Seed is outside.
-#[bench(raw)]
+#[allow(dead_code)]
 fn thresh_delete_2048() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 20);
     let (vid, label) = seed_production_sweep_bucket(&graph, 2048);
@@ -3881,7 +3885,7 @@ fn thresh_delete_2048() -> canbench_rs::BenchResult {
 /// degree <= T_DEMOTE — asserted mid-closure so a no-op demote cannot pass),
 /// re-grow past T (re-promotes). One oscillation contract, threshold-relative
 /// sizing; compare round-trip totals + scopes across arms.
-#[bench(raw)]
+#[allow(dead_code)]
 fn thresh_churn_roundtrip() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 20);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");

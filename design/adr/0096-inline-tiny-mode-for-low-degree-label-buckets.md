@@ -368,7 +368,14 @@ or ipb-field read outside a Slab/Tree arm is a rejection — EXCEPT through the
 allocated-funnel and the verified-safe predicate (see §5 table), which are the
 two named exceptions. Applies to: insert dispatcher, `single_bucket_span_iter`,
 property-visit entries, `remove_edge_at_slot_with_move`, batch
-preflight, materialize/ensure entries, fold planning loops.
+preflight, materialize/ensure entries, fold planning loops. **Loop-filter
+exception:** per-bucket `if is_tiny { continue/skip/0 }` filters inside
+multi-bucket fold/slide/sizing loops (`compact.rs` resident folds, slice
+collects, materialize/commit rows, rewrite sizing, retire-interval filters,
+first-non-tiny anchor finds) stay as filters, not matches — they enumerate
+rows whose per-row handling is identical textually and whose mode decision
+is the skip itself. A match per row would be noise over safety there; §7
+review checks the filter predicate (`!is_tiny` / `is_tiny → 0/skip`) instead.
 2. **Per-mode field docs at declaration.** Every repurposed or constrained
 field/method documents all three modes' semantics inline (record.rs
 tree-precedent: `tree_mode_physical_depth` docs): `ipb_slab_slots` (T0),

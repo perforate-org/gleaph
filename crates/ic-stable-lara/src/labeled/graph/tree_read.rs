@@ -334,7 +334,11 @@ pub(crate) fn property_leaf_fanout(w: u16) -> Option<u32> {
 ///
 /// **Failure modes** (typed):
 /// - `w == 0` or `w > payload` → `InlinePropertyBytesWidthMismatch`
-/// - `slot >= stored_slots` → `EdgeSlotOutOfRange`, before any root or payload read.
+/// - `slot > stored_slots` → `EdgeSlotOutOfRange`, before any root or payload read.
+///   The append position (`slot == stored_slots`) is legitimate for writes:
+///   tail-room inserts resolve the new slot's leaf against the pre-publish
+///   descriptor (the root/leaf layout is append-invariant when tail room
+///   exists). Reads of live slots always satisfy `slot < stored_slots`.
 pub(crate) fn resolve_property_leaf_block_id<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     bucket: &LabelBucket,
@@ -355,7 +359,7 @@ where
         }
     };
     let stored_slots = bucket.stored_slots;
-    if slot >= stored_slots {
+    if slot > stored_slots {
         return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
     }
     let property_leaf_index = u64::from(slot / k);
@@ -790,16 +794,22 @@ mod tests {
             0,
         )
         .with_tree_mode(true);
-        let error = resolve_property_leaf_block_id(&graph, &bucket, 1)
-            .expect_err("an out-of-range property slot must not alias minted block zero");
+        // Past-the-append-position is out of range (must not alias block 0).
+        // The append position itself (slot == stored) is legitimate for
+        // tail-room writes; only strictly-past fails.
+        let error = resolve_property_leaf_block_id(&graph, &bucket, 2)
+            .expect_err("a past-append property slot must not alias minted block zero");
         assert!(matches!(
             &error,
             LabeledOperationError::EdgeSlotOutOfRange {
-                slot: 1,
+                slot: 2,
                 stored_slots: 1
             }
         ));
-        assert_eq!(error.to_string(), "edge slot 1 is outside stored extent 1");
+        assert_eq!(error.to_string(), "edge slot 2 is outside stored extent 1");
+        // Append position resolves (tail-room write path).
+        let _ = resolve_property_leaf_block_id(&graph, &bucket, 1)
+            .expect("append position must resolve");
     }
 
     #[test]

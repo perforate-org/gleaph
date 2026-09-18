@@ -11,7 +11,7 @@ improvement). The full-canister implementation slice (Plan 0317) is now
 unblocked; the remaining Gate 2 rows are amend (deterministic splitmix
 closure and per-write payload constant in non-promotion ops) and
 recorded as design-scope evidence, not as blockers.)
-Last revised: 2026-08-30
+Last revised: 2026-09-13
 
 Supersedes the deferred Stage 2 direction of
 [ADR 0022](0022-degree-driven-hub-edge-storage.md): the dedicated-span tier (2a)
@@ -510,11 +510,14 @@ today). Deepen and promotion always fold.
 
 ### 7. Mode machine and execution model
 
-Three bucket-backing states, two transitions: `bypass → bucket(slab) →
-tree`. No direct bypass→tree edge (the dispatcher may chain the two existing
-transitions in one insert). Demotion (tree → slab) is **not** in the first
-slice; it is a deferred, benchmark-gated maintenance operation (a shrunken
-tree bucket is correct, merely ≤ 2 blocks + root wasteful).
+Four bucket-backing states, three transitions: `tiny → slab → tree`, plus
+the orthogonal vertex-level `bypass → bucket` entry (ADR 0096). Tiny is the
+pre-slab inline state for degree ≤ 3 buckets (descriptor-resident targets,
+zero slab slots; see ADR 0096 §1–§5 for wire, birth/promotion, and dispatch
+rules). No direct `tiny → tree` edge (the dispatcher chains the two existing
+transitions in one insert, mirroring bypass→bucket→tree). No `slab → tiny`
+demotion in the first slice (a small slab bucket is merely unoptimized, never
+incorrect). Tree promotion/demotion below is unchanged.
 
 **Promotion trigger is `stored_slots`, not live degree** — the capacity bound
 requires it (live-degree triggering admits `stored_slots > T_promote` via
@@ -615,6 +618,7 @@ tree buckets) or populated.
 | `T_promote`          | 4,096  | policy (benchmark-gated, hysteresis with compact-or-promote) |
 | `MAX_DEPTH`          | 3      | policy (fail-closed structural boundary; widening = future ADR) |
 | Log cap              | 170    | existing wire                                                |
+| `TINY_MAX_DEGREE`    | 3      | wire (descriptor truth — raising K needs new descriptor bytes, i.e. a layout ADR; see ADR 0096 §3) |
 | LTB VMM bucket policy | 16 pages | policy (ADR 0043 experimental; footprint-gated; superseded-by-code from 64 pages — see §1 note) |
 
 `R_max` is deliberately wire, not policy: a build with a different `R_max`
@@ -1267,4 +1271,61 @@ D-1 (the +2.10% `bench_t_v_window` regression attributed to Plan 0324
 REWORK-3 dispatch) is closed: re-measurement at the 0327 HEAD showed
 the 0326 dense-first dispatch reorder had already absorbed it.
 
-Last revised: 2026-09-03.
+## Tree visitor short-circuit (implemented)
+
+Verified: 2026-09-12 23:34:39 UTC +0000.
+
+The topology and inline-property tree visitors propagate `ControlFlow::Break` to the storage
+walk. After the callback breaks, neither walker decodes another slot, resolves another tree
+leaf, nor reads another property value. The current edge leaf has already been read into a
+fixed 4 KiB buffer; this is not a byte-at-a-time I/O guarantee. An error in an unvisited leaf is
+not reported by a stopped traversal; a complete traversal still reports errors it encounters.
+
+Ownership remains in `tree_read.rs`; `traverse.rs` forwards the stop result directly instead
+of remembering it while the underlying walk continues. Full collectors and demotion explicitly
+continue. Ascending/descending order, tombstone-inclusive positions, and the property bytes of
+the visited slots are unchanged. No storage format, MemoryId, per-edge metadata, normal write
+algorithm, or activation/reinstall requirement changes.
+
+The native regressions `tree_visit_break_stops_topology_reads` and
+`tree_visit_break_stops_property_reads` poison a later root reference, assert exact values and
+an owned Break result in both directions, and verify that uninterrupted traversal detects that
+same invalid reference. Topology stops cover the first slot and both sides of a leaf boundary,
+including a tombstone at the stopping position. The property case stops before an unreadable
+property leaf while the next edge remains in the already-read edge leaf.
+
+Focused, unpersisted canbench (`tree_visit_stop`, production insertion/promotion, dense depth-1
+buckets; setup excluded) measured:
+
+| Stored slots | Stop after first slot | Full callback walk |
+| --- | ---: | ---: |
+| 4,097 | 11.83K instructions | 268.10K instructions |
+| 65,537 | 11.83K instructions | 4.11M instructions |
+
+All four measured closures reported zero heap/stable-page increase; that does not mean their
+fixtures or read buffers occupy zero memory. The existing production
+`tcsr_131072_full_scan_descending` benchmark measured 3.09M instructions, −0.03% against its
+persisted baseline (within noise). These are traversal measurements, not bulk SET throughput,
+inline-property performance, or a fresh same-revision before/after comparison.
+
+This correction is one prerequisite for the [planned bulk edge SET direction](../investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting),
+not a complete work bound. Overflow-chain reconstruction/prefetch, tombstone work before the
+first callback, property and outbox byte budgets, local mutation preflight, and retained
+positive/zero/rejected outcomes still require their own contracts. Logical-slot paging or
+callback-count limits alone must not be advertised as a bounded all-match mutation.
+
+## Tree property slot bound (implemented)
+
+Verified: 2026-09-13 01:26:43 UTC +0000.
+
+`resolve_property_leaf_block_id` returns `EdgeSlotOutOfRange { slot, stored_slots }` when the slot
+is outside the bucket's physical extent, before root or property payload reads. It no longer
+returns block ID zero as a sentinel: zero may be a minted block belonging to another stream.
+`tree_property_slot_bound_rejects_block_zero_alias` reproduced the old successful zero result and
+now asserts the typed rejection. Valid-slot resolution and the storage layout are unchanged.
+
+The [bounded complete inline reader](0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented)
+uses this existing resolver with topology-selected physical slots and an admitted body-byte budget.
+Its property-tree fixture invokes promotion explicitly and seeds an encoded tombstone; it does not
+claim that property-bearing tree mutation dispatch is implemented. No new persistent bytes or
+activation/reinstall requirement is introduced.

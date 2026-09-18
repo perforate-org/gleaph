@@ -254,26 +254,33 @@ fn tree_visit_stop_bench(stored: u32, stop_after: Option<u32>) -> canbench_rs::B
     })
 }
 
-fn bounded_topology_bench(stored: u32, max_slots: u32) -> canbench_rs::BenchResult {
+fn bounded_topology_bench(stored: u32) -> canbench_rs::BenchResult {
+    // NOTE: the capped variant (`max_slots < stored` asserting a
+    // `ReadLimitExceeded` typed error) measured a bounded-collect API that was
+    // removed before landing (uncommitted R2b matrix scaffolding; the bounded
+    // API never existed on HEAD). The cap contract lives in unit tests; the
+    // bench measures the complete visit.
     let fixture = dense_topology_fixture(stored);
     let read = || {
+        let mut rows: Vec<(u32, u32)> = Vec::new();
         fixture
             .graph
-            .collect_edge_topology_bounded(fixture.vid, fixture.label, max_slots)
+            .visit_edges(
+                fixture.vid,
+                fixture.label,
+                OutEdgeOrder::Ascending,
+                |slot, edge| {
+                    rows.push((slot.raw(), edge.target));
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("complete topology");
+        rows
     };
-    if max_slots < stored {
-        assert!(matches!(
-            read(),
-            Err(crate::labeled::graph::LabeledOperationError::Store(
-                crate::LaraOperationError::ReadLimitExceeded
-            ))
-        ));
-    } else {
-        let all = read().expect("complete topology");
-        assert_eq!(all.len(), stored as usize);
-        for (i, (slot, edge)) in all.into_iter().enumerate() {
-            assert_eq!((slot.raw(), edge.target), (i as u32, 10_000_000 + i as u32));
-        }
+    let all = read();
+    assert_eq!(all.len(), stored as usize);
+    for (i, (slot, target)) in all.into_iter().enumerate() {
+        assert_eq!((slot, target), (i as u32, 10_000_000 + i as u32));
     }
     bench_fn(|| {
         drop(black_box(read()));
@@ -282,19 +289,15 @@ fn bounded_topology_bench(stored: u32, max_slots: u32) -> canbench_rs::BenchResu
 
 #[bench(raw)]
 fn bounded_topology_64_full() -> canbench_rs::BenchResult {
-    bounded_topology_bench(64, 64)
+    bounded_topology_bench(64)
 }
 #[bench(raw)]
 fn bounded_topology_4k_slab_full() -> canbench_rs::BenchResult {
-    bounded_topology_bench(4096, 4096)
+    bounded_topology_bench(4096)
 }
 #[bench(raw)]
 fn bounded_topology_4k_tree_full() -> canbench_rs::BenchResult {
-    bounded_topology_bench(4097, 4097)
-}
-#[bench(raw)]
-fn bounded_topology_65k_rejected() -> canbench_rs::BenchResult {
-    bounded_topology_bench(65_537, 4096)
+    bounded_topology_bench(4097)
 }
 
 #[bench(raw)]

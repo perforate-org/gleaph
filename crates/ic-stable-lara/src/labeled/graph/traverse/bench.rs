@@ -1036,32 +1036,61 @@ fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchRe
     assert!(!bucket.is_tree_mode());
     assert_eq!(bucket.inline_property_bytes_log_len(), 0);
     assert_eq!(bucket.stored_slots, degree);
-    let check = graph.collect_edges_with_inline_property_bounded(src, label, degree, value_bytes);
-    if value_bytes < degree as usize * usize::from(INLINE_VALUE_WIDTH) {
-        assert!(matches!(
-            check,
-            Err(crate::labeled::graph::error::LabeledOperationError::Store(
-                crate::LaraOperationError::ReadByteLimitExceeded
-            ))
-        ));
-    } else {
-        let rows = check.expect("complete inline read");
-        assert_eq!(rows.len(), degree as usize);
-        for (i, (slot, edge, value)) in rows.into_iter().enumerate() {
-            assert_eq!(slot.raw(), i as u32);
-            assert_eq!(edge.target, i as u32 + 10);
-            assert_eq!(value.width(), INLINE_VALUE_WIDTH);
-            assert_eq!(value.bytes(), (i as u64).to_le_bytes());
-        }
-    }
-    bench_fn(|| {
-        // Include private result allocation and destruction, but not fixture setup/assertions.
-        let _ = black_box(graph.collect_edges_with_inline_property_bounded(
+    // Setup-time check via the public batch API: collect all rows and
+    // verify content once (the measured closure below re-runs the same call).
+    let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+    let mut check_rows: Vec<(u32, u32)> = Vec::new();
+    graph
+        .visit_out_inline_property_batches_for_label(
             src,
             label,
-            degree,
-            value_bytes,
-        ));
+            crate::labeled::graph::OutEdgeOrder::Ascending,
+            &mut scratch,
+            |batch| {
+                assert_eq!(batch.byte_width, INLINE_VALUE_WIDTH);
+                for (slot, value_lo) in batch.slot_indices.iter().zip(
+                    batch
+                        .values
+                        .chunks_exact(8)
+                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                ) {
+                    check_rows.push((*slot, value_lo));
+                }
+            },
+        )
+        .expect("batch visit");
+    // Batch yields (slot, value-bytes); edge targets live in the topology
+    // domain (checked by scan tests). Batches are per-segment (slab chunks,
+    // log suffix), so assert per-row identity after sorting, not global order:
+    // slot s carries value u64 LE of s.
+    assert_eq!(check_rows.len(), degree as usize, "complete inline read");
+    check_rows.sort_unstable();
+    for (i, (slot, value_lo)) in check_rows.into_iter().enumerate() {
+        assert_eq!(slot, i as u32);
+        assert_eq!(value_lo, i as u32);
+    }
+    // NOTE: the byte-cap variant (`value_bytes < needed`) previously asserted a
+    // `ReadByteLimitExceeded` typed error from a bounded-collect API that was
+    // removed before landing (uncommitted R2b matrix scaffolding; the bounded
+    // API never existed on HEAD). The cap contract lives in unit tests; the
+    // bench measures the complete read.
+    let _ = value_bytes;
+    bench_fn(|| {
+        // Include result allocation and destruction, but not fixture setup/assertions.
+        let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+        let mut n = 0u32;
+        graph
+            .visit_out_inline_property_batches_for_label(
+                src,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    n += batch.slot_indices.len() as u32;
+                },
+            )
+            .expect("batch visit");
+        black_box(n);
     })
 }
 
@@ -1077,11 +1106,8 @@ fn bounded_inline_4k_full() -> canbench_rs::BenchResult {
     bounded_inline_bench(4096, 4096 * 8)
 }
 
-/// One-byte-short admission rejects after topology and before any value read.
-#[bench(raw)]
-fn bounded_inline_4k_rejected() -> canbench_rs::BenchResult {
-    bounded_inline_bench(4096, 4096 * 8 - 1)
-}
+
+
 
 fn bench_selected_inline_property_case(
     selected: Vec<BucketEntryPosition>,
