@@ -248,6 +248,14 @@ impl LabelBucket {
     /// Wire truth (validated at `try_read_from` and `try_enable_tiny_mode`),
     /// not policy: raising K needs new descriptor bytes, i.e. a layout ADR.
     pub(crate) const TINY_MAX_DEGREE: u32 = 3;
+    /// Inline-tombstone target for a tiny-mode bucket (delete redesign).
+    ///
+    /// Dead slots inside the live prefix hold this sentinel (= the global edge
+    /// tombstone `u32::MAX`: `neighbor_vid()==sentinel` already means dead
+    /// everywhere, so no new wire value). New wire rules (see `check_tiny_invariants`):
+    /// `stored` = prefix width (live+tombstones, ≤ 3), `degree` = live count
+    /// (≤ stored), tail `[stored..3)` zero. `stored == degree` iff dense.
+    pub(crate) const TINY_TOMBSTONE_TARGET: u32 = u32::MAX;
 
     /// Bit 60 of the packed `word`: 1 = tiny mode (descriptor-resident inline
     /// targets), 0 = slab/tree interpretation. ADR 0096 §1.
@@ -287,6 +295,14 @@ impl LabelBucket {
                     | ((u32::from(self.inline_property_bytes_log_byte)) << 24)
             }
         }
+    }
+
+    /// Returns `true` when tiny slot `index` holds the tombstone sentinel
+    /// (delete redesign): dead slots inside the live prefix `[0..stored)`.
+    /// Debug-asserts tiny mode like [`Self::tiny_target`].
+    #[inline]
+    pub fn tiny_slot_is_tombstone(self, index: u32) -> bool {
+        self.tiny_target(index) == Self::TINY_TOMBSTONE_TARGET
     }
 
     /// Returns a copy with inline tiny target `index` (0..3) set to `target`.
@@ -387,13 +403,17 @@ impl LabelBucket {
         if self.degree > Self::TINY_MAX_DEGREE {
             return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
         }
-        if self.stored_slots != self.degree {
+        // Inline-tombstone wire rules (delete redesign): `stored` = live
+        // prefix width (live + tombstones, ≤ 3), `degree` = live count
+        // (≤ stored). Tombstone slots hold TINY_TOMBSTONE_TARGET (the global
+        // u32::MAX sentinel — no new wire value). Tail `[stored..3)` zero.
+        if self.stored_slots > Self::TINY_MAX_DEGREE || self.degree > self.stored_slots {
             return Err(LabelBucketFieldError::TinyStoredDegreeMismatch);
         }
         if self.overflow_log_head() >= 0 {
             return Err(LabelBucketFieldError::TinyLogHeadPresent);
         }
-        for i in self.degree..3 {
+        for i in self.stored_slots..3 {
             if self.tiny_target(i) != 0 {
                 return Err(LabelBucketFieldError::TinyTailNotZero);
             }
@@ -2156,9 +2176,16 @@ mod tests {
             LabelBucket::try_read_from(&bad),
             Err(LabelBucketFieldError::TinyDegreeOutOfRange)
         );
-        // Stored != degree.
+        // Stored 4 (> K=3 prefix cap).
         let mut bad = valid_tiny_bytes();
-        bad[12..16].copy_from_slice(&2u32.to_le_bytes());
+        bad[12..16].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(
+            LabelBucket::try_read_from(&bad),
+            Err(LabelBucketFieldError::TinyStoredDegreeMismatch)
+        );
+        // Degree 2 > stored 1 (live exceeds prefix).
+        let mut bad = valid_tiny_bytes();
+        bad[8..12].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(
             LabelBucket::try_read_from(&bad),
             Err(LabelBucketFieldError::TinyStoredDegreeMismatch)

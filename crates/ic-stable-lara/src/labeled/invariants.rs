@@ -269,15 +269,17 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
                 );
             } else if bucket.is_tiny_mode() {
-                // ADR 0096 §1: tiny wire rules on live state (anchor/width rules
-                // are writer-owned and covered behaviorally; see G6).
+                // ADR 0096 §1 + delete redesign: tiny wire rules on live state.
+                // `stored` = prefix width (≤ 3), `degree` = live (≤ stored);
+                // tombstone slots hold the u32::MAX sentinel.
                 assert!(
                     bucket.degree() <= LabelBucket::TINY_MAX_DEGREE,
                     "vertex {vidx} bucket {slot}: tiny degree exceeds cap"
                 );
                 assert!(
-                    bucket.stored_slots == bucket.degree,
-                    "vertex {vidx} bucket {slot}: tiny stored must equal degree"
+                    bucket.stored_slots <= LabelBucket::TINY_MAX_DEGREE
+                        && bucket.degree() <= bucket.stored_slots,
+                    "vertex {vidx} bucket {slot}: tiny stored/degree out of range"
                 );
                 assert!(
                     bucket.overflow_log_head() < 0,

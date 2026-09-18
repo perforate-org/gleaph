@@ -1106,9 +1106,6 @@ fn bounded_inline_4k_full() -> canbench_rs::BenchResult {
     bounded_inline_bench(4096, 4096 * 8)
 }
 
-
-
-
 fn bench_selected_inline_property_case(
     selected: Vec<BucketEntryPosition>,
     order: OutEdgeOrder,

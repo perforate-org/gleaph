@@ -5051,7 +5051,9 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::directed_from_index(1);
-        for target in 1..=3 {
+        // Four seeds: the 4th promotes tiny→slab (three seeds would stay
+        // tiny and take the inline-tombstone path instead).
+        for target in 1..=4 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -5077,7 +5079,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(4),
                     label_id: label,
-                    edge: GraphTestEdge { target: 4 },
+                    edge: GraphTestEdge { target: 5 },
                 }],
             }],
         };
@@ -5091,7 +5093,7 @@ mod tests {
             .into_iter()
             .map(|edge| edge.target)
             .collect::<Vec<_>>();
-        assert_eq!(live_targets, vec![1, 3, 4]);
+        assert_eq!(live_targets, vec![1, 3, 4, 5]);
     }
 
     #[test]
@@ -5769,7 +5771,10 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        for target in 1..=3u32 {
+        // Four seeds: the 4th promotes tiny→slab, so the delete below takes
+        // the slab tombstone path (the helper's contract; three seeds would
+        // stay tiny and take the inline-tombstone path instead).
+        for target in 1..=4u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -5852,14 +5857,14 @@ mod tests {
                 .iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![1, 10, 3],
+            vec![1, 10, 3, 4],
             "the new edge must land in the tombstone hole at slot 1"
         );
         assert_eq!(
-            bucket.stored_slots, 3,
+            bucket.stored_slots, 4,
             "hole reuse must not grow stored_slots"
         );
-        assert_eq!(bucket.degree(), 3, "degree must grow by the run size");
+        assert_eq!(bucket.degree(), 4, "degree must grow by the run size");
     }
 
     #[test]
@@ -5969,7 +5974,7 @@ mod tests {
                 .iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![1, 10, 11, 12],
+            vec![1, 4, 10, 11, 12],
             "two holes filled and one edge appended at the tail"
         );
         let bucket_slot = graph
@@ -5979,9 +5984,13 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(
             bucket.stored_slots, 4,
-            "only the tail remainder grows stored_slots"
+            "the full span forces the tail remainder to the overflow log"
         );
-        assert_eq!(bucket.degree(), 4, "degree grows by the full run size");
+        assert_eq!(bucket.degree(), 5, "degree grows by the full run size");
+        assert!(
+            bucket.overflow_log_head() >= 0,
+            "tail remainder spills to log when the span is full"
+        );
     }
 
     #[test]
@@ -6144,7 +6153,7 @@ mod tests {
                 .iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![1, 3],
+            vec![1, 3, 4],
             "rollback must leave the tombstone and live edges untouched"
         );
         let bucket_slot = graph
@@ -6152,7 +6161,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert_eq!(bucket.stored_slots, 3);
-        assert_eq!(bucket.degree(), 2);
+        assert_eq!(bucket.stored_slots, 4);
+        assert_eq!(bucket.degree(), 3);
     }
 }

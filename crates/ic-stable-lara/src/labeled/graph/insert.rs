@@ -1067,13 +1067,28 @@ where
         E: CsrEdgeTombstone,
     {
         // Width bytes are payload on tiny: a width-carrying edge can never be
-        // stored inline. Promote first (transcribes no values — tiny buckets
-        // hold none), then let the normal schema path handle the width.
-        // Genuinely full blocks fail closed below; retry once after a leaf
-        // relocate (same pressure response as slab growth and remove-side
-        // promote). Bounded to one retry; persistent failure propagates.
+        // stored inline. Promote first (transcribes live targets only —
+        // tombstone holes excluded; tiny buckets hold no values), then let the
+        // normal schema path handle the width.
+        // Promotion triggers: width-carrying edge, or prefix full with no
+        // hole to fill (`stored >= TINY_MAX_DEGREE` and every slot live).
+        // Holed prefixes hole-fill below (no promotion). Genuinely full blocks
+        // fail closed below; retry once after a leaf relocate (same pressure
+        // response as slab growth). Bounded to one retry; persistent failure
+        // propagates.
+        // Hole scan (Unordered only — Insertion appends per ADR 0052 §6,
+        // uniformly across modes; survivors keep slots either way).
+        let mut hole: Option<u32> = None;
+        if _placement == EdgePlacementPolicy::Unordered {
+            for i in 0..bucket.stored_slots {
+                if bucket.tiny_target(i) == LabelBucket::TINY_TOMBSTONE_TARGET {
+                    hole = Some(i);
+                    break;
+                }
+            }
+        }
         if edge.edge_inline_property_byte_width() != 0
-            || bucket.degree() >= LabelBucket::TINY_MAX_DEGREE
+            || (hole.is_none() && bucket.stored_slots >= LabelBucket::TINY_MAX_DEGREE)
         {
             match self.promote_tiny_to_slab(src, bucket_slot, &bucket) {
                 Ok(()) => {}
@@ -1097,15 +1112,25 @@ where
             E::BYTES == 4,
             "tiny buckets require 4-byte edges (birth gate)"
         );
-        let logical_slot = bucket.degree();
-        // Tail-zero invariant (ADR 0096 §1) makes the shared value helper safe:
-        // degree ≤ 2 implies the width bytes it reads are zero.
-        // NOTE: NOT `grow_packed_slab_by_one` — LabelBucket's grow bumps degree
-        // only (the slab span pre-exists), but tiny has no span: `stored` must
-        // track `degree` exactly (validation invariant).
-        let grown = bucket
-            .with_degree_field(logical_slot + 1)
-            .with_stored_slots(logical_slot + 1);
+        // Unordered hole-fill (found above) or dense append at `stored`.
+        // `stored` grows only on dense append; `degree` (live) always +1.
+        let logical_slot = hole.unwrap_or(bucket.stored_slots);
+        let grown = bucket.with_degree_field(
+            bucket
+                .degree()
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+        );
+        let grown = if hole.is_some() {
+            grown
+        } else {
+            grown.with_stored_slots(
+                bucket
+                    .stored_slots
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+            )
+        };
         let grown = grown.with_tiny_target(logical_slot, u32::from(edge.neighbor_vid()));
         let grown = self.write_edge_inline_property_after_insert(src, bucket_slot, grown, &edge)?;
         self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
@@ -1319,15 +1344,28 @@ where
             }
         };
         // --- Commit: transcribe, publish, extend span, account ---
-        for i in 0..degree {
-            let slot = span_base
-                .checked_add(u64::from(i))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // Transcribe LIVE targets only (skip tombstone holes — the slab form
+        // is dense; holes do not survive promotion).
+        let mut transcribed = 0u32;
+        for i in 0..bucket.stored_slots {
             let target = bucket.tiny_target(i);
+            if target == LabelBucket::TINY_TOMBSTONE_TARGET {
+                continue;
+            }
+            let slot = span_base
+                .checked_add(u64::from(transcribed))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.edges
                 .write_slot_bytes(slot, &target.to_le_bytes())
                 .map_err(LabeledOperationError::from)?;
+            transcribed = transcribed
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
+        debug_assert_eq!(
+            transcribed, degree,
+            "transcribed live count must match bucket degree"
+        );
         let fresh =
             LabelBucket::from_parts(bucket.bucket_label_key(), span_base, degree, degree, -1);
         self.buckets.write_label_bucket_slot(bucket_slot, fresh)?;
@@ -1982,8 +2020,11 @@ mod tests {
         graph.compact_vertex_edge_span(src, 0).unwrap();
         graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
 
-        // Insertion placement appends after the surviving suffix and never fills
-        // the interior tombstone (ADR 0052 §6).
+        // Insertion placement never fills the interior tombstone (ADR 0052 §6).
+        // Tiny buckets are born tiny (not slab): the full prefix promotes
+        // (compacting the hole away in transcription) and the pending edge
+        // appends at the compacted tail (slot 2), not the slab-retained
+        // slot 3. The §6 intent holds: no hole was filled (slot != 1).
         let location = graph
             .insert_edge_skip_leaf_cascade_with_location(
                 src,
@@ -1993,7 +2034,8 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(location.logical_slot, 3);
+        assert_ne!(location.logical_slot, 1, "Insertion must not fill the hole");
+        assert_eq!(location.logical_slot, 2);
         assert_eq!(
             graph
                 .out_edges(src)

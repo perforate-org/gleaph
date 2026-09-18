@@ -380,6 +380,15 @@ where
     /// with reported moves). Tiny has no tombstone representation, so the
     /// bucket graduates to slab and takes the normal tombstone path. Moves are
     /// always empty (nothing moved), matching slab-delete reporting.
+    /// Removes one edge from a tiny-mode bucket inline (delete redesign):
+    /// writes the tombstone sentinel at `slot_index`, decrements degree,
+    /// publishes the descriptor. No promotion, no slab/log writes, no moves
+    /// (survivors keep their slots — positional stability holds trivially).
+    /// Empty (`degree` reaches 0) resets to clean-empty tiny (`stored` 0, all
+    /// targets zeroed — matches birth shape, so re-inserts start dense).
+    /// Tombstone slots are skipped by every scan path and excluded from
+    /// promotion transcription; the prefix compacts only via re-insert
+    /// hole-fill or full-empty reset.
     fn remove_tiny_edge_at_slot(
         &self,
         src: VertexId,
@@ -394,24 +403,44 @@ where
             bucket.is_tiny_mode(),
             "tiny remove requires a tiny-mode bucket"
         );
-        if slot_index >= bucket.degree() {
+        let _ = src;
+        if slot_index >= bucket.stored_slots {
             return Ok(None);
         }
-        // ADR 0096 §5: deletes must not fail merely because the leaf has no
-        // free run (slab deletes degrade to log spill under the same pressure).
-        // Retry once after a leaf relocate, which expands the block. Bounded
-        // to one retry; a persistent failure propagates (genuine exhaustion).
-        // The insert path retries the same way (Tombstone-bound); values
-        // paths fail closed (CsrEdge).
-        match self.promote_tiny_to_slab(src, slot, bucket) {
-            Ok(()) => {}
-            Err(LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)) => {
-                self.relocate_labeled_leaf_physical_block(src)?;
-                self.promote_tiny_to_slab(src, slot, bucket)?;
-            }
-            Err(other) => return Err(other),
+        let target = bucket.tiny_target(slot_index);
+        if target == LabelBucket::TINY_TOMBSTONE_TARGET {
+            // Already dead: idempotent no-op (mirrors slab double-delete None).
+            return Ok(None);
         }
-        self.remove_edge_at_slot_with_move(src, bucket.bucket_label_key(), slot_index)
+        let edge = E::read_from(&target.to_le_bytes())
+            .with_slot_index(slot_index)
+            .with_label_id(bucket.bucket_label_key().raw());
+        let new_degree = bucket.degree().saturating_sub(1);
+        let updated = if new_degree == 0 {
+            // Clean-empty reset: zero width, zeroed payload (birth shape).
+            let mut fresh = *bucket;
+            for i in 0..LabelBucket::TINY_MAX_DEGREE {
+                fresh = fresh.with_tiny_target(i, 0);
+            }
+            fresh.with_degree_field(0).with_stored_slots(0)
+        } else {
+            bucket
+                .with_tiny_target(slot_index, LabelBucket::TINY_TOMBSTONE_TARGET)
+                .with_degree_field(new_degree)
+        };
+        self.buckets.write_label_bucket_slot(slot, updated)?;
+        let hdr = self.edges.header();
+        let next_num_edges = hdr
+            .num_edges
+            .checked_sub(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.edges.set_num_edges(next_num_edges);
+        // No leaf `actual` bump: tiny edges occupy no leaf slots (mirrors
+        // tiny insert, which bumps only the global census).
+        Ok(Some(EdgeRemoval {
+            removed: edge,
+            moves: Vec::new(),
+        }))
     }
 
     /// Releases an emptied bucket's slab span and syncs the vertex cover (F1).
@@ -1523,30 +1552,19 @@ mod tests {
     fn remove_edge_leaves_slab_tombstone_until_rebalance() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                road,
-                TestEdge { target: 10 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                road,
-                TestEdge { target: 11 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                road,
-                TestEdge { target: 12 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // Four seeds: the 4th promotes tiny->slab, so the delete below takes
+        // the slab tombstone path (the test's intent; three seeds would stay
+        // tiny and take the inline-tombstone path instead).
+        for target in [10u32, 11, 12, 13] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         graph
             .compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
@@ -1558,30 +1576,39 @@ mod tests {
         );
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
-            vec![TestEdge { target: 12 }, TestEdge { target: 10 }]
+            vec![
+                TestEdge { target: 13 },
+                TestEdge { target: 12 },
+                TestEdge { target: 10 }
+            ]
         );
         assert_eq!(
             graph.out_edges(VertexId::from(0)).unwrap(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
+            vec![
+                TestEdge { target: 10 },
+                TestEdge { target: 12 },
+                TestEdge { target: 13 }
+            ]
         );
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.stored_slots, 4);
         assert_eq!(bucket.stored_slots.saturating_sub(bucket.degree), 1);
-        assert_eq!(bucket.degree(), 2);
+        assert_eq!(bucket.degree(), 3);
 
         graph
             .insert_edge(
                 VertexId::from(0),
                 road,
-                TestEdge { target: 13 },
+                TestEdge { target: 14 },
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![
+                TestEdge { target: 14 },
                 TestEdge { target: 13 },
                 TestEdge { target: 12 },
                 TestEdge { target: 10 },
@@ -1593,15 +1620,16 @@ mod tests {
                 TestEdge { target: 10 },
                 TestEdge { target: 12 },
                 TestEdge { target: 13 },
+                TestEdge { target: 14 },
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        // ADR 0096 §4: delete-time promotion reserves degree+1, so the spare
-        // headroom slot absorbs the re-insert (no log spill); the tombstone
-        // itself stays in place until rebalance (positional stability).
+        // The span is full (tombstone occupies the 4th slot), so the re-insert
+        // spills to the overflow log; the tombstone stays in place until
+        // rebalance (positional stability).
         assert_eq!(bucket.stored_slots, 4);
-        assert!(bucket.overflow_log_head() < 0);
-        assert_eq!(bucket.degree(), 3);
+        assert!(bucket.overflow_log_head() >= 0);
+        assert_eq!(bucket.degree(), 4);
     }
 
     #[test]
@@ -2026,11 +2054,11 @@ mod tests {
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
     }
 
-    // ADR 0096 §5 (R2b): tiny deletes promote first (positional stability
-    // across deletes is load-bearing); survivors keep tombstone-inclusive
-    // positions exactly like slab deletes.
+    // Delete redesign: tiny deletes tombstone inline (no promotion).
+    // Survivors keep their slots (positional stability holds trivially —
+    // nothing moves); the hole is reported with empty moves like slab deletes.
     #[test]
-    fn tiny_remove_tombstones_via_promotion() {
+    fn tiny_remove_tombstones_inline() {
         let graph = test_graph();
         let vid = VertexId::from(0);
         let label = BucketLabelKey::from_raw(2);
@@ -2047,10 +2075,10 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
-        assert!(!bucket.is_tiny_mode(), "delete must promote");
-        // Span holds degree+1 slots (room for a pending edge that never came —
-        // plain slack, reclaimed by rebalance); stored tracks live+slack.
+        assert!(bucket.is_tiny_mode(), "delete stays tiny (no promotion)");
+        // Hole at slot 1 (sentinel), live prefix width 3, live count 2.
         assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!(bucket.tiny_target(1), LabelBucket::TINY_TOMBSTONE_TARGET);
         // Tombstone-inclusive positions preserved (slab contract).
         let mut seen = Vec::new();
         graph
@@ -2065,11 +2093,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(seen, vec![(0, 10), (2, 12)]);
-        // Promotion counted the transcribed 3 (+3); tombstone decrements (-1).
-        assert_eq!(
-            graph.leaf_segment_counts_for_vid(vid).actual,
-            actual_before + 2
-        );
+        // Inline delete touches no leaf counts (tiny edges occupy no slots);
+        // only the global live-edge census decrements (-1).
+        assert_eq!(graph.leaf_segment_counts_for_vid(vid).actual, actual_before);
         assert_eq!(graph.edges().header().num_edges, num_before - 1);
         // Survivor moves are always empty (nothing moved — tombstoned in place).
         let removal = graph
@@ -2124,14 +2150,15 @@ mod tests {
             .unwrap()
             .expect("matched edge");
         assert_eq!(u32::from(removed.neighbor_vid()), 11);
-        // Matched delete promotes (positional stability); survivors keep
-        // tombstone-inclusive positions.
+        // Matched delete tombstones inline (no promotion); survivors keep
+        // their slots with a hole at the removed ordinal.
         let vertex = graph.vertices().get(vid);
         let bucket = graph
             .buckets()
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
-        assert!(!bucket.is_tiny_mode());
+        assert!(bucket.is_tiny_mode());
         assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!(bucket.tiny_target(1), LabelBucket::TINY_TOMBSTONE_TARGET);
     }
 }

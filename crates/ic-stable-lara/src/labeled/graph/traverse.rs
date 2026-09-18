@@ -340,7 +340,10 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                for slot_index in 0..logical_slots.min(bucket.degree()) {
+                for slot_index in 0..logical_slots.min(bucket.stored_slots) {
+                    if bucket.tiny_slot_is_tombstone(slot_index) {
+                        continue;
+                    }
                     let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
                         .with_slot_index(slot_index)
                         .with_label_id(label.raw());
@@ -749,8 +752,11 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let mut edges = Vec::with_capacity(bucket.degree() as usize);
-                for ordinal in 0..bucket.degree() {
+                for ordinal in 0..bucket.stored_slots {
                     let target = bucket.tiny_target(ordinal);
+                    if target == LabelBucket::TINY_TOMBSTONE_TARGET {
+                        continue;
+                    }
                     let edge = E::read_from(&target.to_le_bytes()).with_slot_index(ordinal);
                     edges.push((ordinal, edge));
                 }
@@ -904,7 +910,10 @@ where
                 // shared closure would need `impl Trait` in closure position.)
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.degree() {
+                        for ordinal in 0..bucket.stored_slots {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .with_slot_index(ordinal);
                             if let ControlFlow::Break(value) =
@@ -915,7 +924,10 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.degree()).rev() {
+                        for ordinal in (0..bucket.stored_slots).rev() {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .with_slot_index(ordinal);
                             if let ControlFlow::Break(value) =
@@ -1750,15 +1762,21 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                let degree = bucket.degree();
-                let offset = window.offset.min(degree);
+                // Tombstone-inclusive positions over [0..stored), matching the
+                // slab/tree window contract (ADR 0088 §2); dead slots consume
+                // position space but yield nothing.
+                let extent = bucket.stored_slots;
+                let offset = window.offset.min(extent);
                 let limit = window
                     .limit
-                    .map(|l| l.min(degree - offset))
-                    .unwrap_or(degree - offset);
+                    .map(|l| l.min(extent - offset))
+                    .unwrap_or(extent - offset);
                 match order {
                     OutEdgeOrder::Ascending => {
                         for slot in offset..offset + limit {
+                            if bucket.tiny_slot_is_tombstone(slot) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
                                 .with_slot_index(slot);
                             if let ControlFlow::Break(value) =
@@ -1769,9 +1787,12 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        let start = degree.saturating_sub(offset + limit);
-                        let end = degree.saturating_sub(offset);
+                        let start = extent.saturating_sub(offset + limit);
+                        let end = extent.saturating_sub(offset);
                         for slot in (start..end).rev() {
+                            if bucket.tiny_slot_is_tombstone(slot) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
                                 .with_slot_index(slot);
                             if let ControlFlow::Break(value) =
@@ -2294,7 +2315,10 @@ where
                 );
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.degree() {
+                        for ordinal in 0..bucket.stored_slots {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .with_slot_index(ordinal);
                             if let ControlFlow::Break(value) = visit(
@@ -2309,7 +2333,10 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.degree()).rev() {
+                        for ordinal in (0..bucket.stored_slots).rev() {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .with_slot_index(ordinal);
                             if let ControlFlow::Break(value) = visit(
@@ -2553,13 +2580,19 @@ where
                 // Tombstone-free dense prefix: ordinals are slots; no values.
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.degree() {
+                        for ordinal in 0..bucket.stored_slots {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
                             visit(edge.with_label_id(label.raw()));
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.degree()).rev() {
+                        for ordinal in (0..bucket.stored_slots).rev() {
+                            if bucket.tiny_slot_is_tombstone(ordinal) {
+                                continue;
+                            }
                             let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
                             visit(edge.with_label_id(label.raw()));
                         }
@@ -4086,8 +4119,11 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let slot_index = slot.raw();
-                if slot_index >= bucket.degree() {
+                if slot_index >= bucket.stored_slots {
                     return Ok(EdgeSlotState::Missing);
+                }
+                if bucket.tiny_slot_is_tombstone(slot_index) {
+                    return Ok(EdgeSlotState::Tombstone);
                 }
                 let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
                     .with_slot_index(slot_index)
@@ -4246,7 +4282,9 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 for slot_index in order_slot_indices(raw_slots, order) {
-                    if slot_index >= bucket.degree() {
+                    if slot_index >= bucket.stored_slots
+                        || bucket.tiny_slot_is_tombstone(slot_index)
+                    {
                         continue;
                     }
                     let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())

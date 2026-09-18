@@ -1591,6 +1591,15 @@ where
             let mut resident_buckets = Vec::with_capacity(buckets.len());
             for index in 0..buckets.len() {
                 let bucket = &buckets[index];
+                // ADR 0096 delete redesign: tiny buckets keep their wire
+                // state (`stored` = prefix width incl. holes) through
+                // rewrites — the resident rebuild below would zero it (empty
+                // materialized run) while degree stays live, corrupting the
+                // wire. Anchors still advance via positions.
+                if bucket.is_tiny_mode() {
+                    resident_buckets.push(bucket.with_overflow_log_head(-1));
+                    continue;
+                }
                 let resident_slots = per_bucket_raw[index]
                     .as_ref()
                     .map(|raw| raw.len() / E::BYTES)
@@ -2055,6 +2064,12 @@ where
     }
 
     pub(super) fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
+        // ADR 0096 delete redesign: tiny buckets carry tombstone holes, so
+        // `stored == degree` no longer holds — finalizing would corrupt the
+        // wire state. Tiny needs no slab finalization (no span); return as-is.
+        if bucket.is_tiny_mode() {
+            return bucket;
+        }
         bucket
             .with_stored_slots(bucket.degree())
             .with_overflow_log_head(-1)
@@ -2119,10 +2134,13 @@ where
         if resume_bucket_index >= vertex.degree() {
             // Per-bucket steps may already pack each label row (`stored_slots == degree`) while
             // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
+            // Tiny buckets are excluded from the packed check (holes make
+            // `stored != degree` legitimate inline state, not slab slack).
             if vertex.stored_slots > total_live
-                || buckets
-                    .iter()
-                    .any(|b| b.overflow_log_head() >= 0 || b.stored_slots != b.degree())
+                || buckets.iter().any(|b| {
+                    b.overflow_log_head() >= 0
+                        || (!b.is_tiny_mode() && b.stored_slots != b.degree())
+                })
             {
                 self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
             }
@@ -4834,7 +4852,9 @@ mod tests {
         let graph = flag_tombstone_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
-        for target in [10, 11, 12] {
+        // Four seeds promote tiny->slab (three would stay tiny and take the
+        // inline-tombstone path, which needs no compaction move).
+        for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -4874,7 +4894,9 @@ mod tests {
         let graph = inline_property_test_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
-        for target in [10, 11, 12] {
+        // Four seeds promote tiny->slab (three would stay tiny and take the
+        // inline-tombstone path, which needs no fold move).
+        for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
                     hub,
@@ -4917,7 +4939,7 @@ mod tests {
                 .into_iter()
                 .map(|edge| (edge.edge_slot_index_raw(), edge.target))
                 .collect::<Vec<_>>(),
-            vec![(1, 12), (0, 11)]
+            vec![(3, 13), (1, 12), (0, 11)]
         );
     }
 
@@ -4926,7 +4948,9 @@ mod tests {
         let graph = inline_property_test_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
-        for target in [10, 11, 12] {
+        // Four seeds promote tiny->slab (three would stay tiny and take the
+        // inline-tombstone path, which needs no fold move).
+        for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
                     hub,
@@ -4955,8 +4979,8 @@ mod tests {
         let vertex = graph.vertices().get(hub);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 2);
-        assert_eq!(bucket.degree(), 2);
+        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.degree(), 3);
         assert_eq!(bucket.overflow_log_head(), -1);
         assert_eq!(
             graph
@@ -4965,7 +4989,7 @@ mod tests {
                 .into_iter()
                 .map(|edge| (edge.target, edge.edge_slot_index_raw()))
                 .collect::<Vec<_>>(),
-            vec![(12, 1), (11, 0)]
+            vec![(13, 2), (12, 1), (11, 0)]
         );
     }
 

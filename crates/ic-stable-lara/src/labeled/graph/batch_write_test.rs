@@ -1460,14 +1460,19 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                label,
-                crate::labeled::graph::test_support::TestEdge { target: 1 },
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .unwrap();
+        // Four seeds promote tiny->slab; deleting slot 0 then takes the slab
+        // tombstone path (one seed would stay tiny and reset to clean-empty
+        // on delete, which cannot carry the crafted log metadata below).
+        for target in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
         graph
             .remove_edge_at_slot(VertexId::from(0), label, 0)
             .unwrap()
@@ -1508,7 +1513,9 @@ mod tests {
                 slot,
                 bucket
                     .with_overflow_log_head((log_capacity - 1) as i32)
-                    .with_degree_field(log_capacity as u32),
+                    // Four seeds minus the slot-0 tombstone leave 3 live slab
+                    // edges; the crafted degree counts slab live + log chain.
+                    .with_degree_field(log_capacity as u32 + 3),
             )
             .expect("set folded-log metadata");
 
@@ -1549,8 +1556,9 @@ mod tests {
                 |edge| targets.push(edge.target),
             )
             .unwrap();
-        let expected = (0..log_capacity)
-            .map(|i| 100 + i as u32)
+        let expected = [2, 3, 4]
+            .into_iter()
+            .chain((0..log_capacity).map(|i| 100 + i as u32))
             .chain([200, 201])
             .collect::<Vec<_>>();
         assert_eq!(targets, expected);

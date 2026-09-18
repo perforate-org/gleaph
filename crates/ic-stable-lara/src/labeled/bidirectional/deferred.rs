@@ -5657,8 +5657,12 @@ mod tests {
         let first = graph.push_vertex().expect("first");
         let second = graph.push_vertex().expect("second");
         let third = graph.push_vertex().expect("third");
+        let fourth = graph.push_vertex().expect("fourth");
         let label = BucketLabelKey::directed_from_index(3);
-        for (dst, target) in [(first, 1u32), (second, 2), (third, 3)] {
+        // Four inserts promote tiny->slab (three would stay tiny and take the
+        // inline-tombstone path, which these slab swap-compaction tests do not
+        // exercise).
+        for (dst, target) in [(first, 1u32), (second, 2), (third, 3), (fourth, 4)] {
             graph
                 .insert_directed_edge(
                     src,
@@ -5709,7 +5713,7 @@ mod tests {
         graph.maintenance(unbounded_budget()).expect("timer drain");
         assert_eq!(
             out_targets(&graph, src),
-            vec![3, 2],
+            vec![4, 2, 3],
             "captured Unordered must swap the last live edge into the first interior hole"
         );
     }
@@ -5726,7 +5730,7 @@ mod tests {
         graph.maintenance(unbounded_budget()).expect("timer drain");
         assert_eq!(
             out_targets(&graph, src),
-            vec![2, 3],
+            vec![2, 3, 4],
             "captured Insertion must keep the order-preserving left-pack"
         );
     }
@@ -5746,7 +5750,7 @@ mod tests {
         graph.maintenance(unbounded_budget()).expect("timer drain");
         assert_eq!(
             out_targets(&graph, src),
-            vec![3, 2],
+            vec![4, 2, 3],
             "the dense -> span re-enqueue must propagate the captured Unordered policy"
         );
     }
@@ -5770,7 +5774,7 @@ mod tests {
         graph.maintenance(unbounded_budget()).expect("timer drain");
         assert_eq!(
             out_targets(&graph, src),
-            vec![2, 3],
+            vec![2, 3, 4],
             "a label absent from the captured map falls back to order-preserving"
         );
         let _ = label;
