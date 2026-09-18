@@ -414,6 +414,83 @@ where
         self.remove_edge_at_slot_with_move(src, bucket.bucket_label_key(), slot_index)
     }
 
+    /// Releases an emptied bucket's slab span and syncs the vertex cover (F1).
+    ///
+    /// Called when a delete empties a bucket (`degree == 0`, no log) that still
+    /// holds a slab span (`stored_slots > 0`). Releases the span to the edge
+    /// free store (best-effort, see below) and recomputes `vertex.stored_slots`
+    /// over survivors so the cover stays exact (no phantom occupancy).
+    /// Tiny buckets never reach here (`stored == degree == 0`); tree buckets
+    /// keep their root until maintenance demotion (unchanged behavior).
+    /// PMA total is untouched (block-pin floor owns it; slide/relocate
+    /// reconcile on next maintenance — same rule as promotion's floor-covered
+    /// spans).
+    fn release_bucket_edge_span_on_empty(
+        &self,
+        src: VertexId,
+        slot: u64,
+        bucket: &LabelBucket,
+    ) -> Result<(), LabeledOperationError> {
+        debug_assert!(
+            bucket.degree() == 0 && bucket.overflow_log_head() < 0,
+            "F1 release requires an emptied log-free bucket"
+        );
+        if bucket.is_tiny_mode() {
+            return Ok(());
+        }
+        if bucket.is_tree_mode() {
+            // Tree root regions are LTB-addressed, not slab spans; releasing
+            // them as edge slots would corrupt the free store.
+            return Ok(());
+        }
+        let span_len = bucket.stored_slots;
+        if span_len == 0 {
+            return Ok(());
+        }
+        let _ = self
+            .edges
+            .release_span(bucket.edge_start(), u64::from(span_len));
+        // Recompute the cover over survivors (the emptied span contributes 0),
+        // skipping the emptied bucket by INDEX (two buckets can share an
+        // anchor; address matching would skip a live survivor).
+        let vertex = self.vertices.get(src);
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let mut cover_base: Option<u64> = None;
+        let mut survivor_end: Option<u64> = None;
+        for (index, other) in buckets.iter().enumerate() {
+            if other.is_tiny_mode() {
+                continue;
+            }
+            if u32::try_from(index).map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                == bucket_index
+            {
+                continue;
+            }
+            if cover_base.is_none() {
+                cover_base = Some(other.edge_start());
+            }
+            let end = other
+                .edge_start()
+                .checked_add(u64::from(other.stored_slots))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            survivor_end = Some(survivor_end.map_or(end, |prev| prev.max(end)));
+        }
+        if let (Some(base), Some(end)) = (cover_base, survivor_end) {
+            let new_stored = end
+                .checked_sub(base)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let new_stored = u32::try_from(new_stored)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            self.vertices
+                .set(src, &vertex.with_stored_slots(new_stored));
+        } else {
+            // No slab survivors: vertex span returns to zero.
+            self.vertices.set(src, &vertex.with_stored_slots(0));
+        }
+        Ok(())
+    }
+
     fn remove_bucket_edge_at_slot(
         &self,
         src: VertexId,
@@ -575,7 +652,22 @@ where
         let updated = bucket
             .with_overflow_log_head(new_log_head)
             .after_slab_tombstone_delete();
-        let updated = if updated.degree() == 0 && updated.overflow_log_head() < 0 {
+        // F1: an emptied bucket releases its slab span back to the free store
+        // and syncs the vertex cover (stale width/anchor otherwise linger as
+        // phantom occupancy until slide heals them; block release reclaims the
+        // leak only at relocate). The release runs before the descriptor
+        // publish so a release failure leaves canonical state untouched.
+        // Best-effort release (overlapping promote spans can double-release;
+        // pre-existing tiling incoherence, silent before F1 since nothing
+        // released these spans): a failed release keeps the old phantom
+        // behavior (slide heals), never fails a successful delete (Plan 0319
+        // §Step 2 precedent). The cover sync below always runs (it only
+        // shrinks to survivor ends, never below live content).
+        let emptied = updated.degree() == 0 && updated.overflow_log_head() < 0;
+        if emptied && updated.stored_slots > 0 {
+            self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
+        }
+        let updated = if emptied {
             updated
                 .with_inline_property_bytes_log_head(-1)
                 .with_inline_property_bytes_slab_slots(0)
@@ -1373,6 +1465,58 @@ mod tests {
             .remove_edge_at_slot(VertexId::from(0), road, 0)
             .unwrap();
         assert_eq!(removed_again, None);
+    }
+
+    #[test]
+    fn emptied_bucket_releases_span_and_zeroes_vertex_cover() {
+        // F1: deleting the last edge of a slab bucket frees its span and
+        // syncs the vertex cover (no phantom occupancy between maintenance).
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        for target in [10u32, 11, 12, 13] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(!bucket.is_tiny_mode(), "4 seeds promote past tiny");
+        let span_start = bucket.edge_start();
+        let span_len = u64::from(bucket.stored_slots);
+        assert!(span_len > 0);
+        for target in [10u32, 11, 12, 13] {
+            graph
+                .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == target)
+                .unwrap()
+                .expect("edge must delete");
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.degree(), 0);
+        assert_eq!(bucket.stored_slots, 0, "emptied span publishes zero width");
+        assert_eq!(
+            vertex.stored_slots, 0,
+            "vertex cover syncs to zero with no slab survivors"
+        );
+        // The freed span is reusable: it must be covered by free spans.
+        let free = graph.edges().free_span_store().spans();
+        assert!(
+            free.iter().any(|span| span.start_slot <= span_start
+                && span.start_slot.saturating_add(span.len) >= span_start + span_len),
+            "freed span must be covered by free spans"
+        );
+        // Graph stays fully operational and audit-clean after F1 work.
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
     }
 
     #[test]
