@@ -396,6 +396,15 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         let old = self.read_entry(page, pos).1;
         self.remove_from_page(page, pos)?;
         self.inc_len(-1);
+        if self.is_empty() {
+            // Normalize a fully-drained map to pristine-equivalent header state.
+            // unlink_and_free_page leaves page_count > 0 with an empty page
+            // chain, which init-time validation rejects even though the runtime
+            // handles it (insert regrows via alloc_page). Orphaned page/dir bytes
+            // are unreachable (first/last/dir are 0) and overwritten on reuse.
+            self.write_page_count(0);
+            self.write_free_head(0);
+        }
         Ok(Some(old))
     }
 
@@ -1135,6 +1144,35 @@ mod tests {
         assert_eq!(m.remove(10).unwrap(), None);
         assert!(m.is_empty());
         m.validate().unwrap();
+    }
+
+    #[test]
+    fn drained_map_reopens_and_accepts_inserts() {
+        // Draining the last entry must leave reopenable header state: an
+        // emptied map behaves like a fresh one (init succeeds, freed pages
+        // are recycled by later inserts). Guards the free-span reopen path
+        // (allocator draining its final span across an upgrade boundary).
+        let m = map();
+        m.insert(10, 100).unwrap();
+        m.insert(20, 200).unwrap();
+        assert_eq!(m.remove(10).unwrap(), Some(100));
+        assert_eq!(m.remove(20).unwrap(), Some(200));
+        assert!(m.is_empty());
+        let h = m.header();
+        assert_eq!(h.len, 0);
+        assert_eq!(h.page_count, 0, "drained map must reset page count");
+        assert_eq!(h.free_head, 0, "drained map must reset free head");
+        assert_eq!(h.first_page, 0);
+        assert_eq!(h.last_page, 0);
+        assert_eq!(h.dir_len, 0);
+        m.validate().unwrap();
+        let mem = m.into_memory();
+        let m2 = StablePagedOrderedMap::init(mem).expect("drained map must reopen");
+        m2.validate().unwrap();
+        assert_eq!(m2.get(10), None);
+        assert_eq!(m2.insert(30, 300).unwrap(), None);
+        assert_eq!(m2.get(30), Some(300));
+        m2.validate().unwrap();
     }
 
     #[test]
