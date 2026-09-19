@@ -76,8 +76,15 @@ defect from being rediscovered without its prior reasoning.
   `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` (compact.rs
   tests; M1 shape 0→8192 full-path inserts, asserts tree mode, root-region width,
   + full adjacency; bisect checkpoints at every 512 inserts all 1:1).
-  The `T_PROMOTE = 1024` adoption freeze stays until threshold A/B (G4/G5) measures
-  on the fixed tree path; the freeze reason is now measurement validity, not the trap.
+  Threshold A/B completed 2026-09-19 on the fixed path (unpersisted runs, both
+  arms; T_PROMOTE reverted to 4096 after measuring — production unchanged):
+  M1 hub-grow 82.30M (4096) vs 92.89M (1024, ~13% worse); M2a scan 74.30K slab vs
+  40.09K tree (~1.9x tree-favored); M2b insert 8,364 slab vs 185.07K tree (~22x
+  tree append cost); M2c delete 4,845 vs 7,887; M4 churn 147.54M vs 38.64M
+  (threshold-relative sizing artifact — the 1024 round-trip does less work by
+  definition, not evidence of threshold merit). Verdict: the M2a tree-scan win is
+  outweighed at workload scale (M1); **T_PROMOTE stays 4096** (evidence-backed,
+  not freeze-by-default).
 - **G4/G5 follow-up (2026-09-19, commit `a5cefbf69`):** G4 (`tiny_relocate_mixed_leaf`)
   and G5 (`tiny_workload_skewed_mix`) benches landed; both green unpersisted (G4 ~594K
   ins, HI=0/SMI=0 with payload-identity + per-neighbor scan asserts; G5 ~140M ins for
