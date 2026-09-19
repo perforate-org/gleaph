@@ -1081,7 +1081,8 @@ where
         let mut hole: Option<u32> = None;
         if _placement == EdgePlacementPolicy::Unordered {
             for i in 0..bucket.stored_slots {
-                if bucket.tiny_target(i) == LabelBucket::TINY_TOMBSTONE_TARGET {
+                // Layout-native liveness (same predicate as slab/tree read paths).
+                if E::read_from(&bucket.tiny_target(i).to_le_bytes()).is_deleted_slot() {
                     hole = Some(i);
                     break;
                 }
@@ -1349,7 +1350,7 @@ where
         let mut transcribed = 0u32;
         for i in 0..bucket.stored_slots {
             let target = bucket.tiny_target(i);
-            if target == LabelBucket::TINY_TOMBSTONE_TARGET {
+            if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
                 continue;
             }
             let slot = span_base

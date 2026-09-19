@@ -389,6 +389,16 @@ where
     /// Tombstone slots are skipped by every scan path and excluded from
     /// promotion transcription; the prefix compacts only via re-insert
     /// hole-fill or full-empty reset.
+    fn encode_tiny_tombstone_edge() -> u32
+    where
+        E: CsrEdgeTombstone,
+    {
+        let tomb = E::tombstone_edge();
+        let mut bytes = [0u8; 4];
+        tomb.write_to(&mut bytes[..E::BYTES.min(4)]);
+        u32::from_le_bytes(bytes)
+    }
+
     fn remove_tiny_edge_at_slot(
         &self,
         src: VertexId,
@@ -407,12 +417,14 @@ where
         if slot_index >= bucket.stored_slots {
             return Ok(None);
         }
-        let target = bucket.tiny_target(slot_index);
-        if target == LabelBucket::TINY_TOMBSTONE_TARGET {
-            // Already dead: idempotent no-op (mirrors slab double-delete None).
+        // Layout-native liveness (same predicate as slab/tree read paths):
+        // decode the slot and ask the edge layout. Already-dead is an
+        // idempotent no-op (mirrors slab double-delete None).
+        let probe = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes());
+        if probe.is_deleted_slot() {
             return Ok(None);
         }
-        let edge = E::read_from(&target.to_le_bytes())
+        let edge = probe
             .with_slot_index(slot_index)
             .with_label_id(bucket.bucket_label_key().raw());
         let new_degree = bucket.degree().saturating_sub(1);
@@ -425,7 +437,7 @@ where
             fresh.with_degree_field(0).with_stored_slots(0)
         } else {
             bucket
-                .with_tiny_target(slot_index, LabelBucket::TINY_TOMBSTONE_TARGET)
+                .with_tiny_target(slot_index, Self::encode_tiny_tombstone_edge())
                 .with_degree_field(new_degree)
         };
         self.buckets.write_label_bucket_slot(slot, updated)?;
@@ -2078,7 +2090,9 @@ mod tests {
         assert!(bucket.is_tiny_mode(), "delete stays tiny (no promotion)");
         // Hole at slot 1 (sentinel), live prefix width 3, live count 2.
         assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
-        assert_eq!(bucket.tiny_target(1), LabelBucket::TINY_TOMBSTONE_TARGET);
+        // Layout-native tombstone: the hole decodes as deleted through the
+        // edge layout's own predicate (same as slab/tree read paths).
+        assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
         // Tombstone-inclusive positions preserved (slab contract).
         let mut seen = Vec::new();
         graph
@@ -2126,6 +2140,59 @@ mod tests {
     }
 
     #[test]
+    fn tiny_hole_uses_layout_native_tombstone_predicate() {
+        // Delete redesign contract: the hole representation is layout-native
+        // (`E::tombstone_edge()` encoded, `E::is_deleted_slot()` for liveness —
+        // the same predicate as slab/tree read paths), not a tiny-specific
+        // sentinel. Exercises with the high-bit layout (FlagTombstoneEdge):
+        // a bit-31 hole must decode as deleted while survivors scan intact.
+        use crate::labeled::graph::test_support::FlagTombstoneEdge;
+        let graph = crate::labeled::graph::test_support::flag_tombstone_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        for target in [10u32, 11, 12] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    FlagTombstoneEdge::live(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("delete");
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.is_tiny_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        // The hole decodes as deleted through the layout's own predicate...
+        assert!(
+            FlagTombstoneEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot()
+        );
+        // ...while survivors scan intact with tombstone-inclusive positions.
+        let mut seen = Vec::new();
+        graph
+            .visit_edges(
+                VertexId::from(0),
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |pos, edge| {
+                    seen.push((pos.raw(), edge.neighbor_vid()));
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![(0, VertexId::from(10)), (2, VertexId::from(12)),]
+        );
+    }
+
+    #[test]
     fn tiny_remove_matching_finds_inline_target() {
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -2159,6 +2226,8 @@ mod tests {
             .unwrap();
         assert!(bucket.is_tiny_mode());
         assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
-        assert_eq!(bucket.tiny_target(1), LabelBucket::TINY_TOMBSTONE_TARGET);
+        // Layout-native tombstone: the hole decodes as deleted through the
+        // edge layout's own predicate (same as slab/tree read paths).
+        assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
     }
 }
