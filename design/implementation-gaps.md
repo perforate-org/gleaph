@@ -63,7 +63,13 @@ defect from being rediscovered without its prior reasoning.
   single source of truth — tiny 0, slab `stored_slots`, tree `combined_span_region_len`
   (log-chain slots still added by callers) — routes all five paths through it, and
   removes the whole-cover release so footprints retire as mode-aware bucket regions
-  plus remainder only. Standing regression:
+  plus remainder only. A sixth path shared the confusion on the READ side:
+  `materialize_labeled_vertex_edge_plan` snapshot tree buckets as
+  `stored_slots` slab slots from `edge_start`, walking past the root region into
+  live ranges and republishing those bytes as the bucket's new span on relocate
+  (corruption: post-relocate scan returned 1 edge instead of 8192). The snapshot
+  now reads `bucket_physical_resident_slots`, and the commit rebuild preserves
+  tree descriptors' logical width (root bytes move by anchor only). Standing regression:
   `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` (compact.rs
   tests; M1 shape 0→8192 full-path inserts, asserts tree mode + full adjacency).
   The `T_PROMOTE = 1024` adoption freeze stays until threshold A/B (G4/G5) measures

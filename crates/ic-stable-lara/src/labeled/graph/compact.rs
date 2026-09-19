@@ -1534,18 +1534,25 @@ where
                 per_bucket_raw.push(Some(Vec::new()));
                 continue;
             }
+            // GAP-2026-09-17-001: tree buckets hold only their root region in
+            // LEG (`combined_span_region_len`); the logical `stored_slots` edge
+            // count is NOT a readable span. Reading `stored_slots` slots from
+            // `edge_start` walks past the root into live ranges (in the M1
+            // shape: the promotion-recycled slab prefix still referenced by
+            // the free store) and the relocate then republishes those bytes as
+            // the bucket's new span — corruption. Read the physical region.
+            let physical_slots = bucket_physical_resident_slots(bucket);
             let log_len = if bucket.overflow_log_head() >= 0 {
                 self.edges
                     .overflow_log_chain_len(leaf, bucket.overflow_log_head())
             } else {
                 0
             };
-            let resident_slots = bucket
-                .stored_slots
+            let resident_slots = physical_slots
                 .checked_add(log_len)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
             if bucket.overflow_log_head() < 0 {
-                let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+                let run = Self::edge_bytes_for_len(physical_slots as usize)?;
                 let mut raw = vec![0u8; run];
                 if run > 0 {
                     self.edges
@@ -1555,8 +1562,8 @@ where
                 per_bucket_raw.push(Some(raw));
             } else {
                 let mut resident = Vec::with_capacity(resident_slots as usize);
-                if bucket.stored_slots > 0 {
-                    let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+                if physical_slots > 0 {
+                    let run = Self::edge_bytes_for_len(physical_slots as usize)?;
                     let mut raw = vec![0u8; run];
                     self.edges
                         .read_slots_contiguous(bucket.edge_start(), &mut raw);
@@ -1626,6 +1633,17 @@ where
                 // materialized run) while degree stays live, corrupting the
                 // wire. Anchors still advance via positions.
                 if bucket.is_tiny_mode() {
+                    resident_buckets.push(bucket.with_overflow_log_head(-1));
+                    continue;
+                }
+                // GAP-2026-09-17-001: tree buckets are NOT slab content —
+                // their LEG region is the root array and `stored_slots` is a
+                // logical count. The materialized run above holds the physical
+                // root bytes; republishing `stored_slots` as the width would
+                // reintroduce the logical-width cover the retire path then
+                // releases as unowned ranges. Keep the descriptor's logical
+                // width untouched (root bytes move by anchor only).
+                if bucket.is_tree_mode() {
                     resident_buckets.push(bucket.with_overflow_log_head(-1));
                     continue;
                 }
