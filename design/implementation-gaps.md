@@ -78,6 +78,16 @@ defect from being rediscovered without its prior reasoning.
   + full adjacency; bisect checkpoints at every 512 inserts all 1:1).
   The `T_PROMOTE = 1024` adoption freeze stays until threshold A/B (G4/G5) measures
   on the fixed tree path; the freeze reason is now measurement validity, not the trap.
+- **G4/G5 follow-up (2026-09-19, commit `a5cefbf69`):** G4 (`tiny_relocate_mixed_leaf`)
+  and G5 (`tiny_workload_skewed_mix`) benches landed; both green unpersisted (G4 ~594K
+  ins, HI=0/SMI=0 with payload-identity + per-neighbor scan asserts; G5 ~140M ins for
+  256v/4520e with exact census assert). Two discoveries: (1) a tree bucket co-resident
+  with pinned mates on one vertex is unseedable in quota-1 leaf geometry BOTH ways
+  (tree-first stalls mate tiles at the 8th edge via the leaf-mate overlap assertion;
+  mates-first stalls the tree growth cascade at ~4703-4895 edges) — tree-under-relocate
+  stays covered by the M1 regression instead; (2) the G4 probe exposed a stale ADR
+  expectation: tiny anchors ADVANCE on relocate (running-boundary stamps per the
+  Successor-chain row), so G4 asserts payload identity, not anchor identity.
 - **Second-stage hardening (evaluated 2026-09-19, NOT pursued):** a `SpanExtent`
   enum (slab/tree unit separation at the type level) was scored highest (8/10) but
   rejected on implementation review — the three release call sites correctly pass a
