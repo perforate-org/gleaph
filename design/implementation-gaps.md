@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-12
+Last updated: 2026-09-17
 Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
@@ -47,6 +47,67 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-17-001 — Tree-mode full-path 4-byte bucket growth traps past ~5.7K edges on an overlapping edge free-span release
+
+- **Status:** Fixed 2026-09-19 (first-stage A' fix; commit pending) — root cause was a
+  unit confusion shared by FIVE paths, not one call site. Every resident-geometry
+  computation sized tree buckets on the logical `stored_slots` edge count while the
+  physical LEG span is only the root region (`combined_span_region_len`):
+  (1) `release_vertex_edge_span_footprint`'s monolithic whole-cover
+  `release_span(span_start, span_len)` handed unowned ranges to the free store
+  (the observed `OverlapPrevious` trap); (2) `plan_labeled_leaf_relocation`
+  over-allocated the leaf block (5728 slots for a 6-slot root), which is what made
+  the whole-cover release overlap live free spans; (3) slide tiling, (4) rebalance
+  planning, and (5) fold/grow-footprint planning shared the same logical-width
+  sizing. The fix introduces `bucket_physical_resident_slots` (compact.rs) as the
+  single source of truth — tiny 0, slab `stored_slots`, tree `combined_span_region_len`
+  (log-chain slots still added by callers) — routes all five paths through it, and
+  removes the whole-cover release so footprints retire as mode-aware bucket regions
+  plus remainder only. Standing regression:
+  `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` (compact.rs
+  tests; M1 shape 0→8192 full-path inserts, asserts tree mode + full adjacency).
+  The `T_PROMOTE = 1024` adoption freeze stays until threshold A/B (G4/G5) measures
+  on the fixed tree path; the freeze reason is now measurement validity, not the trap.
+- **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
+  cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
+  (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
+  `Store(RebalanceFailed(GrowFailed { current_size: 0, delta: 0 }))` with the bucket
+  tree-mode, `stored = degree = 5728`, `log_head = -1`. Isolation worktree at detached
+  HEAD `95d791087` (no in-flight changes) fails identically — latent HEAD bug, not an
+  in-flight regression. Throwaway tracing in the isolation worktree shows an EDGE-slab
+  `release_span start=1063168 len=5728` rejected with `OverlapPrevious { previous:
+  FreeSpan { start_slot: 1059545, len: 3628 }, inserted: FreeSpan { start_slot: 1063168,
+  len: 5728 } }` — overlapping exactly the 5 slots of an earlier `len=5` release at the
+  same start. A `stored_slots`-scale (5728) release is issued from the tree growth
+  regime where a root-region-scale (or no) release belongs.
+- **Observability note:** the surfacing error misdirects. `impl From<GrowFailed> for
+  LabeledOperationError` (`crates/ic-stable-lara/src/labeled/graph/error.rs:336`)
+  wraps ANY `GrowFailed` as `Store(RebalanceFailed(..))`; instrumenting the only
+  direct `RebalanceFailed` constructor (`labeled/bucket_store.rs:478`) never fired.
+  The fault is in the edge-slab free-span path (`lara/edge/span.rs`), reached via the
+  generic `From` conversion. Consider distinct error mapping as a follow-up; not part
+  of this gap's fix.
+- **Expected or needed behavior:** tree growth to the structural cap (2^30, ADR 0088)
+  via the production path; release lengths in root-region units, never
+  `stored_slots`-scale overlapping ranges.
+- **Owner:** labeled tree growth + PMA accounting: `tree_write.rs` release sites,
+  `compact.rs` leaf-relocate footprint sizing, per-insert counts bumps in
+  `labeled/graph/insert.rs:495,814`. Same ownership as the in-flight tree slice.
+- **Evidence:** [2026-09-17 investigation, §A result](../investigations/2026-09-17-lara-improvement-investigation.md);
+  repro shape `thresh_hub_grow_8192` (M1 bench, worktree `labeled/bench.rs`);
+  native repro `head_repro_full_path_growth` in the kept isolation worktree
+  `/tmp/gleaph-head` (detached HEAD + throwaway eprintln tracing in
+  `bucket_store.rs`/`span.rs`): `cargo test -p ic-stable-lara --features canbench
+  --lib head_repro`. Unit-level promote paths are healthy (23/23 promote tests pass) —
+  the failure is steady-growth + cascade interplay, untested until now (4B benches
+  seed via `skip_leaf_cascade`; full-path growth benches are 10B-only and never promote).
+- **Impact:** tree mode is unusable past ~5.7K edges via the production insert path;
+  threshold A/B (1024 vs 4096) cannot run; S5 adoption is blocked.
+- **Next decision:** smallest falsifiable question — do tree-mode inserts bump leaf
+  `actual`, and what sizes `release_labeled_leaf_physical_footprint` in the
+  post-promotion regime? Then the smallest evidence-backed fix (release-length unit
+  or accounting exclusion) plus an M1-shaped standing regression bench.
+
 ### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
 
 - **Status:** Open — deferred capability, recorded 2026-09-12.
@@ -69,19 +130,19 @@ defect from being rediscovered without its prior reasoning.
 - **Contract:** [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md), update-lane
   policy and exact-target constraints; [plan format](gql/plan-format.md), exact vertex mutation input.
 
-### GAP-2026-09-11-004 — Bulk-load edge property update has no replicated-mode edge read to gate its exactly-one target
+### GAP-2026-09-11-004 — Bulk-load edge property update needs replicated resolution and retry-safe target validity
 
 - **Status:** Open — prerequisite slice. Recorded 2026-09-11 after the edge-property SET review
   round withdrew the implemented surface (wire variant, CLI mode, Router path, docs section) from
   its slice rather than shipping a weakening contract. Edge-property SET through bulk load is
   **not implemented**. The vertex update lane's journal-first resume/abort work in the same round
   did not re-add any edge surface, identity, or lock substrate.
-- **Owner:** Router bulk-load workflow (`crates/router/src/bulk_load.rs`) and the Router→Graph
-  read contract (`crates/graph/src/lib.rs`); a Graph-side resolution path would be owned by the
-  Graph canister and its planner lowering.
+- **Owner:** Router bulk-load workflow (`crates/router/src/bulk_load.rs`) owns admission and
+  replay. Graph owns canonical adjacency, edge-target validity, and any Router→Graph resolution
+  API (`crates/graph/src/lib.rs`, GraphStore, and the underlying LARA mutation boundaries).
 - **Observed behavior (confirmed):** Router ingress handlers execute in replicated mode. The
-  Router's Router→Graph read of *edge state* resolves to the composite query
-  `execute_plan_query` (`#[query(composite = true, guard = "router_canister")]`), which a
+  withdrawn Router→Graph pre-read of *edge state* used the composite query
+  `execute_plan_query` (`#[query(composite = true, guard = "guard_router_canister")]`), which a
   replicated-mode handler cannot call. A PocketIC run of the withdrawn edge-update lifecycle
   failed with `InvalidArgument("graph execute_plan_query call failed: call rejected: 5 - IC0527:
   Composite query cannot be called in replicated mode")`, so an `Append` handler could not
@@ -91,27 +152,31 @@ defect from being rediscovered without its prior reasoning.
   `router/src/index_lookup.rs` `collect_edge_equal_hits_paged` (`lookup_edge_equal_page`) and
   `collect_edge_range_hits_paged` (`lookup_edge_range_page`), the Router wire helpers
   `lookup_edge_equal_wires`/`lookup_edge_range_wires` (`router/src/gql.rs`), and the planner's
-  `PlanOp::EdgeIndexScan` (`gql-planner/src/plan.rs`). Edge identity inside the Graph is an
-  internal handle (`graph/src/facade/store/handle.rs` `EdgeHandle { owner_vertex_id, label_id,
-  slot_index }`); the only read-projection identity is `GraphPathEdgeId`. So the earlier
-  statement that no edge property index exists was wrong.
-- **Unverified (do not assume either way):** whether the existing edge index surface can supply
-  the exactly-one *target identity* for a `(from endpoint, edge label, to endpoint)` update —
-  i.e. whether an edge posting hit denotes one mutation-addressable edge, whether postings are
-  complete enough to prove "exactly one", and whether an update statement can address that edge
-  without a Graph-side identity. Also unverified: whether the existing index lookups can run from
-  a replicated-mode ingress (they call the index canister, not the Graph read path, so this is
-  plausible but untested for a write handler).
-- **Caution for the next decision:** an in-statement multiplicity filter such as
-  `MATCH … WHERE NOT EXISTS { MATCH … e2 <> e } SET …` can restrict a row to a single matched
-  edge, but it cannot turn a **zero-match** row into an error: a pattern with no matches produces
-  no rows, so nothing is rejected and the row would silently no-op. The zero-match leg needs
-  either a read or a construct that errors on emptiness.
-- **Expected or needed behavior:** A durable bulk-load edge-property update must reject a row whose
-  `(from endpoint, edge label, to endpoint)` triple matches zero edges and must reject (without
-  modifying anything) a row that matches more than one, matching the fail-closed contract that
-  vertex updates enforce through converged property indexes. Multi-edges are legal, so no
-  uniqueness invariant can make the mutation exactly-one by construction.
+  `PlanOp::EdgeIndexScan` (`gql-planner/src/plan.rs`). The earlier statement that no edge property
+  index exists was wrong.
+- **Replicated-call finding (2026-09-12, source/specification evidence):** Edge index paging
+  endpoints are ordinary, non-composite queries. The [IC interface specification](https://docs.internetcomputer.org/references/ic-interface-spec/)
+  permits update execution to call update and ordinary query methods. The earlier call-mode
+  uncertainty is resolved at the protocol level, not by a new bulk-edge runtime test. These APIs
+  select property values and return `EdgePostingHit { shard_id, owner_vertex_id, label_id,
+  slot_index }`, not endpoint-pair adjacency or a destination/generation witness. Posting count
+  alone therefore cannot establish canonical multiplicity for `(from, label, to)`. Graph's
+  `execute_plan_update` is not a read-only substitute: its wire guard rejects read-only plans.
+- **Target-validity finding (2026-09-12, source/test inspection):** `GlobalEdgeId` is a 16-byte
+  query-time physical handle `(shard, owner, label, slot)`, not a lifetime occurrence ID. LARA's
+  `unordered_scalar_insert_reuses_interior_slab_tombstone` deletes target 20 at slot 1 and inserts
+  target 21 into the same slot. Graph maintenance also moves slots and relocates sidecars/postings.
+  Saving the handle does not prevent an unstarted row from updating a replacement edge; checking
+  the destination still cannot distinguish delete/reinsert with identical endpoints. The latter
+  is an identity-model counterexample, not a newly executed test. Repairing the read API alone
+  cannot establish the retry contract.
+- **Selected direction (2026-09-12; planned, not implemented):** Preserve multi-edges; select and
+  update all eligible matches at each input row's first Graph execution, rather than pinning a
+  singleton edge before admission. Zero matches succeeds with target count zero. Exceeding bounded
+  work/mutation/byte limits rejects before writes. Selection, canonical SET and durable outcome
+  must complete locally without an intervening external call; retries replay recorded outcomes.
+  This replaces the withdrawn zero/many-rejection requirement for edge updates, not the existing
+  vertex bulk contract. See [selected direction and storage accounting](investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting).
 - **Evidence:** `crates/graph/src/lib.rs:80` (composite-query graph read),
   `crates/router/src/graph_client.rs:100-119` (mode→method mapping),
   `crates/router/src/gql_search.rs:1637` (query-mode dispatch),
@@ -120,15 +185,170 @@ defect from being rediscovered without its prior reasoning.
   `crates/gql-planner/src/plan.rs:414` (`PlanOp::EdgeIndexScan`),
   `crates/graph/src/facade/store/handle.rs:10` (internal edge handle), and the failing PocketIC
   run recorded in this review round.
-- **Impact:** Edge-property bulk updates cannot be delivered fail-closed today. The alternatives
-  each need an independent decision and their own validation: (a) an in-statement multiplicity
-  guard plus a separate zero-match error construct; (b) resolving one edge before admission from
-  the existing edge index surface (including whether an edge posting hit is a usable update
-  target); (c) a replicated-mode-safe (non-composite) Router→Graph read API. Bulk-load edge
-  inserts, vertex SET/REMOVE, and single-statement GQL edge `SET` are unaffected.
-- **Next decision:** Establish whether the existing edge index surface can prove exactly-one and
-  address that one edge for mutation; if not, decide between (a) and (c). Scope a prerequisite
-  slice with its own ADR-level review before re-adding public wire or CLI surface.
+- **Research:** [Bulk edge SET prerequisites](investigations/2026-09-12-bulk-edge-set-prerequisites.md)
+  records the API/identity evidence, existing journal/receipt extension points, alternatives, and
+  validation gates against `95d791087`. No implementation or new runtime validation was performed.
+- **Candidate design (2026-09-12):** [Sparse edge-reference tokens](investigations/2026-09-12-sparse-edge-reference-tokens.md)
+  explores a bounded Graph registration map and non-reusing allocator, without widening every
+  vertex or edge. Internal LARA materialize/sibling drains use no-op observers, so existing Graph
+  callbacks alone do not establish complete invalidation coverage. Bounded resolution and the
+  availability cost of capacity-driven invalidation also remain gates. No design approval,
+  MemoryId allocation, implementation, or runtime validation is claimed.
+- **Alternative research (2026-09-12):** [Primary-source comparison](investigations/2026-09-12-edge-reference-alternatives.md)
+  identifies occurrence IDs with bounded source/label lookup as an alternative that requires no
+  global ID-to-location directory. Kuzu's inspected update code uses this lookup organization;
+  applying it to Gleaph would require wider edge records and identity-preserving rewrites.
+  The all-edge ID proposal was declined on storage/performance grounds; no measured throughput
+  regression is claimed.
+- **Fixed-budget research (2026-09-12):** [Logical-membership witnesses](investigations/2026-09-12-bounded-edge-membership-witnesses.md)
+  combines canonical singleton selection with a fixed-size hashed revision array for edge
+  insertion/deletion. Adjacency rows stay unchanged; pure movement need not notify the witness,
+  and an unusable saved slot rejects rather than starting another scan. Complete membership-write
+  coverage, storage-mode/work bounds, metadata-write cost, and bulk-level hash false conflicts
+  remain unclosed gates. No implementation or runtime validation was performed.
+- **Bounded-read prerequisite (2026-09-12 23:34:39 UTC +0000):** Implemented tree visitor
+  short-circuiting in LARA; [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#tree-visitor-short-circuit-implemented)
+  owns the contract and measurements. Previously, the topology and inline-property adapters saved
+  a callback's `Break` but the underlying walkers continued through later blocks/properties.
+  `tree_visit_break_stops_topology_reads` and `tree_visit_break_stops_property_reads` reproduced
+  both defects and now prove physical stopping in both orders. This is not complete selection:
+  `read_label_bucket_placement_info` counts the overflow chain, and selected-slot readers can
+  reconstruct chains/prefetch tables outside the emitted-row count. Those existing APIs are not
+  a whole-row work/byte bound; no new validity registry is needed.
+- **Complete-topology prerequisite (2026-09-13 00:22:26 UTC +0000):** LARA now exposes
+  `collect_edge_topology_bounded` and its forward adapter; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-topology-collection-implemented)
+  owns the contract. A physical-slot allowance includes tombstones and linked overflow entries;
+  exhaustion returns an error, never a successful prefix. No property stream or whole-leaf log
+  table is read. Workspace and topology payload are bounded from the slot allowance and concrete
+  edge width; this is not an independent byte-budget API. Six native contracts and focused
+  canbench cover the storage capability, not bulk SET or policy/mutation atomicity.
+- **Inline-read prerequisite (2026-09-13 01:26:43 UTC +0000):** LARA exposes a complete topology plus
+  `InlinePropertyBytes` collector with physical-slot and value-body allowances; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented)
+  owns the bounds. Value admission precedes property reads, reserves wide-blob lookahead, validates
+  exact property-log exhaustion, and preserves slab live ordinals/tree physical slots. Six native
+  contracts and focused canbench validate this read capability, not policy/SET atomicity. The tree
+  property helper's out-of-range block-zero sentinel was replaced with a typed rejection.
+- **Sidecar pre-read blocker (2026-09-13, source inspection):** `facade/stable/edge_properties.rs`
+  stores unbounded `StoredPropertyValue`s. The ic-stable-structures 0.7.2 B-tree getter materializes
+  the whole encoded value before its `Storable::from_bytes` call; `ensure_persistable` only checks
+  binary encoding. A size check after the ordinary getter cannot establish a pre-read byte cap.
+  No sidecar format, length map, dependency fork or whole-row mutation preflight was introduced.
+- **Sidecar node-discovery evidence (2026-09-13 01:52:13 UTC +0000):** A native 0.7.2 B-tree probe
+  with fixed 14-byte keys and unbounded raw values confirms that a ten-byte lookup, a missing-key
+  lookup and key-only iteration all perform more metadata reads as an unselected neighbor grows.
+  `Node::load_v2` reconstructs the whole node overflow list before key search, so exposing only a
+  value length would not close the work bound. The [investigation and reproducer](investigations/2026-09-13-sidecar-bounded-read-options.md)
+  compare a dependency-owner extension, a global property cap and out-of-line storage. That
+  investigation recommended an extension as the minimum layout-preserving change; the design
+  direction below supersedes that priority. This is primitive read evidence, not Graph codec,
+  write-budget, policy or bulk SET validation.
+- **Property-value separation design (2026-09-13 03:57:44 UTC +0000):** The
+  [design](investigations/2026-09-13-property-value-separation-design.md) keeps per-property
+  keys and bounded small cells in the existing vertex/edge directories, with independent large
+  bodies owned by each PropertyStore. A reclaimable fixed-block allocator is an experiment, not
+  an accepted production layout. Threshold, fragmentation, common-path cost, rekey ownership and
+  whole-row preflight remain validation gates. No production Rust, MemoryId, persisted codec,
+  dependency or public API changed; no extra adjacency IDs or reference journal are proposed.
+- **Value-separation experiment (2026-09-13 06:23:23 UTC +0000):** Two native tests over 24
+  configurations passed, including body admission before reads, zero-write rejection, ownership
+  transfer and persistent block reuse. The [results](investigations/2026-09-13-property-value-separation-design.md#8-probe-results-and-disposition)
+  demonstrate removal of unselected-body read/write coupling. They do not select the fixed-block/
+  replacement-body candidate: short-body waste, retained high-water and ordinary-path preparation
+  cost require further design. A partial-pair reopen defect was found and fixed in the new probe,
+  not in production Graph. No Graph codec, Wasm instruction, policy, whole-row SET or IC rollback
+  proof is claimed; the existing storage and public capability remain unchanged.
+- **Comparison-first follow-up (2026-09-13 09:36:59 UTC +0000):** The
+  [B-tree body comparison](investigations/2026-09-13-property-body-btree-comparison.md) measures five
+  whole/chunk configurations, with two native tests and 188 I/O rows. Default-geometry 4 KiB chunks
+  reduce the small external-body neighbor rewrite from 1048708 to 16582 bytes, but rewrite a 1 MiB
+  body with about 5.30× the whole-body write volume. Declared 4 KiB bounds occupy 27 native pages
+  for the tested 256 short bodies versus one with default geometry; shrink can also allocate during
+  tree mutation. These are diagnostic observations, not Graph instruction or workload acceptance.
+  The [extent proposal](investigations/2026-09-13-property-body-extent-design.md) was not measured
+  by this B-tree slice; its later native checkpoint is recorded below, without production selection. Body-key/format/move ownership, decoder and
+  total-work admission, whole-row co-write and IC lifecycle remain open; no production region,
+  allocator, dependency or public capability changed.
+- **IC body-lane comparison (2026-09-13 11:08:59 UTC +0000):** The
+  [stable-memory follow-up](investigations/2026-09-13-property-body-btree-comparison.md#ic-stable-memory-follow-up)
+  completed 32 canbench cases using direct Ic0StableMemory and the shared native body algorithm.
+  Default-geometry 4 KiB chunks reduce a small external-body neighbor rewrite from 2.62M to 0.188M
+  instructions, but a full 1 MiB replacement costs 28.32M versus 6.94M, and shrink 38.27M versus
+  5.06M. Ordinary Whole point-get is also retained as a faster read control than range/assembly.
+  All measured heap/stable page deltas are zero after setup; this does not mean zero allocation.
+  The two native tests and all 188 I/O rows remain unchanged. Query benchmarking is not Graph
+  commit/rollback or workload acceptance; no production layout or custom allocator is selected.
+- **Workload relevance (2026-09-13 11:35:15 UTC +0000):** The
+  [codec-based input profile](investigations/2026-09-13-property-body-workload-profile.md) covers
+  Knowledge and Social 1x1/5x20 typed load artifacts. Maximum Value size is 143 bytes; none exceeds
+  4 KiB. Social scaling repeats 71 post texts, not a sampled large-body tail. At hypothetical T=128,
+  300/35932 scaled vertex-property occurrences and 0/94460 edge-property occurrences remain external,
+  but counts are not access frequencies (all Social prepared queries project Post.body). No runtime
+  read/rewrite/shrink history is available from these inputs; large-row test fixtures are synthetic.
+  This does not select a cap/threshold or justify custom allocation; representative old/new sizes
+  and operation counts remain necessary for workload-weighted acceptance.
+- **Chunk-size sensitivity (2026-09-13 12:30:53 UTC +0000):** The
+  [wider-chunk comparison](investigations/2026-09-13-property-body-chunk-size-sensitivity.md) extends
+  the same body algorithm to 16/64 KiB default-geometry caps: two native tests, 260 I/O rows and
+  48 IC query benchmarks pass; the original 188 native rows/32 IC counters are unchanged. Wider
+  chunks improve some costs versus 4 KiB, but 1 MiB replacement still costs 3.44×/3.85× Whole and
+  shrink 5.28×/5.12×. Neighbor isolation worsens; the 16 KiB shrink adds one stable page. This is
+  size sensitivity, not workload acceptance, a production cap or custom-allocation authorization.
+- **Native extent checkpoint (2026-09-13 14:02:33 UTC +0000):** After explicit authorization, the
+  [allocator-only comparison](investigations/2026-09-13-property-body-extent-comparison.md) passed
+  six native tests/36 extent rows; all 260 B-tree reference rows remain unchanged. Existing 0.7.2
+  exposes no selected-node batch replacement/removal API; no fork was introduced. Contiguous
+  1 MiB replacement writes 1048592 bytes versus 5559316 with 4 KiB chunks. Repeated hot shrink
+  writes 260 bytes but still reads the full old 1 MiB value. Exact partition/index/owner oracles,
+  pre-effect rejection, post-allocation retirement and nine paired reopens pass. The extra index
+  doubles the raw short-body floor (two pages versus one); fragmentation and relocation can retain
+  more capacity. These are native I/O results, not IC instructions, rollback/upgrade, directory
+  atomicity or whole-row work bounds. The managed IC follow-up is recorded below; production
+  selection remains pending.
+- **Managed IC extent checkpoint (2026-09-13 20:50:20 UTC +0000):** The
+  [91-case comparison](investigations/2026-09-13-property-body-extent-canbench.md) uses the same
+  four-page variable-manager policy for one-region B-trees and two-region extents. All91 query
+  cases pass; six native tests and296 numeric rows remain unchanged. Extent1MiB replacement/shrink
+  costs3.15M/2.11M instructions versus Whole7.36M/5.86M and chunks26.71–32.31M/29.54–44.75M.
+  Adverse results remain: Whole point-get1.43M beats extent read2.10M; allocation from already-
+  coalesced space atF128 costs68.65K versus38.08–38.12K. Extent retains four extra physical pages
+  in these fixtures (ten versus six small;26 versus22 large). Five initial grows add16 physical
+  pages each; three also grow heap. Query measurement/local collection reload is not persistent-
+  directory atomicity, Graph work admission or IC update rollback/upgrade proof. A separately
+  reviewed integration design is justified, not production activation or a workload-weighted win.
+- **Native PropertyStore checkpoint (2026-09-14 01:10:06 UTC +0000):** The
+  [comparison](investigations/2026-09-13-property-store-native-comparison.md) implements actual
+  8/14-byte keys, Graph Value codec, directory ownership and single-property moves for Direct,
+  directory+B-tree4/16/64KiB and directory+custom extents. Ten tests pass;40 full stores produce
+  2640 region rows, with all260+36 raw rows preserved. Candidates pre-admit selected bytes; Direct
+  remains an unbounded admission reference. Small-directory isolation helps all candidates, but
+  small mutations add reads and eager lanes retain backing. Chunk writes/moves amplify I/O;
+  extent relocation retains holes/high-water, while B-tree deletion can also grow backing.
+  These native counts do not establish IC speed or total work bounds. The separate managed
+  full-store measurement follows below; frozen0357/0358 sources preserve historical provenance.
+  Fine bucket/zero-fill/free-lookup optimizations remain deferred. No production format, whole-row
+  safety, durable edge outcomes or bulk edge capability is selected.
+- **Managed PropertyStore checkpoint (2026-09-17 22:24:02 UTC +0000):** The
+  [full-store IC comparison](investigations/2026-09-17-property-store-managed-comparison.md) passes
+  all210 full-store cases plus91 reused body controls. Actual keys, Value validation/codec,
+  previous values and all regions are included. For edge keys, Direct ordinary1MiB get/replacement
+  costs5.36M/9.85M instructions versus extent6.04M/10.25M; extent scalar insert/replace is about
+  37%/60% more expensive. Extent large moves improve26.55M→12.11M, and small-neighbor isolation
+  helps every separated candidate. Extent coalesced allocation costs118.36K versus Direct46.81K.
+  Small physical totals are Direct6/chunks10/extent14 pages;1MiB point totals22/26/30. These are
+  independently reserved capacities, not per-edge metadata or automatically wasted bytes. C64
+  large move/deletion each grows four physical pages; extent relocation retains high-water.
+  Native2640+296 rows reproduce. No production integration, total-work/whole-row proof,
+  update/upgrade lifecycle validation or workload-weighted winner follows.
+- **Impact:** Bulk-load edge SET remains unavailable. The selected direction needs bounded local
+  selection/SET and durable terminal replay, not a cross-message edge-reference registry. Bulk-load
+  edge inserts and vertex SET/REMOVE contracts are unchanged; ordinary GQL edge `SET` remains
+  available. The tree, topology and inline-property read prerequisites do not expose a bulk operation.
+- **Next decision:** Specify endpoint/policy semantics, local work/mutation/byte limits, exact
+  positive/zero/rejection outcome representation, input-row versus matched-edge counts, and
+  retention/Abort behavior before implementation. The existing exact-vertex seed and receipt
+  contract do not represent this behavior as-is. No per-edge field or generation table is selected;
+  recovery state belongs in the existing scalar journals and chunk receipts. Include actual
+  serialized record/outbox/high-water measurements in the bounded validation plan.
 
 ### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
 

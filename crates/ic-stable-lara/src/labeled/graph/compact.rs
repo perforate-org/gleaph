@@ -304,6 +304,27 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
     }
 }
 
+/// Physical LEG slots one bucket occupies inside a leaf block.
+///
+/// Single source of truth for every resident-geometry computation
+/// (relocation sizing, slide tiling, rebalance planning, fold planning):
+/// tiny buckets hold zero slab slots (inline targets only), slab buckets
+/// hold `stored_slots`, tree buckets hold only their root region
+/// (`combined_span_region_len` — the logical `stored_slots` edge count is
+/// NOT a physical width). Log-chain slots are added by the caller when the
+/// bucket carries an overflow log. GAP-2026-09-17-001: sizing any of these
+/// paths on the logical width over-allocates the leaf and feeds unowned
+/// ranges to the free store on release.
+pub(super) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
+    if bucket.is_tiny_mode() {
+        return 0;
+    }
+    if bucket.is_tree_mode() {
+        return combined_span_region_len(bucket);
+    }
+    bucket.stored_slots
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -601,9 +622,15 @@ where
 
     /// Releases a relocated VertexEdgeSpan footprint back to the edge free-span store.
     ///
-    /// Prefer one monolithic `release_span` for the whole `[span_start, span_len)` reservation.
-    /// When that fails (typically due to overlap with partial free-span entries), release the
-    /// same footprint as bucket ranges plus interior proportional slack intervals.
+    /// The footprint is released as the mode-aware bucket regions plus the
+    /// interior/tail remainder of the `[span_start, span_len)` reservation
+    /// (see [`Self::vertex_edge_span_retire_intervals`]). A monolithic release of
+    /// the whole cover is NOT attempted: for tree-mode buckets the cover is a
+    /// logical width (`stored_slots` edge count) while the physical LEG span is
+    /// only the root region (`combined_span_region_len`), so a whole-cover
+    /// release would hand unowned ranges to the free store (GAP-2026-09-17-001:
+    /// `OverlapPrevious` trap past ~5.7K edges). The interval path releases only
+    /// owned bucket regions plus slack remainder, which is correct in every mode.
     pub(super) fn release_vertex_edge_span_footprint(
         &self,
         span_start: u64,
@@ -624,11 +651,12 @@ where
         if !has_live_slab {
             return Ok(());
         }
-        let len = u64::from(span_len);
-        if self.edges.release_span(span_start, len).is_ok() {
-            return Ok(());
-        }
-
+        // GAP-2026-09-17-001 (A' fix): no monolithic whole-cover release.
+        // For tree-mode buckets `span_len` is the logical `stored_slots` width
+        // while the physical LEG span is only the root region, so the cover
+        // contains unowned ranges that must never reach the free store.
+        // The interval path below releases exactly the owned bucket regions
+        // plus the interior/tail slack remainder.
         for (start, interval_len) in
             Self::vertex_edge_span_retire_intervals(span_start, span_len, buckets)?
         {
@@ -1262,6 +1290,13 @@ where
                 if bucket.is_tiny_mode() {
                     continue;
                 }
+                // GAP-2026-09-17-001: tree buckets occupy only their root
+                // region (`combined_span_region_len`), not `stored_slots` edge
+                // slots. Sizing the leaf on the logical width over-allocates
+                // the block and — worse — makes the whole-cover release hand
+                // unowned ranges to the free store. Single source of truth:
+                // `combined_span_region_len` (same helper the retire-interval
+                // path uses).
                 let log_slots = if bucket.overflow_log_head() >= 0 {
                     self.edges
                         .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1270,8 +1305,7 @@ where
                 };
                 resident_slots = resident_slots
                     .checked_add(
-                        bucket
-                            .stored_slots
+                        bucket_physical_resident_slots(bucket)
                             .checked_add(log_slots)
                             .ok_or(LaraOperationError::RowDegreeOverflow)?,
                     )
@@ -1345,10 +1379,6 @@ where
                 }
                 let buckets = self.read_vertex_label_buckets(&vertex)?;
                 let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
-                    // ADR 0096 §5: tiny buckets occupy zero leaf slots.
-                    if bucket.is_tiny_mode() {
-                        return Ok(acc);
-                    }
                     let log_slots = if bucket.overflow_log_head() >= 0 {
                         self.edges
                             .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1356,8 +1386,7 @@ where
                         0
                     };
                     acc.checked_add(
-                        bucket
-                            .stored_slots
+                        bucket_physical_resident_slots(bucket)
                             .checked_add(log_slots)
                             .ok_or(LaraOperationError::RowDegreeOverflow)?,
                     )
@@ -2433,12 +2462,15 @@ where
             .unwrap_or(0);
         let mut resident_slots = 0u32;
         for bucket in &buckets {
-            // ADR 0096 §5: tiny buckets occupy zero slab slots (fold planning
-            // sizes physical spans only).
-            let resident = if bucket.is_tiny_mode() {
-                0
+            // Physical spans only (tiny 0, tree root region); the
+            // `.max(degree)` floor covers tombstone-inclusive slab prefixes
+            // whose stored width alone would under-size the tile. Tree
+            // buckets never carry slab prefixes (`stored_slots` is a logical
+            // count there), so the floor is skipped for them.
+            let resident = if bucket.is_tree_mode() {
+                bucket_physical_resident_slots(bucket)
             } else {
-                bucket.stored_slots.max(bucket.degree())
+                bucket_physical_resident_slots(bucket).max(bucket.degree())
             };
             resident_slots = resident_slots
                 .checked_add(resident)
@@ -2921,12 +2953,16 @@ where
             .map(|bucket| bucket.edge_start())
             .unwrap_or(0);
         let resident_slots = buckets.iter().try_fold(0u32, |acc, bucket| {
-            // ADR 0096 §5: tiny buckets occupy zero slab slots and hold no
-            // values (fold planning sizes physical spans only).
-            if bucket.is_tiny_mode() {
-                return Ok(acc);
-            }
-            acc.checked_add(bucket.stored_slots.max(bucket.degree()))
+            // Physical spans only; the `.max(degree)` floor covers
+            // tombstone-inclusive slab prefixes (no-op for tree buckets,
+            // whose `stored_slots` is a logical count).
+            let physical = bucket_physical_resident_slots(bucket);
+            let floor = if bucket.is_tree_mode() {
+                physical
+            } else {
+                physical.max(bucket.degree())
+            };
+            acc.checked_add(floor)
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
         let segment_size = self.edges.header().segment_size.max(1);
@@ -5605,5 +5641,84 @@ mod tests {
         .with_tiny_target(2, 9);
         assert_eq!(super::bucket_span_region_len(&tiny_bucket), 0);
         assert_eq!(super::combined_span_region_len(&tiny_bucket), 0);
+    }
+
+    /// GAP-2026-09-17-001 regression (M1 shape): full-path single-bucket growth
+    /// 0 → 8192 through `insert_edge` (impl + dense-check + cascade), the exact
+    /// shape that trapped at the 5728th edge with
+    /// `release_span(start=1063168, len=5728)` rejected as `OverlapPrevious`.
+    /// The `release_vertex_edge_span_footprint` one-shot whole-cover release is
+    /// gone: footprints retire as mode-aware bucket regions plus remainder, so
+    /// tree covers never hand unowned ranges to the free store.
+    ///
+    /// Wrong-implementation probe: restoring the whole-cover `release_span`
+    /// first attempt reintroduces the trap (this test fails at target=5727).
+    /// Cost note: 8192 full-path inserts on `VectorMemory` complete in well
+    /// under the 30s suite budget (prior art: `labeled_hub_33_labels_bounded_insert_time`).
+    #[test]
+    fn gap_tree_full_path_growth_past_5728_releases_only_owned_regions() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        use crate::labeled::graph::EdgePlacementPolicy;
+        use crate::traits::CsrEdge;
+        // 4-byte edge type exercises the production tree-mode path (B=1024,
+        // T_PROMOTE=4096); the 10-byte bench edge never promotes.
+        assert_eq!(TestEdge::BYTES, 4);
+        // M1-shape capacity: the bench harness uses 1<<20 edge slots so the
+        // 8192-edge growth never hits raw capacity (the trap under test is a
+        // free-span overlap, not exhaustion). `test_graph` (256 slots) cannot
+        // host this shape.
+        let graph = LabeledLaraGraph::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            crate::labeled::InitialCapacities::uniform(1 << 20),
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("graph");
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..8192u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|e| panic!("failed at target={target}: {e:?}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let buckets = graph
+            .read_vertex_label_buckets(&vertex)
+            .expect("read buckets");
+        assert_eq!(buckets.len(), 1);
+        let bucket = buckets[0];
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.stored_slots, 8192);
+        assert_eq!(bucket.degree(), 8192);
+        // Physical root region is 8 slots (ceil(8192/1024)), not 8192: the
+        // cover/tree unit confusion this test guards against.
+        assert_eq!(super::bucket_span_region_len(&bucket), 8);
+        // Full adjacency survives every relocate in the growth chain
+        // (`iter_edges_for_label` yields Descending; reverse for insertion order).
+        let edges = graph.iter_edges_for_label(vid, label).expect("scan");
+        assert_eq!(edges.len(), 8192);
+        for (i, edge) in edges.iter().rev().enumerate() {
+            assert_eq!(edge.target, i as u32, "adjacency mismatch at {i}");
+        }
     }
 }
