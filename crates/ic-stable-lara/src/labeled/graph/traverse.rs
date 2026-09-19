@@ -332,7 +332,7 @@ where
             return Ok(ControlFlow::Continue(()));
         }
         // ADR 0096 §5 + §7: match-first — tiny slots iterate inline
-        // (ordinals are slots, tombstone-free). The slab path below would
+        // (ordinals are slots; holes skipped via the layout predicate). The slab path below would
         // misread the anchor via `read_edge_state_at_slot`.
         match BucketMode::from_bucket(&bucket) {
             BucketMode::Tiny => {
@@ -744,7 +744,8 @@ where
         // storage-class read, so a future mode cannot silently inherit a path.
         match BucketMode::from_bucket(bucket) {
             // ADR 0096 §5: tiny buckets scan inline (no slab/log/value reads).
-            // Tombstone-free dense prefix, so ordinals are slots. Attach flag is
+            // Tombstone-inclusive prefix (ordinals are slots; holes skipped via
+            // the layout predicate). Attach flag is
             // irrelevant (width ≡ 0 → always empty values); property entries divert
             // here and interpret the bare edges with empty values.
             BucketMode::Tiny => {
@@ -907,7 +908,7 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                // Tombstone-free dense prefix: ordinals are slots in both orders.
+                // Tombstone-inclusive prefix: ordinals are slots in both orders; holes skipped.
                 // (Duplicated asc/desc loops mirror the dense-path style; the
                 // shared closure would need `impl Trait` in closure position.)
                 match order {
@@ -1758,7 +1759,7 @@ where
 
         // ADR 0096 §7: match-first dispatch — mode decides before any
         // storage-class read. Tiny arm: self-contained inline window
-        // (ordinals are slots, tombstone-free). Slab arm: dense fast path
+        // (ordinals are slots; holes skipped via the layout predicate). Slab arm: dense fast path
         // first (2% bench parity), then sparse. Tree has its own arm below.
         match BucketMode::from_bucket(&bucket) {
             // ADR 0096 §5: tiny window is a plain ordinal range cut — no slab,
@@ -2591,7 +2592,7 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                // Tombstone-free dense prefix: ordinals are slots; no values.
+                // Tombstone-inclusive prefix: ordinals are slots; holes skipped; no values.
                 match order {
                     OutEdgeOrder::Ascending => {
                         for ordinal in 0..bucket.stored_slots {
@@ -4127,7 +4128,7 @@ where
             return Ok(EdgeSlotState::Missing);
         };
         // ADR 0096 §5 + §7: match-first — tiny slots read inline (ordinals
-        // are slots, tombstone-free). Reserved-slots math below would still
+        // are slots; holes skipped via the layout predicate). Reserved-slots math below would still
         // pass for tiny (stored==degree) but the slab read would misread the
         // anchor, so tiny diverges structurally here.
         match BucketMode::from_bucket(&bucket) {
@@ -4291,7 +4292,8 @@ where
         }
         // ADR 0096 §7: match-first dispatch — mode decides before any
         // storage-class read. Tiny slots read inline (ordinals are slots,
-        // tombstone-free); tree/slab share the replay + slot-read path.
+        // holes skipped via the layout predicate); tree/slab share the replay
+        // + slot-read path.
         match BucketMode::from_bucket(&bucket) {
             // ADR 0096 §5: tiny per-slot select reads inline targets.
             BucketMode::Tiny => {
@@ -6975,5 +6977,44 @@ mod tests {
             rebuilds >= 1,
             "snapshot mismatch must take the sparse fallback"
         );
+    }
+}
+
+#[cfg(test)]
+mod g6_zero_read_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    /// G6 scan arm: visiting a tiny bucket performs zero edge-slab / edge-log /
+    /// inline-property / span reads. Same harness as the insert proof; the scan
+    /// must cost no more than the insert's descriptor+vertex rows (it reads one
+    /// fewer row — no publish — so strictly fewer writes).
+    ///
+    /// Wrong-implementation probe (executed 2026-09-19): a 4B slab-span read
+    /// planted in this arm moves the shape (98,0) -> (102,0) and fails the
+    /// bound. Serving the scan from the slab span (`[anchor, anchor+degree)`
+    /// bytes — the pre-§5 funnel behavior) reads slab bytes and fails likewise.
+    #[test]
+    fn g6_tiny_scan_reads_no_edge_bytes() {
+        let (graph, reads, writes) = counting_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        force_tiny_bucket(&graph, vid, label, &[10, 11, 12]);
+        reads.set(0);
+        writes.set(0);
+        let mut seen = Vec::new();
+        graph
+            .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+                seen.push(u32::from(edge.neighbor_vid()));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(seen, vec![10, 11, 12]);
+        let r = reads.get();
+        let w = writes.get();
+        // Exact shape: one descriptor-row read + vertex/lookup reads, zero writes
+        // (scan publishes nothing). Any slab-span read would add >= 4B (one
+        // edge target) plus span-meta bytes — the bound has no room for it.
+        assert_eq!((r, w), (98, 0), "tiny scan byte shape changed");
     }
 }

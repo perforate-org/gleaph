@@ -1039,20 +1039,17 @@ where
         Ok(true)
     }
 
-    /// Appends one edge to a tiny-mode bucket (ADR 0096 §5).
+    /// Inserts one edge into a tiny-mode bucket (ADR 0096 §5 + delete redesign).
     ///
-    /// Dense-prefix append only: no slab write, no log admission, no successor
-    /// read, no leaf `actual` bump (tiny edges occupy no leaf slots). The global
-    /// `num_edges` census still counts the live edge (mirrors the slab arm).
-    /// `placement` is intentionally ignored: with no tombstones there is nothing
-    /// to reuse, so append satisfies both `Unordered` and `Insertion` read
-    /// contracts (dense prefix preserves insertion order).
-    /// Width-carrying edges and the 4th edge promote first (ADR 0096 §4); the
-    /// pending edge then flows through the normal slab path via one recursion
-    /// (depth 1: the post-promotion bucket is always slab).
-    /// `_placement` is intentionally unused: with no tombstones there is nothing
-    /// to reuse, so append satisfies both `Unordered` and `Insertion` read
-    /// contracts (dense prefix preserves insertion order).
+    /// No slab write, no log admission, no successor read, no leaf `actual`
+    /// bump (tiny edges occupy no leaf slots). The global `num_edges` census
+    /// still counts the live edge (mirrors the slab arm). Placement parity
+    /// with slab (ADR 0052 §6): `Unordered` fills the first tombstone hole;
+    /// `Insertion` dense-appends (promoting when the prefix is full).
+    /// Survivors keep slots either way. Width-carrying edges and hole-less
+    /// full prefixes promote first (ADR 0096 §4); the pending edge then flows
+    /// through the normal slab path via one recursion (depth 1: the
+    /// post-promotion bucket is always slab).
     fn insert_edge_tiny_mode(
         &self,
         src: VertexId,
@@ -2242,5 +2239,94 @@ mod tests {
             )
             .unwrap();
         assert_eq!(seen, vec![10, 11, 12, 13]);
+    }
+}
+
+#[cfg(test)]
+mod g6_zero_read_tests {
+    use super::super::test_support::*;
+    use super::*;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::{VertexId, traits::CsrEdge};
+
+    /// G6 insert arm: a tiny append performs zero edge-slab / edge-log /
+    /// inline-property / span reads or writes. Differential proof: the same op
+    /// on a slab control bucket reads the slab; on the tiny bucket only the
+    /// descriptor row moves. Counters are graph-wide (all 16 memories share
+    /// one pair), so the bound is total stable bytes, not per-store.
+    ///
+    /// Wrong-implementation probe: routing the tiny append through the slab
+    /// span path (e.g. deleting the Tiny dispatcher arm) reads slab bytes and
+    /// fails the zero-delta assert.
+    #[test]
+    fn g6_tiny_insert_reads_no_edge_bytes() {
+        let (graph, reads, writes) = counting_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        force_tiny_bucket(&graph, vid, label, &[10, 11]);
+        // Quiesce: drain setup reads/writes from the counters.
+        reads.set(0);
+        writes.set(0);
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge { target: 12 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        // One descriptor-row read (find) + one descriptor-row write (publish)
+        // plus the vertex row: bounded small. The edge slab, edge log, value
+        // slab/log, span meta, and free-span stores move zero bytes — proven
+        // differentially below against the slab control (which reads its span).
+        let r = reads.get();
+        let w = writes.get();
+        // Sanity first (pre-promotion): the edge landed inline.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(bucket.is_tiny_mode());
+        assert_eq!(bucket.degree(), 3);
+        assert_eq!(TestEdge::BYTES, 4);
+        // Absolute bound: descriptor row (29B) + vertex row + lookup reads only.
+        // No edge-slab/log/ipb/span bytes can hide in 135R/37W: a single slab
+        // span read of the 2-edge prefix alone would cost 8B+ and the control
+        // below shows the slab path's floor.
+        assert_eq!((r, w), (135, 37), "tiny insert byte shape changed");
+        // Differential control: promote to slab (4th edge), then measure a slab
+        // append (5th edge) — it must read its slab span, strictly more than tiny.
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge { target: 13 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(!bucket.is_tiny_mode(), "4th insert promotes to slab");
+        reads.set(0);
+        writes.set(0);
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge { target: 14 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let sr = reads.get();
+        let sw = writes.get();
+        assert_eq!((sr, sw), (372, 65), "slab control byte shape changed");
+        assert!(
+            sr > r && sw > w,
+            "slab append must move strictly more bytes than tiny: tiny ({r},{w}) vs slab ({sr},{sw})"
+        );
     }
 }

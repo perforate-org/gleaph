@@ -153,8 +153,8 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
 /// effects included and harmless here), then converted in place. Anchor keeps
 /// the slab-placed span start; R2b arms never read spans for tiny buckets.
 /// Returns the bucket descriptor slot.
-pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone>(
-    graph: &LabeledLaraGraph<E, crate::VectorMemory>,
+pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
+    graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     label: BucketLabelKey,
     targets: &[u32],
@@ -597,4 +597,101 @@ pub(crate) fn force_tree_mode_for_test(
     fill_leg_slab_prefix_pub(graph, edge_start, T_PROMOTE);
     crate::labeled::graph::promote::promote_bypass_to_tree_mode_pub(graph, vid, label)
         .expect("promote");
+}
+
+/// Counting memory wrapper for the G6 zero-read proofs (ADR 0096 §6).
+///
+/// Wraps one backing memory and counts bytes moved through `read`/`write`
+/// separately. `Clone` shares the counters (all 16 graph memories share one
+/// pair), `Default` builds fresh counters over fresh backing memory. Mirrors
+/// the `ReadMemory` pattern in `lara/edge/log_mut.rs` tests.
+#[derive(Clone, Default)]
+pub struct CountingMemory {
+    inner: crate::VectorMemory,
+    pub reads: std::rc::Rc<std::cell::Cell<usize>>,
+    pub writes: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl CountingMemory {
+    pub fn counted() -> (
+        Self,
+        std::rc::Rc<std::cell::Cell<usize>>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
+        let mem = Self::default();
+        (mem.clone(), mem.reads.clone(), mem.writes.clone())
+    }
+
+    /// Fresh backing memory sharing the given counters (each graph store needs
+    /// its OWN backing memory — sharing one backing store corrupts every
+    /// header at offset 0; only the counters are shared).
+    pub fn sibling(
+        reads: &std::rc::Rc<std::cell::Cell<usize>>,
+        writes: &std::rc::Rc<std::cell::Cell<usize>>,
+    ) -> Self {
+        Self {
+            inner: crate::VectorMemory::default(),
+            reads: reads.clone(),
+            writes: writes.clone(),
+        }
+    }
+}
+
+impl ic_stable_structures::Memory for CountingMemory {
+    fn size(&self) -> u64 {
+        self.inner.size()
+    }
+    fn grow(&self, pages: u64) -> i64 {
+        self.inner.grow(pages)
+    }
+    fn read(&self, offset: u64, dst: &mut [u8]) {
+        self.reads.set(self.reads.get() + dst.len());
+        self.inner.read(offset, dst);
+    }
+    fn write(&self, offset: u64, src: &[u8]) {
+        self.writes.set(self.writes.get() + src.len());
+        self.inner.write(offset, src);
+    }
+}
+
+/// Builds a fully counting-backed graph: all 16 memories share one
+/// read/write counter pair. Returns the graph plus the two counters.
+///
+/// G6 scope: the counters observe EVERY stable read/write (descriptors,
+/// vertices, slab, logs, LTB...). A tiny path asserting zero reads proves a
+/// stronger claim than the ADR's per-store wording (no stable reads at all
+/// outside... — see each test for the exact bound: descriptor + vertex reads
+/// are structural and out of scope; the asserts pin edge-slab/log/ipb/span
+/// silence via differential comparison against a slab control, not an
+/// absolute zero).
+pub fn counting_graph() -> (
+    LabeledLaraGraph<TestEdge, CountingMemory>,
+    std::rc::Rc<std::cell::Cell<usize>>,
+    std::rc::Rc<std::cell::Cell<usize>>,
+) {
+    let (m0, reads, writes) = CountingMemory::counted();
+    let m = || CountingMemory::sibling(&reads, &writes);
+    let graph = LabeledLaraGraph::new(
+        m0,
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::directed_from_index(1),
+    )
+    .unwrap();
+    graph.push_vertex(LabeledVertex::default()).unwrap();
+    (graph, reads, writes)
 }

@@ -461,7 +461,8 @@ where
     /// holds a slab span (`stored_slots > 0`). Releases the span to the edge
     /// free store (best-effort, see below) and recomputes `vertex.stored_slots`
     /// over survivors so the cover stays exact (no phantom occupancy).
-    /// Tiny buckets never reach here (`stored == degree == 0`); tree buckets
+    /// Tiny buckets never hold a releasable span here (empty tiny resets to
+    /// stored 0, so the hook guard never fires for them); tree buckets
     /// keep their root until maintenance demotion (unchanged behavior).
     /// PMA total is untouched (block-pin floor owns it; slide/relocate
     /// reconcile on next maintenance — same rule as promotion's floor-covered
@@ -1268,8 +1269,9 @@ where
             // ADR 0096 §7: match-first dispatch — mode decides before any
             // storage-class read, so a future mode cannot silently inherit a path.
             match BucketMode::from_bucket(&bucket) {
-                // ADR 0096 §5: tiny buckets match inline (dense prefix, no tombstones
-                // or logs). Predicate input mirrors the slab path (label attached,
+                // ADR 0096 §5: tiny buckets match inline (live prefix, holes
+                // skipped via the layout predicate; no slab/log reads). Predicate
+                // input mirrors the slab path (label attached,
                 // no values — tiny width is identically zero).
                 BucketMode::Tiny => {
                     debug_assert!(
@@ -2229,5 +2231,48 @@ mod tests {
         // Layout-native tombstone: the hole decodes as deleted through the
         // edge layout's own predicate (same as slab/tree read paths).
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
+    }
+}
+
+#[cfg(test)]
+mod g6_zero_read_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    /// G6 delete arm: an inline tiny tombstone performs zero edge-slab /
+    /// edge-log / inline-property / span reads or writes beyond the descriptor
+    /// row. Same harness as the insert/scan proofs.
+    ///
+    /// Wrong-implementation probe: promote-then-tombstone (the pre-redesign
+    /// behavior) reserves a slab span + transcribes + releases — thousands of
+    /// bytes — and fails the bound by orders of magnitude.
+    #[test]
+    fn g6_tiny_delete_reads_no_edge_bytes() {
+        let (graph, reads, writes) = counting_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        force_tiny_bucket(&graph, vid, label, &[10, 11, 12]);
+        reads.set(0);
+        writes.set(0);
+        graph
+            .remove_edge_at_slot(vid, label, 1)
+            .unwrap()
+            .expect("removed");
+        let r = reads.get();
+        let w = writes.get();
+        // Exact shape: find reads (descriptor + vertex rows) + one descriptor
+        // publish (29B row + census). Matches the scan reads (98) with the
+        // insert's publish writes (37) — delete is scan + publish, nothing more.
+        // The pre-redesign promote-then-tombstone path would move ~thousands
+        // (span reserve + transcribe + release); no room for it here.
+        assert_eq!((r, w), (98, 37), "tiny delete byte shape changed");
+        // Sanity: hole tombstoned inline, still tiny.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(bucket.is_tiny_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
     }
 }
