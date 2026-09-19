@@ -1391,11 +1391,21 @@ where
             .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(e.into());
     }
-    // 7. Release the old combined span.
+    // 7. Release the old combined span — but only the owned remainder. At
+    // w == 0 the allocator above ran WITHOUT avoid, so the old span's head
+    // may already sit inside a free range (a leaf relocate freed a tail that
+    // `take_best_fit` split and partially reused for the leaf itself — T=1024
+    // arm at edge ~2063: old=(1048579,2) inside free [1048579,2)). Releasing
+    // an already-free head double-frees (`DuplicateStart` trap). The slab
+    // fallback (`release_vertex_edge_span_slab`) owns exactly the
+    // skip-free-prefix-then-probe logic, so delegate the whole old span to
+    // it instead of a bare `release_span`: when the old span is live (the
+    // w > 0 case, and every non-recycled w == 0 case) the fallback releases
+    // it whole — identical behavior; when its head is already free only the
+    // owned remainder is released. Best-effort (`let _ =`) preserved.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
-        let _ = graph
-            .edges()
-            .release_span(old_combined_start, u64::from(old_combined_len));
+        let _ =
+            graph.release_vertex_edge_span_slab(old_combined_start, u64::from(old_combined_len));
     }
     // 8. Bump global accounting.
     let hdr = graph.edges().header();

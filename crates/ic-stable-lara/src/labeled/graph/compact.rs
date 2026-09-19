@@ -339,7 +339,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
-    pub(super) fn release_vertex_edge_span_slab(
+    pub(crate) fn release_vertex_edge_span_slab(
         &self,
         base: u64,
         len: u64,
@@ -621,9 +621,14 @@ where
         }
         #[cfg(test)]
         record_labeled_leaf_physical_release();
-        self.edges
-            .release_span(span_start, span_len)
-            .map_err(LabeledOperationError::from)
+        // Same stale-cover hazard as the tree step-7 path (T=1024 arm at edge
+        // ~2063): the old leaf cover may overlap ranges already recycled (a
+        // tree realloc re-took the freed head for the live root). A bare
+        // `release_span` of the whole cover double-frees (`DuplicateStart`).
+        // Delegate to the slab fallback, which releases exactly the owned
+        // remainder and never double-frees. When the cover is fully live the
+        // fallback releases it whole — identical behavior.
+        self.release_vertex_edge_span_slab(span_start, span_len)
     }
 
     /// Releases a relocated VertexEdgeSpan footprint back to the edge free-span store.
