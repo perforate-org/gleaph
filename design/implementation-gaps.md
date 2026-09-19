@@ -49,31 +49,47 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-17-001 — Tree-mode full-path 4-byte bucket growth traps past ~5.7K edges on an overlapping edge free-span release
 
-- **Status:** Fixed 2026-09-19 (first-stage A' fix; commit pending) — root cause was a
-  unit confusion shared by FIVE paths, not one call site. Every resident-geometry
-  computation sized tree buckets on the logical `stored_slots` edge count while the
-  physical LEG span is only the root region (`combined_span_region_len`):
+- **Status:** Fixed 2026-09-19 (commits `c664d8f73`, `c779ced27`, `0e2ac456a`) —
+  root cause was a unit confusion shared by SIX paths, not one call site.
+  Every resident-geometry computation sized tree buckets on the logical
+  `stored_slots` edge count while the physical LEG span is only the root region
+  (`combined_span_region_len`):
   (1) `release_vertex_edge_span_footprint`'s monolithic whole-cover
   `release_span(span_start, span_len)` handed unowned ranges to the free store
   (the observed `OverlapPrevious` trap); (2) `plan_labeled_leaf_relocation`
   over-allocated the leaf block (5728 slots for a 6-slot root), which is what made
   the whole-cover release overlap live free spans; (3) slide tiling, (4) rebalance
   planning, and (5) fold/grow-footprint planning shared the same logical-width
-  sizing. The fix introduces `bucket_physical_resident_slots` (compact.rs) as the
-  single source of truth — tiny 0, slab `stored_slots`, tree `combined_span_region_len`
-  (log-chain slots still added by callers) — routes all five paths through it, and
-  removes the whole-cover release so footprints retire as mode-aware bucket regions
-  plus remainder only. A sixth path shared the confusion on the READ side:
-  `materialize_labeled_vertex_edge_plan` snapshot tree buckets as
-  `stored_slots` slab slots from `edge_start`, walking past the root region into
-  live ranges and republishing those bytes as the bucket's new span on relocate
-  (corruption: post-relocate scan returned 1 edge instead of 8192). The snapshot
-  now reads `bucket_physical_resident_slots`, and the commit rebuild preserves
-  tree descriptors' logical width (root bytes move by anchor only). Standing regression:
+  sizing; (6) `materialize_labeled_vertex_edge_plan` shared it on the READ side,
+  snapshotting tree buckets as `stored_slots` slab slots from `edge_start`,
+  walking past the root region into live ranges and republishing those bytes as
+  the bucket's new span on relocate (corruption: post-relocate scan returned 1
+  edge instead of 8192 — no trap, so fail-closed never fired). The fix introduces
+  `bucket_physical_resident_slots` (compact.rs) as the single source of truth —
+  tiny 0, slab `stored_slots`, tree `combined_span_region_len` (log-chain slots
+  still added by callers) — routes all six paths through it (plus the commit
+  rebuild, which preserves tree descriptors' logical width: root bytes move by
+  anchor only), removes the whole-cover release so footprints retire as mode-aware
+  bucket regions plus remainder only, and unifies the retire-interval filter/width
+  and live-guard on the same helper (commit `0e2ac456a`; value-identical, no
+  behavior change). Standing regression:
   `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` (compact.rs
-  tests; M1 shape 0→8192 full-path inserts, asserts tree mode + full adjacency).
+  tests; M1 shape 0→8192 full-path inserts, asserts tree mode, root-region width,
+  + full adjacency; bisect checkpoints at every 512 inserts all 1:1).
   The `T_PROMOTE = 1024` adoption freeze stays until threshold A/B (G4/G5) measures
   on the fixed tree path; the freeze reason is now measurement validity, not the trap.
+- **Second-stage hardening (evaluated 2026-09-19, NOT pursued):** a `SpanExtent`
+  enum (slab/tree unit separation at the type level) was scored highest (8/10) but
+  rejected on implementation review — the three release call sites correctly pass a
+  *logical cover* (mixed-mode vertex width), so forcing physical widths at the call
+  boundary contradicts the valid calling convention; the remaining divergence was
+  mechanical and is now unified (see above). A dedicated `TreeSpanLengthMismatch`
+  error variant was prototyped and reverted: the code no longer constructs the
+  failure condition, so the variant would be unreachable (YAGNI); the free-store
+  `OverlapPrevious` tripwire already covers this class (proven: it caught the
+  original trap). The dual meaning of `vertex.stored_slots` (logical cover vs
+  physical width) remains and belongs to R4 (`stored_slots` privatization), not
+  this gap.
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
