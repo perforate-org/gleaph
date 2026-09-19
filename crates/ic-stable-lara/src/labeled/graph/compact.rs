@@ -307,14 +307,15 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
 /// Physical LEG slots one bucket occupies inside a leaf block.
 ///
 /// Single source of truth for every resident-geometry computation
-/// (relocation sizing, slide tiling, rebalance planning, fold planning):
-/// tiny buckets hold zero slab slots (inline targets only), slab buckets
-/// hold `stored_slots`, tree buckets hold only their root region
-/// (`combined_span_region_len` — the logical `stored_slots` edge count is
-/// NOT a physical width). Log-chain slots are added by the caller when the
-/// bucket carries an overflow log. GAP-2026-09-17-001: sizing any of these
-/// paths on the logical width over-allocates the leaf and feeds unowned
-/// ranges to the free store on release.
+/// (relocation sizing, slide tiling, rebalance planning, fold planning,
+/// snapshot reads, release intervals): tiny buckets hold zero slab slots
+/// (inline targets only), slab buckets hold `stored_slots`, tree buckets hold
+/// only their root region (`combined_span_region_len` — the logical
+/// `stored_slots` edge count is NOT a physical width). Log-chain slots are
+/// added by the caller when the bucket carries an overflow log.
+/// GAP-2026-09-17-001: sizing any of these paths on the logical width
+/// over-allocates the leaf, misreads live ranges on relocate, and feeds
+/// unowned ranges to the free store on release.
 pub(super) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
     if bucket.is_tiny_mode() {
         return 0;
@@ -421,20 +422,25 @@ where
         // for both modes.
         let mut bucket_intervals: Vec<(u64, u64)> = buckets
             .iter()
-            // ADR 0096 §5: tiny buckets occupy zero slab slots; including them
-            // would validate phantom anchor spans against real geometry.
-            .filter(|bucket| bucket.stored_slots > 0 && !bucket.is_tiny_mode())
+            // ADR 0096 §5 + GAP-2026-09-17-001: tiny buckets occupy zero slab
+            // slots (including them would validate phantom anchor spans
+            // against real geometry); tree buckets occupy only their root
+            // region (`bucket_physical_resident_slots` — the logical
+            // `stored_slots` width is NOT releasable). The zero-physical
+            // filter below subsumes both (tiny and empty buckets carry no
+            // owned ranges).
+            .filter(|bucket| bucket_physical_resident_slots(bucket) > 0)
             .map(|bucket| {
                 // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
                 // buckets, the vertex span is `[edge root | property
                 // root]` (gap 0, ADR 0088 §2). The combined length is
-                // `edge_root_len + property_root_len` (returned by
-                // `combined_span_region_len`). The single interval
-                // covers both regions contiguously; no separate
-                // property-root interval is needed.
+                // `edge_root_len + property_root_len` — the physical width
+                // from `bucket_physical_resident_slots` (NOT the logical
+                // `stored_slots`). The single interval covers both regions
+                // contiguously; no separate property-root interval is needed.
                 (
                     bucket.edge_start(),
-                    u64::from(combined_span_region_len(bucket)),
+                    u64::from(bucket_physical_resident_slots(bucket)),
                 )
             })
             .collect();
@@ -642,12 +648,13 @@ where
         if span_len == 0 {
             return Ok(());
         }
-        // ADR 0096 §5: spanless vertices (all tiny or all emptied) hold no
-        // slab bytes — a stale width/anchor cover would poison the free store
-        // with live ranges on release. Nothing live, nothing to free.
+        // ADR 0096 §5 + GAP-2026-09-17-001: spanless vertices (all tiny or all
+        // emptied) hold no slab bytes; a tree bucket with an empty root region
+        // likewise owns nothing — a stale width/anchor cover would poison the
+        // free store with live ranges on release. Nothing live, nothing to free.
         let has_live_slab = buckets
             .iter()
-            .any(|bucket| !bucket.is_tiny_mode() && bucket.stored_slots > 0);
+            .any(|bucket| bucket_physical_resident_slots(bucket) > 0);
         if !has_live_slab {
             return Ok(());
         }
