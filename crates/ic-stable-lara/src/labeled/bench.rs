@@ -4154,3 +4154,202 @@ fn tiny_delete_d2_1024() -> canbench_rs::BenchResult {
         black_box(graph.vertex_count());
     })
 }
+
+// ---------------------------------------------------------------------------
+// ADR 0096 G4/G5: relocate with tiny neighbors + skewed synthetic workload.
+//
+// Visibility note: this module is `crate::labeled::bench` (sibling of `graph`),
+// so it uses only `pub(crate)`-or-wider graph surface: `buckets()` +
+// `read_label_bucket_slot` for descriptor reads, `relocate_*` for the forced
+// relocate, `visit_edges`/`iter_edges_for_label` for behavior asserts. No
+// `pub(super)` internals (`read_vertex_label_buckets`) are touched.
+//
+// G4 fixture: 16 slab buckets x 64 edges on one vertex (real slab spans that
+// pin the leaf), one label grown to tree (5000 edges: exercises the
+// GAP-2026-09-17-001 physical-sizing path under relocate), plus 64 tiny
+// buckets (degree 2, zero slab bytes). The measured closure forces one
+// `relocate_labeled_leaf_physical_block` and asserts: tiny payload
+// byte-identical post-relocate (G4 correctness; anchors advance by design —
+// running-boundary stamps), plus full per-neighbor scans.
+//
+// G5 fixture: Orkut-like skewed mix at small scale on 256 vertices —
+// {1x160, 2x48, 3x24, 8x12, 64x8, 512x3, 2048x1} degrees. All inserts run
+// inside the measured closure (birth -> appends -> promotion -> cascades), so
+// the total compares against the G1/G2/G3-attested slab baseline at the same
+// degree mix. Target per ADR: improve or neutral with a capacity win.
+// ---------------------------------------------------------------------------
+
+/// Read one vertex's bucket descriptors via the crate-visible bucket store
+/// (base slot + degree stride; mirrors `read_vertex_label_buckets` geometry
+/// without touching its `pub(super)` visibility).
+fn read_vertex_buckets_for_bench<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+) -> Vec<crate::labeled::record::LabelBucket>
+where
+    E: crate::traits::CsrEdgeTombstone,
+    M: ic_stable_structures::Memory,
+{
+    use crate::labeled::record::LabelBucket;
+    let vertex = graph.vertices().get(vid);
+    let mut out = Vec::new();
+    for offset in 0..vertex.degree() {
+        let slot = vertex.base_slot_start().saturating_add(u64::from(offset));
+        let bucket: LabelBucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("bucket");
+        out.push(bucket);
+    }
+    out
+}
+
+/// G4: relocate one pinned leaf with tiny neighbors.
+///
+/// Fixture: 16 slab buckets x 64 edges + 64 tiny buckets x 2 edges on one
+/// vertex (slab spans pin the leaf; tiny buckets ride as zero-slab-byte
+/// neighbors). No tree bucket on this vertex: a tree bucket co-resident with
+/// pinned mates is unseedable in quota-1 leaf geometry both ways (tree-first
+/// stalls mate tiles at the 8th edge; mates-first stalls the tree growth
+/// cascade at ~4703–4895 edges — leaf-mate overlap assertion / tile
+/// contention; see implementation-gaps GAP-2026-09-17-001 follow-up note).
+/// Tree-under-relocate stays covered by the M1 regression
+/// (`gap_tree_full_path_growth_past_5728_releases_only_owned_regions`: 8192
+/// full-path growth WITH cascade relocates on a sole-vertex leaf). G4 isolates
+/// the tiny contract: payload byte-identical post-relocate (anchors advance by
+/// design — running-boundary stamps), cost <= baseline relocate (zero edge-byte
+/// copies for tiny rows — structural).
+#[bench(raw)]
+fn tiny_relocate_mixed_leaf() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    let vid = VertexId::from(0);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    // 16 slab buckets x 64 edges: real slab spans that pin the leaf.
+    for label_idx in 0..16u16 {
+        let label = BucketLabelKey::from_raw(100 + label_idx);
+        for edge_i in 0..64u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    OneMTestEdge { target: edge_i },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("slab seed");
+        }
+    }
+    // 64 tiny neighbors (degree 2): zero slab bytes, anchors + payload inline.
+    for label_idx in 0..64u16 {
+        let label = BucketLabelKey::from_raw(1000 + label_idx);
+        for edge_i in 0..2u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: 2_000_000 + u32::from(label_idx) * 10 + edge_i,
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("tiny seed");
+        }
+    }
+    // Snapshot tiny payload pre-relocate (payload-identity contract). Anchors are
+    // running-boundary stamps by design (ADR §5 Successor-chain row: rewrite/slide
+    // stamps spanless buckets) — they advance on relocate and are NOT compared.
+    let pre_buckets = read_vertex_buckets_for_bench(&graph, vid);
+    let pre_tiny: Vec<(BucketLabelKey, u32, u32)> = pre_buckets
+        .iter()
+        .filter(|b| b.is_tiny_mode())
+        .map(|b| (b.bucket_label_key(), b.tiny_target(0), b.tiny_target(1)))
+        .collect();
+    assert_eq!(pre_tiny.len(), 64, "all 64 neighbors must be tiny-born");
+    let result = bench_fn(|| {
+        graph
+            .relocate_labeled_leaf_physical_block(black_box(vid))
+            .expect("relocate");
+        black_box(vid);
+    });
+    // Post-relocate: tiny payload byte-identical (anchors advance by design).
+    let post_buckets = read_vertex_buckets_for_bench(&graph, vid);
+    for (label, t0, t1) in &pre_tiny {
+        let post = post_buckets
+            .iter()
+            .find(|b| b.bucket_label_key() == *label)
+            .expect("tiny bucket survives relocate");
+        assert!(post.is_tiny_mode(), "tiny bucket stays tiny");
+        assert_eq!(post.tiny_target(0), *t0, "tiny payload t0 moves");
+        assert_eq!(post.tiny_target(1), *t1, "tiny payload t1 moves");
+    }
+    // Behavior invariant: every tiny neighbor still scans its 2 edges.
+    for (label, _, _) in &pre_tiny {
+        let edges = graph.iter_edges_for_label(vid, *label).expect("tiny scan");
+        assert_eq!(edges.len(), 2, "tiny neighbor loses edges on relocate");
+    }
+    result
+}
+
+/// Shared G4/G5 degree mix: (degree, vertex_count) pairs, Orkut-like *low-end*
+/// skew at bench-affordable scale. Degrees 1-3 (232 of 256 vertices) are the
+/// tiny regime under test; 8/64/512/2048 exercise slab + tree coexistence in
+/// the same run (the 2048-degree vertex also crosses T_PROMOTE-adjacent growth
+/// without hitting the M1-scale cascade). Total: 4520 edges, of which only 328
+/// (7.3%) are tiny-eligible — deliberately harsher than Orkut-10M (25.4% at
+/// K<=4): a win here is a lower bound, not a census claim.
+const SKEWED_DEGREES: [(u32, u32); 7] = [
+    (1, 160),
+    (2, 48),
+    (3, 24),
+    (8, 12),
+    (64, 8),
+    (512, 3),
+    (2048, 1),
+];
+
+/// G5: skewed synthetic workload (Orkut-like degree mix, all inserts in-closure).
+#[bench(raw)]
+fn tiny_workload_skewed_mix() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 20);
+    let label = BucketLabelKey::from_raw(2);
+    for _ in 0..256u32 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    assert_eq!(
+        SKEWED_DEGREES.iter().map(|(_, n)| n).sum::<u32>(),
+        256,
+        "mix must cover 256 vertices"
+    );
+    let total_edges: u32 = SKEWED_DEGREES.iter().map(|(d, n)| d * n).sum();
+    let result = bench_fn(|| {
+        let mut vid = 0u32;
+        for (degree, count) in SKEWED_DEGREES {
+            for _ in 0..count {
+                for k in 0..degree {
+                    graph
+                        .insert_edge(
+                            VertexId::from(vid),
+                            label,
+                            OneMTestEdge {
+                                target: black_box(vid * 1_000_000 + k),
+                            },
+                            EdgePlacementPolicy::Insertion,
+                        )
+                        .expect("skewed insert");
+                }
+                vid += 1;
+            }
+        }
+        black_box(vid);
+    });
+    // Post-condition: exact edge census survives (no wrong fast path).
+    let mut census = 0u32;
+    for v in 0..256u32 {
+        census += graph
+            .iter_edges_for_label(VertexId::from(v), label)
+            .expect("census scan")
+            .len() as u32;
+    }
+    assert_eq!(census, total_edges, "skewed mix edge census");
+    black_box(graph.vertex_count());
+    result
+}
