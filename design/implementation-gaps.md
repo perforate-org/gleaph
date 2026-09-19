@@ -88,6 +88,22 @@ defect from being rediscovered without its prior reasoning.
   stays covered by the M1 regression instead; (2) the G4 probe exposed a stale ADR
   expectation: tiny anchors ADVANCE on relocate (running-boundary stamps per the
   Successor-chain row), so G4 asserts payload identity, not anchor identity.
+- **T=1024 follow-up (2026-09-19, commit `a86ff0f50`):** the threshold A/B's T=1024
+  arm trapped M1 at edge 2063 with `DuplicateStart` on `release_span(1048579, 2064)`
+  — a SECOND double-free of the same family, at a different site: the tree
+  combined-span realloc (w==0, no avoid) re-took a freed head `[1048579,2)` for the
+  live root, and the next leaf relocate released the stale whole cover over it
+  (plus the symmetric tree step-7 old-span release). Both whole-cover releases now
+  delegate to `release_vertex_edge_span_slab` (skip-free-prefix + probe): live
+  covers release whole (identical behavior), recycled heads release only the owned
+  remainder. Verified: T=1024 diagnostic 0→8192 full-path growth green with full
+  adjacency. Rejected alternatives: `allocate_span_avoiding` re-release removal
+  (leaks the taken span as unaccounted padding — the range stays reserved but
+  untracked); free-store-overlap guard at the leaf-release choke point (wrong layer:
+  legitimately-abandoned covers routinely overlap recycled ranges after slide
+  republishes spans — the guard would convert every such release into a leak);
+  old/new-block overlap check at the relocate call site (necessary but insufficient:
+  the overlap is with the NEW block's recycled free tail, not the old cover).
 - **Second-stage hardening (evaluated 2026-09-19, NOT pursued):** a `SpanExtent`
   enum (slab/tree unit separation at the type level) was scored highest (8/10) but
   rejected on implementation review — the three release call sites correctly pass a
