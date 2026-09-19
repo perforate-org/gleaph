@@ -3909,9 +3909,13 @@ fn thresh_churn_roundtrip() -> canbench_rs::BenchResult {
                 )
                 .expect("churn grow insert");
         }
-        for _ in 0..delete_n {
+        // Delete ascending slots 0..delete_n: each hits a live edge exactly once
+        // (re-deleting slot 0 would re-hit the same tombstone — tree deletes are
+        // positional tombstones, and the idempotent path reports the tombstone
+        // without decrementing degree).
+        for slot in 0..delete_n {
             graph
-                .remove_edge_at_slot(vid, label, 0)
+                .remove_edge_at_slot(vid, label, slot)
                 .expect("churn delete")
                 .expect("deleted");
         }
