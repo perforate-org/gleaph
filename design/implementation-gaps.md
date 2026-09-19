@@ -109,13 +109,25 @@ defect from being rediscovered without its prior reasoning.
   rejected on implementation review — the three release call sites correctly pass a
   *logical cover* (mixed-mode vertex width), so forcing physical widths at the call
   boundary contradicts the valid calling convention; the remaining divergence was
-  mechanical and is now unified (see above). A dedicated `TreeSpanLengthMismatch`
+  mechanical and is now unified (see above). NOTE (precision, 2026-09-19): the
+  SpanExtent score applies to the ORIGINAL gap (logical/physical unit confusion)
+  only — it does not address the T=1024 follow-up (temporal ownership overlap),
+  which no type can capture. A dedicated `TreeSpanLengthMismatch`
   error variant was prototyped and reverted: the code no longer constructs the
   failure condition, so the variant would be unreachable (YAGNI); the free-store
   `OverlapPrevious` tripwire already covers this class (proven: it caught the
   original trap). The dual meaning of `vertex.stored_slots` (logical cover vs
   physical width) remains and belongs to R4 (`stored_slots` privatization), not
   this gap.
+- **Future direction (proportional trigger: a THIRD same-family double-free):**
+  an arena rule — while a leaf block is pinned, defer per-bucket sub-releases
+  inside it and release only whole abandoned blocks — would make recurrence
+  structurally impossible (E1=5) instead of guarded per site (current: E1=4).
+  Cost: pin-liveness checks on every sub-release path, new state + invariant
+  design (separate slice). The current slab-fallback delegation bounds the
+  residual hole (stale covers skip free ranges; live spans are republished
+  before old-cover release per post-slide invariant, pinned by M1/G4/G5/suite).
+  Do NOT pursue before a third firing — disproportionate until then.
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
