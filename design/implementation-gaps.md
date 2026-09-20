@@ -4962,3 +4962,17 @@ the single regressed bench with scope output and diff `labeled_rewrite_read_and_
 against the pre-delegation baseline (HEAD~2) to see which pass dominates; only then decide between trimming that
 pass, special-casing the no-log common case, or accepting the cost as the price of one implementation. The
 delegation stays landed and green (614/0) meanwhile.
+
+**`ins` regression narrowed to the tiling rebuild (2026-09-20).** Running `canbench ins` with scope output shows
+**no scope changed by ≥0.5 %** (0 changed scopes), so the extra instructions are in *unscoped* code, not in
+`labeled_rewrite_read_and_plan`, `labeled_vertex_build_resident_buckets`, `labeled_vertex_calculate_bucket_positions`
+or `labeled_vertex_write_*`. The unscoped addition this session made on exactly that path is the tiling rebuild in
+`commit_vertex_edge_span_layout`'s `!fold_logs` branch: it clones `resident_buckets` and rewrites every slab
+bucket's width on **every** rebalance — which the insert path drives through the log-cascade — even though the
+rebuild is a semantic no-op whenever no bucket keeps rows in its log (`bucket_resident_rows == stored_raw` then).
+Fix to apply (small, verified-green target): guard that branch on
+`buckets.iter().any(|b| !b.is_tiny_mode() && !b.is_tree_mode() && b.overflow_log_head() >= 0)` and fall back to the
+plain `&resident_buckets` call otherwise (the code was `cargo fmt`ed since the draft patch, so match the formatted
+form). Then re-run `canbench ins` and `canbench compact`; if the 7 regressions persist, the remaining candidate is
+the plan/commit pass count itself and the decision becomes trim vs special-case the no-log common case vs accept.
+State: delegation landed (`ae25c9378`), probe reuse landed (`26239c0b1`), tree 614/0, `compact` 0 regressed.
