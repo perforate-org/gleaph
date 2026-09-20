@@ -540,36 +540,39 @@ where
         &self,
         src: VertexId,
         new_alloc: u32,
-    ) -> Result<u64, LabeledOperationError>
+    ) -> Result<(u64, u32), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-            return Ok(base);
+            return Ok((base, new_alloc));
         }
         if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
             || LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.get())
         {
             if self.labeled_leaf_physical_range(src).is_some() {
-                return self.labeled_edge_base_from_first_bucket(src);
+                let base = self.labeled_edge_base_from_first_bucket(src)?;
+                return Ok((base, self.vertices.get(src).stored_slots));
             }
             log_collect_overflow(
                 "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating",
             );
             self.relocate_labeled_leaf_physical_block(src)?;
             if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-                return Ok(base);
+                return Ok((base, new_alloc));
             }
-            return self.labeled_edge_base_from_first_bucket(src);
+            let base = self.labeled_edge_base_from_first_bucket(src)?;
+            return Ok((base, self.vertices.get(src).stored_slots));
         }
         let _resolve_guard = LabeledRebalanceResolveGuard::new();
         if self.labeled_leaf_physical_range(src).is_some() {
             self.relocate_labeled_leaf_physical_block(src)?;
             LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(true));
             if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-                return Ok(base);
+                return Ok((base, new_alloc));
             }
-            return self.labeled_edge_base_from_first_bucket(src);
+            let base = self.labeled_edge_base_from_first_bucket(src)?;
+            return Ok((base, self.vertices.get(src).stored_slots));
         }
         log_collect_overflow(
             "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating",
@@ -577,32 +580,38 @@ where
         self.relocate_labeled_leaf_physical_block(src)?;
         LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(true));
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-            return Ok(base);
+            return Ok((base, new_alloc));
         }
-        self.labeled_edge_base_from_first_bucket(src)
+        let base = self.labeled_edge_base_from_first_bucket(src)?;
+        Ok((base, self.vertices.get(src).stored_slots))
     }
 
     /// Resolves edge-slab base for [`rewrite_vertex_edge_span`]: in-leaf pin, leaf relocate
     /// (with growth retries), or (unpinned / relocate-internal only) tail append.
+    /// Returns `(base, width)` — the span the resolution actually obtained, which is
+    /// what the caller may publish. Invariant I1: a cover is a claim that must be
+    /// backed, so publishing the *requested* width over a base that kept the old
+    /// reservation is exactly the phantom cover this pair of resolvers exists to
+    /// prevent (GAP-2026-09-20-005).
     pub(super) fn resolve_labeled_edge_base_for_growth(
         &self,
         src: VertexId,
         new_alloc: u32,
-    ) -> Result<u64, LabeledOperationError>
+    ) -> Result<(u64, u32), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-            return Ok(base);
+            return Ok((base, new_alloc));
         }
         if self.labeled_leaf_physical_range(src).is_some() {
             if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
-                return self.tail_append_labeled_edge_base(new_alloc);
+                return Ok((self.tail_append_labeled_edge_base(new_alloc)?, new_alloc));
             }
             for _ in 0..4 {
                 if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
                 {
-                    return Ok(base);
+                    return Ok((base, new_alloc));
                 }
                 self.relocate_labeled_leaf_physical_block(src)?;
             }
@@ -614,7 +623,7 @@ where
         // instead of tail-appending, per ADR 0001 new-bucket contract.
         self.relocate_labeled_leaf_physical_block(src)?;
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
-            return Ok(base);
+            return Ok((base, new_alloc));
         }
         Err(LabeledOperationError::from(
             LaraOperationError::CollectAllocationOverflow,
@@ -765,14 +774,17 @@ where
             next_vertex_edge_span_allocation(old_alloc, min_required, segment_size)?
         };
 
-        let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
-        let new_base = if new_alloc == 0 {
-            0
-        } else if moved {
-            self.resolve_labeled_edge_base_for_growth(src, new_alloc)?
+        let requested_alloc = new_alloc;
+        let (new_base, new_alloc) = if new_alloc == 0 {
+            (0, 0)
+        } else if old_alloc == 0 || new_alloc > old_alloc || compact {
+            self.resolve_labeled_edge_base_for_growth(src, requested_alloc)?
         } else {
-            old_base
+            (old_base, new_alloc)
         };
+        // I1: the plan reports the width the resolution obtained, so the commit never
+        // publishes a cover wider than the span that backs it.
+        let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
 
         // Positions are the shared commit's decision: it recomputes them from the
         // materialized runs and the caller's placement preference, so the plan only
@@ -2411,14 +2423,17 @@ where
             }
             return self.rebalance_vertex_edge_span(src, preferred_bucket, preferred_extra, false);
         }
-        let moved = old_alloc == 0 || new_alloc > old_alloc;
-        let new_base = if new_alloc == 0 {
-            0
-        } else if moved {
+        let (new_base, new_alloc) = if new_alloc == 0 {
+            (0, 0)
+        } else if old_alloc == 0 || new_alloc > old_alloc {
             self.resolve_labeled_edge_base_for_rebalance(src, new_alloc)?
         } else {
-            old_base
+            (old_base, new_alloc)
         };
+        // I1: publish the width the resolution obtained. When the resolver kept the
+        // existing base it reports the current cover, so the span is never widened over
+        // an old reservation (the phantom cover, GAP-2026-09-20-005).
+        let moved = old_alloc == 0 || new_alloc > old_alloc;
         if LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.replace(false))
             && self.labeled_leaf_physical_range(src).is_some()
         {
@@ -5818,6 +5833,50 @@ mod tests {
                 LabeledOperationError::Store(LaraOperationError::LogSegmentNotDrained)
             ),
             "unexpected error: {err:?}"
+        );
+    }
+    #[test]
+    fn base_resolution_never_reports_a_width_it_did_not_obtain() {
+        // Invariant I1: the width a resolution reports is what the caller publishes, so
+        // it may only be the requested span (the resolver placed or reserved it) or the
+        // span the vertex already holds (the fallback). Anything in between would be a
+        // cover wider than its backing — the phantom cover the never-fail fallback used
+        // to publish.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..64u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let cover_before = graph.vertices().get(vid).stored_slots;
+        let requested = cover_before.saturating_add(100_000);
+        match graph.resolve_labeled_edge_base_for_rebalance(vid, requested) {
+            Ok((base, width)) => {
+                // The width the caller will publish must be backed by the span the
+                // vertex actually holds after the resolution. A relocation may have
+                // grown that span (`cover_before` is only the pre-resolution value), so
+                // the check is against the published cover, not the request.
+                let backed = graph.vertices().get(vid).stored_slots;
+                assert!(
+                    width <= backed,
+                    "resolution reported width {width} over a backing of {backed} (requested {requested}, was {cover_before})"
+                );
+                let _ = base;
+            }
+            Err(_) => {}
+        }
+        let _ = cover_before;
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
         );
     }
 }
