@@ -5379,3 +5379,15 @@ its small runs packed with capacity classes and free lists (the reference's allo
 existing LTB store, and its descriptor field the existing `overflow_log_head` slot reinterpreted as a run id. The
 implementation is a multi-slice effort (small-run store, field meaning, then deletion of the log store, the drain
 guard, the fold prelude and the recovery loop, followed by an ADR that supersedes the log's current description).
+
+**Design slice 1 landed (2026-09-20, `f220205ad`): the packed small-run store.** `labeled/spill_run_store.rs`
+implements fixed-width rows in power-of-two capacity classes (8..1024) with a free list per class — the
+reference's allocator shape — verified by five tests: classes are powers of two bounded at both ends
+(`class_rows(74) = 128`), rows round-trip, a released run is reused only within its own class, the arena grows by
+the class capacity, and reopening the same memory keeps the arena and the free lists (`allocate` returns the run
+that was released before the reopen, which is the property the descriptor will rely on). The module carries a
+`dead_code` allow with a reason because it is deliberately not wired yet: the descriptor field reinterpretation,
+lazy allocation on first spill, the LTB hand-off for large spills, and the deletion of the shared log store, its
+per-segment capacity, the drain guard (I2), the fold prelude and the recovery loop are the following slices.
+Suite 619/0 (614 + the 5 new store tests), scoped fmt/clippy clean, and the leftover `let mut new_alloc` from the
+superseded slack rule is gone.
