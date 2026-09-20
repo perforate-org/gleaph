@@ -213,11 +213,19 @@ defect from being rediscovered without its prior reasoning.
   straddles the block end (`base=3758 end=5070 leaf=(256, 3664)`). So C needs the cover normalized
   too; the model has nowhere to record the vertex's span start (the 29-byte descriptor has no spare
   field, and the row's reserved bits are too narrow).
-  Adding the post-publish normalization (re-base cover → `rewrite_vertex_edge_span(..., force_slack_grow = true)`)
-  currently breaks inserts with `CollectAllocationOverflow` in both regression tests, even with the
-  tree-aware copy paths — that is the single thing left to pin (next: instrument the re-lay's
-  planning/base resolution on the *post-promotion* state, where the vertex's only bucket is the tree
-  bucket). Working copies: `/tmp/c_{compact,promote,bucket,leaf_pin,graph}.rs` (C + normalization) and
+  **Copy-free refinement (2026-09-20):** the prefix never needs to be *moved* — it is dead after the
+  transcription, so the root can be written over the prefix's **head** (`edge_start` unchanged), which
+  also keeps the vertex's span start (and therefore the cover arithmetic) exactly where it was; the
+  single post-promotion layout pass then only *shrinks* the vertex's share to shed the dead tail
+  (root bytes move by anchor, the vertex's other buckets shift down). Implemented that way
+  (`/tmp/d_promote.rs`, `/tmp/d_compact.rs`): Phase 1 allocates nothing, Phase 3e re-bases the cover
+  on the resident SSOT and re-lays.
+  **Pinned failure:** the re-lay's *planning* now succeeds on the post-promotion state
+  (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
+  and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
+  i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
+  `per_bucket`/`raw`). Next instrumentation target is that branch (its `slab_only_bulk` predicate
+  evaluation, `per_bucket` collection, and `raw` sizing), not the planning or the commit. Working copies: `/tmp/c_{compact,promote,bucket,leaf_pin,graph}.rs` (C + normalization) and
   the same files with C alone is `/tmp/ssot_*`.
   For reference, the only *self-consistent and complete* variant today is the root-at-prefix-base
   reuse (B): it passes every geometry test, but holds up to `T_PROMOTE` slots (4 KiB) per promoted
