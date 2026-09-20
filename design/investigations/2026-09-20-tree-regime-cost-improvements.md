@@ -61,7 +61,7 @@ Effect on `bench_l_s2_det_hub_1024`: 51.31 M → 50.03 M (−2.5 % total; the sc
 removal 36.57 M → 35.38 M). The remaining ~32 K per release is store
 bookkeeping, i.e. it does not shrink to zero by micro-optimisation.
 
-### Scalable fix (A2, recommended)
+### Scalable fix (A2) — **implemented 2026-09-20**
 
 The drain performs **one store release per emptied bucket**; each costs ~32 K
 regardless of the bucket's span length. The fix is fewer releases per logical
@@ -88,9 +88,18 @@ Constraints the flush must satisfy:
   `DeleteContext`-style state); a global pending list would need a recovery
   contract, which is the A2-with-stable-state variant.
 
-Acceptance: `bench_l_s2_det_hub_1024` back toward ~20-25 M with
-`fs_drain_release_pattern_1024` recording the per-release store cost, and F1's
-reuse regression plus the free-span suite green.
+Acceptance (met): `bench_l_s2_det_hub_1024` **51.31 M → 25.01 M (−51 %)** and
+`bench_l_s2_det_hub_4096` **208.00 M → 102.59 M (−51 %)**; the stepped variant is
+unchanged (−2 %, it releases one span per maintenance step by design) and
+`bench_l_s2_det_sat_4096` is unchanged. `fs_drain_release_pattern_1024` remains
+the store-level metric for the residual ~32 K per flushed run (A3).
+
+Implementation: the synchronous detach delete opens one release batch per
+orientation, `release_bucket_edge_span_on_empty` records ranges while a batch is
+active (cover sync unchanged), and `flush_span_release_batch` sorts and merges the
+ranges before releasing each run through
+`release_vertex_edge_span_slab` (owned-range semantics). Regression:
+`detach_delete_flushes_emptied_spans_as_merged_runs`.
 
 ### Options (narrowed by the measurement)
 

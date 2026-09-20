@@ -49,10 +49,11 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-20-002 — Emptied-bucket span release costs ~26K per call (drain paths)
 
-- **Status:** Open — measured performance defect, recorded 2026-09-20. Found while
-  attributing the `canbench --persist` verdict for the `T_promote = 1024` re-tune;
-  it is **not** threshold-dependent (identical bench totals at 1024 and 4096) and
-  predates the re-tune.
+- **Status:** Fixed 2026-09-20 (partials `914734443`, A2 `a021a309c`) — measured
+  performance defect, recorded 2026-09-20. Found while attributing the
+  `canbench --persist` verdict for the `T_promote = 1024` re-tune; it is **not**
+  threshold-dependent (identical bench totals at 1024 and 4096) and predates the
+  re-tune.
 - **Observed behavior (confirmed):** F1 (`3fd14768b`) releases an emptied slab
   bucket's span immediately (`release_bucket_edge_span_on_empty`). A detach-delete
   drain empties every neighbour's 1-edge bucket, so `bench_l_s2_det_hub_1024`
@@ -88,16 +89,24 @@ defect from being rediscovered without its prior reasoning.
   `write_record` writes the 48-byte record in one write instead of six.
   Measured: native pattern bench 35.34 M → 33.41 M; `bench_l_s2_det_hub_1024`
   51.31 M → 50.03 M (scoped removal 36.57 M → 35.38 M).
-- **Next decision:** A2 — flush the emptied spans of one detached-vertex delete
-  as pre-merged ranges in a single store pass. Constraints: the flush must
-  complete before the delete returns (F1's reuse regression asserts the freed
-  span is reusable then), the per-delete cover sync stays, and the flush reuses
-  the GAP-2026-09-17-001 owned-range semantics. A1 (blanket deferral) is rejected
-  — it breaks F1's reuse contract. Acceptance: `bench_l_s2_det_hub_1024` toward
-  ~20-25 M with `fs_drain_release_pattern_1024` as the store-level metric, F1's
-  reuse regression and the free-span suite green. A3 (batched
-  header/summary/bin writes) is the follow-up for the residual ~32 K per
-  release.
+- **A2 landed (2026-09-20, commit `a021a309c`):** the synchronous detach delete opens
+  one span-release batch per orientation (`begin_span_release_batch`), emptied
+  buckets record their ranges (the per-delete cover sync still runs), and
+  `flush_span_release_batch` releases them as merged runs before the delete
+  returns — so F1's reuse contract holds at the operation boundary and the store
+  sees one insert per contiguous group instead of one per emptied bucket. Tiny and
+  tree buckets stay excluded (no span / LTB-addressed). Regression:
+  `detach_delete_flushes_emptied_spans_as_merged_runs` (asserts flush runs equal
+  the pre-computed merged-run count and that every freed range is allocatable
+  afterwards; wrong-impl probe: disabling the batch yields 0 vs 8 runs). Measured:
+  `bench_l_s2_det_hub_1024` 51.31 M → 25.01 M (−51 %), `..._4096` 208.00 M →
+  102.59 M (−51 %), stepped variant unchanged (−2 %, one release per step by
+  design), `..._sat_4096` unchanged.
+- **Residual follow-up (A3):** each flushed run still costs ~32 K in store
+  bookkeeping (the strip is below the pre-F1 20.72 M only by the merge count);
+  batching the store's header/summary/bin writes is the next lever if a
+  release-heavy workload needs it. `fs_drain_release_pattern_1024` is the
+  store-level metric.
 
 ### GAP-2026-09-20-003 — Tree property reads resolve the property leaf per row
 
