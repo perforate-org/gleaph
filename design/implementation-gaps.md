@@ -520,6 +520,11 @@ session did.
   while `resolve_labeled_edge_base_for_rebalance` never fails and falls back to
   `labeled_edge_base_from_first_bucket`; plus a canbench run over the publish path and a design-doc pass
   on the log-ownership contract (ADR 0096 / `design/storage/lara.md`) rather than only this ledger.
+  **Validation for `d7265949d` (2026-09-20):** focused canbench from `crates/ic-stable-lara` —
+  `canbench compact` 4 benches, 0 regressed (max +20 instructions, noise) and `canbench ins` 20 benches,
+  0 regressed (one −0.06%, −15.72 K instructions). No persist, so `canbench_results.yml` is untouched;
+  unfiltered `canbench --persist` remains a final-gate item. The log-ownership contract is now in ADR
+  0096 §5 (`fold_logs` row) rather than only here.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
