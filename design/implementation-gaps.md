@@ -156,7 +156,11 @@ defect from being rediscovered without its prior reasoning.
   promote/demote paths, exact leaf counts + audit at every step) and the tree-run
   assertion in `batch_run_admits_tree_mode_bucket_tail_fit`;
   `force_bucket_to_stored_slots` now seeds the matching leaf count so fixture
-  states audit cleanly. Wrong-impl probes (re-added insert bump, removed promote
+  states audit cleanly. The M1 growth regression
+  (`gap_tree_full_path_growth_past_5728_releases_only_owned_regions`) now
+  also asserts leaf `actual == 0` after 8192 full-path inserts and runs the
+  leaf audit, so the rule is pinned across every relocate/slide/rebuild step
+  of the growth chain, not only at the transition sites. Wrong-impl probes (re-added insert bump, removed promote
   subtract, removed demote re-add, restored batch bump) each fail those tests.
   ADR 0096 §5 updated; ADR 0088 §3 clarified (root *span* residency stays
   mode-blind; tree *edge rows* never count).

@@ -5743,6 +5743,28 @@ mod tests {
         // Physical root region is 8 slots (ceil(8192/1024)), not 8192: the
         // cover/tree unit confusion this test guards against.
         assert_eq!(super::bucket_span_region_len(&bucket), 8);
+        // Leaf PMA `actual` must hold across the whole growth/relocate chain:
+        // every one of the 8192 rows is a tree row, so the leaf's live
+        // edge-slab record count is exactly zero (ADR 0096 §5), and the audit
+        // must agree after every relocate/slide/rebuild.
+        let header = graph.edges().header();
+        assert_eq!(
+            graph
+                .edges()
+                .counts_store()
+                .get(u64::from(header.segment_count))
+                .actual,
+            0,
+            "8192 tree rows must contribute zero to leaf `actual`"
+        );
+
+        // tree rows are excluded, so this leaf's live slab-era records are the
+        // only contribution (ADR 0096 §5).
+        crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
         // Full adjacency survives every relocate in the growth chain
         // (`iter_edges_for_label` yields Descending; reverse for insertion order).
         let edges = graph.iter_edges_for_label(vid, label).expect("scan");
