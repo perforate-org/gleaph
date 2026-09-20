@@ -420,6 +420,20 @@ session did.
   saved as `/tmp/unified2_compact.rs` (609/2, same two invariants). Next: compare the plan's published
   anchors against the two deleted implementations' anchors for one failing fixture, and pin the
   contract the readers rely on (`base_slot_start` + bucket index) before re-attempting the delegation.
+  **The reader contract (verified 2026-09-20, `bucket.rs`):** `vertex.base_slot_start()` is the origin
+  of the vertex's **label-bucket descriptor rows**, and their extent is
+  `vertex.label_bucket_descriptor_span()`; `vertex_bucket_descriptor_row_end()` = `base + span` is how
+  the *next* vertex's origin is derived (`ensure_vertex_bucket_row_origin`). Edge **content** is
+  addressed independently by `bucket.edge_start()`, so slack/gaps between bucket contents do not move
+  descriptor rows: `write_label_bucket_row_adaptive(vertex.base_slot_start(), &rows)` places descriptor
+  *i* at `base + i`. `commit_vertex_edge_span_layout` therefore recomputes content positions from the
+  resident buckets it is handed and is already exercised green by the two leaf-relocation call sites,
+  which is why it is probably not the culprit: what differs in the delegated rewrite is the
+  plan→commit inputs (`buckets`, `new_alloc`, `vertex`, `suppress_vertex_footprint_release`), the dead
+  `positions` the plan still computes and drops (compiler warning `unused variable: positions`), and the
+  finalize/release block after it. Next: delete the plan's dead positions, make the plan's bucket slice
+  and `new_alloc` the only interface, and diff one failing fixture's descriptor row region
+  (`base_slot_start` .. `+span`) before and after the delegated rebalance.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
