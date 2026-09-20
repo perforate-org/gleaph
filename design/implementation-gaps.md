@@ -47,6 +47,46 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
+
+- **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
+  GAP-2026-09-20-005 (the promotion's dead prefix). Numbers are page counts from
+  `Memory::size()` (whole 64 KiB WebAssembly pages) plus the graph's own accounting.
+- **Owner:** `ic-stable-lara` per-leaf overflow log (`lara/edge/log.rs`) and per-vertex bucket-row
+  slack (`labeled/bucket_store.rs`).
+- **Observed behavior (5000 vertices, one edge each, single label, segment 16):**
+  | | value |
+  |---|---|
+  | committed pages, empty graph | **30 pages ≈ 1.9 MB** (16 memories' 1-page minimums + the stores' initial growth) |
+  | committed pages, after 5000 tiny edges | **66 pages ≈ 4.2 MB** (buckets 15, log 11, edges 5, vertices 2 pages) |
+  | actual edge data | 5000 × 4 B = **20 KB** |
+  | bucket descriptor rows reserved | **25,000** for 5,000 buckets (5 rows per vertex: 1 live + 4 slack = 116 B/vertex, physically committed) |
+  | overflow-log capacity declared | **87,040 entries = 696 KB** for a workload that used **0 entries** |
+  | edge-slab cover / resident | 0 / 0 (tiny truly occupies no edge slab) |
+- **Two scaling wastes:**
+  1. **Per-leaf overflow-log capacity is eagerly committed.** `DEFAULT_MAX_LOG_ENTRIES = 170` per leaf
+     (`log.rs`), stride `4 + E::BYTES` = 8 B, and `grow_segment_count_to` ensures the *whole*
+     `segment_count × 170 × 8 B` region is backed at init/reopen. At segment 16 that is
+     **1,360 B per 16 vertices = 85 B/vertex**: 1M vertices → ~85 MB, 10M → ~850 MB, committed
+     whether or not any leaf ever spills. The log is only needed for leaves that actually overflow
+     the slab window, and the earlier log-pressure measurement (Finding C, ~1.1K instructions per
+     append, folds ~43K) gives no evidence that the capacity must be reserved graph-wide.
+  2. **Per-vertex bucket-row slack commits 4 extra 29-byte rows (116 B) per vertex with any label.**
+     The slack is consumed by later label inserts without an in-segment rewrite (the reason it
+     exists: `insert_label_bucket_at`'s fast path), so the fix is a policy/tuning question, not a
+     delete: measure the descriptor-rewrite cost it saves (the vertex-segment rewrite path) against
+     the 116 B/vertex.
+- **Also noted (fixed-cost, likely inherent):** every one of the 16 stable memories costs a 1-page
+  minimum (≈1 MB at init), and the edge/lb stores each grow to ~320 KB before any payload; merging
+  small meta stores or lowering the initial growth is a layout-table decision, not a local change.
+- **Expected or needed behavior:** grow the log's entry region lazily (per touched leaf, or with a
+  high-water counter) so tiny/slab-only graphs commit no log entries; re-tune the bucket-row slack
+  with a measured insert-vs-rewrite trade; then re-run the audit probe
+  (`/tmp/space_audit_probe.rs`) to confirm the delta.
+- **Next decision:** decide whether to fold this into the same space-first slice as
+  GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
+  bench for the slack trade.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)** — the fold-prelude path is closed with a
