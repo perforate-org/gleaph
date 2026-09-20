@@ -47,6 +47,43 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
+
+- **Status:** Open, discovered 2026-09-20 while auditing production capacity/latency balance;
+  regression-adjacent to ADR 0096 §3b Phase 2 (`91575bc29`), which made it reachable in a
+  production-shaped skew where the K=3 wire was not.
+- **Severity:** P0 correctness (cover overlap ⇒ a later release/density decision can act on a
+  mate's slots; the debug-only guard `assert_no_labeled_leaf_mate_overlap` is the only detector,
+  so **release builds run on silently.**
+- **Owner:** overflow-log fold / span-growth path (`compact.rs` fold + cover growth; the same
+  class the promotion path already guards with its `mates_free` check).
+- **Observed behavior:** after a hub's span fills, the per-leaf overflow log fills and folds into
+  the bucket span. The fold grows `stored_slots` **in place** without checking the leaf's other
+  covers, so the grown span walks over mates that were placed after it.
+- **Minimal reproduction** (deterministic, single label, Insertion policy, production
+  `segment_size = 16`, `InitialCapacities::uniform(256)`, 16 vertices in one leaf, `TestEdge`
+  4-byte): degrees `[8, 8, 8, 8, 64, 64, 64, 64, 64, 64, 64, 64, 512, 512, 512, 2048]`, mates
+  inserted first, then the 2048-degree hub. The hub promotes at its 5th insert into the 8-slot
+  gap `[356, 364)` (legal), then the fold grows it to 175 slots in place:
+  `vid VertexId(15) reserves up to 531 but vid VertexId(5) starts at 364`
+  (`leaf_pin.rs` guard, leaf 0, block `(256, 2288)`).
+- **K=3/K=4 split (measured):** the same probe on `1c277d95c` (R4, K=3) **passes**; on
+  `91575bc29` (K=4) it fails. The missing mate check is not new, but the K=4 promotion shape
+  (span 5 instead of 4, promotion at the 5th insert instead of the 4th) changes which free run
+  the hub lands in, turning a latent hazard into a reachable one.
+- **Expected or needed behavior:** the fold's span growth must be mate-disjoint (check
+  `labeled_leaf_occupied_spans` for `[base, base + grown)`), and a collision must relocate/grow
+  the leaf block and retry — the same bounded-retry pattern as
+  `promote_tiny_to_slab_with_growth`. Promote the debug guard to a checked error on the growth
+  path (fail closed) so release builds cannot proceed on an overlapping cover.
+- **Impact:** data-loss class (an overlapping cover can free a mate's slots on delete/relocate),
+  plus density/audit misfires. Also blocks any honest capacity-vs-latency tuning of the tiny/slab
+  boundary, since the geometry it would tune is currently not always valid.
+- **Next decision:** fix the fold-path growth check with a regression test built from the
+  reproduction above (`#[test] fn fold_growth_stays_mate_disjoint_across_span_growth`), re-run the
+  skewed-leaf audit, then resume the production balance evaluation. Until then, treat the K=4
+  boundary flip (`91575bc29`) as needing this follow-up before release.
+
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
 
 - **Status:** Fixed 2026-09-20 (commit `f9b276b6e`) — recorded the same day while
