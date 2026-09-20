@@ -581,6 +581,20 @@ session did.
   Attempts saved: `/tmp/unified_on_newbase_compact.rs` (608/3) and
   `/tmp/unified_on_newbase2_compact.rs` (608/3 with the tiny-resident change) — neither is green, so
   neither is landable; the tree is back at 611/0.
+  **LANDED (2026-09-20, `8f137196d`): the rewrite has one publish path.** The three failures above were
+  the tiny resident term after all — the first attempt kept `.max(bucket.degree())` outside the tiny
+  branch, which re-introduced `degree`. The measured proof was
+  `calculate_label_edge_span_positions_by_resident_slots: span_slots=80 < effective_live=81` from the
+  existing `log_collect_overflow` hook (it is `#[cfg(target_family = "wasm")]`, so its non-wasm arm now
+  prints too — that hook, not crate-wide instrumentation, is the cheap way to find these). With tiny
+  zeroed outside the floor, the tree-root region used for trees and the planner budget on
+  `bucket_resident_rows`, the four inline branches (236 lines) collapse into one
+  `materialize` + `commit` call: **611/0**, net −147 lines, scoped fmt/clippy clean (no lib warnings).
+  Focused canbench `compact` 4/4 improved (median −216.86 K instructions, 0 regressed) and `ins` 20
+  benches 0 regressed; the largest insert delta (+1.45%) is inside canbench's noise threshold, and
+  `bench_l_ins_*` per-bench deltas are ≤1.90% on ≈370-instruction micro benches, so a repeat run before
+  treating it as a regression. Still open: delegation of `rebalance_vertex_edge_span` itself
+  (`for_growth` vs `for_rebalance`), promotion rework, and unfiltered `canbench --persist`.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
