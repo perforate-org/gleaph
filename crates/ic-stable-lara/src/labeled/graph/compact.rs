@@ -617,6 +617,26 @@ where
     /// backed, so publishing the *requested* width over a base that kept the old
     /// reservation is exactly the phantom cover this pair of resolvers exists to
     /// prevent (GAP-2026-09-20-005).
+    /// Dispatch for callers that carry a resolution policy explicitly.
+    fn resolve_labeled_edge_base_for_policy(
+        &self,
+        src: VertexId,
+        new_alloc: u32,
+        policy: SpanResolutionPolicy,
+    ) -> Result<(u64, u32), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        match policy {
+            SpanResolutionPolicy::Required => {
+                self.resolve_labeled_edge_base_for_growth(src, new_alloc)
+            }
+            SpanResolutionPolicy::SlackMayBeDropped => {
+                self.resolve_labeled_edge_base_for_rebalance(src, new_alloc)
+            }
+        }
+    }
+
     /// The policy-dependent tail of a resolution that could not place the requested span.
     /// The control flow that reaches it stays with each caller: the two resolvers differ
     /// only in which outcome they accept.
@@ -772,6 +792,7 @@ where
         compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
+        policy: SpanResolutionPolicy,
     ) -> Result<(Vec<LabelBucket>, u32, u64, u32, bool, u64), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -862,7 +883,7 @@ where
         let (new_base, new_alloc) = if new_alloc == 0 {
             (0, 0)
         } else if old_alloc == 0 || new_alloc > old_alloc || compact {
-            self.resolve_labeled_edge_base_for_growth(src, requested_alloc)?
+            self.resolve_labeled_edge_base_for_policy(src, requested_alloc, policy)?
         } else {
             (old_base, new_alloc)
         };
@@ -890,6 +911,31 @@ where
         compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.rewrite_vertex_edge_span_with_policy(
+            src,
+            preferred_bucket,
+            preferred_extra,
+            compact,
+            force_slack_grow,
+            in_window_layout,
+            SpanResolutionPolicy::Required,
+        )
+    }
+
+    /// Rewrite that also names which base-resolution policy its caller accepts.
+    pub(super) fn rewrite_vertex_edge_span_with_policy(
+        &self,
+        src: VertexId,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        compact: bool,
+        force_slack_grow: bool,
+        in_window_layout: Option<(u64, u32)>,
+        policy: SpanResolutionPolicy,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -925,6 +971,7 @@ where
                 compact,
                 force_slack_grow,
                 in_window_layout,
+                policy,
             )?;
 
         // Edge-span planning (especially resolving a growth base) may relocate the leaf,
@@ -942,13 +989,14 @@ where
             // span. Re-growing would demand a larger quantum than the relocate
             // sized for, exhaust its retry loop, and fail a healthy span —
             // force_slack drops on restart (proactive slack accrues later).
-            return self.rewrite_vertex_edge_span(
+            return self.rewrite_vertex_edge_span_with_policy(
                 src,
                 preferred_bucket,
                 preferred_extra,
                 compact,
                 false,
                 in_window_layout,
+                policy,
             );
         }
 
@@ -2453,158 +2501,26 @@ where
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
         }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        let old_alloc = vertex.stored_slots;
-        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
-        // placeholders; releasing from an anchor poisons the free store with
-        // live ranges). Spanless vertices resolve to 0 (callers skip release
-        // on empty spans).
-        let old_base = buckets
-            .iter()
-            .find(|bucket| !bucket.is_tiny_mode())
-            .map(|bucket| bucket.edge_start())
-            .unwrap_or(0);
-        let mut resident_slots = 0u32;
-        for bucket in &buckets {
-            // Physical spans only (tiny 0, tree root region); the
-            // `.max(degree)` floor covers tombstone-inclusive slab prefixes
-            // whose stored width alone would under-size the tile. Tree
-            // buckets never carry slab prefixes (`stored_slots` is a logical
-            // count there), so the floor is skipped for them.
-            // ADR 0096 §5: tiny buckets own zero slab slots, so they must not contribute a
-            // resident term. Applying the degree floor to them (as this loop used to) made an
-            // all-tiny vertex look resident, so a "spanless" vertex requested slack and then
-            // had no base to fall back to (class C, GAP-2026-09-20-005). The planner skips
-            // tiny explicitly; this is the same rule.
-            let resident = if bucket.is_tiny_mode() {
-                0
-            } else if bucket.is_tree_mode() {
-                bucket_physical_resident_slots(bucket)
-            } else {
-                bucket_physical_resident_slots(bucket).max(bucket.degree())
-            };
-            resident_slots = resident_slots
-                .checked_add(resident)
-                .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        }
-        let min_required = resident_slots
-            .checked_add(preferred_extra)
-            .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        let segment_size = self.edges.header().segment_size.max(1);
-        let mut new_alloc = if min_required == 0 {
-            // A spanless vertex (all buckets tiny) owns zero slab slots (ADR 0096 §5) and
-            // must not request slack: `next_vertex_edge_span_allocation` would return a real
-            // span, and when that cannot be placed the slack tail has no base to report
-            // (`labeled_edge_base_from_first_bucket` needs a non-tiny bucket). Class C.
-            0
-        } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
-            let base = old_alloc.max(min_required);
-            let gap = segment_size.max(base / 8);
-            base.saturating_add(gap)
-        } else if old_alloc >= min_required && old_alloc > 0 {
-            old_alloc
-        } else {
-            let base = min_required.max(segment_size);
-            let gap = segment_size.max(base / 8);
-            base.saturating_add(gap)
-        };
-        new_alloc = new_alloc.max(min_required);
-        // Proactive slack is a hint, not a requirement. When the content already fits the
-        // current span (`min_required <= old_alloc`), the rewrite can proceed in place: room
-        // for spare capacity is only taken when it is already free in the current window.
-        // Otherwise keep the current span — an optimisation must never escalate into a leaf
-        // relocation (which is what made the hub fixtures ratchet) nor fail an insert. Only
-        // content that does not fit may move the leaf.
-        if force_slack_grow
-            && old_alloc >= min_required
-            && self
-                .try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
-                .is_none()
-        {
-            new_alloc = old_alloc;
-        }
-        // A spanless vertex (every bucket tiny) owns no slab content by ADR 0096 §5, so
-        // there is nothing to size, resolve or publish — and resolving would fail: the
-        // slack fallback needs a non-tiny bucket to anchor on
-        // (`labeled_edge_base_from_first_bucket`, class C of the relocation analysis).
-        if min_required == 0 {
-            return Ok(());
-        }
-        if self.labeled_leaf_physical_range(src).is_some()
-            && min_required > self.labeled_vertex_stored_slots_max_in_leaf(src)?
-            && !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
-        {
-            self.relocate_labeled_leaf_physical_block(src)?;
-            let relocated = self.vertices.get(src);
-            if relocated.stored_slots >= min_required {
-                return Ok(());
-            }
-            return self.rebalance_vertex_edge_span(src, preferred_bucket, preferred_extra, false);
-        }
-        let (new_base, new_alloc) = if new_alloc == 0 {
-            (0, 0)
-        } else if old_alloc == 0 || new_alloc > old_alloc {
-            self.resolve_labeled_edge_base_for_rebalance(src, new_alloc)?
-        } else {
-            (old_base, new_alloc)
-        };
-        // I1: publish the width the resolution obtained. When the resolver kept the
-        // existing base it reports the current cover, so the span is never widened over
-        // an old reservation (the phantom cover, GAP-2026-09-20-005).
-        let moved = old_alloc == 0 || new_alloc > old_alloc;
-        if LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.replace(false))
-            && self.labeled_leaf_physical_range(src).is_some()
-        {
-            // The relocate slide already published new bucket starts and vertex
-            // spans. Re-plan from that state; never write the pre-relocation row.
-            let relocated = self.vertices.get(src);
-            if relocated.stored_slots >= min_required {
-                return Ok(());
-            }
-            return self.rebalance_vertex_edge_span(src, preferred_bucket, preferred_extra, false);
-        }
-        // One content path for every bucket: materialize each bucket's resident
-        // content (prefix + overflow log for slab, LEG root array for tree, nothing
-        // for tiny) and let the shared commit place descriptors and content. This
-        // function used to carry its own snapshot, position and publish loops — a
-        // fourth copy of the layout mechanics that drifted from the shared pair
-        // (GAP-2026-09-20-005). Its own policy (sizing above, release below) stays.
-        let leaf = Self::leaf_index_for_vid(src, self.edges.header().segment_size.max(1));
-        let (per_bucket_edges, per_bucket_raw) =
-            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, false, false)?;
-        let mut edge_buf: Vec<u8> = Vec::new();
-        let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
-        self.commit_vertex_edge_span_layout(
+        // The rebalance is a rewrite: it plans the span, materializes every bucket's
+        // resident content and publishes it through the shared pair. It used to carry its
+        // own snapshot, position, publish and vertex-cover code — the last duplicate of the
+        // layout mechanics (GAP-2026-09-20-005).
+        //
+        // Its own policy stays explicit: the span is never compacted (`compact = false`, so
+        // tombstoned prefixes and their logs survive), the caller's release decision is
+        // preserved (the rewrite's finalize block runs the same code this function had) and
+        // base resolution accepts the maintenance policy (keep the current span when the
+        // requested one cannot be placed).
+        LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(false));
+        self.rewrite_vertex_edge_span_with_policy(
             src,
-            &vertex,
-            &buckets,
-            &per_bucket_edges,
-            &per_bucket_raw,
-            &mut edge_buf,
-            &mut bucket_row_bytes_buf,
-            new_base,
-            new_alloc,
-            preferred_bucket.map(|index| index as usize),
+            preferred_bucket,
             preferred_extra,
             false,
-            false, // rebalance keeps each bucket's overflow log
-            true,  // the release block below owns the footprint decision
-        )?;
-        if moved
-            && old_alloc > 0
-            && new_base != old_base
-            && !self.vertex_edge_span_relocates_within_pinned_leaf(
-                src, old_base, old_alloc, new_base, new_alloc,
-            )
-            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
-        {
-            self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
-        }
-        self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
-
-        let d_total = i64::from(new_alloc) - i64::from(old_alloc);
-        self.bump_vertex_edge_span_total_delta(src, d_total)?;
-        Ok(())
+            force_slack_grow,
+            None,
+            SpanResolutionPolicy::SlackMayBeDropped,
+        )
     }
 
     /// Compacts all edge buckets for `vid` into slab-backed spans.
@@ -4232,7 +4148,35 @@ mod tests {
 
     #[test]
     fn vertex_edge_span_rewrite_weights_slack_by_label_degree() {
-        let graph = test_graph();
+        // Slack is only taken when the current window already hosts it (a request that needs a
+        // leaf relocation is a hint, not a requirement — `force_slack_grow` is best effort), so
+        // a test about how spare room is *distributed* must run somewhere spare room exists.
+        // Slack is only taken when the current window hosts it (a request that would need a
+        // leaf relocation is a hint, not a requirement), so a test about how spare room is
+        // *distributed* must run where spare room exists: `test_graph`'s 256 slots cannot host
+        // this shape.
+        let graph: LabeledLaraGraph<TestEdge, crate::VectorMemory> = LabeledLaraGraph::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            crate::labeled::InitialCapacities::uniform(1 << 20),
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("graph");
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
         let hot = BucketLabelKey::from_raw(2);
         let cold = BucketLabelKey::from_raw(3);
         for target in 0..64u32 {
@@ -5271,26 +5215,36 @@ mod tests {
             .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
             .unwrap();
 
-        let VertexEdgeSpanCompactOneStep::OverflowRewrite(moves) = rewritten else {
-            panic!("expected overflow-only compaction, got {rewritten:?}");
-        };
-        assert!(moves.is_empty());
+        // The span publish owns the overflow-log fold (ADR 0096 §5, "Span publish log
+        // ownership"), so this first step folds the suffix during its rewrite and then reports
+        // the compaction move it performs — the very move this test used to observe from a
+        // second step. The folded row stays visible and moves into the freed slab slot.
+        assert_eq!(
+            rewritten,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: road,
+                old_slot_index: 1,
+                new_slot_index: 0,
+            })
+        );
         let slab_survivor = graph
             .iter_edges_for_label(hub, road)
             .unwrap()
             .into_iter()
             .find(|edge| edge.target == 1)
-            .unwrap();
-        assert_eq!(slab_survivor.edge_slot_index_raw(), 1);
+            .expect("the slab survivor stays visible after the publish-owned fold");
+        assert_eq!(slab_survivor.edge_slot_index_raw(), 0);
 
+        // The next step packs the following live row one slot left, exactly as before — only
+        // the sequence shifted by one because the fold now happens inside the first step.
         assert_eq!(
             graph
                 .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
                 .unwrap(),
             VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
                 label_id: road,
-                old_slot_index: 1,
-                new_slot_index: 0,
+                old_slot_index: 2,
+                new_slot_index: 1,
             })
         );
     }
@@ -5348,12 +5302,14 @@ mod tests {
             before.inline_property_bytes_log_len(),
         );
 
-        assert!(matches!(
-            graph
-                .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
-                .unwrap(),
-            VertexEdgeSpanCompactOneStep::OverflowRewrite(_)
-        ));
+        // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
+        // ownership"), so the step folds that suffix inside its rewrite and then carries on with
+        // its own compaction. Which variant reports it is not what this test pins — the two
+        // effects below are: the edge log is folded, and the inline property bytes log state is
+        // left exactly as it was.
+        graph
+            .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
+            .unwrap();
 
         let after = read_bucket();
         assert_eq!(after.overflow_log_head(), -1);
