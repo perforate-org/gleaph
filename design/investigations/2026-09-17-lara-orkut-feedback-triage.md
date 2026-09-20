@@ -26,16 +26,16 @@ Gleaph state:
   [ADR 0088](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
   (implementation in progress). `T_promote` is a benchmark-gated policy constant, set larger
   for IC stable-memory write economics. **Adopted `T_PROMOTE=1024` / `T_DEMOTE=512` on
-  2026-09-19** once Gleaph-side canbench evidence existed (see the disposition below).
+  2026-09-20** once Gleaph-side canbench evidence existed (see the disposition below).
 - Core (unlabeled) LARA: all-slab, no tree mode. Tree as a second instance is deferred
   (ADR 0088 Plan 0321), not rejected.
 
 Disposition: supporting evidence for "early hub isolation bounds rebalance scope" —
 reconfirmed by Gleaph-side canbench evidence, and the threshold was adopted on
-2026-09-19 as `T_PROMOTE = 1024` / `T_DEMOTE = 512`
+2026-09-20 as `T_PROMOTE = 1024` / `T_DEMOTE = 512`
 (`crates/ic-stable-lara/src/labeled/graph.rs`). The DRAM memo numbers were not used
 as evidence for the IC decision: after the leaf-density accounting fix
-(GAP-2026-09-17-001) and the overflow-log promotion fix (GAP-2026-09-19-001), the
+(GAP-2026-09-17-001) and the overflow-log promotion fix (GAP-2026-09-20-001), the
 equal-work and workload-level IC measurements favor 1024 — M1 hub growth 8192
 41.70M vs 55.87M (equal work), M2a scan 40.09K vs 74.30K, steady-state append
 4.46K vs 8.36K, G5 skewed mix 132.24M vs 140.11M — with only single deletes

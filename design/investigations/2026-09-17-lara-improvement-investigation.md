@@ -333,9 +333,9 @@ release FAILED start=1063168 len=5728: OverlapPrevious {
   PMA accounting that drives density, so after promotion every insert pushed the
   leaf to density ≥ 1.0 and fired `rebalance_cascade_after_labeled_mutation`;
   the cascading relocates then released an overlapping range. Both halves are
-  now resolved (2026-09-19).
+  now resolved (2026-09-20).
 
-### A resolution (2026-09-19)
+### A resolution (2026-09-20)
 
 Two independent defects shared this trap, both in the same ownership:
 
@@ -387,7 +387,7 @@ favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor 4096,
 and the pre-fix 22× was the mint plus the false cascade. The recorded pre-fix verdict
 ("T_PROMOTE stays 4096", justified by M1) no longer follows from post-fix
 evidence, so the constant was re-tuned to **`T_PROMOTE = 1024` / `T_DEMOTE = 512`**
-(2026-09-19, after the overflow-log promotion fix cleared the gate): every
+(2026-09-20, after the overflow-log promotion fix cleared the gate): every
 equal-work and workload-level metric favors it, and the ten threshold-coupled
 tests now derive their sizes from `T_PROMOTE` so the suite is green at both
 constants. Decision recorded in [implementation-gaps](../implementation-gaps.md).

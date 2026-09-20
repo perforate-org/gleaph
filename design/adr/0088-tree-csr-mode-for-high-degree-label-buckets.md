@@ -199,7 +199,7 @@ was identified and corrected. The wire truth of the cap constants is:
 - `T_promote = 1024` is the **slab → tree promotion threshold** (the
   `alloc_space` size that triggers promotion into tree mode) and the slab
   mode cap on `alloc_space = stored_slots + alloc_gap`. Re-tuned from 4,096 on
-  2026-09-19; see "Threshold re-tune".
+  2026-09-20; see "Threshold re-tune".
 
 The logical-slot capacity of a tree bucket is **`coverage_at_depth(MAX_DEPTH)
 = 2^30`** slots (per §4: depth 1 ≤ 2^20, depth 2 ≤ 2^30, depth 3 ≤ 2^40; the
@@ -543,7 +543,7 @@ old edge span (via the vertex-span rewrite) and the old property span (to the
 byte-slab `FreeSpanStore`). Promotion is also the moment the leaf releases up
 to `T_promote` slots of pressure.
 
-**Implementation note (2026-09-19, GAP-2026-09-19-001):** the commit folds the
+**Implementation note (2026-09-20, GAP-2026-09-20-001):** the commit folds the
 bucket's slab edge overflow log into the prefix first
 (`ensure_label_bucket_folded_to_slab`) and then transcribes that prefix, rather
 than interleaving log entries during transcription. Both satisfy the clause
@@ -634,7 +634,7 @@ tree buckets) or populated.
 | -------------------- | ------ | ----------------------------------------------------------- |
 | `BLOCK_PAYLOAD_BYTES` | 4,096  | wire (header truth; power of two)                            |
 | `R_max`              | 1,024  | wire (header truth — it defines derived depth of stored data) |
-| `T_promote`          | 1,024  | policy (benchmark-gated, hysteresis with compact-or-promote; re-tuned 2026-09-19) |
+| `T_promote`          | 1,024  | policy (benchmark-gated, hysteresis with compact-or-promote; re-tuned 2026-09-20) |
 | `MAX_DEPTH`          | 3      | policy (fail-closed structural boundary; widening = future ADR) |
 | Log cap              | 170    | existing wire                                                |
 | `TINY_MAX_DEGREE`    | 3      | wire (descriptor truth — raising K needs new descriptor bytes, i.e. a layout ADR; see ADR 0096 §3) |
@@ -1349,7 +1349,7 @@ Its property-tree fixture invokes promotion explicitly and seeds an encoded tomb
 claim that property-bearing tree mutation dispatch is implemented. No new persistent bytes or
 activation/reinstall requirement is introduced.
 
-## Threshold re-tune (implemented 2026-09-19)
+## Threshold re-tune (implemented 2026-09-20)
 
 `T_promote` moved 4,096 → **1,024** slots, with `T_demote = T_promote / 2 = 512`
 (`crates/ic-stable-lara/src/labeled/graph.rs`). Both are policy constants: the
@@ -1375,32 +1375,35 @@ promotion defects below; full table in
 | Drain a 4,096-edge hub, all deletes (`bench_l_s2_det_hub_4096`) | **85.49 M** | 208.00 M |
 | Property-bearing scan, 4,096 rows, w = 32 (`tcsr_4096_property_read_w32`) | **3.22 M** | 4.83 M |
 
-The costs are real and equal-work, not sizing artifacts:
+**Attribution (measured 2026-09-20 with temporary scopes).** Only one of the
+three cost rows above is caused by the re-tune:
 
-- **Hub deletes** are ~2.5× more expensive once the bucket is a tree: a tree
-  delete rewrites a 4-byte tombstone inside an LTB block (block read, header
-  update, descriptor publish — ~36 K instructions per delete in the tree regime
-  vs ~6 K on the slab), and the flip makes every hub above `T_promote` a tree
-  bucket. The drain is bounded per bucket by the demote hysteresis: a bucket
-  that falls to `T_demote` (512) rebuilds as a slab and its remaining deletes
-  are slab deletes. The `bench_remove_churn_*` scope growth (+310%) is scope
-  attribution, not cost — those benches' totals move +2%.
-- **Property-bearing reads** (w > 0) pay one property-leaf hop per row in tree
-  mode: a 4,096-row w = 32 scan is 1.5× the slab read. This does not show up in
-  the w = 0 scan result (M2a) because there is no second stream to walk.
-- The once-per-B-rows block-boundary mint (row above) also favors 4,096.
+- **Property-bearing reads** (w > 0): caused by the re-tune. The same bench, same
+  4,096 rows, same w = 32: 3.22 M with a slab bucket and 4.83 M with a tree
+  bucket (1.5×) — tree mode resolves the property leaf per row instead of
+  streaming one LPB block per leaf. It does not show up in the w = 0 scan result
+  (M2a) because there is no second stream to walk.
+- **Hub drain**: *not* caused by the re-tune. `bench_l_s2_det_hub_1024` measures
+  identically at both thresholds (57.09 M with the scopes in place; the pre-F1
+  artifact value is 20.72 M). The cost is F1's per-emptied-bucket span release
+  (`release_bucket_edge_span_on_empty`, commit `3fd14768b`): ~30.2 K instructions
+  per emptied bucket, which dominates a detach-delete drain because every
+  neighbour's 1-edge bucket empties. It is threshold-independent (those buckets
+  are slab, not tree). Tracked as
+  [GAP-2026-09-20-002](../implementation-gaps.md) with design options.
+- **The once-per-B-rows block-boundary mint** is a genuine re-tune cost, bounded
+  to one mint per B appended rows.
 
 So the re-tune is a workload-shape decision: it favors pure-adjacency ingest and
-scan (including the Orkut-shaped G5 mix) and costs on hub drain and
-property-bearing scans. Revisit trigger: a delete-heavy or property-scan-heavy
-target workload — re-run the equal-work benches above (and consider 2,048, which
-keeps 1,024-edge hubs on the slab side while promoting later than 1,024). A promoted bucket's
+scan (including the Orkut-shaped G5 mix) and costs on property-bearing scans.
+Revisit trigger: a property-scan-heavy target workload — re-run the equal-work
+benches above (2,048 keeps 4,096-row property buckets on the slab side). A promoted bucket's
 resident root region also shrinks with the threshold (§4: depth-1 `root_len =
 ceil(T_promote / B)`), from 4 LEG slots to 1, which reduces the leaf pressure
 each tree bucket contributes. The re-tune was gated on
 two promotion defects found while measuring: the false post-promotion density
 cascades (GAP-2026-09-17-001's density-accounting half) and promotion dropping
-overflow-log-resident rows (GAP-2026-09-19-001).
+overflow-log-resident rows (GAP-2026-09-20-001).
 
 Test migration: the ten tests that encoded 4,096/2,048 collapse into
 `T_promote`-derived sizes (batch tail-fit seeds and widths, promote root-length

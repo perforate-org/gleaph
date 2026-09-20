@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
@@ -47,9 +47,68 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-09-19-001 — Promote silently drops overflow-log rows (tree mode has no log)
+### GAP-2026-09-20-002 — Emptied-bucket span release costs ~26K per call (drain paths)
 
-- **Status:** Fixed 2026-09-19 (commit `164e27cfa`) — recorded the same day while
+- **Status:** Open — measured performance defect, recorded 2026-09-20. Found while
+  attributing the `canbench --persist` verdict for the `T_promote = 1024` re-tune;
+  it is **not** threshold-dependent (identical bench totals at 1024 and 4096) and
+  predates the re-tune.
+- **Observed behavior (confirmed):** F1 (`3fd14768b`) releases an emptied slab
+  bucket's span immediately (`release_bucket_edge_span_on_empty`). A detach-delete
+  drain empties every neighbour's 1-edge bucket, so `bench_l_s2_det_hub_1024`
+  performs 1024 such releases and pays ~30 K instructions per emptied bucket
+  (30.88 M of the 42.27 M scoped removal cost): ~26.1 K inside the free-span
+  store's `release_span` insert and ~4.3 K for the cover re-read/sync. The pre-F1
+  artifact value for the same bench is 20.72 M (no per-bucket release); the
+  current value is 51.31 M.
+- **Evidence:** [regime-cost investigation](investigations/2026-09-20-tree-regime-cost-improvements.md)
+  §Finding A (probe table: `tmp_release_empty` 30.88 M / 1025 calls,
+  `tmp_fs_release` 26.73 M, `tmp_cover_recompute` 4.41 M, `tmp_counts_dec`
+  9.28 M over 2048 calls); bench A/B at both thresholds (57.09 M each) rules out
+  the re-tune; `git merge-base` shows the artifact baseline predates F1.
+- **Impact:** every drain that empties many buckets (detach delete, vertex
+  delete, churn) pays ~26 K per emptied bucket inside the free-span store; the
+  cost is per release, so a 4096-edge hub pays ~4× the 1024-edge one. It also
+  explains why the re-tune looked responsible for the drain regression.
+- **Owner:** labeled delete path (`labeled/graph/remove.rs`,
+  `release_bucket_edge_span_on_empty`) plus the free-span store
+  (`lara/edge/free_span.rs`, `release`/`insert_span`). The reclaim owner in the
+  replacement design must keep the F1 guarantee (no phantom occupancy after a
+  delete) and the GAP-2026-09-17-001 double-free protection.
+- **Next decision:** run the A1 experiment (skip sub-cover frees during drains,
+  reclaim whole regions at relocate/slide/fold; one temporary patch + the drain
+  bench + the leaf-pressure benches to bound relocate-frequency risk), then a
+  store-level spike if A1 leaves a store cost to recover. Acceptance:
+  `bench_l_s2_det_hub_1024` back to ~20-25 M with no growth/relocate regression.
+
+### GAP-2026-09-20-003 — Tree property reads resolve the property leaf per row
+
+- **Status:** Open — measured performance defect introduced as a *cost* by the
+  `T_promote = 1024` re-tune (property-bearing buckets above 1024 rows are tree
+  now), recorded 2026-09-20.
+- **Observed behavior (confirmed):** `visit_edges_with_inline_property`'s tree
+  path reads each edge block once but calls `read_property_value_at_slot` per
+  row, which re-resolves the property leaf (`resolve_property_leaf_block_id`:
+  a LEG root read plus offset math) and issues a separate 4-byte LTB read per
+  row. At w = 32 (K = 128 rows per property leaf) a 4096-row scan pays 4096 root
+  reads + 4096 partial reads instead of 32 block reads:
+  `tcsr_4096_property_read_w32` 3.22 M (slab) → 4.83 M (tree), +50 %.
+- **Evidence:** [regime-cost investigation](investigations/2026-09-20-tree-regime-cost-improvements.md)
+  §Finding B; same-bench A/B at `T_promote` 4096 vs 1024 with all other code held
+  constant.
+- **Impact:** property-bearing scans over buckets above `T_promote` rows pay the
+  per-row resolution; w = 0 scans are unaffected (M2a improves in tree mode).
+- **Owner:** `labeled/graph/tree_read.rs` property-bearing scan loops
+  (ascending/descending) + `read_property_value_at_slot`.
+- **Next decision:** implement the leaf-streaming cursor (B1: resolve and read
+  the property block once per leaf, serve rows from the buffer, fall back to
+  `read_property_value_at_slot` at leaf boundaries). Acceptance:
+  `tcsr_4096_property_read_w32` ≤ ~3.5 M at `T_promote = 1024` with the
+  LPB-in-tree round-trip and property-slot bound tests green.
+
+### GAP-2026-09-20-001 — Promote silently drops overflow-log rows (tree mode has no log)
+
+- **Status:** Fixed 2026-09-20 (commit `164e27cfa`) — recorded the same day while
   triaging the `T_PROMOTE = 1024` flip (found by classifying the 11 failures that
   appear at the lower threshold; see GAP-2026-09-17-001 for the density-accounting
   context). Fix: promotion folds the slab overflow log into the prefix first
@@ -198,7 +257,7 @@ defect from being rediscovered without its prior reasoning.
   residual hole (stale covers skip free ranges; live spans are republished
   before old-cover release per post-slide invariant, pinned by M1/G4/G5/suite).
   Do NOT pursue before a third firing — disproportionate until then.
-- **Density-accounting follow-up (2026-09-19, this slice):** the second half of the
+- **Density-accounting follow-up (2026-09-20, this slice):** the second half of the
   same trap. Tree inserts bumped leaf `actual` (+1 per insert, −1 per remove) even
   though tree rows live in LTB blocks and occupy only the root region, and the
   promote did not subtract the slab-era degree; the leaf audit
@@ -226,7 +285,7 @@ defect from being rediscovered without its prior reasoning.
   ADR 0096 §5 updated; ADR 0088 §3 clarified (root *span* residency stays
   mode-blind; tree *edge rows* never count).
 - **Threshold verdict — SUPERSEDED by the density-accounting fix (same session,
-  2026-09-19).** Re-measured both arms with the same unpersisted `thresh_*`
+  2026-09-20).** Re-measured both arms with the same unpersisted `thresh_*`
   benches after the fix (`T_PROMOTE` reverted to 4096 after measuring; production
   constant unchanged):
 
@@ -252,23 +311,26 @@ defect from being rediscovered without its prior reasoning.
   favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor
   4096, and hub-delete streams are not a workload the Orkut comparison
   exercises. **Gated:** the flip is also blocked by
-  [GAP-2026-09-19-001](#gap-2026-09-19-001--promote-silently-drops-overflow-log-rows-tree-mode-has-no-log)
+  [GAP-2026-09-20-001](#gap-2026-09-20-001--promote-silently-drops-overflow-log-rows-tree-mode-has-no-log)
   (promotion silently drops overflow-log rows, and a lower threshold multiplies
-  the number of promotions). **Decision taken (2026-09-19):** the flip was executed
+  the number of promotions). **Decision taken (2026-09-20):** the flip was executed
   once the gate cleared — `T_PROMOTE = 1024` / `T_DEMOTE = 512` (commit `2b417059f`),
   with the ten threshold-coupled tests migrated to derive their sizes from
   `T_PROMOTE` so the suite is green at both constants (602/0 each way). The density
   fix is threshold-agnostic; the flip only changes where promotion happens.
   Persisted artifact re-measured the same day (unfiltered `canbench --persist`,
-  191 benches, 11 regressed / 5 improved / 3 new): the regressions are the
-  equal-work costs of the regime change — hub drain `bench_l_s2_det_hub_1024`
-  20.72M → 51.31M and `..._4096` 85.49M → 208.00M (tree deletes rewrite LTB
-  tombstones, ~36K ins/delete vs ~6K slab; a drained bucket demotes at
-  `T_DEMOTE = 512` and finishes on the slab), and the property-bearing scan
-  `tcsr_4096_property_read_w32` 3.22M → 4.83M (one property-leaf hop per row).
-  `bench_remove_churn_*` scope growth is attribution only (totals +2%). Revisit
-  trigger: a delete-heavy or property-scan-heavy target workload re-opens the
-  threshold (2,048 keeps 1,024-edge hubs on the slab side).
+  191 benches, 11 regressed / 5 improved / 3 new). Attribution was corrected by
+  measurement (2026-09-20, temporary scopes; see the
+  [regime-cost investigation](investigations/2026-09-20-tree-regime-cost-improvements.md)):
+  only the property-bearing scan `tcsr_4096_property_read_w32` 3.22M → 4.83M and
+  the once-per-B-rows block-boundary mint are re-tune costs. The hub-drain
+  regression (`bench_l_s2_det_hub_1024` 20.72M → 51.31M, `..._4096`
+  85.49M → 208.00M) is **threshold-independent** and comes from F1's
+  per-emptied-bucket span release (`3fd14768b`) — see GAP-2026-09-20-002 — so the
+  persist commit `da852423d` message misattributes it. `bench_remove_churn_*`
+  scope growth is attribution only (totals +2%). Revisit trigger: a
+  property-scan-heavy target workload re-opens the threshold (2,048 keeps
+  4,096-row property buckets on the slab side).
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
@@ -304,7 +366,7 @@ defect from being rediscovered without its prior reasoning.
   seed via `skip_leaf_cascade`; full-path growth benches are 10B-only and never promote).
 - **Impact:** tree mode is unusable past ~5.7K edges via the production insert path;
   threshold A/B (1024 vs 4096) cannot run; S5 adoption is blocked.
-- **Next decision:** answered (2026-09-19) — tree-mode inserts did bump leaf
+- **Next decision:** answered (2026-09-20) — tree-mode inserts did bump leaf
   `actual`, and `release_labeled_leaf_physical_footprint` was sized by a
   slab-unit footprint; both halves are fixed (see the follow-up bullets above).
   Remaining decision tracked there: whether to adopt `T_PROMOTE = 1024` now that
