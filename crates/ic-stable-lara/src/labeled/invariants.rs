@@ -226,7 +226,15 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             let gap = successor_start.saturating_sub(bucket.edge_start());
             // ADR 0096 §5: tiny buckets hold no slab bytes (inline targets);
             // their anchor is not inside any span.
-            let on_slab_len = if bucket.is_tiny_mode() {
+            // ADR 0088 §2 + GAP-2026-09-17-001: a tree bucket is resident as its
+            // root region (edge + property root), never as its logical
+            // `stored_slots` width — that width counts LTB-block rows, which
+            // occupy no LEG slots. Route through the resident-geometry SSOT.
+            let on_slab_len = if bucket.is_tree_mode() {
+                u64::from(crate::labeled::graph::bucket_physical_resident_slots(
+                    &bucket,
+                ))
+            } else if bucket.is_tiny_mode() {
                 0
             } else if bucket.overflow_log_head() < 0 {
                 u64::from(bucket.stored_slots)
@@ -284,6 +292,24 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 assert!(
                     bucket.overflow_log_head() < 0,
                     "vertex {vidx} bucket {slot}: tiny log head must be none"
+                );
+            }
+            // ADR 0088 §2 + GAP-2026-09-19-001: tree mode has no overflow log, so
+            // every live row must sit inside the transcribed prefix. `degree >
+            // stored_slots` is the shape produced by orphaning log-resident rows
+            // at promotion (the rows stayed in `degree` but vanished from every
+            // scan). Checked outside the branch chain above because a tree bucket
+            // with inline properties also reports `inline_property_bytes_allocated`.
+            if bucket.is_tree_mode() {
+                assert!(
+                    bucket.overflow_log_head() < 0,
+                    "vertex {vidx} bucket {slot}: tree log head must be none"
+                );
+                assert!(
+                    bucket.degree() <= bucket.stored_slots,
+                    "vertex {vidx} bucket {slot}: tree degree {} exceeds stored width {}",
+                    bucket.degree(),
+                    bucket.stored_slots
                 );
             }
         }

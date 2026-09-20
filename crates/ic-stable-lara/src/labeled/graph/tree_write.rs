@@ -2061,7 +2061,7 @@ pub(crate) fn promote_bucket_if_needed<E, M>(
     label: BucketLabelKey,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     let vertex = graph.vertices().get(src);

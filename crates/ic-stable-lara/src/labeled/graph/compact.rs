@@ -316,7 +316,7 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
 /// GAP-2026-09-17-001: sizing any of these paths on the logical width
 /// over-allocates the leaf, misreads live ranges on relocate, and feeds
 /// unowned ranges to the free store on release.
-pub(super) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
+pub(crate) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
     if bucket.is_tiny_mode() {
         return 0;
     }

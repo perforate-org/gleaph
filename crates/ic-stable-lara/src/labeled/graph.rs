@@ -219,6 +219,10 @@ mod bypass;
 mod compact;
 #[cfg(test)]
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
+// Resident-geometry SSOT (GAP-2026-09-17-001): the layout audit in
+// `labeled::invariants` validates tree buckets against their physical root
+// region, so the helper is re-exported to the crate.
+pub(crate) use compact::bucket_physical_resident_slots;
 pub mod batch_write;
 #[cfg(test)]
 mod batch_write_test;

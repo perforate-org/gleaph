@@ -6741,6 +6741,78 @@ mod tests {
         );
     }
 
+    /// GAP-2026-09-19-001 regression: promoting a bucket whose slab **overflow
+    /// log** is non-empty must not drop the log-resident rows. Tree mode has no
+    /// log (ADR 0088 §2), so `promote_bypass_to_tree_mode` transcribes the
+    /// folded prefix; before the fix it transcribed `stored_slots` only and
+    /// published `overflow_log_head = -1`, leaving `degree = stored + 1` with
+    /// exactly one live row unreachable from both directions (the inserts had
+    /// returned `Ok`, so the loss was silent).
+    ///
+    /// Shape: width-2 inline-property hub seeded past `T_PROMOTE` through the
+    /// production `insert_directed_edge` path. The inline-property growth keeps
+    /// the edge prefix behind the live degree, so the trigger sees an active log
+    /// at every threshold (it fires at insert 4251 for `T_PROMOTE = 4096`).
+    #[test]
+    fn gap_promote_with_active_overflow_log_keeps_every_row() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let noise_dst = VertexId::from(0);
+        let hub = VertexId::from(2);
+        let road = BucketLabelKey::directed_from_index(2);
+        const EDGES: u32 = 5_000;
+        for edge_index in 0..EDGES {
+            let bytes = 1u16.to_le_bytes();
+            graph
+                .ensure_directed_edge_inline_property_width(hub, noise_dst, road, 2)
+                .unwrap_or_else(|error| panic!("schema {edge_index}: {error:?}"));
+            graph
+                .insert_directed_edge(
+                    hub,
+                    noise_dst,
+                    road,
+                    InlinePropertyTestEdge::with_bytes(u32::from(noise_dst), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("edge {edge_index}: {error:?}"));
+        }
+
+        let fv = graph.forward().vertices().get(hub);
+        let forward = match graph.forward().find_bucket(hub, &fv, road).unwrap() {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("forward bucket missing"),
+        };
+        assert!(forward.is_tree_mode(), "5000 edges must promote");
+        assert_eq!(
+            forward.overflow_log_head(),
+            -1,
+            "a tree bucket has no overflow log"
+        );
+        assert_eq!(
+            forward.stored_slots,
+            forward.degree(),
+            "tree width must cover every live row (folded before promotion)"
+        );
+        assert_eq!(
+            graph.out_edges_for_label(hub, road).unwrap().len(),
+            EDGES as usize,
+            "forward scan must see every inserted row"
+        );
+        assert_eq!(
+            graph.in_edges_for_label(noise_dst, road).unwrap().len(),
+            EDGES as usize,
+            "reverse scan must see every inserted row"
+        );
+        assert_eq!(
+            graph.forward().edges().header().num_edges,
+            u64::from(EDGES),
+            "global edge census"
+        );
+    }
+
     #[test]
     fn scalar_insert_returns_exact_forward_and_reverse_locations() {
         let graph = graph();

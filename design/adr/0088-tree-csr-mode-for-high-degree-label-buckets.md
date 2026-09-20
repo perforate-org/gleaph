@@ -542,6 +542,17 @@ old edge span (via the vertex-span rewrite) and the old property span (to the
 byte-slab `FreeSpanStore`). Promotion is also the moment the leaf releases up
 to `T_promote` slots of pressure.
 
+**Implementation note (2026-09-19, GAP-2026-09-19-001):** the commit folds the
+bucket's slab edge overflow log into the prefix first
+(`ensure_label_bucket_folded_to_slab`) and then transcribes that prefix, rather
+than interleaving log entries during transcription. Both satisfy the clause
+above; the fold route reuses the existing fold/span-rewrite machinery and keeps
+transcription a plain prefix copy. The fold is a hard precondition — tree mode
+has no log (§6) — so a slab bucket whose log is still unfolded is never
+promoted: before this fix promotion published `overflow_log_head = -1` while
+transcribing only `stored_slots`, orphaning the log-resident rows (`degree >
+stored_slots`, unreachable from every scan, inserts already returned `Ok`).
+
 Execution model — bounded transitions are synchronous, O(S) work is stepped:
 
 | Transition                          | Bound              | Execution                       |

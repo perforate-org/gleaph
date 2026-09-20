@@ -42,9 +42,16 @@ use crate::labeled::{
     tree_csr::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
 };
 use crate::lara::operation_error::LaraOperationError;
-use crate::traits::CsrEdge;
+use crate::traits::CsrEdgeTombstone;
 
 /// 3-phase promotion entry point.
+///
+/// Phase 0a — Fold: a slab bucket's live rows may sit in the leaf **overflow
+/// log** when its physical window is full, so the trigger can fire with
+/// `degree > stored_slots`. Tree mode has no log (ADR 0088 §2), so the log is
+/// folded into the prefix first; otherwise transcription would orphan those rows
+/// (`overflow_log_head = -1`), leaving them counted in `degree` but unreachable
+/// from every scan (GAP-2026-09-19-001).
 ///
 /// Phase 1 — Reserve: read the bucket descriptor, verify preconditions,
 /// derive the depth and required root length, mint all LTB blocks (which
@@ -71,7 +78,7 @@ pub(super) fn promote_bypass_to_tree_mode<E, M>(
     label: BucketLabelKey,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     // Plan 0321: see `promote_bypass_to_tree_mode_pub` for the
@@ -85,13 +92,13 @@ fn promote_bypass_to_tree_mode_impl<E, M>(
     label: BucketLabelKey,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     // Phase 0: locate the bucket (read-only; no canonical writes).
     let vertex = graph.vertices().get(vid);
     let search = graph.find_bucket(vid, &vertex, label)?;
-    let (bucket_slot, bucket) = match search {
+    let (mut bucket_slot, mut bucket) = match search {
         BucketSearch::Found { slot, bucket } => (slot, bucket),
         BucketSearch::Missing { .. } => {
             // No such bucket. The promotion can only proceed once the
@@ -110,6 +117,32 @@ where
     if bucket.is_tree_mode() {
         // Already in tree mode; promote is a no-op success.
         return Ok(());
+    }
+
+    // Phase 0a (GAP-2026-09-19-001): fold a non-empty overflow log into the slab
+    // prefix before transcription. Slab mode admits live rows to the log when the
+    // bucket's physical window is full, so `degree` can exceed `stored_slots`
+    // here; tree mode has no log (ADR 0088 §2), so transcribing only the prefix
+    // and publishing `overflow_log_head = -1` would orphan those rows — they stay
+    // counted in `degree`, vanish from every scan, and the inserts that admitted
+    // them already returned `Ok`. The fold may rewrite the vertex edge span, so
+    // the descriptor is re-located afterwards; a fold that cannot make room fails
+    // closed (the caller keeps the slab bucket and its log intact).
+    if bucket.overflow_log_head() >= 0 {
+        let bucket_index =
+            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        graph.ensure_label_bucket_folded_to_slab(vid, bucket_index, bucket_slot, bucket)?;
+        let vertex = graph.vertices().get(vid);
+        (bucket_slot, bucket) = match graph.find_bucket(vid, &vertex, label)? {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => {
+                return Err(LabeledOperationError::BucketNotFound { vid, label });
+            }
+        };
+        debug_assert!(
+            bucket.overflow_log_head() < 0,
+            "folding must clear the overflow log before tree transcription"
+        );
     }
 
     // Precondition 2: stored_slots must have reached T_PROMOTE.
@@ -675,7 +708,7 @@ pub(crate) fn promote_bypass_to_tree_mode_pub<E, M>(
     label: BucketLabelKey,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     promote_bypass_to_tree_mode_impl(graph, vid, label)
