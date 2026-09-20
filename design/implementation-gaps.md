@@ -736,6 +736,15 @@ session did.
      shape: snapshot → size → reserve/place → write content → publish descriptors and vertex → clear the
      logs that were drained; anything before the first canonical write is abortable, anything after it
      must be infallible. That is what the deletion in `8f137196d` moved toward.
+  **Landed (2026-09-20, `553a72f09`): I2 is enforced.** `release_leaf_overflow_log` drains-checks the whole
+  leaf before calling the store, all four release sites (leaf relocation, reclaim, the log-full recovery and
+  the sole-active-vertex fast path) go through it, and the store-level release is no longer reachable with
+  rows still chained. New regression
+  `releasing_a_leaf_overflow_log_with_undrained_rows_is_refused` stages a log-backed bucket and proves the
+  refusal; suite 612/0, scoped fmt/clippy clean. I2's ADR text is in ADR 0096 §5. Remaining from the
+  essential design: **I1** (the commit must prove `cover ≤ owned region` before publishing, so a best-effort
+  downgrade keeps `old_alloc`), the single `required` / `slack` resolver, and then the delegation of
+  `rebalance_vertex_edge_span` (115 lines) plus the three assertion-level tests.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
