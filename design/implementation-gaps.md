@@ -5623,3 +5623,25 @@ compaction copies them back into the prefix — at which point the run is releas
 `ceil_pow2(length)` always equals the capacity the run was allocated with, and `release(run, len)` recomputes the
 right class from the length alone. Had deletes shrunk the length, the class would have to be stored (which is what
 the reference does for its descriptor runs); with append-and-tombstone semantics it does not.
+
+## Which tiers use the level-1 spill arena (2026-09-20)
+
+Correct: **tiny and tree do not use it; only slab does.**
+
+* **tiny**: rows live inside the descriptor (K<=4). No prefix, no spill. Growing past K promotes to slab, and the
+  new slab bucket starts with its prefix holding the transcribed rows and an empty spill.
+* **slab**: rows = contiguous prefix + per-bucket spill run (level 1 arena, then LTB blocks at level 2). This is the
+  only tier the level-1 arena serves, and the only tier whose descriptor field means "spill run id".
+* **tree**: rows already live in chunked runs (LTB blocks referenced from the tree's own root in the descriptor), so
+  a tree bucket **is** chunked storage — it needs no level-1 spill. In tree mode the descriptor field keeps the
+  meaning it has today (the tree's own root/run reference), and the redesign does not change it.
+
+The nuance worth keeping: "spill" as a *concept* — rows beyond a contiguous prefix, held as chunks — already exists
+in tree mode; what the redesign adds is the **level-1 arena** for the middle tier, between "fits the prefix" and
+"should be chunked outright". That is also why the open question about tree mode is not "does tree need a spill"
+but "can a slab bucket's spill grow into LTB blocks indefinitely, making tree mode unnecessary" — a unification
+question with its own measurement, not part of the log-to-spill swap.
+
+Transitions change shape in exactly one place: every path that reads "the rows beyond the prefix" (slab->tree
+promotion, demotion, compaction, the resident-content definition used by sizing and by the publish) reads the spill
+run instead of walking a log chain. Reads become contiguous, and each of those paths loses its chain-handling.
