@@ -745,6 +745,19 @@ session did.
   essential design: **I1** (the commit must prove `cover ≤ owned region` before publishing, so a best-effort
   downgrade keeps `old_alloc`), the single `required` / `slack` resolver, and then the delegation of
   `rebalance_vertex_edge_span` (115 lines) plus the three assertion-level tests.
+  **I1 enforcement attempted and corrected (2026-09-20).** Checking `new_base + new_alloc` against
+  `labeled_leaf_physical_range(src)` (the pinned leaf's block) is **wrong**: 46 tests fail with
+  `SpanCoverExceedsRegion`, including every relocation/leaf-pin fixture and the plain
+  `labeled_insert_does_not_grow_elem_capacity_for_hub_growth` insert. The leaf's physical block is not the
+  backing of a vertex's *edge* span; a span may sit in free-span space outside any leaf block, and the block
+  is only the region a relocation tiles into. So the corrected formulation of I1 is:
+  **a published cover must equal the span the base resolution actually obtained.** The backing is the
+  reservation itself (`old_alloc` when the resolver kept the base, `new_alloc` when it placed or
+  tail-appended one), which means the resolver must return *what it obtained*, not the caller's request —
+  `resolve_*` should yield `(base, width)` and the plan/commit must publish that width. HEAD's fourth
+  implementation violates this in exactly one place: `resolve_labeled_edge_base_for_rebalance` falls back to
+  `labeled_edge_base_from_first_bucket` while the caller keeps publishing `new_alloc`. That is the phantom
+  cover, and it is fixed by publishing the obtained width rather than by a commit-time region check.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
