@@ -5417,3 +5417,25 @@ That makes the remaining slices small and ordered:
    a row offset and the top bit is free).
 4. **Deletion**: the shared log store, its per-segment capacity, the drain guard (I2), the fold prelude and the
    log-full recovery loop all go, together with the ADR text that describes them.
+
+## Is the spill store "just the log"? Role same, entity different (2026-09-20)
+
+The spill plays the log's *role* — holding rows that do not fit the bucket's slab prefix — and it reuses the same
+descriptor field (`overflow_log_head`, reinterpreted as a run id). Everything else differs, and each difference is
+deliberate, because each one removes an owner or a choreography this session had to debug:
+
+| | shared per-leaf log (today) | per-bucket spill run (A″) |
+| --- | --- | --- |
+| owner | the leaf; many buckets' entries interleaved in one segment | one bucket per run |
+| shape | chain of entries (`prev` links), order recovered by walking | contiguous run; ordinal = offset (`stored + i`), no walk |
+| free policy | one segment released for the whole leaf, after proving every bucket drained (I2, the drain guard) | released per bucket, when that bucket compacts or dies — nothing shared to prove |
+| allocation | capacity pre-provisioned per segment (170 entries) as soon as the segment count grows | allocated on the bucket's first spill; a bucket that never spills owns nothing |
+| growth | append anywhere in the shared segment until it is full | capacity class 8→16→…→1024 rows, then hand off to LTB blocks |
+| compaction | leaf-wide fold: prepare, fold every vertex, release the segment, retry the insert | copy one contiguous run into prefix slack when it fits; skipping it is fine |
+| failure modes | row loss if a release is not preceded by a proven drain; truncation if a fold is cut short | only its owner frees it, so those cases cannot arise |
+
+Two clarifications worth keeping: the spill is **not** tree mode — tree mode remains the tier where a whole bucket
+becomes chunked (LEG root + LTB blocks, ADR 0088), and its ~41 ins/edge scan is what level 2 of the spill reuses;
+the spill run fills the *gap* between "fits the prefix (with slack)" and "should be a tree", which is exactly the
+gap the log occupies today. And the tier list stays three deep, not four: inline (tiny) → slab prefix → spill
+(small run, then LTB) → tree, with the spill being per bucket and lazy where the log was per leaf and eager.
