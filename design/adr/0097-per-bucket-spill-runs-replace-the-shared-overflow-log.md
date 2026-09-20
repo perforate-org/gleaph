@@ -82,6 +82,24 @@ promoting), the log half of GAP-2026-09-20-005, and GAP-006 (eager per-segment c
 74-row spill lands in a 128-row class (512 B at 4 B per row); the audit's ~696 KB of unused log capacity becomes 0;
 the reference's cap sweep justifies lazy ownership over capacity tuning.
 
+## Slot reuse and ordering in the spill (rules the insert path must follow)
+
+* **No row ever shifts.** A bucket's ordinal space is sparse by construction (`stored + offset` with tombstones),
+  so "insert at a position" is expressed as delete-then-insert, exactly as today (ADR 0052). Splitting rows across
+  prefix and spill introduces no middle-shift case, because neither side ever compacts by shifting: the prefix keeps
+  its `used` headroom and the run appends at its dense end.
+* **A deleted slot is reusable.** `Unordered` fills a reusable slot rather than growing, and `Insertion` appends at
+  the dense end (`used` grows only there). The *observable* rule is that a delete's slot becomes reusable before
+  the bucket grows; the *implementation* may reuse the earliest such slot (today's behaviour) or carry a hint — the
+  prefix keeps the current rule unchanged, and the spill may add a descriptor hint if measurement shows that
+  scanning for the earliest hole matters. This keeps the tombstone-reuse purpose (bounded memory) independent of
+  which side of the boundary the hole sits on.
+* **Growth extends in place at the arena tail.** When a run's class is exhausted and its rows sit at the arena's
+  tail, the class is extended in place; otherwise the bucket allocates the next class, copies at most 2x its live
+  rows and releases the old run. This is a requirement rather than an optimisation: it removes the growth-copy spike
+  that an append-only log did not have, and it is the reference's measured rule (`bucket-tail-growth` reduced
+  read/write requests and mapped bytes on exactly this pattern).
+
 ## Open questions (each with a measurement, none blocking this decision)
 
 Level-1 class boundaries against Gleaph's 4-byte rows (the reference's numbers are for 24-byte records); the level-2
