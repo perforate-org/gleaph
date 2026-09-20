@@ -378,6 +378,15 @@ session did.
   materializer's `raw` for a log-free slab bucket being the *prefix* while the plan budgeted the
   packed run). Do **not** re-derive those two expectations before that is explained. Copies:
   `/tmp/unified_compact.rs` (unified layout code to pair with HEAD's other files).
+  **Last duplicate found (2026-09-20):** `rebalance_vertex_edge_span` (~2487-2660) is a *fourth* span
+  layout implementation — its own snapshot loop (`stored_slots_raw` per bucket), its own
+  `calculate_label_edge_span_positions_by_resident_slots` call, its own publish loop
+  (`write_label_bucket_row_adaptive`) and its own vertex-cover write (`with_stored_slots(new_alloc)`).
+  Test 2 calls exactly this path, which is why instrumenting `commit_vertex_edge_span_layout` printed
+  nothing for it. Consolidation therefore has one more step beyond the rewrite: route
+  `rebalance_vertex_edge_span` through the same plan + materialize + commit pair (or delete it in
+  favour of the rewrite it duplicates), then re-check the two invariants — only then is the
+  expectation question meaningful. Copies: `/tmp/unified_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
