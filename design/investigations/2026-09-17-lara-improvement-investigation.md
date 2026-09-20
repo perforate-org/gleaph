@@ -277,6 +277,15 @@ Explicit non-goals: No-EL removal (rejected by evidence); core tree as a "small
 second instance" (reframed as a maintenance-ownership decision first); adopting
 any DRAM ratio as an IC target.
 
+## S1 follow-up realized (2026-09-20)
+
+The counts walk the S1 probe measured at ~3.2 K per insert has been removed from the
+hot path: leaf rows are canonical, internal rows are derived and repaired on demand
+(`rebuild_counts_internal_nodes`). Measured: `bench_r_ed_st_si_1024` 4.58 M → 2.17 M
+(−52.6 %), G5 mix 132.24 M → 115.49 M (−12.7 %), `bench_l_s2_det_hub_1024` 25.01 M →
+17.88 M (−28.5 %). Recorded as GAP-2026-09-20-004; this was the largest remaining
+lever both the S1 probe and the tiny-tier analysis pointed at.
+
 ## S1 result — core insert attribution (measured 2026-09-17, worktree source)
 
 Method: five sibling `bench_scope`s in `EdgeStore::insert_edge_inner`

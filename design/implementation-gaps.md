@@ -47,6 +47,40 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
+
+- **Status:** Fixed 2026-09-20 (commit [[leafcounts]]) — recorded the same day while
+  looking for the next lever after the drain/property fixes. Not a threshold issue:
+  it affects every slab insert/remove in every arm.
+- **Observed behavior (confirmed):** `bump_counts_leaf_with_layout` propagated each
+  `actual`/`total` delta up the segment tree with one read + write per level
+  (~2.3 K instructions per insert on a 15-level tree). The S1 probe had already
+  measured this walk at **56 % of the attributed labeled append cost**
+  ([investigation §S1](investigations/2026-09-17-lara-improvement-investigation.md)),
+  but every runtime consumer reads the **leaf** row only: the density decision
+  (`leaf_segment_counts_for_vid`), the layout audit (`assert_labeled_edge_store_pma_counts`),
+  and the leaf cascade. The internal rows had no reader outside the walk itself and
+  the segment-growth rebuild — verified by enumerating every `counts.get`/`counts_store().get`
+  site (all leaf-indexed except the walk's own read-modify-write, the growth
+  migration, and two test seed helpers that recompute the tree inline).
+- **Fix:** leaf rows are canonical. The hot path applies its delta to the leaf row
+  only; `EdgeStore::rebuild_counts_internal_nodes` (exposed on the labeled graph,
+  body shared with the segment-growth migration) recomputes the internal rows from
+  the leaves where an aggregate is needed.
+- **Tests:** `counts_internal_nodes_are_derived_and_repaired_on_demand` — leaves stay
+  exact, the internal root is *stale* before a rebuild (the wrong-impl probe: eager
+  maintenance would already match), the rebuild restores every internal row from its
+  children, and a further mutation leaves the root stale again.
+- **Measured (T_promote = 1024):** `bench_r_ed_st_si_1024` (1,024 scattered slab
+  appends) 4.58 M → 2.17 M (−52.6 %); `tiny_workload_skewed_mix` (G5, 256 v /
+  4,520 e) 132.24 M → 115.49 M (−12.7 %); `bench_l_s2_det_hub_1024` 25.01 M →
+  17.88 M (−28.5 %, now below both the pre-F1 20.72 M and the pre-re-tune slab
+  reading). Single-leaf growth shapes (M1) are unaffected — their walk hits the same
+  shallow path.
+- **Contract:** [lara-dgap-contract](storage/lara-dgap-contract.md) and
+  [lara](storage/lara.md) now state leaf-canonical counts with on-demand internal
+  repair (DGAP maintains the tree eagerly; the density semantics are unchanged).
+
 ### GAP-2026-09-20-002 — Emptied-bucket span release costs ~26K per call (drain paths)
 
 - **Status:** Fixed 2026-09-20 (partials `914734443`, A2 `a021a309c`) — measured

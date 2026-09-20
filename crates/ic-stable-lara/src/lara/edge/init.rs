@@ -174,6 +174,33 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(())
     }
 
+    /// Recomputes every internal counts row from the leaf rows
+    /// (GAP-2026-09-20-004). Leaf rows are canonical; the internal path is derived
+    /// and repaired on demand, because the hot insert/remove path applies its delta
+    /// to the leaf only and no runtime consumer reads an internal row.
+    pub(crate) fn rebuild_counts_internal_nodes(&self) {
+        self.rebuild_counts_internal_nodes_for(self.header().segment_count);
+    }
+
+    /// Rebuild body for an explicit segment count. The segment growth path calls
+    /// this before publishing the new header, so it cannot read the count back.
+    fn rebuild_counts_internal_nodes_for(&self, segment_count: u32) {
+        if segment_count == 0 {
+            return;
+        }
+        for idx in (1..segment_count).rev() {
+            let left = self.counts.get(u64::from(idx * 2));
+            let right = self.counts.get(u64::from(idx * 2 + 1));
+            self.counts.set(
+                u64::from(idx),
+                &SegmentEdgeCounts {
+                    actual: left.actual + right.actual,
+                    total: left.total + right.total,
+                },
+            );
+        }
+    }
+
     pub(super) fn migrate_counts_for_segment_grow(&self, old_l: u32, new_l: u32) {
         let mut leaf_vals: Vec<SegmentEdgeCounts> = Vec::with_capacity(old_l as usize);
         for leaf in 0..old_l {
@@ -202,17 +229,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 },
             );
         }
-        for idx in (1..new_l).rev() {
-            let left = self.counts.get(u64::from(idx * 2));
-            let right = self.counts.get(u64::from(idx * 2 + 1));
-            self.counts.set(
-                u64::from(idx),
-                &SegmentEdgeCounts {
-                    actual: left.actual + right.actual,
-                    total: left.total + right.total,
-                },
-            );
-        }
+        self.rebuild_counts_internal_nodes_for(new_l);
         self.counts.set(
             0,
             &SegmentEdgeCounts {

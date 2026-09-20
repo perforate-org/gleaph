@@ -286,6 +286,14 @@ where
         &self.buckets
     }
 
+    /// Recomputes the core edge store's internal counts rows from its leaf rows
+    /// (GAP-2026-09-20-004). Leaf rows are canonical; the labeled hot path applies
+    /// each delta to the leaf only, and this restores the internal path for
+    /// consumers that need an aggregate.
+    pub(crate) fn rebuild_counts_internal_nodes(&self) {
+        self.edges.rebuild_counts_internal_nodes();
+    }
+
     /// Returns the stable edge store.
     pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges

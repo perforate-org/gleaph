@@ -7,7 +7,6 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::counts::SegmentEdgeCounts;
 use super::iter::leaf_segment;
 use super::span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta};
 use super::{EdgeLayout, EdgeStore};
@@ -232,46 +231,25 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         d_actual: i64,
         d_total: i64,
     ) -> Result<(), LaraOperationError> {
-        let mut idx =
+        let idx =
             (leaf_segment(vid, edge_layout.segment_size) + edge_layout.segment_count) as usize;
         if idx as u64 >= self.counts.len() {
             return Err(LaraOperationError::SegmentCountsTreeTooSmall);
         }
-        // Inserts/removes only ever adjust `actual` (live edge records). `total` is owned by
-        // explicit recount/rebalance paths (`LaraGraph::update_leaf_count_and_ancestors`).
-        // Propagate the same delta up the tree with one read + write per level instead of
-        // re-summing both children at every internal node (two reads + write per level).
-        if d_total == 0 {
-            loop {
-                let mut c = self.counts.get(idx as u64);
-                c.actual += d_actual;
-                self.counts.set(idx as u64, &c);
-                if idx == 1 {
-                    break;
-                }
-                idx /= 2;
-            }
-            return Ok(());
-        }
-        loop {
-            let mut c = self.counts.get(idx as u64);
-            if idx >= edge_layout.segment_count as usize {
-                c.actual += d_actual;
-                c.total += d_total;
-            } else {
-                let left = self.counts.get((idx * 2) as u64);
-                let right = self.counts.get((idx * 2 + 1) as u64);
-                c = SegmentEdgeCounts {
-                    actual: left.actual + right.actual,
-                    total: left.total + right.total,
-                };
-            }
-            self.counts.set(idx as u64, &c);
-            if idx == 1 {
-                break;
-            }
-            idx /= 2;
-        }
+        // **Leaf rows are canonical; internal rows are derived** (GAP-2026-09-20-004).
+        // Every runtime consumer reads the leaf row: the density decision
+        // (`leaf_segment_counts_for_vid`), the layout audit, and the tests. The
+        // internal path was maintained eagerly with one read + write per level
+        // (`~2.3 K instructions per insert`, 56 % of the attributed labeled append
+        // cost in the S1 probe) and nothing read it, so the delta is applied to the
+        // leaf only; `LaraGraph::rebuild_counts_internal_nodes` restores the
+        // internal rows from the leaves where an aggregate is needed (segment
+        // growth, audits, or a future reader).
+        let mut c = self.counts.get(idx as u64);
+        c.actual += d_actual;
+        c.total += d_total;
+        self.counts.set(idx as u64, &c);
+        let _ = edge_layout;
         Ok(())
     }
 }

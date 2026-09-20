@@ -150,7 +150,7 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 | Store                               | Contract                                | Scan?                     |
 | ----------------------------------- | --------------------------------------- | ------------------------- |
 | `EdgeStore`                         | Live edge bytes                         | Yes (via vertex row)      |
-| `counts_store`                      | PMA `actual` / `total` per tree node (edge-slab records) | No                        |
+| `counts_store`                      | PMA `actual` / `total`; leaf rows canonical, internal rows derived (repaired on demand) | No                        |
 | `log`                               | Per-leaf overflow entries               | Yes (via `log_head` only) |
 | `span_meta`                         | Leaf `physical_start` when order breaks | No                        |
 | `free_spans` / `free_span_by_start` | Retired physical ranges                 | No                        |

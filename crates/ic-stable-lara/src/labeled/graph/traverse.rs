@@ -6402,6 +6402,110 @@ mod tests {
         );
     }
 
+    /// GAP-2026-09-20-004: leaf counts are canonical, the internal path is
+    /// derived. The hot insert/remove path writes the leaf row only, and
+    /// `rebuild_counts_internal_nodes` restores every internal row from the
+    /// leaves on demand.
+    ///
+    /// Wrong implementation this fails on: eager ancestor maintenance (the
+    /// pre-change shape), where the internal root would already match the leaf
+    /// sums before the rebuild — the test asserts it does not, i.e. that the
+    /// rebuild is load-bearing.
+    #[test]
+    fn counts_internal_nodes_are_derived_and_repaired_on_demand() {
+        use crate::labeled::record::LabeledVertex;
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        // Four edges per bucket promote tiny -> slab, so every edge walks (and
+        // used to walk) the counts path. The fixture's segment size is 32, so 40
+        // vertices span two PMA leaves.
+        const VERTICES: u32 = 40;
+        const PER_VERTEX: u32 = 4;
+        for _ in 0..VERTICES {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        for vid in 0..VERTICES {
+            for k in 0..PER_VERTEX {
+                graph
+                    .insert_edge(
+                        VertexId::from(vid),
+                        road,
+                        TestEdge {
+                            target: vid * 16 + k,
+                        },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+        }
+
+        let seg = graph.edges().header().segment_count;
+        let leaf_rows: Vec<i64> = (0..seg)
+            .map(|leaf| {
+                graph
+                    .edges()
+                    .counts_store()
+                    .get(u64::from(seg + leaf))
+                    .actual
+            })
+            .collect();
+        assert_eq!(
+            leaf_rows.iter().sum::<i64>(),
+            i64::from(VERTICES * PER_VERTEX),
+            "leaves are canonical and carry every live edge"
+        );
+        assert!(
+            leaf_rows.iter().filter(|a| **a > 0).count() >= 2,
+            "fixture spans two leaves"
+        );
+
+        // Before the repair the internal path is stale (eager maintenance is gone).
+        let root_before = graph.edges().counts_store().get(1).actual;
+        assert_ne!(
+            root_before,
+            leaf_rows.iter().sum::<i64>(),
+            "internal rows must be stale until repaired (leaf-only hot path)"
+        );
+
+        graph.rebuild_counts_internal_nodes();
+        let counts = graph.edges().counts_store();
+        assert_eq!(
+            counts.get(1).actual,
+            leaf_rows.iter().sum::<i64>(),
+            "repaired root equals the leaf sum"
+        );
+        for idx in 1..seg {
+            let left = counts.get(u64::from(idx * 2));
+            let right = counts.get(u64::from(idx * 2 + 1));
+            let node = counts.get(u64::from(idx));
+            assert_eq!(
+                node.actual,
+                left.actual + right.actual,
+                "repaired internal row {idx} must equal its children"
+            );
+        }
+
+        // A further mutation leaves the root stale again (the repair is on demand,
+        // not automatic), while the leaf row tracks it immediately.
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 9_999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        assert_eq!(
+            graph.edges().counts_store().get(u64::from(seg)).actual,
+            leaf_rows[0] + 1
+        );
+        assert_eq!(
+            graph.edges().counts_store().get(1).actual,
+            leaf_rows.iter().sum::<i64>(),
+            "internal rows stay derived until the next repair"
+        );
+    }
+
     #[test]
     fn normal_labeled_edges_update_pma_leaf_segment_counts() {
         let graph = test_graph();
