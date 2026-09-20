@@ -175,14 +175,18 @@ bytes sit behind method accessors (`edge_start()`, `overflow_log_head()`,
 4. **Two-phase slice** (code-quality reslicing): Phase 1 is the pure
    privatization with zero behavior change, proven by the full existing suite
    going green unmodified — it lands as standalone tech-debt paydown and needs
-   no tiny decision. Phase 2 is tiny-K4 on top. **Timing: Phase 1 only after
-   the in-flight tree work lands** (same files, same readers — concurrent
-   300-site churn would collide).
+   no tiny decision. Phase 2 is tiny-K4 on top. **Timing: Phase 1 waited for
+   the ADR 0088 Tree-CSR workstream to land** (same files, same readers —
+   concurrent 300-site churn would have collided). That workstream is **landed
+   in `main`** (2026-09-20 check: every tree plan lane/commit is an ancestor of
+   `main` and no tree-semantic change is outstanding), so the timing condition
+   is satisfied; the deciding question is now Phase 2's value, below.
 
-Verdict: recommended sequence is K=3 now (bounded, self-contained), Phase 1
-whenever the tree tree settles, K=4 only if a production census then still
-shows degree-4 buckets dominating the tiny-eligible set. Degree-4 buckets work
-fine as slab buckets meanwhile — the boundary stays optimization-only.
+Verdict: recommended sequence is K=3 now (bounded, self-contained), Phase 1 as
+standalone tech-debt paydown once its value is decided, K=4 only if a production
+census then still shows degree-4 buckets dominating the tiny-eligible set.
+Degree-4 buckets work fine as slab buckets meanwhile — the boundary stays
+optimization-only.
 
 **Decision (2026-09-20): Phase 1 and K=4 are deferred; not scheduled.**
 

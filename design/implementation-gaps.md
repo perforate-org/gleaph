@@ -437,7 +437,8 @@ defect from being rediscovered without its prior reasoning.
   `stored_slots`-scale overlapping ranges.
 - **Owner:** labeled tree growth + PMA accounting: `tree_write.rs` release sites,
   `compact.rs` leaf-relocate footprint sizing, per-insert counts bumps in
-  `labeled/graph/insert.rs:495,814`. Same ownership as the in-flight tree slice.
+  `labeled/graph/insert.rs:495,814` (the same ownership the Tree-CSR workstream
+  had; that workstream landed in `main` before this entry was closed).
 - **Evidence:** [2026-09-17 investigation, §A result](../investigations/2026-09-17-lara-improvement-investigation.md);
   repro shape `thresh_hub_grow_8192` (M1 bench, worktree `labeled/bench.rs`);
   native repro `head_repro_full_path_growth` in the kept isolation worktree
