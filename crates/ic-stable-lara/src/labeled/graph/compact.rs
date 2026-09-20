@@ -865,23 +865,19 @@ where
             next_vertex_edge_span_allocation(old_alloc, min_required, segment_size)?
         };
 
-        // Proactive slack is a hint, not a requirement. When the content already fits the
-        // current span (`min_required <= old_alloc`), the rewrite can proceed in place: room
-        // for spare capacity is only taken when it is already free in the current window.
-        // Otherwise keep the current span — an optimisation must never escalate into a leaf
-        // relocation (which is what made the hub fixtures ratchet) nor fail an insert. Only
-        // content that does not fit may move the leaf.
-        if force_slack_grow
-            && old_alloc >= min_required
-            && self
-                .try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
-                .is_none()
-        {
-            new_alloc = old_alloc;
-        }
         let requested_alloc = new_alloc;
         let (new_base, new_alloc) = if new_alloc == 0 {
             (0, 0)
+        } else if !compact && old_alloc > 0 && old_alloc >= min_required && new_alloc > old_alloc {
+            // Content already fits and the only reason to widen is spare capacity. One
+            // placement attempt in the current window *is* the answer when it succeeds (no
+            // second attempt through the resolver), and when it fails the span stays as it is:
+            // slack never moves a leaf and never fails an insert. Only content that does not
+            // fit may trigger a relocation.
+            match self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+                Some(base) => (base, new_alloc),
+                None => (old_base, old_alloc),
+            }
         } else if old_alloc == 0 || new_alloc > old_alloc || compact {
             self.resolve_labeled_edge_base_for_policy(src, requested_alloc, policy)?
         } else {
