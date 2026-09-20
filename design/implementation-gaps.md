@@ -758,6 +758,16 @@ session did.
   implementation violates this in exactly one place: `resolve_labeled_edge_base_for_rebalance` falls back to
   `labeled_edge_base_from_first_bucket` while the caller keeps publishing `new_alloc`. That is the phantom
   cover, and it is fixed by publishing the obtained width rather than by a commit-time region check.
+  **Landed (2026-09-20, `4296dbab3`): I1 is enforced by publishing the obtained width.** Both resolvers now
+  return `(base, width)`; `for_rebalance`'s fallback reports `self.vertices.get(src).stored_slots`, so a kept
+  base can no longer be widened into a phantom cover, and `for_growth` reports the request it placed,
+  relocated or tail-appended. Suite 613/0 with the new regression
+  `base_resolution_never_reports_a_width_it_did_not_obtain`, which also *corrected the invariant's wording*:
+  the fallback width is not necessarily the pre-call cover — a relocation may have grown the span — so the
+  check is `width <= the vertex's backing span`, which is what a commit-time region test could not express.
+  Remaining from the essential design: the single `required` / `slack` resolver (they still differ in
+  whether a missing span is fatal), then the delegation of `rebalance_vertex_edge_span` (115 lines) and the
+  three assertion-level tests that encode the old placement.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
