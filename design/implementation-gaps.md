@@ -464,6 +464,18 @@ session did.
   `labeled_segment_slide_coalesces_adjacent_free`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`)
   need individual review afterwards. Copies: `/tmp/delegated_logfix_compact.rs`,
   `/tmp/delegated_logfix_init.rs` (597/14).
+  **Correction and next layer (same day):** the placement helpers do **not** miss the log —
+  `plan_labeled_leaf_relocation` and `rebalance_labeled_leaf_weighted_slide_in_block` both already
+  add `overflow_log_chain_len`. So the remaining ~10 `CollectAllocationOverflow` failures sit in
+  another budget check. Sites still worth instrumenting, in order:
+  `prepare_vertex_edge_span_for_overflow_log_fold` (compact.rs ~2737, folds the log while sizing the
+  span), `leaf_pin.rs` (12 `CollectAllocationOverflow` sites, block/pin growth), the restart recursion
+  in `rewrite_vertex_edge_span` (it drops `force_slack_grow`, so a re-plan can ask for a quantum the
+  relocate did not size), and `next_vertex_edge_span_allocation` (span.rs). Suggested fixture:
+  `mixed_label_hub_20_labels_500_edges_each` (smallest of the three hub fixtures) at
+  `test_support.rs:446`. Landing note: the log fix alone is unobservable on HEAD (the fourth
+  implementation's `.max(degree)` floor hid it), so the landing unit is unification + log fix +
+  delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
