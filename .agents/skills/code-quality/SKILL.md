@@ -1,6 +1,6 @@
 ---
 name: code-quality
-description: Keep implementations and reviews simple, cohesive, proportionate, and maintainable over time. Use when adding features, changing APIs, growing modules or functions, introducing helpers or abstractions, adding parameters or flags, refactoring, or reviewing diffs for accidental complexity, duplication, code bloat, unclear naming, excessive coupling, or high change amplification.
+description: Keep implementations and reviews simple, cohesive, proportionate, and maintainable over time. Use when adding features, changing APIs, growing modules or functions, introducing helpers or abstractions, adding parameters or flags, refactoring, fixing a bug inside an existing flow that more than one path implements, or reviewing diffs for accidental complexity, duplication, code bloat, unclear naming, excessive coupling, or high change amplification.
 ---
 
 # Code Quality

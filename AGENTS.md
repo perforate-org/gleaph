@@ -4,6 +4,8 @@
 
 When a failure recurs, stop speculative retries. Inspect diagnostics, owning code, and
 dependency versions; choose the smallest evidence-backed fix that preserves the contract.
+A failure that recurs inside the same layer means that layer's contract is wrong or duplicated:
+unify before patching. "Smallest" means smallest at the owning layer, not smallest diff.
 Research external sources only when relevant external facts cannot be established locally.
 If blocked, report the missing evidence rather than keep guessing.
 
@@ -36,6 +38,15 @@ Before introducing a new module, abstraction, data structure, dependency, or bou
 Prefer a single source of truth over duplicated knowledge.
 
 Do not place the same domain rule, schema, metadata definition, storage invariant, or boundary contract in multiple locations.
+
+When a failure traces into a shared layer, fix the layer's contract rather than the site:
+
+- Name the invariant the layer violates and the function that owns it.
+- Search for the same logic at other sites (symmetric paths, fast paths, commit/publish pairs). If more
+  than one path owns the behavior, unify them first — delete the duplicates, then fix the surviving
+  path — and report the sites found.
+- A repeated symptom inside the same layer is the signal to unify before patching. A fix that copies
+  an invariant into a second place is a defect even when it makes the failing test pass.
 
 Use the `architecture-integrity` skill for structural changes, boundary changes, new dependencies, new modules, or large refactors.
 
