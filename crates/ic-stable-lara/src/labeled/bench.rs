@@ -1533,11 +1533,10 @@ fn bench_remove_churn_bypass_accumulation() -> canbench_rs::BenchResult {
             .expect("drain");
         let vertex = graph.forward().vertices().get(vid);
         assert_eq!(
-            vertex.stored_slots(),
-            vertex.degree,
+            vertex.stored_slots, vertex.degree,
             "drain must left-pack the bypass row (stored == degree)"
         );
-        black_box((vertex.degree, vertex.stored_slots()));
+        black_box((vertex.degree, vertex.stored_slots));
     })
 }
 
@@ -1556,10 +1555,10 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
         }
         let vertex = graph.forward().vertices().get(vid);
         assert!(
-            vertex.stored_slots() > vertex.degree,
+            vertex.stored_slots > vertex.degree,
             "without the drain the bypass row accumulates tombstones (stored > degree)"
         );
-        black_box((vertex.degree, vertex.stored_slots()));
+        black_box((vertex.degree, vertex.stored_slots));
     })
 }
 
@@ -1618,7 +1617,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         let v0 = graph.forward().vertices().get(vid);
         eprintln!(
             "0342 burst_inserts={BURST} stored={} degree={} head={}",
-            v0.stored_slots(),
+            v0.stored_slots,
             v0.degree,
             v0.bypass_overflow_log_head()
         );
@@ -1628,7 +1627,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
              the DONE verdict below no longer holds — re-cut the probe slice",
         );
         assert_eq!(
-            (v0.stored_slots(), v0.degree),
+            (v0.stored_slots, v0.degree),
             (BURST as u32, BURST as u32),
             "burst must land fully on the slab with no tombstones"
         );
@@ -1653,11 +1652,11 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
             let vertex = graph.forward().vertices().get(vid);
             eprintln!(
                 "0342 {label} stored={} degree={} head={} live={live_len}",
-                vertex.stored_slots(),
+                vertex.stored_slots,
                 vertex.degree,
                 vertex.bypass_overflow_log_head(),
             );
-            black_box((vertex.stored_slots(), vertex.degree));
+            black_box((vertex.stored_slots, vertex.degree));
         };
         for round in 0..6 {
             for _ in 0..64 {
@@ -1712,7 +1711,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         // (tombstones <= stored/2), so no compaction fires and the slack grows
         // linearly; the existing 0341 gate caps it once tombstones exceed degree.
         assert_eq!(
-            drained.stored_slots().saturating_sub(drained.degree),
+            drained.stored_slots.saturating_sub(drained.degree),
             6 * 64 + 256,
             "sub-hysteresis churn must accumulate exactly one tombstone per remove"
         );

@@ -459,7 +459,7 @@ where
     ///
     /// Called when a delete empties a bucket (`degree == 0`, no log) that still
     /// holds a slab span (`stored_slots > 0`). Releases the span to the edge
-    /// free store (best-effort, see below) and recomputes `vertex.stored_slots_raw()`
+    /// free store (best-effort, see below) and recomputes `vertex.stored_slots`
     /// over survivors so the cover stays exact (no phantom occupancy).
     /// Tiny buckets never hold a releasable span here (empty tiny resets to
     /// stored 0, so the hook guard never fires for them); tree buckets

@@ -336,7 +336,7 @@ fn build_dense_offset_graph(
     assert_eq!(bucket.degree(), extent);
     assert_eq!(bucket.stored_slots(), extent);
     assert!(bucket.overflow_log_head() < 0);
-    assert_eq!(graph.vertices().get(src).stored_slots(), extent);
+    assert_eq!(graph.vertices().get(src).stored_slots, extent);
     (graph, src, label)
 }
 
@@ -363,7 +363,7 @@ fn collect_offset_truth(
         }
     }
     assert_eq!(tombstones, extent - OFFSET_LIVE_ROWS);
-    assert_eq!(graph.vertices().get(src).stored_slots(), extent);
+    assert_eq!(graph.vertices().get(src).stored_slots, extent);
 
     let ascending = collect_offset_rows(graph, src, label, OutEdgeOrder::Ascending);
     assert_eq!(ascending.len(), OFFSET_LIVE_ROWS as usize);
@@ -487,7 +487,7 @@ fn offset_query_bench(
         black_box((control.is_continue(), count, checksum));
     });
     assert_eq!(
-        fixture.graph.vertices().get(fixture.src).stored_slots(),
+        fixture.graph.vertices().get(fixture.src).stored_slots,
         extent
     );
     result

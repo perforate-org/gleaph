@@ -2192,7 +2192,7 @@ where
         }
         if resume_bucket_index >= vertex.degree() {
             // Per-bucket steps may already pack each label row (`stored_slots == degree`) while
-            // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots_raw()`) stays oversized.
+            // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
             // Tiny buckets are excluded from the packed check (holes make
             // `stored != degree` legitimate inline state, not slab slack).
             if vertex.stored_slots > total_live
