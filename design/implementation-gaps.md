@@ -1047,6 +1047,22 @@ session did.
   `rewrite_vertex_edge_span_with_policy`. The tiling-width separation (`bucket_resident_rows` for the reserved
   span, materialized prefix for the published width) is still required for that path and is preserved in
   `/tmp/delegation_foldthread_tiling_598_16_compact.rs`.
+  **Per-caller log policy landed the fix (2026-09-20): delegation now at 612/2, saved as
+  `/tmp/delegation_foldpercall_612_2_{compact,values,batch_write}.rs`.** `rebalance_vertex_edge_span` takes a
+  `fold_logs` argument; the two `Some(bucket_index), log_len` callers (stepped compaction and the fold-planned
+  path) pass `false` and everything else (maintenance, values, batch, tests) passes `true`; the rewrite pair
+  forwards it to the commit, and the tiling reserves `bucket_resident_rows` (prefix + log) for the
+  non-folding case while the published width stays the materialized prefix. That fixed
+  `edge_overflow_compaction_does_not_fold_inline_property_bytes_log` and every other rebalance test, taking the
+  delegated suite from 611/3 to 612/2. The two residuals:
+
+  * `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones` now fails with
+    `Option::unwrap()` on `None` at compact.rs:5231 — a lookup in the test (bucket slot or edge) returns
+    nothing, so the remaining difference is a *position* the tiling chose, not the fold;
+  * `vertex_edge_span_rewrite_weights_slack_by_label_degree` (`hot_capacity > stored`) — re-derive as a
+    distribution test, since slack is only taken when the window hosts it.
+
+  Restore with the three `cp`s above; HEAD stays 614/0.
   enabling it).
      decision removes).
   fourth implementation's placement.
