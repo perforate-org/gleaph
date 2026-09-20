@@ -63,6 +63,74 @@ bucket.
    be backed; ordinals of existing rows never change; resident content is `prefix + spill`, one definition shared by
    sizing, placement and publish.
 
+## Facts and assumptions (separated)
+
+**Facts, measured in this repository:** the audit's 87 040 entries (~696 KB) of log capacity with zero entries used
+for 5 000 vertices; 1 of 20 buckets spilling 74 of 10 000 rows in the production-shaped hub; `release_segment`
+zeroing a segment without an emptiness check; a stepped compaction packing to `stored_slots = degree` while an
+unfolded row was still chained (two reproducible row-loss paths); chunked sequential scans at ~41 ins/edge
+(ADR 0088); the LTB store's fixed 4096-byte payload (1024 rows); a focused canbench cost of 122 K instructions in
+`labeled_resolve_in_leaf` on the non-tail bypass insert, i.e. the price of *finding* a span when content outgrows
+the prefix.
+
+**Facts, measured in the reference implementation** (`~/dev/lara`): correctness with the log disabled
+(`max_log_entries: 0` against the DGAP port); capacity buys speed only (persisted bytes per insert flat across
+capacity; cap 0 near-fastest on the hub); per-owner runs with power-of-two classes and per-class free lists,
+measured for descriptor runs.
+
+**Assumptions to confirm after the swap, not before:** that the growth-copy spike is removed by in-place tail
+growth in Gleaph's shapes; that hole reuse in the spill can stay O(1)-ish with today's "earliest hole" rule (a hint
+if a measurement says otherwise); that the class boundaries measured against 24-byte reference records transfer to
+Gleaph's 4-byte rows; and that the canbench regression above disappears because the span query is no longer made.
+
+## Why the existing concept cannot own this (Step 2)
+
+The log *is* the existing concept, so the question is whether it can be extended rather than replaced. Its three
+defining choices are exactly the three problems: it is **shared** (so a release is an area others may use, which is
+where row loss becomes possible), it is **per segment** (so capacity is provisioned with the vertex count, which is
+the measured fixed cost), and it is a **chain** (so reads walk, and folds exist to empty it). Each could be patched
+— a drain guard for the first, on-demand segment capacity for the second, chunked entries for the third — and the
+minimum-change alternative below does exactly that; but the patches leave the ownership, the granularity and the
+shape in place, so the first two properties keep producing the same class of failure and the third keeps the
+choreography. Extending it to a per-bucket, contiguous, lazily allocated area *is* the proposal, which is why this
+is a replacement rather than an extension.
+
+**State representability (Step 2a).** The descriptor already has an `i32` field for the log head, so the spill run id
+is representable **as-is**, with no new field, table, or enum variant; no new ownership claim appears that the
+current types cannot carry. What changes is the *meaning* of that field in slab mode and the store behind it, i.e. a
+breaking layout change — acceptable pre-production and explicitly not migrated (fresh state or reinstall). The one
+new persistent object is the arena's 64-byte header plus eight free-list heads, one per graph.
+
+## Alternatives considered (Step 3)
+
+| Alternative | Benefits | Drawbacks | Complexity |
+| --- | --- | --- | --- |
+| **Minimum change**: keep the shared log, add the drain guard, provision segment capacity on demand, chunk entries to shorten walks | smallest diff; keeps the fold and recovery known-good; fixes the two measured loss paths and part of the fixed cost | ownership, granularity and shape stay; a segment release is still an area others may use, so the loss *class* survives; folds and the recovery loop stay; the measured coupling (1 bucket of 20 driving leaf-wide work) stays | low |
+| **Moderate change (this ADR)**: per-bucket, contiguous, lazily allocated spill runs with class free lists and an LTB level 2 | ownership, shape and lifetime all become per-bucket, so the guard, fold, prelude, recovery and per-segment capacity are deleted rather than patched; reads become contiguous; capacity tracks spilled rows | a new allocator (~200 lines); growth copies unless the run is at the arena tail; hole reuse needs a rule | medium, with a large deletion |
+| **Large redesign**: chunked runs for every non-inline bucket (tree mode generalised; A′ in the ledger) | one storage strategy above the inline threshold; no prefix, so no prediction, no slack, no span growth | a degree-5 bucket would occupy a 1024-slot granule (the LTB payload is fixed), trading a prediction problem for a utilization problem; loses the flat prefix's scan path | high |
+| **One shared arena with per-bucket runs** | one allocator, one header | the arena is shared again, so a release or compaction interacts across buckets — the coupling that caused the failures | medium but conceptually the same as today |
+
+## Costs (Step 4)
+
+Migration: none (fresh state; no reader for the old layout). Compatibility: internal only. Documentation: ADR 0096
+§5's log rows, `design/storage/lara.md`'s per-segment overflow-log contract, the D-GAP contract text. Tests: the log
+families are deleted and replaced (lazy first allocation, class reuse, tail in-place growth, level-2 hand-off, no
+pre-allocation, audit fixed cost zero). Benches: rerun `compact` and `ins`, and confirm the predicted regression
+disappearance. Operations: no new canister, role or lifecycle. Maintenance: eight class free lists and one header in
+exchange for the segment table, per-segment capacity, the fold, the prelude, the drain guard and the recovery loop.
+Future extension: level 2 and tree mode can be unified, and K can be re-evaluated, once the middle tier is lazy.
+Net complexity: a ~200-line allocator replaces what is being deleted, so the change is a net deletion.
+
+## Long-term effects (Step 5)
+
+It simplifies the architecture (one fewer store, one fewer choreography), clarifies boundaries (storage that a
+bucket owns), improves encapsulation (a run is private to its bucket), strengthens invariant enforcement (a
+published length must be backed; the shared-release failure mode becomes unrepresentable), keeps canonical/derived
+consistency unchanged (ordinals and the resident definition are untouched), strengthens SSOT (resident = prefix +
+spill, one definition), and reduces duplication (two log twins collapse into one design). On the negative side it
+adds one concept — a run allocator — which is justified because the concept it replaces is the source of the
+invariant fragility; and it does not widen any boundary or expose internal state.
+
 ## Consequences
 
 **Deleted, not adapted** (each for a stated property): the segment store and its per-segment capacity and segment
