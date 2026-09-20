@@ -849,7 +849,7 @@ where
             let moved = old_alloc != new_alloc || old_base != new_base;
             return Ok((buckets, old_alloc, old_base, new_alloc, moved, new_base));
         }
-        let mut new_alloc = if compact {
+        let new_alloc = if compact {
             total_live
         } else if total_live == 0 {
             // A spanless vertex (all buckets tiny) owns zero slab slots by ADR 0096 §5, so

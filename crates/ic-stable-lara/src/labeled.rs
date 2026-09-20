@@ -106,6 +106,7 @@ pub(crate) mod invariants;
 /// gate predated the production wiring and the green-bar matrix never ran a
 /// feature-less lib check).
 pub(crate) mod ltb_raw_block_store;
+pub(crate) mod spill_run_store;
 /// ADR 0088 Tree-CSR constants and layout math (`B`, `derive_depth`, `root_len`)
 /// used by the production tree-mode read/write paths (Plan 0318 §Steps 5-7).
 /// The `TreeCsrBucket` measurement scaffold remains bench-only.
