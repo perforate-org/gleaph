@@ -149,6 +149,41 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(start)
     }
 
+    /// Grows a run in place when it is the arena tail. ADR 0097 makes this a requirement rather
+    /// than an optimisation: without it every class change copies up to 2x the live rows, which an
+    /// append-only log never had to do.
+    ///
+    /// `from_len` is the run's current length (its class follows from it, because a spill's used
+    /// length is monotone) and `to_len` the length it must now hold. Returns `Ok(Some(run))` when
+    /// the run was extended in place, `Ok(None)` when the caller must allocate, copy and release,
+    /// and `Err` when the backing could not grow.
+    pub(crate) fn grow_in_place(
+        &self,
+        run: RunId,
+        from_len: u32,
+        to_len: u32,
+    ) -> Result<Option<RunId>, GrowFailed> {
+        assert!(run != NONE, "cannot grow the sentinel run");
+        let current = Self::class_rows(from_len.max(1));
+        let target = Self::class_rows(to_len.max(1));
+        if target <= current || target > MAX_ROWS {
+            // Nothing to grow into, or the arena tops out: longer spills continue at level 2.
+            return Ok(None);
+        }
+        let arena = self.arena_rows();
+        if run.checked_add(current) != Some(arena) {
+            // Not the tail: another run follows, so growing here would collide with it.
+            return Ok(None);
+        }
+        let end = arena
+            .checked_add(target - current)
+            .expect("spill arena overflow");
+        safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
+        let last = self.row_address(run, target - 1);
+        safe_write(&self.memory, last, &[0u8; 1])?;
+        Ok(Some(run))
+    }
+
     /// Returns a run to its class's free list. `len` is the live length; the class follows from it,
     /// which is why the descriptor only needs the run id and the length.
     pub(crate) fn release(&self, run: RunId, len: u32) -> Result<(), GrowFailed> {
@@ -248,6 +283,31 @@ mod tests {
         assert_eq!(store.arena_rows(), before + 128);
         let _ = store.allocate(9).expect("allocate");
         assert_eq!(store.arena_rows(), before + 128 + 16);
+    }
+
+    #[test]
+    fn a_tail_run_grows_in_place_and_others_do_not() {
+        let store = store();
+        let tail = store.allocate(5).expect("tail");
+        assert_eq!(store.arena_rows(), MIN_ROWS);
+        // The tail run takes the next class in place: same id, arena extended by the difference.
+        assert_eq!(store.grow_in_place(tail, 5, 9).expect("grow"), Some(tail));
+        assert_eq!(store.arena_rows(), MIN_ROWS * 2);
+        // With a run that follows, the earlier one is no longer the tail and must be moved.
+        let following = store.allocate(5).expect("following");
+        assert_eq!(store.grow_in_place(tail, 9, 20).expect("grow"), None);
+        // The following run is the tail, so it may grow in place.
+        assert_eq!(
+            store.grow_in_place(following, 5, 9).expect("grow"),
+            Some(following)
+        );
+    }
+
+    #[test]
+    fn a_run_at_the_largest_class_reports_no_in_place_growth() {
+        let store = store();
+        let run = store.allocate(1024).expect("largest class");
+        assert_eq!(store.grow_in_place(run, 1024, 1024).expect("grow"), None);
     }
 
     #[test]
