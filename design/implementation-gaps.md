@@ -1021,6 +1021,18 @@ session did.
   After reconstructing 611/3, the remaining three failures are: those two one-step-compaction expectations and
   `vertex_edge_span_rewrite_weights_slack_by_label_degree` (re-derive as a distribution test, since slack is
   now only taken when the window hosts it). Tree is at 614/0.
+  **Reconstructed and saved correctly (2026-09-20):** `/tmp/delegation_policy_v2_compact.rs` is the verified
+  **611/3** state — delegation shim (−152 lines) + policy threading (`resolve_labeled_edge_base_for_policy`,
+  planner parameter, `rewrite_vertex_edge_span_with_policy` with the public `Required` wrapper, and the shim
+  passing `SlackMayBeDropped`), with no `fold_logs` threading. HEAD stays 614/0 with the delegation reverted;
+  the file restores it in one `cp`. `head_before_reconstruct.rs` in the same directory is plain HEAD for
+  diffing. Remaining three failures, in the order worth attacking: the two
+  `compact_vertex_edge_span_one_step` expectations (read what the shared commit does for a log-backed bucket
+  whose span already holds its content — the observed `EdgeMoved { old_slot_index: 1, new_slot_index: 0 }`
+  says a log row was written into slot 0, i.e. the published run folded the log even though the one-step path
+  folds it itself and asserts stable indices) and
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` (read the fixture's expectation: with slack only
+  taken when the window hosts it, `hot_capacity > stored` may no longer be the right property).
   enabling it).
      decision removes).
   fourth implementation's placement.
