@@ -7179,7 +7179,12 @@ mod tests {
         let src = graph.push_vertex().expect("push_vertex");
         let dst = graph.push_vertex().expect("push_vertex");
         let label = BucketLabelKey::directed_from_index(2);
-        let n_w0: u32 = 1100;
+        // Keep the 0->w materialization scenario in the slab regime at any
+        // `T_PROMOTE`: eight-byte rows put 600 rows (4800 B) above
+        // `INLINE_MATERIALIZE_BYTE_BUDGET` (4096 B = 512 rows) while staying
+        // below the smallest tuned promotion cap (1024 slots). Four-byte rows
+        // cannot satisfy both once `T_PROMOTE` is 1024.
+        let n_w0: u32 = 600;
         for i in 0..n_w0 {
             let dst_i = VertexId::from(1);
             let result = graph.insert_directed_edge(
@@ -7194,13 +7199,13 @@ mod tests {
                 panic!("w=0 directed insert ({i}) failed: {err:?}");
             }
         }
-        // First w=4 insert: wrapper intercepts, enqueues at Retry priority,
+        // First w=8 insert: wrapper intercepts, enqueues at Retry priority,
         // drains, and surfaces InlinePropertyMaterializePending.
         let result = graph.insert_directed_edge(
             src,
             dst,
             label,
-            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 8]),
             InlinePropertyTestEdge::with_bytes(src.into(), &[]),
             crate::labeled::graph::EdgePlacementPolicy::Insertion,
         );
@@ -7220,23 +7225,23 @@ mod tests {
             .expect("find")
         {
             crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
-                assert_eq!(bucket.inline_property_byte_width(), 4, "width published");
+                assert_eq!(bucket.inline_property_byte_width(), 8, "width published");
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
                     n_w0,
-                    "slab_slots = w=0 edges (w=4 edge not yet inserted)"
+                    "slab_slots = w=0 edges (w=8 edge not yet inserted)"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
             _ => panic!("expected Found bucket after first w=4 insert"),
         }
-        // Retry: the descriptor is at width=4, so the inner schema check passes;
+        // Retry: the descriptor is at width=8, so the inner schema check passes;
         // no new deferred signal fires.
         let result = graph.insert_directed_edge(
             src,
             dst,
             label,
-            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 8]),
             InlinePropertyTestEdge::with_bytes(src.into(), &[]),
             crate::labeled::graph::EdgePlacementPolicy::Insertion,
         );
@@ -7250,11 +7255,11 @@ mod tests {
             .expect("find")
         {
             crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
-                assert_eq!(bucket.inline_property_byte_width(), 4);
+                assert_eq!(bucket.inline_property_byte_width(), 8);
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
                     n_w0 + 1,
-                    "slab_slots = w=0 + 1 w=4"
+                    "slab_slots = w=0 + 1 w=8"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
@@ -7263,7 +7268,7 @@ mod tests {
         let v = graph.forward().vertices().get(src);
         assert_eq!(
             v.inline_property_bytes_allocated_bytes(),
-            u64::from(n_w0 + 1) * 4
+            u64::from(n_w0 + 1) * 8
         );
     }
 

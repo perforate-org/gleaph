@@ -961,14 +961,16 @@ pub mod tests {
             .expect("read_label_bucket_slot");
         assert!(new_bucket.is_tree_mode());
 
-        // Verify the LTB store minted exactly 4 blocks (depth 1 root_len).
-        assert_eq!(graph.ltb().block_capacity(), 4);
+        // Verify the LTB store minted exactly the depth-1 root length
+        // (`ceil(T_PROMOTE / B)` leaf blocks).
+        let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
+        assert_eq!(graph.ltb().block_capacity(), root_len);
 
-        // Verify the new edge_start points at a LEG offset (>= 4,
-        // since the LTB block ids are 0..3).
+        // Verify the new edge_start points at a LEG offset at or above the
+        // minted block ids (root entries 0..root_len).
         assert!(
-            new_bucket.edge_start() >= 4,
-            "edge_start {} should be ≥ 4 (LTB block ids are 0..3)",
+            new_bucket.edge_start() >= u64::from(root_len),
+            "edge_start {} should be ≥ {root_len} (LTB block ids are 0..{root_len})",
             new_bucket.edge_start()
         );
     }
@@ -1044,8 +1046,8 @@ pub mod tests {
     #[cfg(not(feature = "canbench"))]
     fn promote_leg_root_region_holds_block_id_sequence() {
         // After a successful promotion, the LEG root region must hold
-        // 4 distinct block_ids in order. Read 16 bytes from the new
-        // edge_start and decode them.
+        // `ceil(T_PROMOTE / B)` distinct block_ids in order. Read the root
+        // region bytes from the new edge_start and decode them.
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
         let stored = T_PROMOTE;
@@ -1078,26 +1080,26 @@ pub mod tests {
             .read_label_bucket_slot(slot)
             .expect("read_label_bucket_slot");
         let new_edge_start = post_bucket.edge_start();
-        // Read 16 bytes from the new edge_start.
-        let mut root_bytes = [0u8; 16];
+        let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
+        let mut root_bytes = vec![0u8; root_len as usize * 4];
         graph
             .edges()
             .read_slots_contiguous_bytes(new_edge_start, &mut root_bytes);
-        // Decode the 4 block_ids.
-        let id_0 = u32::from_le_bytes(root_bytes[0..4].try_into().unwrap());
-        let id_1 = u32::from_le_bytes(root_bytes[4..8].try_into().unwrap());
-        let id_2 = u32::from_le_bytes(root_bytes[8..12].try_into().unwrap());
-        let id_3 = u32::from_le_bytes(root_bytes[12..16].try_into().unwrap());
         // Each block_id must be a valid mint (id < block_capacity).
         let cap = graph.ltb().block_capacity();
-        assert!(id_0 < cap);
-        assert!(id_1 < cap);
-        assert!(id_2 < cap);
-        assert!(id_3 < cap);
+        let mut ids = Vec::with_capacity(root_len as usize);
+        for i in 0..root_len {
+            let at = i as usize * 4;
+            let id = u32::from_le_bytes(root_bytes[at..at + 4].try_into().unwrap());
+            assert!(
+                id < cap,
+                "root entry {i}: id {id} must be a valid mint (< {cap})"
+            );
+            ids.push(id);
+        }
         // block_ids must be unique (different mint calls).
-        let ids = [id_0, id_1, id_2, id_3];
-        for i in 0..4 {
-            for j in (i + 1)..4 {
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
                 assert_ne!(ids[i], ids[j], "ids[{i}] == ids[{j}] = {}", ids[i]);
             }
         }
@@ -1138,8 +1140,9 @@ pub mod tests {
             promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
 
-        // Read the LTB blocks: 4 blocks × 1024 edges = 4096 edges.
-        for block_idx in 0..4u32 {
+        // Read the LTB blocks: `root_len` blocks × B edges == `stored` edges.
+        let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
+        for block_idx in 0..root_len {
             let mut buf = [0u8; BLOCK_PAYLOAD_BYTES];
             graph
                 .ltb()

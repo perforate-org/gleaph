@@ -49,7 +49,7 @@ const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 /// `tree_csr::derive_depth` and the `root_len` per-level cap use it.
 /// `root_len > R_MAX` is the **deepen** trigger (Plan 0318 Step 7), not a
 /// slot-cap reject.
-pub(crate) const T_PROMOTE: u32 = 4096;
+pub(crate) const T_PROMOTE: u32 = 1024;
 
 /// Plan 0319 §Step 2: demote trigger. After a tree-mode removal, if
 /// the updated `degree <= T_DEMOTE`, the remove path invokes
@@ -435,9 +435,10 @@ mod cap_enforcement_tests {
 
     #[test]
     fn check_alloc_cap_slab_mode_triggers_at_t_promote() {
-        // Slab mode: stored_slots = 4090, alloc_gap = T_PROMOTE - 4090 = 6.
-        // alloc_space = 4090 + 6 = 4096 = T_PROMOTE. Any positive increment triggers the cap.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 4090, -1);
+        // Slab mode: stored_slots = T_PROMOTE - 6, alloc_gap = 6.
+        // alloc_space = (T_PROMOTE - 6) + 6 = T_PROMOTE. Any positive increment
+        // triggers the cap, whatever the tuned threshold is.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, T_PROMOTE - 6, -1);
         let current = compute_bucket_allocation(&bucket);
         assert_eq!(current, T_PROMOTE, "alloc_space at cap");
         let err = check_alloc_cap(&bucket, 1).expect_err("must reject at cap");

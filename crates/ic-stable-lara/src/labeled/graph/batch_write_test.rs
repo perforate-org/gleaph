@@ -2259,11 +2259,10 @@ mod tests {
         let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        // Promote the bucket to tree mode (stored_slots = T_PROMOTE
-        // = 4096 = 4 full blocks). Then issue 1 scalar insert to
-        // mint the 5th block and advance stored_slots to 4097. The
-        // tail block is now block 4 with tail_offset = 4 bytes
-        // (1 edge already in tail from the scalar insert), and
+        // Promote the bucket to tree mode (stored_slots = T_PROMOTE, a whole
+        // number of B-slot blocks). Then issue 1 scalar insert to mint the next
+        // block and advance stored_slots to T_PROMOTE + 1. The tail block is
+        // then the block holding that last slot, with tail_offset = 4 bytes and
         // tail_room = 4096 - 4 = 4092 bytes.
         force_tree_mode_for_test(&graph, VertexId::from(0), label);
         graph
@@ -2285,7 +2284,11 @@ mod tests {
         assert!(bucket_before.is_tree_mode());
         let pre_stored = bucket_before.stored_slots;
         let pre_degree = bucket_before.degree;
-        assert_eq!(pre_stored, 4097, "stored_slots after scalar insert");
+        assert_eq!(
+            pre_stored,
+            crate::labeled::graph::T_PROMOTE + 1,
+            "stored_slots after scalar insert"
+        );
         // ADR 0096 §5: the promote subtracted the slab-era degree, and the
         // scalar tree insert above must not have re-added it.
         assert_eq!(
@@ -2354,10 +2357,9 @@ mod tests {
         let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        // Pre-fill the bucket to T_PROMOTE - 100 = 3996 with scalar
-        // inserts, then batch-insert 200 edges to push stored_slots
-        // to 4196, which is past T_PROMOTE.
-        let pre = 3996u32;
+        // Pre-fill the bucket to T_PROMOTE - 100 with scalar inserts, then
+        // batch-insert 200 edges to push stored_slots past T_PROMOTE.
+        let pre = crate::labeled::graph::T_PROMOTE - 100;
         for i in 0..pre {
             graph
                 .insert_edge(
@@ -2392,7 +2394,15 @@ mod tests {
         let result = graph
             .insert_one_orientation_batch(&plan)
             .expect("batch past T_PROMOTE");
-        assert_eq!(result.edge_slots_written, batch_count);
+        // The run takes the in-place slab path or a wide expansion (which
+        // rewrites the resident prefix, so the reported count can exceed the new
+        // edges at smaller thresholds). The regime-independent contract is that
+        // no row is lost — asserted as a full census after the promotion below.
+        assert!(
+            result.edge_slots_written >= batch_count,
+            "batch run must at least write its own edges (got {})",
+            result.edge_slots_written
+        );
         // Verify the bucket is past T_PROMOTE but still in slab
         // mode (batch-past-threshold is allowed; promotion is
         // triggered on the next scalar insert).
@@ -2433,8 +2443,8 @@ mod tests {
         // post-promote bucket is in tree mode and stored_slots =
         // pre + batch_count + 1 (the scalar insert). Promotion
         // transcribes all stored_slots entries; the batch-inserted
-        // edges are at slab positions 4096..4295 and get
-        // transcribed like any other slab entry.
+        // edges are at slab positions T_PROMOTE..(T_PROMOTE + batch_count)
+        // and get transcribed like any other slab entry.
         let vertex = graph.vertices.get(VertexId::from(0));
         let (_slot, bucket) = match graph
             .find_bucket(VertexId::from(0), &vertex, label)
@@ -2445,6 +2455,15 @@ mod tests {
         };
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.stored_slots, pre + batch_count + 1);
+        // Reachability: promotion transcribed every pre-filled, batch-inserted
+        // and scalar row (the descriptor assertions only cover the width).
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), label)
+                .expect("scan")
+                .len() as u32,
+            pre + batch_count + 1
+        );
         // Spot-check reachability: the bucket is in tree mode and
         // the LTB has the right number of blocks. The post-promote
         // tree-mode read path is exercised by the existing tree_csr
@@ -2455,8 +2474,9 @@ mod tests {
 
     /// Plan 0321 §F-1 (review rework, 2026-09-02): the batch
     /// tree branch must reject runs targeting a freshly-promoted
-    /// bucket whose `stored_slots % B == 0` (e.g. a bucket that
-    /// was just promoted at `stored = T_PROMOTE = 4096`). At
+    /// bucket whose `stored_slots % B == 0` (a freshly promoted bucket ends
+    /// exactly at a block boundary because `T_PROMOTE` is a whole number of
+    /// B-slot blocks). At
     /// that point the bucket ends exactly on a block boundary:
     /// `tail_offset == 0` and the **next** LTB block does not
     /// exist yet. The scalar path mints the new block; the batch
@@ -2470,7 +2490,7 @@ mod tests {
         let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        // Promote (stored = T_PROMOTE = 4096, tail_offset = 0).
+        // Promote (stored = T_PROMOTE, tail_offset = 0).
         force_tree_mode_for_test(&graph, VertexId::from(0), label);
         let vertex = graph.vertices.get(VertexId::from(0));
         let (slot, bucket) = match graph
@@ -2481,8 +2501,12 @@ mod tests {
             _ => panic!("expected Found bucket after promote"),
         };
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, 4096);
-        assert_eq!(bucket.stored_slots % 1024, 0, "tail_offset == 0");
+        assert_eq!(bucket.stored_slots, crate::labeled::graph::T_PROMOTE);
+        assert_eq!(
+            bucket.stored_slots % (crate::labeled::tree_csr::B as u32),
+            0,
+            "a freshly promoted bucket ends on a block boundary"
+        );
         // Build a 100-edge batch run. Even with only 100 edges
         // (= 400 bytes, well within the would-be 4096-byte tail
         // room) the run is rejected because `tail_offset == 0`
@@ -2520,7 +2544,7 @@ mod tests {
             .read_label_bucket_slot(slot)
             .expect("read after");
         assert!(bucket_after.is_tree_mode());
-        assert_eq!(bucket_after.stored_slots, 4096);
+        assert_eq!(bucket_after.stored_slots, crate::labeled::graph::T_PROMOTE);
         // Scalar fallback: insert one edge via the scalar path.
         // The scalar path mints a new block (Plan 0318 §tree
         // insert handles `tail_offset == 0` correctly) and the
@@ -2537,17 +2561,22 @@ mod tests {
             .buckets
             .read_label_bucket_slot(slot)
             .expect("read after scalar");
-        assert_eq!(bucket_after_scalar.stored_slots, 4097);
-        assert_eq!(bucket_after_scalar.degree, 4097);
+        assert_eq!(
+            bucket_after_scalar.stored_slots,
+            crate::labeled::graph::T_PROMOTE + 1
+        );
+        assert_eq!(
+            bucket_after_scalar.degree,
+            crate::labeled::graph::T_PROMOTE + 1
+        );
     }
 
     /// Plan 0321 §F-1 (review rework, 2026-09-02): scalar
     /// fallback after a `tail_offset == 0` rejection. Inserting
-    /// 1024 edges one-by-one via the scalar path at the boundary
-    /// advances the bucket from stored = 4096 to 5120 (5 full
-    /// blocks) without errors. The scalar `tree_mode_insert_edge`
-    /// path mints a new block for each `tail_offset == 0`
-    /// transition.
+    /// B edges one-by-one via the scalar path at the boundary
+    /// advances the bucket from stored = T_PROMOTE to T_PROMOTE + B
+    /// without errors. The scalar `tree_mode_insert_edge` path mints
+    /// a new block for each `tail_offset == 0` transition.
     #[test]
     fn scalar_fallback_after_exactly_full_tail_block_advances_correctly() {
         use crate::labeled::graph::test_support::{
@@ -2579,8 +2608,14 @@ mod tests {
             crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
             _ => panic!("expected Found bucket"),
         };
-        assert_eq!(bucket.stored_slots, 4096 + 1024);
-        assert_eq!(bucket.degree, 4096 + 1024);
+        assert_eq!(
+            bucket.stored_slots,
+            crate::labeled::graph::T_PROMOTE + crate::labeled::tree_csr::B as u32
+        );
+        assert_eq!(
+            bucket.degree,
+            crate::labeled::graph::T_PROMOTE + crate::labeled::tree_csr::B as u32
+        );
         assert!(bucket.is_tree_mode());
     }
 

@@ -5561,19 +5561,19 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(1);
-        let start = 4096u32;
+        let start = crate::labeled::graph::T_PROMOTE;
         promote_test_bucket(&graph, vid, label, start);
         // Remove slot 0 first via the production dispatch path so
         // `num_edges` and `vertex_segment_counts` stay consistent
         // with the production accounting. The bucket is now at
-        // degree=4095, stored=4096, still tree mode.
+        // degree = T_PROMOTE - 1, stored = T_PROMOTE, still tree mode.
         let _ = graph
             .remove_edge_at_slot(vid, label, 0)
             .expect("production remove 0");
-        // Tombstone slots 1..=2047 via the production path. After
-        // 2047 removes, degree = 4095 - 2047 = 2048 == T_DEMOTE.
-        // The last remove (slot 2047) triggers the demote.
-        for slot in 1..2048u32 {
+        // Tombstone every remaining slot above T_DEMOTE via the production
+        // path: after T_PROMOTE - T_DEMOTE - 1 removes, degree == T_DEMOTE and
+        // the last remove triggers the demote.
+        for slot in 1..(crate::labeled::graph::T_PROMOTE - crate::labeled::graph::T_DEMOTE) {
             graph
                 .remove_edge_at_slot(vid, label, slot)
                 .expect("production remove");
@@ -5586,8 +5586,8 @@ mod tests {
             _ => panic!("bucket missing"),
         };
         assert!(!b.is_tree_mode(), "trigger should have demoted the bucket");
-        assert_eq!(b.degree, 2048);
-        assert_eq!(b.stored_slots, 2048);
+        assert_eq!(b.degree, crate::labeled::graph::T_DEMOTE);
+        assert_eq!(b.stored_slots, crate::labeled::graph::T_DEMOTE);
     }
 
     /// Plan 0319 §Step 1 test (c): demote at degree 0 reclaims all
