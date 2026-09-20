@@ -525,6 +525,22 @@ session did.
   0 regressed (one −0.06%, −15.72 K instructions). No persist, so `canbench_results.yml` is untouched;
   unfiltered `canbench --persist` remains a final-gate item. The log-ownership contract is now in ADR
   0096 §5 (`fold_logs` row) rather than only here.
+  **Duplicate resident computation consolidated (2026-09-20, `729214852`):** "physical region plus
+  overflow-log chain" was spelled out by hand in `materialize_labeled_vertex_edge_plan`,
+  `plan_labeled_leaf_relocation` and `rebalance_labeled_leaf_weighted_slide_in_block`; the planner's
+  copy was a fourth and omitted the log term, which *is* the bug this session chased. All three now
+  call `bucket_resident_rows(leaf, bucket)`. `prepare_vertex_edge_span_for_overflow_log_fold` keeps its
+  own `stored_slots() + log` on purpose (logical width after folding, which differs from the physical
+  region for tree buckets). Suite 611/0.
+  **Open defect this exposed (not introduced, but now visible):** clippy reports
+  `rebalance_vertex_edge_span`'s `preferred_bucket` as "only used in recursion" (compact.rs:2512). The
+  shared commit's tiling never receives the caller's placement preference, and the planner's own
+  `positions` were already dead (the compiler warned `unused variable: positions` in the unified
+  variant). So `preferred_bucket` / `preferred_extra` currently affect only *sizing*
+  (`min_required += preferred_extra`), not *placement*. Next caller-facing fix: give
+  `commit_vertex_edge_span_layout` (or the position helper it calls) the preference and pass `None`/0
+  from the paths that have none, then re-check `compact_vertex_edge_span_one_step`, which passes
+  `Some(bucket_index)` precisely to keep one bucket's slot indices stable.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
