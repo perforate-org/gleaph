@@ -347,6 +347,14 @@ session did.
   `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`) are the rework's last
   unexplained piece; the other six are the four promotion contract tests and the two
   expectation/policy tests. Working copies: `/tmp/best2_*.rs`.
+  Narrowed further (2026-09-20): in `edge_inline_propertys_survive_rewrite_with_tombstones` the
+  **property values read back correctly** (20, 30) while the **edge targets read back as 0** — so the
+  values slab is fine and the *edge* copy is what breaks. The call takes the **disjoint** branch
+  (`moved && old_alloc > 0 && new_base != old_base`, `slab_only_bulk == false` because the bucket has a
+  tombstone), i.e. the `per_bucket`-collecting loop: the collected edges are written at the published
+  positions, so the next instrumentation target is the `collect_out_edges_slot_order` source against
+  the positions the plan published (the pair that used to be derived from the same `degree` width; the
+  compaction-aware budget changed one side of that contract).
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
