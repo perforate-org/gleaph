@@ -5130,3 +5130,18 @@ is to answer "does the current cover already host the requested width" before to
 relocation, the delegation merely moved work that the fourth implementation also did, and the honest comparison is
 that scope against its baseline. Then choose trim / cheap-answer / accept (≈ +19 % on this workflow, with `compact`
 −217.82 K median and `ins` median +0.09 %).
+
+**The delegation's plan cost is one placement attempt (2026-09-20, final attribution).** Scopes inside
+`resolve_labeled_edge_base_for_rebalance` on `bench_l_nt_bp_ins_1024` give `labeled_resolve_in_leaf` = **122.23 K**
+with `calls: 1`, against the plan's 132.69 K total; the relocate and policy-tail scopes never appear (no relocation
+happens on this bench). So the entire plan overhead is the single initial
+`try_labeled_vertex_edge_base_in_pinned_leaf` query for the widened span — not the descriptor read (≈7 K), not the
+resident sizing (≈8 K), not a repeated plan (the call count is 1), and not a leaf relocation. The fourth
+implementation asked the same question with the same helper, so the remaining difference must be in the *inputs*
+the two paths hand it (e.g. the plan resolving a wider allocation request than the fourth implementation's tail
+did, hence a more expensive query) rather than in duplicated work. Options left, in order: (1) verify the requested
+width the two paths pass for this bench (log `new_alloc` on both sides for one run) — if the plan asks for more,
+that is the whole difference and it is a sizing question, not a placement one; (2) answer the query from data
+already in hand when the current cover already hosts the request (`old_alloc >= new_alloc`), which the branch order
+currently cannot reach because that branch only fires for growth; (3) accept ≈ +19 % on this workflow (counterweight
+`compact` −217.82 K median, `ins` median +0.09 %). Diagnostic scopes have been removed; tree 614/0.
