@@ -838,6 +838,25 @@ session did.
   `new_alloc = 0`, so the resolver is never asked and (C) becomes unreachable); (b) make the non-wasm
   `log_collect_overflow` observable in tests — it is a no-op today, which is why this class prints nothing
   where it fails (this session's decisive `span_slots=80 < effective_live=81` came from temporarily
+
+  **(A) confirmed with numbers (2026-09-20).** Instrumenting `plan_labeled_leaf_relocation` and the
+  rebalance's request for `mixed_label_hub_20_labels_500_edges_each` gives a repeating pattern:
+
+  ```
+  TMPREQ   old_alloc=10400 min_required=9412 new_alloc=11700 leaf_max=Some(10400)
+  TMPRELOC old_len=10400 new_len=10592 resident_geometry=9412 active=1 block_len=16
+  TMPREQ   old_alloc=10592 min_required=9586 new_alloc=11916 leaf_max=Some(10592)
+  TMPRELOC old_len=10592 new_len=10800 resident_geometry=9586 ...
+  ```
+
+  The content already fits (`min_required` 9412 < `old_alloc` 10400); what fails is the *proactive slack*
+  (`new_alloc` 11700). The relocation sizes the new block as
+  `resident_geometry + active_vertices + max(resident_geometry/8, seg)` = 9412 + 1 + 1179 = **10592**, i.e.
+  ~2 % above the current block and never the request, so `leaf_max` stays below `new_alloc`, the retry loop
+  ratchets by ~200 slots a round and never converges. Fix: the requesting vertex's share in the relocation's
+  sizing must be `max(resident, requested_alloc)` — `plan_labeled_leaf_relocation` knows `src`, so it needs
+  only the request passed in (`relocate_labeled_leaf_physical_block` gains a floor-carrying variant; the
+  plain entry point keeps passing 0).
   enabling it).
      decision removes).
   fourth implementation's placement.
