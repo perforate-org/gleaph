@@ -1063,6 +1063,19 @@ session did.
     distribution test, since slack is only taken when the window hosts it.
 
   Restore with the three `cp`s above; HEAD stays 614/0.
+  **Do not land the 612/2 artifacts yet: the residual is a visibility loss, not an expectation
+  (2026-09-20).** The `None` in `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones` is
+  `.find(|edge| edge.target == 1).unwrap()` on `iter_edges_for_label(hub, road)` — the edge the test expects to
+  remain visible in the slab is **absent from the scan** after the stepped compaction, whereas the previous
+  (folding) behaviour merely moved it (`EdgeMoved { old_slot_index: 1, new_slot_index: 0 }`). So the
+  non-folding publish (`fold_logs = false` + prefix-only materialization + preserved `overflow_log_head` +
+  the wider tiling reservation) leaves a row unreachable: either the fold that follows overwrites it, or the
+  head is cleared while the row was never written. That is the same class as the `release_segment` hazard (I2)
+  and must be explained before any of `/tmp/delegation_foldpercall_612_2_*` is landed — otherwise the
+  delegation would convert a moved row into a missing row. Next step is a *targeted* read of
+  `compact_vertex_edge_span_one_step`'s own fold (what it writes, where, and whether it clears the head) plus
+  the commit's non-folding publish for the same bucket, not another parameter. HEAD stays 614/0; the 612/2
+  artifacts are for that read's starting point only.
   enabling it).
      decision removes).
   fourth implementation's placement.
