@@ -610,6 +610,40 @@ session did.
   (`labeled_relocate_commit_order` `left: 256`, `labeled_segment_relocate_releases_single_footprint`
   `left: 0`, `labeled_segment_slide_coalesces_adjacent_free` `left: 2`,
   `vertex_edge_span_rewrite_weights_slack_by_label_degree` `hot_capacity > stored`) still encode the
+
+  **Decision record needed — "may a span rewrite keep its base when the leaf cannot host the bigger
+  span?"** Facts gathered 2026-09-20:
+
+  * The plan's growth resolution has exactly one caller (`compact.rs:772`, inside
+    `rewrite_vertex_edge_span_read_and_plan`); the fourth implementation's
+    `resolve_labeled_edge_base_for_rebalance` has exactly one caller (`compact.rs:2420`). So the two
+    policies are reachable only through those two entry points.
+  * `resolve_labeled_edge_base_for_growth` order: in-leaf pin → (leaf pinned) up to four
+    relocate-and-retry rounds → **error**; (leaf unpinned) pin once → in-leaf pin → **error**.
+  * `resolve_labeled_edge_base_for_rebalance` order: in-leaf pin → (leaf pinned or relocate in
+    progress) relocate once, set `LABELED_REBALANCE_LEAF_RELOCATED`, retry, then
+    **`labeled_edge_base_from_first_bucket(src)`** — i.e. keep the current anchor — and the same
+    fallback when the leaf is unpinned. It errors only for a vertex with no non-tiny bucket at all.
+  * `tail_append_labeled_edge_base` is the relocate-in-progress escape: it grows
+    `elem_capacity` by `new_alloc` and hands back the old capacity as the base.
+  * Downstream, `commit_vertex_edge_span_layout` publishes `stored_slots = new_alloc`
+    unconditionally. In the fallback case the span's *base* stays while its *cover* grows, so the
+    cover can run past the leaf window and overlap a leaf mate — the GAP-005 overlap hazard, which is
+    only `debug_assert`-guarded.
+  * HEAD's green suite depends on the never-fail policy: `insert_edge_skip_leaf_cascade` skips the
+    leaf *cascade* but still runs the vertex rebalance, so the hub fixtures (`mixed_label_hub_{20,33,50}`,
+    `labeled_hub_33_labels_bounded_insert_time`, `batch_relocates_*`, `expanded_slab_*`) reach it.
+
+  Options: **(A)** strict for everyone (delegation needs an explicit "fallback tolerated" argument and
+  those fixtures must be re-derived, because on HEAD they pass only by keeping the base);
+  **(B)** never-fail for everyone (smallest diff, but the insert path would accept an inflated cover —
+  an invalid state by ADR 0096's own overlap rules); **(C, recommended)** strict for *required* growth,
+  best-effort for *proactive slack* (`force_slack_grow && old_alloc >= min_required` downgrades to an
+  in-place rewrite, already implemented in the delegated attempt), plus an explicit
+  "maintenance may fall back" policy argument so the rebalance keeps its contract without hiding the
+  difference inside one resolver. (C) needs: a policy parameter threaded from the rebalance,
+  the three assertion-level tests re-read against that contract, and an ADR 0096 §5 row naming
+  who may keep a base and who must obtain one.
   fourth implementation's placement.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
