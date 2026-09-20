@@ -999,6 +999,28 @@ session did.
   session introduced) while the published `stored` stays the materialized run (the prefix, keeping
   `overflow_log_head`). The vertex cover (`new_alloc`) is already sized from the resident rows, so this stays
   I1-compliant.
+  **Handover state for the delegation (2026-09-20, end of session).** Verified by running each state:
+
+  * `/tmp/delegation_nopolicy_compact.rs` — shim only, no policy threading: **604/10**.
+  * the policy-threaded state (shim passes `SlackMayBeDropped`, `resolve_labeled_edge_base_for_policy`,
+    planner parameter, `rewrite_vertex_edge_span_with_policy` + `Required` wrapper): **611/3** — this is the
+    state to reconstruct; it was **not saved under a correct name** (the file called
+    `/tmp/delegation_policy_611_3_compact.rs` is actually the later, regressed one, now renamed
+    `/tmp/delegation_foldthread_598_16_misnamed_compact.rs`). Reconstruction is mechanical: re-apply the four
+    policy edits listed above to HEAD, and do *not* thread `fold_logs` yet.
+  * `/tmp/delegation_foldthread_tiling_598_16_compact.rs` — policy threading **plus** `fold_logs = false` for
+    the shim plus the tiling-width separation (tiling reserves `bucket_resident_rows` while the published width
+    stays the materialized prefix): **598/16**, i.e. the tiling fix did not recover the fold-preserving
+    behaviour either. So the two one-step-compaction failures need a different treatment than a flag and a
+    wider tiling: compare `compact_vertex_edge_span_one_step`'s expectations against what the shared commit
+    does for a log-backed bucket whose span already holds the content (the fourth implementation re-tiled from
+    `stored_slots().max(degree)` and published `stored_slots_raw()`; `EdgeMoved { old_slot_index: 1,
+    new_slot_index: 0 }` says the commit moved a log row into slot 0), i.e. read that path rather than adding
+    another parameter.
+
+  After reconstructing 611/3, the remaining three failures are: those two one-step-compaction expectations and
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` (re-derive as a distribution test, since slack is
+  now only taken when the window hosts it). Tree is at 614/0.
   enabling it).
      decision removes).
   fourth implementation's placement.
