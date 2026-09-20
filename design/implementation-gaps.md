@@ -5300,3 +5300,27 @@ So the reference supports the direction, supplies a proven allocator shape, and 
 their sweeps compare capacities on wall time, memory and persisted bytes per insert, which is exactly the triad to
 measure for a per-bucket spill (plus the two extras noted earlier: small-run overhead, and prefix + run versus
 prefix + chain scan cost).
+
+## (iv) answered from the repo's own measurements (2026-09-20)
+
+ADR 0088's Gate 2 verdict records the chunked-run (tree) full scan collapsing from ~14,540 ins/edge to **~41
+ins/edge at both 4K and 65K** once the amortized chunk buffer replaced per-edge node traversal (a 351× change), and
+notes that the "within ~20 % of slab baseline" gate was met trivially because the slab baseline number in that
+comparison came from the *shared-leaf copy path* rather than from a per-edge scan. For comparison the rejected
+B-tree prototype cost ~2,004 ins/edge. Two consequences for the design discussion:
+
+* **A run/chunk structure's sequential scan is not the obstacle it looked like** — ~41 ins/edge with one
+  dereference per 1,024 edges is the measured number for the structure A″ would reuse, so "prefix + spill run"
+  does not lose the scan argument by a wide margin; the earlier `delete_half_by_slot_then_scan` blow-up in that
+  table is explicitly a prototype artifact (naive O(N²) shifts), not the run structure.
+* **The structure's real exposure is random ordinal access**, which the ADR calls out as block-transition and
+  per-level-dereference cost. That is exactly why A″ keeps the *flat prefix* for mid-size buckets and uses runs
+  only for spill: rank/select and positional reads stay flat where buckets are flat, and only the spilled portion
+  pays an indirection.
+
+So the remaining unknown is (i) — small-run overhead in the allocator — and the reference's own
+`bucket-run-allocation`/`bucket-tail-growth` measurements already exercise per-owner runs with 24-byte records,
+power-of-two capacity classes and a per-class free list, which is evidence that small runs are workable in that
+design. Measure it in Gleaph anyway before choosing between a general run and a packed small-run array for the
+first spill level, then proceed with the field-meaning change and the deletion of the log store, the drain guard,
+the fold prelude and the recovery loop.
