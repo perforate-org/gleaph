@@ -49,9 +49,22 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-19-001 — Promote silently drops overflow-log rows (tree mode has no log)
 
-- **Status:** Open — P1 silent edge loss. Recorded 2026-09-19 while triaging the
-  `T_PROMOTE = 1024` flip (found by classifying the 11 failures that appear at the
-  lower threshold; see GAP-2026-09-17-001 for the density-accounting context).
+- **Status:** Fixed 2026-09-19 (commit `164e27cfa`) — recorded the same day while
+  triaging the `T_PROMOTE = 1024` flip (found by classifying the 11 failures that
+  appear at the lower threshold; see GAP-2026-09-17-001 for the density-accounting
+  context). Fix: promotion folds the slab overflow log into the prefix first
+  (`ensure_label_bucket_folded_to_slab`, with the vertex-span rewrite retry), then
+  re-locates the descriptor and transcribes the folded prefix; a fold that cannot
+  make room fails closed and leaves the slab bucket and its log intact. This is
+  the route ADR 0088 §7's transcription clause allows and §6 ("promotion always
+  folds") names; the rejected alternative was interleaving log entries directly
+  during transcription (larger, and duplicates the fold's ordering rules).
+  `assert_labeled_layout_invariants` now enforces the tree wire rules
+  (`overflow_log_head < 0`, `degree <= stored_slots`) and sizes a tree bucket's
+  on-slab range from `bucket_physical_resident_slots` (the logical width had
+  false-positived against the LEG capacity). Cost: `tcsr_4096_insert_grow` 69.92M
+  instructions, no change vs the persisted artifact (the fold runs only when a log
+  is active).
 - **Observed behavior (confirmed):** `promote_bypass_to_tree_mode` transcribes
   exactly `pre_stored_slots` prefix slots into the LTB blocks and publishes
   `overflow_log_head = -1` ("the log was orphaned by promote"). Any live row the
@@ -71,9 +84,11 @@ defect from being rediscovered without its prior reasoning.
     the trigger is a *non-empty overflow log*, which the width>0 path reliably
     produces because the edge prefix plateaus (`stored 4080` while `degree 4200`,
     `log_head 119`) while the property stream keeps growing.
-  - Test that exposes it at the lower threshold:
-    `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
-    (`in_edges_for_label(..).len() == 2000` → 1999).
+  - Regression: `gap_promote_with_active_overflow_log_keeps_every_row` (fails
+    before the fix with `left: 4999, right: 5000`; with the audit swapped in it
+    fails with `vertex 2 bucket 256: tree degree 5000 exceeds stored width 4999`).
+    The lower-threshold test `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
+    (`in_edges_for_label(..).len() == 2000` → 1999) exposed it originally.
   - No detector fires today: `assert_labeled_edge_store_pma_counts` compares
     `actual` against bucket degrees (both agree on the inflated degree), and the
     tree block-header parity helper is test-local.
