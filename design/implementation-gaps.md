@@ -86,22 +86,35 @@ defect from being rediscovered without its prior reasoning.
   relocates the leaf block on a collision, and fails closed otherwise. Regression
   `fold_growth_stays_mate_disjoint_across_span_growth` (the minimal reproduction above) fails on
   the block-only check and passes with the fix.
-- **Second path still open (verified 2026-09-20 on the same commit):** the wider G5-shaped skew
+- **Second path still open (diagnosed 2026-09-20 on the same commit):** the wider G5-shaped skew
   (256 vertices, degrees 1..2048, segment 16) still trips the guard in leaf 15:
-  `vid 255 reserves up to 1568 but vid 240 starts at 400`. Geometry: the hub's span sits at base
-  **256 — outside its leaf block, which had relocated to `(400, 3664)`** — while the mates were
-  re-tiled to `400..2752`; the hub's cover then grew to 1312 slots across them. So a span that
-  lives outside the leaf block is not carried along when the block relocates, and its later growth
-  is published without a mate check. Suspects to inspect next: the relocation slide's handling of
-  out-of-block spans (`rebalance_labeled_leaf_weighted_slide_in_block` /
-  `plan_labeled_leaf_relocation`) and the `in_window_layout` publish path in
-  `rewrite_vertex_edge_span` (which trusts the caller's window with no mate check). Also worth
-  deciding: whether out-of-block (tail-appended) spans should exist at all, or whether the leaf
-  block must always contain them (today the recursion breaker in
-  `resolve_labeled_edge_base_for_growth` can create them).
-- **Next decision:** close the second path (or make out-of-block spans impossible), then re-run the
-  skewed-leaf audit and the production balance evaluation. Until then, treat the K=4 boundary flip
-  (`91575bc29`) as needing this follow-up before release.
+  `vid 255 reserves up to 1568 but vid 240 starts at 400`.
+  The writer is the **tree promotion**, not the fold:
+  `promote_bucket_if_needed` -> `promote_bypass_to_tree_mode[_impl]` publishes the new tree
+  descriptor with `edge_start = allocate_span(combined_root_len)` (a fresh, globally allocated
+  LEG root region — slot 256 in this run, i.e. *outside* the leaf block `(400, 3664)`), and the
+  vertex row's `stored_slots` keeps its **slab-era cover** (1312). `tree_mode_insert_edge` then
+  writes the same stale cover with `degree = stored = 1151`. The audit reads `vertex.stored_slots`
+  as the reservation, so the stale slab cover looks like a span reaching from 256 across the
+  leaf's re-tiled mates.
+  Two modelling facts fall out, and both need a decision before a fix:
+  1. `promote_bypass_to_tree_mode_impl` never re-bases the vertex cover on the resident-geometry
+     SSOT (`bucket_physical_resident_slots(bucket)` = `combined_span_region_len` = `root_len`
+     slots for tree, not `degree`). The published cover therefore describes a region the tree
+     bucket does not own.
+  2. The leaf-cover model itself (one `(base, cover)` interval per vertex, used by the audit, the
+     slide, and release math) cannot represent a vertex whose tree root was allocated outside the
+     leaf block while sibling slab buckets stay inside it. Either tree roots must stay inside the
+     leaf's block (allocate through the leaf's tiling, like promotion of slab spans does), or the
+     cover model needs an explicit out-of-block representation.
+  Also verified while tracing: the relocation slide re-tiles this leaf correctly
+  (`TMPSLIDE`: hub `old2752+688 -> 2749+979`, later `-> 2752+1312`, inside the block), so the
+  slide is not the writer; the guard's span is the *stale vertex cover*, not a moved span.
+- **Next decision:** decide between (1) re-basing the vertex cover in the tree promotion and
+  keeping tree roots inside the leaf's block, or (2) making out-of-block roots explicit in the
+  cover model; then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16),
+  re-run the skewed-leaf audit, and resume the production balance evaluation. Until then, treat the
+  K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
 
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
 
