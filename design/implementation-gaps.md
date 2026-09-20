@@ -5048,3 +5048,29 @@ this bench (the previous parser dropped them) to see which new scope dominates, 
 pass, skipping it for the no-log common case, or accepting ≈ +19 % on this one workflow as the price of one
 implementation — with `compact` (median −217.82 K instructions) and the overall `ins` median (+0.09 %) as the
 counterweight. Everything else from this session is landed, green (614/0) and measured.
+
+**Delegation cost attributed to the byte (2026-09-20).** Scope breakdown for `bench_l_nt_bp_ins_1024` (identical
+for the 256/4096 variants), bench total 391.09 K instructions (+19.32 %):
+
+| scope | instructions | delta |
+| --- | --- | --- |
+| `labeled_rebalance_leaf_cascade` | 194.09 K | **+47.06 %** |
+| `labeled_rebalance_edge_log_vertex` | 185.89 K | **+50.07 %** |
+| `labeled_non_tail_bypass_insert` | 386.53 K | +19.18 % |
+| `labeled_rewrite_read_and_plan` | 129.25 K | **new** |
+| `labeled_vertex_write_edge_runs` | 15.61 K | +52.35 % |
+| (the rest) | ≈40 K | ≈ +100 % each on 0.7–6 K scopes |
+
+So the cascade and the per-vertex log rebalance each roughly doubled, and the whole growth is accounted for by the
+new `labeled_rewrite_read_and_plan` scope (129.25 K) plus the commit's write scopes: the fourth implementation's
+prologue cost about half of what the plan now costs for the same decision (the cascade grew ~62 K while the plan
+scope alone is 129 K, i.e. the plan replaced ~67 K of prologue and added ~62 K net). The plausible dominant terms,
+worth measuring one at a time rather than guessing: (a) `bucket_resident_rows` walks the overflow-log chain for
+every bucket even when the bucket has no log (`overflow_log_head() < 0` ⇒ `bucket_physical_resident_slots` is the
+same number) — cheap guard, applies in the plan, the commit's tiling and the slide; (b) the plan and the commit
+each read the vertex's buckets (`read_vertex_label_buckets`), so the same descriptors are decoded twice; (c) the
+resolver is invoked even when the plan already knows the answer (an in-leaf placement for the current width).
+Each is a one-line-to-few-line guard and each should be measured with `canbench bench_l_nt_bp` alone (~40 s). Only
+after those numbers decide between trimming, special-casing the no-log common case, and accepting ≈ +19 % on this
+one workflow — with `compact` at −217.82 K median and the overall `ins` median at +0.09 % as the counterweight.
+Everything else from this session is landed and green (614/0).
