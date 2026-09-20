@@ -1089,6 +1089,25 @@ session did.
   `iter_edges_for_label` sees the target before and after each step. That distinguishes "step 1 published the
   head without the rows" from "step 2 packed and dropped a row". Restore the 612/2 artifacts with the three
   `cp`s; HEAD is 614/0.
+  **Mechanism of the visibility loss, measured (2026-09-20).** With the per-caller `fold_logs = false`, a probe
+  after step ① prints `TMPSTEP1 slots=[(7, 6, 2)] seen=6` — i.e. the bucket has 7 prefix slots, 6 live rows, a
+  log chain at head 2, and the scan sees 6 rows — and step ② never runs (no `TMPSTEP2`), so the compacting
+  rewrite is not involved. The row is lost afterwards in the recursion's *per-bucket* step, which packs each
+  label row (`stored_slots = degree`; the code comments say so: "Per-bucket steps may already pack each label
+  row (`stored_slots == degree`) while the vertex-wide VertexEdgeSpan width stays oversized"). Packing to
+  `degree` while a log chain is still present truncates the row that lives at ordinal `stored + offset` and has
+  not been folded yet. In other words the stepped path *assumes the fold already happened* before it packs —
+  which the fourth implementation's publish effectively provided, and the unified publish does not when
+  `fold_logs = false`.
+
+  Conclusion for the delegation: the per-caller flag is not the answer, and the stepped path's expectation
+  ("`OverflowRewrite` with unchanged slot indices") is incompatible with a publish that owns the fold. The
+  honest resolution is to let the publish own the fold (i.e. the 611/3 state, `fold_logs = true`), and
+  re-derive `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones` — the observed behaviour there is
+  `EdgeMoved { old_slot_index: 1, new_slot_index: 0 }` and the row remains visible — documenting in ADR 0096 §5
+  that the fold is publish-owned, exactly as the log-ownership row already says for the rewrite path. The
+  `fold_logs=false` machinery (`/tmp/delegation_foldpercall_612_2_*`) is therefore superseded and must not be
+  landed as-is. HEAD is 614/0.
   enabling it).
      decision removes).
   fourth implementation's placement.
