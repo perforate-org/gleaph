@@ -49,7 +49,9 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
-- **Status:** Open, discovered 2026-09-20 while auditing production capacity/latency balance;
+- **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)** — the fold-prelude path is closed with a
+  regression test; a second path is still open (details below). Discovered while auditing
+  production capacity/latency balance;
   regression-adjacent to ADR 0096 §3b Phase 2 (`91575bc29`), which made it reachable in a
   production-shaped skew where the K=3 wire was not.
 - **Severity:** P0 correctness (cover overlap ⇒ a later release/density decision can act on a
@@ -79,10 +81,27 @@ defect from being rediscovered without its prior reasoning.
 - **Impact:** data-loss class (an overlapping cover can free a mate's slots on delete/relocate),
   plus density/audit misfires. Also blocks any honest capacity-vs-latency tuning of the tiny/slab
   boundary, since the geometry it would tune is currently not always valid.
-- **Next decision:** fix the fold-path growth check with a regression test built from the
-  reproduction above (`#[test] fn fold_growth_stays_mate_disjoint_across_span_growth`), re-run the
-  skewed-leaf audit, then resume the production balance evaluation. Until then, treat the K=4
-  boundary flip (`91575bc29`) as needing this follow-up before release.
+- **Fold-path fix (`7ad12b230`):** `prepare_vertex_edge_span_for_overflow_log_fold` now requires
+  the wider range to be mates-disjoint (reusing `try_labeled_vertex_edge_base_in_pinned_leaf`),
+  relocates the leaf block on a collision, and fails closed otherwise. Regression
+  `fold_growth_stays_mate_disjoint_across_span_growth` (the minimal reproduction above) fails on
+  the block-only check and passes with the fix.
+- **Second path still open (verified 2026-09-20 on the same commit):** the wider G5-shaped skew
+  (256 vertices, degrees 1..2048, segment 16) still trips the guard in leaf 15:
+  `vid 255 reserves up to 1568 but vid 240 starts at 400`. Geometry: the hub's span sits at base
+  **256 — outside its leaf block, which had relocated to `(400, 3664)`** — while the mates were
+  re-tiled to `400..2752`; the hub's cover then grew to 1312 slots across them. So a span that
+  lives outside the leaf block is not carried along when the block relocates, and its later growth
+  is published without a mate check. Suspects to inspect next: the relocation slide's handling of
+  out-of-block spans (`rebalance_labeled_leaf_weighted_slide_in_block` /
+  `plan_labeled_leaf_relocation`) and the `in_window_layout` publish path in
+  `rewrite_vertex_edge_span` (which trusts the caller's window with no mate check). Also worth
+  deciding: whether out-of-block (tail-appended) spans should exist at all, or whether the leaf
+  block must always contain them (today the recursion breaker in
+  `resolve_labeled_edge_base_for_growth` can create them).
+- **Next decision:** close the second path (or make out-of-block spans impossible), then re-run the
+  skewed-leaf audit and the production balance evaluation. Until then, treat the K=4 boundary flip
+  (`91575bc29`) as needing this follow-up before release.
 
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
 
