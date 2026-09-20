@@ -1371,9 +1371,30 @@ promotion defects below; full table in
 | M2c delete from a 2048-edge bucket | **4.84 K** | 7.33 K |
 | G5 skewed workload mix (256 vertices / 4520 edges) | 140.11 M | **132.24 M** |
 | M4 promote → demote → re-promote round trip | 117.65 M | 30.77 M (threshold-relative sizing) |
+| Drain a 1,024-edge hub, all deletes (`bench_l_s2_det_hub_1024`) | **20.72 M** | 51.31 M |
+| Drain a 4,096-edge hub, all deletes (`bench_l_s2_det_hub_4096`) | **85.49 M** | 208.00 M |
+| Property-bearing scan, 4,096 rows, w = 32 (`tcsr_4096_property_read_w32`) | **3.22 M** | 4.83 M |
 
-Every equal-work and workload-level metric favors 1,024; only single hub deletes
-and the once-per-B-rows block-boundary mint favor 4,096. A promoted bucket's
+The costs are real and equal-work, not sizing artifacts:
+
+- **Hub deletes** are ~2.5× more expensive once the bucket is a tree: a tree
+  delete rewrites a 4-byte tombstone inside an LTB block (block read, header
+  update, descriptor publish — ~36 K instructions per delete in the tree regime
+  vs ~6 K on the slab), and the flip makes every hub above `T_promote` a tree
+  bucket. The drain is bounded per bucket by the demote hysteresis: a bucket
+  that falls to `T_demote` (512) rebuilds as a slab and its remaining deletes
+  are slab deletes. The `bench_remove_churn_*` scope growth (+310%) is scope
+  attribution, not cost — those benches' totals move +2%.
+- **Property-bearing reads** (w > 0) pay one property-leaf hop per row in tree
+  mode: a 4,096-row w = 32 scan is 1.5× the slab read. This does not show up in
+  the w = 0 scan result (M2a) because there is no second stream to walk.
+- The once-per-B-rows block-boundary mint (row above) also favors 4,096.
+
+So the re-tune is a workload-shape decision: it favors pure-adjacency ingest and
+scan (including the Orkut-shaped G5 mix) and costs on hub drain and
+property-bearing scans. Revisit trigger: a delete-heavy or property-scan-heavy
+target workload — re-run the equal-work benches above (and consider 2,048, which
+keeps 1,024-edge hubs on the slab side while promoting later than 1,024). A promoted bucket's
 resident root region also shrinks with the threshold (§4: depth-1 `root_len =
 ceil(T_promote / B)`), from 4 LEG slots to 1, which reduces the leaf pressure
 each tree bucket contributes. The re-tune was gated on

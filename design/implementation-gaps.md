@@ -259,6 +259,16 @@ defect from being rediscovered without its prior reasoning.
   with the ten threshold-coupled tests migrated to derive their sizes from
   `T_PROMOTE` so the suite is green at both constants (602/0 each way). The density
   fix is threshold-agnostic; the flip only changes where promotion happens.
+  Persisted artifact re-measured the same day (unfiltered `canbench --persist`,
+  191 benches, 11 regressed / 5 improved / 3 new): the regressions are the
+  equal-work costs of the regime change — hub drain `bench_l_s2_det_hub_1024`
+  20.72M → 51.31M and `..._4096` 85.49M → 208.00M (tree deletes rewrite LTB
+  tombstones, ~36K ins/delete vs ~6K slab; a drained bucket demotes at
+  `T_DEMOTE = 512` and finishes on the slab), and the property-bearing scan
+  `tcsr_4096_property_read_w32` 3.22M → 4.83M (one property-leaf hop per row).
+  `bench_remove_churn_*` scope growth is attribution only (totals +2%). Revisit
+  trigger: a delete-heavy or property-scan-heavy target workload re-opens the
+  threshold (2,048 keeps 1,024-edge hubs on the slab side).
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
