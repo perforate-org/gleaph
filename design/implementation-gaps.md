@@ -5089,3 +5089,13 @@ Method, one run each (≈40 s): wrap the three segments (bucket read, sizing/res
 between trimming that segment, skipping resolution when the span is unchanged, or accepting the ≈ +19 % on this one
 workflow. (Counterweight unchanged: `compact` median −217.82 K, overall `ins` median +0.09 %.) Tree 614/0,
 delegation landed.
+
+**Practical note for the three-segment plan measurement (2026-09-20).** The anchors are not unique by text: both
+the plan and the `light` rebalance contain `let mut total_live = 0u32;` followed by a bucket loop with the same
+`// ADR 0096 §5: tiny edges need no slab space` comment, so a text-anchored insert hits two sites and must either
+disambiguate by line number inside `rewrite_vertex_edge_span_read_and_plan` (find the `fn` first, then insert
+within its range) or by including a longer surrounding block. `let buckets = self.read_vertex_label_buckets(vertex)?;`
+followed by `let old_alloc = vertex.stored_slots;` *is* unique and worked as an anchor. No edit was written (the
+guards aborted before `write_text`), so the tree is unchanged and green. Method summary for the next attempt:
+scopes `labeled_plan_read_buckets`, `labeled_plan_sizing`, `labeled_plan_resolve` inside the plan, then
+`canbench bench_l_nt_bp_ins_1024` (~40 s) to see which owns the 129.25 K that the delegation added.
