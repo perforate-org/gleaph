@@ -820,6 +820,25 @@ session did.
   implementing: print `old_len`, `new_len` from `plan_labeled_leaf_relocation` and the requested
   `new_alloc` for `mixed_label_hub_20_labels_500_edges_each` — if `new_len - old_len` is large and the
   placement still fails, (A) is confirmed with numbers rather than by construction.
+
+  **(C) in detail — "no base to fall back to", and it is reachable (2026-09-20).** The slack tail reports
+  the span a vertex currently holds, and the vertex's *content* base is not stored: ADR 0096 §5 derives it as
+  the first **non-tiny** bucket's `edge_start` (`labeled_edge_base_from_first_bucket`), because tiny anchors
+  are placeholders and releasing from one poisons the free-span store with live ranges. So a vertex with no
+  buckets, or only tiny ones, has no base to report and that function errors with
+  `CollectAllocationOverflow` — no allocation is attempted, so this class has nothing to do with memory.
+
+  Reachability, verified in code: `next_vertex_edge_span_allocation(0, min_required = 0, segment_size)`
+  returns `min_required.max(segment_size)` = `segment_size`, so a *spanless* vertex (all buckets tiny,
+  degree > 0) that is asked for **slack** requests a real span. `rebalance_edge_log_vertex_for_labeled`
+  guards only `degree() == 0 || is_default_edge_labeled()`, so an all-tiny vertex passes that guard, and the
+  leaf-wide log-full recovery runs every vertex of the leaf. If the leaf cannot place the requested span, the
+  slack tail then has no base to report and the whole recovery fails — on HEAD too, not only in the
+  delegation. Two cheap, independent fixes: (a) do not request slack when the resident sum is zero (keep
+  `new_alloc = 0`, so the resolver is never asked and (C) becomes unreachable); (b) make the non-wasm
+  `log_collect_overflow` observable in tests — it is a no-op today, which is why this class prints nothing
+  where it fails (this session's decisive `span_slots=80 < effective_live=81` came from temporarily
+  enabling it).
      decision removes).
   fourth implementation's placement.
   had to be reverted).
