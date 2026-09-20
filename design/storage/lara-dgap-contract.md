@@ -111,9 +111,12 @@ Normal labeled vertices:
 
 - `LabeledVertex.degree` — live `LabelBucket` count (not edge count).
 - `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `overflow_log_head`.
-  Degree ≤ 3 buckets with 4-byte edges are born tiny (ADR 0096): targets live
-  in the descriptor (`edge_start` is an empty-span anchor, `stored == degree`,
-  log NONE, width 0), holding zero slab slots until promotion.
+  Degree ≤ 4 buckets with 4-byte edges are born tiny (ADR 0096): targets live
+  in the descriptor (T0..T3; `edge_start` is an empty-span anchor, byte 28 holds
+  the used prefix width 0..=4, log NONE), holding zero slab slots until
+  promotion. `degree` counts live slots inside the prefix, so a tiny bucket has
+  no stored slot width to read — the mode-aware `stored_slots()` accessor and
+  the layout audit serve it instead.
 - `LabelEdgeSpan` scan uses bucket + successor boundary (same CSR-window idea as DGAP, scoped to one label).
 
 Default-label bypass uses core `Vertex` row semantics directly.

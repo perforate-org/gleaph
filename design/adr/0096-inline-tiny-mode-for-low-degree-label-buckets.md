@@ -1,4 +1,4 @@
-# 0096. Inline-tiny mode for low-degree label buckets (descriptor-resident, K=3)
+# 0096. Inline-tiny mode for low-degree label buckets (descriptor-resident, K=4)
 
 Date: 2026-09-17
 Status: accepted (D1 decision 2026-09-18; R3 implementation merge additionally requires passing G1–G6)
@@ -34,9 +34,10 @@ the slab PMA stays the mid tier.
 
 ## Decision
 
-Add a third bucket storage class, **tiny**: buckets with `degree ≤ 3` whose edge
+Add a third bucket storage class, **tiny**: buckets with `degree ≤ 4` whose edge
 targets live inline in the descriptor, hold zero slab slots, use no overflow
-log, and carry no inline-property schema. K=3 (not 4, not 8 — see §K ceiling).
+log, and carry no inline-property schema. The tier shipped at K=3 and was
+extended to K=4 by §3b Phase 2 (not 8 — see §3).
 
 ### 1. Wire (29 bytes, unchanged size, no new region)
 
@@ -50,26 +51,38 @@ shrinks to bits 61–62 with the same exclusion pattern as the tree bit.
 | word: edge_start [0..36] | slab/root span start | **empty-span anchor** (valid successor boundary, §5) |
 | word: log-head [52..60] | log head or NONE | MUST be `OVERFLOW_LOG_NONE` (a zero here would decode as a live log) |
 | word: bits 60–63 | reserved/tree flag | bit 60 = 1, bits 61–62 = 0, bit 63 = 0 |
-| [8..12] degree | live count | live count, 0..=3 (untouched — all degree readers keep working) |
-| [12..16] stored_slots | slab width | live prefix width 0..=3 (live + tombstones); `degree` ≤ `stored` (delete redesign; stored readers see a width, not a count) |
-| [16..20] / [20..24] / [24..28] | ipb fields | **T0 / T1 / T2** (u32 LE targets; live prefix `[0..stored)`, tail past `stored` zero; dead slots hold layout-native `E::tombstone_edge()` encoding, read via `E::is_deleted_slot()`) |
-| [28] | ipb log len | reserved zero |
+| [8..12] degree | live count | live count, 0..=4 (untouched — all degree readers keep working) |
+| [12..16] stored_slots | slab width | **T3** (u32 LE inline target) |
+| [16..20] / [20..24] / [24..28] | ipb fields | **T0 / T1 / T2** (u32 LE inline targets) |
+| [28] | ipb log len | **used width** 0..=4 (live slots + tombstone holes; reserved zero under the retired K=3 wire) |
 
-Consequences of this map: `degree` stays readable and meaningful (live
-count in all modes), so degree readers need no arms. `stored_slots` readers
-see a prefix width on tiny (live + tombstones) rather than a live count —
-the ~300 readers were audited for the delete redesign: span/occupancy paths
-treat tiny as zero-width (tiny-skipped), scan paths iterate `[0..stored)`
-with the layout liveness predicate, and placement reports zero reserved
-geometry for tiny (see §5). The repurposed region (bytes 16..28) is only reachable
-through inline-property paths, which are all width-gated (`values.rs`
-early-returns on width 0; §4 makes width≠0 unrepresentable-persisted on tiny by
-enforcing it at write boundaries, since the width bytes themselves are payload
-and cannot be validated on the wire).
+Tiny payload is the used prefix `[0..used)` of T0..T3: live slots hold targets,
+dead slots hold the layout-native `E::tombstone_edge()` encoding (read via
+`E::is_deleted_slot()`), and slots at or past `used` are never read (their
+content is unconstrained — no zero-tail rule). `used` is stored explicitly
+because neither of the two candidate derivations survives contact with the
+contract: `VertexId(0)` is a legal live target, so a zeroed slot cannot mean
+"dead"; and Insertion placement must append at the used tail without reusing an
+interior hole (ADR 0052 §6, `insertion_placement_never_reuses_interior_tombstone`),
+which requires knowing where the tail is. `degree` counts live slots inside the
+prefix, so `degree ≤ used` and slot ordinals are descriptor-relative.
+
+Consequences of this map: `degree` stays readable and meaningful (live count in
+all modes), so degree readers need no arms. A tiny bucket has **no stored slot
+width at all**: bytes 12..16 are payload, so the retired K=3 meaning is gone and
+every geometry reader is served by the mode-aware `stored_slots()` accessor
+(§3b Phase 1), while the tiny *bound* is `tiny_used_width()` (byte 28). Span and
+occupancy paths treat tiny as zero-width, scan paths iterate `[0..used)` with the
+layout liveness predicate, and placement reports zero reserved geometry for tiny
+(see §5). The repurposed region (bytes 12..28) is only reachable through
+inline-property paths, which are all width-gated (`values.rs` early-returns on
+width 0; §4 makes width≠0 unrepresentable-persisted on tiny by enforcing it at
+write boundaries, since the width bytes themselves are payload and cannot be
+validated on the wire).
 
 Validation matrix (extends the `try_read_from` / `try_from_parts` fail-closed
 pattern; tree-mode exceptions are the precedent). Checkability differs by K
-(see §3) — the table states the specified K=3 rules:
+(see §3) — the table states the current K=4 rules:
 
 | Rule | Slab | Tree | Tiny |
 | --- | --- | --- | --- |
@@ -77,33 +90,34 @@ pattern; tree-mode exceptions are the precedent). Checkability differs by K
 | tree bit 63 | 0 | 1 | 0 (tiny∧tree rejected) |
 | tiny bit 60 | 0 | 0 | 1 |
 | log-head byte | any valid | any valid | MUST be NONE |
-| degree bound | u32 | u32 | ≤ 3 |
-| stored vs degree | any (tombstones) | any | `stored` ≤ 3 AND `degree` ≤ `stored` (prefix/live; tombstone content is layout-native, range-only validation) |
-| payload tail zero | n/a | n/a | bytes past `stored` in T0..T2 zero; byte 28 zero |
+| degree bound | u32 | u32 | ≤ 4 |
+| used width | n/a | n/a | byte 28 ≤ 4 AND `degree` ≤ `used` |
+| payload shape | n/a | n/a | slots `[0..used)` hold targets or layout-native tombstones; slots past `used` unconstrained |
 
 Wire-checkability note: T2 (`bytes[24..28]`) spans three typed fields
-(offset-hi, width, ipb log byte), so for K=3 those three are payload and only
-enforceable at write boundaries — never read on a tiny bucket except through
-the §5 entry arms (verified by G6). K=2 avoids this entirely (all non-payload
-bytes constant — see §3).
+(offset-hi, width, ipb log byte) and T3 is the whole former stored field, so on
+a tiny bucket those four are payload and only enforceable at write boundaries —
+never read except through the §5 entry arms (verified by G6). The used width
+itself is a plain byte field, so it *is* wire-checkable; a drifted value can
+only shrink (live slots unread) or expose unconstrained slots, which the liveness
+predicate filters — the layout audit additionally requires live-slot count ==
+`degree` inside the prefix.
 
-Validation gradient (why degree ≤ 2 is special): for tiny buckets with
-`degree ≤ 2`, T2 is all-tail and the tail-zero rule forces offset-hi, width,
-and ipb log byte to their safe constants — so width IS wire-checkable (=0)
-there. Only degree-3 buckets carry unchecked width. No accessor can close the
-remaining gap: unlike `stored_slots` (which has a mode-independent meaning,
-the count, expressible via a mode-aware accessor — the §3b trick), the width
-bytes ARE target payload on tiny and have no second meaning to expose. Byte
-separation is impossible by construction; the design separates PATHS instead
-(§5 entry order: tiny arm before every width check) and proves it behaviorally
-(G6), with bounded degradation where proof lapses (valid counts and anchors).
-If width-reader sprawl ever outgrows entry discipline, the retreat is K=2
-(one constant), not more encapsulation.
+Validation gradient (why K=2 is special): the retired K=3 wire carried one
+jumbled target and the K=4 wire carries two (T2 and T3), so no K≥3 tiny bucket
+is fully wire-checkable — its schema bytes ARE target payload and have no second
+meaning to expose. Byte separation is impossible by construction; the design
+separates PATHS instead (§5 entry order: tiny arm before every width check) and
+proves it behaviorally (G6), with bounded degradation where proof lapses (valid
+counts and anchors). The K=2 retreat is the fully-checkable wire (every
+non-payload byte constant). If width-reader sprawl ever outgrows entry
+discipline, the retreat is K=2, not more encapsulation.
 | inline-property width | any | any (LPB) | inside T2 payload: NOT wire-checkable; enforced 0 at write boundaries (§4) + entry order (§5) |
 
 ### 2. Constants and mode representation
 
-- `TINY_MAX_DEGREE: u32 = 3`.
+- `TINY_MAX_DEGREE: u32 = 4`; the tiny bound is `tiny_used_width()` (byte 28),
+  not a stored width — bytes 12..16 are payload.
 - `cap_for_mode(Tiny) = TINY_MAX_DEGREE` (a tiny bucket can never approach the
   slab/tree caps; the promote trigger fires first).
 - `BucketMode` gains a `Tiny` variant; `from_bucket` maps tiny-bit → Tiny
@@ -115,12 +129,14 @@ If width-reader sprawl ever outgrows entry discipline, the retreat is K=2
 - One semantic helper `is_tiny_mode()` next to `is_tree_mode()`; no scattered
   bit tests.
 - Payload ownership: T0 ≡ `ipb_slab_slots` value, T1 ≡ `ipb_offset` low-32
-  (+hi-zero validation rule), T2 ≡ raw composition — all three exposed ONLY
-  through `tiny_target(i)` / `with_tiny_target(i, v)` methods (debug-asserting
-  tiny mode). Direct reads of the underlying fields as targets, and any second
-  packing helper, are review rejections.
+  (+hi-zero validation rule), T2 ≡ raw composition, T3 ≡ the former
+  `stored_slots` field — all four exposed ONLY through `tiny_target(i)` /
+  `with_tiny_target(i, v)` methods, and the width through `tiny_used_width()` /
+  `with_tiny_used_width()` (all debug-asserting tiny mode). Direct reads of the
+  underlying fields as targets, and any second packing helper, are review
+  rejections. `with_stored_slots` is slab/tree-only and debug-guards tiny input.
 
-### 3. K ceiling (K=3 specified; K=2 fallback; K=4 future path)
+### 3. K ceiling (K=4 current; K=3 retired; K=2 fallback)
 
 Byte-accounting the tail: T0≡`ipb_slab_slots` value, T1≡`ipb_offset` low-32
 (+hi-zero rule) are clean single-field mappings. T2 (`bytes[24..28]`) crosses
@@ -133,24 +149,19 @@ helper. That jumble is the real cliff — not the stored_slots count:
   13.0% edges (1M), 28.3% / 3.0% (10M). Specified as the **fallback**: K=2 wire
   reads cleanly under K=3 rules, so retreating is one constant plus validation
   tightening, with zero reader changes.
-- **K=3 (specified):** adds the one jumbled target for +11pp rows / +6pp edges
-  (1M). The jumble is owned by `tiny_target` / `with_tiny_target` methods plus
-  validation-as-far-as-possible plus G6. Width/ipb-log readers must never reach
-  tiny buckets — guaranteed by §5 entry order (tiny arm before every width
-  check), verified behaviorally, not by audit.
-- **K=4: encapsulation path (future work, §3b).** Same one jumble plus the
-  `stored_slots` accessor below, for +8pp rows / +6pp edges over K=3 (1M).
+- **K=3 (retired):** the shipped wire. One jumbled target (T2) and a tiny
+  stored width; superseded by K=4, which pays the encapsulation debt instead of
+  the jumble debt.
+- **K=4 (current, §3b Phase 2, `91575bc29`):** four targets. Costs the
+  `stored_slots` repurposing plus byte 28; coverage over K=3 is +8pp rows /
+  +6pp edges (1M) and +7pp / +2pp (10M). The encapsulation work Phase 1 landed
+  first (`15719602c`), so no reader was audited by hand: the mode-aware accessor
+  plus `tiny_used_width()` keep every geometry and count path decidable.
 - K=8 inline is impossible (32 B > 29 B descriptor).
-
-- K=8 inline is impossible (32 B > 29 B descriptor).
-- K=4 requires repurposing `stored_slots` (bytes 12..16), poisoning the
-  most-read field in the crate (~300 direct readers) and turning any missed
-  dispatch into an unbounded span misread. Coverage gain over K=3 is +8pp rows /
-  +6pp edges (1M) and +7pp / +2pp (10M) — real but not worth the blast radius.
-- K=3 keeps every count/geometry field intact, so a missed dispatch degrades to
-  a bounded misread (valid counts and anchor; span reads still wrong but
-  confined to `[anchor, anchor+3)`), caught by the mode-matrix gate (G6).
-### 3b. K=4 encapsulation design (future path, decoupled)
+- A missed dispatch on tiny degrades to a bounded misread (valid counts and
+  anchor; span reads confined to the tiny prefix), caught by the mode-matrix
+  gate (G6).
+### 3b. K=4 encapsulation design (landed)
 
 The type is already ~90% encapsulated: the ONLY public fields are `degree`
 and `stored_slots` (`record.rs:32-34`); `word`, all ipb fields, and the log
@@ -181,7 +192,7 @@ bytes sit behind method accessors (`edge_start()`, `overflow_log_head()`,
    publish, tiny insert/delete — the only constructors of tiny state.
    `with_stored_slots` / `with_edge_range` remain slab/tree-only
    (tiny-unreachable by §5 dispatch, asserted).
-4. **Two-phase slice** (code-quality reslicing): Phase 1 is the pure
+4. **Two-phase slice** (code-quality reslicing): Phase 1 was the pure
    privatization with zero behavior change, proven by the full existing suite
    going green unmodified — it lands as standalone tech-debt paydown and needs
    no tiny decision. Phase 2 is tiny-K4 on top. **Timing: Phase 1 waited for
@@ -191,6 +202,39 @@ bytes sit behind method accessors (`edge_start()`, `overflow_log_head()`,
    `main` and no tree-semantic change is outstanding), so the timing condition
    is satisfied; the deciding question is now Phase 2's value, below.
 
+**Phase 2 implemented 2026-09-20** (`91575bc29`). One deviation from the sketch
+above: the retired plan reused the T2 jumble for T3 and left byte 28 reserved,
+treating byte 28 as a mere convenience. That fails on two contract pinned by
+tests: `VertexId(0)` is a legal live target (so "dead" cannot be a zeroed word),
+and Insertion placement appends at the used tail without filling interior holes
+(ADR 0052 §6) — both need an explicit used width. Byte 28 therefore became the
+tiny used width (reserved zero under K≤3, so no transition shim is needed) and
+T3 took the whole freed `stored_slots` field. The K=3 wire is retired: the crate
+is pre-production, so there is one current tiny layout rather than a decoder
+union.
+
+Phase 2 also surfaced four defects the K=3 wire had been hiding, all fixed in
+the same commit: the tiny matching scan was bounded by `degree` (hiding live
+slots past the first hole) and offered dead slots to the predicate; promotion
+had a single leaf-relocate retry, which a full 4-slot prefix exhausts;
+`materialize_inline_property_stream_step` published schema fields onto a
+still-tiny bucket (payload corruption, rejected on read); and
+`compute_bucket_allocation` read T3 as a slot count, making `check_alloc_cap`
+reject every tiny bucket. Each carries a regression or probe test
+(`tiny_remove_matching_scans_holes_and_whole_used_width`,
+`labeled_heavy_relocation_survives_reopen_without_corruption`,
+`materialize_inline_property_stream_drains_via_bidi_maintenance_queue`,
+`check_alloc_cap_tiny_mode_measures_the_used_width`,
+`tiny_live_slot_count_invariant_catches_degree_drift`).
+
+K=4 delta gates (green in-suite): `tiny_wire_bytes_golden` (byte-exact row,
+including T3 and the used-width byte), `tiny_roundtrip_degrees_0_to_4`,
+`tiny_target_t2_splits_across_three_fields` (T2 composition unchanged),
+`try_read_from_rejects_each_tiny_rule` / `try_enable_tiny_mode_rejects_each_rule`
+(range and cross-field rules), `stored_slots_accessor_is_mode_aware`
+(miss-degradation bound with a T3 target far outside any width), and the full
+G1–G6 set re-run at K=4 as part of the suite.
+
 Verdict: recommended sequence is K=3 now (bounded, self-contained), Phase 1 as
 standalone tech-debt paydown once its value is decided, K=4 only if a production
 census then still shows degree-4 buckets dominating the tiny-eligible set.
@@ -199,11 +243,11 @@ optimization-only.
 
 **Decision (2026-09-20, morning): Phase 1 and K=4 were deferred; not
 scheduled.** The value arithmetic below stands as the context. **Owner direction
-later the same day: pursue K=4** — Phase 1 landed (`15719602c`) and Phase 2 (R5,
-§3b/K=4) is the next slice. The S3 census re-check named as R5's entry condition
-cannot be produced in-repo (no production telemetry), so it remains a documented
-value check rather than a gate; the K=3 boundary stays optimization-only either
-way.
+later the same day: pursue K=4** — Phase 1 landed (`15719602c`) and Phase 2
+landed the same day (`91575bc29`, §3b). The S3 census re-check named as R5's
+entry condition cannot be produced in-repo (no production telemetry), so it
+remains a documented value check rather than a gate; the K=3 boundary stays
+optimization-only either way.
 
 Three measurements changed the arithmetic after K=3 shipped:
 
@@ -258,7 +302,7 @@ Promotion triggers (checked in this order at the insert dispatcher, before the
 width check and the tree branch — width bytes are payload and must never be
 read on a tiny bucket):
 
-1. `bucket.is_tiny()`, prefix full with no hole (`stored >= TINY_MAX_DEGREE`
+1. `bucket.is_tiny()`, prefix full with no hole (`used >= TINY_MAX_DEGREE`
    and every slot live), Insertion placement (the 4th edge; Unordered would
    hole-fill instead — ADR 0052 §6 parity holds across modes).
 2. `bucket.is_tiny()` with insert width `w != 0`: promote first (transcribing
@@ -271,7 +315,8 @@ read on a tiny bucket):
 `tiny → slab` promotion (reserve/commit/publish, modeled on
 `promote_bypass_to_bucket_mode`):
 
-1. Validate: tiny bit set, tree bit clear, `degree ≤ 3`, bucket width 0.
+1. Validate: tiny bit set, tree bit clear, `degree ≤ 4`, used width
+   (`degree ≤ used ≤ 4`), bucket width 0.
 2. Reserve (all fallible grows complete here): leaf pin + quota span through the
    existing `try_place_new_bucket_edge_span` / `ensure_…_span_room` path
    (a leaf relocate may fire here — that is the existing machinery, not new);
@@ -279,7 +324,7 @@ read on a tiny bucket):
 3. Commit: `write_slots_contiguous` the live targets (tombstone holes
    excluded — the slab form is dense) into the new span (one call); publish
    one descriptor write clearing the tiny bit with `edge_start = span`,
-   `stored = degree`, ipb zeros; then fall through to the normal slab insert
+   `used = degree`, ipb zeros; then fall through to the normal slab insert
    for the pending edge (reuses trigger, accounting, log admission — no
    duplicate logic).
 4. Accounting: `+degree` leaf `actual` for the transcribed edges (never counted
@@ -331,8 +376,8 @@ leaf `actual`/`total` unchanged; free-span store byte-identical.
 
 | Path | Rule | Anchor |
 | --- | --- | --- |
-| Insert dispatcher | §7 match-first dispatch: Tiny arm first (structural — width/width-check/tree-branch only exist inside their arms). Unordered fills the first tombstone hole; Insertion dense-appends (`stored` grows only there; `degree` always +1). Hole-less full prefixes and width-carrying inserts promote first (§4, transcribing live targets only, then recurse into dispatch). No counts bump, no successor read, no log. Location reports `Slab` storage class for not-overflow-log (tree-append precedent); ordinal is the slot. Placement parity with slab (ADR 0052 §6). | `insert.rs` (match-first dispatch) |
-| Scan (`single_bucket_span_iter` — the funnel for all 6 visit/collect call sites) | tiny arm returns an inline iterator over `[0..stored)`, skipping tombstone holes via the layout liveness predicate (`E::is_deleted_slot()` — same as slab/tree read paths), both orders, no stable reads. Placement: after the `degree == 0` early-out, before `successor_start` and `LabelEdgeSpanAccess` construction (which would present `[anchor, anchor+degree)` slab bytes). Tombstone-inclusive positions, so asc/desc are trivial reversals. | `traverse.rs` `single_bucket_span_iter` (match-first dispatch) |
+| Insert dispatcher | §7 match-first dispatch: Tiny arm first (structural — width/width-check/tree-branch only exist inside their arms). Unordered fills the first tombstone hole; Insertion dense-appends (`used` grows only there; `degree` always +1). Hole-less full prefixes and width-carrying inserts promote first (§4, transcribing live targets only, then recurse into dispatch). No counts bump, no successor read, no log. Location reports `Slab` storage class for not-overflow-log (tree-append precedent); ordinal is the slot. Placement parity with slab (ADR 0052 §6). | `insert.rs` (match-first dispatch) |
+| Scan (`single_bucket_span_iter` — the funnel for all 6 visit/collect call sites) | tiny arm returns an inline iterator over `[0..used)`, skipping tombstone holes via the layout liveness predicate (`E::is_deleted_slot()` — same as slab/tree read paths), both orders, no stable reads. Placement: after the `degree == 0` early-out, before `successor_start` and `LabelEdgeSpanAccess` construction (which would present `[anchor, anchor+degree)` slab bytes). Tombstone-inclusive positions, so asc/desc are trivial reversals. | `traverse.rs` `single_bucket_span_iter` (match-first dispatch) |
 | Property-visit entries (dense bulk-value paths, per-slot attach, bounded collect) | tiny diverts to the inline path (topology + empty values) at each entry: `visit_edges_with_inline_property_impl`, `visit_edges_for_label_impl`, `collect_edges_with_inline_property_bounded` (which otherwise fails valid tiny reads with spurious `LogChainShort`), `visit_edges_at_with_inline_property` (arm before slot selection — selection itself reads slab spans). All downstream `*_next` batch/log iterators are then unreachable for tiny. | `traverse.rs` (match-first dispatch in `visit_edges_with_inline_property_impl`; tree/slab share the slow path) |
 | Value funnel (`is_inline_property_bytes_allocated`) | returns false for tiny (no value state by construction). This ONE arm covers every `!allocated \|\| width == 0` early-return path in `values.rs`, the readable predicate, and the resident computations — they all select the no-values path without further arms. Review check: any values path that proceeds on allocated-true must still be entry-diverted. | `record.rs` (allocated-funnel, unchanged) |
 | Invariant predicates + audit (`invariants.rs`) | `bucket_dense_inline_property_batch_eligible`: explicit `!is_tiny` arm (it reads width directly; degree-3 payload with an 0xFF top byte would otherwise qualify). `bucket_dense_slab_inline_property_bytes_readable` and both resident helpers: covered by the allocated-funnel (short-circuit), no arms. Layout audit: tiny branch asserting the checkable wire rules (not a skip — unaudited state is debt). | `invariants.rs` (explicit tiny arms + tiny-branched audit) |
@@ -341,12 +386,12 @@ leaf `actual`/`total` unchanged; free-span store byte-identical.
 | Fold planning (edge + value log folds) | value-fold loop: skip tiny explicitly (the ipb-log-head gate is payload for degree 3 and cannot be trusted). Edge-fold prepare: tiny contributes 0 to resident computation and counts as width-0 in the strategy predicate (it has no log and no values; reserving slab for it would be pure waste). | `compact.rs` (fold planning tiny-skips) |
 | Batch planner | tiny guard at preflight head BEFORE the `:2077` width check (which would otherwise misfire `WidthMismatch` on payload bytes) and before any run math. `BucketFingerprint::from_bucket` snapshots are harmless pre-guard (garbage-but-stable compares equal) PROVIDED all consumption is post-guard — R2b audit item. | `batch_write.rs` (match-first dispatch in `preflight_run`) |
 | Deferred enqueue + swap paths | `remove_side_compaction_should_fire`: false for non-slab (already specified). R2b audit items (verify, do not assume): `bucket_allows_unordered_swap` callers (none found — confirm dead/test-only), materialize/fold enqueue sites skip tiny, `ensure_*`/materialize have no direct external callers outside the dispatcher. | `deferred.rs`/`compact.rs`/`values.rs` (deferred/materialize entries, match-first) |
-| Delete (`remove_edge_at_slot_with_move`) | §7 match-first dispatch: Tiny arm tombstones inline (no promotion) — writes the layout-native `E::tombstone_edge()` encoding, decrements `degree`, publishes; survivors never move so positional stability holds trivially (slot-keyed counterpart occurrences; moves-dropping `remove_edge_matching`/`remove_edge_at_slot` APIs report empty moves). Empty (`degree` 0) resets to clean-empty tiny (`stored` 0, zeroed payload — birth shape). No demote check (stays tiny; one-way promotion). | `remove.rs` (match-first dispatch) |
-| Span geometry (`bucket_span_region_len`, `combined_span_region_len`) | tiny ⇒ 0, armed BEFORE the slab default (which would otherwise return the intact `stored` field as a span length). Zero-width intervals make span-rewrite vertex logic skip tiny buckets with no further arms. | `compact.rs` (`bucket_span_region_len`/`combined_span_region_len` match-first) |
+| Delete (`remove_edge_at_slot_with_move`) | §7 match-first dispatch: Tiny arm tombstones inline (no promotion) — writes the layout-native `E::tombstone_edge()` encoding, decrements `degree`, publishes; survivors never move so positional stability holds trivially (slot-keyed counterpart occurrences; moves-dropping `remove_edge_matching`/`remove_edge_at_slot` APIs report empty moves). Empty (`degree` 0) resets to clean-empty tiny (`used` 0; slots outside the prefix are unconstrained). No demote check (stays tiny; one-way promotion). | `remove.rs` (match-first dispatch) |
+| Span geometry (`bucket_span_region_len`, `combined_span_region_len`) | tiny ⇒ 0, armed BEFORE the slab default (which would otherwise return the raw stored field — T3 payload on tiny — as a span length). Zero-width intervals make span-rewrite vertex logic skip tiny buckets with no further arms. | `compact.rs` (`bucket_span_region_len`/`combined_span_region_len` match-first) |
 | Leaf slide collect (`rebalance_labeled_leaf_weighted_slide_in_block`) | resident width 0 for tiny (the enumeration reads `.stored_slots` directly and would otherwise assign degree slab slots to a spanless bucket, then materialize neighbor bytes as its edges). Arm at the `resident` fold. | `compact.rs` (slide resident fold, tiny-skipped) |
 | Leaf slide materialize/commit (`materialize_labeled_vertex_edge_plan`, `commit_vertex_edge_span_layout`) | skip edge move for tiny (zero bytes); stamp `edge_start` with the running boundary so anchors stay valid across relocate/slide. Descriptors still move as opaque 29 B rows. | `compact.rs` (slide materialize/commit, tiny anchors) |
 | Successor chain (new-bucket placement) | `bucket_successor_start_after_bucket_for_new_bucket`: when the PRECEDING bucket is tiny, return its anchor (not `anchor + degree` — tiny spans are empty, so the stored-count formula would overlap the next span). Placement before a tiny next needs no arm (anchor reads correctly). | `bucket.rs` (tiny-aware successor chain) |
-| Successor chain | tiny publishes `edge_start` = valid empty-span anchor (successor boundary at creation, like zero-length slab buckets). Contiguity helpers (`label_buckets_allow_contiguous_slab_copy` et al.) keep working: degree≤stored≤3, log NONE, anchors contiguous. **Requirement on the implementation slice:** span rewrite/slide must stamp spanless buckets with the running boundary (they already enumerate bucket rows opaquely — descriptors move as 29 B rows via `write_label_bucket_slots_contiguous`); G4 proves anchors + payload survive relocate byte-identical. | `bucket.rs` (contiguity helpers, anchor-preserving) |
+| Successor chain | tiny publishes `edge_start` = valid empty-span anchor (successor boundary at creation, like zero-length slab buckets). Contiguity helpers (`label_buckets_allow_contiguous_slab_copy` et al.) keep working: `degree ≤ used ≤ 4`, log NONE, anchors contiguous. **Requirement on the implementation slice:** span rewrite/slide must stamp spanless buckets with the running boundary (they already enumerate bucket rows opaquely — descriptors move as 29 B rows via `write_label_bucket_slots_contiguous`); G4 proves anchors + payload survive relocate byte-identical. | `bucket.rs` (contiguity helpers, anchor-preserving) |
 | Leaf density | `actual` counts **live edge records that occupy edge-slab (PMA) slots** — slab/log rows. Tiny rows live inline in the descriptor and tree rows live in LTB blocks, so neither counts: counting them would inflate density into spurious relocates and post-promotion cascades. Tiny inserts/deletes skip the ±1 `actual` bumps (`insert.rs`/`remove.rs` (density exclusion)); tree inserts/removes skip them structurally (the tree helpers no longer take a vertex id, so they cannot address per-vertex accounting). Both non-slab modes adjust only at their mode transition: tiny→slab `+degree` (`promote_tiny_to_slab`), slab→tree `−degree` (`promote_bypass_to_tree_mode`; LARA `segment_actual[leaf] -= live`), tree→slab `+degree` (`tree_mode_demote_to_slab`). `total`-only corrections (`compact.rs`/`bypass.rs` (total-only corrections, untouched)) are untouched. Landed 2026-09-20: `tree_mode_leaf_actual_counts_slab_edges_only` (production insert/remove/promote/demote paths + leaf audit at every step) and the tree-run assertion in `batch_run_admits_tree_mode_bucket_tail_fit`; this resolves the density-accounting half of GAP-2026-09-17-001. | accounting inventory |
 | Vertex span | tiny contributes 0 to `LabeledVertex.stored_slots`; promotion adds its span through the existing quota path. | `insert.rs` `promote_tiny_to_slab` |
 | Batch planner | `is_tiny → Unsupported` at the head of `preflight_run` (same placement as the tree guard) → existing scalar fallback, which promotes naturally. No tree-style widening in the first slice. | `batch_write.rs` (match-first dispatch in `preflight_run`) |
@@ -355,26 +400,26 @@ leaf `actual`/`total` unchanged; free-span store byte-identical.
 | Bypass | orthogonal (vertex-level vs bucket-level); no interaction. | — |
 | New-bucket creation | tiny creation skips span placement (`ensure_labeled_bucket_edge_span_room` — no quota, no pin) and publishes anchor + NONE log-head + zero tail. `find_bucket` needs no arm (label-key comparison only). Birth is E::BYTES-gated (§4) and flips after matrix-green (R2b sequencing, with successor-anchor test). | `insert.rs` (E-gated tiny birth) |
 | Bucket lifecycle | tiny follows the existing bucket lifecycle (empty buckets persist/prune exactly like empty slab ones — audit item for the slice, not a new rule). | — |
-| Rank/select helper (`visit_live_edge_slots_until`) | dedicated find + inline loop over `[0..stored)`, holes skipped via the layout predicate (counterpart primitives observe identical logical slots). No signature change; +1 bounded descriptor read, documented. | `traverse.rs` (rank/select inline) |
+| Rank/select helper (`visit_live_edge_slots_until`) | dedicated find + inline loop over `[0..used)`, holes skipped via the layout predicate (counterpart primitives observe identical logical slots). No signature change; +1 bounded descriptor read, documented. | `traverse.rs` (rank/select inline) |
 | Dense fast path (`visit_edges`) | slab-only inside the Slab arm (arm-guaranteed; no mode guards — the 2% bench parity path). Tiny has its own arm (inline); tree walks the LTB. | `traverse.rs` (Tiny arm of `visit_edges` match-first) |
-| Windowed visit (`visit_edges_window`) | self-contained inline window loop over tombstone-inclusive `[0..stored)` positions (holes consume position space but yield nothing — ADR 0088 §2 parity with slab/tree windows). | `traverse.rs` (Tiny arm of `visit_edges_window` match-first) |
-| Topology collect | inline loop over `[0..stored)`, holes skipped via the layout predicate; live-count check passes. (The bounded-collect API variant was removed before landing — cap contract lives in unit tests.) | `traverse.rs` (collect inline) |
+| Windowed visit (`visit_edges_window`) | self-contained inline window loop over tombstone-inclusive `[0..used)` positions (holes consume position space but yield nothing — ADR 0088 §2 parity with slab/tree windows). | `traverse.rs` (Tiny arm of `visit_edges_window` match-first) |
+| Topology collect | inline loop over `[0..used)`, holes skipped via the layout predicate; live-count check passes. (The bounded-collect API variant was removed before landing — cap contract lives in unit tests.) | `traverse.rs` (collect inline) |
 | Batch-value entries (`visit_out_*_batches_for_label_next` ×2) | early-return `Continue` (emit nothing — bypass precedent for valueless rows). Downstream dense/sparse/log/batch helpers unreachable. | `traverse.rs` (batch-value entries, tiny early-return) |
 | Per-slot select (`visit_edges_at_with_inline_property`) | force-canonical (`is_tiny` OR-ed into the candidate flag): the canonical visitor's funnel arm serves inline ordinals with selected-filtering. Direct slot reads never run for tiny. | `traverse.rs` (per-slot select, force-canonical) |
 | Matching remove (`remove_edge_matching_skip_leaf_cascade_with_move`) | inline linear match over live slots (holes skipped via the layout predicate; label-attached edges, mirroring slab predicate input) delegating to the positional tiny remover. | `remove.rs` (match-first dispatch) |
 | Inline iterator (`LabeledSpanIter::Inline`) | pre-materialized `(ordinal, edge)` pairs, direction flag, `next`/`next_with_slot`/`try_advance_by` arms (shortfall contract mirrored). No stable reads. | `iter.rs` (`LabeledSpanIter::Inline`) |
-| Rewrite paths (bulk gate, else-collect, else-row, sizing) | bulk gate excludes tiny (`any tiny → false`); else-collect pushes empty runs (index alignment); else-row stamps anchors preserving stored/degree/holes; sizing loops (`read_and_plan`, relocate planning, stepped trigger) skip tiny (0 resident). Metadata-only republish needs no arm (anchor+degree shape already correct). | `compact.rs`/`bucket.rs` (rewrite/sizing tiny-skips) |
+| Rewrite paths (bulk gate, else-collect, else-row, sizing) | bulk gate excludes tiny (`any tiny → false`); else-collect pushes empty runs (index alignment); else-row stamps anchors preserving used/degree/holes; sizing loops (`read_and_plan`, relocate planning, stepped trigger) skip tiny (0 resident). Metadata-only republish needs no arm (anchor+degree shape already correct). | `compact.rs`/`bucket.rs` (rewrite/sizing tiny-skips) |
 | Position calculators (`calculate_label_edge_span_positions*`) | resident/advance 0 for tiny (positions pack them at the running boundary); gap weights intentionally unchanged (free-space distribution only). | `compact.rs` (position calculators, tiny resident/advance 0) |
 | First-compaction move | early `Ok(None)` (tiny needs no moves — holes are inline state, not slab slack); swap/move finders inherit coverage (sole caller). | `compact.rs` (first-compaction move, tiny-early None) |
 | Placement projection (`read_label_bucket_placement_info`) | tiny reports honest degree with zeroed geometry (never sizes planners from payload). Currently caller-less outside tests; armed for future planners. | `bucket.rs` (placement projection, zeroed geometry) |
-| Rank/select helper (`visit_live_edge_slots_until`) | dedicated find + inline loop over `[0..stored)`, holes skipped via the layout predicate (counterpart primitives observe identical logical slots). No signature change; +1 bounded descriptor read, documented. | `traverse.rs` (rank/select inline) |
+| Rank/select helper (`visit_live_edge_slots_until`) | dedicated find + inline loop over `[0..used)`, holes skipped via the layout predicate (counterpart primitives observe identical logical slots). No signature change; +1 bounded descriptor read, documented. | `traverse.rs` (rank/select inline) |
 | Dense fast path (`visit_edges`) | slab-only inside the Slab arm (arm-guaranteed; no mode guards — the 2% bench parity path). Tiny has its own arm (inline); tree walks the LTB. | `traverse.rs` (Tiny arm of `visit_edges` match-first) |
-| Topology collect | inline loop over `[0..stored)`, holes skipped via the layout predicate; live-count check passes. (The bounded-collect API variant was removed before landing — cap contract lives in unit tests.) | `traverse.rs` (collect inline) |
+| Topology collect | inline loop over `[0..used)`, holes skipped via the layout predicate; live-count check passes. (The bounded-collect API variant was removed before landing — cap contract lives in unit tests.) | `traverse.rs` (collect inline) |
 | Batch-value entries (`visit_out_*_batches_for_label_next` ×2) | early-return `Continue` (emit nothing — bypass precedent for valueless rows). Downstream dense/sparse/log/batch helpers unreachable. | `traverse.rs` (batch-value entries, tiny early-return) |
 | Per-slot select (`visit_edges_at_with_inline_property`) | force-canonical (`is_tiny` OR-ed into the candidate flag): the canonical visitor's funnel arm serves inline ordinals with selected-filtering. Direct slot reads never run for tiny. | `traverse.rs` (per-slot select, force-canonical) |
 | Matching remove (`remove_edge_matching_skip_leaf_cascade_with_move`) | inline linear match (label-attached edges, mirroring slab predicate input) delegating to the positional tiny remover. | `remove.rs` (match-first dispatch) |
 | Inline iterator (`LabeledSpanIter::Inline`) | pre-materialized `(ordinal, edge)` pairs, direction flag, `next`/`next_with_slot`/`try_advance_by` arms (shortfall contract mirrored). No stable reads. | `iter.rs` (`LabeledSpanIter::Inline`) |
-| Rewrite paths (bulk gate, else-collect, else-row, sizing) | bulk gate excludes tiny (`any tiny → false`); else-collect pushes empty runs (index alignment); else-row stamps anchors preserving stored/degree/holes; sizing loops (`read_and_plan`, relocate planning) skip tiny (0 resident). Metadata-only republish needs no arm (anchor+degree shape already correct). | `compact.rs`/`bucket.rs` (rewrite/sizing tiny-skips) |
+| Rewrite paths (bulk gate, else-collect, else-row, sizing) | bulk gate excludes tiny (`any tiny → false`); else-collect pushes empty runs (index alignment); else-row stamps anchors preserving used/degree/holes; sizing loops (`read_and_plan`, relocate planning) skip tiny (0 resident). Metadata-only republish needs no arm (anchor+degree shape already correct). | `compact.rs`/`bucket.rs` (rewrite/sizing tiny-skips) |
 | Cursor/compaction internals (1744/1799/1915-style slot loops) | covered by trigger + fold arms (never invoked for tiny); G6 pins behavior. No direct arms (noise over safety). | — |
 
 Scan-contract note (`lara.md` §1): tiny scans read one descriptor and no PMA
@@ -440,7 +485,7 @@ field/method documents all three modes' semantics inline (record.rs
 tree-precedent: `tree_mode_physical_depth` docs): `ipb_slab_slots` (T0),
 `ipb_offset` (T1 low-32 + hi-zero), width/log-byte/byte-28 (T2 composition),
 `stored_slots` (== degree invariant for tiny), `edge_start` (anchor), log-head
-(NONE), `degree` (0..=3). A field whose tiny meaning is missing from its doc
+(NONE), `degree` (0..=4), `used` (byte 28, 0..=4). A field whose tiny meaning is missing from its doc
 comment is a review rejection.
 3. **Cite-section comments.** Every tiny arm carries
 `// ADR 0096 §N: <one-line mode-semantic reason>` (repo Plan/GAP citation
@@ -461,7 +506,7 @@ without a linked assertion is P2.
 6. **Test names encode mode×op×expectation** (repo precedent), e.g.
 `tiny_insert_skips_leaf_actual_counts`,
 `successor_start_after_tiny_returns_anchor`, `tiny_scan_reads_zero_slab_bytes`.
-7. **No second packing helper** (§2 rule restated): all T0..T2 access through
+7. **No second packing helper** (§2 rule restated): all T0..T3 and used-width access through
 `tiny_target` / `with_tiny_target` + validation.
 
 ## Consequences
@@ -471,17 +516,18 @@ without a linked assertion is P2.
   one column. No wire-size, MemoryId, or reopen-topology change.
 - Every future bucket-mode decision pays a third arm — mitigated by the
   exhaustive-match rule (§2), which turns silent misses into compile errors.
-- K=3 is fixed by the wire: raising it is a new layout ADR, not a constant bump.
-  K=2 retreat costs one constant plus validation tightening (forward-compatible
-  wire); K=4 needs the §3b encapsulation slice first.
+- K=4 is fixed by the wire: raising it is a new layout ADR, not a constant bump.
+  K=2 retreat costs one constant plus validation tightening; it also needs the
+  `stored_slots`/byte-28 payload retired, since the K=2 wire leaves both at
+  their constants.
 - Restructure tripwire (2026-09-17): no breaking redesign is warranted now —
   dispatch is O(1) bit tests, tiny/tree REDUCE relocate coefficients (fewer
   bytes move), no tier is removable without regressing its regime, and the 29 B
-  wire still holds K=3 with bits 61–62 to spare. Revisit structure only when a
+  wire holds K=4 with bits 61–62 to spare. Revisit structure only when a
   fourth descriptor-byte demand arrives (overlaying a fourth reinterpretation
   instead of widening/splitting would cross from essential Terrace-tier
   complexity into accidental overloading).
-- Slab buckets with degree ≤ 3 keep working unchanged; the boundary is
+- Slab buckets with degree ≤ 4 keep working unchanged; the boundary is
   optimization-only.
 - Blocks on nothing except acceptance; but see GAP-2026-09-17-001 — the
   promotion and relocate paths this design rides on are themselves under a
@@ -494,10 +540,11 @@ without a linked assertion is P2.
   composite reopen, and chunk free management with crash consistency, against an
   inline design that fits K≤3 with none of it. The memo's own caveat agrees.
   (Core tiny still needs this shape and stays out of scope.)
-- **K=4:** future path via §3b encapsulation (privatize `stored_slots` +
-  owned byte-composer, two-phase slice after tree landing) — the reader audit
-  becomes compiler-checked mechanical churn. Revisit only with production-census
-dominance of degree-4 buckets.
+- **K=4 (adopted):** via §3b encapsulation (privatize `stored_slots` + owned
+  byte-composer + byte-28 used width). The reader audit became compiler-checked
+  mechanical churn, and Phase 2 landed on top of it (`91575bc29`); the census
+  trigger stayed a documented value check because no in-repo production
+  telemetry exists.
 - **K=8 inline:** rejected — 32 B of targets cannot fit a 29 B descriptor.
 - **K=2:** specified fallback (fully validatable, zero churn, 50.4%/13.0% at
   1M) — retreat path if the T2 jumble proves heavier than estimated.
