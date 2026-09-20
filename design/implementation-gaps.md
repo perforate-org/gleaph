@@ -407,6 +407,19 @@ session did.
   `directed_insert_deferred_materialize_via_wrapper_retry_after_drain` (`width published | left: 0 |
   right: 8`). Next: settle the single span-budget policy for both callers; that should collapse most
   of the 24. Copy `/tmp/delegated_compact.rs`.
+  **Root cause of those 22 (2026-09-20):** `Store(CollectAllocationOverflow)` is not an allocation
+  cap. `bucket_store.rs`'s partition search (`find_*` over bucket slots) returns it when
+  `read_label_bucket_slot(slot)` finds **no descriptor** at the slot it computed from
+  `vertex.base_slot_start() + index`, and `bucket.rs` uses the same code for its checked conversions.
+  So the delegated plan-based path publishes bucket rows at anchors the store-level readers do not
+  look at: the descriptors exist, the lookups miss. That matches the two standalone invariants
+  (`new_start` 1280 instead of 256; cold bucket's room narrower than its stored width) — all three are
+  *anchor/placement* differences, not budgets. Also tested and ruled out: making the materializer
+  compact-aware (`compact` now flows into it: log-free slab packs live slots via
+  `pack_live_edge_slots`, log-backed drops superseded prefix slots) does not move any of the 24 —
+  saved as `/tmp/unified2_compact.rs` (609/2, same two invariants). Next: compare the plan's published
+  anchors against the two deleted implementations' anchors for one failing fixture, and pin the
+  contract the readers rely on (`base_slot_start` + bucket index) before re-attempting the delegation.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
