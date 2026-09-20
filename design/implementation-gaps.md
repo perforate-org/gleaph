@@ -781,6 +781,21 @@ session did.
   `LABELED_REBALANCE_LEAF_RELOCATED` was only set for that policy. Next attempt should keep each original
   body's control flow *verbatim* and factor only the policy-dependent tail; do not restructure the retry
   loop while doing it. The tree is back at 613/0 with the two resolvers as they are.
+  **Policy tail factored instead (2026-09-20, `d994fc500`).** Rather than restructuring the retry loops
+  (which is what recursed), the policy-dependent tail is now shared: `finish_span_resolution(src,
+  new_alloc, policy, relocation_in_progress)` holds the three outcomes (tail-append for a required span
+  while a relocation is in flight, an error for a required span, the current span for slack) and each
+  resolver keeps its original control flow verbatim. 613/0, zero behaviour change. Remaining work for the
+  delegation, in order, with no restructuring: (1) add a policy-dispatching resolver
+  (`Required → resolve_labeled_edge_base_for_growth`, `SlackMayBeDropped →
+  resolve_labeled_edge_base_for_rebalance`); (2) rename the current `rewrite_vertex_edge_span` to
+  `..._with_policy(..., policy)` and keep a thin `Required` wrapper so its ten call sites stay untouched;
+  (3) thread that policy into `rewrite_vertex_edge_span_read_and_plan`, where the base resolution happens;
+  (4) replace `rebalance_vertex_edge_span`'s body with a call to the internal rewrite using
+  `SlackMayBeDropped` (115 lines); (5) re-read the three assertion-level tests, whose expectations encode
+  the old placement. Expect the hub fixtures to fail *honestly* at the tiling
+  (`span < effective_live`) if the leaf relocation cannot host the span — that is the policy decision
+  recorded above, now expressed in code rather than inferred.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
