@@ -113,6 +113,24 @@ defect from being rediscovered without its prior reasoning.
   Also verified while tracing: the relocation slide re-tiles this leaf correctly
   (`TMPSLIDE`: hub `old2752+688 -> 2749+979`, later `-> 2752+1312`, inside the block), so the
   slide is not the writer; the guard's span is the *stale vertex cover*, not a moved span.
+- **Minimal variants tried and rejected by measurement (2026-09-20, same commit):**
+  (a) *re-base the vertex cover on `bucket_physical_resident_slots` only* — breaks two existing
+  invariants, measured: `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` and
+  `tree_mode_leaf_actual_counts_slab_edges_only` fail with `leaf 0: PMA total mismatch
+  (store vs labeled geometry) left: 1040 right: 16`, and
+  `single_label_log_fold_reserves_edge_only_tail_headroom` fails on
+  `vertex.stored_slots >= segment_size`. A cover is a vertex's *share of the leaf block* (resident
+  plus distributed slack), not the bare resident sum, so shrinking it to the root region breaks
+  `Σ covers == leaf total` and the headroom floor.
+  (b) *relocate the leaf once after the promotion* (pinned or not) — with the shared
+  position helper made tree-aware it fixes the reproduction, but the slide itself can fail
+  (`CollectAllocationOverflow`) on other shapes (`directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`)
+  and it writes the new block start before the per-vertex commit, so swallowing the error could
+  leave a half-moved leaf; propagating it after the descriptor commit turns a successful promotion
+  into an error. Not acceptable as the minimal variant.
+  Conclusion: no small fix exists. The root must be reserved **inside the vertex's span** from the
+  start (so the cover, the block tiling, and the release math all stay consistent by
+  construction), which is the ADR-prescribed route below.
 - **Prescribed fix (ADR 0088 §3, no design decision left):** the tree promotion must reserve the
   combined root region through the vertex/leaf tiling (the same `rewrite_vertex_edge_span` /
   leaf-placement path slab growth uses) instead of a bare `edges.allocate_span`, and must then
