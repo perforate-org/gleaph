@@ -963,6 +963,27 @@ session did.
   entirely (no growth machinery for slack). Still to add when the two sizing sites collapse into one with the
   delegation: a regression that a slack request never changes the leaf's physical block length (a single site
   makes that a precise unit assertion; today the observable is spread over two paths).
+  **Delegation reaches 611/3 with policy threading (2026-09-20, saved
+  `/tmp/delegation_policy_611_3_compact.rs`; the earlier policy-less shim is
+  `/tmp/delegation_nopolicy_compact.rs` at 604/10).** The shim itself (−152 lines) was never the
+  blocker: what the hub fixtures needed was the maintenance *policy*, and once the rewrite carries a policy
+  (`resolve_labeled_edge_base_for_policy`, `rewrite_vertex_edge_span_with_policy`, planner parameter) and the
+  shim passes `SlackMayBeDropped`, every hub fixture passes (604/10 → 611/3). The three residuals are precise:
+
+  * `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones` and
+    `edge_overflow_compaction_does_not_fold_inline_property_bytes_log` — both drive
+    `compact_vertex_edge_span_one_step`, which folds one bucket's log itself and asserts unchanged slot
+    indices. The fourth implementation *always* preserved logs in its publish (`fold_logs = false`) and folded
+    through a separate prelude (`use_log_fold_prelude`) before calling the rebalance. Passing
+    `fold_logs = false` from the shim alone is **not** enough: it regressed to 598/16, because the log-full
+    recovery relies on that prelude's fold actually happening. The delegated path must reproduce
+    "prelude folds, publish preserves": keep `fold_logs = false` *and* run the fold prelude where the fourth
+    implementation did, instead of folding in the publish.
+  * `vertex_edge_span_rewrite_weights_slack_by_label_degree` asserts that a hot label receives more slack
+    (`hot_capacity > stored`). With the new rule that slack is only taken when the current window hosts it,
+    the fixture apparently cannot place the slack at all, so the expectation encodes the previous
+    slack-always-grown behaviour and needs re-deriving *as a distribution test* (assert the weighting when
+    slack is granted) rather than weakening it.
   enabling it).
      decision removes).
   fourth implementation's placement.
