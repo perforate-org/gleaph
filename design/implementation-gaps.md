@@ -898,6 +898,21 @@ session did.
   Expected outcome: `mixed_label_hub_50_labels_1000_edges_each` converges instead of ratcheting, required
   growth succeeds whenever memory allows, and the never-fail fallback stops being load-bearing for the hub
   fixtures.
+
+  **(A) implemented in full, one fixture left (2026-09-20, saved `/tmp/classA_full_{compact,batch_write}.rs`
+  → 613 passed / 1 failed).** All five edits from the list above are applied and compile: block sizing honours
+  the request, the relocation entry point carries the floor (the plain wrapper and the plain slide caller
+  `rebalance_labeled_leaf_weighted_slide` pass 0), the resolvers drive relocation with the span they are
+  placing, and the slide's per-vertex `resident` becomes `max(resident, requested_floor)` for the requesting
+  vertex. `mixed_label_hub_{20,33}` and their variants converge; only
+  `mixed_label_hub_50_labels_1000_edges_each` still fails (`label_idx=12 edge_i=98`,
+  `CollectAllocationOverflow`, ≈73 s to run). Instrumentation results for that residue:
+  the existing `log_collect_overflow` hook stays **silent**, so the error comes from a plain
+  `ok_or`/`map_err` construction site rather than a logged one; instrumenting compact.rs's 66 such sites hit a
+  type error at its line-190 site (that site needs the `ok_or_else(|| ….into())` form), so the sweep needs that
+  fix before it can name the residue. Next session, in order: (a) fix that instrumentation form and name the
+  site; or (b) bisect the two halves on that fixture (remove the slide half, then the sizing half) to see which
+  one the residue depends on. Everything else from this session is green at 614/0.
   enabling it).
      decision removes).
   fourth implementation's placement.
