@@ -5035,3 +5035,16 @@ and the bucket-side call site already tests the same mark. Measured with focused
 group (up to +1628 %) is what disappeared. What remains is the delegation's own cost in the bypass insert path
 (`bench_l_nt_bp_ins_*`, `labeled_non_tail_bypass_insert` ≈ +21 %), the last open performance item from this
 session, plus a residual ≈ +0.1 % median across the other benches. Suite 614/0, fmt/clippy clean.
+
+**Last open performance item: the delegation's cost on the non-tail bypass insert (2026-09-20).**
+`canbench bench_l_nt_bp` on the current tree shows `bench_l_nt_bp_ins_1024` **regressed by 19.32 %** at the bench
+level, and inside it several scopes are marked **`new`** — work that simply did not exist in the baseline and that
+the unified publish path introduced (the shared pair runs more scoped passes than the fourth implementation's tail:
+resident-bucket rebuild, position calculation, run preparation and the write loops). So the delegation's residual
+cost is *additional passes on the same buckets*, not a regression inside an existing pass; the pre-delegation
+comparison in the earlier bisect already showed the shape of it (6 regressed without the delegation, 7 with it, and
+the extra one being this bench). Next step, one command each: print the scope *names* alongside their deltas for
+this bench (the previous parser dropped them) to see which new scope dominates, then decide between trimming that
+pass, skipping it for the no-log common case, or accepting ≈ +19 % on this one workflow as the price of one
+implementation — with `compact` (median −217.82 K instructions) and the overall `ins` median (+0.09 %) as the
+counterweight. Everything else from this session is landed, green (614/0) and measured.
