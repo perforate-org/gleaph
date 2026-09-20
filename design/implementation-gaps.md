@@ -49,7 +49,8 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-17-001 — Tree-mode full-path 4-byte bucket growth traps past ~5.7K edges on an overlapping edge free-span release
 
-- **Status:** Fixed 2026-09-19 (commits `c664d8f73`, `c779ced27`, `0e2ac456a`) —
+- **Status:** Fixed 2026-09-19 (commits `c664d8f73`, `c779ced27`, `0e2ac456a`,
+  `a86ff0f50`; density-accounting half `8a6d73925` + audit coverage `795754dca`) —
   root cause was a unit confusion shared by SIX paths, not one call site.
   Every resident-geometry computation sized tree buckets on the logical
   `stored_slots` edge count while the physical LEG span is only the root region
