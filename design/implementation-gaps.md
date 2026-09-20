@@ -289,6 +289,14 @@ defect from being rediscovered without its prior reasoning.
     values zeroed); plus `cascade_at_2_20_plus_1_deepens` (`promote: CollectAllocationOverflow`) and
     the known ② `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run`.
   Working copies of the passing shape: `/tmp/final_*.rs` (superseding `/tmp/d_*`).
+  **Leaf-slide variant (2026-09-20):** replacing Phase 3e with
+  `rebalance_labeled_leaf_weighted_slide(vid)` (the honest way to redistribute the shed prefix slots
+  so `Σ covers == leaf total` holds) keeps `fold_growth_stays_mate_disjoint_across_span_growth` green
+  but breaks the skewed test's *premise*: "the degree-2048 hub must have promoted to tree mode" — the
+  hub ends the workload untree. Next step is to find out why (candidates: the slide's slab re-publish
+  sets `stored = packed live rows`, so a bucket's `T_PROMOTE` trigger is evaluated on the post-slide
+  width; or the slide in Phase 3e reshuffles a *later* promotion's inputs). Working copies:
+  `/tmp/slide_*.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
