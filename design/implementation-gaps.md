@@ -5161,3 +5161,63 @@ of the machinery around it. Recommendation: **accept** ≈ +19 % on `bench_l_nt_
 span-layout implementation, with `compact` at −217.82 K median and the overall `ins` median at +0.09 % as the
 counterweight; revisit only if this workflow's absolute cost becomes a product concern (e.g. a different growth
 policy for non-tail bypass inserts). Everything from this session is landed, green (614/0) and measured.
+
+# Design reflection: is there a fundamentally better layout? (2026-09-20)
+
+Every defect this session chased came from two root properties of the current layout, not from the bugs themselves:
+
+1. **A vertex's span width must be predicted before the rows exist.** A bucket's rows live in a contiguous span
+   whose width is chosen at rewrite time, so the design needs proactive slack, weighted re-tiling, leaf relocation,
+   block sizing, placement queries and a "cover must be backed" rule (I1). The measured cost of that prediction on
+   the non-tail bypass benches was one placement query = 122 K instructions, i.e. the *prediction* is the expense.
+2. **The same rows have two representations.** A bucket's content is `slab prefix ∪ overflow log`, so the design
+   needs chains, chain walks, folds, a fold prelude, a release protocol and the I2 rule — and the row-loss hazard
+   this session found (`release_segment` zeroing a non-empty log; a stepped pack truncating an unfolded row) is
+   possible only because two owners can disagree about where the rows are.
+
+Both properties exist to serve one goal: **flat, contiguous sequential scans for traversal** (the "2 % parity"
+dense path). So any redesign has to pay for locality explicitly.
+
+## Candidate A′ — two storage classes only: inline (small) + chunked runs (everything else)
+
+Delete the slab-prefix + shared per-leaf log + vertex-span triad; keep the inline tiny form and generalize the
+existing chunked *tree* mode (LEG root + LTB blocks, ADR 0088) to every non-inline bucket.
+
+* What disappears with it: I1 and I2 become vacuous (no cover, no releasable log), folds and the fold prelude, the
+  log-full recovery loop, weighted re-tiling/slide, leaf relocation for span growth, slack sizing and its policy,
+  `promote_*_to_slab` copies, and the tiling/positions machinery. That is the majority of what this session
+  touched, including every hazard class found in it.
+* What it costs: one indirection per chunk on scans (0 extra for inline, ~1 descriptor read per 64–256 rows above
+  that), and it inherits the LTB/LEG machinery (which already exists and is already benchmarked — ADR 0088 has the
+  tree-mode measurements). Growth becomes "allocate a chunk", so per-bucket waste is bounded by one chunk instead
+  of by a predicted span; a delete can compact a chunk by moving at most one chunk's worth of rows.
+* Fit with the workload: the Orkut census (`design/investigations/2026-09-17-lara-orkut-feedback-triage.md`, S3)
+  shows K≤4 buckets are 69.6 % of buckets but only 25.4 % of edges at 1 M — i.e. **inline covers most buckets and
+  all of the cheap ones**, while ~75 % of edges live in the buckets a chunked design would serve. So A′ changes
+  the storage of the expensive minority and leaves the common case exactly as it is today.
+* Risk to measure first, cheaply: the scan break-even between the current flat prefix and a chunked run per bucket
+  size (tree-mode numbers in ADR 0088 are the starting point), and the insert cost of append-to-last-chunk vs
+  slab-append. If the break-even is inside the measured distribution, A′ is a strictly better design; if not, keep
+  the flat prefix for mid-size buckets.
+
+## Candidate A″ — smallest change that kills the two root properties' worst consequences
+
+Keep the flat slab prefix (and therefore scan parity) but **replace the shared per-leaf overflow log with
+per-bucket spill chunks** (a chunk id + count in the descriptor, chunks from the same LTB store the tree mode
+already uses).
+
+* Kills: I2's class entirely (a bucket owns its spill; there is no shared area to release, no "was it drained?"
+  question), the log-full recovery loop and its leaf-wide fold, the fold prelude, and the chain walks in sizing.
+* Keeps: the prediction problem (spans still have widths) — so I1, slack policy and leaf relocation stay.
+* New cost: a few bytes per bucket in the descriptor plus chunk-granular waste (bounded, and only for buckets that
+  actually spill), and one indirection when a bucket has spilled.
+* This is the option to prefer if the product wants a *bounded* step: it removes the hazard class and a whole
+  recovery path for ~1 descriptor field and one store reference per bucket.
+
+## What survives either way
+
+The session's contracts are about *ownership*, not about the mechanisms they are implemented with, so they should
+outlive a redesign: rows have exactly one owner at a time; a published width is a claim that must be backed;
+releasing storage requires proving it holds nothing; slack is a hint and never a reason to allocate; and sizing
+consumes one shared definition of "resident". A′ makes the first three vacuous by construction, which is the
+strongest argument for it; A″ makes the second and third vacuous where they were actually violated.
