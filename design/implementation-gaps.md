@@ -955,6 +955,14 @@ session did.
   one-line shape is the plan's `new_alloc` expression — when the content fits (`old_alloc >= min_required`) and
   growth cannot be placed, keep `old_alloc` instead of failing — i.e. `force_slack_grow` downgrades to an
   in-place rewrite. Tree back at 614/0; `/tmp/classA_full_*` is superseded.
+  **Landed (2026-09-20, `db04af585`): spare capacity is a hint, never a reason to allocate.** Both sizing
+  paths now check `force_slack_grow && old_alloc >= min_required && try_labeled_vertex_edge_base_in_pinned_leaf(src,
+  new_alloc).is_none()` and keep `old_alloc` in that case, so the wider span is taken only when the current
+  window already hosts it: no resolution, no relocation, no failure for spare room, and content-fitting
+  rewrites stay in place. 614 passed / 0 failed, scoped fmt/clippy clean. This also supersedes class A
+  entirely (no growth machinery for slack). Still to add when the two sizing sites collapse into one with the
+  delegation: a regression that a slack request never changes the leaf's physical block length (a single site
+  makes that a precise unit assertion; today the observable is spread over two paths).
   enabling it).
      decision removes).
   fourth implementation's placement.
