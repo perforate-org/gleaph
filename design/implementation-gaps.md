@@ -303,11 +303,17 @@ defect from being rediscovered without its prior reasoning.
   `promote_publish_phase_atomic_descriptor_write`, `promote_succeeds_when_alloc_space_at_cap` (no fresh
   root span: `edge_start` is the prefix head, nothing is allocated); (ii) *policy/expectation review* —
   `labeled_segment_relocate_reuses_free_span`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`;
-  (iii) *suspected real bugs to investigate first* —
-  `default_bypass_conversion_clears_vertex_edge_span_allocation` (bypass rows read back as
-  `TestEdge { target: 0 }`), `edge_inline_propertys_survive_rewrite_with_tombstones` (property values
-  read back as zeros), `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
-  (`CollectAllocationOverflow` in a schema path). Working copies of the passing shape: `/tmp/best_*.rs`.
+  (iii) *data-assertion failures* — `default_bypass_conversion_clears_vertex_edge_span_allocation`
+  (bypass rows read back as `TestEdge { target: 0 }`),
+  `edge_inline_propertys_survive_rewrite_with_tombstones` (property values read back as zeros),
+  `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
+  (`CollectAllocationOverflow` in a schema path).
+  **Bisect result (2026-09-20):** these three are *not* independent defects. Applying only the
+  resident-region SSOT + planning positions fix (`79ca06e24`) keeps the whole suite green (611/0) and
+  all three pass; they fail only once the promotion/leaf-tiling rework is applied on top, so they
+  belong to that rework's blast radius and must be explained (or the rework corrected) rather than
+  patched in place. Working copies of the rework: `/tmp/best_*.rs`; the SSOT increment is now
+  committed.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
