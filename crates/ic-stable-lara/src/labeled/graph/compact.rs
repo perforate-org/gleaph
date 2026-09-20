@@ -1475,6 +1475,8 @@ where
                     &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
+                    None,
+                    0,
                     leaf_relocate_commit,
                     true,
                     suppress_vertex_footprint_release,
@@ -1512,6 +1514,8 @@ where
                     &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
+                    None,
+                    0,
                     leaf_relocate_commit,
                     true,
                     suppress_vertex_footprint_release,
@@ -1645,6 +1649,8 @@ where
         bucket_row_bytes_buf: &mut Vec<u8>,
         new_base: u64,
         new_alloc: u32,
+        preferred_bucket: Option<usize>,
+        preferred_extra: u32,
         leaf_relocate_commit: bool,
         fold_logs: bool,
         suppress_vertex_footprint_release: bool,
@@ -1710,8 +1716,8 @@ where
                 new_base,
                 new_alloc,
                 &resident_buckets,
-                None,
-                0,
+                preferred_bucket,
+                preferred_extra,
             )?
         };
         let max_run = {
@@ -2614,6 +2620,8 @@ where
             &mut bucket_row_bytes_buf,
             new_base,
             new_alloc,
+            preferred_bucket.map(|index| index as usize),
+            preferred_extra,
             false,
             false, // rebalance keeps each bucket's overflow log
             true,  // the release block below owns the footprint decision
