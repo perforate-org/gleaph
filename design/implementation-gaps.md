@@ -200,6 +200,29 @@ defect from being rediscovered without its prior reasoning.
   Next attempt: give that path the materializer's tree branch (move the root bytes by anchor), then
   add the promotion's Phase 3e (re-base the cover on the SSOT + `rewrite_vertex_edge_span(..., force_slack_grow = true)`)
   and the two regression tests. Working copies: `/tmp/ssot_{compact,promote,bucket,leaf_pin,graph}.rs`.
+- **Space-first attempt (2026-09-20, C = reserve the root inside the vertex span):** Phase 1 now
+  reserves `combined_root_len` through
+  `rewrite_vertex_edge_span(vid, Some(bucket_index), combined_root_len, …)` and writes the root at
+  `bucket.edge_start() + stored_slots`; the old prefix is released by the existing Phase 3c, so no
+  space is forfeited (unlike the reuse variant). With the SSOT migrations, the tree-aware copy arms
+  in both inline loops, and the lower bound in `try_labeled_vertex_edge_base_in_pinned_leaf`, the
+  **skewed-leaf regression passes with C alone**.
+  What C alone does not do: the vertex cover still measures the vertex's share from the *released
+  prefix base*, while the tree bucket's `edge_start` is now the root — and the debug guard (and the
+  layout) reconstruct the vertex's span from the first non-tiny bucket, so the reconstructed span
+  straddles the block end (`base=3758 end=5070 leaf=(256, 3664)`). So C needs the cover normalized
+  too; the model has nowhere to record the vertex's span start (the 29-byte descriptor has no spare
+  field, and the row's reserved bits are too narrow).
+  Adding the post-publish normalization (re-base cover → `rewrite_vertex_edge_span(..., force_slack_grow = true)`)
+  currently breaks inserts with `CollectAllocationOverflow` in both regression tests, even with the
+  tree-aware copy paths — that is the single thing left to pin (next: instrument the re-lay's
+  planning/base resolution on the *post-promotion* state, where the vertex's only bucket is the tree
+  bucket). Working copies: `/tmp/c_{compact,promote,bucket,leaf_pin,graph}.rs` (C + normalization) and
+  the same files with C alone is `/tmp/ssot_*`.
+  For reference, the only *self-consistent and complete* variant today is the root-at-prefix-base
+  reuse (B): it passes every geometry test, but holds up to `T_PROMOTE` slots (4 KiB) per promoted
+  bucket as claimed slack until the leaf is relocated, which is exactly the space cost this
+  requirement rejects.
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
