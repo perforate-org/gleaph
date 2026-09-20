@@ -162,8 +162,14 @@ defect from being rediscovered without its prior reasoning.
   (1) and (2), with (1) narrowed further — the straddling cover observed in
   `fold_growth_stays_mate_disjoint_across_span_growth` (`base=3758 end=5070 leaf=(256, 3664)`) still
   carries the **pre-promotion slab width** (1312), so it is not the `tail_append_labeled_edge_base`
-  escape hatch but cover bookkeeping around the promotion (the slide/commit path that republishes
-  vertex covers from resident slots is the next place to instrument).
+  escape hatch. Instrumenting `commit_vertex_edge_span_layout` (the slide/rewrite commit) shows the
+  hub is **not** among the vertices that path republishes in that workload (only vids 0..11 appear,
+  their spans summing 612 slots inside the block), so the 1312 cover is written by another site.
+  Concrete suspect for the next pass: `prepare_vertex_edge_span_for_overflow_log_fold`'s two relocate
+  branches return `Ok(())` after relocating **without re-publishing the vertex cover** — its in-place
+  publish branches (and the insert-path append growth) are the next instrumentation targets. The
+  shape of the fix, if confirmed, is to re-enter the function once after a relocation (bounded, or as
+  a loop) so the cover is published from the post-relocation geometry.
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
