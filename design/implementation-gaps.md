@@ -693,6 +693,49 @@ session did.
   5. Tests: add a regression that a fold which cannot complete neither releases the log nor reports
      success; re-read the three assertion-level tests against the contract; the hub fixtures should then
      exercise real leaf relocation (they currently pass through the fallback, which is the state this
+
+  **Essential design (proposed contract formulation, 2026-09-20 — for confirmation before it moves into
+  ADR 0096 §5 / `design/storage/lara.md`).** Everything found this session follows from two invariants
+  that the current code states nowhere:
+
+  * **I1 — a cover is a claim that must be backed.** For every vertex, `[base, base + stored_slots)`
+    must lie inside the physical region the store actually owns for it, and that region must lie inside
+    the leaf window. Publishing `stored_slots = new_alloc` while keeping the old base (the never-fail
+    fallback) violates I1: the cover can overlap a leaf mate, which is the GAP-005 hazard. Corollary:
+    growth must be *backed before published* — "decide, then publish, then back" is not available.
+  * **I2 — a log is unmaterialized content, and releasing log space is destroying content.** A bucket's
+    rows live in `prefix ∪ log`; a log entry exists only until a rewrite writes it into a span. Therefore
+    clearing a log head requires that every one of its rows was written, and *releasing a leaf log segment
+    requires the whole leaf's logs to be empty*. `release_segment` currently zeroes without checking, so
+    this invariant is unenforced and the never-fail fallback can reach it with rows still in the log.
+
+  Consequences that make the rest mechanical (and that the landed work already starts):
+
+  1. **Ownership has one accessor.** How many slots back a bucket = `bucket_resident_region` /
+     `bucket_resident_rows` (tiny 0, slab prefix, tree root region, plus log). `stored_slots()` is a wire
+     field with mode-specific meaning (tiny: used width; tree: logical extent) and must never size
+     anything. Landed: `729214852` (one definition) and `8f137196d` (planner uses it).
+  2. **One writer per decision.** Sizing and placement come from one snapshot and one definition; the
+     commit owns positions. Landed: `8f137196d` (single publish path), `97c316f55` (preference reaches
+     the tiler).
+  3. **Growth is leaf-level.** A pinned vertex cannot grow past its leaf's room; the leaf block is the
+     backing region and its vertices are tiled together. So required growth = relocate/re-tile the leaf
+     (block aligned); tail-append is only valid when the leaf is unpinned or a relocation is in flight —
+     which is exactly what `labeled_insert_does_not_grow_elem_capacity_for_hub_growth` already asserts.
+  4. **Slack is optional; growth is not.** Callers differ in how much *spare* they ask for, never in
+     whether the content fits. So there is no need for two resolvers: one resolver, with `required`
+     (must fit: relocate the leaf, else error) versus `slack` (best effort: downgrade to the current
+     span, keeping the cover equal to the owned region).
+  5. **Fail closed, never degrade.** A degradation that keeps an invariant would be local; the ones here
+     are not — an unbacked cover corrupts a neighbour's ownership, an undrained release destroys rows
+     elsewhere in the leaf. Every such case must be an error the caller can act on (relocate, fold,
+     retry), which is the shape the log-full recovery already has: fold every vertex, verify empty,
+     release, retry.
+  6. **Transaction shape.** The batch path already has the right form (`reserve_one_orientation_batch` /
+     `BatchReservation`: validate → reserve → commit → rollback). A span rewrite should have the same
+     shape: snapshot → size → reserve/place → write content → publish descriptors and vertex → clear the
+     logs that were drained; anything before the first canonical write is abortable, anything after it
+     must be infallible. That is what the deletion in `8f137196d` moved toward.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
