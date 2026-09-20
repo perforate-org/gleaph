@@ -5708,21 +5708,38 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, b_with_lpb)
             .expect("write patched bucket");
-        // Demote: should fail with `InlinePropertyBytesWidthMismatch`
-        // BEFORE any state change.
-        let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
-        // **Plan 0326 REWORK**: the demote of a w > 0 tree bucket
-        // now restores the byte-slab from the LPB. The test setup
-        // (patched w=4 without minting the matching LPB leaves)
-        // is no longer a useful "atomic on failure" test because
-        // the demote will try to read the property leaves that
-        // don't exist and return `LtbBlock(NotMinted)`. The
-        // demote atomicity for w = 0 is still covered by the
-        // full round-trip test in `lpb_in_tree_demote_round_trip_at_w_4_stored_4096`.
+        // **Plan 0326 REWORK**: the demote of a w > 0 tree bucket restores the
+        // byte-slab from the LPB, so the patched `w` alone no longer forces a
+        // failure: the restore reads whatever occupies the property-root slots
+        // after the edge root. Make that deterministic (GAP-2026-09-20-005) by
+        // writing an unminted block id into the first property-root slot, so the
+        // restore fails with `LtbBlock(NotMinted)` no matter where the promotion
+        // placed the root.
+        let property_root_start = b_orig.edge_start()
+            + u64::from(crate::labeled::graph::compact::bucket_span_region_len(
+                &b_orig,
+            ));
+        graph
+            .edges()
+            .write_slot(property_root_start, TestEdge { target: u32::MAX })
+            .expect("write unminted property-root sentinel");
+        // Demote: the property restore fails before any state change.
         let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
         assert!(
             matches!(result, Err(LabeledOperationError::LtbBlock(_))),
             "expected LtbBlock (NotMinted) for w > 0 demote on a synthetic w-patched bucket, got {result:?}"
+        );
+        // Atomicity: the descriptor must be untouched by the failed demote.
+        let after = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        assert_eq!(
+            after, b_with_lpb,
+            "a failed demote must leave the tree bucket intact"
         );
         // Restore the original bucket (without the LPB byte) so
         // teardown is clean.
