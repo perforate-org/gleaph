@@ -5523,3 +5523,84 @@ their mechanism. Two design questions remain after the swap, in order: (i) wheth
 bucket can be "prefix + LTB-backed spill run" (tree's LEG root is a one-level block list, which a run header could
 carry), and (ii) whether the inline threshold K should move now that the middle tier is lazy. Both are follow-ups
 with their own measurements, not part of the swap.
+
+# The spill design, in one place (2026-09-20)
+
+## Purpose
+A bucket's rows must be reachable in order, and its live count grows unpredictably. The slab prefix is a
+contiguous run sized in advance, so rows beyond it need somewhere to live. Today that place is a *shared per-leaf
+overflow log*: a chained, pre-provisioned, leaf-owned area that is emptied by a leaf-wide fold and released as a
+whole. The spill replaces it with a **per-bucket, contiguous, lazily allocated run**.
+
+## Data model
+* Tiers: **inline** (tiny, K<=4, rows live in the descriptor) -> **slab prefix** (a contiguous span, sized with the
+  existing policy) -> **spill run** (this design) -> **tree** (unchanged for now; whole-bucket chunking).
+* A bucket's logical row `i` is the prefix slot for `i < prefix_len`, otherwise spill row `i - prefix_len`. That is
+  the same ordinal scheme the log used (`stored + offset`), so **ordinals do not move when the spill grows**: the
+  spill is append-only.
+* Descriptor: the existing 29-byte row, with `overflow_log_head: i32` reinterpreted as the **spill run id**. No row
+  widening. A run id is a row offset in the spill arena, so its top bit is free to mean "level 2" when the spill
+  continues in LTB blocks.
+* Length: because a spill is append-only, the descriptor's live length *is* the run's used length, and the run's
+  capacity class follows from it — so the descriptor needs **no capacity field** (`release(run, len)` recomputes the
+  class).
+
+## Operations
+* **Insert.** (a) a free prefix slot (tombstone reuse, or the Insertion headroom) is used in place; (b) else, if the
+  bucket's run has room, append to it; (c) else allocate a run of the next class, copy the old rows, release the old
+  run, append. Beyond the largest class (1024 rows) the spill continues in LTB blocks. Nothing is pre-allocated, no
+  other bucket is touched, and there is no leaf-wide pass — so the log-full error and its recovery loop have no
+  analogue: the only failure is a genuine allocation failure.
+* **Scan.** Prefix rows in order, then the run's rows in order — contiguous, one read per run (one per block at
+  level 2), no chain walk; descending is the same in reverse. Ordinals come out identical to the log's.
+* **Delete.** A layout-native tombstone is written in place (prefix or spill) and the live count drops; the run's
+  length does not shrink. When the bucket's live rows fit the prefix again, compaction copies the spill's live rows
+  into the prefix and **releases the run** to its class free list — the only place a run is freed, together with
+  bucket death.
+* **Compaction is optional.** If the rows do not fit the prefix, the compaction is simply skipped; nothing else
+  depends on it happening.
+* **Reopen.** The store's 64-byte header plus eight per-class free heads is the whole persistent state; runs are
+  addressed by row offset, so nothing is rebuilt (the store test proves a released run is returned after reopen).
+
+## Allocator
+Power-of-two capacity classes (8..1024 rows), a free list per class whose first four bytes hold the next free run's
+row offset (`u32::MAX` terminates), reuse only within the same class, and no coalescing. Growing past a class
+allocates a new run, copies at most 2x the live rows and releases the old one, which is the standard doubling
+argument: amortized O(1) per insert, with waste bounded by the class (<2x).
+
+## Memory behaviour
+A bucket that never spills owns nothing (measured: 19 of 20 buckets in the production-shaped hub; the audit's shape
+had zero entries used). A bucket that spills pays its class: 74 rows -> a 128-row class = 512 B at 4 B per row. The
+fixed per-segment cost disappears entirely (the audit measured ~696 KB of log capacity for 5 000 vertices with zero
+usage). Stable memory is never returned to the IC, so this is a saving on a fresh graph and a rebuild question on an
+existing one — which the pre-production rule already answers.
+
+## Invariants
+One owner per row at a time; a published width (and a spill length) is a claim that must be backed; **a spill run
+exists only because rows exist** (no policy may pre-allocate one for growth — the slack rule's analogue); ordinals
+of existing rows never change; resident content is `prefix + spill`, one definition shared by sizing, placement and
+publish.
+
+## What this deletes, and why each deletion follows from one property
+| Deleted | Why it existed | Why the spill does not need it |
+| --- | --- | --- |
+| chain (`prev` links, chain-length walks) | one shared area held many buckets' entries interleaved | a run belongs to one bucket and is contiguous |
+| fold + fold prelude | the shared area had to be emptied before it could be reused | freeing is per bucket, so nothing to empty |
+| drain proof + the I2 guard | a release freed an area other buckets might still be using | only the owner frees its run, and only when it is done |
+| log-full error + leaf-wide recovery | one bucket could fill an area everyone shared | a bucket extends its own run |
+| per-segment capacity and its segment table | segment granularity, provisioned eagerly | lazy, per-bucket, class-sized |
+| part of the span-growth machinery | the prefix width had to be predicted | growth is "extend my spill", which needs no prediction |
+| part of the slack policy | prediction needed spare room as a cushion | the spill absorbs variance; slack stays a hint |
+
+## Numbers that make it concrete
+41 instructions per edge for a chunked sequential scan (ADR 0088's tree measurement, the structure level 2 reuses);
+74 rows spilled by the single spilling bucket in a 20 x 500 hub; 128-row class for it (<2x waste); 8-row smallest
+class; 1024-row largest class before LTB; ~696 KB of per-segment log capacity removed in the audit shape; the
+reference's cap sweep (cap 0 correct and near-fastest, persisted bytes flat across cap) showing capacity buys speed
+only.
+
+## Open questions (each with a measurement, not an assumption)
+Level-1 class boundaries against Gleaph's 4-byte rows (the reference's numbers are for 24-byte records); the level-2
+threshold; whether tree mode is still needed once a bucket can be "prefix + LTB-backed spill run" (tree's LEG root
+is a one-level block list a run header could carry); whether K moves now that the middle tier is lazy; and the
+batch/deferred paths, which lose their log-capacity reservation entirely.
