@@ -87,6 +87,20 @@ defect from being rediscovered without its prior reasoning.
   GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
   bench for the slack trade.
 
+### Incident 2026-09-20 — `git stash` + `drop` in the shared worktree (recovered)
+
+Whlie diagnosing GAP-2026-09-20-005 a `git stash` was used to bisect and then dropped, which swept up
+**twelve uncommitted files belonging to other workstreams** (`crates/graph/src/facade/**`,
+`crates/graph/src/index/canonical_export.rs`, `Cargo.lock`, the `deferred.rs` / `iter.rs` comment
+hunks, `pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, `design/adr/0050` / `0059`). All of
+them were restored from the still-reachable dangling stash commit `c2fae9e5b` (`git fsck
+--no-reflogs --unreachable`), verified back in place, and the suite is green again (611/0). No
+foreign content had been committed: the one shared file committed here (`design/adr/README.md`)
+contains only this workstream's ADR 0096 row.
+**Discipline for this worktree:** never `git stash` (or any tree-wide state operation) while other
+agents have uncommitted work; bisect with file copies instead (`/tmp/...`), as the rest of this
+session did.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)** — the fold-prelude path is closed with a
@@ -308,7 +322,17 @@ defect from being rediscovered without its prior reasoning.
   `edge_inline_propertys_survive_rewrite_with_tombstones` (property values read back as zeros),
   `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
   (`CollectAllocationOverflow` in a schema path).
-  **Bisect result (2026-09-20):** these three are *not* independent defects. Applying only the
+  **Bisect result (2026-09-20):** these three are *not* independent defects.
+  Root cause pinned by three bisect steps: `promote.rs` alone is fine, `bucket.rs` alone is fine,
+  `compact.rs` is the culprit, and within it the single change that reproduces
+  `default_bypass_conversion_clears_vertex_edge_span_allocation` is `read_and_plan`'s `total_live`
+  switching from `degree` to the resident SSOT. The reason is a missing dimension in the SSOT: a
+  **compacting** rewrite materializes only the *live* rows (tombstones are packed away), so its span
+  budget must stay `degree` for slab buckets — while a promoted bucket still needs its LEG root
+  region. The SSOT as applied returns the tombstone-inclusive width, which over-reserves slab spans
+  and shifts the published layout. Next step: make the budget compaction-aware
+  (`bucket_rewrite_content_slots(bucket, compact)`: compact → slab `degree` / tree root / tiny 0;
+  non-compact → the resident region) and re-run these three. Applying only the
   resident-region SSOT + planning positions fix (`79ca06e24`) keeps the whole suite green (611/0) and
   all three pass; they fail only once the promotion/leaf-tiling rework is applied on top, so they
   belong to that rework's blast radius and must be explained (or the rework corrected) rather than
