@@ -1076,6 +1076,19 @@ session did.
   `compact_vertex_edge_span_one_step`'s own fold (what it writes, where, and whether it clears the head) plus
   the commit's non-folding publish for the same bucket, not another parameter. HEAD stays 614/0; the 612/2
   artifacts are for that read's starting point only.
+  **Where to look for that visibility loss (2026-09-20, from reading the stepped path).**
+  `compact_vertex_edge_span_one_step` does not fold the bucket itself: for the log-backed case it calls the
+  rebalance (now with `fold_logs = false`) and then **recurses**; the fold happens on the next pass, in the
+  vertex-wide branch `if vertex.stored_slots > total_live && (any bucket has a head || stored != degree) {
+  self.rewrite_vertex_edge_span(vid, None, 0, true /*compact*/, false, None) }`. So the row that disappears is
+  lost between those two calls: step 1 publishes the prefix with the head preserved and (with `fold_logs =
+  false`) a tiling that reserves prefix + log, and step 2 is a compacting rewrite that packs live rows and
+  clears heads. Two concrete things to print in that test, one at a time, rather than adding parameters:
+  (a) after step 1, the bucket's `stored_slots_raw()`, `degree()`, `overflow_log_head()` and the target's
+  `edge_slot_index_raw()` from the log chain read; (b) after step 2, the same four, plus whether
+  `iter_edges_for_label` sees the target before and after each step. That distinguishes "step 1 published the
+  head without the rows" from "step 2 packed and dropped a row". Restore the 612/2 artifacts with the three
+  `cp`s; HEAD is 614/0.
   enabling it).
      decision removes).
   fourth implementation's placement.
