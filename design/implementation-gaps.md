@@ -5728,3 +5728,31 @@ Not lighter, or newly worth designing away:
 
 Net: the hot paths lose a level of indirection, a choreography and a coupling; the costs that remain are bounded,
 per bucket and measurable, with two to design deliberately (in-place tail growth, hole reuse).
+
+# File-by-file plan for the log-to-spill swap (2026-09-20)
+
+The swap is atomic — the layout, the producer, the consumers and the tests move together — but it is reviewable as
+the following file-by-file work. Reference counts are log-related references measured today (18 files, ~450 sites).
+
+| File (log refs) | Change |
+| --- | --- |
+| `labeled.rs`, `lara/edge/init.rs` | The log store's construction becomes the spill store's; `SegmentId`/`release_*` and the segment table go. The region slot the log occupied carries the spill store, so the memory count is unchanged. |
+| `record.rs` (52) | `overflow_log_head` -> `spill_run` for slab (tiny keeps its payload meaning, tree keeps its own root reference); `with_overflow_log_head` -> `with_spill_run`. 29-byte row unchanged. |
+| `lara/edge/log.rs` (+ `edge_inline_property/log.rs`) | Deleted with the chain API: `overflow_log_chain_len`, the asc-index walk, `read_overflow_log_entry`, the append path, `overflow_log_segment_high_water`, `read_overflow_log_state`, `release_log_segment`, `log_entry_stride`. Replaced by the spill store's `allocate` / `write_row` / `read_row` / `release`. |
+| `insert.rs` | The overflow decision becomes "prefix slot (hole or `used` headroom) -> append to my run -> grow my class", with in-place tail growth per ADR 0097. No leaf-wide pass, no error path. |
+| `remove.rs` (48) | Deleting a spill row writes a tombstone in place; the chain-splice logic (`prev` relinking, head rewrites) disappears — a real simplification, since a run needs no unlinking. |
+| `traverse.rs` (78), `iter.rs`, `slot_index.rs` (12) | Chain iteration becomes indexed run iteration; the ordinal algebra (`stored + offset`, tombstone-inclusive positions) is unchanged, which is what keeps reads observable-compatible. |
+| `compact.rs` (73) | Delete the fold, the fold prelude, the leaf-wide recovery and the drain guard (I2); add per-bucket compaction (copy the run's live rows into the prefix, release the run). The resident-content definition reads `prefix + run` and loses its chain-length walks. |
+| `batch_write.rs` (41) | The log-capacity reservation and its rollback path become "the run may need to grow"; the reservation must account for the possible class-growth copy. |
+| `values.rs` (33) | The inline-property-bytes log is the same problem with a second row width, so it gets the same treatment (its own arena/store instance; the region is shared in segments, the allocators are not). |
+| `bucket.rs` (35) | Head-based anchor/successor logic becomes run-based. |
+| `invariants.rs` (4) | Log checks become spill checks: a run's used length never exceeds its class, and a published length is backed (I1's analogue for the spill). |
+| `tree_write.rs`, `tree_read.rs`, `promote.rs` | Transcription reads `prefix + run` instead of `prefix + chain`. |
+| `deferred.rs`, `bench.rs`, `batch_write_test.rs` (4/12/28) | Triggers that existed only to empty the shared area are deleted; benches and tests are replaced by the spill set (lazy first allocation, class reuse, tail in-place growth, level-2 hand-off, no pre-allocation, audit shows zero fixed cost). |
+
+Three parts need care rather than bulk: the inline-property-bytes twin (same design, second arena), the batch
+reservation (growth must be reserved or rolled back), and `slot_index.rs` (the ordinal algebra is the contract that
+keeps the swap invisible to readers). Recommended slice order: (1) layout/region + store construction with a reopen
+test, (2) descriptor rename and the insert producer, (3) reads and the residents, (4) removes and compaction,
+(5) batch and the values twin, (6) deletion of the log API and its tests, (7) ADR 0096 §5 / `design/storage/lara.md` /
+D-GAP contract text, then the audit re-run (the 696 KB must read zero) and the full gates.
