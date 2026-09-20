@@ -355,6 +355,19 @@ session did.
   positions, so the next instrumentation target is the `collect_out_edges_slot_order` source against
   the positions the plan published (the pair that used to be derived from the same `degree` width; the
   compaction-aware budget changed one side of that contract).
+  **Duplication removed (2026-09-20):** `rewrite_vertex_edge_span` had three copies of the
+  collect-and-publish logic (two inline fast paths plus `commit_vertex_edge_span_layout`), which is
+  what kept drifting. Replacing both inline paths with the materializer + commit pair
+  (`materialize_labeled_vertex_edge_plan` → `commit_vertex_edge_span_layout`, the same code the leaf
+  slide uses) deletes 268 lines and fixes `edge_inline_propertys_survive_rewrite_with_tombstones`
+  outright. Combined with the compaction-aware budget and *without* the promotion rework the suite is
+  **609 passed / 2 failed**, and both failures are the sizing/expectation pair
+  (`labeled_segment_relocate_reuses_free_span`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`):
+  the unified path moves the bucket's whole slab prefix, so the span budget must cover the prefix
+  (`stored`) rather than the live count (`degree`) — the old `degree` budget under-reserved, and those
+  two tests pin the old numbers. Next step: re-derive those two expectations (with that justification)
+  and land the unification as its own commit. Copies: `/tmp/unified_compact.rs` (unified layout code to
+  pair with HEAD's other files).
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
