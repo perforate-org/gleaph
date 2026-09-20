@@ -71,12 +71,17 @@ defect from being rediscovered without its prior reasoning.
   exact, the internal root is *stale* before a rebuild (the wrong-impl probe: eager
   maintenance would already match), the rebuild restores every internal row from its
   children, and a further mutation leaves the root stale again.
-- **Measured (T_promote = 1024):** `bench_r_ed_st_si_1024` (1,024 scattered slab
-  appends) 4.58 M → 2.17 M (−52.6 %); `tiny_workload_skewed_mix` (G5, 256 v /
-  4,520 e) 132.24 M → 115.49 M (−12.7 %); `bench_l_s2_det_hub_1024` 25.01 M →
-  17.88 M (−28.5 %, now below both the pre-F1 20.72 M and the pre-re-tune slab
-  reading). Single-leaf growth shapes (M1) are unaffected — their walk hits the same
-  shallow path.
+- **Measured (T_promote = 1024, artifact pre/post of the same persist run):**
+  `bench_r_ed_st_si_1024` (1,024 scattered slab appends) 4.58 M → 2.17 M (−52.6 %);
+  `bench_l_s2_det_hub_1024` 25.01 M → 17.88 M (−28.5 %, now below both the pre-F1
+  20.72 M and the pre-re-tune slab reading); `bench_l_nt_bp_ins_4096` 415.6 K →
+  327.9 K (−21.1 %); `bench_l_s2_det_hub_st_4096` −16.8 %;
+  `tiny_workload_skewed_mix` (G5) 122.11 M → 115.49 M (−5.4 %). The persist run
+  reported 13 improved / 0 regressed / 178 unchanged. Single-leaf growth shapes
+  (M1) are unaffected — their walk hits one shallow path, so the total does not
+  move. Note: G5's 132.24 M reading in the earlier A/B session predates the drain
+  batch and the property cursor, and cross-build canbench comparisons carry a few
+  percent of code-layout variance, so only same-run numbers are quoted as deltas.
 - **Contract:** [lara-dgap-contract](storage/lara-dgap-contract.md) and
   [lara](storage/lara.md) now state leaf-canonical counts with on-demand internal
   repair (DGAP maintains the tree eagerly; the density semantics are unchanged).

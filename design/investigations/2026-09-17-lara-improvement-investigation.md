@@ -281,9 +281,10 @@ any DRAM ratio as an IC target.
 
 The counts walk the S1 probe measured at ~3.2 K per insert has been removed from the
 hot path: leaf rows are canonical, internal rows are derived and repaired on demand
-(`rebuild_counts_internal_nodes`). Measured: `bench_r_ed_st_si_1024` 4.58 M → 2.17 M
-(−52.6 %), G5 mix 132.24 M → 115.49 M (−12.7 %), `bench_l_s2_det_hub_1024` 25.01 M →
-17.88 M (−28.5 %). Recorded as GAP-2026-09-20-004; this was the largest remaining
+(`rebuild_counts_internal_nodes`). Measured (same persist run): `bench_r_ed_st_si_1024`
+4.58 M → 2.17 M (−52.6 %), `bench_l_s2_det_hub_1024` 25.01 M → 17.88 M (−28.5 %),
+`bench_l_nt_bp_ins_4096` −21.1 %, G5 mix 122.11 M → 115.49 M (−5.4 %); 13 improved /
+0 regressed overall. Recorded as GAP-2026-09-20-004; this was the largest remaining
 lever both the S1 probe and the tiny-tier analysis pointed at.
 
 ## S1 result — core insert attribution (measured 2026-09-17, worktree source)
