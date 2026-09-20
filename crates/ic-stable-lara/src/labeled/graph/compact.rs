@@ -2973,11 +2973,16 @@ where
             // Physical spans only; the `.max(degree)` floor covers
             // tombstone-inclusive slab prefixes (no-op for tree buckets,
             // whose `stored_slots` is a logical count).
-            let physical = bucket_physical_resident_slots(bucket);
-            let floor = if bucket.is_tree_mode() {
-                physical
+            // ADR 0096 §5: tiny buckets own zero slab slots, so they must not contribute a
+            // resident term. The degree floor applies to slab prefixes only; applying it to
+            // tiny (as this fold used to) makes a spanless vertex look resident, and it then
+            // asks for a real span that has no base to fall back to (class C).
+            let floor = if bucket.is_tiny_mode() {
+                0
+            } else if bucket.is_tree_mode() {
+                bucket_physical_resident_slots(bucket)
             } else {
-                physical.max(bucket.degree())
+                bucket_physical_resident_slots(bucket).max(bucket.degree())
             };
             acc.checked_add(floor)
                 .ok_or(LaraOperationError::RowDegreeOverflow)
