@@ -5391,3 +5391,29 @@ lazy allocation on first spill, the LTB hand-off for large spills, and the delet
 per-segment capacity, the drain guard (I2), the fold prelude and the recovery loop are the following slices.
 Suite 619/0 (614 + the 5 new store tests), scoped fmt/clippy clean, and the leftover `let mut new_alloc` from the
 superseded slack rule is gone.
+
+## Wiring decision for the spill store: no new memory region (2026-09-20)
+
+The next slices need the small-run store to become part of the graph, and the obvious wiring — a seventeenth
+`Memory` — would churn every construction site (`LabeledLaraGraph::new` appears at 16+ call sites across tests,
+benches and the facade, each listing its memories positionally). Decision instead: **the spill store lives in the
+LTB region as a separate segment with its own header**, which is coherent because both levels of the spill are
+spill storage — level 1 is the packed small-run arena, level 2 is the LTB blocks — and it keeps the graph's memory
+count and every construction signature unchanged. The two allocators stay strictly separate inside that region
+(each owns a segment, each has its own magic/version header, neither reads the other's bytes), so the only shared
+thing is the region, not the accounting.
+
+That makes the remaining slices small and ordered:
+
+1. **Region + store construction**: give the LTB region a spill segment (header + arena from `spill_run_store`),
+   construct the store in the graph's init path next to the LTB store, and prove persistence with a reopen test
+   (the store test already covers the allocator's own reopen; the graph-level test covers the region split).
+2. **Descriptor field**: reinterpret `overflow_log_head: i32` as a spill run id, keeping `ipb_log_len`-style
+   length semantics for the spill (a spill is append-only, so the length is the live count and the capacity class
+   follows from it — which is why the store's `release(run, len)` takes the length).
+3. **Lazy allocation and the LTB hand-off**: the first row that does not fit the slab prefix allocates a level-1
+   run (74 rows in the measured shape); a spill that outgrows the largest class (1024 rows) continues in an LTB
+   block, and the descriptor gains a way to say which level it points at (one bit in the run id, since the id is
+   a row offset and the top bit is free).
+4. **Deletion**: the shared log store, its per-segment capacity, the drain guard (I2), the fold prelude and the
+   log-full recovery loop all go, together with the ADR text that describes them.
