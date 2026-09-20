@@ -183,6 +183,23 @@ defect from being rediscovered without its prior reasoning.
   - Working files from this pass: `/tmp/promote_postpublish_attempt.rs` (post-publish rewrite) and
     `/tmp/compact_treeprep_attempt.rs` (tree-aware planning + positions, which then hits the
     materialization panic).
+- **Class-level reframing (2026-09-20) and the structural step:** every ①/② failure above is one bug
+  class — *a mode-specific field (`degree`, `stored_slots`, `edge_start`) read inside the mode-blind
+  geometry layer* (ADR 0088 §3 keeps that layer mode-blind; ADR 0096 §7 keeps mode decisions at the
+  dispatch points and transitions). The structural fix is one SSOT, `bucket_resident_region()`
+  (tiny → `None`, slab → `(edge_start, stored_slots_raw)`, tree → `(edge_start,
+  combined_span_region_len)`), with `bucket_physical_resident_slots()` delegating to it, and the
+  geometry sites expressed through it so the wrong read cannot be written: `read_and_plan`'s
+  `total_live`, `calculate_label_edge_span_positions_by_resident_slots`'s `resident`,
+  `label_buckets_allow_contiguous_slab_copy` ("every bucket's region *is* its slab prefix"), and the
+  `try_labeled_vertex_edge_base_in_pinned_leaf` block-bound check (which was missing its *lower*
+  bound). Implemented and verified green in isolation.
+  Remaining piece, pinned precisely: `rewrite_vertex_edge_span`'s inline copy path (the one built
+  from `per_bucket`/`buf`, not the `per_bucket_raw` path) cannot move a tree bucket's LEG root array,
+  so the post-promotion re-lay still fails with `CollectAllocationOverflow` after four relocations.
+  Next attempt: give that path the materializer's tree branch (move the root bytes by anchor), then
+  add the promotion's Phase 3e (re-base the cover on the SSOT + `rewrite_vertex_edge_span(..., force_slack_grow = true)`)
+  and the two regression tests. Working copies: `/tmp/ssot_{compact,promote,bucket,leaf_pin,graph}.rs`.
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
