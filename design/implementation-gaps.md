@@ -395,6 +395,18 @@ session did.
   depend on its ordering. So the last consolidation needs an explicit semantics decision per caller
   (footprint release, log folding, ordering) with that 24-test list as the worklist; the direction is
   still right (one layout implementation), but it is a slice of its own. Copies:
+  **Classification of those 24 (2026-09-20):** they are not 24 semantic differences — **22 of them
+  panic with the same `Store(CollectAllocationOverflow)`** at their `rebalance_vertex_edge_span`
+  call sites (leaf rebalance, relocation, batch/deferred, mixed-label hub fixtures, slack/slide
+  tests). So the dominant delta is *one sizing policy*: the rewrite's plan budgets the
+  compaction-aware `stored` span while the old rebalance computed `min_required` from
+  `.max(degree)`-floored residents and grew via `next_vertex_edge_span_allocation`, and the larger
+  request overruns the small caps those fixtures configure. Only two failures are independent:
+  `overflow_rewrite_compacts_only_log_suffix_before_slab_body` (`EdgeMoved` where the test expects
+  overflow-only compaction — ordering) and
+  `directed_insert_deferred_materialize_via_wrapper_retry_after_drain` (`width published | left: 0 |
+  right: 8`). Next: settle the single span-budget policy for both callers; that should collapse most
+  of the 24. Copy `/tmp/delegated_compact.rs`.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
