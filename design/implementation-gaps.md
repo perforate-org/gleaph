@@ -984,6 +984,21 @@ session did.
     the fixture apparently cannot place the slack at all, so the expectation encodes the previous
     slack-always-grown behaviour and needs re-deriving *as a distribution test* (assert the weighting when
     slack is granted) rather than weakening it.
+  **Why `fold_logs = false` alone regressed (2026-09-20, diagnosed).** The fold is a two-step
+  operation: `prepare_vertex_edge_span_for_overflow_log_fold` *sizes* the span (it grows the cover and
+  returns — it does not write the log rows), and the caller's subsequent loop writes the log entries into the
+  slab and clears the head. `rebalance_vertex_edge_span` is called *inside* the prepare step, before the fold,
+  which is why the fourth implementation never folded in its publish (`fold_logs = false` is correct for the
+  rebalance) and why threading `false` alone cannot be wrong for that reason — but it still regressed to
+  598/16 because of **tiling width**: the fourth implementation computed positions from
+  `stored_slots().max(degree)`, i.e. it reserved room for the *live* rows (prefix + log) even though it
+  published only the prefix, while the shared commit now derives the tiling width from
+  `bucket_resident_region` (the prefix alone) when `fold_logs = false`. The fold therefore wrote its rows past
+  the room the tiling had reserved. Fix for the delegated path: decouple "reserved for tiling" from "published
+  width" — with `fold_logs = false` the tiling must reserve `bucket_resident_rows` (prefix + log, the SSOT this
+  session introduced) while the published `stored` stays the materialized run (the prefix, keeping
+  `overflow_log_head`). The vertex cover (`new_alloc`) is already sized from the resident rows, so this stays
+  I1-compliant.
   enabling it).
      decision removes).
   fourth implementation's placement.
