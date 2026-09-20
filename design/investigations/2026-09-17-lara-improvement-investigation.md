@@ -386,9 +386,11 @@ append costs 4.46K in the tree arm vs 8.36K in the slab arm, so tree appends are
 favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor 4096,
 and the pre-fix 22× was the mint plus the false cascade. The recorded pre-fix verdict
 ("T_PROMOTE stays 4096", justified by M1) no longer follows from post-fix
-evidence; the constant is left at 4096 in the density-accounting patch because a
-threshold flip is its own slice (fixtures and tests hardcode 4096; G-gates would
-need re-running). Decision recorded in [implementation-gaps](../implementation-gaps.md).
+evidence, so the constant was re-tuned to **`T_PROMOTE = 1024` / `T_DEMOTE = 512`**
+(2026-09-19, after the overflow-log promotion fix cleared the gate): every
+equal-work and workload-level metric favors it, and the ten threshold-coupled
+tests now derive their sizes from `T_PROMOTE` so the suite is green at both
+constants. Decision recorded in [implementation-gaps](../implementation-gaps.md).
 
 Consequences (updated):
 

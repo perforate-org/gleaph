@@ -196,9 +196,10 @@ was identified and corrected. The wire truth of the cap constants is:
 - `R_max = 1024` is the **root-array fan-out cap** (the dense `u32` block_id
   array that forms the root region of a tree bucket). It bounds the size of
   one root, *not* the logical-slot count of a tree bucket.
-- `T_promote = 4096` is the **slab → tree promotion threshold** (the
+- `T_promote = 1024` is the **slab → tree promotion threshold** (the
   `alloc_space` size that triggers promotion into tree mode) and the slab
-  mode cap on `alloc_space = stored_slots + alloc_gap`.
+  mode cap on `alloc_space = stored_slots + alloc_gap`. Re-tuned from 4,096 on
+  2026-09-19; see "Threshold re-tune".
 
 The logical-slot capacity of a tree bucket is **`coverage_at_depth(MAX_DEPTH)
 = 2^30`** slots (per §4: depth 1 ≤ 2^20, depth 2 ≤ 2^30, depth 3 ≤ 2^40; the
@@ -386,7 +387,7 @@ Capacity bounds (all fail-closed at the allocation site):
 
 | Region                                   | Bound                             | Enforcement                                  |
 | ---------------------------------------- | --------------------------------- | -------------------------------------------- |
-| Slab bucket edge span (incl. slack)       | `T_promote` = 4,096 slots (16 KiB) | growth clamp + crossing compact-or-promote   |
+| Slab bucket edge span (incl. slack)       | `T_promote` = 1,024 slots (4 KiB) | growth clamp + crossing compact-or-promote   |
 | Slab bucket inline-property span          | `T_promote × w` bytes             | follows `stored_slots`                       |
 | Tree bucket span (no gap)                 | root entries ≤ `R_max` per level; logical slots ≤ `coverage_at_depth(MAX_DEPTH) = 2^30` | gap-0 invariant + deepen (when `root_len > R_max`) |
 | Per vertex                                | above × `MAX_VERTEX_LABEL_BUCKETS` | existing bucket-count cap                    |
@@ -633,7 +634,7 @@ tree buckets) or populated.
 | -------------------- | ------ | ----------------------------------------------------------- |
 | `BLOCK_PAYLOAD_BYTES` | 4,096  | wire (header truth; power of two)                            |
 | `R_max`              | 1,024  | wire (header truth — it defines derived depth of stored data) |
-| `T_promote`          | 4,096  | policy (benchmark-gated, hysteresis with compact-or-promote) |
+| `T_promote`          | 1,024  | policy (benchmark-gated, hysteresis with compact-or-promote; re-tuned 2026-09-19) |
 | `MAX_DEPTH`          | 3      | policy (fail-closed structural boundary; widening = future ADR) |
 | Log cap              | 170    | existing wire                                                |
 | `TINY_MAX_DEGREE`    | 3      | wire (descriptor truth — raising K needs new descriptor bytes, i.e. a layout ADR; see ADR 0096 §3) |
@@ -1347,3 +1348,42 @@ uses this existing resolver with topology-selected physical slots and an admitte
 Its property-tree fixture invokes promotion explicitly and seeds an encoded tombstone; it does not
 claim that property-bearing tree mutation dispatch is implemented. No new persistent bytes or
 activation/reinstall requirement is introduced.
+
+## Threshold re-tune (implemented 2026-09-19)
+
+`T_promote` moved 4,096 → **1,024** slots, with `T_demote = T_promote / 2 = 512`
+(`crates/ic-stable-lara/src/labeled/graph.rs`). Both are policy constants: the
+wire layout, the LTB format, and every persisted descriptor field are unchanged,
+so no reopen or migration is involved — the flip only moves where a slab bucket
+becomes a tree bucket.
+
+Evidence (canbench, unpersisted arm comparison, both fixed first for the two
+promotion defects below; full table in
+[implementation-gaps §GAP-2026-09-17-001](../implementation-gaps.md) and the
+[LARA improvement investigation](../investigations/2026-09-17-lara-improvement-investigation.md)):
+
+| Metric (IC instructions) | `T_promote = 4096` | `T_promote = 1024` |
+| --- | --- | --- |
+| M1 full-path hub growth 0 → 8192 (equal work) | 55.87 M | **41.70 M** |
+| M2a full descending scan of a 2048-edge bucket | 74.30 K | **40.09 K** |
+| M2b steady-state append into a 2050-edge bucket | 8.36 K | **4.46 K** |
+| M2b append landing on a block boundary (2048 → 2049) | **8.36 K** | 63.51 K |
+| M2c delete from a 2048-edge bucket | **4.84 K** | 7.33 K |
+| G5 skewed workload mix (256 vertices / 4520 edges) | 140.11 M | **132.24 M** |
+| M4 promote → demote → re-promote round trip | 117.65 M | 30.77 M (threshold-relative sizing) |
+
+Every equal-work and workload-level metric favors 1,024; only single hub deletes
+and the once-per-B-rows block-boundary mint favor 4,096. A promoted bucket's
+resident root region also shrinks with the threshold (§4: depth-1 `root_len =
+ceil(T_promote / B)`), from 4 LEG slots to 1, which reduces the leaf pressure
+each tree bucket contributes. The re-tune was gated on
+two promotion defects found while measuring: the false post-promotion density
+cascades (GAP-2026-09-17-001's density-accounting half) and promotion dropping
+overflow-log-resident rows (GAP-2026-09-19-001).
+
+Test migration: the ten tests that encoded 4,096/2,048 collapse into
+`T_promote`-derived sizes (batch tail-fit seeds and widths, promote root-length
+reads, the demote-hysteresis removal loop, the inline-property materialization
+scenario, which now uses wider rows to stay above the materialize byte budget
+while below the cap). The suite is green at both constants (602 / 602), so a
+future re-tune does not require touching them again.

@@ -254,12 +254,11 @@ defect from being rediscovered without its prior reasoning.
   exercises. **Gated:** the flip is also blocked by
   [GAP-2026-09-19-001](#gap-2026-09-19-001--promote-silently-drops-overflow-log-rows-tree-mode-has-no-log)
   (promotion silently drops overflow-log rows, and a lower threshold multiplies
-  the number of promotions). **Open decision (not taken in this patch):**
-  flipping the constant is its own slice — fixtures/tests hardcode 4096
-  (`promote_test_bucket`, `force_bucket_to_stored_slots`, many
-  `stored_slots == 4096` assertions), and G1–G6 gates plus the workload mix would
-  need re-measuring under 1024. The density fix is threshold-agnostic and
-  correct at both.
+  the number of promotions). **Decision taken (2026-09-19):** the flip was executed
+  once the gate cleared — `T_PROMOTE = 1024` / `T_DEMOTE = 512` (commit `2b417059f`),
+  with the ten threshold-coupled tests migrated to derive their sizes from
+  `T_PROMOTE` so the suite is green at both constants (602/0 each way). The density
+  fix is threshold-agnostic; the flip only changes where promotion happens.
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:

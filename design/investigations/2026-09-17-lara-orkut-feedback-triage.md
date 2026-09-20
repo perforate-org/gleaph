@@ -21,18 +21,29 @@ bounds slab-rebalance scope and contributes to the measured write reduction (0.0
 
 Gleaph state:
 
-- Labeled: `T_PROMOTE=4096` / `T_DEMOTE=2048` (`crates/ic-stable-lara/src/labeled/graph.rs`),
-  tree-CSR mode per [ADR 0088](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
+- Labeled: `T_PROMOTE=4096` / `T_DEMOTE=2048` at triage time
+  (`crates/ic-stable-lara/src/labeled/graph.rs`), tree-CSR mode per
+  [ADR 0088](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
   (implementation in progress). `T_promote` is a benchmark-gated policy constant, set larger
-  for IC stable-memory write economics.
+  for IC stable-memory write economics. **Adopted `T_PROMOTE=1024` / `T_DEMOTE=512` on
+  2026-09-19** once Gleaph-side canbench evidence existed (see the disposition below).
 - Core (unlabeled) LARA: all-slab, no tree mode. Tree as a second instance is deferred
   (ADR 0088 Plan 0321), not rejected.
 
-Disposition: supporting evidence for "early hub isolation bounds rebalance scope" — consistent
-with the ADR 0088 direction, not a new decision. **No threshold change**: DRAM host counters do
-not transfer to IC stable-memory write economics; any `T_promote` movement requires Gleaph-side
-canbench evidence through the ADR 0088 measurement gates. The core-tree question stays with
-Plan 0321; the Orkut-hub numbers are reconfirmation material only.
+Disposition: supporting evidence for "early hub isolation bounds rebalance scope" —
+reconfirmed by Gleaph-side canbench evidence, and the threshold was adopted on
+2026-09-19 as `T_PROMOTE = 1024` / `T_DEMOTE = 512`
+(`crates/ic-stable-lara/src/labeled/graph.rs`). The DRAM memo numbers were not used
+as evidence for the IC decision: after the leaf-density accounting fix
+(GAP-2026-09-17-001) and the overflow-log promotion fix (GAP-2026-09-19-001), the
+equal-work and workload-level IC measurements favor 1024 — M1 hub growth 8192
+41.70M vs 55.87M (equal work), M2a scan 40.09K vs 74.30K, steady-state append
+4.46K vs 8.36K, G5 skewed mix 132.24M vs 140.11M — with only single deletes
+(7.33K vs 4.84K) and one-off block-boundary mints favoring 4096. Full table and
+verdict: [2026-09-17 improvement investigation](2026-09-17-lara-improvement-investigation.md)
+and [implementation-gaps §GAP-2026-09-17-001](../implementation-gaps.md). The
+core-tree question stays with Plan 0321; ADR 0088 "Threshold re-tune" records the
+constant.
 
 ## Item 2 — Low-degree non-slab storage (tiny K=8 pooled chunk)
 
