@@ -227,6 +227,13 @@ reject every tiny bucket. Each carries a regression or probe test
 `check_alloc_cap_tiny_mode_measures_the_used_width`,
 `tiny_live_slot_count_invariant_catches_degree_drift`).
 
+Measured (unfiltered `canbench --persist`, artifact `94fc62459`): the moved
+boundary is worth 40-98 % on the workloads it covers —
+`tiny_promote_d3_1024` 166.11 M → 3.92 M (-97.6 %, the degree-3 bucket no longer
+promotes), `tiny_workload_4x1024` 401.89 M → 245.18 M (-39.0 %), G5
+`tiny_workload_skewed_mix` 115.49 M → 113.15 M (-2.0 %); 191 benches, 50
+improved, none above +0.25 % (code-layout variance).
+
 K=4 delta gates (green in-suite): `tiny_wire_bytes_golden` (byte-exact row,
 including T3 and the used-width byte), `tiny_roundtrip_degrees_0_to_4`,
 `tiny_target_t2_splits_across_three_fields` (T2 composition unchanged),
