@@ -5756,3 +5756,42 @@ keeps the swap invisible to readers). Recommended slice order: (1) layout/region
 test, (2) descriptor rename and the insert producer, (3) reads and the residents, (4) removes and compaction,
 (5) batch and the values twin, (6) deletion of the log API and its tests, (7) ADR 0096 §5 / `design/storage/lara.md` /
 D-GAP contract text, then the audit re-run (the 696 KB must read zero) and the full gates.
+
+# Session handover index (2026-09-20) — read this first
+
+**Verified state**: 621 passed / 0 failed; `cargo fmt` and scoped `clippy --lib` clean; the only uncommitted files
+are the twelve foreign ones listed at the top of this ledger's stash-incident note.
+
+**Landed this session (code)**: single publish path for rewrites (−147 lines); the rebalance delegating to it
+(−152 lines); one definition of a bucket's resident rows; placement preference wired into the commit; **I1** (a
+published span width is the width the resolution obtained); **I2** (a log segment is released only when the leaf is
+drained) plus its short-circuit; named span-resolution policy shared by both resolvers; a spanless vertex never
+requests slack (class C); spare capacity is a hint, never a reason to allocate; the light rebalance contributing zero
+resident for tiny; slack placement attempt reuse; and the first two slices of the spill design
+(`spill_run_store.rs`: power-of-two classes with per-class free lists, reopen persistence, in-place tail growth, 7
+tests).
+
+**Measured performance**: `compact` 0 regressed (median −217.82 K instructions); `ins` median +0.09 % with one
+workflow at ≈ +19 % (`bench_l_nt_bp_ins_*`), attributed scope by scope to the plan's base-resolution query
+(`labeled_resolve_in_leaf` = 122 K, `calls: 1`); ADR 0097 predicts that cost disappears once content growth goes to
+a spill run instead of a span.
+
+**Designed, not implemented**: ADR 0097 (proposed) replaces the shared per-leaf overflow log with per-bucket spill
+runs — see "The spill design, in one place" for the model, "File-by-file plan for the log-to-spill swap" for the
+work list and slice order, and "Confirmed: the log is replaced wholesale" for what is deleted. The swap is **one
+atomic change**: the log's region, the descriptor field's meaning, the insert producer, the readers, the compaction
+paths, the batch reservation, the values twin and the tests move together, because the spill cannot share the log's
+region while the log still exists. That is why no further code was started here: a half-applied swap would leave the
+tree red for the duration.
+
+**Open items, in the order worth doing**: (1) execute the swap in the slice order recorded above, then re-run the
+space audit (the 696 KB must read zero) and check the predicted disappearance of the +19 %; (2) the three
+ADR-0097 measurement questions (level-1 class boundaries against 4-byte rows, the level-2 threshold, hole reuse in
+the spill); (3) whether tree mode survives the spill's level 2, and whether K moves; (4) the final gates:
+unfiltered `canbench --persist`, the PocketIC boundary test, and the design-doc text updates (ADR 0096 §5's log rows,
+`design/storage/lara.md`, the D-GAP contract).
+
+**Artifacts in `/tmp` (volatile)**: `delegation_policy_v2_compact.rs` (the 611/3 intermediate, superseded by the
+landed delegation), `delegation_foldpercall_612_2_*` (the per-caller experiment that exposed the visibility loss),
+`head_before_reconstruct.rs`, and the earlier compaction/unification variants. Nothing there is needed to continue —
+the landed code is the current state, and the design lives in this ledger plus ADR 0097.
