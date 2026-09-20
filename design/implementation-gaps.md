@@ -5099,3 +5099,19 @@ followed by `let old_alloc = vertex.stored_slots;` *is* unique and worked as an 
 guards aborted before `write_text`), so the tree is unchanged and green. Method summary for the next attempt:
 scopes `labeled_plan_read_buckets`, `labeled_plan_sizing`, `labeled_plan_resolve` inside the plan, then
 `canbench bench_l_nt_bp_ins_1024` (~40 s) to see which owns the 129.25 K that the delegation added.
+
+**Plan cost measured (2026-09-20): the base resolution owns it.** Three sequential `bench_scope`s inside
+`rewrite_vertex_edge_span_read_and_plan` (`labeled_plan_read_buckets`, `labeled_plan_sizing`,
+`labeled_plan_resolve`) report 144.19 K / 130.45 K / 122.59 K against the plan's own 151.12 K — canbench scopes
+count from their creation to the end of the enclosing scope, so the segments are cumulative from each marker and
+the *differences* are the segment costs: read ≈ 7 K, sizing loop ≈ 8 K, and **base resolution ≈ 122 K, i.e. 81 % of
+the plan**. So the delegation's cost on the non-tail bypass benches is the placement attempt the plan performs
+(`try_labeled_vertex_edge_base_in_pinned_leaf` through the resolver or the slack branch), not the descriptor read
+or the resident sizing. That attempt is inherent to deciding whether a wider span fits, but it is about twice what
+the fourth implementation's narrower attempt cost — the same decision, made with more machinery. Options, in the
+order worth measuring: (1) skip resolution entirely when the plan's answer is the current span (`new_alloc ==
+old_alloc && !compact`) — verify that path is actually reachable for these benches first, because if `compact` is
+true there the packed width really does change and an attempt is needed; (2) make the attempt cheaper — the
+resolver walks to a placement even when the vertex's existing cover already hosts the requested width, which
+`old_alloc >= new_alloc` can answer without touching the leaf; (3) accept ≈ +19 % on this one workflow, with
+`compact` at −217.82 K median and `ins` median at +0.09 %.
