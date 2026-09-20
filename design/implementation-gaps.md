@@ -366,8 +366,18 @@ session did.
   the unified path moves the bucket's whole slab prefix, so the span budget must cover the prefix
   (`stored`) rather than the live count (`degree`) — the old `degree` budget under-reserved, and those
   two tests pin the old numbers. Next step: re-derive those two expectations (with that justification)
-  and land the unification as its own commit. Copies: `/tmp/unified_compact.rs` (unified layout code to
-  pair with HEAD's other files).
+  **But the two remaining failures are not expectation shifts** (checked 2026-09-20): with the unified
+  code on HEAD, `labeled_segment_relocate_reuses_free_span` fails `assert_eq!(new_start, old_start)`
+  with `left: 1280, right: 256` — the in-place leaf expansion no longer consumes the adjacent released
+  span, so the relocation took a fresh block — and
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` fails
+  `cold_capacity >= cold_bucket.stored_slots()`, i.e. the published tiling gives the cold bucket less
+  room than its own stored width. Both are invariants, so the unified path has a real behavioural
+  delta to diagnose (candidates: the plan's compaction-aware budget versus the commit's
+  resident-slot position helper disagreeing now that the inline fast paths are gone; or the
+  materializer's `raw` for a log-free slab bucket being the *prefix* while the plan budgeted the
+  packed run). Do **not** re-derive those two expectations before that is explained. Copies:
+  `/tmp/unified_compact.rs` (unified layout code to pair with HEAD's other files).
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
