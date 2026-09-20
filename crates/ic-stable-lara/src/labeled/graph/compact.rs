@@ -3033,21 +3033,29 @@ where
                 .is_some_and(|start| *start == bucket.edge_start())
         });
         if layout_unchanged {
-            let need_end = checked_add_slot_index(old_base, u64::from(resident_slots))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let physical_ok =
-                if let Some((leaf_start, leaf_len)) = self.labeled_leaf_physical_range(vid) {
-                    let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    need_end <= leaf_end
-                } else {
-                    true
-                };
-            if physical_ok {
+            // "Fits" means inside the leaf block **and** mates-disjoint: the
+            // block bound alone let the cover grow across a neighbour's span and
+            // corrupt the leaf tiling (GAP-2026-09-20-005; the debug-only audit
+            // guard was the only detector). Reuse the base-resolution predicate
+            // so the in-place publish and the relocation path agree on one
+            // definition of fit.
+            let mates_free = self.try_labeled_vertex_edge_base_in_pinned_leaf(vid, resident_slots)
+                == Some(old_base);
+            if mates_free {
                 self.vertices
                     .set(vid, &vertex.with_stored_slots(resident_slots));
                 return Ok(());
             }
+            // A mate sits inside the grown range: grow/relocate the leaf block
+            // (which re-tiles the leaf) and let the caller's fold re-resolve the
+            // geometry; a leaf that cannot be grown fails closed.
+            if self.labeled_leaf_physical_range(vid).is_some()
+                && !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
+            {
+                self.relocate_labeled_leaf_physical_block(vid)?;
+                return Ok(());
+            }
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
         self.rebalance_vertex_edge_span(vid, None, 0, false)
     }
@@ -4913,6 +4921,105 @@ mod tests {
             graph.vertices(),
             graph.buckets(),
             graph.edges(),
+        );
+    }
+
+    #[test]
+    fn fold_growth_stays_mate_disjoint_across_span_growth() {
+        // GAP-2026-09-20-005. One lobe of the leaf is a hub: the hub promotes as
+        // a tiny bucket into the small gap its mates left, fills that span, then
+        // the per-leaf overflow log folds ~170 rows into the span. The fold's
+        // "the layout is unchanged, so publish the wider cover" branch used to
+        // check only that the wider range fitted inside the leaf *block* — the
+        // mates sitting inside the range were ignored, so the hub's cover walked
+        // over them (`assert_no_labeled_leaf_mate_overlap` was the only detector
+        // and is debug-only, so release builds ran on with a broken tiling).
+        //
+        // Wrong-implementation probe: with the block-only check restored this
+        // test panics in the audit guard ("reserves up to N but vid M starts at
+        // K"); with the fix the fold relocates the leaf block instead.
+        const DEGREES: [u32; 16] = [
+            8, 8, 8, 8, 64, 64, 64, 64, 64, 64, 64, 64, 512, 512, 512, 2048,
+        ];
+        let graph = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::new_with_segment_size(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::directed_from_index(1),
+            16,
+        )
+        .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        for _ in 0..16 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        for vid_u in 0..16u32 {
+            let vid = VertexId::from(vid_u);
+            for target in 0..DEGREES[vid_u as usize] {
+                graph
+                    .insert_edge(
+                        vid,
+                        label,
+                        TestEdge { target },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+        }
+
+        // Every edge survives, and the leaf tiling is still exact.
+        for vid_u in 0..16u32 {
+            let vid = VertexId::from(vid_u);
+            assert_eq!(
+                graph.out_edges(vid).unwrap().len(),
+                DEGREES[vid_u as usize] as usize,
+                "vid {vid_u} lost edges across the fold"
+            );
+            graph.assert_no_labeled_leaf_mate_overlap(vid);
+        }
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+        // A dense leaf may not be able to hold the hub at all; in that case the
+        // documented recursion breaker tail-appends the span *outside* every leaf
+        // block (pre-existing fallback, tracked separately). What the fold must
+        // never do is land the span half-inside a block or across a mate — the
+        // straddle case is what corrupted the tiling.
+        let hub = VertexId::from(15);
+        let hub_vertex = graph.vertices().get(hub);
+        let hub_base = graph
+            .read_vertex_label_buckets(&hub_vertex)
+            .unwrap()
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
+            .map(|bucket| bucket.edge_start())
+            .expect("hub owns a slab span after the fold");
+        let (leaf_start, leaf_len) = graph
+            .labeled_leaf_physical_range(hub)
+            .expect("hub leaf stays pinned");
+        let hub_end = hub_base + u64::from(hub_vertex.stored_slots);
+        let leaf_end = leaf_start + leaf_len;
+        let inside = hub_base >= leaf_start && hub_end <= leaf_end;
+        let outside = hub_end <= leaf_start || hub_base >= leaf_end;
+        assert!(
+            inside || outside,
+            "hub cover must not straddle its leaf block: base={hub_base} end={hub_end} leaf=({leaf_start}, {leaf_len})"
         );
     }
 
