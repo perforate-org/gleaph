@@ -5645,3 +5645,44 @@ question with its own measurement, not part of the log-to-spill swap.
 Transitions change shape in exactly one place: every path that reads "the rows beyond the prefix" (slab->tree
 promotion, demotion, compaction, the resident-content definition used by sizing and by the publish) reads the spill
 run instead of walking a log chain. Reads become contiguous, and each of those paths loses its chain-handling.
+
+## When rebalance/relocate happen after the spill (2026-09-20)
+
+**A full class does not trigger a rebbalance or a relocation.** A run that outgrows its class takes the next class:
+allocate, copy at most 2x the live rows, release the old run — a per-bucket step whose only cost is that copy
+(amortized O(1) by doubling). It touches no other bucket, no span, no leaf, and needs no policy.
+
+What still triggers leaf-level work, and why each survives the spill:
+
+| Trigger | Why it survives | Frequency after the spill |
+| --- | --- | --- |
+| A **new bucket** (a vertex gains a label) needs room for its prefix quota in the leaf | prefixes still live in the leaf block; the spill only holds rows *beyond* a prefix | unchanged — this is structure, not growth |
+| **Leaf density** crossing the block/density thresholds | the leaf's block is still the backing for the prefixes it holds | lower: content growth no longer inflates prefixes |
+| **Explicit maintenance** (defrag, batch reservation expansion) | unchanged | unchanged |
+| **Mode transitions** (tiny->slab at K+1, slab->tree at T_promote, tree->slab demotion) | unchanged; they now transcribe `prefix + spill` instead of `prefix + log chain` | unchanged |
+
+What still triggers a **vertex-span rewrite** (rebalance in today's sense):
+
+* a **new label** joining the vertex's bucket list (descriptor rows plus a prefix placement);
+* **compaction** — copying the spill's live rows back into the prefix when they fit, which is per bucket, optional,
+  and the only place a run is freed besides bucket death;
+* **slack/density policy** when it wants a different prefix width for a vertex (today's weighted re-tiling), which
+  becomes rarer because a tight prefix now simply spills sooner instead of needing to grow;
+* the mode transitions above.
+
+The measured shape shows the size of the change: in the 20 x 500 hub, **1 of 20 buckets** broke its prefix (74 of
+10 000 rows). Today that one bucket's growth drives leaf-wide folds, leaf-level span growth and segment releases,
+touching 19 buckets with no spill; after the change it drives one run growth of at most 128 rows. Leaf-level work
+is left for structure (new labels, density, mode changes) rather than for content.
+
+Two interactions this raises, which belong in the implementation slices rather than in this answer:
+
+1. **Hole reuse in the spill.** Today `Unordered` fills the first tombstone hole, and `Insertion` dense-appends
+   into a `used` headroom. A spill that is append-only with in-place tombstones supports the second trivially but
+   must decide how the first finds a hole: a bounded scan, or a per-bucket free-slot hint in the descriptor. This
+   is the spill's analogue of the tombstone-reuse rule in ADR 0052 and should be stated in ADR 0097 before the
+   insert path is rewritten.
+2. **Middle-ordered inserts.** With rows split across prefix and spill, an insert that must land at a specific
+   ordinal may have to shift part of one or both. The current design avoids most of this by reusing holes and
+   appending at the dense end, so the question is whether the same discipline holds once the dense end is a run —
+   it should, but the rule needs to be written down so the semantics do not drift.
