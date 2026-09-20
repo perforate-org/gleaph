@@ -333,19 +333,20 @@ session did.
   and shifts the published layout. Next step: make the budget compaction-aware
   (`bucket_rewrite_content_slots(bucket, compact)`: compact → slab `degree` / tree root / tiny 0;
   non-compact → the resident region) and re-run these three. Applying only the
-  **Compaction-aware budget applied (2026-09-20):** implemented as
-  `bucket_rewrite_content_slots(bucket, compact)` next to the resident-region SSOT and wired into the
-  planning sizing and the planning positions helper (weights stay label-degree-based). Suite moves
-  from 9 to **8 failures**: `default_bypass_conversion_clears_vertex_edge_span_allocation` is fixed.
-  The two data-assertion tests left (`edge_inline_propertys_survive_rewrite_with_tombstones`,
-  `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`) still fail, so the
-  rework's last unexplained piece is there; the other six are the four promotion contract tests and
-  the two expectation/policy tests listed above. Working copies: `/tmp/best2_*.rs`.
   resident-region SSOT + planning positions fix (`79ca06e24`) keeps the whole suite green (611/0) and
   all three pass; they fail only once the promotion/leaf-tiling rework is applied on top, so they
   belong to that rework's blast radius and must be explained (or the rework corrected) rather than
   patched in place. Working copies of the rework: `/tmp/best_*.rs`; the SSOT increment is now
   committed.
+  **Compaction-aware budget applied (2026-09-20):** `bucket_rewrite_content_slots(bucket, compact)`
+  (compact → slab `degree` / tree root / tiny 0; non-compact → the resident region) next to the
+  resident-region SSOT, wired into the planning sizing and the planning positions helper (weights
+  stay label-degree-based). The rework's suite moves from 9 to **8 failures**:
+  `default_bypass_conversion_clears_vertex_edge_span_allocation` is fixed. The two remaining
+  data-assertion tests (`edge_inline_propertys_survive_rewrite_with_tombstones`,
+  `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`) are the rework's last
+  unexplained piece; the other six are the four promotion contract tests and the two
+  expectation/policy tests. Working copies: `/tmp/best2_*.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
