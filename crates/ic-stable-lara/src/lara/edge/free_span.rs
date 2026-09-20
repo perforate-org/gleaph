@@ -503,15 +503,25 @@ impl<M: Memory> FreeSpanStore<M> {
             .start_slot
             .checked_add(span.len)
             .ok_or(FreeSpanError::SpanOverflow { span })?;
-        if self.by_start.borrow().get(span.start_slot).is_some() {
-            return Err(FreeSpanError::DuplicateStart {
-                start_slot: span.start_slot,
-            });
-        }
-
-        let prev = self.prev_span(span.start_slot);
-        let adjacent_next = self.free_span_starting_at(span_end);
-        let next = adjacent_next.or_else(|| self.next_span(span.start_slot));
+        // Two page-walking lookups per release: `predecessor_or_equal` answers
+        // "duplicate start, or the span to merge/overlap with", and `successor`
+        // covers both the next-overlap check and the adjacent-next merge case (a
+        // span starting exactly at `span_end` is the first key above
+        // `span.start_slot`). The previous shape spent four lookups here
+        // (`get` + `predecessor` + `free_span_starting_at` + `successor`) was also
+        // less precise: it ignored a free span strictly inside the released range
+        // whenever another span started exactly at `span_end`, merging over it
+        // (GAP-2026-09-20-002).
+        let prev = match self.by_start.borrow().predecessor_or_equal(span.start_slot) {
+            Some((start_slot, _)) if start_slot == span.start_slot => {
+                return Err(FreeSpanError::DuplicateStart {
+                    start_slot: span.start_slot,
+                });
+            }
+            Some((_, id)) => self.active_span(id),
+            None => None,
+        };
+        let next = self.next_span(span.start_slot);
         let mut merged = span;
         let mut merge_prev = None;
         let mut merge_next = None;
@@ -872,36 +882,31 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    /// Resolves a `by_start` value to its active free span, `None` when the
+    /// record is a stale (already-unlinked) entry.
+    fn active_span(&self, id: SpanId) -> Option<FreeSpan> {
+        let rec = self.read_record(id);
+        if rec.flags != FLAG_ACTIVE {
+            return None;
+        }
+        Some(FreeSpan {
+            start_slot: rec.start_slot,
+            len: rec.len,
+        })
+    }
+
     fn prev_span(&self, start_slot: u64) -> Option<FreeSpan> {
         self.by_start
             .borrow()
             .predecessor(start_slot)
-            .and_then(|(_, id)| {
-                let rec = self.read_record(id);
-                if rec.flags != FLAG_ACTIVE {
-                    return None;
-                }
-                Some(FreeSpan {
-                    start_slot: rec.start_slot,
-                    len: rec.len,
-                })
-            })
+            .and_then(|(_, id)| self.active_span(id))
     }
 
     fn next_span(&self, start_slot: u64) -> Option<FreeSpan> {
         self.by_start
             .borrow()
             .successor(start_slot)
-            .and_then(|(_, id)| {
-                let rec = self.read_record(id);
-                if rec.flags != FLAG_ACTIVE {
-                    return None;
-                }
-                Some(FreeSpan {
-                    start_slot: rec.start_slot,
-                    len: rec.len,
-                })
-            })
+            .and_then(|(_, id)| self.active_span(id))
     }
 
     fn pick_span_in_bin(
@@ -1155,26 +1160,22 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     fn write_record(&self, rec: SpanRecord, id: SpanId) -> Result<(), FreeSpanError> {
-        let off = record_offset(id);
-        crate::write_u64(
-            &self.store,
-            Address::from(off + RECORD_OFFSET_START),
-            rec.start_slot,
-        );
-        crate::write_u64(&self.store, Address::from(off + RECORD_OFFSET_LEN), rec.len);
-        crate::write_u64(
-            &self.store,
-            Address::from(off + RECORD_OFFSET_PREV_BIN),
-            rec.prev_bin,
-        );
-        crate::write_u64(
-            &self.store,
-            Address::from(off + RECORD_OFFSET_NEXT_BIN),
-            rec.next_bin,
-        );
-        crate::safe_write(&self.store, off + RECORD_OFFSET_FLAGS, &[rec.flags])
-            .map_err(|_| FreeSpanError::CorruptedFreeList)?;
-        crate::safe_write(&self.store, off + RECORD_OFFSET_BIN_IDX, &[rec.bin_idx])
+        // One contiguous write for the whole record: the fields share a
+        // 48-byte stride, and per-field writes each pay a stable-memory write
+        // (GAP-2026-09-20-002: writes dominate release cost, ~1.3K each).
+        // Bytes beyond `RECORD_OFFSET_BIN_IDX` are unused and written zero.
+        let mut buf = [0u8; RECORD_STRIDE as usize];
+        buf[RECORD_OFFSET_START as usize..RECORD_OFFSET_START as usize + 8]
+            .copy_from_slice(&rec.start_slot.to_le_bytes());
+        buf[RECORD_OFFSET_LEN as usize..RECORD_OFFSET_LEN as usize + 8]
+            .copy_from_slice(&rec.len.to_le_bytes());
+        buf[RECORD_OFFSET_PREV_BIN as usize..RECORD_OFFSET_PREV_BIN as usize + 8]
+            .copy_from_slice(&rec.prev_bin.to_le_bytes());
+        buf[RECORD_OFFSET_NEXT_BIN as usize..RECORD_OFFSET_NEXT_BIN as usize + 8]
+            .copy_from_slice(&rec.next_bin.to_le_bytes());
+        buf[RECORD_OFFSET_FLAGS as usize] = rec.flags;
+        buf[RECORD_OFFSET_BIN_IDX as usize] = rec.bin_idx;
+        crate::safe_write(&self.store, record_offset(id), &buf)
             .map_err(|_| FreeSpanError::CorruptedFreeList)?;
         Ok(())
     }
@@ -1421,6 +1422,40 @@ mod tests {
     use crate::test_support::FailpointMemory;
     use ic_stable_structures::DefaultMemoryImpl;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+
+    /// A release that is exactly adjacent to a free span *and* overlaps another
+    /// free span strictly inside its range must report the overlap, not merge
+    /// over the inner span. The earlier lookup shape preferred the span starting
+    /// exactly at the range end, so it merged over the inner span and left the
+    /// store with two overlapping free spans (caught by `validate`).
+    #[test]
+    fn release_prefers_inner_overlap_over_adjacent_merge() {
+        let store = test_store();
+        store
+            .release(FreeSpan {
+                start_slot: 10,
+                len: 5,
+            })
+            .expect("adjacent free span");
+        store
+            .release(FreeSpan {
+                start_slot: 5,
+                len: 2,
+            })
+            .expect("inner free span");
+        let err = store
+            .release(FreeSpan {
+                start_slot: 0,
+                len: 10,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, FreeSpanError::OverlapNext { .. }),
+            "inner overlap must win over the adjacent merge, got {err:?}"
+        );
+        store.validate().unwrap();
+        assert_eq!(store.len(), 2, "both pre-existing spans survive");
+    }
 
     fn test_store() -> FreeSpanStore<VirtualMemory<DefaultMemoryImpl>> {
         let m = MemoryManager::init(DefaultMemoryImpl::default());

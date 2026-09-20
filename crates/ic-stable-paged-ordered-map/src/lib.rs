@@ -427,6 +427,37 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         }
     }
 
+    /// Greatest key **less than or equal to** `key`, with its value: `pred` such that
+    /// `pred.0 <= key`.
+    ///
+    /// Unlike [`Self::predecessor`], an exact match is reported, so callers that must
+    /// distinguish "already present" from "previous entry" (duplicate-or-predecessor
+    /// checks on insert) need one directory walk instead of `get` plus `predecessor`.
+    /// Returns `None` when every stored key is `> key` (including the empty map).
+    pub fn predecessor_or_equal(&self, key: u64) -> Option<(u64, u64)> {
+        let page = self.find_page_for_key(key)?;
+        let pos = self.page_lower_bound(page, key);
+        let len = self.read_page_header(page).len;
+        if pos < len {
+            let entry = self.read_entry(page, pos);
+            if entry.0 == key {
+                return Some(entry);
+            }
+        }
+        // `pos` holds the first key greater than `key` (or is past the page end), so
+        // the answer is the entry before it, falling back to the previous page.
+        if pos == 0 {
+            let prev = self.read_page_header(page).prev;
+            if prev == 0 {
+                return None;
+            }
+            let prev_len = self.read_page_header(prev).len;
+            Some(self.read_entry(prev, prev_len - 1))
+        } else {
+            Some(self.read_entry(page, pos - 1))
+        }
+    }
+
     /// Smallest key **strictly greater** than `key`, with its value: `succ` such that `succ.0 > key`.
     ///
     /// When `key` is smaller than all keys, the search starts at the first page. Returns `None` when no larger key exists.
@@ -1187,6 +1218,23 @@ mod tests {
         assert_eq!(m.successor(1990), None);
         assert_eq!(m.first(), Some((0, 0)));
         assert_eq!(m.last(), Some((1990, 199)));
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn predecessor_or_equal_reports_exact_matches_across_pages() {
+        let m = map();
+        assert_eq!(m.predecessor_or_equal(5), None);
+        for i in 0..200 {
+            m.insert(i * 10, i).unwrap();
+        }
+        // Exact match, in-page predecessor, first key, page boundary, and past the end.
+        assert_eq!(m.predecessor_or_equal(1000), Some((1000, 100)));
+        assert_eq!(m.predecessor_or_equal(1005), Some((1000, 100)));
+        assert_eq!(m.predecessor_or_equal(0), Some((0, 0)));
+        assert_eq!(m.predecessor_or_equal(1990), Some((1990, 199)));
+        assert_eq!(m.predecessor_or_equal(1995), Some((1990, 199)));
+        assert_eq!(m.predecessor_or_equal(u64::MAX), Some((1990, 199)));
         m.validate().unwrap();
     }
 

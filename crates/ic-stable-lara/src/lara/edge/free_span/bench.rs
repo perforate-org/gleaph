@@ -48,6 +48,42 @@ fn bench_take_best_fit_split(n: u64) -> canbench_rs::BenchResult {
     })
 }
 
+/// Drain release pattern (GAP-2026-09-20-002 decision input, DE-BENCHED): spans
+/// freed high-to-low so each release is adjacent to *two* already-free spans and
+/// takes the double-merge path, at a 1024-span population. This is the shape a
+/// detached-hub delete produces for every emptied neighbour bucket, and it is
+/// where the release cost lives (~32K instructions per release after the
+/// record-write batching; lookups are ~0.3K). Re-add `#[bench(raw)]` locally to
+/// re-measure; kept as a plain fn so `canbench --persist` never runs it.
+#[allow(dead_code)]
+fn fs_drain_release_pattern_1024() -> canbench_rs::BenchResult {
+    const LIVE: u64 = 64;
+    const GAP: u64 = 128;
+    const N: u64 = 1024;
+    let mut memories = helper::BenchMemoryFactory::new();
+    let store = FreeSpanStore::new(memories.memory(), memories.memory()).expect("store");
+    for i in 0..N {
+        store
+            .release(FreeSpan {
+                start_slot: i * (LIVE + GAP),
+                len: LIVE,
+            })
+            .expect("populate release");
+    }
+    canbench_rs::bench_fn(|| {
+        for i in (0..N).rev() {
+            let start = i * (LIVE + GAP) + LIVE;
+            store
+                .release(FreeSpan {
+                    start_slot: black_box(start),
+                    len: GAP,
+                })
+                .expect("drain release");
+        }
+        black_box(());
+    })
+}
+
 /// Measures best-fit allocation with split and immediate prefix restoration in
 /// a 256-span free-list population. This preserves the historical baseline name
 /// for tracking the small-population allocator path.
