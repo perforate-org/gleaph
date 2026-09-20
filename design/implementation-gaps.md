@@ -5604,3 +5604,22 @@ Level-1 class boundaries against Gleaph's 4-byte rows (the reference's numbers a
 threshold; whether tree mode is still needed once a bucket can be "prefix + LTB-backed spill run" (tree's LEG root
 is a one-level block list a run header could carry); whether K moves now that the middle tier is lazy; and the
 batch/deferred paths, which lose their log-capacity reservation entirely.
+
+## Clarification: what a "class" is, and why the length can determine it (2026-09-20)
+
+A **class** is one of the run capacities a spill may be allocated with — the powers of two from `MIN_ROWS = 8` to
+`MAX_ROWS = 1024` rows (`CLASS_COUNT = 8`), i.e. 8, 16, 32, 64, 128, 256, 512, 1024 rows. `class_rows(len)` picks the
+smallest class that holds `len` (so 74 rows -> 128), and `class_index(capacity)` maps a class to its free list.
+Runs are *only* allocated with these capacities, which is what makes reuse possible at all: a freed 128-row run can
+serve any later spill needing 65..128 rows, and the free list is an O(1) stack per class.
+
+Two properties make it cheap rather than a bookkeeping burden: waste is bounded by doubling (<2x, measured: a
+74-row spill in a 128-row class), and the whole structure is 8 free-list heads = 32 bytes of header. A denser
+ladder would waste less but needs more classes and fragments reuse across them; a sparser one wastes more.
+
+One precision that matters, because it is why the descriptor needs no capacity field: **a spill run's used length is
+monotone**. Deletes write a tombstone in place and do *not* shrink the length, and rows only leave the spill when
+compaction copies them back into the prefix — at which point the run is released with exactly the length it has. So
+`ceil_pow2(length)` always equals the capacity the run was allocated with, and `release(run, len)` recomputes the
+right class from the length alone. Had deletes shrunk the length, the class would have to be stored (which is what
+the reference does for its descriptor runs); with append-and-tombstone semantics it does not.
