@@ -857,6 +857,21 @@ session did.
   sizing must be `max(resident, requested_alloc)` — `plan_labeled_leaf_relocation` knows `src`, so it needs
   only the request passed in (`relocate_labeled_leaf_physical_block` gains a floor-carrying variant; the
   plain entry point keeps passing 0).
+  **(A) attempted, half of it landed as diagnosis (2026-09-20, saved
+  `/tmp/classA_classC_attempt_{compact,batch_write}.rs`).** Threading the requesting vertex's span into
+  `plan_labeled_leaf_relocation` (its share becomes `max(resident, requested_floor)`) worked for the 20- and
+  33-label hubs but left `mixed_label_hub_50_labels_1000_edges_each` failing: the *re-tiling* also assigns
+  each vertex only its resident share (`rebalance_labeled_leaf_weighted_slide_in_block` computes `span_slots`
+  from residents), so a bigger block alone does not place the request. (A) therefore needs both halves — the
+  block sizing *and* the per-vertex span assignment during the slide — before it converges. Reverted to keep
+  the tree green; the sizing half is preserved in the saved files.
+  **(C) fixed and landed (`f6c2acaef`):** tiny contributes zero resident in both sizing paths, a spanless
+  vertex short-circuits in the rebalance, and the plan skips slack when `total_live` is zero. The regression
+  `spanless_tiny_vertex_does_not_request_slack` *found* the divergence, and the existing
+  `log_collect_overflow` hook — temporarily made visible for non-wasm — named it exactly:
+  "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating" then
+  "labeled_edge_base_from_first_bucket: src=VertexId(0) has no buckets". Making that hook observable in tests
+  under a cfg would have saved the instrumentation round; worth doing if class C recurs.
   enabling it).
      decision removes).
   fourth implementation's placement.
