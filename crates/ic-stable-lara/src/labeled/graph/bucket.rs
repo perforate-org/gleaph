@@ -1,7 +1,7 @@
 //! Labeled graph `bucket` implementation.
 
 use crate::{
-    SegmentId, VertexId,
+    VertexId,
     labeled::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
@@ -230,9 +230,7 @@ where
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rebalance_edge_log_vertex");
                 self.rebalance_edge_log_vertex_for_labeled(src, true, false)?;
-                self.edges
-                    .release_log_segment(SegmentId::from(leaf))
-                    .map_err(LabeledOperationError::from)?;
+                self.release_leaf_overflow_log(leaf)?;
             } else {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rebalance_edge_log_leaf");

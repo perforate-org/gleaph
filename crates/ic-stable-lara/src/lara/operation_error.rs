@@ -46,6 +46,12 @@ pub enum LaraOperationError {
     ClearRowRequiresSlabOnlyRow,
     /// Overflow log has no free slot for another entry.
     SegmentLogFull,
+
+    /// A leaf's overflow-log segment was about to be released while at least one
+    /// bucket still chained rows in it. `LogStore::release_segment` zeroes the
+    /// segment's entries and resets its high-water index, so releasing a non-drained
+    /// segment destroys rows silently (invariant I2, GAP-2026-09-20-005).
+    LogSegmentNotDrained,
     /// PMA segment-count vector shorter than tree height requires.
     SegmentCountsTreeTooSmall,
     /// Leaf segment counts lookup could not be performed (internal geometry).
@@ -82,6 +88,10 @@ impl fmt::Display for LaraOperationError {
             }
             Self::ClearRowRequiresSlabOnlyRow => write!(f, "clear row requires slab-only row"),
             Self::SegmentLogFull => write!(f, "segment log full"),
+            Self::LogSegmentNotDrained => write!(
+                f,
+                "overflow-log segment still chains rows and cannot be released"
+            ),
             Self::SegmentCountsTreeTooSmall => write!(f, "segment counts tree too small"),
             Self::SegmentCountsOutOfRange => write!(f, "segment counts out of range"),
             Self::VertexIdExceedsI32 => write!(f, "vertex id exceeds i32"),

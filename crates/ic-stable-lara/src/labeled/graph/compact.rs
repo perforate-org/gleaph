@@ -1036,9 +1036,7 @@ where
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_release_log_segment");
-            self.edges
-                .release_log_segment(SegmentId::from(leaf))
-                .map_err(LabeledOperationError::from)?;
+            self.release_leaf_overflow_log(leaf)?;
         }
         // Per-vertex commits update PMA total from each vertex's prior logical
         // allocation. Zero-length anchors mean those allocations do not always
@@ -2808,9 +2806,7 @@ where
         for vid_u in start_vid..end_vid {
             self.reclaim_vertex_overflow_buckets(VertexId::from(vid_u))?;
         }
-        self.edges
-            .release_log_segment(SegmentId::from(leaf))
-            .map_err(LabeledOperationError::from)?;
+        self.release_leaf_overflow_log(leaf)?;
         Ok(())
     }
 
@@ -2955,6 +2951,44 @@ where
         Ok(())
     }
 
+    /// Invariant I2: a leaf's overflow-log segment may only be released once every
+    /// bucket in the leaf has been drained. The store's `release_segment` zeroes the
+    /// segment's entries and resets its high-water index, so releasing while rows are
+    /// still chained destroys them silently. The store cannot check this itself — its
+    /// index is a high-water mark that stays positive after folds — so the check lives
+    /// here, where bucket heads are visible (GAP-2026-09-20-005).
+    pub(super) fn ensure_leaf_overflow_logs_drained(
+        &self,
+        leaf: u32,
+    ) -> Result<(), LabeledOperationError> {
+        let seg_size = self.edges.header().segment_size.max(1);
+        let start_vid = leaf.saturating_mul(seg_size);
+        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
+        for vid_u in start_vid..end_vid {
+            let vertex = self.vertices.get(VertexId::from(vid_u));
+            if vertex.is_default_edge_labeled() {
+                continue;
+            }
+            for bucket in self.read_vertex_label_buckets(&vertex)? {
+                if bucket.overflow_log_head() >= 0 {
+                    log_collect_overflow(&format!(
+                        "release of leaf {leaf} refused: vid {vid_u} still chains an overflow log"
+                    ));
+                    return Err(LaraOperationError::LogSegmentNotDrained.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drained-check + release, so no caller can free a segment that still owns rows.
+    pub(super) fn release_leaf_overflow_log(&self, leaf: u32) -> Result<(), LabeledOperationError> {
+        self.ensure_leaf_overflow_logs_drained(leaf)?;
+        self.edges
+            .release_log_segment(SegmentId::from(leaf))
+            .map_err(LabeledOperationError::from)
+    }
+
     pub(super) fn rebalance_edge_log_leaf_for_labeled(
         &self,
         src: VertexId,
@@ -2975,9 +3009,7 @@ where
                 use_log_fold_prelude,
             )?;
         }
-        self.edges
-            .release_log_segment(SegmentId::from(leaf))
-            .map_err(LabeledOperationError::from)?;
+        self.release_leaf_overflow_log(leaf)?;
         Ok(())
     }
 
@@ -5751,5 +5783,41 @@ mod tests {
         for (i, edge) in edges.iter().rev().enumerate() {
             assert_eq!(edge.target, i as u32, "adjacency mismatch at {i}");
         }
+    }
+    #[test]
+    fn releasing_a_leaf_overflow_log_with_undrained_rows_is_refused() {
+        // Invariant I2: freeing a log segment zeroes its entries, so a release while a
+        // bucket still chains rows would destroy them silently. This guard is the only
+        // thing standing between the never-fail rebalance fallback and that loss.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..4096u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+            if graph.edges().overflow_log_segment_high_water(0) > 0 {
+                break;
+            }
+        }
+        assert!(
+            graph.edges().overflow_log_segment_high_water(0) > 0,
+            "fixture must spill into the leaf's overflow log"
+        );
+        let err = graph
+            .release_leaf_overflow_log(0)
+            .expect_err("a log segment that still owns rows must not be released");
+        assert!(
+            matches!(
+                err,
+                LabeledOperationError::Store(LaraOperationError::LogSegmentNotDrained)
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 }
