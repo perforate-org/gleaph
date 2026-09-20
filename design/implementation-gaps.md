@@ -5439,3 +5439,30 @@ becomes chunked (LEG root + LTB blocks, ADR 0088), and its ~41 ins/edge scan is 
 the spill run fills the *gap* between "fits the prefix (with slack)" and "should be a tree", which is exactly the
 gap the log occupies today. And the tier list stays three deep, not four: inline (tiny) → slab prefix → spill
 (small run, then LTB) → tree, with the spill being per bucket and lazy where the log was per leaf and eager.
+
+## Does the spill design cover the dynamic log's fixed-capacity saving? Structurally, yes (2026-09-20)
+
+GAP-006's audit measured the log's fixed cost precisely: a `segment16` graph with `uniform(256)` capacities and
+5 000 vertices x 1 edge (5 000 buckets, 25 000 descriptor rows reserved, **zero slab cover, zero log entries
+used**) had **87 040 log entries of capacity** — 170 entries per leaf segment x 8 B, backed as the segment count
+grows, across 512 allocated segment-tree leaves. That is ~696 KB, matching the audit's page counts (empty 30 pages,
+buckets 15, **log 11**, edges 5, vertices 2; one page is 64 KiB). So the fixed cost is per *segment*, i.e. it scales
+with the **vertex count** and not with usage.
+
+The spill design removes that cost at the root rather than tuning it:
+
+* **Nothing is pre-provisioned per segment, because segments do not exist.** The only fixed storage is the
+  small-run store's header (64 B) plus eight per-class free-list heads (32 B) for the whole region. The per-leaf
+  log capacity, its segment table and its growth-by-segment-count behaviour all go with the log.
+* **The cost tracks spilled rows, measured.** In the production-shaped hub only 1 of 20 buckets spilled (74 of
+  10 000 rows), so 19 buckets would hold *zero* bytes; the one that spilled takes a 128-row class at 4 B per row =
+  512 B, i.e. bounded by construction at under 2x the live spill. For the audit's shape (zero spilled rows) the
+  saving is the entire ~696 KB, not a fraction of it.
+* **No tuning trade-off is accepted in exchange.** The reference's cap sweep shows capacity is a speed/space knob
+  with an interior optimum (mid caps 4-32 were *slower* than both ends; cap 0 was the second-fastest on the hub
+  because a single fold acts as bulk) and that persisted bytes per insert are flat across capacity — so capacity
+  buys speed only, and shrinking it is not free. The spill keeps the speed where rows exist (a contiguous run for
+  the bucket that spills) and pays nothing where they do not, which is the one point cap tuning cannot reach.
+* **One rule to keep it that way**: a spill run exists *only because rows exist* — no policy may pre-allocate spill
+  runs for hot buckets "for growth", exactly as slack may not justify an allocation. That rule is the spill's
+  analogue of the slack rule, and it is what makes this benefit structural instead of a tuning choice.
