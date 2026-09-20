@@ -913,6 +913,19 @@ session did.
   fix before it can name the residue. Next session, in order: (a) fix that instrumentation form and name the
   site; or (b) bisect the two halves on that fixture (remove the slide half, then the sizing half) to see which
   one the residue depends on. Everything else from this session is green at 614/0.
+  **Instrumentation for that residue is a dead end (2026-09-20, second attempt).** The 66-site sweep of
+  compact.rs compiles except for the line-190 site, which needs the `.into()` form; teaching the sweep that
+  form produced eleven classes of syntax errors ("expected expression, found `let`", "expected `;`, found
+  `if`", …), i.e. the regex keeps matching `ok_or(...)` inside larger expressions and dropping the punctuation
+  the surrounding expression needs. Do **not** retry regex instrumentation of construction sites: it has now
+  broken the tree twice (the earlier crate-wide sweep touched a foreign file). Method that worked instead, in
+  order of preference: (1) the existing `log_collect_overflow` hook, which named class C's site in one run but
+  is silent here, meaning the residue comes from a plain `ok_or`/`map_err`; (2) **bisection on the two class-A
+  halves** — restore `/tmp/classA_full_compact.rs`, remove the slide half (step 5) and run
+  `mixed_label_hub_50_labels_1000_edges_each` (≈73 s), then remove the sizing half (steps 1–2) as well and run
+  again; whichever half's removal changes the failure names the residue's dependency; (3) if a site must be
+  identified directly, wrap only the *few* sites on the path (`rgba`-free: read the failing function's
+  `ok_or` lines and edit them by hand). Tree is back at 614/0 with class A reverted.
   enabling it).
      decision removes).
   fourth implementation's placement.
