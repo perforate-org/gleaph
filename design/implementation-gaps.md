@@ -5795,3 +5795,24 @@ unfiltered `canbench --persist`, the PocketIC boundary test, and the design-doc 
 landed delegation), `delegation_foldpercall_612_2_*` (the per-caller experiment that exposed the visibility loss),
 `head_before_reconstruct.rs`, and the earlier compaction/unification variants. Nothing there is needed to continue —
 the landed code is the current state, and the design lives in this ledger plus ADR 0097.
+
+## Prepared workspace for the swap, and why it is not started here (2026-09-20)
+
+A worktree at the current commit is prepared at `~/dev/gleaph-spill` (`git worktree add ~/dev/gleaph-spill HEAD`,
+detached at `0d176b579`), so the atomic log-to-spill swap can be executed without putting `main` into a red state
+for its duration. Remove it with `git worktree remove ~/dev/gleaph-spill` when the work is done.
+
+The swap is not started in this session, deliberately. Re-checking one more time for a safe first slice: the spill
+store needs the log's memory region, and there is no other region to take (the LTB region's allocator has no
+capacity ceiling, so a reservation at its end would be overwritten when the tree store grows; the graph's sixteen
+memories are all in use and adding a seventeenth churns the 31 `LabeledLaraGraph::new` sites for a structure nothing
+can use yet). The log store itself is constructed by the *edge* store (`lara/edge/init.rs`), not by the graph, so
+even the layout step touches a type whose log API is used from eighteen files. Every road leads to the same
+conclusion: the layout, the descriptor's field meaning, the producer, the readers, the compaction paths, the batch
+reservation, the values twin and the tests change together, and stopping halfway leaves the tree unusable.
+
+That is not a defect of the design — it is one atomic change with a complete contract (ADR 0097) and a complete
+work list ("File-by-file plan for the log-to-spill swap", including the recommended slice order). It is simply work
+that wants a fresh, focused session rather than the tail of this one, and the session's job has been to make it
+cheap to start: the problem is measured, the alternatives are argued, the invariants and the deletion list are
+written down, the allocator's first two slices are implemented and tested, and the workspace is prepared.
