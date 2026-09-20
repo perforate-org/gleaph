@@ -3011,6 +3011,13 @@ where
         &self,
         leaf: u32,
     ) -> Result<(), LabeledOperationError> {
+        // A segment whose high-water mark is zero holds no entries, so no bucket can be
+        // chaining rows in it and the leaf walk below would find nothing. Checking the store's
+        // mark first keeps the common release (a leaf that never used its log, or already
+        // released it) as cheap as it was before this guard existed.
+        if self.edges.overflow_log_segment_high_water(leaf) == 0 {
+            return Ok(());
+        }
         let seg_size = self.edges.header().segment_size.max(1);
         let start_vid = leaf.saturating_mul(seg_size);
         let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
