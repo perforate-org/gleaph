@@ -668,6 +668,32 @@ session did.
   leaf relocation (never tail-append), slack stays best-effort, and an incomplete fold is a hard error;
   the shared resolver then needs an explicit policy argument that says *which* of those a caller accepts,
   instead of one resolver that is strict for some callers and forgiving for others.
+
+  **Verified (2026-09-20): `release_segment` silently zeroes a non-empty log.**
+  `LogStore::release_segment` (`lara/edge/log.rs`) and its inline-property twin
+  (`lara/edge_inline_property/log.rs`) write zeroes over every entry up to the segment's `idx` and then
+  reset the index to 0. There is **no emptiness check** — the only test nearby
+  (`release_segment_clears_entries_and_index`) pins exactly the zeroing behaviour. So if any vertex's
+  fold did not move its rows out of the log, `rebalance_edge_log_leaf_for_labeled`'s final
+  `release_log_segment(leaf)` destroys them silently. That turns the resolver's never-fail fallback from
+  a convenience into a **row-loss hazard**: the fallback can leave rows in the log precisely when the
+  span could not grow, and the caller then releases the log area unconditionally.
+
+  **Recommended direction (C''), for the user to confirm:**
+  1. Fail closed at the owning layer first: `release_segment` must reject a non-empty segment (typed
+     error, not zeroing), so no caller can lose rows by releasing a log it did not empty.
+  2. `rebalance_edge_log_leaf_for_labeled` must propagate a failed fold *before* releasing, rather than
+     relying on the resolver to swallow it.
+  3. One resolver contract for every caller: required growth is achieved by leaf relocation (block
+     aligned — `labeled_insert_does_not_grow_elem_capacity_for_hub_growth` already forbids tail-append);
+     if the leaf cannot host it, error. Proactive slack stays best-effort, and a best-effort downgrade
+     keeps the cover at `old_alloc` so a published cover is never larger than the owned region.
+  4. Then the delegation of `rebalance_vertex_edge_span` is a pure refactor (both callers share the
+     contract) and lands with the 115-line deletion.
+  5. Tests: add a regression that a fold which cannot complete neither releases the log nor reports
+     success; re-read the three assertion-level tests against the contract; the hub fixtures should then
+     exercise real leaf relocation (they currently pass through the fallback, which is the state this
+     decision removes).
   fourth implementation's placement.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
