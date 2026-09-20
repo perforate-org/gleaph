@@ -144,8 +144,12 @@ defect from being rediscovered without its prior reasoning.
      the block, which the cover/tiling invariants forbid;
   2. `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run` fails with
      `CollectAllocationOverflow` (the pre-transcription rewrite can fail on batch-shaped fixtures);
-  3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free`
-     (dropping the span releases changed the rollback/release ordering that test pins).
+  3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free`.
+     Narrowed on re-inspection: the failure surfaces inside the *demote* error cleanup, on the
+     synthetic fixture (`force_bucket_to_stored_slots` + `fill_leg_slab_prefix`), i.e. the demote's
+     cleanup releases LTB ids derived from the root region while the promotion's own rollback no
+     longer releases the LEG span — so the two paths no longer agree on who owns the root region's
+     blocks. Read the demote cleanup before re-attempting, not just the promote rollback.
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
