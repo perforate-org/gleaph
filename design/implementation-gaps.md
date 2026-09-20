@@ -5145,3 +5145,19 @@ that is the whole difference and it is a sizing question, not a placement one; (
 already in hand when the current cover already hosts the request (`old_alloc >= new_alloc`), which the branch order
 currently cannot reach because that branch only fires for growth; (3) accept ≈ +19 % on this workflow (counterweight
 `compact` −217.82 K median, `ins` median +0.09 %). Diagnostic scopes have been removed; tree 614/0.
+
+**Closing the performance item (2026-09-20): accept, with the numbers recorded.** The growth quantum was the last
+code-shaped hypothesis — the plan asked for `next_vertex_edge_span_allocation(old, min_required, seg)` (≈ +25 %)
+where the fourth implementation grew to `max(min_required, seg) + max(seg, base/8)` — and switching the plan to the
+need-based quantum left the bench unchanged (`bench_l_nt_bp_ins_1024` +19.32 % → +19.42 %; overall `ins` median
++0.09 % both), so the change was reverted and the divergence from the `light` path's formula (which still uses
+`next_vertex_edge_span_allocation`) is *not* introduced. Net state of the investigation: the delegation's cost on
+this workflow is **one placement query** (`try_labeled_vertex_edge_base_in_pinned_leaf` = 122.23 K with `calls: 1`,
+i.e. essentially the plan's whole 132.69 K), and it is *not* the descriptor read (≈7 K), the resident sizing
+(≈8 K), a repeated plan, a leaf relocation, or the requested width. The fourth implementation asked the same
+question through the same helper, so what differs is which answer the query gives for the plan's request — success
+requires scanning for a suitable free span, failure returns early — which is a property of the request's fit, not
+of the machinery around it. Recommendation: **accept** ≈ +19 % on `bench_l_nt_bp_ins_*` as the price of one
+span-layout implementation, with `compact` at −217.82 K median and the overall `ins` median at +0.09 % as the
+counterweight; revisit only if this workflow's absolute cost becomes a product concern (e.g. a different growth
+policy for non-tail bypass inserts). Everything from this session is landed, green (614/0) and measured.
