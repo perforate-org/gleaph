@@ -325,8 +325,11 @@ defect from being rediscovered without its prior reasoning.
   failure condition, so the variant would be unreachable (YAGNI); the free-store
   `OverlapPrevious` tripwire already covers this class (proven: it caught the
   original trap). The dual meaning of `vertex.stored_slots` (logical cover vs
-  physical width) remains and belongs to R4 (`stored_slots` privatization), not
-  this gap.
+  physical width) remains and is *not* what plan 0361's R4 addressed: R4
+  privatized the **bucket** descriptor's `stored_slots` (mode-aware accessor,
+  landed 2026-09-20 `15719602c`); the vertex-level cover/resident split is owned by
+  the resident-geometry SSOT introduced here (`bucket_physical_resident_slots`)
+  and stays a documented convention rather than a type split.
 - **Future direction (proportional trigger: a THIRD same-family double-free):**
   an arena rule — while a leaf block is pinned, defer per-bucket sub-releases
   inside it and release only whole abandoned blocks — would make recurrence

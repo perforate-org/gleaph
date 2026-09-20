@@ -164,6 +164,15 @@ bytes sit behind method accessors (`edge_start()`, `overflow_log_head()`,
    width otherwise. The compiler enumerates every
    direct reader (~300 sites) as an error; each is a mechanical swap to the
    accessor. No semantic decision per site.
+   **Implemented 2026-09-20** (`15719602c`): the field is private, `stored_slots()`
+   returns `degree` for tiny and the raw width otherwise, and
+   `stored_slots_raw()` serves the sites that own the *wire* meaning —
+   validation, tiny prefix iteration (ordinals include tombstone holes), and
+   wire assertions: 240 accessor calls vs 74 raw calls, compiler-enumerated, with
+   the full suite green (607 tests) as the zero-behavior-change proof. One test
+   expression in `insert.rs` was re-pointed at the raw accessor (it asserts the
+   tiny prefix width, not the live count); no expectation changed. `record.rs`
+   keeps its internal reads on the raw field (the type owns the wire).
 2. **Own the jumble**: `tiny_target(i)` / `with_tiny_target(i, v)` methods own
    the T0..T3 packing (T0≡stored_raw, T1≡ipb_slab, T2≡offset-lo32+hi0,
    T3≡bytes[24..28] raw composition) plus the zero-tail rule. Raw field access
@@ -188,7 +197,13 @@ census then still shows degree-4 buckets dominating the tiny-eligible set.
 Degree-4 buckets work fine as slab buckets meanwhile — the boundary stays
 optimization-only.
 
-**Decision (2026-09-20): Phase 1 and K=4 are deferred; not scheduled.**
+**Decision (2026-09-20, morning): Phase 1 and K=4 were deferred; not
+scheduled.** The value arithmetic below stands as the context. **Owner direction
+later the same day: pursue K=4** — Phase 1 landed (`15719602c`) and Phase 2 (R5,
+§3b/K=4) is the next slice. The S3 census re-check named as R5's entry condition
+cannot be produced in-repo (no production telemetry), so it remains a documented
+value check rather than a gate; the K=3 boundary stays optimization-only either
+way.
 
 Three measurements changed the arithmetic after K=3 shipped:
 
