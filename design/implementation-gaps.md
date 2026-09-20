@@ -49,7 +49,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
 
-- **Status:** Fixed 2026-09-20 (commit [[leafcounts]]) — recorded the same day while
+- **Status:** Fixed 2026-09-20 (commit `f9b276b6e`) — recorded the same day while
   looking for the next lever after the drain/property fixes. Not a threshold issue:
   it affects every slab insert/remove in every arm.
 - **Observed behavior (confirmed):** `bump_counts_leaf_with_layout` propagated each
