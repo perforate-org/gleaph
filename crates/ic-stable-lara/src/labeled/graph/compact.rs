@@ -1483,7 +1483,7 @@ where
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets)?;
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true)?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
@@ -1495,6 +1495,7 @@ where
                     v_start,
                     span_slots,
                     leaf_relocate_commit,
+                    true,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1504,7 +1505,7 @@ where
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets)?;
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true)?;
                 plans.push((
                     vid,
                     vertex,
@@ -1531,6 +1532,7 @@ where
                     v_start,
                     span_slots,
                     leaf_relocate_commit,
+                    true,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1538,10 +1540,18 @@ where
         Ok(())
     }
 
+    /// `fold_logs` selects which owner keeps a bucket's overflow-log rows: `true`
+    /// materializes prefix + log and lets the commit publish them as one run (the
+    /// rewrite and leaf-relocation paths compact that way), `false` materializes the
+    /// slab prefix alone and leaves the log where it is, which is the rebalance
+    /// contract: it re-anchors the prefix and preserves `overflow_log_head`
+    /// (`compact_vertex_edge_span_one_step` folds one bucket's log on its own and
+    /// relies on this).
     fn materialize_labeled_vertex_edge_plan(
         &self,
         leaf: u32,
         buckets: &[LabelBucket],
+        fold_logs: bool,
     ) -> Result<(Vec<Option<Vec<E>>>, Vec<Option<Vec<u8>>>), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1565,6 +1575,17 @@ where
             // the free store) and the relocate then republishes those bytes as
             // the bucket's new span — corruption. Read the physical region.
             let physical_slots = bucket_physical_resident_slots(bucket);
+            if !fold_logs {
+                let run = Self::edge_bytes_for_len(physical_slots as usize)?;
+                let mut raw = vec![0u8; run];
+                if run > 0 {
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
+                }
+                per_bucket_edges.push(None);
+                per_bucket_raw.push(Some(raw));
+                continue;
+            }
             let log_len = if bucket.overflow_log_head() >= 0 {
                 self.edges
                     .overflow_log_chain_len(leaf, bucket.overflow_log_head())
@@ -1629,6 +1650,7 @@ where
         new_base: u64,
         new_alloc: u32,
         leaf_relocate_commit: bool,
+        fold_logs: bool,
         suppress_vertex_footprint_release: bool,
     ) -> Result<(), LabeledOperationError>
     where
@@ -1767,7 +1789,11 @@ where
                 row_buckets.push(
                     bucket
                         .with_edge_range(row_start, bucket.stored_slots_raw())
-                        .with_overflow_log_head(-1),
+                        .with_overflow_log_head(if fold_logs {
+                            -1
+                        } else {
+                            buckets[index].overflow_log_head()
+                        }),
                 );
             }
         }
@@ -2571,55 +2597,31 @@ where
             }
             return self.rebalance_vertex_edge_span(src, preferred_bucket, preferred_extra, false);
         }
-        let preferred = preferred_bucket.map(|index| index as usize);
-        let positions = Self::calculate_label_edge_span_positions_by_resident_slots(
+        // One content path for every bucket: materialize each bucket's resident
+        // content (prefix + overflow log for slab, LEG root array for tree, nothing
+        // for tiny) and let the shared commit place descriptors and content. This
+        // function used to carry its own snapshot, position and publish loops — a
+        // fourth copy of the layout mechanics that drifted from the shared pair
+        // (GAP-2026-09-20-005). Its own policy (sizing above, release below) stays.
+        let leaf = Self::leaf_index_for_vid(src, self.edges.header().segment_size.max(1));
+        let (per_bucket_edges, per_bucket_raw) =
+            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, false)?;
+        let mut edge_buf: Vec<u8> = Vec::new();
+        let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
+        self.commit_vertex_edge_span_layout(
+            src,
+            &vertex,
+            &buckets,
+            &per_bucket_edges,
+            &per_bucket_raw,
+            &mut edge_buf,
+            &mut bucket_row_bytes_buf,
             new_base,
             new_alloc,
-            &buckets,
-            preferred,
-            preferred_extra,
+            false,
+            false, // rebalance keeps each bucket's overflow log
+            true,  // the release block below owns the footprint decision
         )?;
-
-        // Snapshot every source run before the first write. Repositioned label
-        // spans can overlap another bucket's old range, so read-then-write per
-        // bucket would let an early destination corrupt a later source.
-        let mut source_runs = Vec::with_capacity(buckets.len());
-        for bucket in &buckets {
-            // ADR 0096 §5: tiny buckets have no slab bytes to snapshot; the
-            // publish loop below stamps their anchor from the running boundary.
-            if bucket.is_tiny_mode() {
-                source_runs.push(Vec::new());
-                continue;
-            }
-            let run = Self::edge_bytes_for_len(bucket.stored_slots_raw() as usize)?;
-            let mut bytes = vec![0u8; run];
-            if run > 0 {
-                self.edges
-                    .read_slots_contiguous(bucket.edge_start(), &mut bytes);
-            }
-            source_runs.push(bytes);
-        }
-        let mut row_buckets = Vec::with_capacity(buckets.len());
-        for (index, bucket) in buckets.iter().enumerate() {
-            let row_start = positions[index];
-            // ADR 0096 §5: tiny descriptors keep stored == degree; only the
-            // anchor advances (content stays inline).
-            if bucket.is_tiny_mode() {
-                row_buckets.push(
-                    bucket
-                        .with_edge_range(row_start, bucket.stored_slots_raw())
-                        .with_overflow_log_head(-1),
-                );
-                continue;
-            }
-            if !source_runs[index].is_empty() {
-                self.edges
-                    .write_slots_contiguous(row_start, &source_runs[index])?;
-            }
-            row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots_raw()));
-        }
-        self.buckets
-            .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
         if moved
             && old_alloc > 0
             && new_base != old_base
