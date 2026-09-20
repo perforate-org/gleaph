@@ -5221,3 +5221,47 @@ outlive a redesign: rows have exactly one owner at a time; a published width is 
 releasing storage requires proving it holds nothing; slack is a hint and never a reason to allocate; and sizing
 consumes one shared definition of "resident". A′ makes the first three vacuous by construction, which is the
 strongest argument for it; A″ makes the second and third vacuous where they were actually violated.
+
+# Combined design: per-bucket spill + lazy allocation (2026-09-20, after the A′ objection)
+
+**A′ is out.** A chunked run for every non-inline bucket would put a degree-5 bucket on a whole chunk (1024 slots
+of space for five rows), so generalizing the tree mode trades a prediction problem for a utilization problem. The
+objection also sharpens the second candidate: A′ and A″ converge if and only if the run store supports *small*
+runs, and if it does, the flat prefix should stay for mid-size buckets anyway (scan parity).
+
+**A″ designed together with the dynamic-allocation item (GAP-006).** The two are the same change seen from two
+sides — GAP-006 complains that log capacity is backed per segment whether or not it is used, and A″ says the log's
+*ownership* is wrong (shared per leaf, releasable, hence the I2 hazard). Fixing either alone leaves the other; the
+combined design is:
+
+* **The descriptor field stays, its meaning changes.** `overflow_log_head` is an `i32` in a 29-byte row
+  (`record.rs:576`), and a spill-run id fits it exactly. So the wire keeps its size: "index into the shared
+  per-leaf log chain" becomes "id of this bucket's spill run (0/none)". No row widening, and the ordinal scheme
+  (`stored + offset` beyond the prefix) is unchanged — reads and rank/select see the same logical slots.
+* **Spill runs come from the run/block store the tree mode already uses** (LEG root + LTB blocks, ADR 0088), with
+  **variable-size runs, doubling growth and a free list**. A bucket that spills five rows gets room for five, not a
+  block — which is exactly the small-run support A′ lacks — and because runs are per bucket, a run is never
+  contended: today one hot bucket can fill the leaf's shared log and trigger a leaf-wide fold that touches every
+  neighbour, and afterwards the leaf's log segment is released for the whole leaf.
+* **Allocation is lazy in both directions**: a bucket that never overflows its prefix has no run at all (the
+  descriptor field is NONE), and the per-segment log store, its eager per-segment capacity, `release_segment`, the
+  drain protocol, the fold prelude and the log-full recovery loop all disappear. That removes GAP-006's complaint
+  and I2's hazard class together, because there is no shared area whose emptiness must be proven before freeing it.
+* **Folding becomes per-bucket and optional**: when a rewrite can fit prefix + spill into the prefix it packs them
+  (no leaf-wide pass, no policy tail, no "fold prelude"), and the freed run returns to the free list. When it
+  cannot, the spill simply stays — growth is "extend my own run", which needs no prediction, no tiling, no cover.
+* **What that leaves of today's machinery**: the resident-content definition (prefix + spill), "publish the width
+  you materialized", I1 (a published width must be backed) and the slack rule all survive but shrink in scope —
+  and every log-shaped contract (I2, the release protocol, the fold/recovery choreography) is deleted with its
+  mechanism rather than kept as a rule about a mechanism that no longer exists.
+* **Open questions to settle with measurements, not prose**: (i) small-run overhead in the run store (header per
+  run — if it is heavy, the first spill level should be a packed small-run array rather than a general run);
+  (ii) when a spill run shrinks or is released (natural answer: on the bucket's own compaction, when prefix + spill
+  fit the prefix, and on bucket removal — with the free list absorbing reuse); (iii) insert cost of allocating or
+  doubling a run versus appending to the shared log (the run is uncontended and amortized by doubling, the log
+  append is cheaper per call but couples neighbours); (iv) scan cost of prefix + spill run versus prefix + chain,
+  which should favour the run, since a run is contiguous where a chain is a walk.
+
+Sequence if accepted: measure (i) and (iv) first (both are cheap, and (iv) is a win or a loss by a wide margin),
+then change the field's meaning and the ownership, then delete the log store, the drain guard, the fold prelude and
+the recovery loop.
