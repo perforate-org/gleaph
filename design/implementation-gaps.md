@@ -165,11 +165,24 @@ defect from being rediscovered without its prior reasoning.
   escape hatch. Instrumenting `commit_vertex_edge_span_layout` (the slide/rewrite commit) shows the
   hub is **not** among the vertices that path republishes in that workload (only vids 0..11 appear,
   their spans summing 612 slots inside the block), so the 1312 cover is written by another site.
-  Concrete suspect for the next pass: `prepare_vertex_edge_span_for_overflow_log_fold`'s two relocate
-  branches return `Ok(())` after relocating **without re-publishing the vertex cover** — its in-place
-  publish branches (and the insert-path append growth) are the next instrumentation targets. The
-  shape of the fix, if confirmed, is to re-enter the function once after a relocation (bounded, or as
-  a loop) so the cover is published from the post-relocation geometry.
+  Instrumentation then cleared the fold-prelude suspect and found the real shape (2026-09-20):
+  - `prepare_vertex_edge_span_for_overflow_log_fold`'s relocate branches are fine — the relocation's
+    slide *does* republish the cover, and the printed state is consistent
+    (`after-relocate vid=15 stored=1312 base=Some(2608) leaf=Some((256, 3664))`, i.e. the span ends
+    exactly at the block end).
+  - The inconsistency is **tree-bucket sizing inside the vertex-span layout**. After the promotion,
+    `edge_start` is the LEG *root* offset (3758) while the vertex cover still carries the vertex's
+    block share (1312), because the layout helpers size a tree bucket by its *logical* degree:
+    `read_and_plan`'s `total_live` and `calculate_label_edge_span_positions_by_resident_slots`'s
+    `resident`, plus the materialization slice length at `compact.rs:984` (a tree bucket has no slab
+    rows there — reading `stored`-many rows panics with `range end index 4600 out of range for slice
+    of length 8`). ADR 0088 §3 names the intended shape: promotion publishes the descriptor and then
+    "releases the old edge span (via the vertex-span rewrite)", so the vertex is re-laid with the
+    tree bucket contributing `bucket_physical_resident_slots` (its root region) — no Phase-1
+    restructuring needed.
+  - Working files from this pass: `/tmp/promote_postpublish_attempt.rs` (post-publish rewrite) and
+    `/tmp/compact_treeprep_attempt.rs` (tree-aware planning + positions, which then hits the
+    materialization panic).
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
