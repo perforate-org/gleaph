@@ -387,6 +387,15 @@ session did.
   `rebalance_vertex_edge_span` through the same plan + materialize + commit pair (or delete it in
   favour of the rewrite it duplicates), then re-check the two invariants — only then is the
   expectation question meaningful. Copies: `/tmp/unified_compact.rs`.
+  **Delegation attempt (2026-09-20):** replacing `rebalance_vertex_edge_span`'s body with a call to
+  `rewrite_vertex_edge_span` (deleting 137 more lines) breaks **24** tests — the two functions do not
+  share semantics yet: the rebalance path must not release the vertex footprint
+  (`labeled_leaf_rebalance_does_not_release_span`), it folds overflow logs
+  (`labeled_leaf_rebalance_folds_overflow_log`), and several batch/deferred/inline-property tests
+  depend on its ordering. So the last consolidation needs an explicit semantics decision per caller
+  (footprint release, log folding, ordering) with that 24-test list as the worklist; the direction is
+  still right (one layout implementation), but it is a slice of its own. Copies:
+  `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
