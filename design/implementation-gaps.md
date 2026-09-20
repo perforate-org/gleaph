@@ -289,14 +289,25 @@ defect from being rediscovered without its prior reasoning.
     values zeroed); plus `cascade_at_2_20_plus_1_deepens` (`promote: CollectAllocationOverflow`) and
     the known ② `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run`.
   Working copies of the passing shape: `/tmp/final_*.rs` (superseding `/tmp/d_*`).
-  **Leaf-slide variant (2026-09-20):** replacing Phase 3e with
-  `rebalance_labeled_leaf_weighted_slide(vid)` (the honest way to redistribute the shed prefix slots
-  so `Σ covers == leaf total` holds) keeps `fold_growth_stays_mate_disjoint_across_span_growth` green
-  but breaks the skewed test's *premise*: "the degree-2048 hub must have promoted to tree mode" — the
-  hub ends the workload untree. Next step is to find out why (candidates: the slide's slab re-publish
-  sets `stored = packed live rows`, so a bucket's `T_PROMOTE` trigger is evaluated on the post-slide
-  width; or the slide in Phase 3e reshuffles a *later* promotion's inputs). Working copies:
-  `/tmp/slide_*.rs`.
+  **Leaf-slide variant works (2026-09-20):** an earlier attempt at this looked broken because a
+  script splice had landed Phase 3e *inside* Phase 1 (so the slide ran before the descriptor flip and
+  the promotion looked like a no-op); rebuilding the function from the known-good shape
+  (`/tmp/c_promote.rs`) with Phase 3e at the end — Phase 1 root-in-place, transcription, flip, release,
+  then `rebalance_labeled_leaf_weighted_slide(vid)` — makes **both regression tests pass** and drops
+  the suite to **603 passed / 9 failed** (from 13). The leaf re-tile absorbs the shed prefix slots into
+  the neighbours' shares, which is exactly what fixes the audit-model pair
+  (`gap_tree_full_path_growth_past_5728_…`, `tree_mode_leaf_actual_counts_slab_edges_only`), plus
+  `cascade_at_2_20_plus_1_deepens` and `single_label_log_fold_reserves_edge_only_tail_headroom`.
+  Remaining 9, classified: (i) *design contract, re-express* —
+  `promote_edge_start_points_to_leg_offset`, `promote_pre_and_post_edge_start_differ`,
+  `promote_publish_phase_atomic_descriptor_write`, `promote_succeeds_when_alloc_space_at_cap` (no fresh
+  root span: `edge_start` is the prefix head, nothing is allocated); (ii) *policy/expectation review* —
+  `labeled_segment_relocate_reuses_free_span`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`;
+  (iii) *suspected real bugs to investigate first* —
+  `default_bypass_conversion_clears_vertex_edge_span_allocation` (bypass rows read back as
+  `TestEdge { target: 0 }`), `edge_inline_propertys_survive_rewrite_with_tombstones` (property values
+  read back as zeros), `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
+  (`CollectAllocationOverflow` in a schema path). Working copies of the passing shape: `/tmp/best_*.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
