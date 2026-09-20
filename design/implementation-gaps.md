@@ -595,6 +595,22 @@ session did.
   `bench_l_ins_*` per-bench deltas are ≤1.90% on ≈370-instruction micro benches, so a repeat run before
   treating it as a regression. Still open: delegation of `rebalance_vertex_edge_span` itself
   (`for_growth` vs `for_rebalance`), promotion rework, and unfiltered `canbench --persist`.
+  **Delegation re-tried on the unified base (2026-09-20, saved `/tmp/delegated_on_unified_compact.rs`,
+  597/14):** with the single publish path in place the shim is 115 lines shorter than the fourth
+  implementation, but the failure set is the same shape as before, so the blockers are the two base
+  resolution policies, not the publish mechanics: `resolve_labeled_edge_base_for_growth` returns
+  `CollectAllocationOverflow` after four relocation attempts (the `mixed_label_hub_*` /
+  `labeled_hub_33_labels_*` inserts and `batch_relocates_*` / `expanded_slab_*` see it) while
+  `resolve_labeled_edge_base_for_rebalance` never fails — it relocates once and then falls back to
+  `labeled_edge_base_from_first_bucket(src)`. **This is a policy decision, not a bug to guess at:**
+  should an insert that needs a bigger span than its pinned leaf can host *fail*, or keep the current
+  span and let the publisher report the shortfall? The fourth implementation chose "keep and continue"
+  and the fixtures depend on it. Secondary blockers unchanged: `compact_vertex_edge_span_one_step`
+  expects the log-preserving path (`OverflowRewrite` + stable slot indices), and four assertion tests
+  (`labeled_relocate_commit_order` `left: 256`, `labeled_segment_relocate_releases_single_footprint`
+  `left: 0`, `labeled_segment_slide_coalesces_adjacent_free` `left: 2`,
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` `hot_capacity > stored`) still encode the
+  fourth implementation's placement.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
