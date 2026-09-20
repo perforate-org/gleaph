@@ -566,6 +566,21 @@ session did.
   consistent with the *bulk* inline branch, which publishes live rows (`with_edge_range(row_start,
   bucket.degree())` + `-1` log head). The budget and the published width are two sides of one decision,
   so any unification must move them together — which is exactly what `fold_logs` now names.
+  **Third path narrowed, and a real inconsistency found (2026-09-20):** the three failing rewrite tests
+  did not move when the planner's `total_live` switched to the shared resident definition, and they did
+  not move either when the *commit-side* position calculator stopped counting tiny residents
+  (`calculate_label_edge_span_positions_by_resident_slots` used `stored_slots()`, which returns `degree`
+  for tiny **after K=4**, while the plan-side calculator already uses the
+  `bucket_resident_region` SSOT, i.e. 0 for tiny). That inconsistency is real and worth fixing on its own
+  terms — ADR 0096 §5 says tiny buckets take a zero resident term in the position calculators — but it is
+  not what fails these three. So the under-count is in a third place; ranked candidates left: the
+  `prepare_vertex_edge_span_for_overflow_log_fold` preflight (`stored_slots() + log`),
+  the leaf-pin growth retries, and the `in_window_layout` the plan receives. Next: one surgical print in
+  that preflight plus one at the plan's `in_window_layout` reject, run only
+  `compact_vertex_edge_span_shrinks_vertex_edge_span`, and do not sweep the crate with instrumentation.
+  Attempts saved: `/tmp/unified_on_newbase_compact.rs` (608/3) and
+  `/tmp/unified_on_newbase2_compact.rs` (608/3 with the tiny-resident change) — neither is green, so
+  neither is landable; the tree is back at 611/0.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
