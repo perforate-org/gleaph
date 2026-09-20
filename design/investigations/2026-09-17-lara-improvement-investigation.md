@@ -287,6 +287,11 @@ hot path: leaf rows are canonical, internal rows are derived and repaired on dem
 0 regressed overall. Recorded as GAP-2026-09-20-004; this was the largest remaining
 lever both the S1 probe and the tiny-tier analysis pointed at.
 
+Consequence for **S4b (core tiny)**: the counts walk was the one quantified
+leverage a core-side tiny tier had (the S1 shares below). With it removed, the
+remaining per-insert cost is the slot write plus the vertex/header updates, so a
+core tier now needs new workload evidence rather than the S1 attribution.
+
 ## S1 result — core insert attribution (measured 2026-09-17, worktree source)
 
 Method: five sibling `bench_scope`s in `EdgeStore::insert_edge_inner`
