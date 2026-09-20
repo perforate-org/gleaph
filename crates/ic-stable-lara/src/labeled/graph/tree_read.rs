@@ -511,6 +511,76 @@ where
     Ok(())
 }
 
+/// Property-leaf block cache for sequential scans of a tree-mode bucket.
+///
+/// The property walk asks for one value per slot. Resolving the property leaf
+/// and reading its 4-byte row per slot costs one LEG root read plus one LTB
+/// partial read per row, where the property leaf covers
+/// `K = floor(payload_bytes / w)` consecutive slots — `2 x rows` memory calls
+/// where `2 x leaves` would do (GAP-2026-09-20-003).
+///
+/// The cache resolves and reads the leaf's LTB block once and serves the
+/// remaining rows from the buffer. Both walk orders move the leaf index
+/// monotonically, so one cache covers a whole scan (ascending or descending).
+struct PropertyLeafCache {
+    /// First slot covered by the cached leaf, `None` before the first read.
+    leaf_first_slot: Option<u32>,
+    block: [u8; ltb_payload_bytes_const()],
+}
+
+impl PropertyLeafCache {
+    fn new() -> Self {
+        Self {
+            leaf_first_slot: None,
+            block: [0u8; ltb_payload_bytes_const()],
+        }
+    }
+
+    /// Copies `slot`'s `w` property bytes into `out`, reading the leaf's LTB
+    /// block at most once per leaf.
+    fn read_slot_into<E, M>(
+        &mut self,
+        graph: &LabeledLaraGraph<E, M>,
+        bucket: &LabelBucket,
+        slot: u32,
+        out: &mut [u8],
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdge,
+        M: Memory,
+    {
+        let w = bucket.inline_property_byte_width();
+        let k = property_leaf_fanout(w).ok_or(
+            LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: w,
+                edge_inline_property_width: 0,
+            },
+        )?;
+        // Sequential walks stay inside one leaf for `K` consecutive slots, so the
+        // cached first slot replaces the per-row division/modulo (both are
+        // integer divisions on the hot path).
+        let leaf_first_slot = match self.leaf_first_slot {
+            Some(first) if slot >= first && slot - first < k => first,
+            _ => {
+                let leaf_index = slot / k;
+                let first = leaf_index
+                    .checked_mul(k)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
+                graph
+                    .ltb()
+                    .read_payload(block_id, &mut self.block)
+                    .map_err(LabeledOperationError::LtbBlock)?;
+                self.leaf_first_slot = Some(first);
+                first
+            }
+        };
+        let row = (slot - leaf_first_slot) as usize * usize::from(w);
+        out.copy_from_slice(&self.block[row..row + usize::from(w)]);
+        Ok(())
+    }
+}
+
 /// Walk a tree-mode bucket and yield every live slot's `(slot, edge,
 /// property_value)` triple to the visit closure. The property value is
 /// returned as a `Vec<u8>` of length `w = bucket.inline_property_byte_width()`.
@@ -556,6 +626,7 @@ where
     let mut property_buf = vec![0u8; usize::from(w)];
     match order {
         OutEdgeOrder::Ascending => {
+            let mut property_leaf = PropertyLeafCache::new();
             for block_index in 0..leaf_count {
                 let block_id =
                     super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
@@ -572,7 +643,7 @@ where
                     let byte = (slot_in_block as usize) * E::BYTES;
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
-                    read_property_value_at_slot::<E, M>(graph, bucket, slot, &mut property_buf)?;
+                    property_leaf.read_slot_into::<E, M>(graph, bucket, slot, &mut property_buf)?;
                     if let ControlFlow::Break(value) = visit(slot, edge, property_buf.clone()) {
                         return Ok(ControlFlow::Break(value));
                     }
@@ -580,6 +651,7 @@ where
             }
         }
         OutEdgeOrder::Descending => {
+            let mut property_leaf = PropertyLeafCache::new();
             for block_index in (0..leaf_count).rev() {
                 let block_id =
                     super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
@@ -596,7 +668,7 @@ where
                     let byte = (slot_in_block as usize) * E::BYTES;
                     let edge =
                         E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
-                    read_property_value_at_slot::<E, M>(graph, bucket, slot, &mut property_buf)?;
+                    property_leaf.read_slot_into::<E, M>(graph, bucket, slot, &mut property_buf)?;
                     if let ControlFlow::Break(value) = visit(slot, edge, property_buf.clone()) {
                         return Ok(ControlFlow::Break(value));
                     }
@@ -1591,6 +1663,91 @@ mod tests {
             w,
             "property width must be preserved after promote"
         );
+    }
+
+    /// GAP-2026-09-20-003: a tree-mode property scan must touch each LTB payload
+    /// block once, not once per row. Pinned deterministically by counting LTB
+    /// payload read calls over a promoted 4096-row w = 32 bucket: the walk reads
+    /// `ceil(stored / B)` edge blocks plus `ceil(stored / K)` property leaves
+    /// (K = floor(4096 / 32) = 128), i.e. 4 + 32 = 36 calls in either order.
+    ///
+    /// Wrong implementation this fails on: resolving the property leaf and
+    /// reading one row per slot (the pre-fix shape) issues 4 + 4096 calls.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_property_scan_reads_each_payload_block_once() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        use crate::labeled::graph::test_support::{
+            InlinePropertyTestEdge, inline_property_test_graph_with_capacity,
+        };
+        use crate::labeled::ltb_raw_block_store::{
+            ltb_payload_read_calls, reset_ltb_payload_read_calls,
+        };
+        let graph = inline_property_test_graph_with_capacity(1 << 13);
+        let src = graph
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .expect("vertex");
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 32;
+        let stored: u32 = 4096;
+        graph
+            .ensure_label_bucket_inline_property_byte_width(src, label, w)
+            .expect("declare inline property width");
+        let value = [0x5Au8; 32];
+        for slot in 0..stored {
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(slot, &value[..usize::from(w)]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|e| panic!("insert {slot}: {e:?}"));
+        }
+        let bucket = match graph
+            .find_bucket(src, &graph.vertices().get(src), label)
+            .expect("find_bucket")
+        {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        assert!(bucket.is_tree_mode(), "4096 rows must promote");
+        assert_eq!(bucket.degree, stored);
+
+        let k = u64::from(property_leaf_fanout(w).expect("fanout"));
+        let expected_calls = u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64)
+            + u64::from(stored).div_ceil(k);
+        assert_eq!(expected_calls, 36, "4 edge blocks + 32 property leaves");
+
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            let mut seen = 0u32;
+            reset_ltb_payload_read_calls();
+            let outcome = visit_tree_mode_label_bucket_edges_with_property::<
+                InlinePropertyTestEdge,
+                VectorMemory,
+                (),
+            >(
+                &graph,
+                label.raw(),
+                &bucket,
+                stored,
+                order,
+                |_slot, _edge, bytes| {
+                    assert_eq!(bytes.len(), usize::from(w));
+                    assert_eq!(bytes, value);
+                    seen = seen.saturating_add(1);
+                    std::ops::ControlFlow::Continue(())
+                },
+            )
+            .expect("scan");
+            assert!(matches!(outcome, std::ops::ControlFlow::Continue(())));
+            assert_eq!(seen, stored, "{order:?}: every row visited");
+            assert_eq!(
+                ltb_payload_read_calls(),
+                expected_calls,
+                "{order:?}: property scan must read each payload block once"
+            );
+        }
     }
 
     /// **LPB-in-tree property_leaf_fanout sanity check** at the

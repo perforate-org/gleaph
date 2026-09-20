@@ -47,6 +47,30 @@ use std::cell::Cell;
 
 use crate::GrowFailed;
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only count of LTB payload reads (full or partial). Lets tests pin
+    /// "one block read per block walked" contracts without measuring bytes —
+    /// reading a whole block costs more bytes than reading one row, so byte
+    /// counters cannot express the call-count contract (GAP-2026-09-20-003).
+    static LTB_PAYLOAD_READ_CALLS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_ltb_payload_read_calls() {
+    LTB_PAYLOAD_READ_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn ltb_payload_read_calls() -> u64 {
+    LTB_PAYLOAD_READ_CALLS.with(|c| c.get())
+}
+
+#[cfg(test)]
+fn record_ltb_payload_read_call() {
+    LTB_PAYLOAD_READ_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+}
+
 /// Header size in bytes (ADR 0088 §1).
 pub(crate) const HEADER_SIZE: u64 = 64;
 /// Per-block payload capacity in bytes (ADR 0088 §1 wire truth).
@@ -504,6 +528,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
             return Err(BlockError::NotMinted { id });
         }
         let offset = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64;
+        #[cfg(test)]
+        record_ltb_payload_read_call();
         self.memory.read(offset, dst);
         Ok(())
     }
@@ -539,6 +565,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
             });
         }
         let base = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64 + offset as u64;
+        #[cfg(test)]
+        record_ltb_payload_read_call();
         self.memory.read(base, dst);
         Ok(())
     }
