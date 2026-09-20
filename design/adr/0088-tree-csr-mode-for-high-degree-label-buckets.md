@@ -1371,35 +1371,39 @@ promotion defects below; full table in
 | M2c delete from a 2048-edge bucket | **4.84 K** | 7.33 K |
 | G5 skewed workload mix (256 vertices / 4520 edges) | 140.11 M | **132.24 M** |
 | M4 promote → demote → re-promote round trip | 117.65 M | 30.77 M (threshold-relative sizing) |
-| Drain a 1,024-edge hub, all deletes (`bench_l_s2_det_hub_1024`) | **20.72 M** | 51.31 M |
-| Drain a 4,096-edge hub, all deletes (`bench_l_s2_det_hub_4096`) | **85.49 M** | 208.00 M |
+| Drain a 1,024-edge hub, all deletes (`bench_l_s2_det_hub_1024`) | 25.01 M | 25.01 M (parity) |
+| Drain a 4,096-edge hub, all deletes (`bench_l_s2_det_hub_4096`) | 102.59 M | 102.59 M (parity) |
 | Property-bearing scan, 4,096 rows, w = 32 (`tcsr_4096_property_read_w32`) | **3.22 M** | 4.83 M → 3.66 M after the per-leaf property cursor (GAP-2026-09-20-003 fix) |
 
 **Attribution (measured 2026-09-20 with temporary scopes).** Only one of the
 three cost rows above is caused by the re-tune:
 
-- **Property-bearing reads** (w > 0): caused by the re-tune, then largely
-  recovered. The same bench, same 4,096 rows, same w = 32: 3.22 M with a slab
-  bucket and 4.83 M with a tree bucket (1.5×) — tree mode resolved the property
-  leaf per row instead of streaming one LPB block per leaf. The per-leaf cursor
-  (GAP-2026-09-20-003, 2026-09-20) brings it to 3.66 M, so the remaining tree
-  overhead is +13.7 %. It does not show up in the w = 0 scan result (M2a)
-  because there is no second stream to walk.
-- **Hub drain**: *not* caused by the re-tune. `bench_l_s2_det_hub_1024` measures
-  identically at both thresholds (57.09 M with the scopes in place; the pre-F1
-  artifact value is 20.72 M). The cost is F1's per-emptied-bucket span release
-  (`release_bucket_edge_span_on_empty`, commit `3fd14768b`): ~30.2 K instructions
-  per emptied bucket, which dominates a detach-delete drain because every
-  neighbour's 1-edge bucket empties. It is threshold-independent (those buckets
-  are slab, not tree). Tracked as
-  [GAP-2026-09-20-002](../implementation-gaps.md) with design options.
+- **Property-bearing reads** (w > 0): the only measurable re-tune cost left.
+  Same bench, same 4,096 rows, same w = 32: 3.22 M with a slab bucket vs 4.83 M
+  with a tree bucket before the per-leaf cursor, 3.66 M after it
+  (GAP-2026-09-20-003) — a +13.7 % tree indirection cost (one leaf resolution
+  plus one 4 KiB block read per leaf). It does not show up in the w = 0 scan
+  result (M2a, which favors tree mode) because there is no second stream to
+  walk.
+- **Hub drain**: *not* caused by the re-tune, and now at parity between the
+  arms. The original +147 % reading was F1's per-emptied-bucket span release
+  (`release_bucket_edge_span_on_empty`, commit `3fd14768b`, ~30 K instructions
+  per emptied bucket) — threshold-independent, since the emptied buckets are
+  slab in both arms. The drain release batch (GAP-2026-09-20-002, commit
+  `a021a309c`) merges those ranges per delete and removed the cost entirely, so
+  both drain benches now measure **identically at 1,024 and 4,096** (25.01 M and
+  102.59 M). What remains above the pre-F1 20.72 M is F1's necessary per-delete
+  cover sync (~4.2 K per emptied bucket, vertex-row accounting), not a re-tune
+  effect.
 - **The once-per-B-rows block-boundary mint** is a genuine re-tune cost, bounded
   to one mint per B appended rows.
 
 So the re-tune is a workload-shape decision: it favors pure-adjacency ingest and
-scan (including the Orkut-shaped G5 mix) and costs on property-bearing scans.
-Revisit trigger: a property-scan-heavy target workload — re-run the equal-work
-benches above (2,048 keeps 4,096-row property buckets on the slab side). A promoted bucket's
+scan (including the Orkut-shaped G5 mix) at parity on deletes, and costs +13.7 %
+on property-bearing scans of buckets above `T_promote` rows plus the bounded
+once-per-B block-boundary mint. Revisit trigger: a property-scan-heavy target
+workload — re-run the equal-work benches above (2,048 keeps 4,096-row property
+buckets on the slab side). A promoted bucket's
 resident root region also shrinks with the threshold (§4: depth-1 `root_len =
 ceil(T_promote / B)`), from 4 LEG slots to 1, which reduces the leaf pressure
 each tree bucket contributes. The re-tune was gated on

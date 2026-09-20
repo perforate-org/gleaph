@@ -102,11 +102,14 @@ defect from being rediscovered without its prior reasoning.
   `bench_l_s2_det_hub_1024` 51.31 M → 25.01 M (−51 %), `..._4096` 208.00 M →
   102.59 M (−51 %), stepped variant unchanged (−2 %, one release per step by
   design), `..._sat_4096` unchanged.
-- **Residual follow-up (A3):** each flushed run still costs ~32 K in store
-  bookkeeping (the strip is below the pre-F1 20.72 M only by the merge count);
-  batching the store's header/summary/bin writes is the next lever if a
-  release-heavy workload needs it. `fs_drain_release_pattern_1024` is the
-  store-level metric.
+- **Residual evaluated, not pursued (A3, 2026-09-20):** with the batch in place
+  the drain bench sits 4.3 M above the pre-F1 20.72 M, and that difference
+  matches F1's *necessary* per-delete cover sync (~4.2 K × 1024 emptied buckets) —
+  the per-flushed-run store write cost is only ~1 M of it. Store-level write
+  batching therefore has a ceiling of roughly 4 % on this shape; kept as
+  `fs_drain_release_pattern_1024` (de-benched) if a release-heavy workload ever
+  needs it. The drain is now threshold-independent: both `bench_l_s2_det_hub_*`
+  benches measure identically at `T_promote` 1024 and 4096.
 
 ### GAP-2026-09-20-003 — Tree property reads resolve the property leaf per row
 
@@ -350,7 +353,10 @@ defect from being rediscovered without its prior reasoning.
   exercises. **Gated:** the flip is also blocked by
   [GAP-2026-09-20-001](#gap-2026-09-20-001--promote-silently-drops-overflow-log-rows-tree-mode-has-no-log)
   (promotion silently drops overflow-log rows, and a lower threshold multiplies
-  the number of promotions). **Decision taken (2026-09-20):** the flip was executed
+  the number of promotions). The drain batches landed later the same day
+  (`a021a309c`) make the delete side threshold-independent, so the cost record
+  is now property-scan indirection (+13.7 %) and the bounded boundary mint only.
+  **Decision taken (2026-09-20):** the flip was executed
   once the gate cleared — `T_PROMOTE = 1024` / `T_DEMOTE = 512` (commit `2b417059f`),
   with the ten threshold-coupled tests migrated to derive their sizes from
   `T_PROMOTE` so the suite is green at both constants (602/0 each way). The density
