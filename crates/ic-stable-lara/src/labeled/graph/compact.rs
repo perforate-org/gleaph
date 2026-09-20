@@ -336,6 +336,18 @@ pub(crate) fn bucket_resident_region(bucket: &LabelBucket) -> Option<(u64, u32)>
     (len > 0).then_some((bucket.edge_start(), len))
 }
 
+/// Which outcome a caller accepts when the requested span cannot be placed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SpanResolutionPolicy {
+    /// The span must exist: fail when nothing can back it — the insert path, which has
+    /// to grow for real.
+    Required,
+    /// The span was requested for spare room: keep the span the vertex already holds
+    /// when it cannot be placed — the maintenance path, which must not fail a healthy
+    /// graph for slack.
+    SlackMayBeDropped,
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -551,8 +563,12 @@ where
             || LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.get())
         {
             if self.labeled_leaf_physical_range(src).is_some() {
-                let base = self.labeled_edge_base_from_first_bucket(src)?;
-                return Ok((base, self.vertices.get(src).stored_slots));
+                return self.finish_span_resolution(
+                    src,
+                    new_alloc,
+                    SpanResolutionPolicy::SlackMayBeDropped,
+                    true,
+                );
             }
             log_collect_overflow(
                 "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating",
@@ -561,8 +577,12 @@ where
             if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
                 return Ok((base, new_alloc));
             }
-            let base = self.labeled_edge_base_from_first_bucket(src)?;
-            return Ok((base, self.vertices.get(src).stored_slots));
+            return self.finish_span_resolution(
+                src,
+                new_alloc,
+                SpanResolutionPolicy::SlackMayBeDropped,
+                false,
+            );
         }
         let _resolve_guard = LabeledRebalanceResolveGuard::new();
         if self.labeled_leaf_physical_range(src).is_some() {
@@ -582,8 +602,12 @@ where
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
             return Ok((base, new_alloc));
         }
-        let base = self.labeled_edge_base_from_first_bucket(src)?;
-        Ok((base, self.vertices.get(src).stored_slots))
+        self.finish_span_resolution(
+            src,
+            new_alloc,
+            SpanResolutionPolicy::SlackMayBeDropped,
+            false,
+        )
     }
 
     /// Resolves edge-slab base for [`rewrite_vertex_edge_span`]: in-leaf pin, leaf relocate
@@ -593,6 +617,38 @@ where
     /// backed, so publishing the *requested* width over a base that kept the old
     /// reservation is exactly the phantom cover this pair of resolvers exists to
     /// prevent (GAP-2026-09-20-005).
+    /// The policy-dependent tail of a resolution that could not place the requested span.
+    /// The control flow that reaches it stays with each caller: the two resolvers differ
+    /// only in which outcome they accept.
+    fn finish_span_resolution(
+        &self,
+        src: VertexId,
+        new_alloc: u32,
+        policy: SpanResolutionPolicy,
+        relocation_in_progress: bool,
+    ) -> Result<(u64, u32), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if policy == SpanResolutionPolicy::Required {
+            if relocation_in_progress {
+                // Recursion is impossible mid-relocation, so a span that must exist
+                // escapes to the tail: that is a real reservation, not spare room.
+                return Ok((self.tail_append_labeled_edge_base(new_alloc)?, new_alloc));
+            }
+            log_collect_overflow(&format!(
+                "resolve_labeled_edge_base: no placement for a required span of {new_alloc} slots"
+            ));
+            return Err(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ));
+        }
+        // Slack may be dropped: keep the span the vertex holds (invariant I1 — the
+        // returned width is what the caller publishes, so it must be backed).
+        let base = self.labeled_edge_base_from_first_bucket(src)?;
+        Ok((base, self.vertices.get(src).stored_slots))
+    }
+
     pub(super) fn resolve_labeled_edge_base_for_growth(
         &self,
         src: VertexId,
@@ -606,7 +662,12 @@ where
         }
         if self.labeled_leaf_physical_range(src).is_some() {
             if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
-                return Ok((self.tail_append_labeled_edge_base(new_alloc)?, new_alloc));
+                return self.finish_span_resolution(
+                    src,
+                    new_alloc,
+                    SpanResolutionPolicy::Required,
+                    true,
+                );
             }
             for _ in 0..4 {
                 if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
@@ -615,9 +676,12 @@ where
                 }
                 self.relocate_labeled_leaf_physical_block(src)?;
             }
-            return Err(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ));
+            return self.finish_span_resolution(
+                src,
+                new_alloc,
+                SpanResolutionPolicy::Required,
+                false,
+            );
         }
         // Leaf is not pinned yet. Pin it with a block-aligned leaf physical block
         // instead of tail-appending, per ADR 0001 new-bucket contract.
@@ -625,9 +689,7 @@ where
         if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
             return Ok((base, new_alloc));
         }
-        Err(LabeledOperationError::from(
-            LaraOperationError::CollectAllocationOverflow,
-        ))
+        self.finish_span_resolution(src, new_alloc, SpanResolutionPolicy::Required, false)
     }
 
     pub(super) fn release_labeled_leaf_physical_footprint(
