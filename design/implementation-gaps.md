@@ -872,6 +872,32 @@ session did.
   "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating" then
   "labeled_edge_base_from_first_bucket: src=VertexId(0) has no buckets". Making that hook observable in tests
   under a cfg would have saved the instrumentation round; worth doing if class C recurs.
+  **(A) exact remaining edits (2026-09-20, partial state in `/tmp/classA_partial_{compact,batch_write}.rs`,
+  superseded by the earlier `/tmp/classA_classC_attempt_*`).** Both halves are known; only the edit order
+  needs care:
+
+  1. `plan_labeled_leaf_relocation(&self, src, requested_floor: u32)` — in its vertex loop, after the bucket
+     fold produces `resident_slots`, add `if u32::from(vid_u) == u32::from(src) { resident_slots =
+     resident_slots.max(requested_floor); }` before the `resident_geometry` accumulation. Both
+     `batch_write.rs` call sites then pass `, 0`.
+  2. `relocate_labeled_leaf_physical_block(src)` stays as a wrapper passing floor 0; the existing body is
+     renamed `relocate_labeled_leaf_physical_block_with_floor(src, requested_floor)` and forwards the floor to
+     `plan_labeled_leaf_relocation(src, requested_floor)`.
+  3. Inside that body, its slide call passes the floor:
+     `self.rebalance_labeled_leaf_weighted_slide_in_block(src, leaf_start, leaf_len, false, true, None)`
+     becomes `(src, requested_floor, leaf_start, leaf_len, false, true, None)` — note the arguments are on one
+     line, which is why the anchor-based patch missed it; the second call site (the fresh-block path, around
+     the `labeled_leaf_weighted_slide_commit` bench scope) has `src, new_start, new_len, true, true, None` and
+     gains `requested_floor` the same way.
+  4. The two resolvers' five `relocate_labeled_leaf_physical_block(src)?` calls become
+     `..._with_floor(src, new_alloc)?`.
+  5. The slide's own signature gains `requested_floor: u32` after `src`, and in its `slices` loop the
+     per-vertex `resident` becomes `resident.max(requested_floor)` for `vid == src` before it is added to
+     `total_resident` (so the extra room comes out of the gaps).
+
+  Expected outcome: `mixed_label_hub_50_labels_1000_edges_each` converges instead of ratcheting, required
+  growth succeeds whenever memory allows, and the never-fail fallback stops being load-bearing for the hub
+  fixtures.
   enabling it).
      decision removes).
   fourth implementation's placement.
