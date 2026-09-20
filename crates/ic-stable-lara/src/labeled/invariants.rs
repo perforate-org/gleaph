@@ -294,7 +294,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: tiny log head must be none"
                 );
             }
-            // ADR 0088 §2 + GAP-2026-09-19-001: tree mode has no overflow log, so
+            // ADR 0088 §2 + GAP-2026-09-20-001: tree mode has no overflow log, so
             // every live row must sit inside the transcribed prefix. `degree >
             // stored_slots` is the shape produced by orphaning log-resident rows
             // at promotion (the rows stayed in `degree` but vanished from every

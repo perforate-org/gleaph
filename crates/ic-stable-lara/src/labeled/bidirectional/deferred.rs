@@ -6741,7 +6741,7 @@ mod tests {
         );
     }
 
-    /// GAP-2026-09-19-001 regression: promoting a bucket whose slab **overflow
+    /// GAP-2026-09-20-001 regression: promoting a bucket whose slab **overflow
     /// log** is non-empty must not drop the log-resident rows. Tree mode has no
     /// log (ADR 0088 §2), so `promote_bypass_to_tree_mode` transcribes the
     /// folded prefix; before the fix it transcribed `stored_slots` only and

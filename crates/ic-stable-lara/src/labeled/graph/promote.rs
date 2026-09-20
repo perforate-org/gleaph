@@ -51,7 +51,7 @@ use crate::traits::CsrEdgeTombstone;
 /// `degree > stored_slots`. Tree mode has no log (ADR 0088 §2), so the log is
 /// folded into the prefix first; otherwise transcription would orphan those rows
 /// (`overflow_log_head = -1`), leaving them counted in `degree` but unreachable
-/// from every scan (GAP-2026-09-19-001).
+/// from every scan (GAP-2026-09-20-001).
 ///
 /// Phase 1 — Reserve: read the bucket descriptor, verify preconditions,
 /// derive the depth and required root length, mint all LTB blocks (which
@@ -119,7 +119,7 @@ where
         return Ok(());
     }
 
-    // Phase 0a (GAP-2026-09-19-001): fold a non-empty overflow log into the slab
+    // Phase 0a (GAP-2026-09-20-001): fold a non-empty overflow log into the slab
     // prefix before transcription. Slab mode admits live rows to the log when the
     // bucket's physical window is full, so `degree` can exceed `stored_slots`
     // here; tree mode has no log (ADR 0088 §2), so transcribing only the prefix
