@@ -541,6 +541,15 @@ session did.
   `commit_vertex_edge_span_layout` (or the position helper it calls) the preference and pass `None`/0
   from the paths that have none, then re-check `compact_vertex_edge_span_one_step`, which passes
   `Some(bucket_index)` precisely to keep one bucket's slot indices stable.
+  **Fixed (2026-09-20, `97c316f55`):** `commit_vertex_edge_span_layout` now takes
+  `preferred_bucket` / `preferred_extra` and forwards them to
+  `calculate_label_edge_span_positions_by_resident_slots`; the rebalance passes its caller's values and
+  the two leaf-relocation call sites pass `None` / `0` as before. Clippy's "parameter is only used in
+  recursion" signal on `rebalance_vertex_edge_span` is gone (0 occurrences) and the suite is 611/0 — the
+  one-step compaction's slot-stability tests now hold by policy rather than by accident. Still
+  outstanding from the same family: the planner computes and returns `positions` that no caller uses
+  (dead work; drop it when the full delegation lands), and `preferred_extra` still only *sizes* the span
+  for the paths that do not pass a bucket index.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
