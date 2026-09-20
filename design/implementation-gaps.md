@@ -5466,3 +5466,32 @@ The spill design removes that cost at the root rather than tuning it:
 * **One rule to keep it that way**: a spill run exists *only because rows exist* — no policy may pre-allocate spill
   runs for hot buckets "for growth", exactly as slack may not justify an allocation. That rule is the spill's
   analogue of the slack rule, and it is what makes this benefit structural instead of a tuning choice.
+
+## What happens to the memory the log uses today (2026-09-20) — and a correction
+
+Three distinct things are "the log's memory", and they end differently:
+
+1. **Live rows** (the entries that actually hold edges: 74 rows for the one hot bucket in the measured hub shape,
+   zero in the tiny-heavy audit shape). These are *content*, and they are re-created in their new home — the
+   bucket's spill run, or the prefix when compaction fits — by the same rebuild that a layout change already
+   requires. Per the repository's pre-production rule there is no migration code, no legacy decoder and no
+   compatibility path: fresh state or reinstall, and the old graph is rebuilt with the existing transcription
+   paths.
+2. **Reserved-but-unused capacity** (the audit's 87 040 entries ≈ 696 KB, backed per segment as the segment count
+   grew, with zero entries used). On a fresh graph this is *never requested*, so the saving is real pages and real
+   cycles. Be precise about the limit: stable memory is never returned to the IC — `grow` only grows, and nothing
+   in the design shrinks — so an *in-place* upgrade of an existing graph would not reclaim those pages. The
+   pre-production reset is what makes this a saving rather than a relocation, which is exactly the rule AGENTS.md
+   sets for layout changes.
+3. **The log store's structures** (segment table, per-segment block sizing, chain walkers, the release
+   bookkeeping, the fold prelude and the log-full recovery loop). These are deleted with the mechanism, and here is
+   the correction: the earlier note said the spill store should live *inside* the LTB region to avoid a seventeenth
+   `Memory`. Since this change also frees the log's own region, the better answer is to **repurpose the log's
+   region slot as the spill store's own region** — the graph's memory count stays exactly the same (so no
+   construction churn across the 31 `LabeledLaraGraph::new` sites) *and* the spill gets a clean region of its own
+   instead of sharing bytes with the LTB allocator. That preserves the reason for the earlier decision while
+   removing its downside.
+
+Net: content is rebuilt, unused capacity is never allocated on a fresh graph, the store's bookkeeping is deleted,
+and its region is handed to the spill store rather than dropped, so nothing in the graph's layout arithmetic
+changes except the meaning of the bytes.
