@@ -1123,6 +1123,24 @@ session did.
   `cp /tmp/delegation_policy_v2_compact.rs crates/ic-stable-lara/src/labeled/graph/compact.rs` (611/3), then edit
   that test, then `vertex_edge_span_rewrite_weights_slack_by_label_degree` as a distribution property. HEAD is
   614/0 and everything from this session is committed.
+  **Delegation at 613/1, saved as `/tmp/delegation_613_1_compact.rs` (2026-09-20, session close).** Both stepped
+  tests are re-derived and pass — the publish owning the fold means the first step folds the suffix and then
+  reports the compaction move it performs, so `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones`
+  now asserts `EdgeMoved { old_slot_index: 1, new_slot_index: 0 }` (survivor visible at slot 0) followed by
+  `EdgeMoved { 2 → 1 }`, and `edge_overflow_compaction_does_not_fold_inline_property_bytes_log` drops the
+  variant assertion (which claimed *who* folds) while keeping both effects it was guarding: the edge log is
+  folded (`overflow_log_head() == -1`) and the inline-property-bytes log state is unchanged. Only
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` remains, and its fix is a *fixture* change, not an
+  assertion change: the weighting property (`hot_capacity > cold_capacity`) still holds, but `hot_capacity >
+  hot_bucket.stored_slots()` now requires the window to host the slack (slack is a hint), so the fixture must
+  build a roomy graph. Copy the construction from
+  `gap_tree_full_path_growth_past_5728_releases_only_owned_regions` (it exists precisely because "`test_graph`
+  (256 slots) cannot host this shape"): the same `LabeledLaraGraph::new(...)` with
+  `crate::labeled::InitialCapacities::uniform(1 << 20)` that appears at compact.rs:5794 — note `LabeledLaraGraph::new`
+  takes **18** arguments (my 10-argument attempt did not compile). After that the delegation should be green;
+  then land it (−152 lines) with the ADR 0096 §5 note that the publish owns the fold, run canbench
+  (`compact`, `ins`), and continue with the final gates. HEAD is 614/0 and everything else from this session is
+  committed.
   enabling it).
      decision removes).
   fourth implementation's placement.
