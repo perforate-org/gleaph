@@ -240,7 +240,7 @@ impl WorkloadFixture {
     /// incremental maps would be stale).
     fn rebuild_model(&mut self) {
         let bucket = self.bucket();
-        let extent = bucket.stored_slots;
+        let extent = bucket.stored_slots();
         let edge_start = bucket.edge_start();
         let mut pos_target: Vec<Option<u32>> = vec![None; extent as usize];
         let mut target_pos = vec![TARGET_ABSENT; OFFSET_WORKLOAD_EXTENT as usize];
@@ -794,7 +794,7 @@ fn offset_workload_targeted_compaction() -> canbench_rs::BenchResult {
     for _ in 0..64 {
         fixture.mutate();
     }
-    let before = fixture.bucket().stored_slots;
+    let before = fixture.bucket().stored_slots();
     let result = bench_fn(|| {
         fixture
             .graph
@@ -807,7 +807,7 @@ fn offset_workload_targeted_compaction() -> canbench_rs::BenchResult {
             .expect("targeted compaction enqueue");
         black_box(drain_maintenance(&fixture.graph));
     });
-    let after = fixture.bucket().stored_slots;
+    let after = fixture.bucket().stored_slots();
     assert!(
         after < before,
         "targeted compaction must reclaim: {before} -> {after}"
@@ -867,7 +867,7 @@ fn offset_workload_restored_query() -> canbench_rs::BenchResult {
     drain_maintenance(&fixture.graph);
     fixture.rebuild_model();
     let bucket = fixture.bucket();
-    assert_eq!(bucket.stored_slots, bucket.degree, "fully compacted");
+    assert_eq!(bucket.stored_slots(), bucket.degree, "fully compacted");
     fixture.assert_full_parity();
     bench_fn(|| {
         let (count, checksum) = fixture.scan();

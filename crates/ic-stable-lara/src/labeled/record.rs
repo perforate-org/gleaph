@@ -31,8 +31,9 @@ use std::borrow::Cow;
 /// rejection):
 ///
 /// - `degree`: live count in ALL modes (tiny: 0..=3, see `TINY_MAX_DEGREE`).
-/// - `stored_slots`: slab width for slab/tree; on tiny MUST equal `degree`
-///   (dense prefix, no tombstones — wire rule, `try_read_from` enforces).
+/// - `stored_slots`: slab width for slab/tree; on tiny the live prefix width
+///   (live + tombstones, ≤ 3) with `degree` = live (≤ stored) — wire rules,
+///   `try_read_from` enforces.
 /// - `edge_start` (word bits 0..36): span start for slab, root region for
 ///   tree, EMPTY-SPAN ANCHOR for tiny (valid successor boundary, §5).
 /// - log-head (word bits 52..60): log head or NONE for slab/tree; on tiny
@@ -52,8 +53,11 @@ pub struct LabelBucket {
     word: u64,
     /// Logical live edge count for this label bucket.
     pub degree: u32,
-    /// Stored edge-slab width (may exceed [`Self::degree`] while tombstones await compaction).
-    pub stored_slots: u32,
+    /// Stored edge-slab width (may exceed [`Self::degree`] while tombstones await
+    /// compaction). Private since ADR 0096 §3b Phase 1 / plan 0361 R4: readers go
+    /// through [`Self::stored_slots`] (mode-aware) or, where the wire meaning is
+    /// owned, [`Self::stored_slots_raw`].
+    stored_slots_raw: u32,
     /// Stored inline-property-bytes slab slots. Always zero when the inline property byte width is zero.
     inline_property_bytes_slab_slots: u32,
     /// Byte offset into [`EdgeInlinePropertyBytesStore`] where this bucket's value span starts.
@@ -64,6 +68,31 @@ pub struct LabelBucket {
     inline_property_bytes_log_byte: u8,
     /// Number of inline property bytes entries in this bucket's ordered suffix log.
     inline_property_bytes_log_len: u8,
+}
+
+impl LabelBucket {
+    /// Mode-aware stored width (ADR 0096 §3b Phase 1 / plan 0361 R4).
+    ///
+    /// Slab and tree buckets return their stored edge-slab width (tombstones
+    /// included). Tiny buckets return their live count: today the wire stores the
+    /// live prefix width in this field position, and Phase 2 (K=4) repurposes
+    /// those bytes for a fourth target — this accessor is the seam that keeps both
+    /// meanings behind one name, which is why no reader outside this type touches
+    /// the raw field. Sites that own the *wire* meaning (validation, tiny prefix
+    /// iteration where ordinals include tombstone holes) call
+    /// [`Self::stored_slots_raw`].
+    pub(crate) fn stored_slots(&self) -> u32 {
+        if self.is_tiny_mode() {
+            self.degree
+        } else {
+            self.stored_slots_raw
+        }
+    }
+
+    /// The raw field value, for validation and tiny prefix iteration only.
+    pub(crate) fn stored_slots_raw(&self) -> u32 {
+        self.stored_slots_raw
+    }
 }
 
 impl Default for LabelBucket {
@@ -198,7 +227,7 @@ impl LabelBucket {
         Ok(Self {
             word,
             degree,
-            stored_slots,
+            stored_slots_raw: stored_slots,
             inline_property_bytes_slab_slots,
             inline_property_bytes_offset,
             inline_property_byte_width,
@@ -349,7 +378,7 @@ impl LabelBucket {
         if self.degree > Self::TINY_MAX_DEGREE {
             return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
         }
-        if self.stored_slots != self.degree {
+        if self.stored_slots_raw != self.degree {
             return Err(LabelBucketFieldError::TinyStoredDegreeMismatch);
         }
         if self.overflow_log_head() >= 0 {
@@ -393,13 +422,13 @@ impl LabelBucket {
         // encoded, read back via `E::is_deleted_slot()` — the same liveness
         // predicate as slab/tree read paths); validation stays range-only
         // (E-agnostic). Tail `[stored..3)` zero.
-        if self.stored_slots > Self::TINY_MAX_DEGREE || self.degree > self.stored_slots {
+        if self.stored_slots_raw > Self::TINY_MAX_DEGREE || self.degree > self.stored_slots_raw {
             return Err(LabelBucketFieldError::TinyStoredDegreeMismatch);
         }
         if self.overflow_log_head() >= 0 {
             return Err(LabelBucketFieldError::TinyLogHeadPresent);
         }
-        for i in self.stored_slots..3 {
+        for i in self.stored_slots_raw..3 {
             if self.tiny_target(i) != 0 {
                 return Err(LabelBucketFieldError::TinyTailNotZero);
             }
@@ -639,7 +668,7 @@ impl LabelBucket {
         let LabelBucket {
             word,
             degree,
-            stored_slots,
+            stored_slots_raw: stored_slots,
             inline_property_bytes_slab_slots,
             inline_property_bytes_offset,
             inline_property_byte_width,
@@ -677,7 +706,7 @@ impl LabelBucket {
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
         Ok(Self {
             word,
-            stored_slots,
+            stored_slots_raw: stored_slots,
             ..self
         })
     }
@@ -698,7 +727,7 @@ impl LabelBucket {
     #[inline]
     pub fn with_stored_slots(self, stored_slots: u32) -> Self {
         Self {
-            stored_slots,
+            stored_slots_raw: stored_slots,
             ..self
         }
     }
@@ -754,7 +783,7 @@ impl LabelBucket {
         let bucket = Self {
             word,
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
-            stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
+            stored_slots_raw: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
             inline_property_bytes_slab_slots,
             inline_property_bytes_offset,
             inline_property_byte_width,
@@ -926,11 +955,11 @@ impl CsrVertex for LabelBucket {
     }
 
     fn stored_degree(&self) -> u32 {
-        self.stored_slots
+        self.stored_slots()
     }
 
     fn with_base_slot_start(self, start: u64) -> Self {
-        self.try_with_edge_range(start, self.stored_slots)
+        self.try_with_edge_range(start, self.stored_slots())
             .expect("LabelBucket::with_base_slot_start: slot index overflow")
     }
 
@@ -968,7 +997,7 @@ impl CsrVertex for LabelBucket {
         } else {
             // Packed slab append: the edge is appended inside the bucket's slab
             // window, so both logical degree and stored width grow.
-            let next_stored = self.stored_slots.checked_add(1).ok_or(())?;
+            let next_stored = self.stored_slots().checked_add(1).ok_or(())?;
             Ok(self.with_degree(next_degree).with_stored_slots(next_stored))
         }
     }
@@ -1732,7 +1761,7 @@ mod tests {
         bucket.write_to(&mut bytes);
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
         assert_eq!(bucket.base_slot_start(), bucket.edge_start());
-        assert!(bucket.stored_slots >= bucket.degree());
+        assert!(bucket.stored_slots() >= bucket.degree());
     }
 
     #[test]
@@ -1845,7 +1874,7 @@ mod tests {
         assert_eq!(tree.bucket_label_key().raw(), 0xABCD);
         assert_eq!(tree.edge_start(), 0x1234_5678);
         assert_eq!(tree.degree, 7);
-        assert_eq!(tree.stored_slots, 11);
+        assert_eq!(tree.stored_slots(), 11);
         assert_eq!(tree.overflow_log_head(), 5);
         assert_eq!(tree.inline_property_byte_width(), 32);
         assert_eq!(tree.inline_property_bytes_slab_slots(), 9);
@@ -1991,7 +2020,7 @@ mod tests {
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 5, -1)
             .after_slab_tombstone_delete();
         assert_eq!(bucket.degree, 1);
-        assert_eq!(bucket.stored_slots, 5);
+        assert_eq!(bucket.stored_slots(), 5);
     }
 
     // ADR 0096 §1 (R2a): inline-tiny wire rules. No dispatch arms exist yet, so
@@ -2011,7 +2040,7 @@ mod tests {
         assert!(bucket.is_tiny_mode());
         assert!(!bucket.is_tree_mode());
         assert_eq!(bucket.degree, 2);
-        assert_eq!(bucket.stored_slots, 2);
+        assert_eq!(bucket.stored_slots(), 2);
         assert_eq!(bucket.tiny_target(0), 7);
         assert_eq!(bucket.tiny_target(1), 9);
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2028,6 +2057,41 @@ mod tests {
         assert_eq!(bytes[20..24], 9u32.to_le_bytes()); // T1
         assert!(bytes[24..29].iter().all(|&b| b == 0)); // T2 tail + spare zero
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
+    }
+
+    /// Plan 0361 R4 / ADR 0096 §3b Phase 1: the mode-aware accessor is the seam
+    /// K=4 will repurpose. Slab and tree buckets report their raw stored width;
+    /// tiny buckets report their live count (today the wire stores the live prefix
+    /// width — holes included — in the raw field).
+    ///
+    /// Wrong implementation this fails on: an accessor that returns the raw field
+    /// for tiny (the pre-R4 shape would report the prefix width, e.g. 3 with a
+    /// tombstone hole, instead of the live 2).
+    #[test]
+    fn stored_slots_accessor_is_mode_aware() {
+        let live = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, 3, 3, -1)
+            .try_enable_tiny_mode()
+            .expect("enable tiny");
+        assert_eq!(live.stored_slots_raw(), 3, "wire prefix width");
+        assert_eq!(live.stored_slots(), 3, "no holes: live == prefix");
+
+        // A tombstone hole widens the wire prefix while `degree` drops: the
+        // accessor follows the live count, the raw field keeps the prefix.
+        let holed = live
+            .with_degree_field(2)
+            .with_stored_slots(3)
+            .with_tiny_target(1, 0);
+        assert_eq!(holed.degree, 2);
+        assert_eq!(holed.stored_slots_raw(), 3);
+        assert_eq!(holed.stored_slots(), 2);
+
+        // Slab and tree buckets keep the raw width in both accessors.
+        let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 10, 2, 7, -1);
+        assert_eq!(slab.stored_slots_raw(), 7);
+        assert_eq!(slab.stored_slots(), 7);
+        let tree = slab.with_tree_mode(true);
+        assert_eq!(tree.stored_slots_raw(), 7);
+        assert_eq!(tree.stored_slots(), 7);
     }
 
     #[test]

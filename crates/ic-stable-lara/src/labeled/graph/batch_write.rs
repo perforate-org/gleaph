@@ -664,7 +664,7 @@ impl BucketFingerprint {
         Self {
             owner_vertex_id,
             label_id,
-            stored_slots: bucket.stored_slots,
+            stored_slots: bucket.stored_slots(),
             degree: bucket.degree,
             inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
             inline_property_bytes_offset: bucket.inline_property_bytes_offset(),
@@ -1199,7 +1199,7 @@ where
                     ..
                 } => {
                     let tail_end = (*edge_start_slot)
-                        .saturating_add(u64::from(p.bucket.stored_slots))
+                        .saturating_add(u64::from(p.bucket.stored_slots()))
                         .saturating_add(u64::from(*tail_edge_slot_count));
                     max_edge_end_slot = max_edge_end_slot.max(tail_end);
                 }
@@ -2159,7 +2159,7 @@ where
                 // `tail_offset == 0` is rejected typed (the caller falls
                 // back to scalar inserts which mint correctly).
                 let block_b: u32 = crate::labeled::tree_csr::B as u32;
-                let stored = bucket.stored_slots;
+                let stored = bucket.stored_slots();
                 let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
                 let tail_room: u32 = (block_b * (E::BYTES as u32)) - tail_offset;
                 let run_bytes = u32::try_from(run.edges.len())
@@ -2221,7 +2221,7 @@ where
                 }
 
                 let edge_start_slot =
-                    checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
+                    checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots()))
                         .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
                 let edge_slot_count = u32::try_from(run.edges.len())
                     .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
@@ -2262,14 +2262,14 @@ where
                 // whole run, the run keeps the current tail-first/log path (a mixed
                 // slab+log split of one run is out of scope).
                 if run.placement == EdgePlacementPolicy::Unordered
-                    && bucket.stored_slots > bucket.degree
+                    && bucket.stored_slots() > bucket.degree
                 {
-                    let window_len = u64::from(bucket.stored_slots);
+                    let window_len = u64::from(bucket.stored_slots());
                     let mut window = vec![0u8; (window_len as usize).saturating_mul(E::BYTES)];
                     self.edges
                         .read_slots_contiguous(bucket.edge_start(), &mut window);
                     let mut hole_window_indices = Vec::new();
-                    for slot_index in 0..bucket.stored_slots {
+                    for slot_index in 0..bucket.stored_slots() {
                         let off = (slot_index as usize).saturating_mul(E::BYTES);
                         let encoded = E::read_from(&window[off..off + E::BYTES]);
                         if encoded.is_tombstone_edge() {
@@ -2621,7 +2621,7 @@ where
             .read_vertex_label_buckets(&vertex)
             .map_err(OneOrientationBatchError::from)?;
         let resident_slots = buckets.iter().try_fold(0u32, |sum, b| {
-            sum.checked_add(b.stored_slots.max(b.degree))
+            sum.checked_add(b.stored_slots().max(b.degree))
                 .ok_or(OneOrientationBatchError::SlabCapacityExceeded)
         })?;
         let min_required = resident_slots
@@ -2663,7 +2663,7 @@ where
                 leaf,
                 old_leaf_len: state.old_leaf_len,
                 new_leaf_len: state.new_leaf_len,
-                existing_bucket_slots: bucket.stored_slots,
+                existing_bucket_slots: bucket.stored_slots(),
                 edge_log_len,
                 existing_inline_property_bytes_slots,
                 inline_property_bytes_log_len,
@@ -2790,7 +2790,7 @@ where
             match &res.destination {
                 RunDestination::Slab { .. } => {
                     let _updated_stored_slots = bucket
-                        .stored_slots
+                        .stored_slots()
                         .checked_add(res.edge_slot_count)
                         .expect("reserve guaranteed stored_slots overflow safety");
                     if res.inline_property_width > 0 {
@@ -2809,7 +2809,7 @@ where
                     // window. Inline-property bytes are keyed by live ordinal, so
                     // the byte-slot count still grows by the full run size.
                     let _updated_stored_slots = bucket
-                        .stored_slots
+                        .stored_slots()
                         .checked_add(*tail_edge_slot_count)
                         .expect("reserve guaranteed stored_slots overflow safety");
                     if res.inline_property_width > 0 {
@@ -2826,14 +2826,14 @@ where
                         .checked_add(res.edge_slot_count)
                         .expect("reserve guaranteed expanded degree overflow safety");
                     let _updated_stored_slots = bucket
-                        .stored_slots
+                        .stored_slots()
                         .checked_add(*edge_log_len)
                         .and_then(|x| x.checked_add(res.edge_slot_count))
                         .expect("reserve guaranteed expanded stored_slots overflow safety");
                 }
                 RunDestination::RelocatedSlab { edge_log_len, .. } => {
                     let _updated_stored_slots = bucket
-                        .stored_slots
+                        .stored_slots()
                         .checked_add(*edge_log_len)
                         .and_then(|x| x.checked_add(res.edge_slot_count))
                         .expect("reserve guaranteed relocated stored_slots overflow safety");
@@ -3027,7 +3027,7 @@ where
                         0
                     };
                     let logical_slot_base = bucket
-                        .stored_slots
+                        .stored_slots()
                         .checked_add(existing_edge_log_len)
                         .expect("reserve guaranteed logical slot");
                     let entries: Vec<(i32, E)> = run
@@ -3307,7 +3307,7 @@ where
                 } => {
                     updated_bucket = updated_bucket.with_stored_slots(
                         bucket
-                            .stored_slots
+                            .stored_slots()
                             .checked_add(res.edge_slot_count)
                             .expect("reserve guaranteed stored_slots overflow safety"),
                     );
@@ -3343,7 +3343,7 @@ where
                 } => {
                     updated_bucket = updated_bucket.with_stored_slots(
                         bucket
-                            .stored_slots
+                            .stored_slots()
                             .checked_add(*tail_edge_slot_count)
                             .expect("reserve guaranteed stored_slots overflow safety"),
                     );
@@ -3412,7 +3412,7 @@ where
                     // first pass; this is the canonical publish.
                     updated_bucket = updated_bucket.with_stored_slots(
                         bucket
-                            .stored_slots
+                            .stored_slots()
                             .checked_add(*run_edge_count)
                             .expect("reserve guaranteed tree stored_slots overflow safety"),
                     );
@@ -3533,7 +3533,7 @@ where
             "relocation must fold the existing edge overflow log before append"
         );
         assert_eq!(
-            bucket.stored_slots,
+            bucket.stored_slots(),
             existing_bucket_slots
                 .checked_add(edge_log_len)
                 .expect("reserve guaranteed relocated resident slots"),
@@ -3604,7 +3604,7 @@ where
         let mut updated_bucket = bucket
             .with_stored_slots(
                 bucket
-                    .stored_slots
+                    .stored_slots()
                     .checked_add(res.edge_slot_count)
                     .expect("reserve guaranteed relocated stored slot count"),
             )
@@ -3746,7 +3746,7 @@ where
             .buckets
             .read_label_bucket_slot(res.bucket_slot)
             .expect("reserve found this slab bucket");
-        let window_len = u64::from(bucket.stored_slots);
+        let window_len = u64::from(bucket.stored_slots());
         let holes = hole_window_indices.len();
         let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
         for e in &run.edges {
@@ -3816,7 +3816,7 @@ where
                     let tail_offset = (offset - holes) as u64;
                     (
                         bucket
-                            .stored_slots
+                            .stored_slots()
                             .checked_add(tail_offset as u32)
                             .expect("reserve guaranteed logical slot"),
                         tail_start
@@ -4921,7 +4921,7 @@ mod tests {
             bucket_after_remove.overflow_log_head(),
         );
         let expected_logical_slot = bucket_after_remove
-            .stored_slots
+            .stored_slots()
             .checked_add(existing_log_len)
             .expect("test logical slot fits");
 
@@ -5462,7 +5462,7 @@ mod tests {
             .values
             .inline_property_bytes_log_chain_asc_indices(leaf, inline_property_bytes_log_head)
             .len() as u8;
-        let initial_stored_slots = bucket.stored_slots;
+        let initial_stored_slots = bucket.stored_slots();
         let initial_inline_property_bytes_slots = bucket.inline_property_bytes_slab_slots();
         graph
             .buckets()
@@ -5548,7 +5548,7 @@ mod tests {
             .and_then(|slots| slots.checked_add(1))
             .expect("test relocated edge slots fit");
         assert_eq!(bucket.degree, expected_slots);
-        assert_eq!(bucket.stored_slots, expected_slots);
+        assert_eq!(bucket.stored_slots(), expected_slots);
         assert!(bucket.overflow_log_head() < 0);
 
         let edges = graph.out_edges(VertexId::from(0)).unwrap();
@@ -5572,7 +5572,7 @@ mod tests {
             direct_pending,
             3000i32.to_le_bytes(),
             "pending ordinal {pending_ordinal}, initial edge slots {initial_stored_slots}, initial inline slots {initial_inline_property_bytes_slots}, stored {}, inline slots {}, inline log len {}",
-            bucket.stored_slots,
+            bucket.stored_slots(),
             bucket.inline_property_bytes_slab_slots(),
             bucket.inline_property_bytes_log_len()
         );
@@ -5682,7 +5682,7 @@ mod tests {
                         .with_overflow_log_head(log_head)
                         .with_degree_field(
                             bucket
-                                .stored_slots
+                                .stored_slots()
                                 .checked_add(edge_log_len)
                                 .expect("test edge degree fits"),
                         )
@@ -5870,7 +5870,8 @@ mod tests {
             "the new edge must land in the tombstone hole at slot 1"
         );
         assert_eq!(
-            bucket.stored_slots, 4,
+            bucket.stored_slots(),
+            4,
             "hole reuse must not grow stored_slots"
         );
         assert_eq!(bucket.degree(), 4, "degree must grow by the run size");
@@ -5913,7 +5914,7 @@ mod tests {
             let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
             (
                 targets,
-                bucket.stored_slots,
+                bucket.stored_slots(),
                 bucket.degree(),
                 result.locations,
             )
@@ -5992,7 +5993,8 @@ mod tests {
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(
-            bucket.stored_slots, 4,
+            bucket.stored_slots(),
+            4,
             "the full span forces the tail remainder to the overflow log"
         );
         assert_eq!(bucket.degree(), 5, "degree grows by the full run size");
@@ -6127,7 +6129,8 @@ mod tests {
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(
-            bucket.stored_slots, 4,
+            bucket.stored_slots(),
+            4,
             "a full slab span keeps Insertion batch on the overflow-log path; no tombstone reuse"
         );
     }
@@ -6170,7 +6173,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert_eq!(bucket.stored_slots, 4);
+        assert_eq!(bucket.stored_slots(), 4);
         assert_eq!(bucket.degree(), 3);
     }
 }

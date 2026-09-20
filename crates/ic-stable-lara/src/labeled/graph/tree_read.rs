@@ -77,7 +77,7 @@ where
         bucket.is_tree_mode(),
         "tree_mode_random_ordinal_access: bucket is not in tree mode (caller must dispatch)"
     );
-    if slot >= bucket.stored_slots {
+    if slot >= bucket.stored_slots() {
         return Ok(None);
     }
     if bucket.inline_property_byte_width() != 0 {
@@ -96,7 +96,7 @@ where
     // descends the hop chain. The valid range is
     // `block_root_index < leaf_count = ceil(stored_slots / B)`.
     let leaf_count = u32::try_from(
-        (u64::from(bucket.stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
+        (u64::from(bucket.stored_slots())).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     debug_assert!(block_root_index < leaf_count);
@@ -147,7 +147,7 @@ where
     // **Plan 0326**: accept `w > 0` (the demote path handles the
     // property stream separately in Phase 3.5; this visit only
     // yields edge targets).
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let _depth = bucket.tree_mode_physical_depth();
     let root_len = u32::try_from(derived_root_len(stored_slots))
         .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
@@ -358,7 +358,7 @@ where
             });
         }
     };
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     if slot > stored_slots {
         return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
     }
@@ -492,15 +492,15 @@ where
     // after the write). For the very first insert into an empty
     // tree bucket, `next_stored = 1` and `slot = 0`, but the
     // bucket's `stored_slots` is still the pre-insert value (0).
-    // We use a soft bound `slot <= bucket.stored_slots` which
+    // We use a soft bound `slot <= bucket.stored_slots()` which
     // covers both the first-insert and the post-first-insert
     // cases. The actual LTB block capacity (K = floor(4096/w)
     // rows per leaf) is the stricter bound enforced by the
     // property leaf index computation.
     assert!(
-        slot <= bucket.stored_slots,
+        slot <= bucket.stored_slots(),
         "write_property_value_at_slot: slot out of bounds (slot={slot}, stored_slots={})",
-        bucket.stored_slots
+        bucket.stored_slots()
     );
     let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
     let row_offset = (slot % k) * u32::from(w);
@@ -619,7 +619,7 @@ where
     if out_degree == 0 {
         return Ok(ControlFlow::Continue(()));
     }
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let leaf_count =
         u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
@@ -1228,7 +1228,7 @@ mod tests {
         // remains the pre-promotion degree (promote doesn't change the
         // logical edge count, only the storage backing).
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, 4096);
+        assert_eq!(bucket.stored_slots(), 4096);
         let collected = tree_mode_out_edges_collect(
             &graph,
             label.raw(),
@@ -1350,7 +1350,7 @@ mod tests {
         };
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.degree, stored);
-        assert_eq!(bucket.stored_slots, stored);
+        assert_eq!(bucket.stored_slots(), stored);
 
         // Tombstone slot 100 via the production tree-mode remove path.
         super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 100)
@@ -1364,7 +1364,8 @@ mod tests {
         };
         assert_eq!(bucket_after.degree, stored - 1, "degree drops by 1");
         assert_eq!(
-            bucket_after.stored_slots, stored,
+            bucket_after.stored_slots(),
+            stored,
             "stored_slots is tombstone-inclusive (unchanged by tombstone)"
         );
 

@@ -167,7 +167,7 @@ fn build_tree_fixture(tombstones: u32) -> TreeFixture {
         2,
         "fixture must be depth 2"
     );
-    assert_eq!(bucket.stored_slots, TREE_SEED_SLOTS);
+    assert_eq!(bucket.stored_slots(), TREE_SEED_SLOTS);
     assert_eq!(bucket.degree, TREE_SEED_SLOTS - tombstones);
     TreeFixture {
         graph,
@@ -401,7 +401,7 @@ fn counting_walk_offset(fixture: &TreeFixture, offset: u32) -> (u32, u64, u32, u
         .buckets()
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
-    let stored = bucket.stored_slots;
+    let stored = bucket.stored_slots();
     let leaf_count =
         u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf count");
@@ -489,7 +489,7 @@ fn assert_l1_parity(fixture: &TreeFixture, tombstones: u32, offset: u32, exact: 
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
     let leaf_count =
-        u32::try_from((u64::from(bucket.stored_slots)).div_ceil(B as u64)).expect("leaf count");
+        u32::try_from((u64::from(bucket.stored_slots())).div_ceil(B as u64)).expect("leaf count");
     let mut total = 0u64;
     for block_index in 0..leaf_count {
         let block_id =
@@ -501,7 +501,7 @@ fn assert_l1_parity(fixture: &TreeFixture, tombstones: u32, offset: u32, exact: 
             .expect("resolve leaf");
         let header = fixture.graph.ltb().read_block_header(block_id);
         let start_slot = block_index * B as u32;
-        let end_slot = (start_slot + B as u32).min(bucket.stored_slots);
+        let end_slot = (start_slot + B as u32).min(bucket.stored_slots());
         let mut scanned = 0u32;
         for slot in start_slot..end_slot {
             let mut buf = [0u8; 4];
@@ -517,7 +517,7 @@ fn assert_l1_parity(fixture: &TreeFixture, tombstones: u32, offset: u32, exact: 
         assert_eq!(u32::from(header.tombstone_count), scanned);
         total += u64::from(header.tombstone_count);
     }
-    assert_eq!(total, u64::from(bucket.stored_slots - bucket.degree));
+    assert_eq!(total, u64::from(bucket.stored_slots() - bucket.degree));
 }
 
 /// Baseline exact-scan OFFSET at 87.5% tombstones, first live slot.
@@ -697,7 +697,7 @@ fn s0_exact_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32
         .buckets()
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
-    let stored = bucket.stored_slots;
+    let stored = bucket.stored_slots();
     let end = match limit {
         Some(l) => offset.saturating_add(l).min(stored),
         None => stored,
@@ -748,7 +748,7 @@ fn s1_window_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u3
         .buckets()
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
-    let stored = bucket.stored_slots;
+    let stored = bucket.stored_slots();
     let end = match limit {
         Some(l) => offset.saturating_add(l).min(stored),
         None => stored,
@@ -970,7 +970,7 @@ fn read_tree_stored(fixture: &TreeFixture) -> u32 {
         .buckets()
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket")
-        .stored_slots
+        .stored_slots()
 }
 
 /// Run a bounded remove→insert churn loop on the fixture and return the final
@@ -1040,10 +1040,11 @@ fn run_tree_churn(
         .buckets()
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
-    let leaf_count =
-        u32::try_from(u64::from(bucket.stored_slots).div_ceil(crate::labeled::tree_csr::B as u64))
-            .expect("leaf count");
-    (bucket.stored_slots, bucket.degree, leaf_count)
+    let leaf_count = u32::try_from(
+        u64::from(bucket.stored_slots()).div_ceil(crate::labeled::tree_csr::B as u64),
+    )
+    .expect("leaf count");
+    (bucket.stored_slots(), bucket.degree, leaf_count)
 }
 
 /// Bench-scope parity: every leaf block's header count == scanned markers and
@@ -1056,7 +1057,7 @@ fn assert_tree_churn_header_parity(fixture: &TreeFixture) {
         .read_label_bucket_slot(fixture.bucket_slot)
         .expect("bucket");
     let leaf_count =
-        u32::try_from(u64::from(bucket.stored_slots).div_ceil(B as u64)).expect("leaf count");
+        u32::try_from(u64::from(bucket.stored_slots()).div_ceil(B as u64)).expect("leaf count");
     let mut total = 0u64;
     for block_index in 0..leaf_count {
         let block_id =
@@ -1068,7 +1069,7 @@ fn assert_tree_churn_header_parity(fixture: &TreeFixture) {
             .expect("resolve leaf");
         let header = fixture.graph.ltb().read_block_header(block_id);
         let start_slot = block_index * B as u32;
-        let end_slot = (start_slot + B as u32).min(bucket.stored_slots);
+        let end_slot = (start_slot + B as u32).min(bucket.stored_slots());
         let mut scanned = 0u32;
         for slot in start_slot..end_slot {
             let mut buf = [0u8; 4];
@@ -1084,7 +1085,7 @@ fn assert_tree_churn_header_parity(fixture: &TreeFixture) {
         assert_eq!(u32::from(header.tombstone_count), scanned);
         total += u64::from(header.tombstone_count);
     }
-    assert_eq!(total, u64::from(bucket.stored_slots - bucket.degree));
+    assert_eq!(total, u64::from(bucket.stored_slots() - bucket.degree));
 }
 
 /// Alternating churn with reuse (Unordered): stored must stay bounded at the

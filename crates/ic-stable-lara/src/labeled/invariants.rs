@@ -237,9 +237,9 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             } else if bucket.is_tiny_mode() {
                 0
             } else if bucket.overflow_log_head() < 0 {
-                u64::from(bucket.stored_slots)
+                u64::from(bucket.stored_slots_raw())
             } else {
-                gap.min(u64::from(bucket.stored_slots))
+                gap.min(u64::from(bucket.stored_slots_raw()))
             };
             // Spanless buckets (tiny anchors, emptied spans) hold no slab
             // bytes; containment against capacity and the vertex span is
@@ -279,14 +279,15 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             } else if bucket.is_tiny_mode() {
                 // ADR 0096 §1 + delete redesign: tiny wire rules on live state.
                 // `stored` = prefix width (≤ 3), `degree` = live (≤ stored);
-                // tombstone slots hold the u32::MAX sentinel.
+                // dead-slot content is layout-native (E::tombstone_edge()
+                // encoded, read via E::is_deleted_slot()).
                 assert!(
                     bucket.degree() <= LabelBucket::TINY_MAX_DEGREE,
                     "vertex {vidx} bucket {slot}: tiny degree exceeds cap"
                 );
                 assert!(
-                    bucket.stored_slots <= LabelBucket::TINY_MAX_DEGREE
-                        && bucket.degree() <= bucket.stored_slots,
+                    bucket.stored_slots_raw() <= LabelBucket::TINY_MAX_DEGREE
+                        && bucket.degree() <= bucket.stored_slots_raw(),
                     "vertex {vidx} bucket {slot}: tiny stored/degree out of range"
                 );
                 assert!(
@@ -306,10 +307,10 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: tree log head must be none"
                 );
                 assert!(
-                    bucket.degree() <= bucket.stored_slots,
+                    bucket.degree() <= bucket.stored_slots_raw(),
                     "vertex {vidx} bucket {slot}: tree degree {} exceeds stored width {}",
                     bucket.degree(),
-                    bucket.stored_slots
+                    bucket.stored_slots_raw()
                 );
             }
         }

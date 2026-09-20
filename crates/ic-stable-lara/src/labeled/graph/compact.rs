@@ -215,7 +215,7 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     // (inline targets only); tree/slab keep their region rules.
     match BucketMode::from_bucket(bucket) {
         BucketMode::Tiny => 0,
-        BucketMode::Slab => bucket.stored_slots,
+        BucketMode::Slab => bucket.stored_slots(),
         BucketMode::Tree => {
             // Tree mode: edge root region length + property root region length
             // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
@@ -227,7 +227,7 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
             // and `vertex_label_edge_span_end_exclusive` (and friends) sum
             // the two regions for the compaction rewrite path).
             let physical_depth = bucket.tree_mode_physical_depth();
-            let stored = bucket.stored_slots;
+            let stored = bucket.stored_slots();
             let leaf_count =
                 u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
                     .expect("leaf_count fits u32 for MAX_DEPTH=3");
@@ -272,7 +272,7 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
         Some(k) if k >= 1 => k,
         _ => return 0,
     };
-    let l_p = u64::from(bucket.stored_slots.div_ceil(k));
+    let l_p = u64::from(bucket.stored_slots().div_ceil(k));
     let b = crate::labeled::tree_csr::B as u64;
     let mut r = l_p;
     for _ in 1..bucket.tree_mode_property_depth() {
@@ -292,7 +292,7 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
     // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots.
     match BucketMode::from_bucket(bucket) {
         BucketMode::Tiny => 0,
-        BucketMode::Slab => bucket.stored_slots,
+        BucketMode::Slab => bucket.stored_slots(),
         BucketMode::Tree => {
             let edge = bucket_span_region_len(bucket);
             let prop = property_root_region_len(bucket);
@@ -323,7 +323,7 @@ pub(crate) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
     if bucket.is_tree_mode() {
         return combined_span_region_len(bucket);
     }
-    bucket.stored_slots
+    bucket.stored_slots_raw()
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -414,7 +414,7 @@ where
         // Plan 0319 §Step 3: for tree-mode buckets, the LEG span is
         // the **physical root region** (a u32 block_id array), NOT
         // `stored_slots` edge slots. The previous code used
-        // `bucket.stored_slots` for every bucket, which for a tree
+        // `bucket.stored_slots()` for every bucket, which for a tree
         // bucket would claim a region far larger than the root region
         // and cause the rewrite to read past the region into
         // neighboring buckets (corruption). The helper
@@ -930,7 +930,7 @@ where
                     if bucket.is_tiny_mode() {
                         row_buckets.push(
                             bucket
-                                .with_edge_range(row_start, bucket.stored_slots)
+                                .with_edge_range(row_start, bucket.stored_slots_raw())
                                 .with_overflow_log_head(-1),
                         );
                         continue;
@@ -1051,7 +1051,7 @@ where
                     if bucket.is_tiny_mode() {
                         row_buckets.push(
                             bucket
-                                .with_edge_range(row_start, bucket.stored_slots)
+                                .with_edge_range(row_start, bucket.stored_slots_raw())
                                 .with_overflow_log_head(-1),
                         );
                         continue;
@@ -1592,7 +1592,7 @@ where
                     let log_offset = u32::try_from(log_offset)
                         .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
                     let slot_index = bucket
-                        .stored_slots
+                        .stored_slots_raw()
                         .checked_add(log_offset)
                         .ok_or(LaraOperationError::RowDegreeOverflow)?;
                     let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
@@ -1717,7 +1717,7 @@ where
                 if buckets[index].is_tiny_mode() {
                     row_buckets.push(
                         buckets[index]
-                            .with_edge_range(row_start, buckets[index].stored_slots)
+                            .with_edge_range(row_start, buckets[index].stored_slots_raw())
                             .with_overflow_log_head(-1),
                     );
                     continue;
@@ -1755,7 +1755,7 @@ where
                 }
                 row_buckets.push(
                     bucket
-                        .with_edge_range(row_start, bucket.stored_slots)
+                        .with_edge_range(row_start, bucket.stored_slots_raw())
                         .with_overflow_log_head(-1),
                 );
             }
@@ -1817,7 +1817,7 @@ where
                 continue;
             }
             let mut next_live = 0u32;
-            for old_slot_index in 0..bucket.stored_slots {
+            for old_slot_index in 0..bucket.stored_slots_raw() {
                 let edge_slot =
                     checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -1862,7 +1862,7 @@ where
             let log_offset = u32::try_from(log_offset)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             let old_slot_index = bucket
-                .stored_slots
+                .stored_slots()
                 .checked_add(log_offset)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
@@ -1872,7 +1872,7 @@ where
             let live_log_offset = u32::try_from(live_log_edges.len())
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             let new_slot_index = bucket
-                .stored_slots
+                .stored_slots()
                 .checked_add(live_log_offset)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             if old_slot_index != new_slot_index {
@@ -1888,7 +1888,7 @@ where
         let live_log_count = u32::try_from(live_log_edges.len())
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         let new_stored_slots = bucket
-            .stored_slots
+            .stored_slots()
             .checked_add(live_log_count)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let vertex = self.vertices.get(src);
@@ -1903,7 +1903,7 @@ where
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             let out_slot = checked_add_slot_index(
                 bucket.edge_start(),
-                u64::from(bucket.stored_slots)
+                u64::from(bucket.stored_slots())
                     .checked_add(log_offset)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?,
             )
@@ -1941,7 +1941,7 @@ where
             return Ok(None);
         }
         let mut next_live = resume_slot_index;
-        for old_slot_index in resume_slot_index..bucket.stored_slots {
+        for old_slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             if edges.read_slot(edge_slot).is_tombstone_edge() {
@@ -2001,7 +2001,7 @@ where
         }
         let mut first_hole: Option<u32> = None; // slot
         let mut last_live_slot: Option<u32> = None;
-        for slot_index in resume_slot_index..bucket.stored_slots {
+        for slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = edges.read_slot(edge_slot);
@@ -2192,13 +2192,13 @@ where
         }
         if resume_bucket_index >= vertex.degree() {
             // Per-bucket steps may already pack each label row (`stored_slots == degree`) while
-            // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
+            // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots_raw()`) stays oversized.
             // Tiny buckets are excluded from the packed check (holes make
             // `stored != degree` legitimate inline state, not slab slack).
             if vertex.stored_slots > total_live
                 || buckets.iter().any(|b| {
                     b.overflow_log_head() >= 0
-                        || (!b.is_tiny_mode() && b.stored_slots != b.degree())
+                        || (!b.is_tiny_mode() && b.stored_slots_raw() != b.degree())
                 })
             {
                 self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
@@ -2394,7 +2394,7 @@ where
                 0
             };
             let resident = bucket
-                .stored_slots
+                .stored_slots()
                 .max(bucket.degree())
                 .checked_add(extra)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
@@ -2441,7 +2441,7 @@ where
             };
             let resident = u128::from(
                 bucket
-                    .stored_slots
+                    .stored_slots()
                     .max(bucket.degree())
                     .checked_add(extra)
                     .ok_or(LaraOperationError::RowDegreeOverflow)?,
@@ -2572,7 +2572,7 @@ where
                 source_runs.push(Vec::new());
                 continue;
             }
-            let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+            let run = Self::edge_bytes_for_len(bucket.stored_slots_raw() as usize)?;
             let mut bytes = vec![0u8; run];
             if run > 0 {
                 self.edges
@@ -2588,7 +2588,7 @@ where
             if bucket.is_tiny_mode() {
                 row_buckets.push(
                     bucket
-                        .with_edge_range(row_start, bucket.stored_slots)
+                        .with_edge_range(row_start, bucket.stored_slots_raw())
                         .with_overflow_log_head(-1),
                 );
                 continue;
@@ -2597,7 +2597,7 @@ where
                 self.edges
                     .write_slots_contiguous(row_start, &source_runs[index])?;
             }
-            row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots));
+            row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots_raw()));
         }
         self.buckets
             .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
@@ -2679,7 +2679,7 @@ where
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         Ok(buckets.iter().any(|bucket| {
-            bucket.stored_slots.saturating_sub(bucket.degree())
+            bucket.stored_slots().saturating_sub(bucket.degree())
                 >= self.edges.header().segment_size.max(1)
         }))
     }
@@ -2750,7 +2750,7 @@ where
             .edges
             .overflow_log_chain_len(leaf, bucket.overflow_log_head());
         let resident_after_fold = bucket
-            .stored_slots
+            .stored_slots()
             .checked_add(log_len)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let successor = self.bucket_successor_start(vertex, bucket_index)?;
@@ -2794,7 +2794,7 @@ where
         // `stored_slots.saturating_sub(log_len)` formula assumed `stored_slots` already
         // included the log suffix, which is no longer true under the zero-length new-bucket
         // contract; the segment16/quota1 first bucket has a one-slot initial span.
-        let slab_prefix_slots = bucket.stored_slots;
+        let slab_prefix_slots = bucket.stored_slots();
         let edge_start = bucket.edge_start();
 
         let mut log_edges = Vec::with_capacity(log_len as usize);
@@ -3580,7 +3580,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(vertex.base_slot_start())
             .unwrap();
-        assert_eq!(bucket.stored_slots, u32::MAX);
+        assert_eq!(bucket.stored_slots(), u32::MAX);
     }
 
     #[test]
@@ -3946,7 +3946,7 @@ mod tests {
         let bucket_before = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert_eq!(
             bucket_before
-                .stored_slots
+                .stored_slots()
                 .saturating_sub(bucket_before.degree),
             55
         );
@@ -3969,10 +3969,10 @@ mod tests {
         }
         let bucket_after = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(
-            edge_moves > 0 || bucket_after.stored_slots == bucket_after.degree,
+            edge_moves > 0 || bucket_after.stored_slots() == bucket_after.degree,
             "expected in-bucket compaction progress"
         );
-        assert_eq!(bucket_after.stored_slots, bucket_after.degree);
+        assert_eq!(bucket_after.stored_slots(), bucket_after.degree);
         assert_eq!(bucket_after.degree, 5);
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
@@ -4027,7 +4027,9 @@ mod tests {
         let road_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let road_bucket = graph.buckets().read_label_bucket_slot(road_slot).unwrap();
         assert_eq!(
-            road_bucket.stored_slots.saturating_sub(road_bucket.degree),
+            road_bucket
+                .stored_slots()
+                .saturating_sub(road_bucket.degree),
             17
         );
 
@@ -4049,7 +4051,7 @@ mod tests {
         }
 
         let anchor_bucket = graph.buckets().read_label_bucket_slot(anchor_slot).unwrap();
-        assert_eq!(anchor_bucket.stored_slots, anchor_bucket.degree);
+        assert_eq!(anchor_bucket.stored_slots(), anchor_bucket.degree);
         assert_eq!(anchor_bucket.degree(), 1);
         assert_eq!(
             graph
@@ -4059,7 +4061,7 @@ mod tests {
         );
 
         let road_bucket = graph.buckets().read_label_bucket_slot(road_slot).unwrap();
-        assert_eq!(road_bucket.stored_slots, road_bucket.degree);
+        assert_eq!(road_bucket.stored_slots(), road_bucket.degree);
         assert_eq!(road_bucket.degree, 3);
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
@@ -4103,14 +4105,14 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots.saturating_sub(bucket.degree), 200);
+        assert_eq!(bucket.stored_slots().saturating_sub(bucket.degree), 200);
         assert_eq!(bucket.degree(), 2);
 
         graph
             .compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, bucket.degree);
+        assert_eq!(bucket.stored_slots(), bucket.degree);
         assert_eq!(bucket.degree, 2);
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
@@ -4236,8 +4238,8 @@ mod tests {
             .saturating_sub(cold_bucket.edge_start());
 
         assert!(hot_capacity > cold_capacity);
-        assert!(hot_capacity > u64::from(hot_bucket.stored_slots));
-        assert!(cold_capacity >= u64::from(cold_bucket.stored_slots));
+        assert!(hot_capacity > u64::from(hot_bucket.stored_slots()));
+        assert!(cold_capacity >= u64::from(cold_bucket.stored_slots()));
         crate::labeled::invariants::assert_labeled_layout_invariants(
             graph.vertices(),
             graph.buckets(),
@@ -4295,8 +4297,8 @@ mod tests {
             .unwrap()
             .saturating_sub(cold_bucket.edge_start());
         assert!(hot_capacity > cold_capacity);
-        assert!(hot_capacity > u64::from(hot_bucket.stored_slots));
-        assert!(cold_capacity >= u64::from(cold_bucket.stored_slots));
+        assert!(hot_capacity > u64::from(hot_bucket.stored_slots()));
+        assert!(cold_capacity >= u64::from(cold_bucket.stored_slots()));
         graph
             .assert_labeled_buckets_within_leaf_physical(vid)
             .unwrap();
@@ -5045,7 +5047,7 @@ mod tests {
         let vertex = graph.vertices().get(hub);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.stored_slots(), 3);
         assert_eq!(bucket.degree(), 3);
         assert_eq!(bucket.overflow_log_head(), -1);
         assert_eq!(
@@ -5115,7 +5117,7 @@ mod tests {
             .unwrap();
         assert!(!removal.moves.is_empty());
         let before = read_bucket();
-        assert!(before.stored_slots >= 4);
+        assert!(before.stored_slots() >= 4);
         assert!(before.overflow_log_head() >= 0);
 
         let rewritten = graph
@@ -5335,7 +5337,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 3, "trailing tombstones trimmed");
+        assert_eq!(bucket.stored_slots(), 3, "trailing tombstones trimmed");
         assert_eq!(bucket.degree(), 3);
         assert_eq!(
             bucket.inline_property_bytes_slab_slots(),
@@ -5579,7 +5581,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 5);
+        assert_eq!(bucket.stored_slots(), 5);
         assert_eq!(bucket.degree(), 3);
     }
 
@@ -5738,7 +5740,7 @@ mod tests {
         assert_eq!(buckets.len(), 1);
         let bucket = buckets[0];
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, 8192);
+        assert_eq!(bucket.stored_slots(), 8192);
         assert_eq!(bucket.degree(), 8192);
         // Physical root region is 8 slots (ceil(8192/1024)), not 8192: the
         // cover/tree unit confusion this test guards against.

@@ -11,7 +11,7 @@
 //!
 //! Design (per ADR 0088 recorded constraints):
 //! - **Ordinal-addressed**, not key-addressed: lookup input is a logical
-//!   position (`slot` 0..stored_slots); no separator keys; no target-keyed
+//!   position (`slot` 0..stored_slots()); no separator keys; no target-keyed
 //!   search. ADR 0022's measured B-tree costs (~2,004 ins/edge) do not apply
 //!   here — block-internal reads are the same raw 4-byte rows as the slab.
 //! - **Fixed fanout**, left-packed: `B = 1024` slots per block, `R_max = 1024`
@@ -339,7 +339,7 @@ impl<M: Memory> TreeCsrBucket<M> {
     /// `deepen()` if the new root length would exceed `R_max`.
     pub(crate) fn insert(&mut self, target: u32) {
         let new_stored_slots = self
-            .stored_slots
+            .stored_slots()
             .checked_add(1)
             .expect("tree_csr: stored_slots overflow");
 
@@ -487,7 +487,7 @@ impl<M: Memory> TreeCsrBucket<M> {
             // `min(B*4, (stored_slots - first_slot) * 4)`.
             let block_first_slot = root_index as u32 * B as u32;
             let remaining_slots = self
-                .stored_slots
+                .stored_slots()
                 .saturating_sub(block_first_slot)
                 .min(B as u32);
             let block_byte_len = remaining_slots as usize * 4;

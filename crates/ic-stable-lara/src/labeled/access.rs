@@ -63,7 +63,7 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
                 // shared overflow log instead of writing into the placeholder slab
                 // region. The full successor boundary is still used by scan paths
                 // once the bucket is folded to slab.
-                let succ = if bucket.overflow_log_head() >= 0 && bucket.stored_slots == 0 {
+                let succ = if bucket.overflow_log_head() >= 0 && bucket.stored_slots() == 0 {
                     bucket.edge_start()
                 } else {
                     self.successor_start.max(bucket.edge_start())

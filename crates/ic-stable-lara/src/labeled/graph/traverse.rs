@@ -340,7 +340,7 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                for slot_index in 0..logical_slots.min(bucket.stored_slots) {
+                for slot_index in 0..logical_slots.min(bucket.stored_slots_raw()) {
                     if E::read_from(&bucket.tiny_target(slot_index).to_le_bytes()).is_deleted_slot()
                     {
                         continue;
@@ -754,7 +754,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let mut edges = Vec::with_capacity(bucket.degree() as usize);
-                for ordinal in 0..bucket.stored_slots {
+                for ordinal in 0..bucket.stored_slots_raw() {
                     let target = bucket.tiny_target(ordinal);
                     // Layout-native liveness (same predicate as slab/tree read paths).
                     if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
@@ -913,7 +913,7 @@ where
                 // shared closure would need `impl Trait` in closure position.)
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots {
+                        for ordinal in 0..bucket.stored_slots_raw() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -929,7 +929,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots).rev() {
+                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -1694,7 +1694,7 @@ where
             }
             let offset = window.offset;
             let remaining = window.limit;
-            // Bypass extent: bypass rows span `vertex.stored_slots` slots
+            // Bypass extent: bypass rows span `vertex.stored_slots_raw()` slots
             // with no overflow log. Descending positions are
             // `extent - 1 - slot`.
             let extent = vertex.stored_slots;
@@ -1772,7 +1772,7 @@ where
                 // Tombstone-inclusive positions over [0..stored), matching the
                 // slab/tree window contract (ADR 0088 §2); dead slots consume
                 // position space but yield nothing.
-                let extent = bucket.stored_slots;
+                let extent = bucket.stored_slots_raw();
                 let offset = window.offset.min(extent);
                 let limit = window
                     .limit
@@ -1901,7 +1901,7 @@ where
                         } else {
                             0
                         };
-                        bucket.stored_slots.checked_add(log_len).ok_or(
+                        bucket.stored_slots_raw().checked_add(log_len).ok_or(
                             LabeledOperationError::from(
                                 LaraOperationError::CollectAllocationOverflow,
                             ),
@@ -1961,7 +1961,7 @@ where
                 //
                 // Capture `ControlFlow::Break` via a mutable cell to preserve
                 // the `visit_edges_window` API contract.
-                let extent = bucket.stored_slots;
+                let extent = bucket.stored_slots_raw();
                 let offset = window.offset.min(extent);
                 let limit = window
                     .limit
@@ -2326,7 +2326,7 @@ where
                 );
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots {
+                        for ordinal in 0..bucket.stored_slots_raw() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2346,7 +2346,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots).rev() {
+                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2595,7 +2595,7 @@ where
                 // Tombstone-inclusive prefix: ordinals are slots; holes skipped; no values.
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots {
+                        for ordinal in 0..bucket.stored_slots_raw() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2606,7 +2606,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots).rev() {
+                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2737,7 +2737,7 @@ where
         if reserved == 0 || bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
-        let stored_slots = bucket.stored_slots;
+        let stored_slots = bucket.stored_slots();
         let edge_bytes_len =
             (stored_slots as usize)
                 .checked_mul(E::BYTES)
@@ -2955,7 +2955,7 @@ where
             )?;
             let reserved_log_slots = u32::try_from(prefetched.0.len())
                 .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-            let reserved = bucket.stored_slots.saturating_add(reserved_log_slots);
+            let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
             // If the bucket has tombstones in the overflow log, fall back to the sparse
             // iterator path so we emit only live edges and their values.
             if reserved != bucket.degree() {
@@ -3007,7 +3007,7 @@ where
         )?;
         let reserved_log_slots =
             u32::try_from(prefetched.0.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        let reserved = bucket.stored_slots.saturating_add(reserved_log_slots);
+        let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
         if reserved != bucket.degree() {
             return self.visit_sparse_out_inline_property_batches_for_bucket_next(
                 owner, label, bucket, order, scratch, visit,
@@ -3316,7 +3316,7 @@ where
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
         replay.degree = bucket.degree();
-        replay.stored_slots = bucket.stored_slots;
+        replay.stored_slots = bucket.stored_slots();
         replay.overflow_log_head = bucket.overflow_log_head();
         replay.edge_start = bucket.edge_start();
         replay.deleted_slab_offsets = deleted_slab_offsets.clone();
@@ -3386,7 +3386,7 @@ where
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
         replay.degree = bucket.degree();
-        replay.stored_slots = bucket.stored_slots;
+        replay.stored_slots = bucket.stored_slots();
         replay.overflow_log_head = bucket.overflow_log_head();
         replay.edge_start = bucket.edge_start();
         replay.deleted_slab_offsets = deleted_slab_offsets.clone();
@@ -4138,7 +4138,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let slot_index = slot.raw();
-                if slot_index >= bucket.stored_slots {
+                if slot_index >= bucket.stored_slots_raw() {
                     return Ok(EdgeSlotState::Missing);
                 }
                 // Layout-native liveness (same predicate as slab/tree read paths).
@@ -4192,7 +4192,7 @@ where
             return Ok(EdgeSlotState::Missing);
         }
         if bucket.overflow_log_head() < 0 {
-            if slot_index >= bucket.stored_slots {
+            if slot_index >= bucket.stored_slots() {
                 return Ok(EdgeSlotState::Missing);
             }
             let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
@@ -4302,7 +4302,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 for slot_index in order_slot_indices(raw_slots, order) {
-                    if slot_index >= bucket.stored_slots {
+                    if slot_index >= bucket.stored_slots_raw() {
                         continue;
                     }
                     // Layout-native liveness (same predicate as slab/tree read paths).
@@ -4329,7 +4329,7 @@ where
                     && replay.label_id == label
                     && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
                     && replay.degree == bucket.degree()
-                    && replay.stored_slots == bucket.stored_slots
+                    && replay.stored_slots == bucket.stored_slots_raw()
                     && replay.overflow_log_head == bucket.overflow_log_head()
                     && replay.edge_start == bucket.edge_start()
                 {
@@ -4694,7 +4694,7 @@ where
         if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
             return None;
         }
-        if buckets.iter().any(|b| b.stored_slots != b.degree()) {
+        if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
             return None;
         }
         let base = buckets.first()?.edge_start();
@@ -4704,9 +4704,11 @@ where
             if b.edge_start() != pos {
                 return None;
             }
-            total_edges = total_edges.checked_add(b.stored_slots)?;
-            pos =
-                crate::labeled::slot_index::checked_add_slot_index(pos, u64::from(b.stored_slots))?;
+            total_edges = total_edges.checked_add(b.stored_slots())?;
+            pos = crate::labeled::slot_index::checked_add_slot_index(
+                pos,
+                u64::from(b.stored_slots()),
+            )?;
         }
         if pos > span_end_exclusive {
             return None;
@@ -4725,7 +4727,7 @@ where
         if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
             return None;
         }
-        if buckets.iter().any(|b| b.stored_slots != b.degree()) {
+        if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
             return None;
         }
         let base = buckets.first()?.edge_start();
@@ -4735,9 +4737,11 @@ where
             if b.edge_start() != pos {
                 return None;
             }
-            total_edges = total_edges.checked_add(b.stored_slots)?;
-            pos =
-                crate::labeled::slot_index::checked_add_slot_index(pos, u64::from(b.stored_slots))?;
+            total_edges = total_edges.checked_add(b.stored_slots())?;
+            pos = crate::labeled::slot_index::checked_add_slot_index(
+                pos,
+                u64::from(b.stored_slots()),
+            )?;
         }
         let span_end = crate::labeled::slot_index::checked_add_slot_index(
             base,
@@ -6853,7 +6857,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.stored_slots > 0);
+        assert!(bucket.stored_slots() > 0);
         assert!(bucket.overflow_log_head() >= 0);
         assert_eq!(
             graph.bucket_reserved_edge_slots(src, &bucket),

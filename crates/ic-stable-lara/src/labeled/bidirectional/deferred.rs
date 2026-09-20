@@ -1635,7 +1635,7 @@ where
         if policy != EdgePlacementPolicy::Insertion {
             return false;
         }
-        let stored = u64::from(bucket.stored_slots);
+        let stored = u64::from(bucket.stored_slots_raw());
         let degree = u64::from(bucket.degree);
         stored >= degree && stored - degree > stored / 2
     }
@@ -6839,9 +6839,9 @@ mod tests {
                     if !bucket.is_tiny_mode()
                         && !bucket.is_tree_mode()
                         && bucket.degree() > 0
-                        && bucket.stored_slots > 0
+                        && bucket.stored_slots_raw() > 0
                     {
-                        freed.push((bucket.edge_start(), u64::from(bucket.stored_slots)));
+                        freed.push((bucket.edge_start(), u64::from(bucket.stored_slots_raw())));
                     }
                 }
             }
@@ -6937,7 +6937,7 @@ mod tests {
             "a tree bucket has no overflow log"
         );
         assert_eq!(
-            forward.stored_slots,
+            forward.stored_slots(),
             forward.degree(),
             "tree width must cover every live row (folded before promotion)"
         );

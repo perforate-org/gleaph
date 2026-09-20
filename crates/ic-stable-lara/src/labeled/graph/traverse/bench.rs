@@ -224,7 +224,7 @@ fn truth_position_window(
     offset: u32,
     limit: u32,
 ) -> Vec<(BucketEntryPosition, u32)> {
-    let extent = offset_bucket(graph, src, label).stored_slots;
+    let extent = offset_bucket(graph, src, label).stored_slots();
     let (lo, hi) = match order {
         OutEdgeOrder::Ascending => (u64::from(offset), u64::from(offset) + u64::from(limit)),
         OutEdgeOrder::Descending => (
@@ -334,9 +334,9 @@ fn build_dense_offset_graph(
     graph.compact_vertex_edge_span(src, 0).unwrap();
     let bucket = offset_bucket(&graph, src, label);
     assert_eq!(bucket.degree(), extent);
-    assert_eq!(bucket.stored_slots, extent);
+    assert_eq!(bucket.stored_slots(), extent);
     assert!(bucket.overflow_log_head() < 0);
-    assert_eq!(graph.vertices().get(src).stored_slots, extent);
+    assert_eq!(graph.vertices().get(src).stored_slots(), extent);
     (graph, src, label)
 }
 
@@ -349,7 +349,7 @@ fn collect_offset_truth(
 ) -> Vec<(BucketEntryPosition, u32)> {
     let bucket = offset_bucket(graph, src, label);
     assert_eq!(bucket.degree(), OFFSET_LIVE_ROWS);
-    assert_eq!(bucket.stored_slots, extent);
+    assert_eq!(bucket.stored_slots(), extent);
     assert!(bucket.overflow_log_head() < 0);
     let mut tombstones = 0u32;
     for slot in 0..extent {
@@ -363,7 +363,7 @@ fn collect_offset_truth(
         }
     }
     assert_eq!(tombstones, extent - OFFSET_LIVE_ROWS);
-    assert_eq!(graph.vertices().get(src).stored_slots, extent);
+    assert_eq!(graph.vertices().get(src).stored_slots(), extent);
 
     let ascending = collect_offset_rows(graph, src, label, OutEdgeOrder::Ascending);
     assert_eq!(ascending.len(), OFFSET_LIVE_ROWS as usize);
@@ -487,7 +487,7 @@ fn offset_query_bench(
         black_box((control.is_continue(), count, checksum));
     });
     assert_eq!(
-        fixture.graph.vertices().get(fixture.src).stored_slots,
+        fixture.graph.vertices().get(fixture.src).stored_slots(),
         extent
     );
     result
@@ -1035,7 +1035,7 @@ fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchRe
     };
     assert!(!bucket.is_tree_mode());
     assert_eq!(bucket.inline_property_bytes_log_len(), 0);
-    assert_eq!(bucket.stored_slots, degree);
+    assert_eq!(bucket.stored_slots(), degree);
     // Setup-time check via the public batch API: collect all rows and
     // verify content once (the measured closure below re-runs the same call).
     let mut scratch = LabeledInlinePropertyValueBatchScratch::default();

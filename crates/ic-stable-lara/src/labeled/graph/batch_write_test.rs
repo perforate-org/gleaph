@@ -2102,7 +2102,7 @@ mod tests {
         };
         assert!(bucket.is_tree_mode(), "bucket must be tree-mode");
         assert_eq!(
-            bucket.stored_slots,
+            bucket.stored_slots(),
             crate::labeled::graph::T_PROMOTE,
             "post-promotion stored_slots should be T_PROMOTE"
         );
@@ -2144,7 +2144,7 @@ mod tests {
             .read_label_bucket_slot(slot)
             .expect("read after");
         assert!(bucket_after.is_tree_mode());
-        assert_eq!(bucket_after.stored_slots, bucket.stored_slots);
+        assert_eq!(bucket_after.stored_slots(), bucket.stored_slots());
     }
 
     /// Plan 0321 §Step 1: per-run precision. A vertex with one
@@ -2282,7 +2282,7 @@ mod tests {
             _ => panic!("expected Found bucket after promote+insert"),
         };
         assert!(bucket_before.is_tree_mode());
-        let pre_stored = bucket_before.stored_slots;
+        let pre_stored = bucket_before.stored_slots();
         let pre_degree = bucket_before.degree;
         assert_eq!(
             pre_stored,
@@ -2327,7 +2327,7 @@ mod tests {
             _ => panic!("expected Found bucket after batch"),
         };
         assert!(bucket_after.is_tree_mode());
-        assert_eq!(bucket_after.stored_slots, pre_stored + 1);
+        assert_eq!(bucket_after.stored_slots(), pre_stored + 1);
         assert_eq!(bucket_after.degree, pre_degree + 1);
         // ADR 0096 §5: a tree run writes LTB rows, so the batch commit must
         // not bump the leaf `actual` (wrong implementation: the run's
@@ -2418,7 +2418,7 @@ mod tests {
             !bucket.is_tree_mode(),
             "still slab after batch past T_PROMOTE"
         );
-        assert_eq!(bucket.stored_slots, pre + batch_count);
+        assert_eq!(bucket.stored_slots(), pre + batch_count);
         // Next scalar insert triggers promotion. Use target 9999 to
         // ensure it's a new edge.
         graph
@@ -2454,7 +2454,7 @@ mod tests {
             _ => panic!("expected Found bucket after promote"),
         };
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, pre + batch_count + 1);
+        assert_eq!(bucket.stored_slots(), pre + batch_count + 1);
         // Reachability: promotion transcribed every pre-filled, batch-inserted
         // and scalar row (the descriptor assertions only cover the width).
         assert_eq!(
@@ -2501,9 +2501,9 @@ mod tests {
             _ => panic!("expected Found bucket after promote"),
         };
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, crate::labeled::graph::T_PROMOTE);
+        assert_eq!(bucket.stored_slots(), crate::labeled::graph::T_PROMOTE);
         assert_eq!(
-            bucket.stored_slots % (crate::labeled::tree_csr::B as u32),
+            bucket.stored_slots() % (crate::labeled::tree_csr::B as u32),
             0,
             "a freshly promoted bucket ends on a block boundary"
         );
@@ -2544,7 +2544,10 @@ mod tests {
             .read_label_bucket_slot(slot)
             .expect("read after");
         assert!(bucket_after.is_tree_mode());
-        assert_eq!(bucket_after.stored_slots, crate::labeled::graph::T_PROMOTE);
+        assert_eq!(
+            bucket_after.stored_slots(),
+            crate::labeled::graph::T_PROMOTE
+        );
         // Scalar fallback: insert one edge via the scalar path.
         // The scalar path mints a new block (Plan 0318 §tree
         // insert handles `tail_offset == 0` correctly) and the
@@ -2562,7 +2565,7 @@ mod tests {
             .read_label_bucket_slot(slot)
             .expect("read after scalar");
         assert_eq!(
-            bucket_after_scalar.stored_slots,
+            bucket_after_scalar.stored_slots(),
             crate::labeled::graph::T_PROMOTE + 1
         );
         assert_eq!(
@@ -2609,7 +2612,7 @@ mod tests {
             _ => panic!("expected Found bucket"),
         };
         assert_eq!(
-            bucket.stored_slots,
+            bucket.stored_slots(),
             crate::labeled::graph::T_PROMOTE + crate::labeled::tree_csr::B as u32
         );
         assert_eq!(

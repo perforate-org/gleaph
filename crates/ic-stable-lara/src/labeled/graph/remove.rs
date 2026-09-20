@@ -414,7 +414,7 @@ where
             "tiny remove requires a tiny-mode bucket"
         );
         let _ = src;
-        if slot_index >= bucket.stored_slots {
+        if slot_index >= bucket.stored_slots_raw() {
             return Ok(None);
         }
         // Layout-native liveness (same predicate as slab/tree read paths):
@@ -459,7 +459,7 @@ where
     ///
     /// Called when a delete empties a bucket (`degree == 0`, no log) that still
     /// holds a slab span (`stored_slots > 0`). Releases the span to the edge
-    /// free store (best-effort, see below) and recomputes `vertex.stored_slots`
+    /// free store (best-effort, see below) and recomputes `vertex.stored_slots_raw()`
     /// over survivors so the cover stays exact (no phantom occupancy).
     /// Tiny buckets never hold a releasable span here (empty tiny resets to
     /// stored 0, so the hook guard never fires for them); tree buckets
@@ -485,7 +485,7 @@ where
             // them as edge slots would corrupt the free store.
             return Ok(());
         }
-        let span_len = bucket.stored_slots;
+        let span_len = bucket.stored_slots_raw();
         if span_len == 0 {
             return Ok(());
         }
@@ -527,7 +527,7 @@ where
             }
             let end = other
                 .edge_start()
-                .checked_add(u64::from(other.stored_slots))
+                .checked_add(u64::from(other.stored_slots_raw()))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             survivor_end = Some(survivor_end.map_or(end, |prev| prev.max(end)));
         }
@@ -772,7 +772,7 @@ where
         // §Step 2 precedent). The cover sync below always runs (it only
         // shrinks to survivor ends, never below live content).
         let emptied = updated.degree() == 0 && updated.overflow_log_head() < 0;
-        if emptied && updated.stored_slots > 0 {
+        if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
         let updated = if emptied {
@@ -967,7 +967,7 @@ where
                         let it = OutEdgeSlabIter::try_new(
                             &self.edges,
                             bucket.edge_start(),
-                            bucket.stored_slots,
+                            bucket.stored_slots(),
                             bucket.degree(),
                         )?;
                         for edge in it {
@@ -1412,7 +1412,7 @@ where
                             }
                             let slot_index =
                                 bucket
-                                    .stored_slots
+                                    .stored_slots_raw()
                                     .checked_add(u32::try_from(ordinal).map_err(|_| {
                                         LaraOperationError::CollectAllocationOverflow
                                     })?)
@@ -1431,7 +1431,7 @@ where
                                     leaf,
                                     &chain,
                                     ordinal,
-                                    bucket.stored_slots,
+                                    bucket.stored_slots_raw(),
                                     bucket.bucket_label_key(),
                                 )?;
                                 let newer_entry_idx = chain.get(ordinal + 1).copied();
@@ -1456,7 +1456,7 @@ where
                         }
                         return Ok(None);
                     }
-                    let stored = bucket.stored_slots;
+                    let stored = bucket.stored_slots_raw();
                     let mut found = None;
                     if bucket.is_inline_property_bytes_allocated() {
                         let log_chains =
@@ -1621,7 +1621,7 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(!bucket.is_tiny_mode(), "4 seeds promote past tiny");
         let span_start = bucket.edge_start();
-        let span_len = u64::from(bucket.stored_slots);
+        let span_len = u64::from(bucket.stored_slots_raw());
         assert!(span_len > 0);
         for target in [10u32, 11, 12, 13] {
             graph
@@ -1632,7 +1632,11 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert_eq!(bucket.degree(), 0);
-        assert_eq!(bucket.stored_slots, 0, "emptied span publishes zero width");
+        assert_eq!(
+            bucket.stored_slots_raw(),
+            0,
+            "emptied span publishes zero width"
+        );
         assert_eq!(
             vertex.stored_slots, 0,
             "vertex cover syncs to zero with no slab survivors"
@@ -1697,8 +1701,8 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 4);
-        assert_eq!(bucket.stored_slots.saturating_sub(bucket.degree), 1);
+        assert_eq!(bucket.stored_slots(), 4);
+        assert_eq!(bucket.stored_slots().saturating_sub(bucket.degree), 1);
         assert_eq!(bucket.degree(), 3);
 
         graph
@@ -1731,7 +1735,7 @@ mod tests {
         // The span is full (tombstone occupies the 4th slot), so the re-insert
         // spills to the overflow log; the tombstone stays in place until
         // rebalance (positional stability).
-        assert_eq!(bucket.stored_slots, 4);
+        assert_eq!(bucket.stored_slots(), 4);
         assert!(bucket.overflow_log_head() >= 0);
         assert_eq!(bucket.degree(), 4);
     }
@@ -2181,7 +2185,7 @@ mod tests {
             .unwrap();
         assert!(bucket.is_tiny_mode(), "delete stays tiny (no promotion)");
         // Hole at slot 1 (sentinel), live prefix width 3, live count 2.
-        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
         // Layout-native tombstone: the hole decodes as deleted through the
         // edge layout's own predicate (same as slab/tree read paths).
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
@@ -2227,7 +2231,7 @@ mod tests {
             .unwrap();
         // Out-of-range delete neither promotes nor mutates.
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (1, 1));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (1, 1));
         assert_eq!(graph.edges().header().num_edges, num_before);
     }
 
@@ -2260,7 +2264,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
         // The hole decodes as deleted through the layout's own predicate...
         assert!(
             FlagTombstoneEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot()
@@ -2303,7 +2307,7 @@ mod tests {
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (3, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (3, 3));
         let removed = graph
             .remove_edge_matching(vid, label, |edge| edge.neighbor_vid() == VertexId::from(11))
             .unwrap()
@@ -2317,7 +2321,7 @@ mod tests {
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
         // Layout-native tombstone: the hole decodes as deleted through the
         // edge layout's own predicate (same as slab/tree read paths).
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
@@ -2363,6 +2367,6 @@ mod g6_zero_read_tests {
             BucketSearch::Missing { .. } => panic!("bucket missing"),
         };
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (2, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
     }
 }

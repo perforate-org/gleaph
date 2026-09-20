@@ -736,7 +736,7 @@ where
                 }
                 stats.total_stored_edge_slots = stats
                     .total_stored_edge_slots
-                    .checked_add(u64::from(bucket.stored_slots))
+                    .checked_add(u64::from(bucket.stored_slots_raw()))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 stats.total_inline_property_bytes_slab_slots = stats
                     .total_inline_property_bytes_slab_slots
@@ -812,7 +812,7 @@ where
                 };
                 Ok(Some(LabelBucketPlacementInfo {
                     degree: bucket.degree,
-                    stored_edge_slots: bucket.stored_slots,
+                    stored_edge_slots: bucket.stored_slots_raw(),
                     edge_overflow_log_head: bucket.overflow_log_head(),
                     edge_overflow_log_len,
                     inline_property_byte_width: bucket.inline_property_byte_width(),
@@ -947,7 +947,7 @@ where
 
         crate::labeled::slot_index::checked_add_slot_index(
             bucket.edge_start(),
-            u64::from(bucket.stored_slots),
+            u64::from(bucket.stored_slots_raw()),
         )
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
@@ -996,7 +996,7 @@ where
         }
         crate::labeled::slot_index::checked_add_slot_index(
             prev.edge_start(),
-            u64::from(prev.stored_slots),
+            u64::from(prev.stored_slots_raw()),
         )
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
@@ -1014,7 +1014,7 @@ where
         if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
             return Ok(false);
         }
-        if buckets.iter().any(|b| b.stored_slots != b.degree()) {
+        if buckets.iter().any(|b| b.stored_slots_raw() != b.degree()) {
             return Ok(false);
         }
         for (index, bucket) in buckets.iter().enumerate() {
@@ -1026,7 +1026,7 @@ where
                 }
             };
             let span_width = successor.saturating_sub(bucket.edge_start());
-            if span_width < u64::from(bucket.stored_slots) {
+            if span_width < u64::from(bucket.stored_slots_raw()) {
                 return Ok(false);
             }
         }
@@ -1426,7 +1426,7 @@ mod tests {
         let middle_bucket = graph.buckets().read_label_bucket_slot(middle_slot).unwrap();
         let middle_index = middle_slot.saturating_sub(vertex.base_slot_start()) as u32;
         let successor = graph.bucket_successor_start(&vertex, middle_index).unwrap();
-        assert_eq!(middle_bucket.stored_slots, 0);
+        assert_eq!(middle_bucket.stored_slots(), 0);
         assert!(successor >= middle_bucket.edge_start());
 
         crate::labeled::invariants::assert_labeled_layout_invariants(

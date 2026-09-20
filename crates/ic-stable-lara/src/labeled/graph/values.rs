@@ -264,7 +264,7 @@ where
 
     pub(super) fn bucket_reserved_edge_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
         bucket
-            .stored_slots
+            .stored_slots()
             .saturating_add(self.bucket_edge_log_slots(src, bucket))
     }
 
@@ -279,7 +279,7 @@ where
     }
 
     pub(super) fn bucket_slab_prefix_slots(&self, _src: VertexId, bucket: &LabelBucket) -> u32 {
-        bucket.stored_slots
+        bucket.stored_slots()
     }
 
     pub(super) fn bucket_resident_inline_property_bytes_slots_for(
@@ -700,7 +700,7 @@ where
     /// 1. `w > 0` and `w <= u16::MAX` (u16 is the representation bound).
     /// 2. Bucket is slab-mode (tree-mode property insert is LPB-in-tree).
     /// 3. `bucket.inline_property_byte_width() == 0` (w1→w2 deferred).
-    /// 4. `bucket.stored_slots > 0` (empty bucket is the schema_unset fast
+    /// 4. `bucket.stored_slots() > 0` (empty bucket is the schema_unset fast
     ///    path; caller must use `ensure_bucket_inline_property_byte_width_on_slot`).
     ///
     /// Phases:
@@ -1127,7 +1127,7 @@ where
                 }
                 let schema_unset = bucket.inline_property_byte_width() == 0
                     && bucket.degree() == 0
-                    && bucket.stored_slots == 0
+                    && bucket.stored_slots() == 0
                     && bucket.overflow_log_head() < 0
                     && bucket.inline_property_bytes_log_head() < 0
                     && bucket.inline_property_bytes_log_len() == 0;
@@ -1414,7 +1414,7 @@ where
         E: CsrEdgeTombstone,
     {
         if bucket.overflow_log_head() < 0 {
-            if slot_index >= bucket.stored_slots {
+            if slot_index >= bucket.stored_slots() {
                 return Ok(false);
             }
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
@@ -1480,7 +1480,8 @@ where
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
-        let ordinal = if bucket.overflow_log_head() < 0 && bucket.stored_slots == bucket.degree() {
+        let ordinal = if bucket.overflow_log_head() < 0 && bucket.stored_slots() == bucket.degree()
+        {
             slot_index
         } else {
             let bucket_slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
@@ -1950,7 +1951,7 @@ mod tests {
             if inline_property_bytes_first {
                 let edge_state = (
                     before.edge_start(),
-                    before.stored_slots,
+                    before.stored_slots(),
                     before.overflow_log_head(),
                 );
                 graph
@@ -1960,7 +1961,7 @@ mod tests {
                 assert_eq!(
                     (
                         after_inline_property_bytes.edge_start(),
-                        after_inline_property_bytes.stored_slots,
+                        after_inline_property_bytes.stored_slots(),
                         after_inline_property_bytes.overflow_log_head(),
                     ),
                     edge_state
@@ -2002,7 +2003,7 @@ mod tests {
                 );
                 let edge_state = (
                     after_edge.edge_start(),
-                    after_edge.stored_slots,
+                    after_edge.stored_slots(),
                     after_edge.overflow_log_head(),
                 );
                 graph
@@ -2012,7 +2013,7 @@ mod tests {
                 assert_eq!(
                     (
                         after_inline_property_bytes.edge_start(),
-                        after_inline_property_bytes.stored_slots,
+                        after_inline_property_bytes.stored_slots(),
                         after_inline_property_bytes.overflow_log_head(),
                     ),
                     edge_state

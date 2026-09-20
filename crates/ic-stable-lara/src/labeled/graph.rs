@@ -143,11 +143,11 @@ pub(crate) fn alloc_gap(stored_slots: u32) -> u32 {
 #[inline]
 pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
     if bucket.is_tree_mode() {
-        bucket.stored_slots
+        bucket.stored_slots_raw()
     } else {
         bucket
-            .stored_slots
-            .saturating_add(alloc_gap(bucket.stored_slots))
+            .stored_slots_raw()
+            .saturating_add(alloc_gap(bucket.stored_slots_raw()))
     }
 }
 

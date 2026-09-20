@@ -113,7 +113,7 @@ where
         &[]
     };
 
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let tail_block_idx: u32 = stored_slots / (BLOCK_B as u32);
     let tail_offset: u32 = (stored_slots % (BLOCK_B as u32)) * (E::BYTES as u32);
 
@@ -222,7 +222,7 @@ where
         // before the next root-full trigger.
         let post_depth = bucket.tree_mode_physical_depth();
         let post_root_len: u32 =
-            physical_root_len_ceil(u64::from(bucket.stored_slots), post_depth)?;
+            physical_root_len_ceil(u64::from(bucket.stored_slots()), post_depth)?;
         debug_assert!(
             post_root_len < k,
             "right-spine cascade must strictly reduce physical root length"
@@ -604,7 +604,7 @@ where
     debug_assert!(d < 3, "property deepen requires d' < 3");
     let w = bucket.inline_property_byte_width();
     debug_assert!(w > 0, "property deepen requires w > 0");
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
     let k = payload / u32::from(w);
@@ -963,7 +963,7 @@ pub(crate) const TREE_REUSE_WINDOW_BLOCKS: u32 = 4;
 /// - `placement == Unordered` (Insertion tree buckets NEVER reuse —
 ///   ADR 0052 §6; the dispatcher passes the resolved policy in).
 /// - `E::BYTES == 4` (tree width guard, unchanged).
-/// - `bucket.stored_slots > bucket.degree()` (O(1) tombstone-exists gate,
+/// - `bucket.stored_slots() > bucket.degree()` (O(1) tombstone-exists gate,
 ///   same shape as the slab reuse at insert.rs).
 ///
 /// Compensation chain (mirror of the remove increment, Plan 0337):
@@ -995,7 +995,7 @@ where
     debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
     // GATE 3: O(1) tombstone-exists gate. A dense bucket has no hole to
     // reuse; the common no-tombstone case pays nothing beyond this gate.
-    if bucket.stored_slots <= bucket.degree {
+    if bucket.stored_slots() <= bucket.degree {
         return Ok(None);
     }
     let w = bucket.inline_property_byte_width();
@@ -1013,7 +1013,7 @@ where
     } else {
         &[]
     };
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     // Tail-first window: the last leaf block and up to
     // TREE_REUSE_WINDOW_BLOCKS - 1 preceding blocks.
     let last_block = (stored_slots - 1) / (BLOCK_B as u32);
@@ -1123,7 +1123,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let new_bucket = bucket
             .with_degree_field(next_degree)
-            .with_stored_slots(bucket.stored_slots)
+            .with_stored_slots(bucket.stored_slots())
             .with_tree_mode(true);
         if let Err(e) = graph
             .buckets()
@@ -1218,7 +1218,7 @@ where
     // of truth). `property_root_region_len` = ceil(S / K) at d' = 1,
     // which at the mint (S % K == 0) equals the previous floor + 1
     // expression — identical, so the swap is safe.
-    let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots), 1)?;
+    let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots()), 1)?;
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -1462,7 +1462,7 @@ where
     // `stored_slots` is the pre-insert value (this helper is called
     // when the previous leaf block is full at the boundary; the
     // next slot lives in a new leaf block).
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let leaf_index: u32 = u32::try_from((u64::from(stored_slots)).div_ceil(b as u64))
         .expect("leaf_index fits u32 for MAX_DEPTH=3");
     // Home interior: the last interior level. At depth d=2 the
@@ -1705,7 +1705,7 @@ where
     // contiguous at `edge_start + edge_root_len`). The new combined
     // span holds `[edge root + new edge interior id | property root +
     // optional property entry]`.
-    let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots), depth)?;
+    let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots()), depth)?;
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -1923,7 +1923,7 @@ where
         0,
         "tree mode rejects inline-property buckets (promote is fail-closed)"
     );
-    if slot >= bucket.stored_slots {
+    if slot >= bucket.stored_slots() {
         return Ok(None);
     }
     let block_root_index: u32 = slot / (BLOCK_B as u32);
@@ -1978,7 +1978,7 @@ where
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     let new_bucket = bucket
         .with_degree_field(next_degree)
-        .with_stored_slots(bucket.stored_slots)
+        .with_stored_slots(bucket.stored_slots())
         .with_tree_mode(true);
     if let Err(e) = graph
         .buckets()
@@ -2072,7 +2072,7 @@ where
     if bucket.is_tree_mode() {
         return Ok(());
     }
-    if bucket.stored_slots >= super::T_PROMOTE {
+    if bucket.stored_slots() >= super::T_PROMOTE {
         promote_path::promote_bypass_to_tree_mode(graph, src, label)?;
     }
     Ok(())
@@ -2273,7 +2273,7 @@ where
     M: Memory,
 {
     debug_assert_eq!(E::BYTES, 4);
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let leaf_count =
         u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
@@ -2349,7 +2349,7 @@ where
 {
     debug_assert_eq!(E::BYTES, 4);
     debug_assert!(bucket.is_tree_mode());
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     // Compute the depth *without* calling `derive_depth` so a stored
     // value past the structural cap returns a typed error instead of a
     // `derive_depth` panic.
@@ -2646,7 +2646,7 @@ where
 {
     debug_assert_eq!(E::BYTES, 4);
     debug_assert!(bucket.is_tree_mode());
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     // Use the **physical** depth (stored in the bucket via the
     // `inline_property_bytes_log_len` byte) rather than the structural
     // `derive_depth(stored_slots)`. A manually-deepened bucket at
@@ -2843,7 +2843,7 @@ where
     // flip. (For depth 1 the root region overlaps the released
     // slab prefix; `allocate_span_avoiding` is the correct API.)
     let physical_depth = bucket.tree_mode_physical_depth();
-    let stored = bucket.stored_slots;
+    let stored = bucket.stored_slots();
     let leaf_count =
         u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
@@ -3202,7 +3202,7 @@ mod tests {
             _ => panic!("bucket not found 2"),
         };
         assert!(bucket2.is_tree_mode());
-        assert_eq!(bucket2.stored_slots, 4097);
+        assert_eq!(bucket2.stored_slots(), 4097);
         assert_eq!(bucket2.degree, 4097);
 
         // Verify the new edge is readable at slot 4096.
@@ -3251,7 +3251,7 @@ mod tests {
             _ => panic!("bucket not found"),
         };
         assert!(bucket.is_tree_mode());
-        assert_eq!(bucket.stored_slots, 5120);
+        assert_eq!(bucket.stored_slots(), 5120);
         assert_eq!(bucket.degree, 5120);
         let collected = tree_mode_out_edges_collect(
             &graph,
@@ -3312,7 +3312,7 @@ mod tests {
             _ => panic!("bucket missing after insert"),
         };
         assert!(bucket_after.is_tree_mode(), "expected tree mode");
-        assert_eq!(bucket_after.stored_slots, 4097);
+        assert_eq!(bucket_after.stored_slots(), 4097);
         assert_eq!(bucket_after.degree, 4097);
         let collected = tree_mode_out_edges_collect(
             &graph,
@@ -3543,7 +3543,7 @@ mod tests {
         };
         assert!(bucket_after.is_tree_mode());
         assert_eq!(bucket_after.degree, 4095);
-        assert_eq!(bucket_after.stored_slots, 4096);
+        assert_eq!(bucket_after.stored_slots(), 4096);
         // num_edges decremented.
         let num_after = graph.edges().header().num_edges;
         assert_eq!(num_after, num_before - 1);
@@ -3623,7 +3623,7 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("bucket 3"),
         };
-        assert_eq!(bucket3.stored_slots, 4097);
+        assert_eq!(bucket3.stored_slots(), 4097);
         // After remove (degree 4096 → 4095) and insert (degree 4095 →
         // 4096): the new edge is at slot 4096, the tombstone at slot
         // 100 stays (stored_slots includes tombstones).
@@ -3650,7 +3650,7 @@ mod tests {
             let header = graph.ltb().read_block_header(*block_id);
             let start_slot = block_index as u32 * crate::labeled::tree_csr::B as u32;
             let end_slot =
-                (start_slot + crate::labeled::tree_csr::B as u32).min(bucket.stored_slots);
+                (start_slot + crate::labeled::tree_csr::B as u32).min(bucket.stored_slots());
             let mut scanned = 0u32;
             for slot in start_slot..end_slot {
                 let in_block = slot - start_slot;
@@ -3672,7 +3672,7 @@ mod tests {
         }
         assert_eq!(
             total,
-            u64::from(bucket.stored_slots - bucket.degree),
+            u64::from(bucket.stored_slots() - bucket.degree),
             "Σ block counts != stored_slots - degree"
         );
     }
@@ -3941,7 +3941,7 @@ mod tests {
             "reuse must decrement the block header count back to 0"
         );
         assert_eq!(bucket.degree, 4096, "degree restored");
-        assert_eq!(bucket.stored_slots, 4096, "stored_slots unchanged");
+        assert_eq!(bucket.stored_slots(), 4096, "stored_slots unchanged");
     }
 
     #[test]
@@ -4017,7 +4017,7 @@ mod tests {
             )
             .expect("insertion insert");
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
-        assert_eq!(bucket.stored_slots, 4097, "Insertion insert must append");
+        assert_eq!(bucket.stored_slots(), 4097, "Insertion insert must append");
         assert_eq!(bucket.degree, 4096);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
@@ -4062,7 +4062,7 @@ mod tests {
             .expect("unordered insert");
         // Append fallback: stored grows, block 0 count unchanged.
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
-        assert_eq!(bucket.stored_slots, 8193, "append fallback grows stored");
+        assert_eq!(bucket.stored_slots(), 8193, "append fallback grows stored");
         assert_eq!(bucket.degree, 8192);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
@@ -4108,7 +4108,7 @@ mod tests {
         graph.ltb().write_block_header(block_id, &header);
         let new_bucket = bucket
             .with_degree_field(bucket.degree - 1)
-            .with_stored_slots(bucket.stored_slots)
+            .with_stored_slots(bucket.stored_slots())
             .with_tree_mode(true);
         graph
             .buckets()
@@ -4176,7 +4176,7 @@ mod tests {
         );
         // Degree restored, stored unchanged.
         assert_eq!(post.degree, stored);
-        assert_eq!(post.stored_slots, stored);
+        assert_eq!(post.stored_slots(), stored);
         // Header count back to 0.
         let leaf_ids = collect_leaf_block_ids(&graph, &post).expect("collect leaf ids");
         assert_eq!(
@@ -4213,7 +4213,8 @@ mod tests {
         assert_eq!(reused, 100);
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
         assert_eq!(
-            bucket.stored_slots, 4096,
+            bucket.stored_slots(),
+            4096,
             "stored_slots invariant under reuse"
         );
         assert_eq!(
@@ -4262,7 +4263,7 @@ mod tests {
         };
         assert!(!bucket.is_tree_mode(), "demote must return to slab");
         assert_eq!(bucket.degree, 4096);
-        assert_eq!(bucket.stored_slots, 4096);
+        assert_eq!(bucket.stored_slots(), 4096);
     }
 
     #[test]
@@ -4295,7 +4296,7 @@ mod tests {
         assert_tree_header_count_parity(&graph, vid, label);
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
         assert_eq!(bucket.degree, 4095);
-        assert_eq!(bucket.stored_slots, 4096);
+        assert_eq!(bucket.stored_slots(), 4096);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
             graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
@@ -4627,7 +4628,7 @@ mod tests {
             _ => panic!("bucket missing after"),
         };
         assert!(bucket_after.is_tree_mode());
-        assert_eq!(bucket_after.stored_slots, stored_slots);
+        assert_eq!(bucket_after.stored_slots(), stored_slots);
         assert_eq!(bucket_after.degree, stored_slots);
         // The new root region has 1 entry pointing to the new interior.
         let mut new_root_id_bytes = [0u8; 4];
@@ -4669,7 +4670,7 @@ mod tests {
         };
         // The structural root_len for stored=1,048,576 is 1024 (the
         // bucket is at the depth-1 fan-out cap, not pushed to depth 2).
-        let structural_root_len = crate::labeled::tree_csr::root_len(bucket_before.stored_slots);
+        let structural_root_len = crate::labeled::tree_csr::root_len(bucket_before.stored_slots());
         assert_eq!(structural_root_len, 1024);
         let original_edge_start = bucket_before.edge_start();
         let mut original_leaf_ids: Vec<u32> = Vec::with_capacity(1024);
@@ -4699,7 +4700,7 @@ mod tests {
         // been replaced with a 1-entry region pointing to the new
         // interior.
         let deepened_structural_root_len =
-            crate::labeled::tree_csr::root_len(bucket_deepened.stored_slots);
+            crate::labeled::tree_csr::root_len(bucket_deepened.stored_slots());
         assert_eq!(deepened_structural_root_len, 1024);
         // The deepened root's first entry is the new interior block_id.
         let mut new_root_id_bytes = [0u8; 4];
@@ -4940,7 +4941,7 @@ mod tests {
             _ => panic!("bucket slot missing"),
         };
         assert!(pre_bucket.is_tree_mode());
-        assert_eq!(pre_bucket.stored_slots, target_stored);
+        assert_eq!(pre_bucket.stored_slots(), target_stored);
         assert_eq!(pre_bucket.tree_mode_physical_depth(), 1);
         // Insert one edge via the raw helper.
         let new_edge = TestEdge { target: 0xDEAD };
@@ -4954,7 +4955,7 @@ mod tests {
             _ => panic!("bucket missing post"),
         };
         assert!(post_bucket.is_tree_mode());
-        assert_eq!(post_bucket.stored_slots, target_stored + 1);
+        assert_eq!(post_bucket.stored_slots(), target_stored + 1);
         assert_eq!(post_bucket.degree, target_stored + 1);
         assert_eq!(
             post_bucket.tree_mode_physical_depth(),
@@ -5070,7 +5071,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(bucket_slot)
             .expect("post read");
-        assert_eq!(post_bucket.stored_slots, pre_stored + 1);
+        assert_eq!(post_bucket.stored_slots(), pre_stored + 1);
         assert_eq!(post_bucket.degree, pre_stored + 1);
         assert_eq!(post_bucket.tree_mode_physical_depth(), 2);
         assert_eq!(
@@ -5174,7 +5175,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(bucket_slot)
             .expect("post read");
-        assert_eq!(post_bucket.stored_slots, pre_stored + 1);
+        assert_eq!(post_bucket.stored_slots(), pre_stored + 1);
         assert_eq!(post_bucket.tree_mode_physical_depth(), 2);
         // Verify the root grew by 1: read the post-insert root
         // region (3 entries) and check the 3rd entry is a valid
@@ -5375,7 +5376,7 @@ mod tests {
             _ => panic!("bucket missing"),
         };
         assert_eq!(b.degree, 2048);
-        assert_eq!(b.stored_slots, 4096);
+        assert_eq!(b.stored_slots(), 4096);
         assert!(b.is_tree_mode());
 
         // Snapshot the LTB allocated count before demote.
@@ -5400,7 +5401,7 @@ mod tests {
         };
         assert!(!b2.is_tree_mode(), "demoted bucket must be slab-mode");
         assert_eq!(b2.degree, 2048);
-        assert_eq!(b2.stored_slots, 2048);
+        assert_eq!(b2.stored_slots(), 2048);
         assert_eq!(b2.tree_mode_physical_depth(), 0); // slab mode => 0
         assert_eq!(b2.inline_property_byte_width(), 0);
         assert_eq!(b2.overflow_log_head(), -1);
@@ -5544,7 +5545,7 @@ mod tests {
         };
         assert!(!b4.is_tree_mode(), "after direct demote: slab mode");
         assert_eq!(b4.degree, 2048);
-        assert_eq!(b4.stored_slots, 2048);
+        assert_eq!(b4.stored_slots(), 2048);
     }
 
     /// Plan 0319 §Step 2 hysteresis test: drive the production
@@ -5587,7 +5588,7 @@ mod tests {
         };
         assert!(!b.is_tree_mode(), "trigger should have demoted the bucket");
         assert_eq!(b.degree, crate::labeled::graph::T_DEMOTE);
-        assert_eq!(b.stored_slots, crate::labeled::graph::T_DEMOTE);
+        assert_eq!(b.stored_slots(), crate::labeled::graph::T_DEMOTE);
     }
 
     /// Plan 0319 §Step 1 test (c): demote at degree 0 reclaims all
@@ -5634,7 +5635,7 @@ mod tests {
             _ => panic!("bucket missing"),
         };
         assert_eq!(b.degree, 0);
-        assert_eq!(b.stored_slots, 4096);
+        assert_eq!(b.stored_slots(), 4096);
         assert!(b.is_tree_mode());
         // Demote at degree 0: the live Vec is empty, no slab span is
         // reserved (allocate_span(0) returns 0? actually returns the
@@ -5649,7 +5650,7 @@ mod tests {
         };
         assert!(!b2.is_tree_mode());
         assert_eq!(b2.degree, 0);
-        assert_eq!(b2.stored_slots, 0);
+        assert_eq!(b2.stored_slots(), 0);
         // LTB allocated count back to pre-promote baseline.
         let alloc_after = graph
             .ltb()
@@ -5757,7 +5758,7 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("bucket missing"),
         };
-        assert_eq!(b.stored_slots, 1_048_576);
+        assert_eq!(b.stored_slots(), 1_048_576);
         assert_eq!(b.tree_mode_physical_depth(), 1);
         // bucket_slot was captured before build_depth1_full_root_bucket;
         // the helper writes the same slot, so we reuse it for the deepen
@@ -5790,7 +5791,7 @@ mod tests {
             .expect("read post-demote");
         assert!(!b_post.is_tree_mode());
         assert_eq!(b_post.degree, 1_048_576);
-        assert_eq!(b_post.stored_slots, 1_048_576);
+        assert_eq!(b_post.stored_slots(), 1_048_576);
         assert_eq!(b_post.tree_mode_physical_depth(), 0); // slab mode
         let alloc_final = graph
             .ltb()
@@ -5996,7 +5997,7 @@ mod tests {
             1,
             "edge tree must stay at depth 1"
         );
-        assert_eq!(post.stored_slots, stored + 1);
+        assert_eq!(post.stored_slots(), stored + 1);
         // Full parity: every slot (old + new) reads back its seeded value.
         for slot in 0..=stored {
             let expected = if slot < stored { seed(slot) } else { new_value };
@@ -6151,7 +6152,7 @@ mod tests {
             2,
             "property tree must deepen to 2"
         );
-        assert_eq!(post.stored_slots, stored);
+        assert_eq!(post.stored_slots(), stored);
         // Sampled parity across the whole slot space (every 997th slot
         // plus the boundaries).
         let mut checked = 0u32;
@@ -6275,7 +6276,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(bucket_slot)
             .expect("post read");
-        assert_eq!(post.stored_slots, stored + 1);
+        assert_eq!(post.stored_slots(), stored + 1);
         assert_eq!(post.tree_mode_physical_depth(), 2);
         assert_eq!(post.tree_mode_property_depth(), 1);
         // Property root grew by exactly 1 (257 -> 258).
@@ -6390,7 +6391,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(0)
             .expect("post read b");
-        assert_eq!(post_b.stored_slots, stored_b + 1);
+        assert_eq!(post_b.stored_slots(), stored_b + 1);
         assert_eq!(post_b.tree_mode_physical_depth(), 2);
         assert_eq!(post_b.tree_mode_property_depth(), 1);
         // Edge root grew to 3, property root grew to 513.

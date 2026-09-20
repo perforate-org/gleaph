@@ -1533,10 +1533,11 @@ fn bench_remove_churn_bypass_accumulation() -> canbench_rs::BenchResult {
             .expect("drain");
         let vertex = graph.forward().vertices().get(vid);
         assert_eq!(
-            vertex.stored_slots, vertex.degree,
+            vertex.stored_slots(),
+            vertex.degree,
             "drain must left-pack the bypass row (stored == degree)"
         );
-        black_box((vertex.degree, vertex.stored_slots));
+        black_box((vertex.degree, vertex.stored_slots()));
     })
 }
 
@@ -1555,10 +1556,10 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
         }
         let vertex = graph.forward().vertices().get(vid);
         assert!(
-            vertex.stored_slots > vertex.degree,
+            vertex.stored_slots() > vertex.degree,
             "without the drain the bypass row accumulates tombstones (stored > degree)"
         );
-        black_box((vertex.degree, vertex.stored_slots));
+        black_box((vertex.degree, vertex.stored_slots()));
     })
 }
 
@@ -1617,7 +1618,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         let v0 = graph.forward().vertices().get(vid);
         eprintln!(
             "0342 burst_inserts={BURST} stored={} degree={} head={}",
-            v0.stored_slots,
+            v0.stored_slots(),
             v0.degree,
             v0.bypass_overflow_log_head()
         );
@@ -1627,7 +1628,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
              the DONE verdict below no longer holds — re-cut the probe slice",
         );
         assert_eq!(
-            (v0.stored_slots, v0.degree),
+            (v0.stored_slots(), v0.degree),
             (BURST as u32, BURST as u32),
             "burst must land fully on the slab with no tombstones"
         );
@@ -1652,11 +1653,11 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
             let vertex = graph.forward().vertices().get(vid);
             eprintln!(
                 "0342 {label} stored={} degree={} head={} live={live_len}",
-                vertex.stored_slots,
+                vertex.stored_slots(),
                 vertex.degree,
                 vertex.bypass_overflow_log_head(),
             );
-            black_box((vertex.stored_slots, vertex.degree));
+            black_box((vertex.stored_slots(), vertex.degree));
         };
         for round in 0..6 {
             for _ in 0..64 {
@@ -1711,7 +1712,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         // (tombstones <= stored/2), so no compaction fires and the slack grows
         // linearly; the existing 0341 gate caps it once tombstones exceed degree.
         assert_eq!(
-            drained.stored_slots.saturating_sub(drained.degree),
+            drained.stored_slots().saturating_sub(drained.degree),
             6 * 64 + 256,
             "sub-hysteresis churn must accumulate exactly one tombstone per remove"
         );
@@ -3397,7 +3398,7 @@ fn tcsr_1048576_deepen_beyond_r_max() -> canbench_rs::BenchResult {
         .buckets()
         .read_label_bucket_slot(slot)
         .expect("pre-insert read")
-        .stored_slots;
+        .stored_slots();
     assert!(pre_stored >= 1_048_576, "seed must reach 2^20");
     let result = bench_fn(|| {
         let r = graph.insert_edge_skip_leaf_cascade(
@@ -3423,7 +3424,7 @@ fn tcsr_1048576_deepen_beyond_r_max() -> canbench_rs::BenchResult {
         .read_label_bucket_slot(slot)
         .expect("post-insert read");
     assert_eq!(
-        post_bucket.stored_slots,
+        post_bucket.stored_slots(),
         pre_stored + 1,
         "cascade must commit the insert"
     );
@@ -3476,7 +3477,7 @@ fn tcsr_1048576_deepen_then_interior_grow() -> canbench_rs::BenchResult {
         .read_label_bucket_slot(slot)
         .expect("post-grow read");
     assert_eq!(
-        post_bucket.stored_slots,
+        post_bucket.stored_slots(),
         1_048_576 + 1024,
         "1024 inserts must commit"
     );
@@ -3647,7 +3648,7 @@ fn tcsr_4096_property_read_w32() -> canbench_rs::BenchResult {
             "DEBUG 4K: is_tree_mode={} depth={} stored={} degree={} w={} offset={}",
             bucket.is_tree_mode(),
             bucket.tree_mode_physical_depth(),
-            bucket.stored_slots,
+            bucket.stored_slots(),
             bucket.degree,
             bucket.inline_property_byte_width(),
             bucket.inline_property_bytes_offset()

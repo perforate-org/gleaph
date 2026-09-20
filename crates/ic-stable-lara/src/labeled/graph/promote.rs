@@ -158,7 +158,7 @@ where
     // `stored_slots` directly as the equivalent stricter form. When
     // the weighted gap is introduced the trigger switches back to
     // `compute_bucket_allocation(&bucket) < T_PROMOTE`.
-    let stored_slots_check = bucket.stored_slots;
+    let stored_slots_check = bucket.stored_slots();
     if stored_slots_check < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
             current_alloc_space: stored_slots_check,
@@ -194,7 +194,7 @@ where
         });
     }
 
-    let stored_slots = bucket.stored_slots;
+    let stored_slots = bucket.stored_slots();
     let _depth = derive_depth(stored_slots);
     let root_len = u32::try_from(derived_root_len(stored_slots)).expect("root_len fits u32");
     debug_assert!(root_len as usize <= 1024);
@@ -612,7 +612,7 @@ where
         label,
         new_edge_start,
         bucket.degree,
-        bucket.stored_slots,
+        bucket.stored_slots(),
         -1, // overflow_log_head = -1 (tree mode does not use log)
         w,  // inline_property_byte_width (preserved)
         0,  // inline_property_bytes_offset = 0 (unused in tree mode;

@@ -408,8 +408,8 @@ where
                 // `bench_l_s2_det_sat_4096` bench drives a 10-byte edge type and
                 // trapped on the tree-append typed guard after the promotion had
                 // already mis-transcribed — promote now rejects before minting.)
-                if bucket.stored_slots >= super::T_PROMOTE
-                    && bucket.stored_slots < u32::MAX
+                if bucket.stored_slots() >= super::T_PROMOTE
+                    && bucket.stored_slots() < u32::MAX
                     && E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES
                 {
                     super::tree_write::promote_bucket_if_needed(self, src, label_id)?;
@@ -507,17 +507,17 @@ where
                     };
                     let slack_span = successor_start.saturating_sub(bucket.edge_start());
                     if bucket.overflow_log_head() < 0
-                        && bucket.stored_slots > 0
-                        && slack_span > u64::from(bucket.stored_slots)
+                        && bucket.stored_slots() > 0
+                        && slack_span > u64::from(bucket.stored_slots())
                     {
                         let write_slot = checked_add_slot_index(
                             bucket.edge_start(),
-                            u64::from(bucket.stored_slots),
+                            u64::from(bucket.stored_slots()),
                         )
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                         debug_assert!(write_slot < successor_start);
                         self.edges.write_slot(write_slot, attempt_edge.clone())?;
-                        let logical_slot = bucket.stored_slots;
+                        let logical_slot = bucket.stored_slots();
                         let bucket = bucket.grow_packed_slab_by_one();
                         let bucket = self.write_edge_inline_property_after_insert(
                             src,
@@ -578,8 +578,8 @@ where
                                     LaraOperationError::CollectAllocationOverflow
                                 })?;
                             let new_stored =
-                                written_slot.saturating_add(1).max(bucket.stored_slots);
-                            if new_stored != bucket.stored_slots {
+                                written_slot.saturating_add(1).max(bucket.stored_slots());
+                            if new_stored != bucket.stored_slots() {
                                 bucket = bucket.with_stored_slots(new_stored);
                             }
                             let bucket = self.write_edge_inline_property_after_insert(
@@ -799,7 +799,7 @@ where
         // (`log_live >= tombs`) defers those tombstones to fold/compaction,
         // which is the pre-slice behavior and avoids an O(log-chain) walk on
         // every insert (ADR 0052 §5, Slice 3 implementation note).
-        if bucket.stored_slots <= bucket.degree() {
+        if bucket.stored_slots() <= bucket.degree() {
             return Ok(None);
         }
         if bucket.inline_property_bytes_log_head() >= 0 {
@@ -807,7 +807,7 @@ where
         }
         let mut ordinal_before = 0u32;
         let mut reused_slot = None;
-        for slot_index in 0..bucket.stored_slots {
+        for slot_index in 0..bucket.stored_slots() {
             let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             if self.edges.read_slot(physical_slot).is_tombstone_edge() {
@@ -1073,7 +1073,7 @@ where
         // uniformly across modes; survivors keep slots either way).
         let mut hole: Option<u32> = None;
         if _placement == EdgePlacementPolicy::Unordered {
-            for i in 0..bucket.stored_slots {
+            for i in 0..bucket.stored_slots_raw() {
                 // Layout-native liveness (same predicate as slab/tree read paths).
                 if E::read_from(&bucket.tiny_target(i).to_le_bytes()).is_deleted_slot() {
                     hole = Some(i);
@@ -1082,7 +1082,7 @@ where
             }
         }
         if edge.edge_inline_property_byte_width() != 0
-            || (hole.is_none() && bucket.stored_slots >= LabelBucket::TINY_MAX_DEGREE)
+            || (hole.is_none() && bucket.stored_slots_raw() >= LabelBucket::TINY_MAX_DEGREE)
         {
             match self.promote_tiny_to_slab(src, bucket_slot, &bucket) {
                 Ok(()) => {}
@@ -1108,7 +1108,7 @@ where
         );
         // Unordered hole-fill (found above) or dense append at `stored`.
         // `stored` grows only on dense append; `degree` (live) always +1.
-        let logical_slot = hole.unwrap_or(bucket.stored_slots);
+        let logical_slot = hole.unwrap_or(bucket.stored_slots_raw());
         let grown = bucket.with_degree_field(
             bucket
                 .degree()
@@ -1120,7 +1120,7 @@ where
         } else {
             grown.with_stored_slots(
                 bucket
-                    .stored_slots
+                    .stored_slots_raw()
                     .checked_add(1)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?,
             )
@@ -1202,7 +1202,7 @@ where
             }
             let end = bucket
                 .edge_start()
-                .checked_add(u64::from(bucket.stored_slots))
+                .checked_add(u64::from(bucket.stored_slots_raw()))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             content_end = Some(content_end.map_or(end, |prev| prev.max(end)));
         }
@@ -1295,7 +1295,7 @@ where
                             }
                             let end = mbucket
                                 .edge_start()
-                                .checked_add(u64::from(mbucket.stored_slots))
+                                .checked_add(u64::from(mbucket.stored_slots_raw()))
                                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                             mcontent = Some(mcontent.map_or(end, |prev| prev.max(end)));
                         }
@@ -1341,7 +1341,7 @@ where
         // Transcribe LIVE targets only (skip tombstone holes — the slab form
         // is dense; holes do not survive promotion).
         let mut transcribed = 0u32;
-        for i in 0..bucket.stored_slots {
+        for i in 0..bucket.stored_slots_raw() {
             let target = bucket.tiny_target(i);
             if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
                 continue;
@@ -1415,7 +1415,7 @@ where
                 .with_bypass_undirected(bucket.bucket_label_key().is_undirected())
                 .with_base_slot_start(bucket.edge_start())
                 .with_degree(bucket.degree)
-                .with_stored_slots(bucket.stored_slots);
+                .with_stored_slots(bucket.stored_slots());
             self.clear_vertex_label_buckets_for_segment(src)?;
             self.set_labeled_vertex(src, updated)?;
             self.edges
@@ -1531,7 +1531,7 @@ mod tests {
         assert_eq!(vertex.degree(), 1);
         assert_eq!(vertex.stored_slots, 0, "tiny birth consumes no span");
         assert!(first.is_tiny_mode());
-        assert_eq!((first.degree(), first.stored_slots), (1, 1));
+        assert_eq!((first.degree(), first.stored_slots_raw()), (1, 1));
         assert!(
             graph
                 .labeled_leaf_physical_range(VertexId::from(0))
@@ -1553,7 +1553,7 @@ mod tests {
             .read_label_bucket_slot(vertex.base_slot_start())
             .unwrap();
         assert!(!first.is_tiny_mode(), "4th edge must promote");
-        assert_eq!((first.degree(), first.stored_slots), (4, 4));
+        assert_eq!((first.degree(), first.stored_slots_raw()), (4, 4));
         assert!(vertex.stored_slots >= 4);
         // ADR 0096 §5: promotion reserves a span (edge_start + stored cohere
         // with the vertex cover); pinning is maintenance's job, not the
@@ -1562,10 +1562,10 @@ mod tests {
         assert!(
             first
                 .edge_start()
-                .checked_add(u64::from(first.stored_slots))
+                .checked_add(u64::from(first.stored_slots_raw()))
                 .is_some()
         );
-        assert!(vertex.stored_slots >= first.stored_slots);
+        assert!(vertex.stored_slots >= first.stored_slots_raw());
     }
 
     #[test]
@@ -1803,8 +1803,8 @@ mod tests {
             edge_count as usize
         );
         assert!(vertex.stored_slots >= graph.edges().header().segment_size);
-        assert!(vertex.stored_slots > bucket.stored_slots);
-        assert_eq!(bucket.stored_slots, edge_count);
+        assert!(vertex.stored_slots > bucket.stored_slots());
+        assert_eq!(bucket.stored_slots(), edge_count);
         assert_eq!(bucket.overflow_log_head(), -1);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 0);
     }
@@ -1860,7 +1860,9 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        assert_eq!(bucket.stored_slots, 3);
+        // Wire prefix width: tiny keeps the tombstone hole (degree is the live
+        // count, so the mode-aware accessor would report 2 here).
+        assert_eq!(bucket.stored_slots_raw(), 3);
         assert_eq!(bucket.degree(), 2);
 
         // Unordered placement reuses the tombstone before appending.
@@ -1888,7 +1890,7 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.stored_slots(), 3);
         assert_eq!(bucket.degree(), 3);
         assert_eq!(
             graph
@@ -2095,7 +2097,7 @@ mod tests {
         let after = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(after, crafted);
         assert_eq!(after.degree(), 1);
-        assert_eq!(after.stored_slots, 2);
+        assert_eq!(after.stored_slots(), 2);
     }
 
     #[test]
@@ -2127,7 +2129,7 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
-            assert_eq!(bucket.stored_slots, 8);
+            assert_eq!(bucket.stored_slots(), 8);
             assert_eq!(bucket.degree(), 8);
         }
     }
@@ -2176,7 +2178,7 @@ mod tests {
         }
         let bucket = read_tiny_bucket(&graph, vid, label);
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (3, 3));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (3, 3));
         assert_eq!(
             graph.leaf_segment_counts_for_vid(vid).actual,
             actual_before,
@@ -2214,7 +2216,7 @@ mod tests {
         let bucket = read_tiny_bucket(&graph, vid, label);
         assert!(!bucket.is_tiny_mode(), "4th edge must promote");
         assert!(!bucket.is_tree_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots), (4, 4));
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (4, 4));
         assert_eq!(bucket.overflow_log_head(), -1);
         // Transcribed 3 never counted before (+3), appended 4th bumps (+1).
         assert_eq!(

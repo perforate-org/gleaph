@@ -478,7 +478,7 @@ where
     pub(crate) fn labeled_bucket_edge_end_exclusive(
         bucket: &LabelBucket,
     ) -> Result<u64, LabeledOperationError> {
-        checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
+        checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots()))
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
