@@ -5006,3 +5006,24 @@ cascade/maintenance-heavy insert where the plan + commit take more passes than t
 Decision options once the bench is named: trim the pass it exercises, special-case the no-log common case, or
 accept ≈ +17 % on that single workload as the price of one implementation. The delegation stays landed; tree
 614/0.
+
+**Scope-level bisect (2026-09-20): the dominant `ins` cost is the I2 drain walk, not the delegation.** Parsing
+`canbench ins` per bench and per scope (saved run at `/tmp/ins_run.txt`) gives 82 regressed lines; the largest are
+all in **`labeled_leaf_release_log_segment`**: +1627.87 % (`bench_l_ins_mv_l32_2048`), +580 % (the three
+`bench_l_nt_bp_ins_*`), +454 % (`bench_l_ins_fresh_256`), +322 %/+316 %/+306 % (the three
+`bench_labeled_stage2_hub_insert_grow_*`), +281 % (`bench_l_s2_h_ins_1024`, `bench_l_ins_sb_1024`,
+`bench_l_ins_ex_bucket_128`), +231 %, +191 %. That scope wraps the release site, and the only thing this session
+added there is invariant I2's guard — `ensure_leaf_overflow_logs_drained` walks every vertex of the leaf and reads
+all of their buckets before releasing, where the release used to be a single store call. Bench-level totals are
+correspondingly: `bench_l_ins_mv_l32_2048` +3.88 %, `bench_l_ins_last_1024` +3.87 %,
+`bench_l_mix_hub_ins_33x50` +3.63 %, `bench_l_ins_rr_64l_1024` +2.47 %, `bench_l_df_ins_1024` +6.79 % (that one
+from the same scope alone) — i.e. **most of the six pre-delegation-looking regressions are I2's guard**, not older
+work. The delegation's own contribution is separate and narrow: +21.49 % on `bench_l_nt_bp_ins_*`
+(`labeled_non_tail_bypass_insert` scope +21.37 %), the bypass insert path.
+
+Fixes, in order: (1) short-circuit the drain check on `self.edges.overflow_log_segment_high_water(leaf) == 0`
+(sound: no entries ⇒ no bucket can chain rows; the `bucket.rs` call site already tests that mark), which should
+recover the whole `labeled_leaf_release_log_segment` group while keeping I2's guarantee; (2) look at the bypass
+insert path's delegation cost separately (it is the one genuinely delegation-shaped number). Both were started but
+not applied — the anchor greps for the drain function did not match (the signature is wrapped by `cargo fmt`, and
+the function name should be re-confirmed before patching). Tree is 614/0 with the delegation landed.
