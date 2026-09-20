@@ -490,6 +490,23 @@ session did.
   that the plan-based path does not — in-leaf re-root versus whole-leaf re-tile, and the
   `LABELED_REBALANCE_LEAF_RELOCATED` protocol it maintains? Read those two paths side by side for one
   growing fixture; do not sweep instrumentation across the crate again (it touched a foreign file and
+  **Two contracts found by side-by-side reading (2026-09-20):** the rebalance path this replaces
+  uses `resolve_labeled_edge_base_for_rebalance`, which **never fails**: it pins/relocates once and
+  then falls back to `labeled_edge_base_from_first_bucket(src)` (and sets
+  `LABELED_REBALANCE_LEAF_RELOCATED`). The plan path calls `resolve_labeled_edge_base_for_growth`,
+  which returns `CollectAllocationOverflow` after four relocation attempts — that is the error the hub
+  fixtures report, raised *after* the planner has already succeeded. Ported both rebalance contracts
+  into the shared rewrite: (1) the leaf-capacity guard (`min_required > max stored in leaf` ⇒ relocate
+  the leaf first) — no test changed; (2) **proactive slack is best effort** (`force_slack_grow` with
+  `old_alloc >= min_required` downgrades to an in-place rewrite when the leaf cannot host the bigger
+  span) — this fixed `labeled_relocation_preserves_all_leaf_vertices`, 14 → **13**. The three hub
+  fixtures still fail, so their inserts need *real* growth (`old_alloc < min_required`), where
+  `for_growth` errors while `for_rebalance` falls back to the first bucket's base. Next decision, with
+  one bounded measurement: for `mixed_label_hub_20_labels_500_edges_each` print `min_required`,
+  `old_alloc`, whether the vertex is in a pinned leaf and how many relocations each attempt needs —
+  then decide whether the insert path must tolerate the same fallback (and what it does with a cover
+  bigger than the owned range) or must genuinely grow. Copies: `/tmp/delegated_logfix2_compact.rs`,
+  `/tmp/delegated_logfix2_init.rs` (598/13).
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
