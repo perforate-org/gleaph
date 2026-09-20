@@ -5686,3 +5686,45 @@ Two interactions this raises, which belong in the implementation slices rather t
    ordinal may have to shift part of one or both. The current design avoids most of this by reusing holes and
    appending at the dense end, so the question is whether the same discipline holds once the dense end is a run —
    it should, but the rule needs to be written down so the semantics do not drift.
+
+## Where the spill is lighter, and where it is not (predictions to check, 2026-09-20)
+
+Lighter, and by construction:
+
+* **Insert**: no leaf-wide fold, no log-full error, no recovery loop, no shared-capacity contention, no chain
+  append. The path becomes "prefix slot if free -> append to my run -> grow my class". The trigger for the workload
+  coupling disappears: one bucket's pressure no longer reaches its 19 neighbours.
+* **Read**: prefix rows then a **contiguous** run, instead of prefix rows then a chain walk. The same improvement
+  applies to every consumer of "rows beyond the prefix": slab->tree promotion, demotion, compaction, the
+  resident-content definition, and the log-specific fold paths that go away with it.
+* **Random ordinal access improves as well**, which is worth stating because the ADR calls it the structure's real
+  exposure: today an ordinal inside the log is reached by chasing `prev` from the head (O(entries)), while a spill
+  row is `run + offset` (O(1), plus one block hop at level 2).
+* **Batch** loses its log-capacity reservation entirely — an admission decision, a rollback path and a class of
+  failure modes go with it.
+* **Maintenance** drops from "content growth" to "structure" (new labels, density, mode changes), and each event is
+  smaller: the measured hub shape had one growing bucket out of twenty, and it drove leaf-wide work.
+* **A concrete regression should disappear**: the focused canbench cost that this session attributed to the plan's
+  base-resolution query (`labeled_resolve_in_leaf`, 122 K of the non-tail bypass insert's bench) exists because a
+  span must be *found* when content outgrows its prefix. With the spill that growth is unnecessary for content, so
+  the query is not made. That is a prediction the implementation must confirm, not assume.
+
+Not lighter, or newly worth designing away:
+
+1. **Growth copies.** The log appended in O(1) with no copy; a spill that outgrows its class copies up to 2x its
+   live rows (amortized O(1), but a spike at each growth). Mitigation to design in rather than discover: allow
+   in-place growth when the run is the arena tail, which is the reference's B3a rule and was measured as a win
+   there (its `bucket-tail-growth` reduced read/write requests and mapped bytes on exactly this pattern).
+2. **Hole reuse inside the spill.** Today `Unordered` fills the first tombstone hole in the prefix and the log
+   merely appends. With rows split across prefix and spill, the same rule must be defined for the run — a bounded
+   scan (a new per-insert cost) or a free-slot hint in the descriptor (O(1)). The hint is the right answer if the
+   measurement shows the scan matters; either way the rule belongs in ADR 0097 before the insert path is rewritten.
+3. **An allocator to maintain** — eight class free lists, a few reads and writes per allocation. Small and fixed,
+   and strictly less bookkeeping than the segment table, the per-segment capacity and the release protocol it
+   replaces.
+4. **Class waste** is bounded at <2x on *spilled* rows only (measured: a 74-row spill in a 128-row class = 512 B),
+   against the log's eager per-segment capacity (~696 KB unused in the audit shape) — an improvement in the
+   measured shapes, not a guarantee in all shapes, so the audit should be repeated after the swap.
+
+Net: the hot paths lose a level of indirection, a choreography and a coupling; the costs that remain are bounded,
+per bucket and measurable, with two to design deliberately (in-place tail growth, hole reuse).
