@@ -644,6 +644,30 @@ session did.
   difference inside one resolver. (C) needs: a policy parameter threaded from the rebalance,
   the three assertion-level tests re-read against that contract, and an ADR 0096 §5 row naming
   who may keep a base and who must obtain one.
+
+  **The path that actually needs the never-fail policy (2026-09-20): overflow-log exhaustion.**
+  `insert.rs:648` handles `Err(LaraOperationError::SegmentLogFull)` by calling
+  `rebalance_edge_log_leaf_for_labeled(src, true, true)` and then re-reading the bucket and retrying —
+  so the design's answer to "log is full" *is* a rebalance/relocation, exactly as ADR 0096 and the two
+  insert tests say (`insert_beyond_initial_label_edge_span_capacity_relocates_labeled_leaf`;
+  `labeled_insert_does_not_grow_elem_capacity_for_hub_growth`, which forbids tail-append for hub growth
+  and requires block-aligned leaf allocation). `rebalance_edge_log_leaf_for_labeled` walks **every**
+  vertex of the leaf with `grow_vertex_span = true, use_log_fold_prelude = true` and then calls
+  `edges.release_log_segment(leaf)`, so the recovery is: fold each vertex's log into its span, grow the
+  spans, release the leaf's log area, retry the insert. Per-leaf log capacity is real
+  (`read_overflow_log_state(leaf) -> (used, capacity)`, `SegmentLogFull`,
+  `overflow_log_same_leaf_second_run_capacity_exhaustion_rolls_back` for the batch path).
+  Consequences for the decision: the never-fail fallback is what lets this leaf-wide pass tolerate a
+  vertex whose span cannot grow — but the pass then *releases the log segment*, so a vertex whose fold did
+  not complete would leave rows in a released area. That makes the fallback a **correctness** question,
+  not a convenience: the policy must be "fold and grow, or fail closed", and if a fallback is kept it may
+  only downgrade *proactive slack*, never a fold that still holds rows. Verify before deciding:
+  whether `LogStore::release_segment` asserts/rejects a non-empty segment (`lara/edge/init.rs:285` →
+  `log.release_segment`), and how the hub fixtures' `insert_edge_skip_leaf_cascade` inserts ever reached a
+  state where the fold could not complete. Recommended shape (C''): required growth must be achieved by
+  leaf relocation (never tail-append), slack stays best-effort, and an incomplete fold is a hard error;
+  the shared resolver then needs an explicit policy argument that says *which* of those a caller accepts,
+  instead of one resolver that is strict for some callers and forgiving for others.
   fourth implementation's placement.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
