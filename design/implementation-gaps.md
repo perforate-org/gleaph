@@ -97,23 +97,33 @@ defect from being rediscovered without its prior reasoning.
   writes the same stale cover with `degree = stored = 1151`. The audit reads `vertex.stored_slots`
   as the reservation, so the stale slab cover looks like a span reaching from 256 across the
   leaf's re-tiled mates.
-  Two modelling facts fall out, and both need a decision before a fix:
+  Two facts fall out, and ADR 0088 §3 already prescribes which way to fix them — "the
+  rope/PMA/placement layers treat the root span exactly like a small slab bucket ... and stay
+  mode-blind":
   1. `promote_bypass_to_tree_mode_impl` never re-bases the vertex cover on the resident-geometry
      SSOT (`bucket_physical_resident_slots(bucket)` = `combined_span_region_len` = `root_len`
      slots for tree, not `degree`). The published cover therefore describes a region the tree
      bucket does not own.
   2. The leaf-cover model itself (one `(base, cover)` interval per vertex, used by the audit, the
      slide, and release math) cannot represent a vertex whose tree root was allocated outside the
-     leaf block while sibling slab buckets stay inside it. Either tree roots must stay inside the
-     leaf's block (allocate through the leaf's tiling, like promotion of slab spans does), or the
-     cover model needs an explicit out-of-block representation.
+     leaf block while sibling slab buckets stay inside it. Per ADR 0088 §3 the root span is *not*
+     a special case: it is an ordinary vertex-local span, so it must be reserved through the same
+     vertex/leaf tiling the slab path uses, and the cover re-based on the resident length —
+     rather than teaching the cover model an out-of-block representation.
   Also verified while tracing: the relocation slide re-tiles this leaf correctly
   (`TMPSLIDE`: hub `old2752+688 -> 2749+979`, later `-> 2752+1312`, inside the block), so the
   slide is not the writer; the guard's span is the *stale vertex cover*, not a moved span.
-- **Next decision:** decide between (1) re-basing the vertex cover in the tree promotion and
-  keeping tree roots inside the leaf's block, or (2) making out-of-block roots explicit in the
-  cover model; then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16),
-  re-run the skewed-leaf audit, and resume the production balance evaluation. Until then, treat the
+- **Prescribed fix (ADR 0088 §3, no design decision left):** the tree promotion must reserve the
+  combined root region through the vertex/leaf tiling (the same `rewrite_vertex_edge_span` /
+  leaf-placement path slab growth uses) instead of a bare `edges.allocate_span`, and must then
+  publish the vertex cover from the resident length (`bucket_physical_resident_slots`) so the
+  vertex's `(base, cover)` describes exactly the region the tree bucket owns. Watch items while
+  implementing: the promotion's rollback path currently releases the root region with
+  `release_span(new_edge_start, combined_root_len)` (must follow the tiling's owner), the
+  in-pinned-leaf release caveat documented at Phase 3c, and `force_tree_mode_for_test`'s
+  `force_bucket_to_stored_slots` fixture which prepares the slab prefix.
+  Then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16), re-run the
+  skewed-leaf audit, and resume the production balance evaluation. Until then, treat the
   K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
 
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
