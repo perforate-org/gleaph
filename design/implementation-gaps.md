@@ -131,6 +131,24 @@ defect from being rediscovered without its prior reasoning.
   Conclusion: no small fix exists. The root must be reserved **inside the vertex's span** from the
   start (so the cover, the block tiling, and the release math all stay consistent by
   construction), which is the ADR-prescribed route below.
+- **In-span reservation attempt (2026-09-20, implemented then reverted):** Phase 1 was rewritten to
+  reserve the combined root region *inside* the vertex span (property sizing first; then
+  `rewrite_vertex_edge_span(vid, Some(bucket_index), combined_root_len, …)`; root base =
+  `bucket.edge_start() + stored_slots` after re-reading the bucket; every span-release rollback
+  dropped, LTB releases kept). Outcome: the reproduction passes (the target defect is fixed), but
+  three interactions remain, so the attempt was reverted to keep the tree green:
+  1. the re-laid vertex span can straddle the leaf block end
+     (`fold_growth_stays_mate_disjoint_across_span_growth`: hub cover `[3758, 5070)` against block
+     `(256, …3920)`) — the vertex-span rewrite's out-of-block escape hatch
+     (`tail_append_labeled_edge_base` while a relocation is in progress) or its sizing can exceed
+     the block, which the cover/tiling invariants forbid;
+  2. `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run` fails with
+     `CollectAllocationOverflow` (the pre-transcription rewrite can fail on batch-shaped fixtures);
+  3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free`
+     (dropping the span releases changed the rollback/release ordering that test pins).
+  Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
+  `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
+  HEAD with the exact guard message).
 - **Prescribed fix (ADR 0088 §3, no design decision left):** the tree promotion must reserve the
   combined root region through the vertex/leaf tiling (the same `rewrite_vertex_edge_span` /
   leaf-placement path slab growth uses) instead of a bare `edges.allocate_span`, and must then
@@ -140,8 +158,10 @@ defect from being rediscovered without its prior reasoning.
   `release_span(new_edge_start, combined_root_len)` (must follow the tiling's owner), the
   in-pinned-leaf release caveat documented at Phase 3c, and `force_tree_mode_for_test`'s
   `force_bucket_to_stored_slots` fixture which prepares the slab prefix.
-  Then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16), re-run the
-  skewed-leaf audit, and resume the production balance evaluation. Until then, treat the
+  Then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16) — the reverted
+  attempt already has one at `/tmp/tree_promo_test.rs` — re-run the skewed-leaf audit, and resume
+  the production balance evaluation. Budget the three interactions listed above as part of the
+  slice: they are the reason this is not a drive-by patch. Until then, treat the
   K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
 
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
