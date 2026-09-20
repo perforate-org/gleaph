@@ -4949,3 +4949,16 @@ retry once with `old_alloc` **without** letting the resolver relocate for slack;
 inside the plan so the commit reuses it. Until one lands, the delegation is an architectural simplification with
 a documented insert regression; the benchmark comparison must be re-run before any final artifact update, and the
 ADR 0096 §5 row for "the rebalance is a rewrite" still needs to be added (the anchor text moved).
+
+**Update on the `ins` regression (2026-09-20, `ae25c9378` + the probe-reuse commit).** Removing the duplicated
+placement attempt (`perf(lara): reuse the slack placement attempt instead of resolving twice`) left the focused
+canbench `ins` numbers unchanged (7 regressed, max +21.49 %, median +0.61 %), so the cost is not the probe: it is
+the delegation itself. The shared pair takes more passes than the fourth implementation's tail — the planner
+reads the buckets, walks each bucket's resident region *and* its log chain for sizing, decides the span, and the
+commit rebuilds resident buckets, scans for the maximum run length and publishes descriptors — while the fourth
+implementation's tail went straight from sizes to positions to writes. Next diagnostic, in one run: `canbench`
+the single regressed bench with scope output and diff `labeled_rewrite_read_and_plan`,
+`labeled_vertex_build_resident_buckets`, `labeled_vertex_calculate_bucket_positions`, `labeled_vertex_write_*`
+against the pre-delegation baseline (HEAD~2) to see which pass dominates; only then decide between trimming that
+pass, special-casing the no-log common case, or accepting the cost as the price of one implementation. The
+delegation stays landed and green (614/0) meanwhile.
