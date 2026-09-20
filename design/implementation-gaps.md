@@ -5074,3 +5074,18 @@ Each is a one-line-to-few-line guard and each should be measured with `canbench 
 after those numbers decide between trimming, special-casing the no-log common case, and accepting ≈ +19 % on this
 one workflow — with `compact` at −217.82 K median and the overall `ins` median at +0.09 % as the counterweight.
 Everything else from this session is landed and green (614/0).
+
+**Where the plan's 129 K can and cannot be (2026-09-20).** Candidate (a) from the previous note is already handled:
+`bucket_resident_rows` only calls `overflow_log_chain_len` when `overflow_log_head() >= 0`, so a log-less bucket
+costs a field check plus `bucket_physical_resident_slots` — nothing to guard. So the plan scope's 129.25 K
+instructions are in the rest of the plan, and the candidates worth one measurement each are: (i) the base
+resolution the plan calls — `try_labeled_vertex_edge_base_in_pinned_leaf` performs a real placement attempt (free
+span lookup) even when the span does not change; (ii) the plan runs *twice* per rewrite when the resolution moved
+the vertex, because `rewrite_vertex_edge_span` re-reads the vertex and restarts (the restart is what the escalation
+guard was for); (iii) `read_vertex_label_buckets` decoding the descriptors, which the commit then decodes again.
+Method, one run each (≈40 s): wrap the three segments (bucket read, sizing/resolution, restart check) in
+`#[cfg(all(feature = "canbench", target_family = "wasm"))] bench_scope(...)` the way the commit already does, run
+`canbench bench_l_nt_bp` with `--persist` **not** set, and read which segment owns the 129 K. Only then choose
+between trimming that segment, skipping resolution when the span is unchanged, or accepting the ≈ +19 % on this one
+workflow. (Counterweight unchanged: `compact` median −217.82 K, overall `ins` median +0.09 %.) Tree 614/0,
+delegation landed.
