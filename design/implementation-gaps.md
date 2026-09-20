@@ -434,6 +434,19 @@ session did.
   finalize/release block after it. Next: delete the plan's dead positions, make the plan's bucket slice
   and `new_alloc` the only interface, and diff one failing fixture's descriptor row region
   (`base_slot_start` .. `+span`) before and after the delegated rebalance.
+  **Correction (2026-09-20, same day):** the "anchor" reading above is **wrong**; the store-level
+  search is not involved. Instrumenting all 4 `read_label_bucket_slot` miss sites in
+  `bucket_store.rs` and all 44 `CollectAllocationOverflow` sites in `bucket.rs` produced **no
+  output** for `labeled_leaf_rebalance_does_not_release_span`. The site is in the planner:
+  `rewrite_vertex_edge_span_read_and_plan` returns `CollectAllocationOverflow` when
+  `new_alloc < min_required` in the `in_window_layout` branch, and `next_vertex_edge_span_allocation`
+  can return it for the non-window branch. `min_required = total_live + preferred_extra` with
+  `total_live = Σ bucket_rewrite_content_slots(bucket, compact)` — the compaction-aware resident SSOT
+  substituted for the old rebalance's per-bucket `.max(degree)`-floored residents. So the remaining
+  delta *is* the budget after all (the earlier budget hypothesis was right; the anchor detour was
+  mine). Next: for one failing fixture print `old_alloc`, `total_live`, `preferred_extra`,
+  `min_required` and the per-bucket resident terms from both formulas, then settle the single
+  resident/budget definition for both callers.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
