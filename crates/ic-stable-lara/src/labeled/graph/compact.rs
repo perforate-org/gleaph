@@ -317,13 +317,24 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
 /// over-allocates the leaf, misreads live ranges on relocate, and feeds
 /// unowned ranges to the free store on release.
 pub(crate) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
+    bucket_resident_region(bucket).map_or(0, |(_, len)| len)
+}
+
+/// The edge-slab region a bucket physically owns, as `(start_slot, len)`, or
+/// `None` when it owns none (tiny). The mode-blind geometry layer reads sizes
+/// only through this SSOT: slab is its `stored_slots` prefix, tree its LEG root
+/// array (its `stored_slots` is a logical count), tiny nothing.
+#[inline]
+pub(crate) fn bucket_resident_region(bucket: &LabelBucket) -> Option<(u64, u32)> {
     if bucket.is_tiny_mode() {
-        return 0;
+        return None;
     }
-    if bucket.is_tree_mode() {
-        return combined_span_region_len(bucket);
-    }
-    bucket.stored_slots_raw()
+    let len = if bucket.is_tree_mode() {
+        combined_span_region_len(bucket)
+    } else {
+        bucket.stored_slots_raw()
+    };
+    (len > 0).then_some((bucket.edge_start(), len))
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -2296,7 +2307,15 @@ where
             // ADR 0096 §5: tiny buckets occupy zero span slots (positions pack
             // them at the running boundary). Weights below still count them
             // (gap distribution only, intentionally unchanged).
-            let degree = if bucket.is_tiny_mode() {
+            // Span budget from the resident-region SSOT; the gap-distribution
+            // weight stays label-degree-based (existing policy).
+            let resident = u64::from(
+                crate::labeled::graph::bucket_resident_region(bucket)
+                    .map_or(0, |(_, len)| len)
+                    .checked_add(extra)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
+            );
+            let weight = if bucket.is_tiny_mode() {
                 0u64
             } else {
                 u64::from(
@@ -2307,10 +2326,10 @@ where
                 )
             };
             effective_live = effective_live
-                .checked_add(degree)
+                .checked_add(resident)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             total_weight = total_weight
-                .checked_add(degree)
+                .checked_add(weight)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
         let gaps = u64::from(span_slots)
