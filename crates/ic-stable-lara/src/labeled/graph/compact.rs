@@ -1320,18 +1320,8 @@ where
                 // unowned ranges to the free store. Single source of truth:
                 // `combined_span_region_len` (same helper the retire-interval
                 // path uses).
-                let log_slots = if bucket.overflow_log_head() >= 0 {
-                    self.edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                } else {
-                    0
-                };
                 resident_slots = resident_slots
-                    .checked_add(
-                        bucket_physical_resident_slots(bucket)
-                            .checked_add(log_slots)
-                            .ok_or(LaraOperationError::RowDegreeOverflow)?,
-                    )
+                    .checked_add(self.bucket_resident_rows(leaf, bucket)?)
                     .ok_or(LaraOperationError::RowDegreeOverflow)?;
             }
             resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
@@ -1402,18 +1392,9 @@ where
                 }
                 let buckets = self.read_vertex_label_buckets(&vertex)?;
                 let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
-                    let log_slots = if bucket.overflow_log_head() >= 0 {
-                        self.edges
-                            .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                    } else {
-                        0
-                    };
-                    acc.checked_add(
-                        bucket_physical_resident_slots(bucket)
-                            .checked_add(log_slots)
-                            .ok_or(LaraOperationError::RowDegreeOverflow)?,
-                    )
-                    .ok_or(LaraOperationError::RowDegreeOverflow)
+                    acc.checked_add(self.bucket_resident_rows(leaf, bucket)?)
+                        .ok_or(LaraOperationError::RowDegreeOverflow)
+                        .map_err(LabeledOperationError::from)
                 })?;
                 // A newly created label bucket is an active zero-edge vertex span. Keep
                 // it in the slide so the relocation capacity planned for `active_vertices`
@@ -1586,15 +1567,7 @@ where
                 per_bucket_raw.push(Some(raw));
                 continue;
             }
-            let log_len = if bucket.overflow_log_head() >= 0 {
-                self.edges
-                    .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-            } else {
-                0
-            };
-            let resident_slots = physical_slots
-                .checked_add(log_len)
-                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            let resident_slots = self.bucket_resident_rows(leaf, bucket)?;
             if bucket.overflow_log_head() < 0 {
                 let run = Self::edge_bytes_for_len(physical_slots as usize)?;
                 let mut raw = vec![0u8; run];
@@ -1636,6 +1609,29 @@ where
             }
         }
         Ok((per_bucket_edges, per_bucket_raw))
+    }
+
+    /// Resident rows a rewrite, relocation or fold must move for this bucket: the
+    /// physical region (`bucket_physical_resident_slots`: tiny nothing, slab its
+    /// tombstone-inclusive prefix, tree its LEG root array) plus its edge
+    /// overflow-log chain. The planner, both leaf-sizing loops and the materializer
+    /// used to spell this out separately, and one copy forgot the log term, which
+    /// under-sized the span (GAP-2026-09-20-005). One definition, one call each.
+    fn bucket_resident_rows(
+        &self,
+        leaf: u32,
+        bucket: &LabelBucket,
+    ) -> Result<u32, LabeledOperationError> {
+        let log_len = if bucket.overflow_log_head() >= 0 {
+            self.edges
+                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+        } else {
+            0
+        };
+        bucket_physical_resident_slots(bucket)
+            .checked_add(log_len)
+            .ok_or(LaraOperationError::RowDegreeOverflow)
+            .map_err(LabeledOperationError::from)
     }
 
     fn commit_vertex_edge_span_layout(
