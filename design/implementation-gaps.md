@@ -926,6 +926,35 @@ session did.
   again; whichever half's removal changes the failure names the residue's dependency; (3) if a site must be
   identified directly, wrap only the *few* sites on the path (`rgba`-free: read the failing function's
   `ok_or` lines and edit them by hand). Tree is back at 614/0 with class A reverted.
+  **The numbers retired class A and answered the whole question (2026-09-20).** With both halves applied, two
+  prints on `mixed_label_hub_50_labels_1000_edges_each` show runaway growth:
+
+  ```
+  TMPRELOC  old_len=1_053_766_992 new_len=1_333_673_856 resident_geometry=1_185_487_866 active=1 floor=1_185_487_866
+  TMPSLIDE  vid=0 resident_after_floor=1_185_487_866 floor=1_185_487_866 leaf_len=1_333_673_856
+  TMPRELOC  old_len=1_333_673_856 new_len=1_687_930_976 ...            (×1.26 every round, seven rounds)
+  ```
+
+  Two conclusions, both structural:
+
+  1. **Feeding the allocation request back into "resident" is a positive feedback loop.** The floor I passed
+     was `new_alloc` (content + proactive slack, ≈ `old_alloc × 1.125`); the slide then assigns the requesting
+     vertex that many slots, its cover grows, and the *next* round's `resident_geometry` (which sums covers)
+     is bigger again — exponential until the index space is exceeded and a plain `ok_or` reports
+     `CollectAllocationOverflow`. Class A as I specified it cannot work: a span *assignment* may only be sized
+     from content (`min_required`), never from the request.
+  2. **The hub fixtures never needed growth.** In the earlier measurement the content already fitted
+     (`min_required` 9412 < `old_alloc` 10400); only the proactive slack (11700) did not. Since the leaf block
+     already sums every vertex's resident rows, the block was never too small — the *slack* request was simply
+     being treated as required by the insert path. The correct fix is therefore the policy one: make proactive
+     slack best-effort (drop it and keep the current span when it cannot be placed), which is exactly the
+     `SlackMayBeDropped` tail that already exists, rather than growing leaves. That also removes the last
+     reason the never-fail fallback looked load-bearing.
+
+  So: class A is not a growth-sizing problem at all; it is the slack policy applied to the insert path. The
+  one-line shape is the plan's `new_alloc` expression — when the content fits (`old_alloc >= min_required`) and
+  growth cannot be placed, keep `old_alloc` instead of failing — i.e. `force_slack_grow` downgrades to an
+  in-place rewrite. Tree back at 614/0; `/tmp/classA_full_*` is superseded.
   enabling it).
      decision removes).
   fourth implementation's placement.
