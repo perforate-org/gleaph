@@ -25,7 +25,7 @@ DGAP keeps a **mutable CSR** on persistent memory:
 |--------|------|
 | `vertex_element` | Per-vertex **scan metadata**: `index` (slab start), `degree`, `offset` (overflow-log head, `-1` = slab-only) |
 | `edges_[]` | Global edge slab |
-| PMA leaf segment | `segment_size` vertices; `segment_edges_actual` (live edges) vs `segment_edges_total` (assigned physical width) |
+| PMA leaf segment | `segment_size` vertices; `segment_edges_actual` (live edge records occupying slab slots) vs `segment_edges_total` (assigned physical width) |
 | Per-segment log | Overflow when `index + degree` hits the next vertex boundary |
 | `rebalance_weighted` | **Rope-style slide** inside a vertex window `[start_vertex, end_vertex)` — proportional gaps by `degree + 1`, rewrite `index`, fold logs |
 | `resize_V1` | Grow `elem_capacity` when no PMA window can absorb density; re-place all vertices |
@@ -96,7 +96,7 @@ Inline properties are a separate physical domain: bucket-local live order associ
 **Crate modules:** `lara.rs`, `lara/edge/*`, `lara/vertex/*`
 
 - **Vertex row** matches DGAP `vertex_element`: locator packs `base_slot_start`; `degree` / `stored_degree` play the live vs reserved roles; `log_head` ≡ `offset`.
-- **PMA segment tree:** `segment_count`, `segment_size`, `segment_edges_actual`, `segment_edges_total` in `counts_store` — same density semantics as DGAP (`reference/DGAP/dgap/src/graph.h`, `recount_segment_*`).
+- **PMA segment tree:** `segment_count`, `segment_size`, `segment_edges_actual`, `segment_edges_total` in `counts_store` — same density semantics as DGAP (`reference/DGAP/dgap/src/graph.h`, `recount_segment_*`). The labeled layer keeps the same definition from the row side: `actual` counts live edge records that occupy edge-slab slots, so the modes whose rows are not slab-resident (tiny inline prefix, tree LTB blocks) contribute zero and adjust only at their mode transition (ADR 0096 §5; LARA `segment_actual` likewise excludes tree rows).
 - **Weighted rebalance:** `rebalance_weighted_with_layout` redistributes edges and slack across a vertex index range inside the segment's physical capacity — DGAP `spread_weighted` / `rebalance_weighted`.
 - **Segment relocation:** `segment_slide`, hot-segment relocate tests — physical block moves; vertex bases rewritten; then old physical range → **`FreeSpanStore`** (core LARA; DGAP often folds equivalent space recovery into `resize_V1` instead of an explicit retirement pool).
 - **Scan isolation:** Documented in `lib.rs` and `lara/edge.rs`; iterators must not touch `span_meta` or `free_spans`.

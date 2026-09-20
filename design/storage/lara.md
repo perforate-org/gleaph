@@ -39,7 +39,8 @@ LARA is a **storage algorithm and contract**, not an Internet Computer feature. 
 [DGAP](https://github.com/DIR-LAB/DGAP) (Dynamic Graph Adjacency structure on PM) is the primary external reference for:
 
 - Per-vertex scan row (`index`, `degree`, `offset` / log head)
-- PMA segment tree and leaf density (`actual` / `total`)
+- PMA segment tree and leaf density (`actual` = live edge records occupying
+  edge-slab slots / `total` = assigned physical width)
 - Weighted rebalance inside a fixed physical window (`rebalance_weighted`)
 - Per-segment overflow logs when the slab window is full
 
@@ -149,7 +150,7 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 | Store                               | Contract                                | Scan?                     |
 | ----------------------------------- | --------------------------------------- | ------------------------- |
 | `EdgeStore`                         | Live edge bytes                         | Yes (via vertex row)      |
-| `counts_store`                      | PMA `actual` / `total` per tree node    | No                        |
+| `counts_store`                      | PMA `actual` / `total` per tree node (edge-slab records) | No                        |
 | `log`                               | Per-leaf overflow entries               | Yes (via `log_head` only) |
 | `span_meta`                         | Leaf `physical_start` when order breaks | No                        |
 | `free_spans` / `free_span_by_start` | Retired physical ranges                 | No                        |

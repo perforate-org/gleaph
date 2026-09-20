@@ -82,9 +82,11 @@ defect from being rediscovered without its prior reasoning.
   40.09K tree (~1.9x tree-favored); M2b insert 8,364 slab vs 185.07K tree (~22x
   tree append cost); M2c delete 4,845 vs 7,887; M4 churn 147.54M vs 38.64M
   (threshold-relative sizing artifact — the 1024 round-trip does less work by
-  definition, not evidence of threshold merit). Verdict: the M2a tree-scan win is
-  outweighed at workload scale (M1); **T_PROMOTE stays 4096** (evidence-backed,
-  not freeze-by-default).
+  definition, not evidence of threshold merit). Verdict at the time: the M2a
+  tree-scan win is outweighed at workload scale (M1); **T_PROMOTE stays 4096**
+  (evidence-backed, not freeze-by-default). **Superseded** by the
+  density-accounting fix below: post-fix M1 inverts (1024 25% cheaper on equal
+  work).
 - **G4/G5 follow-up (2026-09-19, commit `a5cefbf69`):** G4 (`tiny_relocate_mixed_leaf`)
   and G5 (`tiny_workload_skewed_mix`) benches landed; both green unpersisted (G4 ~594K
   ins, HI=0/SMI=0 with payload-identity + per-neighbor scan asserts; G5 ~140M ins for
@@ -135,6 +137,52 @@ defect from being rediscovered without its prior reasoning.
   residual hole (stale covers skip free ranges; live spans are republished
   before old-cover release per post-slide invariant, pinned by M1/G4/G5/suite).
   Do NOT pursue before a third firing — disproportionate until then.
+- **Density-accounting follow-up (2026-09-19, this slice):** the second half of the
+  same trap. Tree inserts bumped leaf `actual` (+1 per insert, −1 per remove) even
+  though tree rows live in LTB blocks and occupy only the root region, and the
+  promote did not subtract the slab-era degree; the leaf audit
+  (`expected_vertex_pma_contribution`) counted tree `degree()` too, so the
+  accounting stayed self-consistent while driving density ≥ 1.0 after every
+  promotion — each post-promotion insert fired
+  `rebalance_cascade_after_labeled_mutation` (M2b: 185.07K vs 8.36K; M1: 92.89M
+  vs 82.30M at T=1024). Fix: `actual` now means *live edge records that occupy
+  edge-slab slots*. Tree insert/remove helpers no longer take a vertex id
+  (structurally unable to touch per-vertex counts); `promote_bypass_to_tree_mode`
+  subtracts the live degree (`−degree`, LARA parity `segment_actual[leaf] -=
+  live`); `tree_mode_demote_to_slab` re-adds it (`+degree`, mirroring
+  `promote_tiny_to_slab`); the leaf audit and the batch `RunDestination::Tree`
+  commit skip the bump. Tests:
+  `tree_mode_leaf_actual_counts_slab_edges_only` (production insert/remove/
+  promote/demote paths, exact leaf counts + audit at every step) and the tree-run
+  assertion in `batch_run_admits_tree_mode_bucket_tail_fit`;
+  `force_bucket_to_stored_slots` now seeds the matching leaf count so fixture
+  states audit cleanly. Wrong-impl probes (re-added insert bump, removed promote
+  subtract, removed demote re-add, restored batch bump) each fail those tests.
+  ADR 0096 §5 updated; ADR 0088 §3 clarified (root *span* residency stays
+  mode-blind; tree *edge rows* never count).
+- **Threshold verdict — SUPERSEDED by the density-accounting fix (same session,
+  2026-09-19).** Re-measured both arms with the same unpersisted `thresh_*`
+  benches after the fix (`T_PROMOTE` reverted to 4096 after measuring; production
+  constant unchanged):
+
+  | Metric | T=4096 | T=1024 | Pre-fix |
+  | --- | --- | --- | --- |
+  | M1 hub-grow 8192 (equal work) | 55.87M | **41.70M** | 82.30M / 92.89M |
+  | M2a scan 2048 | 74.30K | **40.09K** | 74.30K / 40.09K |
+  | M2b insert into 2048 (block-boundary mint) | **8.36K** | 63.51K | 8,364 / 185.07K |
+  | M2c delete 2048 | **4.84K** | 7.33K | 4,845 / 7,887 |
+  | M4 churn round-trip (threshold-relative sizing) | 117.65M | 30.77M | 147.54M / 38.64M |
+
+  Both arms improved on M1 (the false cascade is gone) and the **ordering
+  inverts**: 1024 is now 25% cheaper for equal work (8192 full-path inserts), so
+  the pre-fix rationale for keeping 4096 no longer holds. M2b's residual 7.6× is
+  a block-boundary mint (2048 → 2049 mints an LTB block, grows the root, reallocs
+  the combined span), not a cascade. **Open decision (not taken in this patch):**
+  flipping the constant is its own slice — fixtures/tests hardcode 4096
+  (`promote_test_bucket`, `force_bucket_to_stored_slots`, many
+  `stored_slots == 4096` assertions), and G1–G6 gates plus the workload mix would
+  need re-measuring under 1024. The density fix is threshold-agnostic and
+  correct at both.
 - **Observed behavior (confirmed):** full-path `insert_edge` (impl + dense-check +
   cascade) on a single-vertex/single-label `LabeledLaraGraph` with 4-byte edges
   (Insertion policy), growing 0 → 8192, traps deterministically at the 5728th edge:
@@ -170,10 +218,11 @@ defect from being rediscovered without its prior reasoning.
   seed via `skip_leaf_cascade`; full-path growth benches are 10B-only and never promote).
 - **Impact:** tree mode is unusable past ~5.7K edges via the production insert path;
   threshold A/B (1024 vs 4096) cannot run; S5 adoption is blocked.
-- **Next decision:** smallest falsifiable question — do tree-mode inserts bump leaf
-  `actual`, and what sizes `release_labeled_leaf_physical_footprint` in the
-  post-promotion regime? Then the smallest evidence-backed fix (release-length unit
-  or accounting exclusion) plus an M1-shaped standing regression bench.
+- **Next decision:** answered (2026-09-19) — tree-mode inserts did bump leaf
+  `actual`, and `release_labeled_leaf_physical_footprint` was sized by a
+  slab-unit footprint; both halves are fixed (see the follow-up bullets above).
+  Remaining decision tracked there: whether to adopt `T_PROMOTE = 1024` now that
+  the post-fix evidence favors it at workload scale.
 
 ### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
 

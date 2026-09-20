@@ -131,6 +131,10 @@ Sub-decisions resolved within D:
 - **Root lives in the CSR span, not in an LTB block.** A root-in-block variant
   would waste most of a 4-KiB block at small tree sizes, add +1 indirection to
   every access, and hide the bucket's weight from PMA density math. Rejected.
+  (The weight at stake is the root region's *span residency*, which stays
+  resident and mode-blind. Tree **edge rows** never count toward leaf `actual`
+  in either variant: `actual` counts live edge records that occupy edge-slab
+  slots — ADR 0096 §5.)
 
 ## Decision
 
@@ -373,7 +377,10 @@ the ordinary vertex-local update contract; amortized cost is ≤ leaf-copy /
 like a small slab bucket (a 4-entry root is physically a 4-slot span) and stay
 **mode-blind** — the tree flag is read at exactly one dispatch point, the
 bucket access constructor. A mode branch in rope/PMA/placement code is a
-review rejection.
+review rejection. Root occupancy is therefore real PMA geometry (`total`,
+`bucket_physical_resident_slots`), while the density **numerator** (`actual`)
+counts only live edge records that occupy edge-slab slots: tree edge rows live
+in LTB blocks and contribute no slab slot (ADR 0096 §5).
 
 Capacity bounds (all fail-closed at the allocation site):
 
