@@ -5324,3 +5324,28 @@ power-of-two capacity classes and a per-class free list, which is evidence that 
 design. Measure it in Gleaph anyway before choosing between a general run and a packed small-run array for the
 first spill level, then proceed with the field-meaning change and the deletion of the log store, the drain guard,
 the fold prelude and the recovery loop.
+
+## (i) resolved by the store's granularity: the spill needs two levels (2026-09-20)
+
+Gleaph's existing run store cannot serve small spill runs: `ltb_raw_block_store.rs` has a **fixed 4096-byte payload
+per block** (`BLOCK_PAYLOAD_BYTES`, stride 4112 B) and `R_MAX = 1024` rows per block, with block ids dense over
+that stride. A degree-5 bucket that spills would therefore occupy a 1024-row granule — the same waste that killed
+A′ — and the store also has no capacity classes or free list (the reference's `BucketStore` does: smallest power of
+two that fits, a free list per capacity class, in-place growth only at the arena tail). So A″ splits the spill into
+two levels:
+
+* **Level 1 — packed small runs owned by the bucket.** A dedicated small-run area with power-of-two capacity
+  classes and a per-class free list, taken from the reference's proven allocator shape (`bucket-run-allocation`,
+  `bucket-tail-growth`). This is what a bucket's first spill uses, so a five-row spill costs a small run, not a
+  block — and it is also the level that makes lazy allocation meaningful, because a bucket that never spills has
+  no entry at all.
+* **Level 2 — LTB blocks (existing store).** Above a threshold where the 1024-row granule is proportionate, the
+  spill continues in the tree store the tree mode already uses, which keeps promotion/demotion semantics and the
+  measured ~41 ins/edge scan behaviour.
+
+The transition between levels is the same shape the modes already use (inline → packed run → block), but it is
+*per bucket and lazy* instead of per leaf and eager: no shared log, no per-leaf capacity, no release protocol, no
+fold prelude, no recollection loop. What still needs measuring before implementation is the *sizing* of level 1
+(chunk length and the class boundaries — the reference's data covers 24-byte descriptor records, not Gleaph's
+4-byte edge rows) and the threshold at which level 2 takes over; both are one bench each with the triad
+(wall / memory / persisted bytes per insert) the reference uses.
