@@ -1033,6 +1033,20 @@ session did.
   folds it itself and asserts stable indices) and
   `vertex_edge_span_rewrite_weights_slack_by_label_degree` (read the fixture's expectation: with slack only
   taken when the window hosts it, `hot_capacity > stored` may no longer be the right property).
+  **Root cause of the two one-step failures, from reading the failures (2026-09-20).** Applying
+  `fold_logs = false` from the *shim* (i.e. to every rebalance call) breaks ten rebalance tests with
+  `CollectAllocationOverflow`, including `labeled_leaf_rebalance_folds_overflow_log` — so the rebalance itself
+  *must* fold in its normal use; the flag was in the wrong place. What the one-step path needs is the opposite:
+  `compact_vertex_edge_span_one_step` calls the rebalance with `preferred_extra = log_len` to make room, then
+  folds that one bucket itself and asserts its slot indices are unchanged (`slab_survivor.edge_slot_index_raw()
+  == 1`). The delegated rebalance folds the log *during its publish*, so by the time the one-step path inspects
+  the result the row has already moved into slot 0 (`EdgeMoved { old_slot_index: 1, new_slot_index: 0 }`).
+  Correct placement of the log policy is therefore **per caller of the rebalance**, not per shim: give
+  `rebalance_vertex_edge_span` a `fold_logs` argument, pass `false` from `compact_vertex_edge_span_one_step`
+  (and the fold-planned callers that fold themselves) and `true` everywhere else, then forward it to
+  `rewrite_vertex_edge_span_with_policy`. The tiling-width separation (`bucket_resident_rows` for the reserved
+  span, materialized prefix for the published width) is still required for that path and is preserved in
+  `/tmp/delegation_foldthread_tiling_598_16_compact.rs`.
   enabling it).
      decision removes).
   fourth implementation's placement.
