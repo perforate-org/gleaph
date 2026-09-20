@@ -830,6 +830,14 @@ where
         }
         let new_alloc = if compact {
             total_live
+        } else if total_live == 0 {
+            // A spanless vertex (all buckets tiny) owns zero slab slots by ADR 0096 §5, so
+            // it must not request slack: the request would be a real span
+            // (`next_vertex_edge_span_allocation` returns at least `segment_size`), and when
+            // it cannot be placed the slack tail has no base to report
+            // (`labeled_edge_base_from_first_bucket` needs a non-tiny bucket), which failed
+            // the whole leaf-wide log recovery (class C).
+            0
         } else if !force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             old_alloc
         } else {
@@ -2449,7 +2457,14 @@ where
             // whose stored width alone would under-size the tile. Tree
             // buckets never carry slab prefixes (`stored_slots` is a logical
             // count there), so the floor is skipped for them.
-            let resident = if bucket.is_tree_mode() {
+            // ADR 0096 §5: tiny buckets own zero slab slots, so they must not contribute a
+            // resident term. Applying the degree floor to them (as this loop used to) made an
+            // all-tiny vertex look resident, so a "spanless" vertex requested slack and then
+            // had no base to fall back to (class C, GAP-2026-09-20-005). The planner skips
+            // tiny explicitly; this is the same rule.
+            let resident = if bucket.is_tiny_mode() {
+                0
+            } else if bucket.is_tree_mode() {
                 bucket_physical_resident_slots(bucket)
             } else {
                 bucket_physical_resident_slots(bucket).max(bucket.degree())
@@ -2462,7 +2477,13 @@ where
             .checked_add(preferred_extra)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let segment_size = self.edges.header().segment_size.max(1);
-        let mut new_alloc = if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
+        let mut new_alloc = if min_required == 0 {
+            // A spanless vertex (all buckets tiny) owns zero slab slots (ADR 0096 §5) and
+            // must not request slack: `next_vertex_edge_span_allocation` would return a real
+            // span, and when that cannot be placed the slack tail has no base to report
+            // (`labeled_edge_base_from_first_bucket` needs a non-tiny bucket). Class C.
+            0
+        } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             let base = old_alloc.max(min_required);
             let gap = segment_size.max(base / 8);
             base.saturating_add(gap)
@@ -2474,6 +2495,13 @@ where
             base.saturating_add(gap)
         };
         new_alloc = new_alloc.max(min_required);
+        // A spanless vertex (every bucket tiny) owns no slab content by ADR 0096 §5, so
+        // there is nothing to size, resolve or publish — and resolving would fail: the
+        // slack fallback needs a non-tiny bucket to anchor on
+        // (`labeled_edge_base_from_first_bucket`, class C of the relocation analysis).
+        if min_required == 0 {
+            return Ok(());
+        }
         if self.labeled_leaf_physical_range(src).is_some()
             && min_required > self.labeled_vertex_stored_slots_max_in_leaf(src)?
             && !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
@@ -5939,6 +5967,33 @@ mod tests {
             graph.vertices(),
             graph.buckets(),
             graph.edges(),
+        );
+    }
+    #[test]
+    fn spanless_tiny_vertex_does_not_request_slack() {
+        // Class C: a vertex whose buckets are all tiny owns zero slab slots (ADR 0096 §5),
+        // so a slack request could only be a real span; when that span cannot be placed,
+        // the slack tail has no base to report (`labeled_edge_base_from_first_bucket` needs
+        // a non-tiny bucket) and the whole leaf-wide log recovery failed. The request must
+        // not happen at all, so the vertex stays spanless even when slack is forced.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        graph
+            .insert_edge(
+                vid,
+                BucketLabelKey::from_raw(2),
+                TestEdge { target: 7 },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("tiny birth");
+        assert_eq!(graph.vertices().get(vid).stored_slots, 0);
+        graph
+            .rebalance_vertex_edge_span(vid, None, 0, true)
+            .expect("rebalance");
+        assert_eq!(
+            graph.vertices().get(vid).stored_slots,
+            0,
+            "a spanless vertex must stay spanless"
         );
     }
 }
