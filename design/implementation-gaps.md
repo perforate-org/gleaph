@@ -5265,3 +5265,38 @@ combined design is:
 Sequence if accepted: measure (i) and (iv) first (both are cheap, and (iv) is a win or a loss by a wide margin),
 then change the field's meaning and the ownership, then delete the log store, the drain guard, the fold prelude and
 the recovery loop.
+
+# What `~/dev/lara` says about the log and dynamic allocation (2026-09-20, inspected)
+
+The reference implementation settles two questions this session has been circling, with measurements:
+
+* **The log is a performance mechanism, not a correctness one.** `crates/benches/tests/dgap_vs_log0.rs` runs LARA
+  with `LaraConfig { max_log_entries: 0 }` ("log0") against the DGAP port and asserts identical neighbour sets, so
+  the graph is correct with the log disabled. Their `docs/benchmark-log-2026-09-08.md` log-capacity sweep (T=1024)
+  then ranks capacities: **cap 0 is the second-fastest on the hub fixture (314 µs) because "single-leaf fold acts
+  bulk"**, caps 4–32 are *slower* than both ends (fold frequency plus chain cost), cap 512 is best of the tested
+  range (170 is described as a PMEM legacy value, not an optimum), memory is linear in cap, and — importantly for
+  GAP-006 — **persisted bytes per insert are flat across capacities** (hub 10.4–10.5, dispersed 8.2), so the log's
+  size does not buy durability, only speed. Conclusion for us: making the spill lazy is about *not paying memory for
+  a mechanism that may not be used*, not about correctness, and a blanket "smaller is better" would be wrong at
+  small caps — the first spill should be sized to the bucket (power-of-two class), not to a leaf-wide constant.
+* **Their allocator design for runs is exactly what A″ needs.** `docs/bucket-run-allocation-2026-09-13.md` (B2b)
+  and `bucket-tail-growth-2026-09-13.md` (B3a) describe per-owner runs with **capacity = the smallest power of two
+  that fits**, a **free list per capacity class** (the retired run's first 8 bytes hold the next link; `u64::MAX`
+  terminates), **in-place growth only when `start + old_capacity == arena.len`**, and relocation otherwise — with
+  measured wins on tail growth (32,768 → 65,536 descriptors: read requests 98,335 → 65,567, write requests
+  65,541 → 32,772, mapped bucket bytes 2,359,296 → 1,572,864) and a stated cost for front insertion (the suffix
+  shift remains). Mapped onto A″: the spill run *is* such a run, its capacity class gives bounded waste for small
+  degrees (the objection that killed A′), and its growth is per-bucket, so no leaf-wide tiling, no prediction, no
+  cover.
+* **Their own docs flag what A″ fixes.** `docs/design-opportunities-2026-09-12.md` lists "chunk numbering" for the
+  log as a candidate extension *blocked* by sharing one variable-size log area across users (alignment and
+  co-location), and separately flags `layout_leaf`'s **minimum 1024-slot allocation per leaf** as a computed
+  floor that costs ~16 MiB of edge space at 100 k vertices / 4 096 leaves. A″ removes the shared area (so chunk
+  numbering becomes trivial — the descriptor's existing `i32` field becomes the run id) and the same
+  power-of-two/capacity-class treatment would apply to leaf blocks later.
+
+So the reference supports the direction, supplies a proven allocator shape, and supplies the measurement method:
+their sweeps compare capacities on wall time, memory and persisted bytes per insert, which is exactly the triad to
+measure for a per-bucket spill (plus the two extras noted earlier: small-run overhead, and prefix + run versus
+prefix + chain scan cost).
