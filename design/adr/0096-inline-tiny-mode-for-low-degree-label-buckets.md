@@ -184,6 +184,33 @@ whenever the tree tree settles, K=4 only if a production census then still
 shows degree-4 buckets dominating the tiny-eligible set. Degree-4 buckets work
 fine as slab buckets meanwhile — the boundary stays optimization-only.
 
+**Decision (2026-09-20): Phase 1 and K=4 are deferred; not scheduled.**
+
+Three measurements changed the arithmetic after K=3 shipped:
+
+1. **The tier's main quantified leverage is now universal.** The S1 probe
+   justified S4a with the per-insert PMA counts walk (56 % of the attributed
+   labeled append cost). That walk was removed for *every* bucket on 2026-09-20
+   (leaf-canonical counts, GAP-2026-09-20-004), so the tier's remaining benefit
+   is the span/quota/log/window/cascade avoidance measured in the G1–G3 gates
+   (~2× on a tiny insert) applied to the eligible subset only.
+2. **Marginal coverage is small at scale.** K≤4 − K≤3 is +7.9pp rows / +5.9pp
+   edges (1M) and **+7.0pp rows / +2.2pp edges (10M)** (S3 census). With the
+   eligible *edge* share at 5.0 % (K≤3) → 7.2 % (K≤4), the marginal aggregate
+   ingest effect is ≈1 %.
+3. **Property-bearing buckets are excluded by construction** (width 0 required),
+   and any single property-bearing edge raises its bucket's width, so the
+   eligible set in property-bearing deployments is a subset of the census above
+   (unmeasured; deployment-dependent).
+
+Against that, Phase 1 costs a mechanical swap at every direct reader of the
+crate's most-read field (~300 sites) and K=4 repurposes bytes 12..16, turning a
+missed dispatch into an unbounded span misread. Revisit trigger: a *production*
+census (degree **and** inline-property width) showing degree-4 buckets
+dominating the tiny-eligible set — the same trigger the phase-2 wording already
+names. Until then degree-4 buckets stay slab, which is correct, just
+unoptimized.
+
 ### 4. State machine and transitions
 
 Bucket storage classes: `{tiny, slab, tree}` plus the orthogonal vertex-level

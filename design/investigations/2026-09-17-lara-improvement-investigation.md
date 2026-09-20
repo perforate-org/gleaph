@@ -292,6 +292,12 @@ leverage a core-side tiny tier had (the S1 shares below). With it removed, the
 remaining per-insert cost is the slot write plus the vertex/header updates, so a
 core tier now needs new workload evidence rather than the S1 attribution.
 
+Consequence for **K=4 / ADR 0096 §3b**: same arithmetic at the labeled tier —
+its marginal coverage is +2.2pp of edges at Orkut-10M scale and its leverage
+shrank with the universal counts change, so §3b Phase 1 (the ~300-reader
+`stored_slots` privatization) and K=4 are deferred with the ADR recording the
+decision and the revisit trigger (a production degree + property-width census).
+
 ## S1 result — core insert attribution (measured 2026-09-17, worktree source)
 
 Method: five sibling `bench_scope`s in `EdgeStore::insert_edge_inner`
