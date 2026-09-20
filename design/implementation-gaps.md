@@ -768,6 +768,19 @@ session did.
   Remaining from the essential design: the single `required` / `slack` resolver (they still differ in
   whether a missing span is fatal), then the delegation of `rebalance_vertex_edge_span` (115 lines) and the
   three assertion-level tests that encode the old placement.
+  **Resolver unification attempted and reverted (2026-09-20, saved
+  `/tmp/unified_resolver_attempt_compact.rs`).** The attempt introduced `SpanResolutionPolicy { Required,
+  SlackMayBeDropped }`, one `resolve_labeled_edge_base` plus a policy tail
+  (`tail_append` for a required span while a relocation is in flight, the current cover for slack, an error
+  otherwise), and kept the two public wrappers with their existing signatures. It compiles and 613 green
+  tests pass, but `compaction_cursor_packs_alternating_tombstones_across_steps` **overflows the stack**:
+  the restructured retry/relocation order recurses where the two original bodies did not (the original
+  growth body retried in-leaf *before* each relocation and never took the rebalance resolve guard; the
+  original rebalance body relocated once with that guard held). Two other behaviour details also drifted in
+  the attempt: the `SlackMayBeDropped` path stopped relocating when the leaf was already pinned, and
+  `LABELED_REBALANCE_LEAF_RELOCATED` was only set for that policy. Next attempt should keep each original
+  body's control flow *verbatim* and factor only the policy-dependent tail; do not restructure the retry
+  loop while doing it. The tree is back at 613/0 with the two resolvers as they are.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
