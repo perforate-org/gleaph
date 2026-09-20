@@ -341,7 +341,7 @@ where
             // `bucket.is_tree_mode()`.
             BucketMode::Tree => {
                 let removed = super::tree_write::tree_mode_remove_edge_at_slot(
-                    self, src, slot, &bucket, slot_index,
+                    self, slot, &bucket, slot_index,
                 )?;
                 // Plan 0319 §Step 2: after a successful tree-mode removal,
                 // check the degree-hysteresis trigger. If the updated
@@ -358,7 +358,7 @@ where
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
                         let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
-                            self, slot, label_id, &updated,
+                            self, src, slot, label_id, &updated,
                         );
                     }
                 }

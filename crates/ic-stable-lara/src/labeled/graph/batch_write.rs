@@ -3424,14 +3424,23 @@ where
                 .write_label_bucket_slot(bucket_slot, updated_bucket)
                 .expect("reserve guaranteed bucket slot writability");
 
-            graph
-                .edges
-                .bump_vertex_segment_counts(
-                    res.bucket_fingerprint.owner_vertex_id,
-                    i64::from(res.edge_slot_count),
-                    0,
-                )
-                .expect("reserve guaranteed segment count overflow safety");
+            // ADR 0096 §5 density parity: `actual` counts live slab/log edge
+            // records. A tree run appends rows to LTB blocks, so it leaves the
+            // leaf PMA `actual` untouched (see `tree_write` module header).
+            let actual_delta = match &res.destination {
+                RunDestination::Tree { .. } => 0,
+                _ => i64::from(res.edge_slot_count),
+            };
+            if actual_delta != 0 {
+                graph
+                    .edges
+                    .bump_vertex_segment_counts(
+                        res.bucket_fingerprint.owner_vertex_id,
+                        actual_delta,
+                        0,
+                    )
+                    .expect("reserve guaranteed segment count overflow safety");
+            }
         }
 
         // Publish any vertex span growth caused by growing the last bucket on a

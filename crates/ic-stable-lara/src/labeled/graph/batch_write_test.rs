@@ -2286,6 +2286,13 @@ mod tests {
         let pre_stored = bucket_before.stored_slots;
         let pre_degree = bucket_before.degree;
         assert_eq!(pre_stored, 4097, "stored_slots after scalar insert");
+        // ADR 0096 §5: the promote subtracted the slab-era degree, and the
+        // scalar tree insert above must not have re-added it.
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(VertexId::from(0)).actual,
+            0,
+            "tree-mode edges (promote + scalar insert) leave leaf `actual` empty"
+        );
         // Build a 1-edge batch plan. 1 edge = 4 bytes fits in
         // tail_room.
         let plan = OneOrientationBatchPlan {
@@ -2319,6 +2326,14 @@ mod tests {
         assert!(bucket_after.is_tree_mode());
         assert_eq!(bucket_after.stored_slots, pre_stored + 1);
         assert_eq!(bucket_after.degree, pre_degree + 1);
+        // ADR 0096 §5: a tree run writes LTB rows, so the batch commit must
+        // not bump the leaf `actual` (wrong implementation: the run's
+        // `edge_slot_count` added unconditionally at commit).
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(VertexId::from(0)).actual,
+            0,
+            "tree batch run must not bump leaf `actual`"
+        );
         // The new edge's target must be in the out_edges list.
         let all = graph.out_edges(VertexId::from(0)).unwrap();
         let count = all.iter().filter(|e| e.target == 2).count();

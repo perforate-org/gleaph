@@ -838,7 +838,6 @@ mod tests {
                 };
                 super::super::tree_write::tree_mode_remove_edge_at_slot(
                     &graph,
-                    vid,
                     bucket_slot,
                     &bucket,
                     stop_slot,
@@ -1282,11 +1281,9 @@ mod tests {
         assert_eq!(bucket.stored_slots, stored);
 
         // Tombstone slot 100 via the production tree-mode remove path.
-        super::super::tree_write::tree_mode_remove_edge_at_slot(
-            &graph, vid, slot_idx, &bucket, 100,
-        )
-        .expect("remove")
-        .expect("slot 100 in range");
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 100)
+            .expect("remove")
+            .expect("slot 100 in range");
         // Re-read the bucket: degree decreased, stored_slots unchanged.
         let vertex = graph.vertices().get(vid);
         let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
@@ -1379,7 +1376,7 @@ mod tests {
             super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
             _ => panic!("bucket not found"),
         };
-        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 2)
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 2)
             .expect("remove")
             .expect("slot 2 in range");
         let vertex = graph.vertices().get(vid);
@@ -1448,7 +1445,7 @@ mod tests {
             _ => panic!("bucket not found"),
         };
         // Remove 2 live slots in block 0 (header count becomes 2).
-        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 2)
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 2)
             .expect("remove")
             .expect("slot 2");
         let vertex = graph.vertices().get(vid);
@@ -1456,7 +1453,7 @@ mod tests {
             super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
             _ => panic!("bucket not found"),
         };
-        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 3)
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 3)
             .expect("remove")
             .expect("slot 3");
         // Corrupt the header count to 5 (payload holds exactly 2 markers).
@@ -1709,7 +1706,7 @@ mod tests {
             );
         }
         // 6. Demote back to slab.
-        tree_mode_demote_to_slab(&graph, slot, label, &bucket).expect("demote");
+        tree_mode_demote_to_slab(&graph, vid, slot, label, &bucket).expect("demote");
         // 7. Verify slab mode + property preserved + slab slots match.
         let bucket = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)

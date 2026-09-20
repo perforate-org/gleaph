@@ -346,6 +346,14 @@ where
         if bucket.is_tiny_mode() {
             continue;
         }
+        // ADR 0096 §5 (LARA parity) is the same contract for tree mode: tree
+        // rows live in LTB blocks, so a tree bucket contributes zero. Promote
+        // (`promote_bypass_to_tree_mode`) subtracts the live degree and demote
+        // (`tree_mode_demote_to_slab`) re-adds it; tree inserts/removes never
+        // adjust `actual` (see `tree_write` module header).
+        if bucket.is_tree_mode() {
+            continue;
+        }
         live += i64::from(bucket.degree());
     }
     (live, i64::from(vertex.stored_slots))

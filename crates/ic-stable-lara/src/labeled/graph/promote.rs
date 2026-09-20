@@ -616,6 +616,19 @@ where
         return Err(e.into());
     }
 
+    // Phase 3b-2 (ADR 0096 §5 density parity): the promoted edges leave the
+    // leaf PMA accounting. `actual` counts live slab/log edge records; a tree
+    // bucket's rows live in LTB blocks (only the root region stays resident),
+    // so the tree bucket contributes zero. Subtract the live degree the slab
+    // era counted — LARA does the same at promote (`segment_actual[leaf] -=
+    // live`). The mirror re-add lives in `tree_write::tree_mode_demote_to_slab`.
+    //
+    // Subtract `degree`, not `stored_slots`: tombstones were already excluded
+    // from `actual` when they were removed.
+    graph
+        .edges()
+        .bump_vertex_segment_counts(vid, -i64::from(bucket.degree), 0)?;
+
     // Phase 3c: release the old edge span. The slab prefix is no longer
     // referenced (the new descriptor points at the LEG root region),
     // so the slab prefix slots become recyclable.
@@ -740,6 +753,14 @@ pub mod tests {
                 graph
                     .set_labeled_vertex(vid, new_vertex)
                     .expect("set_labeled_vertex");
+                // Leaf PMA `actual` counts live slab edges (ADR 0096 §5), so the
+                // fabricated descriptor must be visible there too — otherwise no
+                // test using this helper could audit (or detect) the promote /
+                // demote leaf-count arithmetic.
+                graph
+                    .edges()
+                    .bump_vertex_segment_counts(vid, i64::from(stored_slots), 0)
+                    .expect("fixture leaf counts");
                 return;
             }
         };
@@ -765,6 +786,16 @@ pub mod tests {
             .buckets()
             .write_label_bucket_slot(slot, new_bucket)
             .expect("write_label_bucket_slot");
+        // The descriptor keeps `existing.degree` but is forced back to slab /
+        // non-tiny mode: tiny and tree contributions are excluded from leaf
+        // `actual` (ADR 0096 §5), so switching them to slab re-admits exactly
+        // that degree.
+        if existing.is_tiny_mode() || existing.is_tree_mode() {
+            graph
+                .edges()
+                .bump_vertex_segment_counts(vid, i64::from(existing.degree), 0)
+                .expect("fixture leaf counts");
+        }
     }
 
     /// Fill the LEG slab prefix at `edge_start` with deterministic

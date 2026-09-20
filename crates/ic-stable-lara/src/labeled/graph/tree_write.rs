@@ -29,6 +29,17 @@
 //! insert dispatcher calls [`tree_mode_reuse_tombstone_slot`] before the
 //! tail append, reusing an interior tombstone within a fixed tail-first
 //! window. Insertion tree buckets never reuse (ADR 0052 §6).
+//!
+//! Leaf PMA accounting (ADR 0096 §5, LARA parity): a leaf's `actual` counts
+//! **live slab/log edge records only**. Tree rows live in LTB blocks, so a
+//! tree bucket contributes zero — counting its `degree` would push any leaf
+//! holding a ≥ T_PROMOTE-edge bucket to density 1.0 and trigger relocation
+//! cascades that move no slab payload. Tree inserts and removes therefore
+//! never touch `actual`; the two mode transitions are the only adjusting
+//! sites: [`promote_path::promote_bypass_to_tree_mode`] subtracts the live
+//! degree (slab era → tree) and [`tree_mode_demote_to_slab`] re-adds it
+//! (tree → slab era). `num_edges` and every tree/pin geometry count are
+//! unaffected by this rule.
 
 use ic_stable_structures::Memory;
 
@@ -60,7 +71,6 @@ pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
 /// helper runs; this helper always appends (the reuse fallback).
 pub(crate) fn tree_mode_insert_edge<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     label: BucketLabelKey,
@@ -226,7 +236,6 @@ where
         if post_depth == 1 {
             return tree_mode_tail_append_depth1::<E, M>(
                 graph,
-                src,
                 bucket_slot,
                 bucket,
                 &target_bytes,
@@ -239,7 +248,6 @@ where
         // depth ≥ 2: depth-aware interior append.
         tree_mode_tail_append_depth_ge2::<E, M>(
             graph,
-            src,
             bucket_slot,
             bucket,
             &target_bytes,
@@ -467,10 +475,6 @@ where
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         graph.edges().set_num_edges(next_num_edges);
-        graph
-            .edges()
-            .bump_vertex_segment_counts(src, 1, 0)
-            .map_err(LabeledOperationError::from)?;
         Ok(next_stored - 1)
     }
 }
@@ -969,7 +973,6 @@ pub(crate) const TREE_REUSE_WINDOW_BLOCKS: u32 = 4;
 /// the property bytes are rolled back before returning `Err`.
 pub(crate) fn tree_mode_reuse_tombstone_slot<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     _label: BucketLabelKey,
@@ -1150,10 +1153,6 @@ where
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         graph.edges().set_num_edges(next_num_edges);
-        graph
-            .edges()
-            .bump_vertex_segment_counts(src, 1, 0)
-            .map_err(LabeledOperationError::from)?;
         return Ok(Some(reused_slot));
     }
     Ok(None)
@@ -1169,7 +1168,6 @@ where
 /// `tree_mode_tail_append_depth_ge2` (the new interior path). The
 fn tree_mode_tail_append_depth1<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     target_bytes: &[u8; 4],
@@ -1414,10 +1412,6 @@ where
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     graph.edges().set_num_edges(next_num_edges);
-    graph
-        .edges()
-        .bump_vertex_segment_counts(src, 1, 0)
-        .map_err(LabeledOperationError::from)?;
     Ok(next_stored - 1)
 }
 
@@ -1448,7 +1442,6 @@ where
 /// into the existing interior structure.
 fn tree_mode_tail_append_depth_ge2<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     target_bytes: &[u8; 4],
@@ -1677,10 +1670,6 @@ where
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         graph.edges().set_num_edges(next_num_edges);
-        graph
-            .edges()
-            .bump_vertex_segment_counts(src, 1, 0)
-            .map_err(LabeledOperationError::from)?;
         return Ok(next_stored - 1);
     }
     // === New-interior mint (edge root grows) ===
@@ -1899,10 +1888,6 @@ where
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     graph.edges().set_num_edges(next_num_edges);
-    graph
-        .edges()
-        .bump_vertex_segment_counts(src, 1, 0)
-        .map_err(LabeledOperationError::from)?;
     Ok(next_stored - 1)
 }
 
@@ -1918,7 +1903,6 @@ where
 /// `stored_slots` and is not reusable by a future insert).
 pub(crate) fn tree_mode_remove_edge_at_slot<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     slot: u32,
@@ -2018,10 +2002,6 @@ where
         .checked_sub(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     graph.edges().set_num_edges(next_num_edges);
-    graph
-        .edges()
-        .bump_vertex_segment_counts(src, -1, 0)
-        .map_err(LabeledOperationError::from)?;
     Ok(Some(current))
 }
 
@@ -2784,8 +2764,10 @@ where
 /// 1. `bucket.is_tree_mode()` (caller's responsibility; assert).
 /// 2. `E::BYTES == TREE_MODE_REQUIRED_EDGE_BYTES` (typed
 ///    `TreeModeEdgeWidthUnsupported`).
-/// 3. `bucket.inline_property_byte_width() == 0` (LPB-in-tree is
-///    Plan 0320+; typed `InlinePropertyBytesWidthMismatch`).
+/// 3. `bucket.inline_property_byte_width() <= BLOCK_PAYLOAD_BYTES`
+///    (Plan 0326 LPB-in-tree: `0 < w <= payload_bytes` rebuilds the
+///    byte slab from the LPB; wider widths are the typed
+///    `InlinePropertyBytesWidthMismatch` declared bound).
 ///
 /// **Failure-atomic reserve / commit / publish** (mirrors
 /// `tree_mode_flatten`):
@@ -2799,7 +2781,11 @@ where
 ///    (`with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
 ///    so the byte resets to 0; physical depth field is repurposed
 ///    for tree mode and is 0 for slab mode), then `write_label_bucket_slot`.
-/// 5. **Release after publish**: walk the old root region for
+/// 5. **Account**: `bump_vertex_segment_counts(src, +degree, 0)` — the
+///    rebuilt slab's live edges re-enter the leaf PMA `actual`, which the
+///    tree era excluded (mirror of `promote_tiny_to_slab`'s post-publish
+///    bump and of the promote path's subtract).
+/// 6. **Release after publish**: walk the old root region for
 ///    interior block_ids, release each interior via
 ///    `ltb().release()`, release the leaf blocks via
 ///    `collect_leaf_block_ids` + `ltb().release()`, and
@@ -2815,6 +2801,7 @@ where
 /// contained (`let _ =`).
 pub(crate) fn tree_mode_demote_to_slab<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
     bucket_slot: u64,
     label: BucketLabelKey,
     bucket: &LabelBucket,
@@ -3030,6 +3017,13 @@ where
         }
     }
 
+    // Phase 4b: the rebuilt slab's live edges re-enter the leaf PMA
+    // `actual` (the tree era contributed zero — see the module header).
+    graph
+        .edges()
+        .bump_vertex_segment_counts(src, i64::from(degree), 0)
+        .map_err(LabeledOperationError::from)?;
+
     // Phase 5: After publish, release all old resources. Best-effort:
     // the descriptor no longer references them.
     //
@@ -3124,6 +3118,7 @@ where
 /// test.
 pub(crate) fn tree_mode_demote_to_slab_pub<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
     bucket_slot: u64,
     label: BucketLabelKey,
     bucket: &LabelBucket,
@@ -3132,7 +3127,7 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    tree_mode_demote_to_slab(graph, bucket_slot, label, bucket)
+    tree_mode_demote_to_slab(graph, src, bucket_slot, label, bucket)
 }
 
 #[cfg(test)]
@@ -3193,9 +3188,8 @@ mod tests {
             _ => panic!("bucket slot not found"),
         };
         let new_edge = TestEdge { target: 9999 };
-        let logical_slot =
-            tree_mode_insert_edge(&graph, vid, bucket_slot, &bucket, label, &new_edge)
-                .expect("tree_mode_insert_edge");
+        let logical_slot = tree_mode_insert_edge(&graph, bucket_slot, &bucket, label, &new_edge)
+            .expect("tree_mode_insert_edge");
         assert_eq!(logical_slot, 4096);
 
         // Re-read the bucket: stored=4097, degree=4097, still tree mode.
@@ -3248,7 +3242,7 @@ mod tests {
                 _ => panic!("slot not found"),
             };
             let edge = TestEdge { target: 4096 + i };
-            tree_mode_insert_edge(&graph, vid, bucket_slot, &bucket, label, &edge).expect("insert");
+            tree_mode_insert_edge(&graph, bucket_slot, &bucket, label, &edge).expect("insert");
         }
         // Verify the final bucket state.
         let vertex = graph.vertices().get(vid);
@@ -3415,22 +3409,22 @@ mod tests {
 
         fn make_graph() -> LabeledLaraGraph<InlinePropEdge, VectorMemory> {
             LabeledLaraGraph::<InlinePropEdge, VectorMemory>::new(
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
-                test_mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
+                super::super::test_support::mem(),
                 crate::labeled::InitialCapacities::uniform(64),
                 BucketLabelKey::UNLABELED_DIRECTED,
             )
@@ -3536,7 +3530,7 @@ mod tests {
             BucketSearch::Found { slot, .. } => slot,
             _ => panic!("slot"),
         };
-        let removed = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100)
+        let removed = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100)
             .expect("remove")
             .expect("slot in range");
         // The removed edge must be the original value at slot 100.
@@ -3605,7 +3599,7 @@ mod tests {
             BucketSearch::Found { slot, .. } => slot,
             _ => panic!("slot"),
         };
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         // Re-read.
         let vertex = graph.vertices().get(vid);
         let bucket2 = match graph.find_bucket(vid, &vertex, label).expect("find 2") {
@@ -3619,7 +3613,7 @@ mod tests {
         // Insert: stored_slots was 4096, append goes to slot 4096.
         let new_edge = TestEdge { target: 7777 };
         let logical_slot =
-            tree_mode_insert_edge(&graph, vid, slot2, &bucket2, label, &new_edge).expect("insert");
+            tree_mode_insert_edge(&graph, slot2, &bucket2, label, &new_edge).expect("insert");
         // 0-indexed: 0..=4095 were the original slots; slot 4096 is the
         // post-remove post-insert tail.
         assert_eq!(logical_slot, 4096);
@@ -3699,7 +3693,7 @@ mod tests {
             _ => panic!("bucket not found"),
         };
         for remove_slot in [100u32, 200, 300] {
-            let removed = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, remove_slot)
+            let removed = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, remove_slot)
                 .expect("remove")
                 .expect("slot in range");
             assert_eq!(removed.target, remove_slot + 100);
@@ -3744,14 +3738,14 @@ mod tests {
             BucketSearch::Found { bucket, slot } => (bucket, slot),
             _ => panic!("bucket not found"),
         };
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         // Second remove of the same slot: idempotent, returns the tombstone.
         let vertex = graph.vertices().get(vid);
         let (bucket2, slot2) = match graph.find_bucket(vid, &vertex, label).expect("find") {
             BucketSearch::Found { bucket, slot } => (bucket, slot),
             _ => panic!("bucket not found"),
         };
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot2, &bucket2, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot2, &bucket2, 100).expect("remove");
         assert_tree_header_count_parity(&graph, vid, label);
         let vertex = graph.vertices().get(vid);
         let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
@@ -3766,6 +3760,139 @@ mod tests {
     }
 
     // =================== Plan 0340: tree-mode tombstone reuse ===================
+
+    /// ADR 0096 §5 leaf-density parity, driven end to end through the
+    /// production paths (the dispatcher promotes at `T_PROMOTE`; the scalar
+    /// remove promotes the demote trigger at `T_DEMOTE`).
+    ///
+    /// Wrong implementations this fails on: (a) bumping `actual` for a tree
+    /// insert (the count assertion), (b) skipping the promote subtract (the
+    /// post-promote zero assertion plus the leaf audit), (c) skipping the
+    /// demote re-add (the post-demote assertion plus the leaf audit).
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_mode_leaf_actual_counts_slab_edges_only() {
+        use crate::labeled::invariants::assert_labeled_edge_store_pma_counts;
+        use crate::labeled::record::LabeledVertex;
+        // Insert label must differ from the graph's default edge label: the
+        // default label routes to the core bypass store (no labeled bucket).
+        let label = BucketLabelKey::from_raw(2);
+        // 1<<20 slots keeps the shape off the raw-capacity path (the same
+        // capacity envelope the GAP regression in `compact` uses).
+        let graph = LabeledLaraGraph::new(
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            super::super::test_support::mem(),
+            crate::labeled::InitialCapacities::uniform(1 << 20),
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("graph");
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        let vid = VertexId::from(0);
+        let placement = EdgePlacementPolicy::Insertion;
+        let bucket = || match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find_bucket")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        let actual = || graph.leaf_segment_counts_for_vid(vid).actual;
+        let audit = || {
+            assert_labeled_edge_store_pma_counts(graph.vertices(), graph.buckets(), graph.edges())
+        };
+
+        // Slab era: every live edge is a PMA-resident record.
+        for target in 0..crate::labeled::graph::T_PROMOTE {
+            graph
+                .insert_edge(vid, label, TestEdge { target }, placement)
+                .unwrap();
+        }
+        assert!(
+            !bucket().is_tree_mode(),
+            "stored == T_PROMOTE is still slab"
+        );
+        assert_eq!(actual(), i64::from(crate::labeled::graph::T_PROMOTE));
+        audit();
+
+        // The next insert trips the promote trigger: the whole slab-era
+        // degree leaves `actual`, and the new edge is a tree row.
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge {
+                    target: crate::labeled::graph::T_PROMOTE,
+                },
+                placement,
+            )
+            .unwrap();
+        let promoted = bucket();
+        assert!(promoted.is_tree_mode(), "stored > T_PROMOTE must promote");
+        assert_eq!(promoted.degree, crate::labeled::graph::T_PROMOTE + 1);
+        assert_eq!(actual(), 0, "promote must subtract the slab-era degree");
+        audit();
+
+        // Tree inserts and tree removes leave the leaf counts alone.
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge {
+                    target: crate::labeled::graph::T_PROMOTE + 1,
+                },
+                placement,
+            )
+            .unwrap();
+        assert_eq!(bucket().degree, crate::labeled::graph::T_PROMOTE + 2);
+        assert_eq!(actual(), 0, "tree insert must not bump leaf `actual`");
+        audit();
+        let tail = bucket().degree - 1;
+        graph
+            .remove_edge_at_slot_with_move(vid, label, tail)
+            .expect("tree remove")
+            .expect("slot in range");
+        assert_eq!(bucket().degree, crate::labeled::graph::T_PROMOTE + 1);
+        assert_eq!(actual(), 0, "tree remove must not decrement leaf `actual`");
+        audit();
+
+        // Strip the tail down to the demote threshold: the trigger rebuilds
+        // the bucket as a slab, whose live edges re-enter `actual`.
+        while bucket().degree > crate::labeled::graph::T_DEMOTE {
+            let tail = bucket().degree - 1;
+            graph
+                .remove_edge_at_slot_with_move(vid, label, tail)
+                .expect("remove tail")
+                .expect("slot in range");
+        }
+        let demoted = bucket();
+        assert!(!demoted.is_tree_mode(), "degree <= T_DEMOTE must demote");
+        assert_eq!(demoted.degree, crate::labeled::graph::T_DEMOTE);
+        assert_eq!(
+            actual(),
+            i64::from(crate::labeled::graph::T_DEMOTE),
+            "demote must re-add the live slab degree"
+        );
+        audit();
+        // The global edge count is untouched by the mode transitions.
+        assert_eq!(
+            graph.edges().header().num_edges,
+            u64::from(crate::labeled::graph::T_DEMOTE)
+        );
+    }
 
     /// Re-read the tree bucket at `(vid, label)` and return `(bucket, slot)`.
     fn read_tree_bucket(
@@ -3790,13 +3917,12 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         // Reuse insert: the hole at slot 100 (block 0) is within the window.
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         let new_edge = TestEdge { target: 7777 };
         let reused = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             slot,
             &bucket,
             label,
@@ -3829,12 +3955,11 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         let new_edge = TestEdge { target: 7777 };
         let reused = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             slot,
             &bucket,
             label,
@@ -3881,7 +4006,7 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         // Dispatcher insert with Insertion policy: must append at the tail.
         graph
             .insert_edge_skip_leaf_cascade(
@@ -3924,7 +4049,7 @@ mod tests {
         promote_test_bucket(&graph, vid, label, 8192);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         // Tombstone slot 100 (block 0), which is OUTSIDE the window.
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         // Dispatcher insert with Unordered policy: the reuse search misses the
         // out-of-window tombstone and the append fallback fires.
         graph
@@ -3998,7 +4123,6 @@ mod tests {
         // target and the w-byte property value at the reused position (the
         // tree property stream is tombstone-inclusive 1:1, ADR 0088 §5).
         let graph = inline_property_test_graph();
-        let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(3);
         let w: u16 = 4;
         let stored: u32 = 4096;
@@ -4019,7 +4143,6 @@ mod tests {
             .with_stored_inline_property_bytes(w, &prop_bytes);
         let reused = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             bucket_slot,
             &tombstoned,
             label,
@@ -4072,14 +4195,13 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         let tail_before = graph.ltb().tail_next();
         let free_before = graph.ltb().free_count();
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         let depth_before = bucket.tree_mode_physical_depth();
         let reused = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             slot,
             &bucket,
             label,
@@ -4117,11 +4239,10 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         let _ = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             slot,
             &bucket,
             label,
@@ -4133,7 +4254,7 @@ mod tests {
         assert_tree_header_count_parity(&graph, vid, label);
         // Demote: rebuild as a fresh slab of only live edges.
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        tree_mode_demote_to_slab(&graph, slot, label, &bucket).expect("demote");
+        tree_mode_demote_to_slab(&graph, vid, slot, label, &bucket).expect("demote");
         let vertex = graph.vertices().get(vid);
         let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
             BucketSearch::Found { bucket, .. } => bucket,
@@ -4155,11 +4276,10 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         promote_test_bucket(&graph, vid, label, 4096);
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
         let _ = tree_mode_reuse_tombstone_slot(
             &graph,
-            vid,
             slot,
             &bucket,
             label,
@@ -4171,7 +4291,7 @@ mod tests {
         assert_tree_header_count_parity(&graph, vid, label);
         // Remove the same slot again.
         let (bucket, slot) = read_tree_bucket(&graph, vid, label);
-        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
         assert_tree_header_count_parity(&graph, vid, label);
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
         assert_eq!(bucket.degree, 4095);
@@ -4690,14 +4810,7 @@ mod tests {
             .expect("write descriptor");
         // The next insert must fail-closed.
         let new_edge = TestEdge { target: 0xCAFE };
-        let result = tree_mode_insert_edge(
-            &graph,
-            crate::VertexId::from(0),
-            bucket_slot,
-            &new_bucket,
-            label,
-            &new_edge,
-        );
+        let result = tree_mode_insert_edge(&graph, bucket_slot, &new_bucket, label, &new_edge);
         match result {
             Err(LabeledOperationError::TreeRootCapacityReached {
                 stored_slots,
@@ -4831,9 +4944,8 @@ mod tests {
         assert_eq!(pre_bucket.tree_mode_physical_depth(), 1);
         // Insert one edge via the raw helper.
         let new_edge = TestEdge { target: 0xDEAD };
-        let logical_slot =
-            tree_mode_insert_edge(&graph, vid, pre_slot, &pre_bucket, label, &new_edge)
-                .expect("cascade insert must succeed");
+        let logical_slot = tree_mode_insert_edge(&graph, pre_slot, &pre_bucket, label, &new_edge)
+            .expect("cascade insert must succeed");
         assert_eq!(logical_slot, target_stored);
         // Re-read: depth 2, stored 2^20 + 1.
         let vertex = graph.vertices().get(vid);
@@ -4949,15 +5061,9 @@ mod tests {
         // l % K = 1, so the interior-row append path fires:
         // root unchanged.
         let new_edge = TestEdge { target: 0xBEEF };
-        let logical_slot = tree_mode_insert_edge(
-            &graph,
-            crate::VertexId::from(0),
-            bucket_slot,
-            &pre_bucket,
-            label,
-            &new_edge,
-        )
-        .expect("interior-row append must succeed");
+        let logical_slot =
+            tree_mode_insert_edge(&graph, bucket_slot, &pre_bucket, label, &new_edge)
+                .expect("interior-row append must succeed");
         assert_eq!(logical_slot, pre_stored);
         // Re-read: root unchanged, depth unchanged, stored 2^20+2.
         let post_bucket = graph
@@ -5060,15 +5166,9 @@ mod tests {
         // Insert one. l = ceil(2,097,152/1024) = 2048. l % K = 0
         // → new-interior mint, root grows from 2 to 3.
         let new_edge = TestEdge { target: 0xFEED };
-        let logical_slot = tree_mode_insert_edge(
-            &graph,
-            crate::VertexId::from(0),
-            bucket_slot,
-            &pre_bucket,
-            label,
-            &new_edge,
-        )
-        .expect("new-interior mint must succeed");
+        let logical_slot =
+            tree_mode_insert_edge(&graph, bucket_slot, &pre_bucket, label, &new_edge)
+                .expect("new-interior mint must succeed");
         assert_eq!(logical_slot, pre_stored);
         let post_bucket = graph
             .buckets()
@@ -5264,7 +5364,7 @@ mod tests {
                 BucketSearch::Found { bucket, .. } => bucket,
                 _ => panic!("bucket missing mid-tombstone"),
             };
-            tree_mode_remove_edge_at_slot(&graph, vid, bucket_slot, &bucket, slot)
+            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bucket, slot)
                 .expect("tree remove")
                 .expect("slot in range");
         }
@@ -5288,7 +5388,7 @@ mod tests {
         let num_before = graph.edges().header().num_edges;
 
         // Demote.
-        tree_mode_demote_to_slab(&graph, bucket_slot, label, &b).expect("demote");
+        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote");
 
         // Re-read the bucket: must be slab-mode, stored == degree == 2048,
         // overflow_log_head = -1, inline_property_bytes_log_len = 0
@@ -5379,7 +5479,7 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("bucket missing"),
         };
-        tree_mode_remove_edge_at_slot(&graph, vid, bucket_slot, &bucket, 0)
+        tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bucket, 0)
             .expect("remove 0")
             .expect("slot in range");
         let b = match graph
@@ -5403,7 +5503,7 @@ mod tests {
                 BucketSearch::Found { bucket, .. } => bucket,
                 _ => panic!("bucket missing mid"),
             };
-            tree_mode_remove_edge_at_slot(&graph, vid, bucket_slot, &bcur, slot)
+            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bcur, slot)
                 .expect("remove mid")
                 .expect("slot in range");
         }
@@ -5421,7 +5521,7 @@ mod tests {
         // Tombstone one more: degree = 2048 == T_DEMOTE. Direct demote
         // (without the Step 2 trigger) should succeed.
         let b2_slot_idx = 2047u32;
-        tree_mode_remove_edge_at_slot(&graph, vid, bucket_slot, &b2, b2_slot_idx)
+        tree_mode_remove_edge_at_slot(&graph, bucket_slot, &b2, b2_slot_idx)
             .expect("remove 2047")
             .expect("slot in range");
         let b3 = match graph
@@ -5434,7 +5534,7 @@ mod tests {
         assert_eq!(b3.degree, 2048);
         assert!(b3.is_tree_mode());
         // Direct demote at degree == T_DEMOTE.
-        tree_mode_demote_to_slab(&graph, bucket_slot, label, &b3).expect("demote");
+        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b3).expect("demote");
         let b4 = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)
             .expect("find")
@@ -5522,7 +5622,7 @@ mod tests {
                 BucketSearch::Found { bucket, .. } => bucket,
                 _ => panic!("bucket missing mid"),
             };
-            tree_mode_remove_edge_at_slot(&graph, vid, bucket_slot, &b, slot)
+            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &b, slot)
                 .expect("remove all")
                 .expect("slot in range");
         }
@@ -5539,7 +5639,7 @@ mod tests {
         // Demote at degree 0: the live Vec is empty, no slab span is
         // reserved (allocate_span(0) returns 0? actually returns the
         // free-list head; either way, the new bucket has 0 live edges).
-        tree_mode_demote_to_slab(&graph, bucket_slot, label, &b).expect("demote 0");
+        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote 0");
         let b2 = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)
             .expect("find")
@@ -5609,7 +5709,7 @@ mod tests {
             .expect("write patched bucket");
         // Demote: should fail with `InlinePropertyBytesWidthMismatch`
         // BEFORE any state change.
-        let result = tree_mode_demote_to_slab(&graph, bucket_slot, label, &b_with_lpb);
+        let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
         // **Plan 0326 REWORK**: the demote of a w > 0 tree bucket
         // now restores the byte-slab from the LPB. The test setup
         // (patched w=4 without minting the matching LPB leaves)
@@ -5618,7 +5718,7 @@ mod tests {
         // don't exist and return `LtbBlock(NotMinted)`. The
         // demote atomicity for w = 0 is still covered by the
         // full round-trip test in `lpb_in_tree_demote_round_trip_at_w_4_stored_4096`.
-        let result = tree_mode_demote_to_slab(&graph, bucket_slot, label, &b_with_lpb);
+        let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
         assert!(
             matches!(result, Err(LabeledOperationError::LtbBlock(_))),
             "expected LtbBlock (NotMinted) for w > 0 demote on a synthetic w-patched bucket, got {result:?}"
@@ -5683,7 +5783,7 @@ mod tests {
         assert_eq!(alloc_after_deepen, alloc_before + 1);
         // Demote: should release 1024 leaves + 1 interior, drop back
         // to alloc_before.
-        tree_mode_demote_to_slab(&graph, bucket_slot, label, &b_d2).expect("demote d2");
+        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_d2).expect("demote d2");
         let b_post = graph
             .buckets()
             .read_label_bucket_slot(bucket_slot)
@@ -5857,7 +5957,6 @@ mod tests {
     #[cfg(not(feature = "canbench"))]
     fn property_deepen_at_k_boundary_preserves_all_values() {
         let graph = inline_property_test_graph();
-        let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(3);
         let w: u16 = 32;
         let stored: u32 = 128 * 1024; // 131072 = 1024 leaves x K=128
@@ -5880,7 +5979,7 @@ mod tests {
         prop_bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
         let edge = InlinePropertyTestEdge::with_bytes(0x1234, &new_value.to_le_bytes())
             .with_stored_inline_property_bytes(w, &prop_bytes);
-        let logical_slot = tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge)
+        let logical_slot = tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge)
             .expect("insert at K boundary must deepen the property tree");
         assert_eq!(logical_slot, stored);
         let post = graph
@@ -5915,7 +6014,6 @@ mod tests {
     #[cfg(not(feature = "canbench"))]
     fn property_deepen_random_slot_read_write_model() {
         let graph = inline_property_test_graph();
-        let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(3);
         let w: u16 = 32;
         let stored: u32 = 128 * 1024;
@@ -5926,8 +6024,7 @@ mod tests {
         prop_bytes[0..4].copy_from_slice(&0xABCD_1234u32.to_le_bytes());
         let edge = InlinePropertyTestEdge::with_bytes(1, &0u32.to_le_bytes())
             .with_stored_inline_property_bytes(w, &prop_bytes);
-        tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge)
-            .expect("insert must deepen");
+        tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge).expect("insert must deepen");
         let post = graph
             .buckets()
             .read_label_bucket_slot(bucket_slot)
@@ -6085,7 +6182,6 @@ mod tests {
     fn depth_ge2_property_append_at_k_boundary() {
         // ---------- Part (a): interior-row edge append ----------
         let graph = inline_property_test_graph();
-        let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(3);
         let w: u16 = 1;
         let kp = 4096u32;
@@ -6173,7 +6269,7 @@ mod tests {
         let new_value: u32 = 0x7E;
         let edge = InlinePropertyTestEdge::with_bytes(0x77, &[new_value as u8]);
         let logical_slot =
-            tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge).expect("insert");
+            tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge).expect("insert");
         assert_eq!(logical_slot, stored);
         let post = graph
             .buckets()
@@ -6288,8 +6384,7 @@ mod tests {
         let new_value_b: u32 = 0x3C;
         let edge_b = InlinePropertyTestEdge::with_bytes(0x88, &[new_value_b as u8]);
         let logical_slot_b =
-            tree_mode_insert_edge(&graph_b, VertexId::from(0), 0, &pre_b, label, &edge_b)
-                .expect("insert b");
+            tree_mode_insert_edge(&graph_b, 0, &pre_b, label, &edge_b).expect("insert b");
         assert_eq!(logical_slot_b, stored_b);
         let post_b = graph_b
             .buckets()

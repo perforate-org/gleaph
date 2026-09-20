@@ -344,7 +344,6 @@ where
                 // structural, enforced by the placement policy passed in.
                 if let Some(reused_slot) = super::tree_write::tree_mode_reuse_tombstone_slot(
                     self,
-                    src,
                     bucket_slot,
                     &bucket,
                     label_id,
@@ -358,7 +357,6 @@ where
                 }
                 let logical_slot = super::tree_write::tree_mode_insert_edge(
                     self,
-                    src,
                     bucket_slot,
                     &bucket,
                     label_id,
@@ -432,7 +430,6 @@ where
                         if let Some(reused_slot) =
                             super::tree_write::tree_mode_reuse_tombstone_slot(
                                 self,
-                                src,
                                 bucket_slot,
                                 &bucket,
                                 label_id,
@@ -447,7 +444,6 @@ where
                         }
                         let logical_slot = super::tree_write::tree_mode_insert_edge(
                             self,
-                            src,
                             bucket_slot,
                             &bucket,
                             label_id,
