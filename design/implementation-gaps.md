@@ -5349,3 +5349,33 @@ fold prelude, no recollection loop. What still needs measuring before implementa
 (chunk length and the class boundaries — the reference's data covers 24-byte descriptor records, not Gleaph's
 4-byte edge rows) and the threshold at which level 2 takes over; both are one bench each with the triad
 (wall / memory / persisted bytes per insert) the reference uses.
+
+## Spill distribution measured: the design's premise, quantified (2026-09-20)
+
+A one-off probe on a production-shaped hub (`build_mixed_label_hub(20, 500)`, 20 labels x 500 rows = 10 000 rows)
+counted, per bucket, the slab width, the live rows and the overflow-log chain length:
+
+```
+buckets=20  log_backed=1  total_rows=10000  spilled_rows=74
+chains = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,74]
+```
+
+Three things follow directly:
+
+* **Lazy allocation is justified quantitatively, not ideologically.** 19 of 20 buckets hold *zero* spill; only the
+  one hot bucket spills, with 74 rows = 0.74 % of the rows. A per-leaf eager log capacity (Gleaph's 170 entries per
+  segment) is therefore provisioned for buckets that never use it — which is GAP-006's complaint in numbers.
+* **The shared area couples 20 buckets to one hot one.** Today that single 74-row chain lives in the leaf's shared
+  log, so the next log-full event triggers a leaf-wide fold that touches all 20 buckets, and the leaf's log segment
+  is then released for everyone. A per-bucket spill moves exactly 74 rows and touches nobody else — the coupling is
+  the cost, not the row count.
+* **Level-1 sizing starts from ~74 rows.** A power-of-two class of 128 covers the observed spill with <2x waste, so
+  classes up to a few hundred cover this shape and LTB's 1024-row blocks take over only for genuinely large spills.
+  The class boundaries still need a distribution over more fixtures (this is one shape at one moment), but the
+  order of magnitude is now measured rather than assumed.
+
+With this, the design question is closed on evidence: the log's ownership should be per bucket, its allocation lazy,
+its small runs packed with capacity classes and free lists (the reference's allocator shape), its large runs the
+existing LTB store, and its descriptor field the existing `overflow_log_head` slot reinterpreted as a run id. The
+implementation is a multi-slice effort (small-run store, field meaning, then deletion of the log store, the drain
+guard, the fold prelude and the recovery loop, followed by an ADR that supersedes the log's current description).
