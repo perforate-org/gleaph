@@ -828,7 +828,7 @@ where
             let moved = old_alloc != new_alloc || old_base != new_base;
             return Ok((buckets, old_alloc, old_base, new_alloc, moved, new_base));
         }
-        let new_alloc = if compact {
+        let mut new_alloc = if compact {
             total_live
         } else if total_live == 0 {
             // A spanless vertex (all buckets tiny) owns zero slab slots by ADR 0096 §5, so
@@ -844,6 +844,20 @@ where
             next_vertex_edge_span_allocation(old_alloc, min_required, segment_size)?
         };
 
+        // Proactive slack is a hint, not a requirement. When the content already fits the
+        // current span (`min_required <= old_alloc`), the rewrite can proceed in place: room
+        // for spare capacity is only taken when it is already free in the current window.
+        // Otherwise keep the current span — an optimisation must never escalate into a leaf
+        // relocation (which is what made the hub fixtures ratchet) nor fail an insert. Only
+        // content that does not fit may move the leaf.
+        if force_slack_grow
+            && old_alloc >= min_required
+            && self
+                .try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+                .is_none()
+        {
+            new_alloc = old_alloc;
+        }
         let requested_alloc = new_alloc;
         let (new_base, new_alloc) = if new_alloc == 0 {
             (0, 0)
@@ -2495,6 +2509,20 @@ where
             base.saturating_add(gap)
         };
         new_alloc = new_alloc.max(min_required);
+        // Proactive slack is a hint, not a requirement. When the content already fits the
+        // current span (`min_required <= old_alloc`), the rewrite can proceed in place: room
+        // for spare capacity is only taken when it is already free in the current window.
+        // Otherwise keep the current span — an optimisation must never escalate into a leaf
+        // relocation (which is what made the hub fixtures ratchet) nor fail an insert. Only
+        // content that does not fit may move the leaf.
+        if force_slack_grow
+            && old_alloc >= min_required
+            && self
+                .try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+                .is_none()
+        {
+            new_alloc = old_alloc;
+        }
         // A spanless vertex (every bucket tiny) owns no slab content by ADR 0096 §5, so
         // there is nothing to size, resolve or publish — and resolving would fail: the
         // slack fallback needs a non-tiny bucket to anchor on
