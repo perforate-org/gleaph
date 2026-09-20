@@ -5115,3 +5115,18 @@ true there the packed width really does change and an attempt is needed; (2) mak
 resolver walks to a placement even when the vertex's existing cover already hosts the requested width, which
 `old_alloc >= new_alloc` can answer without touching the leaf; (3) accept ≈ +19 % on this one workflow, with
 `compact` at −217.82 K median and `ins` median at +0.09 %.
+
+**Option 1 does not apply; the next scope split is inside the resolver (2026-09-20).** Reading the branch order in
+`rewrite_vertex_edge_span_read_and_plan`: the cheap in-place answer (`(old_base, new_alloc)`) is taken when
+`new_alloc == old_alloc`; the slack-hint branch (`try_labeled_vertex_edge_base_in_pinned_leaf` only, no
+relocation) *additionally* requires `old_alloc >= min_required`, i.e. it only covers "content already fits, widen
+for spare room"; a vertex whose content does not fit (`old_alloc < min_required`) falls through to the resolver,
+which may relocate the leaf. So on the non-tail bypass benches the 122 K is either the plain placement attempt
+inside the resolver or a leaf relocation it drives — the two have very different implications (the first is the
+price of asking, the second is real maintenance work). Next measurement, one run (~40 s): put scopes around the
+resolver's three steps — the initial `try_labeled_vertex_edge_base_in_pinned_leaf`, the
+relocate-and-retry loop, and the policy tail — and read which owns the 122 K. If it is the initial attempt, the fix
+is to answer "does the current cover already host the requested width" before touching the leaf; if it is the
+relocation, the delegation merely moved work that the fourth implementation also did, and the honest comparison is
+that scope against its baseline. Then choose trim / cheap-answer / accept (≈ +19 % on this workflow, with `compact`
+−217.82 K median and `ins` median +0.09 %).
