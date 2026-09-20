@@ -260,7 +260,35 @@ defect from being rediscovered without its prior reasoning.
   (root bytes move by anchor, the vertex's other buckets shift down). Implemented that way
   (`/tmp/d_promote.rs`, `/tmp/d_compact.rs`): Phase 1 allocates nothing, Phase 3e re-bases the cover
   on the resident SSOT and re-lays.
-  **Pinned failure:** the re-lay's *planning* now succeeds on the post-promotion state
+  **Root cause of that failure (found 2026-09-20):** `calculate_label_edge_span_positions` (the
+  degree-weighted positions helper used by the *planning* path) computes its slot budget as
+  `Σ bucket.degree()`, so a promoted bucket demanded its full logical count of a span sized for its
+  root region — `gaps = span_slots - effective_live` underflowed into `CollectAllocationOverflow`.
+  With `effective_live` taken from the resident-region SSOT (weights stay label-degree-based, which
+  `vertex_edge_span_rewrite_weights_slack_by_label_degree` pins), **both regression tests pass** with
+  the copy-free shape.
+  **Blast radius measured (13 tests, classified):**
+  - *design contract change* (expected, re-express): `promote_edge_start_points_to_leg_offset`,
+    `promote_pre_and_post_edge_start_differ`, `promote_publish_phase_atomic_descriptor_write`,
+    `promote_succeeds_when_alloc_space_at_cap` (the root now reuses the prefix head, so
+    `edge_start` is unchanged and no span is allocated — the "fresh LEG offset" proxies no longer
+    hold).
+  - *audit model* (needs the leaf-level slide, see below): `gap_tree_full_path_growth_past_5728_releases_only_owned_regions`
+    and `tree_mode_leaf_actual_counts_slab_edges_only` fail with `leaf 0: PMA total mismatch (store
+    vs labeled geometry) left: 1040` — shedding the prefix leaves its slots unassigned in the leaf,
+    while the audit requires `Σ covers == leaf total`. The honest fix is to re-tile the **leaf**
+    (slide / relocate) in Phase 3e instead of only the vertex, so the freed slots are redistributed
+    to the leaf's other vertices.
+  - *expectation shifts* (policy preserved, numbers move): `labeled_segment_relocate_reuses_free_span`,
+    `vertex_edge_span_rewrite_weights_slack_by_label_degree`,
+    `single_label_log_fold_reserves_edge_only_tail_headroom`.
+  - *suspected real bugs* (data assertions, investigate before updating anything):
+    `default_bypass_conversion_clears_vertex_edge_span_allocation` (`left: [TestEdge { target: 0 },
+    TestEdge { target: 0 }]` — bypass rows read back as zeros) and
+    `edge_inline_propertys_survive_rewrite_with_tombstones` (`left: [(0, 20), (0, 30)]` — property
+    values zeroed); plus `cascade_at_2_20_plus_1_deepens` (`promote: CollectAllocationOverflow`) and
+    the known ② `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run`.
+  Working copies of the passing shape: `/tmp/final_*.rs` (superseding `/tmp/d_*`).
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
