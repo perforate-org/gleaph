@@ -340,7 +340,7 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                for slot_index in 0..logical_slots.min(bucket.stored_slots_raw()) {
+                for slot_index in 0..logical_slots.min(bucket.tiny_used_width()) {
                     if E::read_from(&bucket.tiny_target(slot_index).to_le_bytes()).is_deleted_slot()
                     {
                         continue;
@@ -754,7 +754,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let mut edges = Vec::with_capacity(bucket.degree() as usize);
-                for ordinal in 0..bucket.stored_slots_raw() {
+                for ordinal in 0..bucket.tiny_used_width() {
                     let target = bucket.tiny_target(ordinal);
                     // Layout-native liveness (same predicate as slab/tree read paths).
                     if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
@@ -913,7 +913,7 @@ where
                 // shared closure would need `impl Trait` in closure position.)
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots_raw() {
+                        for ordinal in 0..bucket.tiny_used_width() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -929,7 +929,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
+                        for ordinal in (0..bucket.tiny_used_width()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -1694,7 +1694,7 @@ where
             }
             let offset = window.offset;
             let remaining = window.limit;
-            // Bypass extent: bypass rows span `vertex.stored_slots_raw()` slots
+            // Bypass extent: bypass rows span `vertex.stored_slots` slots
             // with no overflow log. Descending positions are
             // `extent - 1 - slot`.
             let extent = vertex.stored_slots;
@@ -1769,10 +1769,10 @@ where
                     E::BYTES == 4,
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
-                // Tombstone-inclusive positions over [0..stored), matching the
+                // Tombstone-inclusive positions over the used width, matching the
                 // slab/tree window contract (ADR 0088 §2); dead slots consume
                 // position space but yield nothing.
-                let extent = bucket.stored_slots_raw();
+                let extent = bucket.tiny_used_width();
                 let offset = window.offset.min(extent);
                 let limit = window
                     .limit
@@ -2326,7 +2326,7 @@ where
                 );
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots_raw() {
+                        for ordinal in 0..bucket.tiny_used_width() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2346,7 +2346,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
+                        for ordinal in (0..bucket.tiny_used_width()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2595,7 +2595,7 @@ where
                 // Tombstone-inclusive prefix: ordinals are slots; holes skipped; no values.
                 match order {
                     OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.stored_slots_raw() {
+                        for ordinal in 0..bucket.tiny_used_width() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -2606,7 +2606,7 @@ where
                         }
                     }
                     OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.stored_slots_raw()).rev() {
+                        for ordinal in (0..bucket.tiny_used_width()).rev() {
                             if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
                                 .is_deleted_slot()
                             {
@@ -4138,7 +4138,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 let slot_index = slot.raw();
-                if slot_index >= bucket.stored_slots_raw() {
+                if slot_index >= bucket.tiny_used_width() {
                     return Ok(EdgeSlotState::Missing);
                 }
                 // Layout-native liveness (same predicate as slab/tree read paths).
@@ -4302,7 +4302,7 @@ where
                     "tiny buckets require 4-byte edges (birth gate)"
                 );
                 for slot_index in order_slot_indices(raw_slots, order) {
-                    if slot_index >= bucket.stored_slots_raw() {
+                    if slot_index >= bucket.tiny_used_width() {
                         continue;
                     }
                     // Layout-native liveness (same predicate as slab/tree read paths).
@@ -6420,11 +6420,12 @@ mod tests {
         use crate::labeled::record::LabeledVertex;
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
-        // Four edges per bucket promote tiny -> slab, so every edge walks (and
-        // used to walk) the counts path. The fixture's segment size is 32, so 40
+        // Five edges per bucket promote tiny -> slab (K=4 keeps four inline and
+        // those bank nothing in the leaf), so every edge walks (and used to
+        // walk) the counts path. The fixture's segment size is 32, so 40
         // vertices span two PMA leaves.
         const VERTICES: u32 = 40;
-        const PER_VERTEX: u32 = 4;
+        const PER_VERTEX: u32 = 5;
         for _ in 0..VERTICES {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
@@ -6513,18 +6514,25 @@ mod tests {
     #[test]
     fn normal_labeled_edges_update_pma_leaf_segment_counts() {
         let graph = test_graph();
-        // ADR 0096 §4: tiny edges reserve no slots (invisible to PMA counts).
-        // Promote so slab spans and counts materialize.
+        // ADR 0096 §4/§3b: tiny edges reserve no slots (invisible to PMA
+        // counts), so promote the four inline seeds explicitly to materialize
+        // the slab span and its counts.
+        let label = BucketLabelKey::from_raw(2);
         for target in [10u32, 11, 12, 13] {
             graph
                 .insert_edge(
                     VertexId::from(0),
-                    BucketLabelKey::from_raw(2),
+                    label,
                     TestEdge { target },
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(
+            &graph,
+            VertexId::from(0),
+            label,
+        );
 
         let header = graph.edges().header();
         let first_leaf = graph

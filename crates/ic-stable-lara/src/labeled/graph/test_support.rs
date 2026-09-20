@@ -145,6 +145,36 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     test_graph_with_default(BucketLabelKey::directed_from_index(1))
 }
 
+/// Promotes an existing tiny bucket to the slab (test fixture helper).
+///
+/// ADR 0096 §3b: four inline edges stay inline at K=4, so fixtures that need a
+/// slab-backed bucket with an exact span promote explicitly instead of relying
+/// on the n-th insert to promote (the pre-K=4 idiom). The promotion transcribes
+/// the inline edges into a span of exactly `degree` slots.
+///
+/// Panics if the bucket is missing or is not tiny.
+pub(crate) fn promote_bucket_to_slab<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+) -> u64 {
+    let vertex = graph.vertices().get(vid);
+    let (slot, bucket) = match graph.find_bucket(vid, &vertex, label).expect("find bucket") {
+        crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+        crate::labeled::graph::BucketSearch::Missing { .. } => {
+            panic!("promote_bucket_to_slab: bucket missing")
+        }
+    };
+    assert!(
+        bucket.is_tiny_mode(),
+        "promote_bucket_to_slab: bucket is already promoted"
+    );
+    graph
+        .promote_tiny_to_slab(vid, slot, &bucket)
+        .expect("promote tiny bucket to slab");
+    slot
+}
+
 /// Builds a tiny-mode bucket with the given inline targets for R2b tests
 /// (ADR 0096). Birth-tiny flips separately; tests construct explicitly so the
 /// suite stays green with zero production behavior change meanwhile.
@@ -162,7 +192,7 @@ pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone, M: ic_stable_structures::Me
     use crate::labeled::record::LabelBucket;
     assert!(
         targets.len() <= LabelBucket::TINY_MAX_DEGREE as usize,
-        "force_tiny_bucket: at most K=3 targets"
+        "force_tiny_bucket: at most TINY_MAX_DEGREE targets"
     );
     let vertex = graph.vertices().get(vid);
     let (slot, bucket) = graph
@@ -172,8 +202,13 @@ pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone, M: ic_stable_structures::Me
     for (i, target) in targets.iter().enumerate() {
         bucket = bucket.with_tiny_target(i as u32, *target);
     }
+    // K=4 birth shape: every target within the used width is written (holes are
+    // layout-native tombstones, never zero), and the width itself is the tiny
+    // bound. Slots outside the used width stay untouched and are never read.
     let degree = targets.len() as u32;
-    let bucket = bucket.with_degree_field(degree).with_stored_slots(degree);
+    let bucket = bucket
+        .with_degree_field(degree)
+        .with_tiny_used_width(degree);
     graph
         .buckets()
         .write_label_bucket_slot(slot, bucket)

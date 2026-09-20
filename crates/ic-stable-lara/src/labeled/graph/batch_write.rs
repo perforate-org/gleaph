@@ -4417,7 +4417,7 @@ mod tests {
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::{
         InlinePropertyTestEdge, TestEdge as GraphTestEdge,
-        inline_property_test_graph_with_capacity, test_graph_with_default,
+        inline_property_test_graph_with_capacity, promote_bucket_to_slab, test_graph_with_default,
     };
     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
@@ -4819,11 +4819,13 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         // Fill the bucket slab window so the batch must use the overflow log.
-        // ADR 0096 §4: four inserts (promotion materializes an exact span,
-        // which the fourth edge fills) where three quota-spaced inserts
-        // sufficed before.
+        // ADR 0096 §3b: the 5th insert promotes with an exact span and no
+        // vertex slack, so the batch cannot append in place. An explicit
+        // promotion of a four-edge tiny bucket would leave one cover slot
+        // unused (the allocator mints a quota-sized cover), which the batch
+        // would legitimately consume.
         let label = BucketLabelKey::directed_from_index(1);
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -4860,12 +4862,12 @@ mod tests {
         let out = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             out.len(),
-            5,
-            "expected five out-edges after overflow append (four seeds + batch)"
+            6,
+            "expected six out-edges after overflow append (five seeds + batch)"
         );
         assert_eq!(
             out.iter().map(|edge| edge.target).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 10],
+            vec![1, 2, 3, 4, 5, 10],
             "overflow-log append must preserve ascending live order"
         );
     }
@@ -4982,9 +4984,9 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::directed_from_index(2);
-        // ADR 0096 §4: promote past tiny (four seeds) so the source leaf pins
-        // and the bucket owns a slab span for relocation. Seeds avoid target 2
-        // (reserved for the batch edge below).
+        // ADR 0096 §3b: four inline seeds plus an explicit promotion so the
+        // source leaf pins and the bucket owns a slab span for relocation.
+        // Seeds avoid target 2 (reserved for the batch edge below).
         for target in [1u32, 3, 4, 5] {
             graph
                 .insert_edge(
@@ -4995,6 +4997,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        promote_bucket_to_slab(&graph, VertexId::from(0), label);
         graph
             .insert_edge(
                 VertexId::from(32),
@@ -5060,8 +5063,8 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::directed_from_index(1);
-        // Four seeds: the 4th promotes tiny→slab (three seeds would stay
-        // tiny and take the inline-tombstone path instead).
+        // Four inline seeds plus an explicit promotion: the delete below must
+        // take the slab tombstone path (K=4 keeps four edges inline).
         for target in 1..=4 {
             graph
                 .insert_edge(
@@ -5072,6 +5075,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        promote_bucket_to_slab(&graph, VertexId::from(0), label);
         graph
             .remove_edge_at_slot(VertexId::from(0), label, 1)
             .unwrap()
@@ -5114,10 +5118,11 @@ mod tests {
         }
 
         let label = BucketLabelKey::directed_from_index(1);
-        // Create a bucket at vertex 0 and fill its slab window.
-        // ADR 0096 §4: four seeds (promotion fills the exact span) where
-        // three quota-spaced seeds sufficed before.
-        for i in 1..=4u32 {
+        // Create a bucket at vertex 0 and fill its slab window. ADR 0096 §3b:
+        // the 5th insert promotes with an exact span and no vertex slack, so the
+        // batch below cannot append in place (an explicit promotion of a
+        // four-edge tiny bucket leaves one cover slot free).
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -5129,7 +5134,7 @@ mod tests {
         }
         // Pin a second leaf after leaf 0 so leaf 0 is not at the allocation tail
         // and cannot expand via tail growth (promote to slab so the pin sticks).
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(32),
@@ -5780,9 +5785,9 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let label = BucketLabelKey::directed_from_index(1);
-        // Four seeds: the 4th promotes tiny→slab, so the delete below takes
-        // the slab tombstone path (the helper's contract; three seeds would
-        // stay tiny and take the inline-tombstone path instead).
+        // Four inline seeds (K=4 keeps them inline), then an explicit
+        // promotion so the delete below takes the slab tombstone path and the
+        // span is exactly four slots (the helper's contract).
         for target in 1..=4u32 {
             graph
                 .insert_edge(
@@ -5793,6 +5798,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        promote_bucket_to_slab(&graph, VertexId::from(0), label);
         graph
             .compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
@@ -6070,10 +6076,9 @@ mod tests {
 
     #[test]
     fn insertion_batch_never_fills_slab_tombstone() {
-        // ADR 0096 §4: four seeds (promotion fills the exact span) plus a
-        // middle tombstone, so the span is genuinely full and the batch must
-        // take the overflow-log path (three seeds leave promotion headroom
-        // that a slab append would legitimately consume).
+        // ADR 0096 §3b: four inline seeds plus an explicit promotion fill the
+        // exact four-slot span; the middle tombstone below then makes the span
+        // genuinely full, so the batch must take the overflow-log path.
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -6088,6 +6093,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        promote_bucket_to_slab(&graph, VertexId::from(0), label);
         graph
             .compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();

@@ -335,9 +335,8 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema
             | crate::labeled::record::LabelBucketFieldError::TinyTreeModeConflict
             | crate::labeled::record::LabelBucketFieldError::TinyDegreeOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::TinyStoredDegreeMismatch
+            | crate::labeled::record::LabelBucketFieldError::TinyUsedWidthOutOfRange
             | crate::labeled::record::LabelBucketFieldError::TinyLogHeadPresent
-            | crate::labeled::record::LabelBucketFieldError::TinyTailNotZero
             | crate::labeled::record::LabelBucketFieldError::TinyValueStatePresent => {
                 Self::CollectAllocationOverflow
             }

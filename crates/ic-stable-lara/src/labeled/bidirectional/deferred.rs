@@ -5682,9 +5682,9 @@ mod tests {
         let third = graph.push_vertex().expect("third");
         let fourth = graph.push_vertex().expect("fourth");
         let label = BucketLabelKey::directed_from_index(3);
-        // Four inserts promote tiny->slab (three would stay tiny and take the
-        // inline-tombstone path, which these slab swap-compaction tests do not
-        // exercise).
+        // Four inserts plus an explicit promotion to the slab: K=4 keeps four
+        // edges inline, and these swap-compaction tests exercise the slab path
+        // (an inline bucket takes the inline-tombstone path instead).
         for (dst, target) in [(first, 1u32), (second, 2), (third, 3), (fourth, 4)] {
             graph
                 .insert_directed_edge(
@@ -5700,6 +5700,7 @@ mod tests {
         graph
             .maintenance(unbounded_budget())
             .expect("settle inserts");
+        crate::labeled::graph::test_support::promote_bucket_to_slab(graph.forward(), src, label);
         assert!(
             graph
                 .remove_directed_deferred(src, first, TestEdge(1))
@@ -6795,10 +6796,10 @@ mod tests {
         };
         let graph = valued_bidirectional_graph();
         const NEIGHBOURS: u32 = 8;
-        // Four edges per neighbour: the neighbour's reverse bucket promotes out of
-        // tiny (which owns no slab span) into a slab bucket, so the delete has
-        // spans to empty and release.
-        const EDGES_PER_NEIGHBOUR: u32 = 4;
+        // Five edges per neighbour: the neighbour's reverse bucket promotes out
+        // of tiny (which owns no slab span) into a slab bucket at K=4's K+1, so
+        // the delete has spans to empty and release.
+        const EDGES_PER_NEIGHBOUR: u32 = 5;
         // Vertex 0 is unused; hub = 1, neighbours = 2..(2 + NEIGHBOURS).
         for _ in 0..(NEIGHBOURS + 2) {
             graph.push_vertex().unwrap();

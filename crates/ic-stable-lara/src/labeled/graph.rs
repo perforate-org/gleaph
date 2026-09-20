@@ -140,9 +140,14 @@ pub(crate) fn alloc_gap(stored_slots: u32) -> u32 {
 ///
 /// CSR slab mode: `alloc_space = stored_slots + alloc_gap(stored_slots)`.
 /// Tree mode: `alloc_space = stored_slots` (gap-0 invariant).
+/// Tiny mode: `alloc_space = tiny_used_width()` — a tiny bucket owns no slab
+/// allocation, and its raw stored field is payload (the 4th inline target), so
+/// the slab formula would read a vertex id as a slot count.
 #[inline]
 pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
-    if bucket.is_tree_mode() {
+    if bucket.is_tiny_mode() {
+        bucket.tiny_used_width()
+    } else if bucket.is_tree_mode() {
         bucket.stored_slots_raw()
     } else {
         bucket
@@ -157,8 +162,8 @@ pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
 /// - Tree: `TREE_STRUCTURAL_CAP = 2^30` slots (the `MAX_DEPTH = 3` fail-closed
 ///   boundary). `R_MAX = 1024` is the **root-array fan-out cap** governing
 ///   `deepen` (Step 7), not a slot cap.
-/// - Tiny: `TINY_MAX_DEGREE = 3` slots (ADR 0096 §1; the promote trigger fires
-///   first, so no tiny bucket can approach the slab/tree caps).
+/// - Tiny: `TINY_MAX_DEGREE` inline slots (ADR 0096 §1; the promote trigger
+///   fires first, so no tiny bucket can approach the slab/tree caps).
 #[inline]
 pub(crate) fn cap_for_mode(bucket: &LabelBucket) -> u32 {
     if bucket.is_tiny_mode() {
@@ -387,7 +392,10 @@ mod cap_enforcement_tests {
             .expect("enable");
         assert_eq!(BucketMode::from_bucket(&tiny), BucketMode::Tiny);
         assert_eq!(cap_for_mode(&tiny), LabelBucket::TINY_MAX_DEGREE);
-        assert_eq!(LabelBucket::TINY_MAX_DEGREE, 3);
+        assert_eq!(LabelBucket::TINY_MAX_DEGREE, 4);
+        // ADR 0096 §1 (R5): the tiny bound is the byte-28 used width, not the
+        // T3 payload slot (which holds the 4th inline target).
+        assert_eq!(tiny.tiny_used_width(), 2);
         // Zero-cap geometry travels with the mode (see §4b).
         assert_eq!(super::compact::bucket_span_region_len(&tiny), 0);
         assert_eq!(super::compact::combined_span_region_len(&tiny), 0);
@@ -441,6 +449,36 @@ mod cap_enforcement_tests {
         assert!(
             matches!(err, LabeledOperationError::AllocSpaceCapReached { .. }),
             "expected AllocSpaceCapReached, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_alloc_cap_tiny_mode_measures_the_used_width() {
+        // Tiny mode: the raw stored field is payload (T3 = the 4th inline
+        // target), so the slab formula would read a vertex id as a slot count
+        // and reject every tiny bucket. Alloc space is the byte-28 used width.
+        let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2, -1)
+            .try_enable_tiny_mode()
+            .expect("enable tiny");
+        assert_eq!(compute_bucket_allocation(&tiny), 2);
+        check_alloc_cap(&tiny, 1).expect("two used slots leave room in a K=4 prefix");
+
+        let full = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 0, -1)
+            .try_enable_tiny_mode()
+            .expect("enable tiny")
+            .with_tiny_target(3, 999);
+        assert_eq!(compute_bucket_allocation(&full), 4);
+        assert_eq!(cap_for_mode(&full), LabelBucket::TINY_MAX_DEGREE);
+        let err = check_alloc_cap(&full, 1).expect_err("a full inline prefix is at the cap");
+        assert!(
+            matches!(
+                err,
+                LabeledOperationError::AllocSpaceCapReached {
+                    current_alloc_space: 4,
+                    ..
+                }
+            ),
+            "expected the used width as alloc space, got {err:?}"
         );
     }
 

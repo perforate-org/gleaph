@@ -1065,15 +1065,17 @@ where
         // normal schema path handle the width.
         // Promotion triggers: width-carrying edge, or prefix full with no
         // hole to fill (`stored >= TINY_MAX_DEGREE` and every slot live).
-        // Holed prefixes hole-fill below (no promotion). Genuinely full blocks
-        // fail closed below; retry once after a leaf relocate (same pressure
-        // response as slab growth). Bounded to one retry; persistent failure
-        // propagates.
+        // Holed prefixes hole-fill below (no promotion). A leaf too tight for
+        // the pending span relocates and retries, exactly like slab growth: one
+        // relocate can leave the block one growth quantum short (K=4 promotes a
+        // full inline prefix, so promotions land later and collide more often),
+        // so the retry budget matches the slab append loop's and persistent
+        // failure still propagates.
         // Hole scan (Unordered only — Insertion appends per ADR 0052 §6,
         // uniformly across modes; survivors keep slots either way).
         let mut hole: Option<u32> = None;
         if _placement == EdgePlacementPolicy::Unordered {
-            for i in 0..bucket.stored_slots_raw() {
+            for i in 0..bucket.tiny_used_width() {
                 // Layout-native liveness (same predicate as slab/tree read paths).
                 if E::read_from(&bucket.tiny_target(i).to_le_bytes()).is_deleted_slot() {
                     hole = Some(i);
@@ -1082,18 +1084,9 @@ where
             }
         }
         if edge.edge_inline_property_byte_width() != 0
-            || (hole.is_none() && bucket.stored_slots_raw() >= LabelBucket::TINY_MAX_DEGREE)
+            || (hole.is_none() && bucket.tiny_used_width() >= LabelBucket::TINY_MAX_DEGREE)
         {
-            match self.promote_tiny_to_slab(src, bucket_slot, &bucket) {
-                Ok(()) => {}
-                Err(LabeledOperationError::Store(
-                    LaraOperationError::CollectAllocationOverflow,
-                )) => {
-                    self.relocate_labeled_leaf_physical_block(src)?;
-                    self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
-                }
-                Err(other) => return Err(other),
-            }
+            self.promote_tiny_to_slab_with_growth(src, bucket_slot, &bucket)?;
             return self.insert_edge_skip_leaf_cascade_impl(
                 src,
                 label_id,
@@ -1106,9 +1099,10 @@ where
             E::BYTES == 4,
             "tiny buckets require 4-byte edges (birth gate)"
         );
-        // Unordered hole-fill (found above) or dense append at `stored`.
-        // `stored` grows only on dense append; `degree` (live) always +1.
-        let logical_slot = hole.unwrap_or(bucket.stored_slots_raw());
+        // Unordered hole-fill (found above) or dense append at the used width
+        // (Insertion's tail ordinal); the used width grows only on append while
+        // `degree` (live) always +1.
+        let logical_slot = hole.unwrap_or(bucket.tiny_used_width());
         let grown = bucket.with_degree_field(
             bucket
                 .degree()
@@ -1118,9 +1112,9 @@ where
         let grown = if hole.is_some() {
             grown
         } else {
-            grown.with_stored_slots(
+            grown.with_tiny_used_width(
                 bucket
-                    .stored_slots_raw()
+                    .tiny_used_width()
                     .checked_add(1)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?,
             )
@@ -1140,6 +1134,40 @@ where
             // precedent at the tree-mode branch); the ordinal is the slot.
             storage: ScalarInsertStorage::Slab,
         }))
+    }
+
+    /// Promotes a tiny bucket to the slab from the insert trigger, growing the
+    /// leaf block when the pending span does not fit.
+    ///
+    /// One relocate can leave the block a growth quantum short, and K=4
+    /// promotes a *full* inline prefix, so promotions land later in the leaf's
+    /// life and collide far more often than at K=3. The retry budget therefore
+    /// mirrors the slab append loop's; persistent failure still propagates
+    /// (fail-closed) and the caller treats it as the leaf-pressure signal.
+    ///
+    /// Scoped to the insert trigger (the dense-promotion path). The inline
+    /// property width-declaration path promotes single-shot: it declares schema
+    /// on a bucket with no pending edge and surfaces the typed pressure error
+    /// to its caller instead (ADR 0096 §4b).
+    pub(super) fn promote_tiny_to_slab_with_growth(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        bucket: &LabelBucket,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        for _attempt in 0..64u32 {
+            match self.promote_tiny_to_slab(src, bucket_slot, bucket) {
+                Ok(()) => return Ok(()),
+                Err(LabeledOperationError::Store(
+                    LaraOperationError::CollectAllocationOverflow,
+                )) => self.relocate_labeled_leaf_physical_block(src)?,
+                Err(other) => return Err(other),
+            }
+        }
+        Err(LaraOperationError::CollectAllocationOverflow.into())
     }
 
     /// Promotes a tiny-mode bucket to slab (ADR 0096 §4): reserve, transcribe,
@@ -1341,7 +1369,7 @@ where
         // Transcribe LIVE targets only (skip tombstone holes — the slab form
         // is dense; holes do not survive promotion).
         let mut transcribed = 0u32;
-        for i in 0..bucket.stored_slots_raw() {
+        for i in 0..bucket.tiny_used_width() {
             let target = bucket.tiny_target(i);
             if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
                 continue;
@@ -1510,8 +1538,8 @@ mod tests {
 
     #[test]
     fn first_label_bucket_born_tiny_promotes_to_span() {
-        // ADR 0096 §4: new buckets are born tiny (no quota span, no pin).
-        // The initial quota span materializes at promotion (4th edge).
+        // ADR 0096 §4/§3b: new buckets are born tiny (no quota span, no pin).
+        // The initial quota span materializes at promotion (K+1 = 5th edge).
         let graph = test_graph();
         let first_label = BucketLabelKey::from_raw(2);
         graph
@@ -1531,12 +1559,13 @@ mod tests {
         assert_eq!(vertex.degree(), 1);
         assert_eq!(vertex.stored_slots, 0, "tiny birth consumes no span");
         assert!(first.is_tiny_mode());
-        assert_eq!((first.degree(), first.stored_slots_raw()), (1, 1));
+        assert_eq!((first.degree(), first.tiny_used_width()), (1, 1));
         assert!(
             graph
                 .labeled_leaf_physical_range(VertexId::from(0))
                 .is_none()
         );
+        // K=4: a completely full inline bucket still owns no leaf span.
         for target in [11u32, 12, 13] {
             graph
                 .insert_edge(
@@ -1552,9 +1581,31 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(vertex.base_slot_start())
             .unwrap();
-        assert!(!first.is_tiny_mode(), "4th edge must promote");
-        assert_eq!((first.degree(), first.stored_slots_raw()), (4, 4));
-        assert!(vertex.stored_slots >= 4);
+        assert!(first.is_tiny_mode(), "4 live edges still fit inline at K=4");
+        assert_eq!((first.degree(), first.tiny_used_width()), (4, 4));
+        assert_eq!(vertex.stored_slots, 0, "a full tiny bucket owns no span");
+        assert!(
+            graph
+                .labeled_leaf_physical_range(VertexId::from(0))
+                .is_none()
+        );
+        // The 5th edge is the one that promotes.
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                first_label,
+                TestEdge { target: 14 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let first = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert!(!first.is_tiny_mode(), "5th edge must promote");
+        assert_eq!((first.degree(), first.stored_slots_raw()), (5, 5));
+        assert!(vertex.stored_slots >= 5);
         // ADR 0096 §5: promotion reserves a span (edge_start + stored cohere
         // with the vertex cover); pinning is maintenance's job, not the
         // insert path's (tiny birth pins nothing, and promotion need not
@@ -1580,10 +1631,10 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
-        // ADR 0096 §4: fresh buckets are born tiny (no leaf accounting), so
+        // ADR 0096 §4/§3b: fresh buckets are born tiny (no leaf accounting), so
         // seed past promotion to exercise the slab accounting path this test
         // pins (accounting without rebalance).
-        for target in [10u32, 11, 12, 13] {
+        for target in [10u32, 11, 12, 13, 14] {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1598,7 +1649,7 @@ mod tests {
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                TestEdge { target: 14 },
+                TestEdge { target: 15 },
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
@@ -1624,11 +1675,11 @@ mod tests {
             .unwrap();
         let cap_after_tiny_anchor = graph.edges().header().elem_capacity;
         // ADR 0096 §4: the anchor insert births a tiny bucket (no pin, no span).
-        // Pinning defers to promotion (4th edge of a bucket) and slab growth.
+        // Pinning defers to promotion (K+1 = 5th edge of a bucket) and slab growth.
         assert!(graph.labeled_leaf_physical_range(vid).is_none());
         // Growth label must sort after `anchor` so bucket layout stays in pinned-leaf order.
         let road = BucketLabelKey::from_raw(100);
-        for target in 0..4u32 {
+        for target in 0..5u32 {
             graph
                 .insert_edge(
                     vid,
@@ -1639,7 +1690,7 @@ mod tests {
                 .unwrap();
         }
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
-        for target in 4..128u32 {
+        for target in 5..128u32 {
             graph
                 .insert_edge(
                     vid,
@@ -1838,7 +1889,7 @@ mod tests {
         let label = BucketLabelKey::from_raw(2);
         let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
         let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
-        for target in [10u32, 20, 30] {
+        for target in [10u32, 20, 30, 40, 50] {
             graph
                 .insert_edge(src, label, TestEdge { target }, insertion)
                 .unwrap();
@@ -1848,7 +1899,7 @@ mod tests {
         // maintenance.
         graph.compact_vertex_edge_span(src, 0).unwrap();
 
-        // Delete the middle edge: slot 1 becomes a tombstone while stored_slots stays 3.
+        // Delete the middle edge: slot 1 becomes a tombstone while stored_slots stays 5.
         let removed = graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
         assert_eq!(removed.target, 20);
         let bucket = graph
@@ -1860,10 +1911,9 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        // Wire prefix width: tiny keeps the tombstone hole (degree is the live
-        // count, so the mode-aware accessor would report 2 here).
-        assert_eq!(bucket.stored_slots_raw(), 3);
-        assert_eq!(bucket.degree(), 2);
+        assert!(!bucket.is_tiny_mode(), "5 seeds promote to the slab");
+        assert_eq!(bucket.stored_slots_raw(), 5);
+        assert_eq!(bucket.degree(), 4);
 
         // Unordered placement reuses the tombstone before appending.
         let location = graph
@@ -1890,8 +1940,8 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        assert_eq!(bucket.stored_slots(), 3);
-        assert_eq!(bucket.degree(), 3);
+        assert_eq!(bucket.stored_slots(), 5);
+        assert_eq!(bucket.degree(), 5);
         assert_eq!(
             graph
                 .out_edges(src)
@@ -1899,7 +1949,7 @@ mod tests {
                 .iter()
                 .map(|edge| edge.target)
                 .collect::<Vec<_>>(),
-            vec![10, 21, 30]
+            vec![10, 21, 30, 40, 50]
         );
     }
 
@@ -2017,10 +2067,11 @@ mod tests {
         graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
 
         // Insertion placement never fills the interior tombstone (ADR 0052 §6).
-        // Tiny buckets are born tiny (not slab): the full prefix promotes
-        // (compacting the hole away in transcription) and the pending edge
-        // appends at the compacted tail (slot 2), not the slab-retained
-        // slot 3. The §6 intent holds: no hole was filled (slot != 1).
+        // Tiny buckets are born tiny (not slab): the live prefix does not
+        // promote yet (K=4 holds 4 inline slots, and only 3 are used), so the
+        // pending edge appends at the used tail (slot 3) and the interior hole
+        // at slot 1 is retained as a layout-native tombstone. The §6 intent
+        // holds: no hole was filled (slot != 1).
         let location = graph
             .insert_edge_skip_leaf_cascade_with_location(
                 src,
@@ -2031,7 +2082,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_ne!(location.logical_slot, 1, "Insertion must not fill the hole");
-        assert_eq!(location.logical_slot, 2);
+        assert_eq!(location.logical_slot, 3);
         assert_eq!(
             graph
                 .out_edges(src)
@@ -2162,6 +2213,46 @@ mod tests {
     }
 
     #[test]
+    fn tiny_live_slot_count_invariant_catches_degree_drift() {
+        // ADR 0096 §3b invariant: the live slots inside the byte-28 used width
+        // are exactly `degree` (holes are tombstones). Injected drift — here a
+        // degree field claiming a slot that is actually a dead hole — must fail
+        // the layout audit rather than pass as a valid tiny row.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        force_tiny_bucket(&graph, vid, label, &[10, 11, 12]);
+        graph.remove_edge_at_slot(vid, label, 1).unwrap().unwrap();
+        let slot = graph
+            .find_bucket_slot(&graph.vertices().get(vid), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (2, 3));
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+
+        graph
+            .buckets()
+            .write_label_bucket_slot(slot, bucket.with_degree_field(3))
+            .unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::labeled::invariants::assert_labeled_layout_invariants(
+                graph.vertices(),
+                graph.buckets(),
+                graph.edges(),
+            );
+        }));
+        assert!(
+            result.is_err(),
+            "audit must reject a tiny degree that is not backed by live slots"
+        );
+    }
+
+    #[test]
     fn tiny_append_grows_inline_without_leaf_accounting() {
         let graph = test_graph();
         let (vid, label) = tiny_test_bucket(&graph, &[]);
@@ -2178,7 +2269,7 @@ mod tests {
         }
         let bucket = read_tiny_bucket(&graph, vid, label);
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (3, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (3, 3));
         assert_eq!(
             graph.leaf_segment_counts_for_vid(vid).actual,
             actual_before,
@@ -2201,10 +2292,11 @@ mod tests {
     }
 
     #[test]
-    fn tiny_fourth_insert_promotes_to_slab() {
+    fn tiny_fourth_insert_stays_inline_fifth_promotes_to_slab() {
         let graph = test_graph();
         let (vid, label) = tiny_test_bucket(&graph, &[10, 11, 12]);
         let actual_before = graph.leaf_segment_counts_for_vid(vid).actual;
+        // K=4: the 4th edge still lands inline (no span, no leaf accounting).
         graph
             .insert_edge(
                 vid,
@@ -2214,16 +2306,35 @@ mod tests {
             )
             .unwrap();
         let bucket = read_tiny_bucket(&graph, vid, label);
-        assert!(!bucket.is_tiny_mode(), "4th edge must promote");
-        assert!(!bucket.is_tree_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (4, 4));
+        assert!(bucket.is_tiny_mode(), "4th edge still fits inline at K=4");
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (4, 4));
         assert_eq!(bucket.overflow_log_head(), -1);
-        // Transcribed 3 never counted before (+3), appended 4th bumps (+1).
         assert_eq!(
             graph.leaf_segment_counts_for_vid(vid).actual,
-            actual_before + 4
+            actual_before,
+            "a full inline bucket banks nothing in the leaf"
         );
         assert_eq!(graph.edges().header().num_edges, 4);
+        // The 5th edge promotes and transcribes all 4 inline edges.
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge { target: 14 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let bucket = read_tiny_bucket(&graph, vid, label);
+        assert!(!bucket.is_tiny_mode(), "5th edge must promote");
+        assert!(!bucket.is_tree_mode());
+        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (5, 5));
+        assert_eq!(bucket.overflow_log_head(), -1);
+        // Transcribed 4 never counted before (+4), appended 5th bumps (+1).
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(vid).actual,
+            actual_before + 5
+        );
+        assert_eq!(graph.edges().header().num_edges, 5);
         let mut seen = Vec::new();
         graph
             .visit_edges(
@@ -2236,7 +2347,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(seen, vec![10, 11, 12, 13]);
+        assert_eq!(seen, vec![10, 11, 12, 13, 14]);
     }
 }
 
@@ -2293,8 +2404,8 @@ mod g6_zero_read_tests {
         // span read of the 2-edge prefix alone would cost 8B+ and the control
         // below shows the slab path's floor.
         assert_eq!((r, w), (135, 37), "tiny insert byte shape changed");
-        // Differential control: promote to slab (4th edge), then measure a slab
-        // append (5th edge) — it must read its slab span, strictly more than tiny.
+        // Differential control: promote to slab (5th edge), then measure a slab
+        // append (6th edge) — it must read its slab span, strictly more than tiny.
         graph
             .insert_edge(
                 vid,
@@ -2308,14 +2419,28 @@ mod g6_zero_read_tests {
             BucketSearch::Found { bucket, .. } => bucket,
             BucketSearch::Missing { .. } => panic!("bucket missing"),
         };
-        assert!(!bucket.is_tiny_mode(), "4th insert promotes to slab");
+        assert!(bucket.is_tiny_mode(), "4th insert still fits inline at K=4");
+        graph
+            .insert_edge(
+                vid,
+                label,
+                TestEdge { target: 14 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(!bucket.is_tiny_mode(), "5th insert promotes to slab");
         reads.set(0);
         writes.set(0);
         graph
             .insert_edge(
                 vid,
                 label,
-                TestEdge { target: 14 },
+                TestEdge { target: 15 },
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();

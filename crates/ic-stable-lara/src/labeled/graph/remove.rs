@@ -414,7 +414,7 @@ where
             "tiny remove requires a tiny-mode bucket"
         );
         let _ = src;
-        if slot_index >= bucket.stored_slots_raw() {
+        if slot_index >= bucket.tiny_used_width() {
             return Ok(None);
         }
         // Layout-native liveness (same predicate as slab/tree read paths):
@@ -434,7 +434,9 @@ where
             for i in 0..LabelBucket::TINY_MAX_DEGREE {
                 fresh = fresh.with_tiny_target(i, 0);
             }
-            fresh.with_degree_field(0).with_stored_slots(0)
+            // `with_tiny_target(3, 0)` (in the loop above) already zeroes T3,
+            // the former stored position.
+            fresh.with_degree_field(0).with_tiny_used_width(0)
         } else {
             bucket
                 .with_tiny_target(slot_index, Self::encode_tiny_tombstone_edge())
@@ -1344,8 +1346,18 @@ where
                         E::BYTES == 4,
                         "tiny buckets require 4-byte edges (birth gate)"
                     );
-                    for ordinal in 0..bucket.degree() {
-                        let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
+                    // Bounded by the byte-28 used width, not the live degree: a
+                    // hole inside the prefix makes `degree` smaller than
+                    // `used`, and bounding by `degree` would hide every live
+                    // slot at or beyond it.
+                    for ordinal in 0..bucket.tiny_used_width() {
+                        let target = bucket.tiny_target(ordinal);
+                        // Layout-native liveness (same predicate as the scan
+                        // paths): a dead slot is a hole, never a match.
+                        if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
+                            continue;
+                        }
+                        let edge = E::read_from(&target.to_le_bytes())
                             .with_slot_index(ordinal)
                             .with_label_id(label_id.raw());
                         if matches(&edge) {
@@ -1606,7 +1618,7 @@ mod tests {
         // syncs the vertex cover (no phantom occupancy between maintenance).
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
-        for target in [10u32, 11, 12, 13] {
+        for target in [10u32, 11, 12, 13, 14] {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1619,11 +1631,11 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(!bucket.is_tiny_mode(), "4 seeds promote past tiny");
+        assert!(!bucket.is_tiny_mode(), "5 seeds promote past tiny");
         let span_start = bucket.edge_start();
         let span_len = u64::from(bucket.stored_slots_raw());
         assert!(span_len > 0);
-        for target in [10u32, 11, 12, 13] {
+        for target in [10u32, 11, 12, 13, 14] {
             graph
                 .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == target)
                 .unwrap()
@@ -1660,10 +1672,10 @@ mod tests {
     fn remove_edge_leaves_slab_tombstone_until_rebalance() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
-        // Four seeds: the 4th promotes tiny->slab, so the delete below takes
-        // the slab tombstone path (the test's intent; three seeds would stay
-        // tiny and take the inline-tombstone path instead).
-        for target in [10u32, 11, 12, 13] {
+        // Five seeds: the 5th promotes tiny->slab (K=4), so the delete below
+        // takes the slab tombstone path (the test's intent; four seeds would
+        // stay tiny and take the inline-tombstone path instead).
+        for target in [10u32, 11, 12, 13, 14] {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1685,6 +1697,7 @@ mod tests {
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![
+                TestEdge { target: 14 },
                 TestEdge { target: 13 },
                 TestEdge { target: 12 },
                 TestEdge { target: 10 }
@@ -1695,27 +1708,29 @@ mod tests {
             vec![
                 TestEdge { target: 10 },
                 TestEdge { target: 12 },
-                TestEdge { target: 13 }
+                TestEdge { target: 13 },
+                TestEdge { target: 14 }
             ]
         );
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots(), 4);
+        assert_eq!(bucket.stored_slots(), 5);
         assert_eq!(bucket.stored_slots().saturating_sub(bucket.degree), 1);
-        assert_eq!(bucket.degree(), 3);
+        assert_eq!(bucket.degree(), 4);
 
         graph
             .insert_edge(
                 VertexId::from(0),
                 road,
-                TestEdge { target: 14 },
+                TestEdge { target: 15 },
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![
+                TestEdge { target: 15 },
                 TestEdge { target: 14 },
                 TestEdge { target: 13 },
                 TestEdge { target: 12 },
@@ -1729,15 +1744,16 @@ mod tests {
                 TestEdge { target: 12 },
                 TestEdge { target: 13 },
                 TestEdge { target: 14 },
+                TestEdge { target: 15 },
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        // The span is full (tombstone occupies the 4th slot), so the re-insert
+        // The span is full (tombstone occupies the 2nd slot), so the re-insert
         // spills to the overflow log; the tombstone stays in place until
         // rebalance (positional stability).
-        assert_eq!(bucket.stored_slots(), 4);
+        assert_eq!(bucket.stored_slots(), 5);
         assert!(bucket.overflow_log_head() >= 0);
-        assert_eq!(bucket.degree(), 4);
+        assert_eq!(bucket.degree(), 5);
     }
 
     #[test]
@@ -1838,10 +1854,10 @@ mod tests {
         let graph = inline_property_test_graph();
         let src = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
-        // ADR 0096 §4: tiny birth holds the first three edges inline (no log).
-        // Seed past promotion (4th) into log spill (5th) so the bucket owns a
-        // real overflow-log head for the direct-unlink step below.
-        for target in [10, 11, 12, 13, 14] {
+        // ADR 0096 §4/§3b: tiny birth holds the first four edges inline (no
+        // log). Seed past promotion into log spill (6th edge) so the bucket
+        // owns a real overflow-log head for the direct-unlink step below.
+        for target in [10, 11, 12, 13, 14, 15] {
             graph
                 .insert_edge(
                     src,
@@ -1862,7 +1878,7 @@ mod tests {
             .unwrap();
         graph
             .buckets()
-            .write_label_bucket_degree(bucket_slot, 4)
+            .write_label_bucket_degree(bucket_slot, 5)
             .unwrap();
 
         let removal = graph
@@ -1882,7 +1898,7 @@ mod tests {
                 .into_iter()
                 .map(|edge| (edge.slot_index, edge.target))
                 .collect::<Vec<_>>(),
-            vec![(3, 13), (2, 12), (1, 11)]
+            vec![(4, 14), (3, 13), (2, 12), (1, 11)]
         );
     }
 
@@ -2185,7 +2201,7 @@ mod tests {
             .unwrap();
         assert!(bucket.is_tiny_mode(), "delete stays tiny (no promotion)");
         // Hole at slot 1 (sentinel), live prefix width 3, live count 2.
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (2, 3));
         // Layout-native tombstone: the hole decodes as deleted through the
         // edge layout's own predicate (same as slab/tree read paths).
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
@@ -2231,7 +2247,7 @@ mod tests {
             .unwrap();
         // Out-of-range delete neither promotes nor mutates.
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (1, 1));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (1, 1));
         assert_eq!(graph.edges().header().num_edges, num_before);
     }
 
@@ -2264,7 +2280,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (2, 3));
         // The hole decodes as deleted through the layout's own predicate...
         assert!(
             FlagTombstoneEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot()
@@ -2307,7 +2323,7 @@ mod tests {
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (3, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (3, 3));
         let removed = graph
             .remove_edge_matching(vid, label, |edge| edge.neighbor_vid() == VertexId::from(11))
             .unwrap()
@@ -2321,10 +2337,63 @@ mod tests {
             .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
             .unwrap();
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (2, 3));
         // Layout-native tombstone: the hole decodes as deleted through the
         // edge layout's own predicate (same as slab/tree read paths).
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
+    }
+
+    #[test]
+    fn tiny_remove_matching_scans_holes_and_whole_used_width() {
+        // Regression (K=4): the inline matching scan must walk the byte-28 used
+        // width, not the live degree, and must never hand a dead slot to the
+        // predicate. Bounding by `degree` hides every live slot at or beyond
+        // the first hole once a hole exists (the pre-K=4 shape had the same
+        // defect for prefixes shorter than their hole count).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        force_tiny_bucket(&graph, vid, label, &[10, 11, 12, 13]);
+        graph.remove_edge_at_slot(vid, label, 0).unwrap().unwrap();
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        assert_eq!(
+            (bucket.degree(), bucket.tiny_used_width()),
+            (3, 4),
+            "slot 0 is a hole inside a full-width prefix"
+        );
+
+        // The live slot at ordinal 3 sits outside `0..degree` (=3).
+        let removed = graph
+            .remove_edge_matching(vid, label, |edge| edge.target == 13)
+            .unwrap()
+            .expect("live slot 3 must be reachable through the hole");
+        assert_eq!(u32::from(removed.neighbor_vid()), 13);
+
+        // A catch-all predicate takes the first live slot (1), never the hole
+        // at 0 (whose decoded target is a tombstone, not a vertex).
+        let removed = graph
+            .remove_edge_matching(vid, label, |_| true)
+            .unwrap()
+            .expect("first live slot");
+        assert_eq!(u32::from(removed.neighbor_vid()), 11);
+
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+            .unwrap();
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (1, 4));
+        let survivors: Vec<u32> = graph
+            .iter_edges_for_label(vid, label)
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.target)
+            .collect();
+        assert_eq!(survivors, vec![12]);
     }
 }
 
@@ -2367,6 +2436,6 @@ mod g6_zero_read_tests {
             BucketSearch::Missing { .. } => panic!("bucket missing"),
         };
         assert!(bucket.is_tiny_mode());
-        assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (2, 3));
+        assert_eq!((bucket.degree(), bucket.tiny_used_width()), (2, 3));
     }
 }

@@ -1551,11 +1551,12 @@ mod tests {
             .unwrap();
         let road = BucketLabelKey::from_raw(2);
         let pma_before = graph.labeled_leaf_pma_density(vid);
-        // ADR 0096 §4: tiny edges are invisible to PMA (no slots reserved).
-        // Promote (span 4) then spill one edge to the log: PMA actual must
-        // rise (log edges count!) while reservations (geometry denominator)
-        // stay flat — the log/span firewall the dense decision relies on.
-        for target in [1u32, 2, 3, 4, 5] {
+        // ADR 0096 §4/§3b: tiny edges are invisible to PMA (no slots reserved).
+        // Six seeds promote at the 5th (exact span 5) and spill one edge to the
+        // log: PMA actual must rise (log edges count!) while reservations
+        // (geometry denominator) stay flat — the log/span firewall the dense
+        // decision relies on.
+        for target in [1u32, 2, 3, 4, 5, 6] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     vid,
@@ -1572,7 +1573,7 @@ mod tests {
         );
         let counts = graph.leaf_segment_counts_for_vid(vid);
         assert_eq!(
-            counts.actual, 5,
+            counts.actual, 6,
             "PMA actual counts slab and log-spilled edges"
         );
         assert_eq!(
@@ -1582,7 +1583,7 @@ mod tests {
             >::leaf_index_for_vid(
                 vid, graph.edges().header().segment_size
             )),
-            4,
+            5,
             "log spill reserves no new slab geometry"
         );
     }

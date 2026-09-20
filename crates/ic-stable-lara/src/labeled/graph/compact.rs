@@ -4537,8 +4537,8 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
-        // ADR 0096 §4: promote past tiny (four seeds) so the leaf pins with a
-        // real slab span for the in-pinned rewrite below.
+        // ADR 0096 §3b: four inline seeds plus an explicit promotion so the
+        // leaf pins with a real slab span for the in-pinned rewrite below.
         for target in [1u32, 2, 3, 4] {
             graph
                 .insert_edge_skip_leaf_cascade(
@@ -4549,6 +4549,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(&graph, src, road);
         assert!(graph.labeled_leaf_physical_range(src).is_some());
         graph
             .remove_edge_at_slot(src, road, 0)
@@ -4920,8 +4921,9 @@ mod tests {
         let graph = flag_tombstone_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
-        // Four seeds promote tiny->slab (three would stay tiny and take the
-        // inline-tombstone path, which needs no compaction move).
+        // Four inline seeds plus an explicit promotion: the delete below must
+        // leave a slab tombstone (K=4 keeps four edges inline, and the inline
+        // tombstone path needs no compaction move).
         for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
@@ -4932,6 +4934,11 @@ mod tests {
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(
+            &graph,
+            VertexId::from(0),
+            road,
+        );
         graph
             .compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
@@ -4962,8 +4969,9 @@ mod tests {
         let graph = inline_property_test_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
-        // Four seeds promote tiny->slab (three would stay tiny and take the
-        // inline-tombstone path, which needs no fold move).
+        // Four inline seeds plus an explicit promotion: the delete below must
+        // leave a slab tombstone whose fold reports bounded moves (K=4 keeps
+        // four edges inline, and the inline-tombstone path needs no fold move).
         for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
@@ -4974,6 +4982,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(&graph, hub, road);
         let removal = graph
             .remove_edge_matching_with_move(hub, road, |edge| edge.target == 10)
             .unwrap();
@@ -5016,8 +5025,9 @@ mod tests {
         let graph = inline_property_test_graph();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
-        // Four seeds promote tiny->slab (three would stay tiny and take the
-        // inline-tombstone path, which needs no fold move).
+        // Four inline seeds plus an explicit promotion: the delete below must
+        // leave a slab tombstone the span compactor can pack (K=4 keeps four
+        // edges inline, and the inline-tombstone path needs no fold move).
         for target in [10, 11, 12, 13] {
             graph
                 .insert_edge(
@@ -5028,6 +5038,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(&graph, hub, road);
         let removal = graph
             .remove_edge_matching_with_move(hub, road, |edge| edge.target == 10)
             .unwrap()
@@ -5076,6 +5087,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        crate::labeled::graph::test_support::promote_bucket_to_slab(&graph, hub, road);
         graph
             .rebalance_edge_log_leaf_for_labeled(hub, true, true)
             .unwrap();

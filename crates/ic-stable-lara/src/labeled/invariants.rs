@@ -11,7 +11,7 @@ use crate::{
         operation_error::LaraOperationError,
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
 
@@ -108,7 +108,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
     buckets: &LabelBucketStore<M>,
     edges: &EdgeStore<E, M>,
 ) where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     let edge_cap = edges.header().elem_capacity;
@@ -277,18 +277,26 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
                 );
             } else if bucket.is_tiny_mode() {
-                // ADR 0096 §1 + delete redesign: tiny wire rules on live state.
-                // `stored` = prefix width (≤ 3), `degree` = live (≤ stored);
-                // dead-slot content is layout-native (E::tombstone_edge()
-                // encoded, read via E::is_deleted_slot()).
+                // ADR 0096 §1/§3b (K=4): `used` is the byte-28 prefix width
+                // (≤ 4, tombstones included), `degree` is the live count inside
+                // it (≤ used), and T3 is the 4th inline target — not a stored
+                // width. Dead-slot content is layout-native (`E::tombstone_edge()`,
+                // read back via `E::is_deleted_slot()`), so the live slots below
+                // the used width are exactly `degree`.
                 assert!(
-                    bucket.degree() <= LabelBucket::TINY_MAX_DEGREE,
-                    "vertex {vidx} bucket {slot}: tiny degree exceeds cap"
+                    bucket.tiny_used_width() <= LabelBucket::TINY_MAX_DEGREE
+                        && bucket.degree() <= bucket.tiny_used_width(),
+                    "vertex {vidx} bucket {slot}: tiny used width below degree or above cap"
                 );
-                assert!(
-                    bucket.stored_slots_raw() <= LabelBucket::TINY_MAX_DEGREE
-                        && bucket.degree() <= bucket.stored_slots_raw(),
-                    "vertex {vidx} bucket {slot}: tiny stored/degree out of range"
+                let live = (0..bucket.tiny_used_width())
+                    .filter(|index| {
+                        !E::read_from(&bucket.tiny_target(*index).to_le_bytes()).is_deleted_slot()
+                    })
+                    .count() as u32;
+                assert_eq!(
+                    live,
+                    bucket.degree(),
+                    "vertex {vidx} bucket {slot}: tiny live slots must equal degree"
                 );
                 assert!(
                     bucket.overflow_log_head() < 0,

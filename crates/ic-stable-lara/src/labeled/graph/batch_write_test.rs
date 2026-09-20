@@ -110,7 +110,7 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         // ADR 0096 §4: promote to slab (four seeds); tiny buckets take the
         // scalar fallback and never reach batch reserve.
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -122,7 +122,7 @@ mod tests {
         }
         // Pin a second leaf after leaf 0 so expansion cannot use tail growth
         // (promote so the pin sticks).
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(16),
@@ -443,7 +443,7 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         // ADR 0096 §4: four seeds (promotion fills the exact span) so the
         // batch spills to the log like the quota-filled span before.
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -500,7 +500,7 @@ mod tests {
         // The first four scalar edges stay in slab order, the batch edges follow
         // in logical ordinal order inside the overflow log, and ascending
         // traversal replays the log oldest-to-newest after the slab prefix.
-        assert_eq!(targets, vec![1, 2, 3, 4, 10, 11, 12]);
+        assert_eq!(targets, vec![1, 2, 3, 4, 5, 10, 11, 12]);
     }
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
         let label_b = BucketLabelKey::directed_from_index(2);
         // ADR 0096 §4: four seeds per bucket (promotion fills exact spans) so
         // both batch runs spill to the log.
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1110,7 +1110,7 @@ mod tests {
         let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
         assert_eq!(
             targets,
-            vec![1, 2, 3, 4, 100, 101, 11, 12, 13, 14, 200, 201]
+            vec![1, 2, 3, 4, 5, 100, 101, 11, 12, 13, 14, 15, 200, 201]
         );
     }
 
@@ -1238,7 +1238,7 @@ mod tests {
 
         let label_a = BucketLabelKey::directed_from_index(1);
         let label_b = BucketLabelKey::directed_from_index(2);
-        for i in 1..=4u32 {
+        for i in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1373,7 +1373,7 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         // Fill the bucket's slab window (promotion materializes an exact span
         // under tiny birth; one quota-spaced seed sufficed before).
-        for target in 1..=4u32 {
+        for target in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1463,7 +1463,7 @@ mod tests {
         // Four seeds promote tiny->slab; deleting slot 0 then takes the slab
         // tombstone path (one seed would stay tiny and reset to clean-empty
         // on delete, which cannot carry the crafted log metadata below).
-        for target in 1..=4u32 {
+        for target in 1..=5u32 {
             graph
                 .insert_edge(
                     VertexId::from(0),
@@ -1513,9 +1513,9 @@ mod tests {
                 slot,
                 bucket
                     .with_overflow_log_head((log_capacity - 1) as i32)
-                    // Four seeds minus the slot-0 tombstone leave 3 live slab
+                    // Five seeds minus the slot-0 tombstone leave 4 live slab
                     // edges; the crafted degree counts slab live + log chain.
-                    .with_degree_field(log_capacity as u32 + 3),
+                    .with_degree_field(log_capacity as u32 + 4),
             )
             .expect("set folded-log metadata");
 
@@ -1556,7 +1556,7 @@ mod tests {
                 |edge| targets.push(edge.target),
             )
             .unwrap();
-        let expected = [2, 3, 4]
+        let expected = [2, 3, 4, 5]
             .into_iter()
             .chain((0..log_capacity).map(|i| 100 + i as u32))
             .chain([200, 201])

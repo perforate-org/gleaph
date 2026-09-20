@@ -262,7 +262,14 @@ where
         crate::labeled::invariants::bucket_resident_inline_property_bytes_slots(bucket)
     }
 
+    /// Slot space a bucket declares (ADR 0096 §5): tiny buckets declare their
+    /// used width (live slots plus tombstone holes — the mode-aware accessor
+    /// returns the live count, which would understate it); slab/tree buckets
+    /// declare their stored width plus any overflow-log entries.
     pub(super) fn bucket_reserved_edge_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
+        if bucket.is_tiny_mode() {
+            return bucket.tiny_used_width();
+        }
         bucket
             .stored_slots()
             .saturating_add(self.bucket_edge_log_slots(src, bucket))
@@ -877,6 +884,22 @@ where
         const STEP_BYTES: u64 = 4096;
         // On first call, reserve the byte span.
         let reserved_offset = if reserved_offset == u64::MAX {
+            // ADR 0096 §7: match-first dispatch — mode decides before any schema
+            // write. A tiny bucket holds inline targets in the very bytes the
+            // width/offset/slot fields would occupy, so the final publish would
+            // corrupt the payload (the reader then rejects the row). The
+            // non-stepped sibling promotes in its Tiny arm for the same reason;
+            // this worker (the deferred/large case of the same operation) must
+            // reach the same shape first. Checked on the reserving call only: a
+            // resumed call can only follow a completed reserve, which already
+            // promoted.
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.is_tiny_mode() {
+                self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
+            }
             if !self.inline_property_bytes_compaction_deferred.get()
                 && self.inline_property_bytes_compaction_needed(total_bytes)?
             {

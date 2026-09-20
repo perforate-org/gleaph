@@ -902,9 +902,10 @@ mod tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
         let label = BucketLabelKey::from_raw(7);
-        // ADR 0096 §5: promote past tiny so both vertices own real slab spans
-        // (corrupting a tiny anchor is meaningless — the guard skips spanless
-        // buckets by construction).
+        // ADR 0096 §5/§3b: four inline inserts plus an explicit promotion so
+        // both vertices own real slab spans (corrupting a tiny anchor is
+        // meaningless — the guard skips spanless buckets by construction, and
+        // K=4 keeps four edges inline).
         for vid_u in 0..2u32 {
             for target in [1u32, 2, 3, 4] {
                 graph
@@ -916,6 +917,11 @@ mod tests {
                     )
                     .unwrap();
             }
+            crate::labeled::graph::test_support::promote_bucket_to_slab(
+                &graph,
+                VertexId::from(vid_u),
+                label,
+            );
             graph
                 .compact_vertex_edge_span(VertexId::from(vid_u), 0)
                 .unwrap();
