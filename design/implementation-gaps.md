@@ -475,6 +475,22 @@ session did.
   `mixed_label_hub_20_labels_500_edges_each` (smallest of the three hub fixtures) at
   `test_support.rs:446`. Landing note: the log fix alone is unobservable on HEAD (the fourth
   implementation's `.max(degree)` floor hid it), so the landing unit is unification + log fix +
+  **Where the remaining insert-path failures actually happen (measured 2026-09-20):** instrumenting the
+  planner's output for `mixed_label_hub_20_labels_500_edges_each` gives
+  `compact=false force=true extra=0 old_alloc=576 total_live=674 min_required=674 new_alloc=1296`
+  with `buckets = [(slab, stored=500, degree=500, resident=500), (slab, stored=4, degree=174,
+  resident=4)]`. So the planner **succeeds** — it correctly counts the log (4 + 170) and asks for the
+  next quantum (1296 > 576) — and the `CollectAllocationOverflow` is raised *after* it, on the
+  **growth** path (leaf relocation / in-leaf re-root / commit), which is exactly where the fourth
+  implementation differed: the delegated shim routes `rebalance` through the rewrite, whose
+  `moved = new_alloc > old_alloc` sends the vertex to `plan_labeled_leaf_relocation` and re-tiles the
+  whole leaf, while the fourth implementation kept its own `new_base`/release logic and
+  `vertex_edge_span_relocates_within_pinned_leaf` checks. Next question, in code: on a *growing* span,
+  what does the fourth implementation (`git show HEAD:...compact.rs`, `rebalance_vertex_edge_span`) do
+  that the plan-based path does not — in-leaf re-root versus whole-leaf re-tile, and the
+  `LABELED_REBALANCE_LEAF_RELOCATED` protocol it maintains? Read those two paths side by side for one
+  growing fixture; do not sweep instrumentation across the crate again (it touched a foreign file and
+  had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
