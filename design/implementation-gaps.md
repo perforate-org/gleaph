@@ -796,6 +796,30 @@ session did.
   the old placement. Expect the hub fixtures to fail *honestly* at the tiling
   (`span < effective_live`) if the leaf relocation cannot host the span — that is the policy decision
   recorded above, now expressed in code rather than inferred.
+
+  **"Relocation cannot host it" is usually NOT a memory-growth failure (verified 2026-09-20).** Three
+  distinct classes reach the policy tail:
+
+  * **(A) leaf-window sizing.** `plan_labeled_leaf_relocation` computes
+    `raw_len = resident_geometry + active_vertices + max(resident_geometry/8, seg)` (then rounds up to a
+    block), where `resident_geometry` is the sum of the leaf's *resident* rows (physical region + log).
+    It never consults the requesting vertex's `new_alloc`. So a vertex asking for more than its resident
+    share — proactive slack, or a required span wider than its rows — fails to place
+    (`try_labeled_vertex_edge_base_in_pinned_leaf` returns `None`) **with memory perfectly available**.
+    This is the class the hub fixtures hit: in the delegated run they failed with
+    `CollectAllocationOverflow` *after* the relocation rounds, i.e. relocations themselves were fine.
+  * **(B) reservation failure.** Only here is growth the question: `GrowFailed` from wasm-memory growth,
+    `AllocSpaceCapReached`, or the index-space overflow in `tail_append_labeled_edge_base`'s
+    `checked_add_slot_exclusive_end`.
+  * **(C) structural.** No non-tiny bucket at all, so `labeled_edge_base_from_first_bucket` itself errors.
+
+  Design consequence: (A) is fixable *honestly* by making the relocation request-driven — size the new
+  leaf block from `max(resident_geometry, floors requested by the vertices being grown)` instead of
+  resident geometry alone. Then a required span succeeds whenever memory allows, the never-fail fallback
+  stops being load-bearing, and the policy question narrows to (B) alone. Next verification before
+  implementing: print `old_len`, `new_len` from `plan_labeled_leaf_relocation` and the requested
+  `new_alloc` for `mixed_label_hub_20_labels_500_edges_each` — if `new_len - old_len` is large and the
+  placement still fails, (A) is confirmed with numbers rather than by construction.
      decision removes).
   fourth implementation's placement.
   had to be reverted).
