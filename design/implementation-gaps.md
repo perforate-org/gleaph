@@ -144,7 +144,11 @@ defect from being rediscovered without its prior reasoning.
      the block, which the cover/tiling invariants forbid;
   2. `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run` fails with
      `CollectAllocationOverflow` (the pre-transcription rewrite can fail on batch-shaped fixtures);
-  3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free`.
+  3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free` —
+     **resolved** (`d80504c2e`, test-only): the fixture's premise (the property restore reads an
+     unminted id from whatever follows the edge root) was placement-dependent; the test now writes an
+     explicit unminted sentinel and asserts the descriptor is byte-identical after the failed demote.
+     Details in the original narrowing below, kept for the record.
      Narrowed by instrumentation (2026-09-20): `physical_depth` is 1, so the depth-2 interior walk
      is skipped; the two releases of block 0 come from the test's **two demote calls on a synthetic
      state** (`w = 4` patched without minting the matching LPB, bucket relocated to
@@ -154,6 +158,12 @@ defect from being rediscovered without its prior reasoning.
      placement-dependent, not an invariant. Next attempt: decide whether the fixture should build a
      legitimate LPB (or patch the depth/width consistently) so demote atomicity is pinned on a state
      that does not depend on where the promotion placed the root.
+  Re-run after `d80504c2e`: interaction 3 is gone; the remaining failures with the in-span change are
+  (1) and (2), with (1) narrowed further — the straddling cover observed in
+  `fold_growth_stays_mate_disjoint_across_span_growth` (`base=3758 end=5070 leaf=(256, 3664)`) still
+  carries the **pre-promotion slab width** (1312), so it is not the `tail_append_labeled_edge_base`
+  escape hatch but cover bookkeeping around the promotion (the slide/commit path that republishes
+  vertex covers from resident slots is the next place to instrument).
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
