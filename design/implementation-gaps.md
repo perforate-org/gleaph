@@ -507,6 +507,19 @@ session did.
   then decide whether the insert path must tolerate the same fallback (and what it does with a cover
   bigger than the owned range) or must genuinely grow. Copies: `/tmp/delegated_logfix2_compact.rs`,
   `/tmp/delegated_logfix2_init.rs` (598/13).
+  **Landed (2026-09-20, `d7265949d`): partial unification on HEAD.** `rebalance_vertex_edge_span` no
+  longer carries its own snapshot, position and publish loops: it materializes with
+  `materialize_labeled_vertex_edge_plan` and publishes through `commit_vertex_edge_span_layout`, keeping
+  only its own policy (sizing, base resolution, release ownership). Log ownership is now an explicit
+  argument of that pair: `fold_logs = false` (rebalance) materializes the slab prefix alone and preserves
+  `overflow_log_head`; `fold_logs = true` (rewrite, leaf relocation) materializes prefix + log and clears
+  the head. That split is required by `compact_vertex_edge_span_one_step`, which folds one bucket's log
+  itself and asserts stable slot indices. Suite 611/0, scoped fmt/clippy clean. Still open from the
+  earlier analysis: the *full* delegation of `rebalance_vertex_edge_span` to the rewrite, because the
+  rewrite resolves growth through `resolve_labeled_edge_base_for_growth` (fails after four relocations)
+  while `resolve_labeled_edge_base_for_rebalance` never fails and falls back to
+  `labeled_edge_base_from_first_bucket`; plus a canbench run over the publish path and a design-doc pass
+  on the log-ownership contract (ADR 0096 / `design/storage/lara.md`) rather than only this ledger.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
