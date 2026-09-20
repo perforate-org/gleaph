@@ -550,6 +550,22 @@ session did.
   outstanding from the same family: the planner computes and returns `positions` that no caller uses
   (dead work; drop it when the full delegation lands), and `preferred_extra` still only *sizes* the span
   for the paths that do not pass a bucket index.
+  **Unified rewrite re-attempted on the new base (2026-09-20, saved `/tmp/unified_on_newbase_compact.rs`):**
+  with the landed pieces (`bucket_resident_rows`, `fold_logs`, preference wiring) the rewrite's publish
+  section (236 lines, all four inline branches) collapses into
+  `materialize_labeled_vertex_edge_plan(leaf, &buckets, true, compact)` +
+  `commit_vertex_edge_span_layout(...)` and the suite reaches **608/3** — the three failures
+  (`compact_vertex_edge_span_shrinks_vertex_edge_span`, `incremental_vertex_edge_span_compact_preserves_*`,
+  `labeled_rewrite_within_pinned_leaf_does_not_re*`) all report the same
+  `Store(CollectAllocationOverflow)` and did **not** move when the planner's `total_live` switched from
+  `Σ degree` to the shared resident definition (physical region + log), so their under-count is on a
+  third path (candidates: `prepare_vertex_edge_span_for_overflow_log_fold`'s `stored_slots() + log`
+  preflight, the leaf-pin growth retries, or the in-window layout the plan receives). Reverted to keep
+  the tree green; the attempt is saved.
+  **Insight from that attempt worth keeping:** on HEAD the planner's `Σ degree` budget is internally
+  consistent with the *bulk* inline branch, which publishes live rows (`with_edge_range(row_start,
+  bucket.degree())` + `-1` log head). The budget and the published width are two sides of one decision,
+  so any unification must move them together — which is exactly what `fold_logs` now names.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
   `/tmp/delegated_compact.rs`.
