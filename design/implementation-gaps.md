@@ -447,6 +447,23 @@ session did.
   mine). Next: for one failing fixture print `old_alloc`, `total_live`, `preferred_extra`,
   `min_required` and the per-bucket resident terms from both formulas, then settle the single
   resident/budget definition for both callers.
+  **Measured and fixed the same day:** the planner's `total_live` **did not count the overflow log**.
+  In `labeled_leaf_rebalance_does_not_release_span` the fixture is a log-backed slab bucket with
+  `stored_raw = 4`, `degree = 96` and `resident = 4`, so the plan asked for a span of `4` slots while
+  the materializer needs `4 + 92 = 96`. Adding the chain length (`overflow_log_chain_len`, the same
+  definition the materializer uses) made that test pass and moved the delegated suite from **587/24 to
+  597/14**. The remaining 14 are the same under-count one layer out: the leaf/vertex *placement*
+  budgets (`span_slots`, the `positions` helpers) still size from `bucket_physical_resident_slots`,
+  i.e. the prefix alone, so log-backed buckets still under-reserve there
+  (`mixed_label_hub_{20,33,50}`, `labeled_hub_33_labels_bounded_insert_time`,
+  `batch_relocates_same_leaf_once_for_multiple_buckets`, `expanded_slab_*`,
+  `labeled_relocation_preserves_all_leaf_vertices`). Next: one shared definition
+  (`resident = prefix + log` for slab, LEG region + log for tree, 0 for tiny) used by the planner, the
+  placement helpers and the materializer, then re-run; the four assertion-level failures
+  (`labeled_relocate_commit_order`, `labeled_segment_relocate_releases_single_footprint`,
+  `labeled_segment_slide_coalesces_adjacent_free`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`)
+  need individual review afterwards. Copies: `/tmp/delegated_logfix_compact.rs`,
+  `/tmp/delegated_logfix_init.rs` (597/14).
   `/tmp/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
