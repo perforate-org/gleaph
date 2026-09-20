@@ -4976,3 +4976,19 @@ plain `&resident_buckets` call otherwise (the code was `cargo fmt`ed since the d
 form). Then re-run `canbench ins` and `canbench compact`; if the 7 regressions persist, the remaining candidate is
 the plan/commit pass count itself and the decision becomes trim vs special-case the no-log common case vs accept.
 State: delegation landed (`ae25c9378`), probe reuse landed (`26239c0b1`), tree 614/0, `compact` 0 regressed.
+
+**Correction (2026-09-20): the tiling rebuild is not in the landed code.** The previous note blamed the
+`!fold_logs` tiling rebuild for the `ins` regression, but that code only ever existed in the 612/2 per-caller
+attempt, which was reverted before landing; the landed delegation (`ae25c9378`, built from the 611/3 policy state)
+has no `fold_logs` threading at all (`grep -c fold_logs compact.rs` → the parameter appears only on the rebalance
+entry point, and the rewrite still publishes with the fold). So the regression's cause is **not identified**, and
+the scope evidence stands: no named scope moved ≥0.5 %, so the extra instructions are in unscoped code on the
+delegated path. The unexplained numbers are `ins` 7 regressed, max +21.49 %, median +0.61 % (and `compact` 0
+regressed, median −217.82 K instructions, i.e. the rewrite path got cheaper while the maintenance-driven insert
+path got more expensive).
+
+Next diagnostic, cheap and decisive, is a bisect rather than more reading: revert only `ae25c9378` (the shim) and
+run `canbench ins` on HEAD~1; if that is clean, bisect inside the shim's parts (policy dispatch/threading → the
+plan call → the finalize/release block) with one `canbench ins` each (≈2–3 min per run). Record which part carries
+the cost before choosing between trimming it, special-casing the no-log common case, and accepting the cost as the
+price of one implementation. Tree is 614/0 with the delegation landed.
