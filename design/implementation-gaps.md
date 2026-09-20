@@ -145,11 +145,15 @@ defect from being rediscovered without its prior reasoning.
   2. `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run` fails with
      `CollectAllocationOverflow` (the pre-transcription rewrite can fail on batch-shaped fixtures);
   3. `demote_atomic_on_failure` trips `LtbRawBlockStore::release(0): block is already Free`.
-     Narrowed on re-inspection: the failure surfaces inside the *demote* error cleanup, on the
-     synthetic fixture (`force_bucket_to_stored_slots` + `fill_leg_slab_prefix`), i.e. the demote's
-     cleanup releases LTB ids derived from the root region while the promotion's own rollback no
-     longer releases the LEG span — so the two paths no longer agree on who owns the root region's
-     blocks. Read the demote cleanup before re-attempting, not just the promote rollback.
+     Narrowed by instrumentation (2026-09-20): `physical_depth` is 1, so the depth-2 interior walk
+     is skipped; the two releases of block 0 come from the test's **two demote calls on a synthetic
+     state** (`w = 4` patched without minting the matching LPB, bucket relocated to
+     `edge_start = 4352`, `stored = 4096`). With the in-span change the *first* call gets past the
+     property visit and completes Phase 5 (releases the leaf ids), so the second call re-releases
+     them — i.e. the test's premise ("the first call fails before any release") is
+     placement-dependent, not an invariant. Next attempt: decide whether the fixture should build a
+     legitimate LPB (or patch the depth/width consistently) so demote atomicity is pinned on a state
+     that does not depend on where the promotion placed the root.
   Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
   `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
