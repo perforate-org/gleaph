@@ -3765,6 +3765,106 @@ fn tcsr_65536_property_read_w32() -> canbench_rs::BenchResult {
 
 use crate::labeled::graph::{T_DEMOTE, T_PROMOTE};
 
+/// Finding C (log pressure) decision input, DE-BENCHED: does a tree hub sharing
+/// one PMA leaf with small slab neighbours change the neighbours' log/fold
+/// pressure? The per-leaf overflow log (170 entries) is shared, so a hub whose
+/// root growth spills there could fold neighbours' growth too.
+///
+/// Shape: one leaf = `DEFAULT_SEGMENT_SIZE` (16) vertices. `with_hub` seeds
+/// vertex 0 to `T_PROMOTE + 64` (tree in every arm); the measured closure appends
+/// 32 edges to each of the 15 neighbours, whose buckets are slab (8 seeds,
+/// above the tiny cap). `hub_edges = 0` is the control.
+///
+/// **Measured 2026-09-20 (T_promote = 1024, 15 neighbours x 32 appends = 480;
+/// temporary `tmp_log_fold` scope in `stream_fold_label_bucket_overflow_to_slab`):**
+///
+/// | arm | total | leaf rebalances | folds | fold instructions |
+/// | --- | --- | --- | --- | --- |
+/// | control (no hub) | 7.90 M | 2 | 11 | 496.70 K |
+/// | tree hub (T_promote + 64) | **6.79 M** | 1 | 12 | 524.91 K |
+/// | slab hub (64 edges) | 7.47 M | 1 | 13 | 557.15 K |
+///
+/// Reading: a tree hub does **not** add shared-log pressure for its leaf mates
+/// (fold count within one of the control) — its rows live in LTB blocks and its
+/// resident root is a couple of slots, while the cover-based tiling spreads the
+/// neighbours out (one rebalance instead of two). Fold cost itself is ~43 K per
+/// fold, ~1.1 K per append amortized in this shape. Re-add `#[bench(raw)]`
+/// locally to re-measure; kept as plain fns so `canbench --persist` skips them.
+#[allow(dead_code)]
+fn log_pressure_shared_leaf_tree_hub() -> canbench_rs::BenchResult {
+    log_pressure_shared_leaf(crate::labeled::graph::T_PROMOTE + 64)
+}
+
+#[allow(dead_code)]
+fn log_pressure_shared_leaf_control() -> canbench_rs::BenchResult {
+    log_pressure_shared_leaf(0)
+}
+
+#[allow(dead_code)]
+fn log_pressure_shared_leaf_slab_hub() -> canbench_rs::BenchResult {
+    log_pressure_shared_leaf(64)
+}
+
+#[allow(dead_code)]
+fn log_pressure_shared_leaf(hub_edges: u32) -> canbench_rs::BenchResult {
+    const VERTICES: u32 = 16; // DEFAULT_SEGMENT_SIZE: one PMA leaf
+    const NEIGHBOURS: u32 = VERTICES - 1;
+    const NEIGHBOUR_SEED: u32 = 8; // > tiny cap, so slab
+    const NEIGHBOUR_APPEND: u32 = 32;
+    let graph = bench_graph(1 << 20);
+    let label = BucketLabelKey::from_raw(2);
+    for _ in 0..VERTICES {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    if hub_edges > 0 {
+        for target in 0..hub_edges {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    BenchEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("hub seed");
+        }
+    }
+    for n in 0..NEIGHBOURS {
+        for k in 0..NEIGHBOUR_SEED {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(1 + n),
+                    label,
+                    BenchEdge(1_000_000 + n * 100 + k),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("neighbour seed");
+        }
+    }
+    let result = bench_fn(|| {
+        for n in 0..NEIGHBOURS {
+            for k in 0..NEIGHBOUR_APPEND {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        VertexId::from(1 + n),
+                        label,
+                        BenchEdge(2_000_000 + n * 100 + k),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .expect("neighbour append");
+            }
+        }
+    });
+    // Every vertex above lives in leaf 0; report the leaf's shared-log watermark.
+    let segment_size = graph.edges().header().segment_size.max(1);
+    assert_eq!(
+        u32::from(VertexId::from(VERTICES - 1)) / segment_size,
+        0,
+        "fixture must stay inside one PMA leaf (segment_size={segment_size})"
+    );
+    black_box(graph.edges().overflow_log_segment_high_water(0));
+    result
+}
+
 /// M1: full-path hub growth 0 → 8192 through the production insert path
 /// (`insert_edge`: impl + dense-check + cascade), 4-byte edges, Insertion
 /// policy. At T=4096 the bench promotes once at 4096 mid-growth; at T=1024 it

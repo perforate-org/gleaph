@@ -205,12 +205,33 @@ invariants already appear in Gleaph's contracts:
 
 Pressure, not existence, is the improvable surface: with quota1 + a shared
 170-entry log, hub growth folds ~30× per 4096 edges, each fold leaf-wide.
-Tree mode already relieves the hub side (root ids only). Remaining open
-measurement: log-spill frequency of **non-tree buckets sharing a leaf with a
-tree hub** (shared-log contention) — bench shape: one hub + N neighbors, count
-folds. The persisted `bench_l_du_log_fold_mnt` (46.0M total) is **not** quoted
-as a fold cost here: its scoped maintenance sums to only ~1.2M and the bulk of
-its closure is unscoped workload, so a dedicated fold-cost bench is needed
+Tree mode already relieves the hub side (root ids only).
+
+**Measured 2026-09-20 (closes the open item).** Dedicated bench
+`log_pressure_shared_leaf*` (`labeled/bench.rs`, de-benched decision input): one
+PMA leaf (16 vertices) with 15 slab neighbours (8 seeded edges each) appending 32
+edges each, plus hub arms; a temporary `tmp_log_fold` scope in
+`stream_fold_label_bucket_overflow_to_slab` counted folds.
+
+| arm (T_promote = 1024, 480 appends) | total | leaf rebalances | folds | fold ins |
+| --- | --- | --- | --- | --- |
+| control (no hub) | 7.90 M | 2 | 11 | 496.70 K |
+| tree hub (`T_promote` + 64 edges) | **6.79 M** | 1 | 12 | 524.91 K |
+| slab hub (64 edges) | 7.47 M | 1 | 13 | 557.15 K |
+
+Reading: a tree hub does **not** add shared-log pressure for its leaf mates —
+the fold count is within one of the control and the arm needs one rebalance
+rather than two (its rows live in LTB blocks and its resident root is a couple of
+slots, while cover-based tiling spreads the neighbours out). Fold cost itself is
+~43 K per fold, ~1.1 K per append amortized here (~7 % of this shape's append
+cost) — the same surface the pre-tree design had, bounded by the 170-entry cap
+and relieved by leaf rebalances. **No tree-hub-aware log admission change is
+warranted.** Caveats: the hub is seeded before the neighbours (fixture order
+matters for tile slack — see the G4/G5 note), and the shape is a lower bound
+(only one leaf's worth of concurrent growth). The persisted
+`bench_l_du_log_fold_mnt` (46.0M total) is **not** quoted as a fold cost here: its
+scoped maintenance sums to only ~1.2M and the bulk of its closure is unscoped
+workload
 before any claim.
 
 ## Proposed sequence (gated)
