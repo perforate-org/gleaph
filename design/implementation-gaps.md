@@ -56,11 +56,15 @@ defect from being rediscovered without its prior reasoning.
 - **Observed behavior (confirmed):** F1 (`3fd14768b`) releases an emptied slab
   bucket's span immediately (`release_bucket_edge_span_on_empty`). A detach-delete
   drain empties every neighbour's 1-edge bucket, so `bench_l_s2_det_hub_1024`
-  performs 1024 such releases and pays ~30 K instructions per emptied bucket
-  (30.88 M of the 42.27 M scoped removal cost): ~26.1 K inside the free-span
-  store's `release_span` insert and ~4.3 K for the cover re-read/sync. The pre-F1
-  artifact value for the same bench is 20.72 M (no per-bucket release); the
-  current value is 51.31 M.
+  performs 1024 such releases. The pre-F1 artifact value for the same bench is
+  20.72 M (no per-bucket release); the value at measurement time was 51.31 M.
+  Uninstrumented attribution (native pattern bench
+  `fs_drain_release_pattern_1024` + whole-`release()` ablations; the first,
+  heavily-scoped probe run over-reported the lookups and is superseded): a
+  drain-shaped release costs ~34 K, of which the dup/prev/next lookups are only
+  ~0.6 K and the rest is the free-span store's stable-memory writes (~1.3 K per
+  write, ~20 writes on the double-merge path), plus ~4 K for the cover
+  re-read/sync in the labeled path.
 - **Evidence:** [regime-cost investigation](investigations/2026-09-20-tree-regime-cost-improvements.md)
   §Finding A (probe table: `tmp_release_empty` 30.88 M / 1025 calls,
   `tmp_fs_release` 26.73 M, `tmp_cover_recompute` 4.41 M, `tmp_counts_dec`
@@ -75,11 +79,25 @@ defect from being rediscovered without its prior reasoning.
   (`lara/edge/free_span.rs`, `release`/`insert_span`). The reclaim owner in the
   replacement design must keep the F1 guarantee (no phantom occupancy after a
   delete) and the GAP-2026-09-17-001 double-free protection.
-- **Next decision:** run the A1 experiment (skip sub-cover frees during drains,
-  reclaim whole regions at relocate/slide/fold; one temporary patch + the drain
-  bench + the leaf-pressure benches to bound relocate-frequency risk), then a
-  store-level spike if A1 leaves a store cost to recover. Acceptance:
-  `bench_l_s2_det_hub_1024` back to ~20-25 M with no growth/relocate regression.
+- **Landed partials (2026-09-20, commit `914734443`):** `release()` needs two
+  page-walking lookups instead of four (`predecessor_or_equal` added to
+  `ic-stable-paged-ordered-map`; `successor` now covers adjacency *and*
+  next-overlap, which also closes a latent hole where a span strictly inside the
+  released range was ignored when another span started exactly at the range end
+  — regression `release_prefers_inner_overlap_over_adjacent_merge`), and
+  `write_record` writes the 48-byte record in one write instead of six.
+  Measured: native pattern bench 35.34 M → 33.41 M; `bench_l_s2_det_hub_1024`
+  51.31 M → 50.03 M (scoped removal 36.57 M → 35.38 M).
+- **Next decision:** A2 — flush the emptied spans of one detached-vertex delete
+  as pre-merged ranges in a single store pass. Constraints: the flush must
+  complete before the delete returns (F1's reuse regression asserts the freed
+  span is reusable then), the per-delete cover sync stays, and the flush reuses
+  the GAP-2026-09-17-001 owned-range semantics. A1 (blanket deferral) is rejected
+  — it breaks F1's reuse contract. Acceptance: `bench_l_s2_det_hub_1024` toward
+  ~20-25 M with `fs_drain_release_pattern_1024` as the store-level metric, F1's
+  reuse regression and the free-span suite green. A3 (batched
+  header/summary/bin writes) is the follow-up for the residual ~32 K per
+  release.
 
 ### GAP-2026-09-20-003 — Tree property reads resolve the property leaf per row
 

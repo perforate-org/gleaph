@@ -26,58 +26,86 @@ mint stays a bounded re-tune cost.
 
 ## Finding A — emptied-bucket span release costs ~30 K per emptied bucket
 
-Per-call breakdown for `bench_l_s2_det_hub_1024` (1024 counterpart removals, each
-emptying a 1-edge slab bucket):
+### Measured breakdown (2026-09-20, corrected)
 
-| Probe | instructions | per call |
-| --- | --- | --- |
-| `labeled_remove_edge_skip_leaf` (the whole scoped removal) | 42.27 M | 41.3 K |
-| `tmp_release_empty` (`release_bucket_edge_span_on_empty`) | 30.88 M | 30.1 K |
-| `tmp_fs_release` (the free-span store `release_span` call) | 26.73 M | 26.1 K |
-| `tmp_cover_recompute` (vertex/bucket re-read + cover sync) | 4.41 M | 4.3 K |
-| `tmp_counts_dec` (PMA counts decrement, ×2 per removal) | 9.28 M | 4.5 K |
+Instrumenting `release()` with many `bench_scope`s inflated the numbers (each
+scope entry costs ~2-3 K on a hot path), so the attribution was redone with a
+native, uninstrumented micro-bench (`free_span/bench.rs`,
+`fs_drain_release_pattern_1024`, de-benched) plus whole-`release()` ablations
+(bench-only patches, reverted):
 
-So the cost is the **free-span store's `release()` insert** (~26 K), not the
-scan or the cover sync. `release()` itself is small code: duplicate-start check,
-`prev_span`/`next_span` predecessor/successor lookups, merge decision, then
-`insert_span` → `alloc_record` + `write_active_record` + `record_max_candidate`
-+ `adjust_summary_after_insert`. At ~26 K per insert the dominant term must be
-page-level work inside those structures (a 4 KiB-page read-modify-write per
-insert is ~8 K; two structures plus the heap candidate list explains the rest).
-A store-level spike (probes inside `release()`) is required before choosing a
-store-level fix.
+| Ablation | per release |
+| --- | --- |
+| A: dup/prev/next lookups only | ~0.6 K |
+| B: A + skip the replace/insert writes (record relink kept) | ~27 K |
+| C: B + skip the double-merge neighbour removal | ~13 K |
+| full `release()` in the drain pattern | ~34 K |
 
-Why it shows up in drains: `delete_vertex_deferred` drains the hub and then
-removes the counterpart row at each neighbour; every neighbour's 1-edge bucket
-empties, and F1 releases each emptied span individually. A 1024-edge detach
-delete therefore performs 1024 such inserts (this bench), a 4096-edge one 4096.
+So the cost is the free-span store's **stable-memory writes** (~1.3 K each, ~20
+writes per release on the double-merge path that a high-to-low drain produces),
+not the neighbor lookups. Two bounded improvements landed the same day:
 
-### Options
+- `release()` now needs **two** page-walking lookups instead of four: a new
+  `predecessor_or_equal` on `ic-stable-paged-ordered-map` answers "duplicate
+  start or predecessor" in one directory walk, and `successor` covers both the
+  adjacent-next merge and the next-overlap check. The rewrite also fixes a
+  latent hole where a free span strictly *inside* the released range was ignored
+  whenever another span started exactly at the range end (the old shape merged
+  over the inner span, producing two overlapping free spans); regression
+  `release_prefers_inner_overlap_over_adjacent_merge` (wrong-impl probe: the old
+  lookup shape returns `Ok` instead of `OverlapNext`).
+- `write_record` writes the 48-byte record in **one** stable-memory write
+  instead of six per-field writes (−5.5 % on the native pattern bench).
 
-- **A1 — arena-style deferral (recommended first experiment).** Stop inserting
-  sub-cover frees into the free-span store during drains; keep the existing
-  cover shrink (the vertex row already drops to the survivors' end) and reclaim
-  whole abandoned regions at relocate/slide/fold time. Pre-F1 behaviour was
-  effectively this (the artifact value 20.72 M is the no-release cost). Expected
-  win on this bench: ~−26 M (−50 %). Risk to measure: without the release, leaf
-  occupancy looks higher until the next relocate, which can trigger earlier
-  relocates — run the leaf-pressure benches (`thresh_hub_grow_8192`-shaped
-  growth, `tcsr_*_insert_grow`, G4/G5) in the same session to bound that.
-  This is also the direction the ledger already records for the double-free
-  family (`GAP-2026-09-17-001`, "arena rule"), now with a performance reason.
-- **A2 — pending-release log.** Keep releasing, but append the range to a
-  stable pending log that maintenance folds into the free-span store in one
-  batched pass (amortises the ~26 K insert over many ranges). Needs a new stable
-  owner + recovery contract; larger than A1.
-- **A3 — store-level insert cost.** Probe `release()` internals; if a page
-  read-modify-write or the max-candidate list dominates, cheapen it (e.g. avoid
-  rewriting a whole page for a single insert, or defer heap maintenance).
-  Complements A1/A2 and would also speed up every other release path.
-- **A4 — coalesce within a drain.** Only helps when emptied spans are adjacent
-  (not the case for a hub's neighbours) — not sufficient alone.
+Effect on `bench_l_s2_det_hub_1024`: 51.31 M → 50.03 M (−2.5 % total; the scoped
+removal 36.57 M → 35.38 M). The remaining ~32 K per release is store
+bookkeeping, i.e. it does not shrink to zero by micro-optimisation.
 
-Recommended order: **A1 experiment (one temporary patch + the bench set), then
-A3 spike to understand the 26 K, then decide A2 vs shipping A1.**
+### Scalable fix (A2, recommended)
+
+The drain performs **one store release per emptied bucket**; each costs ~32 K
+regardless of the bucket's span length. The fix is fewer releases per logical
+operation: collect the emptied spans of one detached-vertex delete (they are
+adjacent by construction once the neighbours' buckets are freed) and flush them
+as pre-merged ranges in one store pass.
+
+Constraints the flush must satisfy:
+
+- **F1 reuse contract.** F1's regression
+  (`emptied_bucket_releases_span_and_zeroes_vertex_cover`) asserts that the freed
+  span becomes reusable; the flush must therefore complete before the delete
+  operation returns, so the batch belongs to the drain boundary
+  (`delete_vertex_deferred` / the resumable step), not to a lazy maintenance
+  pass.
+- **Cover sync stays per-delete.** `vertex.stored_slots` must shrink as each
+  bucket empties (that part costs only ~4 K and keeps accounting honest); only
+  the store insertion is deferred to the flush.
+- **Double-free protection.** The flush reuses the GAP-2026-09-17-001
+  protections (`release_vertex_edge_span_slab` semantics: skip free prefixes,
+  never hand unowned ranges to the store).
+- **Owner.** The batching needs a per-drain accumulator with a clear owner
+  (either a parameter threaded through the delete path or a
+  `DeleteContext`-style state); a global pending list would need a recovery
+  contract, which is the A2-with-stable-state variant.
+
+Acceptance: `bench_l_s2_det_hub_1024` back toward ~20-25 M with
+`fs_drain_release_pattern_1024` recording the per-release store cost, and F1's
+reuse regression plus the free-span suite green.
+
+### Options (narrowed by the measurement)
+
+- **A2 — drain-level batch flush (recommended; see above).** Fewer releases, F1
+  contract preserved at the operation boundary.
+- **A3 — store write-path refactor.** ~20 writes per release at ~1.3 K each;
+  batching the header/summary/bin updates per release could cut this further
+  (the record write is already batched). Complements A2 and benefits every
+  release path.
+- **A1 — blanket deferral of sub-cover frees** is **rejected**: it breaks F1's
+  reuse regression (a freed span must be reusable when the delete returns).
+- **A4 — coalesce within a drain** is subsumed by A2 (the flush pre-merges).
+
+Recommended order: **A2 first (it is the only lever that removes whole
+releases), then A3 for the residual per-release cost.**
 
 ## Finding B — tree-mode property reads resolve the property leaf per row
 
