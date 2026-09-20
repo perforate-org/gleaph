@@ -3,7 +3,6 @@
 use crate::{
     SegmentId, VertexId,
     labeled::{
-        access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
@@ -698,18 +697,18 @@ where
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
-        preferred_bucket: Option<u32>,
         preferred_extra: u32,
         compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
-    ) -> Result<(Vec<LabelBucket>, u32, u64, u32, u32, bool, u64, Vec<u64>), LabeledOperationError>
+    ) -> Result<(Vec<LabelBucket>, u32, u64, u32, bool, u64), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
         let segment_size = self.edges.header().segment_size.max(1);
+        let leaf = u32::from(src) / segment_size;
         let buckets = self.read_vertex_label_buckets(vertex)?;
         let old_alloc = vertex.stored_slots;
         // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
@@ -727,8 +726,19 @@ where
             if bucket.is_tiny_mode() {
                 continue;
             }
+            // The span must host what the materializer will move: the physical
+            // region plus the overflow-log chain. Counting `degree` alone under-sized
+            // every log-backed bucket — a fixture with `stored_raw = 4` and
+            // `degree = 174` asked for 4 slots and needed 174 — which surfaced as
+            // `CollectAllocationOverflow` in the publish (GAP-2026-09-20-005).
+            // Compacting rewrites move live rows only.
+            let resident = if compact {
+                bucket.degree()
+            } else {
+                self.bucket_resident_rows(leaf, bucket)?
+            };
             total_live = total_live
-                .checked_add(bucket.degree())
+                .checked_add(resident)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
         }
 
@@ -745,17 +755,7 @@ where
                 .map(|bucket| bucket.edge_start())
                 .unwrap_or(0);
             let moved = old_alloc != new_alloc || old_base != new_base;
-            let preferred = preferred_bucket.map(|index| index as usize);
-            let positions = Self::calculate_label_edge_span_positions(
-                new_base,
-                new_alloc,
-                buckets.as_slice(),
-                preferred,
-                preferred_extra,
-            )?;
-            return Ok((
-                buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions,
-            ));
+            return Ok((buckets, old_alloc, old_base, new_alloc, moved, new_base));
         }
         let new_alloc = if compact {
             total_live
@@ -774,17 +774,10 @@ where
             old_base
         };
 
-        let preferred = preferred_bucket.map(|index| index as usize);
-        let positions = Self::calculate_label_edge_span_positions(
-            new_base,
-            new_alloc,
-            buckets.as_slice(),
-            preferred,
-            preferred_extra,
-        )?;
-        Ok((
-            buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions,
-        ))
+        // Positions are the shared commit's decision: it recomputes them from the
+        // materialized runs and the caller's placement preference, so the plan only
+        // reports what the commit cannot know (span width and base).
+        Ok((buckets, old_alloc, old_base, new_alloc, moved, new_base))
     }
 
     pub(super) fn edge_bytes_for_len(edge_count: usize) -> Result<usize, LabeledOperationError> {
@@ -828,11 +821,10 @@ where
             return Ok(());
         }
 
-        let (buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions) =
-            self.rewrite_vertex_edge_span_read_and_plan(
+        let (buckets, old_alloc, old_base, new_alloc, moved, new_base) = self
+            .rewrite_vertex_edge_span_read_and_plan(
                 src,
                 &planned_vertex,
-                preferred_bucket,
                 preferred_extra,
                 compact,
                 force_slack_grow,
@@ -864,243 +856,34 @@ where
             );
         }
 
-        let slab_only_bulk =
-            !compact && self.label_buckets_allow_contiguous_slab_copy(&vertex, &current_buckets)?;
-
-        let disjoint_copy = moved && old_alloc > 0 && new_base != old_base;
-        if disjoint_copy {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
-            if slab_only_bulk {
-                let max_run = buckets.iter().try_fold(0usize, |max_run, bucket| {
-                    Ok::<usize, LabeledOperationError>(
-                        max_run.max(Self::edge_bytes_for_len(bucket.degree() as usize)?),
-                    )
-                })?;
-                let mut buf = vec![0u8; max_run];
-                let mut row_buckets = Vec::with_capacity(buckets.len());
-                for (index, bucket) in buckets.iter().enumerate() {
-                    let row_start = positions[index];
-                    let run = Self::edge_bytes_for_len(bucket.degree() as usize)?;
-                    if run > 0 {
-                        self.edges
-                            .read_slots_contiguous(bucket.edge_start(), &mut buf[..run]);
-                        self.edges.write_slots_contiguous(row_start, &buf[..run])?;
-                    }
-                    row_buckets.push(
-                        bucket
-                            .with_edge_range(row_start, bucket.degree())
-                            .with_overflow_log_head(-1),
-                    );
-                }
-                self.buckets
-                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-            } else {
-                let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
-                for (index, _) in buckets.iter().enumerate() {
-                    // ADR 0096 §5: tiny buckets have no slab content to collect;
-                    // push empty runs so per-bucket indices stay aligned. (The
-                    // disjoint bulk path above is gated off for tiny vertices.)
-                    if buckets[index].is_tiny_mode() {
-                        per_bucket.push(Vec::new());
-                        continue;
-                    }
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                    let bucket_index = index as u32;
-                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
-                        &vertex,
-                        bucket_index,
-                        &buckets[index],
-                    )?;
-                    let acc = LabelEdgeSpanAccess::with_bucket(
-                        &self.buckets,
-                        slot,
-                        buckets[index],
-                        successor,
-                        src,
-                    );
-                    per_bucket.push(
-                        self.edges
-                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
-                            .map_err(LabeledOperationError::from)?,
-                    );
-                }
-                let max_run = per_bucket.iter().try_fold(0usize, |max_run, edges| {
-                    Ok::<usize, LabeledOperationError>(
-                        max_run.max(Self::edge_bytes_for_len(edges.len())?),
-                    )
-                })?;
-                let mut buf = vec![0u8; max_run];
-                let mut row_buckets = Vec::with_capacity(buckets.len());
-                for (index, bucket) in buckets.iter().enumerate() {
-                    let row_start = positions[index];
-                    let edges = &per_bucket[index];
-                    let el = edges.len() as u32;
-                    // ADR 0096 §5: tiny descriptors keep stored == degree; only
-                    // the anchor advances (content stays inline).
-                    if bucket.is_tiny_mode() {
-                        row_buckets.push(
-                            bucket
-                                .with_edge_range(row_start, bucket.stored_slots_raw())
-                                .with_overflow_log_head(-1),
-                        );
-                        continue;
-                    }
-                    if !edges.is_empty() {
-                        let run = Self::edge_bytes_for_len(edges.len())?;
-                        debug_assert!(run <= buf.len());
-                        let mut o = 0usize;
-                        for e in edges {
-                            e.write_to(&mut buf[o..o + E::BYTES]);
-                            o += E::BYTES;
-                        }
-                        self.edges.write_slots_contiguous(row_start, &buf[..run])?;
-                    }
-                    row_buckets.push(
-                        bucket
-                            .with_edge_range(row_start, el)
-                            .with_degree_field(el)
-                            .with_overflow_log_head(-1),
-                    );
-                }
-                self.buckets
-                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-            }
-        } else if total_live > 0 {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_rewrite_copy_inplace_vec");
-            if slab_only_bulk {
-                let run_total = Self::edge_bytes_for_len(
-                    usize::try_from(total_live)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-                )?;
-                let mut raw = vec![0u8; run_total];
-                let mut off = 0usize;
-                for bucket in &buckets {
-                    let run = Self::edge_bytes_for_len(bucket.degree() as usize)?;
-                    if run > 0 {
-                        let end = off
-                            .checked_add(run)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        self.edges
-                            .read_slots_contiguous(bucket.edge_start(), &mut raw[off..end]);
-                        off = end;
-                    }
-                }
-                off = 0;
-                let mut row_buckets = Vec::with_capacity(buckets.len());
-                for (index, bucket) in buckets.iter().enumerate() {
-                    let row_start = positions[index];
-                    let run = Self::edge_bytes_for_len(bucket.degree() as usize)?;
-                    if run > 0 {
-                        let end = off
-                            .checked_add(run)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        self.edges
-                            .write_slots_contiguous(row_start, &raw[off..end])?;
-                        off = end;
-                    }
-                    row_buckets.push(
-                        bucket
-                            .with_edge_range(row_start, bucket.degree())
-                            .with_overflow_log_head(-1),
-                    );
-                }
-                self.buckets
-                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-            } else {
-                let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
-                for (index, _) in buckets.iter().enumerate() {
-                    // ADR 0096 §5: tiny buckets have no slab content to collect;
-                    // push empty runs so per-bucket indices stay aligned. (The
-                    // bulk path above is gated off for tiny vertices.)
-                    if buckets[index].is_tiny_mode() {
-                        per_bucket.push(Vec::new());
-                        continue;
-                    }
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                    let bucket_index = index as u32;
-                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
-                        &vertex,
-                        bucket_index,
-                        &buckets[index],
-                    )?;
-                    let acc = LabelEdgeSpanAccess::with_bucket(
-                        &self.buckets,
-                        slot,
-                        buckets[index],
-                        successor,
-                        src,
-                    );
-                    per_bucket.push(
-                        self.edges
-                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
-                            .map_err(LabeledOperationError::from)?,
-                    );
-                }
-                let run_total: usize = per_bucket.iter().try_fold(0usize, |total, edges| {
-                    let run = Self::edge_bytes_for_len(edges.len())?;
-                    total.checked_add(run).ok_or_else(|| {
-                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-                    })
-                })?;
-                let mut raw = vec![0u8; run_total];
-                let mut pack = 0usize;
-                for edges in &per_bucket {
-                    for e in edges {
-                        e.write_to(&mut raw[pack..pack + E::BYTES]);
-                        pack += E::BYTES;
-                    }
-                }
-                pack = 0;
-                let mut row_buckets = Vec::with_capacity(buckets.len());
-                for (index, bucket) in buckets.iter().enumerate() {
-                    let row_start = positions[index];
-                    let edges = &per_bucket[index];
-                    // ADR 0096 §5: tiny descriptors keep stored == degree; only
-                    // the anchor advances (content stays inline).
-                    if bucket.is_tiny_mode() {
-                        row_buckets.push(
-                            bucket
-                                .with_edge_range(row_start, bucket.stored_slots_raw())
-                                .with_overflow_log_head(-1),
-                        );
-                        continue;
-                    }
-                    let run = Self::edge_bytes_for_len(edges.len())?;
-                    if run > 0 {
-                        let end = pack
-                            .checked_add(run)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        self.edges
-                            .write_slots_contiguous(row_start, &raw[pack..end])?;
-                        pack = end;
-                    }
-                    row_buckets.push(
-                        bucket
-                            .with_edge_range(row_start, edges.len() as u32)
-                            .with_degree_field(edges.len() as u32)
-                            .with_overflow_log_head(-1),
-                    );
-                }
-                self.buckets
-                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-            }
-        } else {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_rewrite_metadata_only");
-            let mut row_buckets = Vec::with_capacity(buckets.len());
-            for (index, bucket) in buckets.iter().enumerate() {
-                let row_start = positions[index];
-                row_buckets.push(
-                    bucket
-                        .with_edge_range(row_start, bucket.degree())
-                        .with_overflow_log_head(-1),
-                );
-            }
-            self.buckets
-                .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-        }
+        // One content path for every bucket: materialize each bucket's resident
+        // content (tiny nothing; tree its LEG root array; slab the packed live run
+        // when compacting, else its raw prefix plus log rows) and publish it through
+        // `commit_vertex_edge_span_layout`, which owns the tiling, the descriptor
+        // rows and the vertex row. The three per-branch fast paths that used to do
+        // this inline reproduced the same logic and drifted apart
+        // (GAP-2026-09-20-005).
+        let leaf = Self::leaf_index_for_vid(src, self.edges.header().segment_size.max(1));
+        let (per_bucket_edges, per_bucket_raw) =
+            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, compact)?;
+        let mut edge_buf: Vec<u8> = Vec::new();
+        let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
+        self.commit_vertex_edge_span_layout(
+            src,
+            &vertex,
+            &buckets,
+            &per_bucket_edges,
+            &per_bucket_raw,
+            &mut edge_buf,
+            &mut bucket_row_bytes_buf,
+            new_base,
+            new_alloc,
+            preferred_bucket.map(|index| index as usize),
+            preferred_extra,
+            false, // not a leaf-relocation commit
+            true,  // this path folds overflow logs into the published rows
+            true,  // the finalize block below owns the vertex-footprint release
+        )?;
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_finalize");
@@ -1464,7 +1247,7 @@ where
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true)?;
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, false)?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
@@ -1488,7 +1271,7 @@ where
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true)?;
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, false)?;
                 plans.push((
                     vid,
                     vertex,
@@ -1537,6 +1320,7 @@ where
         leaf: u32,
         buckets: &[LabelBucket],
         fold_logs: bool,
+        compact: bool,
     ) -> Result<(Vec<Option<Vec<E>>>, Vec<Option<Vec<u8>>>), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1579,6 +1363,14 @@ where
                     self.edges
                         .read_slots_contiguous(bucket.edge_start(), &mut raw);
                 }
+                // A compacting rewrite publishes live rows only, so the run must
+                // match the plan's packed budget (`degree`) rather than the
+                // tombstone-inclusive prefix.
+                let raw = if compact {
+                    Self::pack_live_edge_slots::<E>(&raw)
+                } else {
+                    raw
+                };
                 per_bucket_edges.push(None);
                 per_bucket_raw.push(Some(raw));
             } else {
@@ -1589,7 +1381,14 @@ where
                     self.edges
                         .read_slots_contiguous(bucket.edge_start(), &mut raw);
                     for bytes in raw.chunks_exact(E::BYTES) {
-                        resident.push(E::read_from(bytes));
+                        let edge = E::read_from(bytes);
+                        // Compaction folds the log into live rows: a superseded
+                        // prefix slot must not survive next to the log entry that
+                        // replaced it.
+                        if compact && (edge.is_tombstone_edge() || edge.is_deleted_slot()) {
+                            continue;
+                        }
+                        resident.push(edge);
                     }
                 }
                 for (log_offset, log_index) in self
@@ -1607,7 +1406,10 @@ where
                     let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
                     resident.push(edge.with_slot_index(slot_index));
                 }
-                debug_assert_eq!(resident.len(), resident_slots as usize);
+                debug_assert!(
+                    compact || resident.len() == resident_slots as usize,
+                    "non-compacting materialization must cover every resident slot"
+                );
                 per_bucket_edges.push(Some(resident));
                 per_bucket_raw.push(None);
             }
@@ -1636,6 +1438,21 @@ where
             .checked_add(log_len)
             .ok_or(LaraOperationError::RowDegreeOverflow)
             .map_err(LabeledOperationError::from)
+    }
+
+    /// Pack the live slots of a tombstone-inclusive slab prefix, keeping order and
+    /// encoded slot indices (the inline paths this replaced republished the raw
+    /// prefix with a narrower `stored` width the same way).
+    fn pack_live_edge_slots<T: CsrEdgeTombstone>(raw: &[u8]) -> Vec<u8> {
+        let mut packed = Vec::with_capacity(raw.len());
+        for bytes in raw.chunks_exact(T::BYTES) {
+            let edge = T::read_from(bytes);
+            if edge.is_tombstone_edge() || edge.is_deleted_slot() {
+                continue;
+            }
+            packed.extend_from_slice(bytes);
+        }
+        packed
     }
 
     fn commit_vertex_edge_span_layout(
@@ -2440,9 +2257,25 @@ where
             } else {
                 0
             };
-            let resident = bucket
-                .stored_slots()
-                .max(bucket.degree())
+            // ADR 0096 §5: tiny buckets occupy zero leaf slots — the position
+            // calculator packs them at the running boundary — so they must not
+            // contribute a resident term. `stored_slots()` returns `degree` for tiny
+            // after K=4, and counting it made this tiling demand one slot more than
+            // the planner reserved (`span_slots=80 < effective_live=81`), which the
+            // rewrite tests surfaced as `CollectAllocationOverflow`
+            // (GAP-2026-09-20-005). Non-tiny buckets take the resident-region SSOT:
+            // slab keeps the degree floor, tree takes its root region alone (its
+            // `stored_slots` is a logical count, not a readable span).
+            let resident = if bucket.is_tiny_mode() {
+                0
+            } else if bucket.is_tree_mode() {
+                crate::labeled::graph::bucket_resident_region(bucket).map_or(0, |(_, len)| len)
+            } else {
+                crate::labeled::graph::bucket_resident_region(bucket)
+                    .map_or(bucket.stored_slots_raw(), |(_, len)| len)
+                    .max(bucket.degree())
+            };
+            let resident = resident
                 .checked_add(extra)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
             effective_live = effective_live
@@ -2607,7 +2440,7 @@ where
         // (GAP-2026-09-20-005). Its own policy (sizing above, release below) stays.
         let leaf = Self::leaf_index_for_vid(src, self.edges.header().segment_size.max(1));
         let (per_bucket_edges, per_bucket_raw) =
-            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, false)?;
+            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, false, false)?;
         let mut edge_buf: Vec<u8> = Vec::new();
         let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
         self.commit_vertex_edge_span_layout(
