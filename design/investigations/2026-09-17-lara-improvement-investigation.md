@@ -369,6 +369,8 @@ run per (arm, pattern); `T_PROMOTE` patched back to 4096 after measuring):
 | M1 hub-grow 8192 (equal work) | 55.87M | **41.70M** | 82.30M / 92.89M |
 | M2a scan 2048 | 74.30K | **40.09K** | 74.30K / 40.09K |
 | M2b insert into 2048 (block boundary) | **8.36K** | 63.51K | 8,364 / 185.07K |
+| M2b insert into 2050 (steady-state append) | 8.36K | **4.46K** | not measured |
+| G5 skewed mix 256v/4520e (workload level) | 140.11M | **132.24M** | not measured |
 | M2c delete 2048 | **4.84K** | 7.33K | 4,845 / 7,887 |
 | M4 churn round-trip (threshold-relative sizing) | 117.65M | 30.77M | 147.54M / 38.64M |
 
@@ -376,8 +378,13 @@ Two readings changed materially: M1 improves in BOTH arms (82.30M→55.87M at
 4096; 92.89M→41.70M at 1024 — the removed per-insert false cascade), and the
 arm ordering **inverts** at workload scale (1024 now 25% cheaper on equal work).
 M2b's remaining 7.6× is the tree-append cost at a block-boundary mint (stored
-2048 → 2049 mints an LTB block, grows the root, reallocs the combined span); the
-pre-fix 22× was that plus the false cascade. The recorded pre-fix verdict
+2048 → 2049 mints an LTB block, grows the root, reallocs the combined span), not
+tree appends in general: seeded at 2050 (still inside the tail block) the same
+append costs 4.46K in the tree arm vs 8.36K in the slab arm, so tree appends are
+~1.9× cheaper in steady state. The insert/scan-dominated G5 workload mix agrees
+(132.24M vs 140.11M, −5.6%). Every equal-work and workload-level metric now
+favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor 4096,
+and the pre-fix 22× was the mint plus the false cascade. The recorded pre-fix verdict
 ("T_PROMOTE stays 4096", justified by M1) no longer follows from post-fix
 evidence; the constant is left at 4096 in the density-accounting patch because a
 threshold flip is its own slice (fixtures and tests hardcode 4096; G-gates would

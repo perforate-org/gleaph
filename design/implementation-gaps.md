@@ -175,14 +175,23 @@ defect from being rediscovered without its prior reasoning.
   | M1 hub-grow 8192 (equal work) | 55.87M | **41.70M** | 82.30M / 92.89M |
   | M2a scan 2048 | 74.30K | **40.09K** | 74.30K / 40.09K |
   | M2b insert into 2048 (block-boundary mint) | **8.36K** | 63.51K | 8,364 / 185.07K |
+  | M2b insert into 2050 (steady-state append) | 8.36K | **4.46K** | not measured |
   | M2c delete 2048 | **4.84K** | 7.33K | 4,845 / 7,887 |
   | M4 churn round-trip (threshold-relative sizing) | 117.65M | 30.77M | 147.54M / 38.64M |
+  | G5 skewed mix 256v/4520e (workload level) | 140.11M | **132.24M** | not measured |
 
   Both arms improved on M1 (the false cascade is gone) and the **ordering
   inverts**: 1024 is now 25% cheaper for equal work (8192 full-path inserts), so
   the pre-fix rationale for keeping 4096 no longer holds. M2b's residual 7.6× is
   a block-boundary mint (2048 → 2049 mints an LTB block, grows the root, reallocs
-  the combined span), not a cascade. **Open decision (not taken in this patch):**
+  the combined span), not a cascade: with the seed moved off the block boundary
+  (2050) the same append costs 4.46K in the tree arm vs 8.36K in the slab arm, so
+  tree appends are ~1.9x cheaper in steady state and the earlier 7.6x was the
+  one-off mint. The insert/scan-dominated G5 workload mix also favors 1024
+  (132.24M vs 140.11M, -5.6%). Every equal-work and workload-level metric now
+  favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor
+  4096, and hub-delete streams are not a workload the Orkut comparison
+  exercises. **Open decision (not taken in this patch):**
   flipping the constant is its own slice — fixtures/tests hardcode 4096
   (`promote_test_bucket`, `force_bucket_to_stored_slots`, many
   `stored_slots == 4096` assertions), and G1–G6 gates plus the workload mix would
