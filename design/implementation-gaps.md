@@ -4992,3 +4992,17 @@ run `canbench ins` on HEAD~1; if that is clean, bisect inside the shim's parts (
 plan call → the finalize/release block) with one `canbench ins` each (≈2–3 min per run). Record which part carries
 the cost before choosing between trimming it, special-casing the no-log common case, and accepting the cost as the
 price of one implementation. Tree is 614/0 with the delegation landed.
+
+**Bisect step 1 result (2026-09-20): most of the `ins` signal is not the delegation.** Reverting only the
+delegation commit's file (`git checkout ae25c9378^ -- compact.rs`, everything else unchanged) and running
+`canbench ins` gives **6 regressed, max +4.68 %, p75 +2.86 %, median +0.45 %**, against **7 regressed, max
++21.49 %, p75 +3.69 %, median +0.61 %** with the delegation. So the stored `canbench_results.yml` baseline
+predates this session's other landings: roughly six small regressions (≤4.7 %) are shared/common, and the
+delegation's own contribution is concentrated in **one bench at ≈ +17 %** plus ≈ +0.16 % on the median. A
+per-bench parser attempt was unreliable (it reported only three *improvements* where the summary said six
+regressions), so the next step is to read the bench names from canbench's own `--persist`-free output by eye, or
+write a stricter parser over the `Benchmark:` blocks, and then look at that one bench's shape (likely a
+cascade/maintenance-heavy insert where the plan + commit take more passes than the fourth implementation's tail).
+Decision options once the bench is named: trim the pass it exercises, special-case the no-log common case, or
+accept ≈ +17 % on that single workload as the price of one implementation. The delegation stays landed; tree
+614/0.
