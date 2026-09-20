@@ -5027,3 +5027,11 @@ recover the whole `labeled_leaf_release_log_segment` group while keeping I2's gu
 insert path's delegation cost separately (it is the one genuinely delegation-shaped number). Both were started but
 not applied — the anchor greps for the drain function did not match (the signature is wrapped by `cargo fmt`, and
 the function name should be re-confirmed before patching). Tree is 614/0 with the delegation landed.
+
+**drain short-circuit landed (2026-09-20, `5283ad6d8`).** `ensure_leaf_overflow_logs_drained` returns early when
+`overflow_log_segment_high_water(leaf) == 0` — a segment with no entries cannot have a bucket chaining rows in it,
+and the bucket-side call site already tests the same mark. Measured with focused `canbench ins`: median +0.61 % →
+**+0.09 %**, p75 +3.69 % → **+2.74 %**, max +21.49 % → **+19.32 %**; the `labeled_leaf_release_log_segment` scope
+group (up to +1628 %) is what disappeared. What remains is the delegation's own cost in the bypass insert path
+(`bench_l_nt_bp_ins_*`, `labeled_non_tail_bypass_insert` ≈ +21 %), the last open performance item from this
+session, plus a residual ≈ +0.1 % median across the other benches. Suite 614/0, fmt/clippy clean.
