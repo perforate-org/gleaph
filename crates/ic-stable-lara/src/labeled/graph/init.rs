@@ -17,7 +17,10 @@ use crate::{
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
-use std::{cell::Cell, marker::PhantomData};
+use std::{
+    cell::{Cell, RefCell},
+    marker::PhantomData,
+};
 
 use super::error::{InitError, LabeledOperationError};
 use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
@@ -173,6 +176,7 @@ where
             default_label,
             last_bucket_lookup: Cell::new(None),
             inline_property_bytes_compaction_deferred: Cell::new(false),
+            span_release_batch: RefCell::new(None),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
@@ -267,6 +271,7 @@ where
             default_label,
             last_bucket_lookup: Cell::new(None),
             inline_property_bytes_compaction_deferred: Cell::new(false),
+            span_release_batch: RefCell::new(None),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })

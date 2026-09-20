@@ -4263,6 +4263,29 @@ where
     where
         E: PartialEq + CsrEdgeTombstone,
     {
+        // GAP-2026-09-20-002: one span-release batch per orientation for the whole
+        // delete. A detached hub empties one bucket per neighbour, and a
+        // per-bucket store release costs ~32 K instructions; collecting them and
+        // flushing merged runs before returning keeps F1's reuse contract (the
+        // freed ranges are allocatable once this call returns) while paying a
+        // handful of store inserts instead of one per neighbour.
+        self.forward.begin_span_release_batch();
+        self.reverse.begin_span_release_batch();
+        let result = self.delete_vertex_deferred_drain(vid);
+        self.forward.flush_span_release_batch();
+        self.reverse.flush_span_release_batch();
+        result
+    }
+
+    /// Drain body of [`Self::delete_vertex_deferred`], run inside the
+    /// span-release batch opened by its caller.
+    fn delete_vertex_deferred_drain(
+        &self,
+        vid: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLabeledError>
+    where
+        E: PartialEq + CsrEdgeTombstone,
+    {
         let mut affected_forward = std::collections::BTreeSet::new();
         let mut affected_reverse = std::collections::BTreeSet::new();
         affected_forward.insert(vid);
@@ -6753,6 +6776,128 @@ mod tests {
     /// production `insert_directed_edge` path. The inline-property growth keeps
     /// the edge prefix behind the live degree, so the trigger sees an active log
     /// at every threshold (it fires at insert 4251 for `T_PROMOTE = 4096`).
+    /// GAP-2026-09-20-002: a detach delete batches the spans it empties and
+    /// flushes them as merged runs. Two contracts:
+    ///
+    /// 1. the freed ranges are allocatable when the delete returns (F1's reuse
+    ///    contract, here for the batched shape), and
+    /// 2. the store sees far fewer inserts than emptied buckets.
+    ///
+    /// Wrong implementation this fails on: releasing each emptied bucket
+    /// separately (~2K + 2 inserts here, one per emptied bucket).
+    #[test]
+    fn detach_delete_flushes_emptied_spans_as_merged_runs() {
+        use crate::labeled::graph::{
+            reset_span_release_batch_flush_runs, span_release_batch_flush_runs,
+        };
+        use crate::lara::edge::free_span::{
+            free_span_release_calls, reset_free_span_release_calls,
+        };
+        let graph = valued_bidirectional_graph();
+        const NEIGHBOURS: u32 = 8;
+        // Four edges per neighbour: the neighbour's reverse bucket promotes out of
+        // tiny (which owns no slab span) into a slab bucket, so the delete has
+        // spans to empty and release.
+        const EDGES_PER_NEIGHBOUR: u32 = 4;
+        // Vertex 0 is unused; hub = 1, neighbours = 2..(2 + NEIGHBOURS).
+        for _ in 0..(NEIGHBOURS + 2) {
+            graph.push_vertex().unwrap();
+        }
+        let hub = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(2);
+        for i in 0..NEIGHBOURS {
+            let dst = VertexId::from(2 + i);
+            for k in 0..EDGES_PER_NEIGHBOUR {
+                graph
+                    .insert_directed_edge(
+                        hub,
+                        dst,
+                        label,
+                        InlinePropertyTestEdge::with_bytes(u32::from(dst), &[]),
+                        InlinePropertyTestEdge::with_bytes(u32::from(hub), &[]),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap_or_else(|e| panic!("insert {i}/{k}: {e:?}"));
+            }
+        }
+        // Ranges that the delete will free, recorded before it runs, per owning
+        // store (each orientation has its own free-span store and flush).
+        let mut freed_forward: Vec<(u64, u64)> = Vec::new();
+        let mut freed_reverse: Vec<(u64, u64)> = Vec::new();
+        for vid in std::iter::once(hub).chain((0..NEIGHBOURS).map(|i| VertexId::from(2 + i))) {
+            for (orientation, freed) in [
+                (&graph.forward, &mut freed_forward),
+                (&graph.reverse, &mut freed_reverse),
+            ] {
+                let vertex = orientation.vertices().get(vid);
+                if let crate::labeled::graph::BucketSearch::Found { bucket, .. } = orientation
+                    .find_bucket(vid, &vertex, label)
+                    .expect("find_bucket")
+                {
+                    // Mirror `release_bucket_edge_span_on_empty`'s guards: tiny
+                    // buckets own no span and tree buckets are LTB-addressed.
+                    if !bucket.is_tiny_mode()
+                        && !bucket.is_tree_mode()
+                        && bucket.degree() > 0
+                        && bucket.stored_slots > 0
+                    {
+                        freed.push((bucket.edge_start(), u64::from(bucket.stored_slots)));
+                    }
+                }
+            }
+        }
+        let mut freed: Vec<(u64, u64)> = freed_forward.clone();
+        freed.extend(freed_reverse.iter().copied());
+        assert!(
+            freed.len() > usize::try_from(NEIGHBOURS).unwrap(),
+            "fixture must have per-neighbour slab spans to empty, got {}",
+            freed.len()
+        );
+        freed.sort_unstable();
+        let mut merged_runs = 0usize;
+        let mut end = 0u64;
+        for (start, len) in freed.iter().copied() {
+            if merged_runs == 0 || start > end {
+                merged_runs += 1;
+                end = start.saturating_add(len);
+            } else {
+                end = end.max(start.saturating_add(len));
+            }
+        }
+
+        reset_free_span_release_calls();
+        reset_span_release_batch_flush_runs();
+        graph.delete_vertex_deferred(hub).expect("detach delete");
+        let flush_runs = span_release_batch_flush_runs();
+        assert_eq!(
+            flush_runs,
+            u64::try_from(merged_runs).unwrap(),
+            "the flush releases one run per contiguous group (merged_runs={merged_runs}, emptied={})",
+            freed.len()
+        );
+        assert!(
+            free_span_release_calls() >= flush_runs,
+            "every flushed run reaches the free-span store"
+        );
+
+        // Reuse contract: every freed range is covered by free spans in the store
+        // that owned it.
+        for (orientation, owned) in [
+            (&graph.forward, &freed_forward),
+            (&graph.reverse, &freed_reverse),
+        ] {
+            let free = orientation.edges().free_span_store().spans();
+            for (start, len) in owned.iter().copied() {
+                assert!(
+                    free.iter().any(|span| span.start_slot <= start
+                        && span.start_slot.saturating_add(span.len) >= start + len),
+                    "freed range [{start}, {}) must be allocatable after the delete",
+                    start + len
+                );
+            }
+        }
+    }
+
     #[test]
     fn gap_promote_with_active_overflow_log_keeps_every_row() {
         let graph = valued_bidirectional_graph();

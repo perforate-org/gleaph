@@ -496,6 +496,8 @@ impl<M: Memory> FreeSpanStore<M> {
 
     /// Releases `span` back to the allocator, coalescing adjacent spans.
     pub fn release(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
+        #[cfg(test)]
+        record_free_span_release_call();
         if span.len == 0 {
             return Err(FreeSpanError::EmptySpan);
         }
@@ -1414,6 +1416,31 @@ fn read_u8_at<M: Memory>(memory: &M, offset: u64) -> u8 {
     let mut b = [0u8; 1];
     memory.read(offset, &mut b);
     b[0]
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only count of public free-span releases (`release`/`release_span`).
+    /// Lets tests pin "one store insert per merged run" contracts: a drain that
+    /// batches its emptied ranges must not pay one insert per emptied bucket
+    /// (GAP-2026-09-20-002). Bytes or span counts cannot express this — the store
+    /// merges adjacent spans on insert either way.
+    static FREE_SPAN_RELEASE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_free_span_release_calls() {
+    FREE_SPAN_RELEASE_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn free_span_release_calls() -> u64 {
+    FREE_SPAN_RELEASE_CALLS.with(|c| c.get())
+}
+
+#[cfg(test)]
+fn record_free_span_release_call() {
+    FREE_SPAN_RELEASE_CALLS.with(|c| c.set(c.get().saturating_add(1)));
 }
 
 #[cfg(test)]

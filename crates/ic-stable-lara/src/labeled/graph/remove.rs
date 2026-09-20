@@ -489,9 +489,22 @@ where
         if span_len == 0 {
             return Ok(());
         }
-        let _ = self
-            .edges
-            .release_span(bucket.edge_start(), u64::from(span_len));
+        // GAP-2026-09-20-002: inside a delete-level batch the emptied range is
+        // recorded and released merged at the flush; otherwise it is released
+        // immediately (F1's single-delete behaviour). Either way the release is
+        // best-effort, so a failed release never fails a successful delete.
+        let batched = match self.span_release_batch.borrow_mut().as_mut() {
+            Some(ranges) => {
+                ranges.push((bucket.edge_start(), u64::from(span_len)));
+                true
+            }
+            None => false,
+        };
+        if !batched {
+            let _ = self
+                .edges
+                .release_span(bucket.edge_start(), u64::from(span_len));
+        }
         // Recompute the cover over survivors (the emptied span contributes 0),
         // skipping the emptied bucket by INDEX (two buckets can share an
         // anchor; address matching would skip a live survivor).
@@ -531,6 +544,59 @@ where
             self.vertices.set(src, &vertex.with_stored_slots(0));
         }
         Ok(())
+    }
+
+    /// Starts collecting the spans of the buckets a delete operation empties.
+    ///
+    /// While a batch is active, `release_bucket_edge_span_on_empty` records the
+    /// emptied range (the per-delete cover sync still runs) instead of releasing
+    /// it, and [`Self::flush_span_release_batch`] releases the collected ranges as
+    /// pre-merged runs. A drain empties one bucket per neighbour and each
+    /// per-bucket release costs ~32 K instructions in free-span-store writes
+    /// (GAP-2026-09-20-002), so merging first removes whole releases.
+    ///
+    /// A batch never nests: the delete entry points own the begin/flush pair.
+    pub(crate) fn begin_span_release_batch(&self) {
+        debug_assert!(
+            self.span_release_batch.borrow().is_none(),
+            "span release batches do not nest"
+        );
+        *self.span_release_batch.borrow_mut() = Some(Vec::new());
+    }
+
+    /// Releases every span collected since [`Self::begin_span_release_batch`] as
+    /// merged runs. Best-effort like the single-delete release, and it must run
+    /// before the delete operation returns: F1's reuse regression asserts a freed
+    /// span is available to the allocator once the delete completes.
+    pub(crate) fn flush_span_release_batch(&self) {
+        let Some(ranges) = self.span_release_batch.borrow_mut().take() else {
+            return;
+        };
+        let mut sorted = ranges;
+        sorted.sort_unstable();
+        let mut start = 0u64;
+        let mut end = 0u64;
+        let mut pending = false;
+        for (range_start, range_len) in sorted {
+            let range_end = range_start.saturating_add(range_len);
+            if pending && range_start <= end {
+                end = end.max(range_end);
+                continue;
+            }
+            if pending {
+                #[cfg(test)]
+                record_span_release_batch_flush_run();
+                let _ = self.release_vertex_edge_span_slab(start, end - start);
+            }
+            start = range_start;
+            end = range_end;
+            pending = true;
+        }
+        if pending {
+            #[cfg(test)]
+            record_span_release_batch_flush_run();
+            let _ = self.release_vertex_edge_span_slab(start, end - start);
+        }
     }
 
     fn remove_bucket_edge_at_slot(
@@ -1461,6 +1527,30 @@ where
         }
         Ok(None)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only count of store releases a span-release batch flush performs (one
+    /// per merged run). Pins the batching contract of
+    /// `flush_span_release_batch`: a drain must flush merged runs, not one span
+    /// per emptied bucket (GAP-2026-09-20-002).
+    static SPAN_RELEASE_BATCH_FLUSH_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_span_release_batch_flush_runs() {
+    SPAN_RELEASE_BATCH_FLUSH_RUNS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn span_release_batch_flush_runs() -> u64 {
+    SPAN_RELEASE_BATCH_FLUSH_RUNS.with(|c| c.get())
+}
+
+#[cfg(test)]
+fn record_span_release_batch_flush_run() {
+    SPAN_RELEASE_BATCH_FLUSH_RUNS.with(|c| c.set(c.get().saturating_add(1)));
 }
 
 #[cfg(test)]

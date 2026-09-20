@@ -24,7 +24,10 @@ use crate::{
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
-use std::{cell::Cell, marker::PhantomData};
+use std::{
+    cell::{Cell, RefCell},
+    marker::PhantomData,
+};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 16;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
@@ -219,6 +222,8 @@ mod bypass;
 mod compact;
 #[cfg(test)]
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
+#[cfg(test)]
+pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_flush_runs};
 // Resident-geometry SSOT (GAP-2026-09-17-001): the layout audit in
 // `labeled::invariants` validates tree buckets against their physical root
 // region, so the helper is re-exported to the crate.
@@ -271,6 +276,12 @@ where
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     inline_property_bytes_compaction_deferred: Cell<bool>,
+    /// Drain-time span-release batch (GAP-2026-09-20-002). `Some` while a delete
+    /// operation collects the spans of the buckets it empties, so the flush can
+    /// merge adjacent runs and pay one free-span-store insert instead of one per
+    /// bucket; `None` releases each emptied span immediately (the single-delete
+    /// shape F1's reuse regression pins).
+    span_release_batch: RefCell<Option<Vec<(u64, u64)>>>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],
     _marker: PhantomData<E>,
 }
