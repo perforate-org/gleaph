@@ -1108,6 +1108,21 @@ session did.
   that the fold is publish-owned, exactly as the log-ownership row already says for the rewrite path. The
   `fold_logs=false` machinery (`/tmp/delegation_foldpercall_612_2_*`) is therefore superseded and must not be
   landed as-is. HEAD is 614/0.
+  **Stepped-test re-derivation plan (2026-09-20, session close).** The enum settles the intent:
+  `OverflowRewrite(Vec<EdgeSlotMove>)` is documented as "one overflow suffix was folded; `moves` lists
+  legacy-tombstone slot rewrites", `EdgeMoved(EdgeSlotMove)` as "one live edge was relocated inside its label
+  bucket". With the publish owning the fold, the step's first call folds the suffix during the rewrite and then
+  the step reports the *compaction* move, so the test should assert `EdgeMoved` with
+  `old_slot_index: 1, new_slot_index: 0` and that the survivor (`target == 1`) is still visible — at slot 0.
+  The fixture builds it as: `inline_property_test_graph()` + a hub, four inserted edges, `promote_bucket_to_slab`,
+  `rebalance_edge_log_leaf_for_labeled(hub, true, true)`, remove `target == 0`, then insert `target` 100.. until
+  the bucket has a log chain of length ≥ 3, remove the first log target with `remove_edge_matching_with_move`
+  (asserting its moves are non-empty), and finally call `compact_vertex_edge_span_one_step(hub, 0, 0, insertion)`.
+  The assertions after the survivor check (a second `compact_vertex_edge_span_one_step` call and its
+  expectations) must be re-derived in the same pass — they were not read. State to start from:
+  `cp /tmp/delegation_policy_v2_compact.rs crates/ic-stable-lara/src/labeled/graph/compact.rs` (611/3), then edit
+  that test, then `vertex_edge_span_rewrite_weights_slack_by_label_degree` as a distribution property. HEAD is
+  614/0 and everything from this session is committed.
   enabling it).
      decision removes).
   fourth implementation's placement.
