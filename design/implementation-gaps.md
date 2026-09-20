@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-17
+Last updated: 2026-09-19
 Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
@@ -46,6 +46,51 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-09-19-001 — Promote silently drops overflow-log rows (tree mode has no log)
+
+- **Status:** Open — P1 silent edge loss. Recorded 2026-09-19 while triaging the
+  `T_PROMOTE = 1024` flip (found by classifying the 11 failures that appear at the
+  lower threshold; see GAP-2026-09-17-001 for the density-accounting context).
+- **Observed behavior (confirmed):** `promote_bypass_to_tree_mode` transcribes
+  exactly `pre_stored_slots` prefix slots into the LTB blocks and publishes
+  `overflow_log_head = -1` ("the log was orphaned by promote"). Any live row the
+  slab **overflow log** holds at the trigger is therefore dropped — tree mode has
+  no log (ADR 0088 §2) — and the row becomes unreachable. Post-promotion the
+  bucket reports `degree = stored_slots + N` (N = log depth at the trigger) while
+  every scan (forward and reverse) returns `stored_slots` rows. The inserts that
+  admitted those rows returned `Ok` and `num_edges` counts them: fail-open.
+- **Evidence / repro:** temporary probe (removed after diagnosis) seeding a
+  width-2 `InlinePropertyTestEdge` hub through the production
+  `insert_directed_edge` path on `valued_bidirectional_graph()`:
+  - `T_PROMOTE = 1024`: promotion fires at insert 1191 →
+    `stored 1191, degree 1192, out/in scans 1191`.
+  - `T_PROMOTE = 4096`: promotion fires at insert 4251 →
+    `stored 4251, degree 4252, out/in scans 4251` → **threshold-independent**.
+  - width-0 control: exact (`stored == degree == scanned` at 4097/5000/8000);
+    the trigger is a *non-empty overflow log*, which the width>0 path reliably
+    produces because the edge prefix plateaus (`stored 4080` while `degree 4200`,
+    `log_head 119`) while the property stream keeps growing.
+  - Test that exposes it at the lower threshold:
+    `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`
+    (`in_edges_for_label(..).len() == 2000` → 1999).
+  - No detector fires today: `assert_labeled_edge_store_pma_counts` compares
+    `actual` against bucket degrees (both agree on the inflated degree), and the
+    tree block-header parity helper is test-local.
+- **Impact:** silent adjacency loss for any promoted bucket that carried
+  log-resident rows. Promotion frequency rises as the threshold falls, so the
+  `T_PROMOTE = 1024` flip multiplies the exposure; the flip is gated on this fix.
+- **Owner:** tree promotion transcription (`labeled/graph/promote.rs` Phase 2/3)
+  plus overflow-log ownership in the labeled insert path
+  (`labeled/graph/insert.rs`; the slab path's fold helper
+  `fold_label_bucket_*_log_to_slab` already exists). Contracts: ADR 0088 §2
+  (tree mode has no overflow log), ADR 0096 §5 (log rows are PMA edge records).
+- **Next decision:** smallest fix — fold the overflow log into the prefix before
+  promoting (fold → re-check trigger → promote, reusing the existing fold path),
+  versus a typed fail-closed precondition on `overflow_log_head() >= 0` that makes
+  the caller fold-then-retry, versus transcribing prefix+log rows into the tree
+  (larger). Regression: promote a bucket with a non-empty log, then assert
+  `degree == stored == scanned` for both directions plus payload identity.
 
 ### GAP-2026-09-17-001 — Tree-mode full-path 4-byte bucket growth traps past ~5.7K edges on an overlapping edge free-span release
 
@@ -191,7 +236,10 @@ defect from being rediscovered without its prior reasoning.
   (132.24M vs 140.11M, -5.6%). Every equal-work and workload-level metric now
   favors 1024; only single deletes (7.33K vs 4.84K) and boundary mints favor
   4096, and hub-delete streams are not a workload the Orkut comparison
-  exercises. **Open decision (not taken in this patch):**
+  exercises. **Gated:** the flip is also blocked by
+  [GAP-2026-09-19-001](#gap-2026-09-19-001--promote-silently-drops-overflow-log-rows-tree-mode-has-no-log)
+  (promotion silently drops overflow-log rows, and a lower threshold multiplies
+  the number of promotions). **Open decision (not taken in this patch):**
   flipping the constant is its own slice — fixtures/tests hardcode 4096
   (`promote_test_bucket`, `force_bucket_to_stored_slots`, many
   `stored_slots == 4096` assertions), and G1–G6 gates plus the workload mix would
