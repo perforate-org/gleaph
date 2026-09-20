@@ -5495,3 +5495,31 @@ Three distinct things are "the log's memory", and they end differently:
 Net: content is rebuilt, unused capacity is never allocated on a fresh graph, the store's bookkeeping is deleted,
 and its region is handed to the spill store rather than dropped, so nothing in the graph's layout arithmetic
 changes except the meaning of the bytes.
+
+## Confirmed: the log is replaced wholesale by the spill (2026-09-20, pre-production)
+
+No deployed data exists, so nothing is adapted and nothing is migrated: the log's mechanism is **deleted** and the
+per-bucket spill takes its place. Concretely the change removes, rather than rewrites:
+
+* `lara/edge/log.rs` and its inline-property-bytes twin — the segment store, its per-segment capacity, the chain
+  representation (`prev` links, `overflow_log_chain_len`), `SegmentId::release_*` and the segment table.
+* The log-specific graph paths: `prepare_vertex_edge_span_for_overflow_log_fold`, `rebalance_edge_log_*` (the
+  leaf-wide recovery), `release_leaf_overflow_log` with the I2 drain guard, the fold prelude, the fold/deferred
+  triggers that exist only to empty a shared area, and the log parts of the batch reservation.
+* Their tests and benches (the `bench_l_du_log_*` family, the log-capacity fixtures, `overflow_log_same_leaf_*`),
+  replaced by spill tests: lazy allocation on first spill, class reuse, level-2 hand-off, "no pre-allocation"
+  regression, and the audit shape that must now show zero fixed cost.
+
+What is kept because it is not the log: the inline (tiny) form, the slab prefix with the flat scan it buys, tree
+mode for the moment, the descriptor's 29-byte row (its `overflow_log_head: i32` field becomes the spill run id), the
+ordinal scheme (`stored + i` beyond the prefix), the resident-content definition (prefix + spill) and the ownership
+rules (one owner per row; a published width must be backed; slack is a hint; a spill run exists only because rows
+exist). The `Memory` region count stays unchanged — the freed log slot carries the spill store, renamed — so the 31
+`LabeledLaraGraph::new` sites are untouched.
+
+The gaps this session opened close by deletion rather than by fix, and their ledgers should say so: GAP-2026-09-20-001
+(log loss while promoting), the log half of GAP-2026-09-20-005, and GAP-006 (eager per-segment capacity) all lose
+their mechanism. Two design questions remain after the swap, in order: (i) whether tree mode is still needed once a
+bucket can be "prefix + LTB-backed spill run" (tree's LEG root is a one-level block list, which a run header could
+carry), and (ii) whether the inline threshold K should move now that the middle tier is lazy. Both are follow-ups
+with their own measurements, not part of the swap.
