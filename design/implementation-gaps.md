@@ -4930,3 +4930,22 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   The bypass v1 boundary (overflow-log-backed rows defer to the existing fold mechanism) and
   the undirected/vertex-purge remove paths (not wired; a bypass row being purged needs no
   compaction) are recorded in the Plan 0341 report.
+
+**Delegation LANDED (2026-09-20, `ae25c9378`) — 614/0, with an insert-path regression to fix.** The rebalance now
+goes through the shared pair (−152 lines) with the maintenance policy threaded explicitly
+(`SpanResolutionPolicy::SlackMayBeDropped`), the publish owning the overflow-log fold for that path. Both stepped
+tests are re-derived for that ownership (first step folds and reports the compaction move
+`EdgeMoved { 1 → 0 }`, survivor visible at slot 0, then `EdgeMoved { 2 → 1 }`; the inline-property-bytes test
+drops the variant claim about *who* folds and keeps both effects), and the slack test now runs on a roomy fixture
+copied verbatim from the M1 gap test — `LabeledLaraGraph::new` takes **18** arguments and the fixture must
+`push_vertex` before the first insert. Scoped fmt/clippy clean.
+
+Focused canbench: `compact` 0 regressed (median −217.82 K instructions), but **`ins` 7 regressed — max +21.50 %,
+p75 +3.69 %, median +0.61 %** — the cost of the up-front slack placement probe the "spare capacity is a hint"
+rule runs on every `force_slack_grow` rewrite (`try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)`
+before resolving). Candidate fixes, cheapest first: (a) probe only when the plan has not already chosen an
+in-leaf base; (b) replace probe-then-resolve with resolve-then-downgrade — attempt `new_alloc` and on failure
+retry once with `old_alloc` **without** letting the resolver relocate for slack; (c) memoise the probe's answer
+inside the plan so the commit reuses it. Until one lands, the delegation is an architectural simplification with
+a documented insert regression; the benchmark comparison must be re-run before any final artifact update, and the
+ADR 0096 §5 row for "the rebalance is a rewrite" still needs to be added (the anchor text moved).
