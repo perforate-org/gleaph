@@ -1373,16 +1373,18 @@ promotion defects below; full table in
 | M4 promote → demote → re-promote round trip | 117.65 M | 30.77 M (threshold-relative sizing) |
 | Drain a 1,024-edge hub, all deletes (`bench_l_s2_det_hub_1024`) | **20.72 M** | 51.31 M |
 | Drain a 4,096-edge hub, all deletes (`bench_l_s2_det_hub_4096`) | **85.49 M** | 208.00 M |
-| Property-bearing scan, 4,096 rows, w = 32 (`tcsr_4096_property_read_w32`) | **3.22 M** | 4.83 M |
+| Property-bearing scan, 4,096 rows, w = 32 (`tcsr_4096_property_read_w32`) | **3.22 M** | 4.83 M → 3.66 M after the per-leaf property cursor (GAP-2026-09-20-003 fix) |
 
 **Attribution (measured 2026-09-20 with temporary scopes).** Only one of the
 three cost rows above is caused by the re-tune:
 
-- **Property-bearing reads** (w > 0): caused by the re-tune. The same bench, same
-  4,096 rows, same w = 32: 3.22 M with a slab bucket and 4.83 M with a tree
-  bucket (1.5×) — tree mode resolves the property leaf per row instead of
-  streaming one LPB block per leaf. It does not show up in the w = 0 scan result
-  (M2a) because there is no second stream to walk.
+- **Property-bearing reads** (w > 0): caused by the re-tune, then largely
+  recovered. The same bench, same 4,096 rows, same w = 32: 3.22 M with a slab
+  bucket and 4.83 M with a tree bucket (1.5×) — tree mode resolved the property
+  leaf per row instead of streaming one LPB block per leaf. The per-leaf cursor
+  (GAP-2026-09-20-003, 2026-09-20) brings it to 3.66 M, so the remaining tree
+  overhead is +13.7 %. It does not show up in the w = 0 scan result (M2a)
+  because there is no second stream to walk.
 - **Hub drain**: *not* caused by the re-tune. `bench_l_s2_det_hub_1024` measures
   identically at both thresholds (57.09 M with the scopes in place; the pre-F1
   artifact value is 20.72 M). The cost is F1's per-emptied-bucket span release

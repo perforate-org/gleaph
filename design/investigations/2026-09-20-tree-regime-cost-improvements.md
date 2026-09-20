@@ -89,9 +89,17 @@ plus offset math) and performs a separate 4-byte LTB read **per row**
 K = floor(4096 / 32) = 128 rows, so a 4 096-row scan pays 4 096 root reads +
 4 096 partial reads instead of 32 block reads.
 
-### Options
+**Implemented 2026-09-20 (B1, `tree_read.rs` `PropertyLeafCache`):**
+`tcsr_4096_property_read_w32` 4.83 M → 3.66 M at `T_promote = 1024` (slab
+reference 3.22 M; the +50 % regression is now +13.7 %). Deterministic regression:
+`tree_property_scan_reads_each_payload_block_once` counts LTB payload read calls
+and requires exactly 4 edge blocks + 32 property leaves = 36 per scan in both
+orders (pre-fix shape: 4100). Residual: one leaf resolution + one 4 KiB block
+read per leaf, plus the per-row property value clone the visit API requires.
 
-- **B1 — leaf-streaming cursor (recommended).** Track `(property_leaf_index,
+### Options (as designed)
+
+- **B1 — leaf-streaming cursor (chosen).** Track `(property_leaf_index,
   block_id, payload_buf)` in the scan loop; resolve and read the property block
   once per leaf, serve rows from the buffer, fall back to
   `read_property_value_at_slot` at leaf boundaries. Contained to the two scan
@@ -101,10 +109,10 @@ K = floor(4096 / 32) = 128 rows, so a 4 096-row scan pays 4 096 root reads +
   turns out to interact with the LPB-in-tree property-depth handling.
 - **B3 — widen property leaves.** Wire change; rejected.
 
-Acceptance metric: `tcsr_4096_property_read_w32` back to ≤ ~3.5 M at
-`T_promote = 1024` (slab reference 3.22 M), with
+Acceptance metric (met): `tcsr_4096_property_read_w32` back to ≤ ~3.5 M at
+`T_promote = 1024` (slab reference 3.22 M) — landed at 3.66 M with
 `lpb_in_tree_read_round_trip_at_w_4_stored_4096` and the property-slot bound
-tests green.
+tests green, plus the new payload-read-call test.
 
 ## Suggested slice order
 

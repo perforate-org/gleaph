@@ -83,9 +83,18 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-20-003 — Tree property reads resolve the property leaf per row
 
-- **Status:** Open — measured performance defect introduced as a *cost* by the
-  `T_promote = 1024` re-tune (property-bearing buckets above 1024 rows are tree
-  now), recorded 2026-09-20.
+- **Status:** Fixed 2026-09-20 (commit `cfd389cad`) — measured performance
+  defect introduced as a *cost* by the `T_promote = 1024` re-tune
+  (property-bearing buckets above 1024 rows are tree now). Fix: the property
+  walk caches the leaf's LTB block (`PropertyLeafCache`), resolving and reading
+  it once per leaf and serving rows from the buffer in both walk orders
+  (`tree_read.rs`); `tcsr_4096_property_read_w32` 4.83 M → 3.66 M at
+  `T_promote = 1024` (slab reference 3.22 M, so the residual tree overhead is
+  +13.7 % instead of +50 %). Pinned deterministically by
+  `tree_property_scan_reads_each_payload_block_once`, which counts LTB payload
+  read calls over a promoted 4096-row w = 32 bucket and requires exactly
+  `4 + 32 = 36` (edge blocks + property leaves) in both orders — the pre-fix
+  shape fails it with 4100.
 - **Observed behavior (confirmed):** `visit_edges_with_inline_property`'s tree
   path reads each edge block once but calls `read_property_value_at_slot` per
   row, which re-resolves the property leaf (`resolve_property_leaf_block_id`:
@@ -100,11 +109,12 @@ defect from being rediscovered without its prior reasoning.
   per-row resolution; w = 0 scans are unaffected (M2a improves in tree mode).
 - **Owner:** `labeled/graph/tree_read.rs` property-bearing scan loops
   (ascending/descending) + `read_property_value_at_slot`.
-- **Next decision:** implement the leaf-streaming cursor (B1: resolve and read
-  the property block once per leaf, serve rows from the buffer, fall back to
-  `read_property_value_at_slot` at leaf boundaries). Acceptance:
-  `tcsr_4096_property_read_w32` ≤ ~3.5 M at `T_promote = 1024` with the
-  LPB-in-tree round-trip and property-slot bound tests green.
+- **Next decision:** none for the per-row resolution itself. The residual
+  +0.44 M over the slab reference is the tree property indirection (one leaf
+  resolution plus one 4 KiB block read per leaf, per-row closure value clone);
+  revisit only if a property-scan-heavy workload makes it material. The
+  deterministic test also gives the LTB store a reusable payload-read counter
+  (`ltb_payload_read_calls`) for future block-granularity contracts.
 
 ### GAP-2026-09-20-001 — Promote silently drops overflow-log rows (tree mode has no log)
 
