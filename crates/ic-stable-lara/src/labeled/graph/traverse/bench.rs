@@ -1101,9 +1101,14 @@ fn bounded_inline_64_full() -> canbench_rs::BenchResult {
 }
 
 /// Complete eight-byte inline values from a promotion-sized slab.
+///
+/// "Promotion-sized" is `T_promote` rows, not a literal: the fixture asserts
+/// slab mode, and a slab bucket cannot exceed the tuned threshold (this bench
+/// trapped once the threshold moved to 1024).
 #[bench(raw)]
-fn bounded_inline_4k_full() -> canbench_rs::BenchResult {
-    bounded_inline_bench(4096, 4096 * 8)
+fn bounded_inline_promote_full() -> canbench_rs::BenchResult {
+    let degree = crate::labeled::graph::T_PROMOTE;
+    bounded_inline_bench(degree, degree as usize * 8)
 }
 
 fn bench_selected_inline_property_case(
