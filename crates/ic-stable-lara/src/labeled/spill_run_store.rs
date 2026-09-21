@@ -306,6 +306,55 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(Some(run))
     }
 
+    /// Grows a run to the class that holds `to_len` and returns the run id the caller must publish.
+    ///
+    /// In place when the run is the arena tail (ADR 0097's requirement), otherwise the next class is
+    /// allocated, at most 2x the live rows are copied, and the old run is released. `to_len` must be
+    /// within the store's classes; a bucket that needs more promotes to tree mode, which is the
+    /// caller's decision (ADR 0097 §6).
+    pub(crate) fn grow_to(
+        &self,
+        run: RunId,
+        from_len: u32,
+        to_len: u32,
+    ) -> Result<RunId, SpillRunError> {
+        assert!(
+            to_len > from_len && to_len <= MAX_ROWS,
+            "spill growth must stay inside the store's classes"
+        );
+        if let Some(same) = self.grow_in_place(run, from_len, to_len)? {
+            return Ok(same);
+        }
+        let target = self.allocate(to_len)?;
+        let mut row = vec![0u8; self.row_bytes as usize];
+        for index in 0..from_len {
+            self.read_row(run, index, &mut row);
+            self.write_row(target, index, &row)?;
+        }
+        self.release(run, from_len)?;
+        Ok(target)
+    }
+
+    /// Appends `row` at the run's used end and advances the used length.
+    ///
+    /// Returns `Ok(false)` when the run's class is already full, which is the caller's signal to
+    /// grow first (the used length is unchanged). The used length only ever moves through this,
+    /// [`Self::allocate`], [`Self::grow_in_place`] and [`Self::release`].
+    pub(crate) fn try_append_row(&self, run: RunId, row: &[u8]) -> Result<bool, SpillRunError> {
+        assert_eq!(
+            row.len(),
+            self.row_bytes as usize,
+            "spill row width mismatch"
+        );
+        let used = self.read_used_len(run);
+        if used >= self.capacity(run) {
+            return Ok(false);
+        }
+        self.write_row(run, used, row)?;
+        self.set_used_len(run, used + 1)?;
+        Ok(true)
+    }
+
     /// Returns a run to its class's free list, turning its header word into the free-list link.
     /// `len` is the used length; the class follows from it, which is why the descriptor only needs
     /// the run id.
@@ -439,6 +488,78 @@ mod tests {
             matches!(err, SpillRunError::Grow(_)),
             "a growth failure must not be reported as arena exhaustion: {err:?}"
         );
+    }
+
+    #[test]
+    fn appending_advances_the_used_length_until_the_class_is_full() {
+        let store = store();
+        // `allocate(len)` publishes `len` as the used length, so a class-8 run has 7 rows of room.
+        let run = store.allocate(1).expect("allocate");
+        for index in 1..MIN_ROWS {
+            assert!(
+                store
+                    .try_append_row(run, &index.to_le_bytes())
+                    .expect("append"),
+                "row {index} fits class {MIN_ROWS}"
+            );
+        }
+        assert_eq!(store.read_used_len(run), MIN_ROWS);
+        // The class is full: the caller's signal to grow, and nothing changed.
+        assert!(
+            !store
+                .try_append_row(run, &99u32.to_le_bytes())
+                .expect("full")
+        );
+        assert_eq!(store.read_used_len(run), MIN_ROWS);
+        for index in 0..MIN_ROWS {
+            let mut buf = [0u8; 4];
+            store.read_row(run, index, &mut buf);
+            assert_eq!(u32::from_le_bytes(buf), index);
+        }
+    }
+
+    #[test]
+    fn growing_a_tail_run_extends_in_place_and_preserves_rows() {
+        let store = store();
+        let run = store.allocate(MIN_ROWS).expect("allocate");
+        for index in 0..MIN_ROWS {
+            store
+                .write_row(run, index, &index.to_le_bytes())
+                .expect("write");
+        }
+        assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
+        // The run is the arena tail, so the next class extends it in place.
+        let grown = store.grow_to(run, MIN_ROWS, MIN_ROWS + 1).expect("grow");
+        assert_eq!(grown, run);
+        assert_eq!(store.read_used_len(run), MIN_ROWS + 1);
+        assert_eq!(store.arena_rows(), MIN_ROWS * 2 + RUN_HEADER_ROWS);
+        for index in 0..MIN_ROWS {
+            let mut buf = [0u8; 4];
+            store.read_row(run, index, &mut buf);
+            assert_eq!(u32::from_le_bytes(buf), index);
+        }
+    }
+
+    #[test]
+    fn growing_a_non_tail_run_moves_it_and_copies_every_row() {
+        let store = store();
+        let first = store.allocate(MIN_ROWS).expect("first");
+        let _tail = store.allocate(MIN_ROWS).expect("tail");
+        for index in 0..MIN_ROWS {
+            store
+                .write_row(first, index, &index.to_le_bytes())
+                .expect("write");
+        }
+        let grown = store.grow_to(first, MIN_ROWS, MIN_ROWS + 1).expect("grow");
+        assert_ne!(grown, first, "a run that is not the tail must move");
+        assert_eq!(store.read_used_len(grown), MIN_ROWS + 1);
+        for index in 0..MIN_ROWS {
+            let mut buf = [0u8; 4];
+            store.read_row(grown, index, &mut buf);
+            assert_eq!(u32::from_le_bytes(buf), index);
+        }
+        // The old class is free again.
+        assert_eq!(store.allocate(MIN_ROWS).expect("reuse"), first);
     }
 
     #[test]
