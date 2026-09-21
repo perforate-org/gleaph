@@ -196,4 +196,6 @@ The complete YAML, workspace full CSV and benchmark source hashes are unchanged.
 logs, diagnostic source, patches, caller searches, reference statuses and focused CSVs are in
 `/tmp/spill-all-label/`. The capacity probes are deliberately outside production tests: they
 remain failing counterexamples, not ignored tests or assertions weakened to bless rejection.
-This slice is blocked on promotion correctness/integration, not ready for main landing.
+This slice was blocked on promotion correctness/integration, not ready for main landing.
+The subsequent [bucket-promotion prerequisite](adr0097-promotion-prerequisite.md) corrects the
+promoter in `15ab44efb`; combined public conversion/promotion/retry and main landing remain open.

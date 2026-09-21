@@ -212,9 +212,12 @@ bucket.
    **Implementation status: incomplete caller integration.** The low-level typed rejection is not
    automatic promotion. `insert_forward_out_edge` currently propagates a tail bypass's
    `Forward(Store(SpillNeedsPromotion))`. The regular bucket arm has separate tree-capable and
-   wide-edge treatments, but merely routing the bypass there is not sufficient: promotion's
-   pre-fold can change tombstone-inclusive ordinals, and can reject below `T_PROMOTE` after that
-   mutation. Runtime witnesses and the required promotion prerequisite are recorded in
+   wide-edge treatments. The bucket promoter now admits against original resident width and
+   transcribes prefix/run ordinals into unpublished native trees without folding either source
+   plane. Publication precedes source retirement; tested allocation failure releases target roots
+   and blocks. Bypass conversion plus promotion/retry still needs a combined failure boundary;
+   sequentially publishing conversion before a failing promotion is not unchanged-state rejection.
+   Runtime witnesses and remaining ownership/integration blockers are recorded in
    [the implementation ledger](../implementation-gaps.md#gap-2026-09-20-009--experimental-redundant-header-reads-and-scalar-spill-payload-reads).
    Section 6 remains the required contract, not a claim that rejection fulfills it. Class-limit
    witnesses do not validate arena exhaustion or every outer write path.

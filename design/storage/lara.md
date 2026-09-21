@@ -217,6 +217,12 @@ existing typed promotion outcome; it does not force a fold or reinterpret capaci
 Consuming that outcome at every caller remains incomplete (ADR 0097 §6); typed rejection alone
 is not automatic promotion. Bypass-to-bucket conversion transfers the initialized prefix and
 run unchanged, including zero-live retained runs, then clears the old vertex reference.
+The bucket-to-tree promoter admits using the original initialized prefix plus used spill rows,
+not live degree. It preserves that high-water extent and surviving ordinals, writes native edge
+leaf tombstone counts, and maps sidecars through their independent source prefix/run. Both target
+streams are unpublished until transcription succeeds; preparation errors release target allocations
+without folding or releasing source runs. This does not yet make bypass conversion/promotion/retry
+one failure-atomic public operation. See the [promotion evidence](../evidence/adr0097-promotion-prerequisite.md).
 Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:

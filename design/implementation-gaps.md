@@ -78,7 +78,8 @@ defect from being rediscovered without its prior reasoning.
   `degree` floor goes (the materialized width is the SSOT: a relocation's prefix, a
   compaction's packed live rows); and the wide-edge carve-out, which cannot promote, now
   goes through the explicit compaction instead of a span-growing rewrite, extracted as
-  `compact_run_into_prefix_with_growth_retry` and shared with the promotion's Phase 0a.
+  `compact_run_into_prefix_with_growth_retry` and, at that revision, shared with promotion's
+  Phase 0a. `15ab44efb` subsequently removes promotion's fold; the wide-edge carve-out remains.
 - **Witness:** `labeled::graph::spill_swap_test::a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals`
   (the bench's fixture). It fails before the fix (`insert 1000000:
   Store(CollectAllocationOverflow)`) and passes after, with the run and its ordinals intact
@@ -470,7 +471,7 @@ transferring prefix/run ownership without compaction, including zero-live retain
 
 **Capacity integration remains a prerequisite, not accepted rejection semantics.** Actual public
 `insert_forward_out_edge` returns `Forward(Store(SpillNeedsPromotion))` at MAX_ROWS for 4/10-byte
-rows with and without tombstones. After safe conversion, directly invoking the existing 4-byte
+rows with and without tombstones. At `4451efbd3`, after safe conversion, directly invoking the existing 4-byte
 promoter with prefix 5, used 1024 and 16 tombstones returns `AllocSpaceCapReached`
 (`current_alloc_space=1018, cap=1024, mode=Slab`) after freeing the run and moving target 16 from ordinal 16 to 5. With eight tombstones it returns
 success but emits five prefix tombstone sentinels and renumbers survivors. The owner is
@@ -485,6 +486,23 @@ The existing main-reference worktree is dirty, so the required main-side counter
 optimization experiment are blocked. No reference files or full artifacts were changed.
 [Detailed evidence](evidence/adr0097-append-mixed-hub.md#capacity-integration-blocked-not-relabeled-as-success)
 records exact public states, red/green evidence, caller trace and the remaining decision.
+
+#### Ordinal-preserving promotion prerequisite
+
+`15ab44efb` removes promotion's destructive source folds. Admission uses original resident width;
+native edge/property trees preserve surviving ordinals and high-water extent. The identical final
+seven-test fixture set records **1 passed / 6 failed** against the old promoter and **7/0** in the
+new library run (**644/0** overall). A real LTB grow failure after two target blocks verifies exact
+typed rejection, unchanged source descriptors/rows/counts, and return of both blocks and the full
+root allocation. Native tree visitors intentionally emit tombstone rows; tests assert their exact
+positions and leaf-header counts rather than filtering them out. These replace the earlier promoter
+counterexamples, not the public caller-integration requirement.
+
+Public bypass conversion/promotion/retry remains unimplemented as one failure boundary. Separately,
+a cascade-path fixture exposed an active prefix `[256,261)` already present in free span `[256,267)`
+before promotion. Its next root allocation reused that source prefix. The actual deferred forward
+fixture does not reproduce this ownership defect. No allocator workaround or automatic promotion
+routing was added. [Evidence and exact validation](evidence/adr0097-promotion-prerequisite.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
