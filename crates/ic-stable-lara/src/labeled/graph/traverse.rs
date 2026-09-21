@@ -2869,7 +2869,7 @@ where
 
                 if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                     return self.visit_hybrid_out_inline_property_batches_for_bucket_next(
-                        owner, label, &bucket, order, scratch, &mut visit,
+                        owner, &bucket, order, scratch, &mut visit,
                     );
                 }
 
@@ -2923,7 +2923,6 @@ where
     fn visit_hybrid_out_inline_property_batches_for_bucket_next<B>(
         &self,
         owner: VertexId,
-        label: BucketLabelKey,
         bucket: &LabelBucket,
         order: OutEdgeOrder,
         scratch: &mut LabeledInlinePropertyValueBatchScratch,
@@ -2945,13 +2944,14 @@ where
             let reserved_log_slots = u32::try_from(prefetched.len())
                 .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
             let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
-            // If the bucket has tombstones in the overflow log, fall back to the sparse
-            // iterator path so we emit only live edges and their values.
-            if reserved != bucket.degree() {
-                return self.visit_sparse_out_inline_property_batches_for_bucket_next(
-                    owner, label, bucket, order, scratch, visit,
-                );
-            }
+            // `reserved` counts the prefix's *width*, tombstones included, so a single dead
+            // prefix slot used to make it disagree with `degree` and send the whole scan to the
+            // sparse iterator. That fallback was the run-backed bucket's span tax: the rows live
+            // in the run, the run's live tags are already what the replay emits, and the prefix
+            // pass skips its own dead slots (ADR 0097 §7: a bucket whose rows live in its own run
+            // pays no extra span work). The replay runs; `reserved` stays only as the sanity
+            // input for the slot arithmetic below.
+            let _ = reserved;
             let edge_slab_slots = slab_slots;
             let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
             // Descending order: spill rows have the highest logical slots,
@@ -2993,12 +2993,10 @@ where
             .prefetch_spill_replay_tags(self.edges.spill_mint(bucket.edge_spill_run())?)?;
         let reserved_log_slots =
             u32::try_from(prefetched.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
-        if reserved != bucket.degree() {
-            return self.visit_sparse_out_inline_property_batches_for_bucket_next(
-                owner, label, bucket, order, scratch, visit,
-            );
-        }
+        // Ascending order takes the same path as descending: the run's live tags are emitted and
+        // the prefix pass skips its own dead slots, so a tombstoned prefix is not a reason to
+        // fall back to the sparse iterator (ADR 0097 §7, GAP-2026-09-20-009).
+        let _ = bucket.stored_slots().saturating_add(reserved_log_slots);
         let edge_slab_slots = slab_slots;
         let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
         let _ = self.visit_dense_out_inline_property_batches_for_slab_prefix_next(

@@ -206,6 +206,30 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
+### GAP-2026-09-20-009 — FIXED: the ordered scan no longer falls back to sparse for a run-backed bucket
+
+The `reserved != bucket.degree()` guard in both ordered batch scans is gone. `reserved`
+counted the prefix's *width* (tombstones included), so one dead prefix slot sent the whole
+scan to `visit_sparse_out_inline_property_batches_for_bucket_next`; the run's live tags are
+already what the replay emits and the prefix pass skips its own dead slots, so the guard was
+a run-backed bucket's span tax (ADR 0097 §7 at the scan level). The now-unused `label`
+parameter went with it.
+
+| bench | main (measured) | pre | post | Δ vs main |
+| --- | --- | --- | --- | --- |
+| `bench_l_s2_h_del_1024` | 127,160,000 | 193,655,245 | 193,655,245 | +52.29% |
+| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 | +192.54% |
+| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 | +193.07% |
+| `bench_l_s2_det_hub_st_1024` | 45,845,565 | 45,848,699 | 45,848,699 | +0.01% |
+| `bench_l_s2_det_sat_1024` | 465,196 | 465,286 | 465,286 | +0.02% |
+| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 | -6.41% |
+| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 | -6.53% |
+| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 | -6.54% |
+
+Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
+cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
+descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
+
 ### GAP-2026-09-20-009 — A run-backed bucket's ordered scan falls back to the sparse iterator
 
 - **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is both remaining

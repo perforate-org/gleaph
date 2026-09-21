@@ -1334,7 +1334,7 @@ benches:
   bench_l_ip_spill_8b_of:
     total:
       calls: 1
-      instructions: 2841840
+      instructions: 2841415
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -3292,14 +3292,14 @@ benches:
   bench_t_v_in_hyb_ip:
     total:
       calls: 1
-      instructions: 292185
+      instructions: 292162
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_t_v_pf_then_sel:
     total:
       calls: 1
-      instructions: 512905
+      instructions: 512889
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -3369,14 +3369,14 @@ benches:
   bounded_inline_64_full:
     total:
       calls: 1
-      instructions: 80251
+      instructions: 80235
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bounded_inline_promote_full:
     total:
       calls: 1
-      instructions: 1132525
+      instructions: 1132509
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
