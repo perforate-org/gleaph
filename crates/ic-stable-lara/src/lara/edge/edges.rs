@@ -40,7 +40,7 @@
 use crate::{
     GrowFailed, VertexCount,
     lara::reserved::{region_is_zero, write_zeroes},
-    read_u32, read_u64, safe_write,
+    safe_write,
     traits::CsrEdge,
     types::Address,
     write_u32, write_u64,
@@ -351,30 +351,46 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     fn read_header(&self) -> Result<HeaderV1, InitError> {
-        let mut magic = [0u8; 3];
-        self.memory.read(0, &mut magic);
+        // A constructed store owns at least one page. Read the same current
+        // metadata in one bounded operation; validation and reserved checks
+        // retain their existing owners and error order.
+        let mut bytes = [0u8; RESERVED_OFFSET as usize];
+        self.memory.read(0, &mut bytes);
+        let magic = bytes[..3].try_into().expect("fixed magic width");
         if magic != MAGIC {
             return Err(InitError::BadMagic { actual: magic });
         }
-        let mut version = [0u8; 1];
-        self.memory.read(3, &mut version);
-        if version[0] != LAYOUT_VERSION {
-            return Err(InitError::IncompatibleVersion(version[0]));
+        let version = bytes[3];
+        if version != LAYOUT_VERSION {
+            return Err(InitError::IncompatibleVersion(version));
         }
+        let u32_at = |offset: u64| {
+            let start = offset as usize;
+            u32::from_le_bytes(
+                bytes[start..start + 4]
+                    .try_into()
+                    .expect("fixed header field"),
+            )
+        };
+        let u64_at = |offset: u64| {
+            let start = offset as usize;
+            u64::from_le_bytes(
+                bytes[start..start + 8]
+                    .try_into()
+                    .expect("fixed header field"),
+            )
+        };
         Ok(HeaderV1 {
             magic,
-            version: version[0],
-            elem_capacity: read_u64(&self.memory, Address::from(ELEM_CAPACITY_OFFSET)),
-            segment_count: read_u32(&self.memory, Address::from(SEGMENT_COUNT_OFFSET)),
-            segment_size: read_u32(&self.memory, Address::from(SEGMENT_SIZE_OFFSET)),
-            tree_height: read_u32(&self.memory, Address::from(TREE_HEIGHT_OFFSET)),
-            num_edges: read_u64(&self.memory, Address::from(NUM_EDGES_OFFSET)),
-            stride: read_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET)),
-            slab_occupied_tail: read_u64(&self.memory, Address::from(SLAB_OCCUPIED_TAIL_OFFSET)),
-            initial_vertex_edge_slots: read_u32(
-                &self.memory,
-                Address::from(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
-            ),
+            version,
+            elem_capacity: u64_at(ELEM_CAPACITY_OFFSET),
+            segment_count: u32_at(SEGMENT_COUNT_OFFSET),
+            segment_size: u32_at(SEGMENT_SIZE_OFFSET),
+            tree_height: u32_at(TREE_HEIGHT_OFFSET),
+            num_edges: u64_at(NUM_EDGES_OFFSET),
+            stride: u32_at(EDGE_STRIDE_OFFSET),
+            slab_occupied_tail: u64_at(SLAB_OCCUPIED_TAIL_OFFSET),
+            initial_vertex_edge_slots: u32_at(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
         })
     }
 
@@ -441,6 +457,34 @@ mod tests {
         write_u64,
     };
     use ic_stable_structures::Memory;
+
+    #[test]
+    fn edge_slab_header_reads_current_fields_and_preserves_error_precedence() {
+        let memory = vector_memory();
+        let mut header = HeaderV1::new(64, 8, 16, TestEdge::BYTES as u32, 3);
+        header.num_edges = 17;
+        header.slab_occupied_tail = 23;
+        let store = EdgeSlabStore::<TestEdge, _>::new(memory.clone(), header).unwrap();
+        assert_eq!(store.header().unwrap(), header);
+        header.elem_capacity = 63;
+        header.segment_count = 4;
+        header.segment_size = 32;
+        header.tree_height = 2;
+        header.num_edges = 19;
+        header.slab_occupied_tail = 29;
+        header.initial_vertex_edge_slots = 7;
+        store.write_header(&header);
+        assert_eq!(
+            store.header().unwrap(),
+            header,
+            "must read current metadata, not cache it"
+        );
+        memory.write(0, b"BAD");
+        memory.write(3, &[255]);
+        assert_eq!(store.header(), Err(InitError::BadMagic { actual: *b"BAD" }));
+        memory.write(0, &super::MAGIC);
+        assert_eq!(store.header(), Err(InitError::IncompatibleVersion(255)));
+    }
 
     #[test]
     fn edge_slab_init_rejects_elem_capacity_above_index_space() {
