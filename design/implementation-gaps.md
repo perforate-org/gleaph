@@ -83,11 +83,28 @@ defect from being rediscovered without its prior reasoning.
   (the bench's fixture). It fails before the fix (`insert 1000000:
   Store(CollectAllocationOverflow)`) and passes after, with the run and its ordinals intact
   and the descriptor still pointing at it.
-- **Open (reported, not absorbed):** with the trap gone, the three benches measure ~1.16 M
-  instructions against `main`'s 391 K (+255%) where the pre-fix head trapped and had no
-  number at all. The likely cost is the slack placement search the cascade still forces
-  (`force_slack_grow`) over a dense leaf; it needs its own measurement before it is called
-  a regression of the swap rather than of the bench's fixture shape.
+- **Open (reported, not absorbed): the repaired path's cost, attributed.**
+  `cd crates/ic-stable-lara && canbench bench_l_nt_bp` (same command, same fixture) measures
+
+  | bench | `main` 9a64049f4 | `spill-swap` 52b2c7796 | ratio |
+  | --- | --- | --- | --- |
+  | `bench_l_nt_bp_ins_256` | 390,604 | 1,164,747 | 2.98x |
+  | `bench_l_nt_bp_ins_1024` | 391,094 | 1,163,272 | 2.97x |
+  | `bench_l_nt_bp_ins_4096` | 391,094 | 1,163,272 | 2.97x |
+
+  Flat across all three fixture densities on *both* sides, so this is a regression of the
+  swap, not a cost of the fixture shape. The scope call counts name the mechanism: `main`
+  runs the leaf cascade **once** for the 16 inserts (`labeled_rebalance_leaf_cascade`
+  1 call / 194,089 instructions, of which `labeled_rebalance_edge_log_vertex` - the fold -
+  is 185,893), because that single run re-lays the leaf and drops its density below the
+  trigger (`LEAF_VERTEX_EDGE_SEGMENT_DENSITY = 1.0`). The swap head runs it **16 times**
+  (927,185 instructions, of which `labeled_rewrite_vertex_edge_span` is 16 calls /
+  810,149): a bucket whose rows live in its run keeps its span in place, so the rewrite
+  changes nothing about the leaf's geometry, the density stays at 1.0, and every insert
+  re-enters the cascade and repeats the same rewrite. The slack placement search is only
+  `labeled_rewrite_read_and_plan` (16 calls / 60,155, ~5% of the total); the cost is the
+  repetition. What the cascade should do for a bucket whose rows are no longer span content
+  is a policy question the ADR does not answer, so it is reported rather than guessed.
 
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
