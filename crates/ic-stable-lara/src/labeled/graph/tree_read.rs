@@ -846,7 +846,7 @@ mod tests {
         promote::tests::fill_leg_slab_prefix(graph, edge_start, stored);
         promote::tests::force_bucket_to_stored_slots(graph, vid, label, stored);
         // Promotion itself.
-        promote::promote_bypass_to_tree_mode(graph, vid, label).expect("promote");
+        promote::promote_bucket_to_tree_mode(graph, vid, label).expect("promote");
     }
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
                     .expect("property bucket"),
                 )
                 .expect("write bucket");
-            promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+            promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
             let bucket = graph
                 .buckets()
                 .read_label_bucket_slot(bucket_slot)
@@ -1646,7 +1646,7 @@ mod tests {
         //    root start, slab_slots = 0). The actual LPB writeback is
         //    exercised by future test paths that allocate a slab
         //    property stream and read it back.
-        let promote_res = promote::promote_bypass_to_tree_mode(&graph, vid, label);
+        let promote_res = promote::promote_bucket_to_tree_mode(&graph, vid, label);
         assert!(
             promote_res.is_ok(),
             "promote with w = 4 must succeed: {:?}",
@@ -1838,7 +1838,7 @@ mod tests {
             .write_label_bucket_slot(slot_after_force, new_bucket)
             .expect("write_label_bucket_slot");
         // 4. Promote to tree mode (Plan 0326 carve-out path).
-        promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
         // 5. Verify tree mode + property preserved.
         let (slot, bucket) = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)
@@ -1973,7 +1973,7 @@ mod tests {
             .write_label_bucket_slot(slot, new_bucket)
             .expect("write");
         // Promote (Plan 0326 REWORK combined-span path).
-        promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
         // Verify invariants.
         let bucket = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)
@@ -2186,7 +2186,7 @@ mod tests {
             .write_label_bucket_slot(slot, new_bucket)
             .expect("write");
         // 2. Promote (Plan 0326 REWORK combined-span path).
-        promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
         // 3. Verify pre-deepen state.
         let bucket = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)

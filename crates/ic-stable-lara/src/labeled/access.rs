@@ -71,9 +71,7 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
                 } else {
                     self.successor_start.max(bucket.edge_start())
                 };
-                bucket
-                    .with_edge_range(succ, 0)
-                    .with_edge_spill_run(crate::traits::NO_SPILL_RUN)
+                bucket.with_edge_range(succ, 0).without_edge_spill_run()
             }
             _ => panic!("LabelEdgeSpanAccess only exposes row 0 and successor row 1"),
         }

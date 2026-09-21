@@ -6767,7 +6767,7 @@ mod tests {
 
     /// GAP-2026-09-20-001 regression: promoting a bucket whose slab **overflow
     /// log** is non-empty must not drop the log-resident rows. Tree mode has no
-    /// log (ADR 0088 §2), so `promote_bypass_to_tree_mode` transcribes the
+    /// log (ADR 0088 §2), so `promote_bucket_to_tree_mode` transcribes the
     /// folded prefix; before the fix it transcribed `stored_slots` only and
     /// published `overflow_log_head = -1`, leaving `degree = stored + 1` with
     /// exactly one live row unreachable from both directions (the inserts had
@@ -7046,10 +7046,10 @@ mod tests {
         }
 
         assert!(
-            locations.iter().any(
-                |location| location.storage == crate::labeled::ScalarInsertStorage::OverflowLog
-            ),
-            "parallel inline property bytes inserts must exercise overflow-log location capture"
+            locations
+                .iter()
+                .any(|location| location.storage == crate::labeled::ScalarInsertStorage::Spill),
+            "parallel inline property bytes inserts must exercise spill location capture"
         );
 
         let mut live_slots = Vec::new();

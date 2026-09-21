@@ -43,8 +43,8 @@ pub struct ScalarInsertLocation {
 pub enum ScalarInsertStorage {
     /// The edge was written to the bucket's slab span.
     Slab,
-    /// The edge was written to the owning leaf's overflow log.
-    OverflowLog,
+    /// The edge was written to the bucket's own spill run (ADR 0097 §7).
+    Spill,
 }
 
 /// Storage-owned placement policy for scalar edge writes on a labeled bucket
@@ -506,7 +506,7 @@ where
                         )?
                     };
                     let slack_span = successor_start.saturating_sub(bucket.edge_start());
-                    if bucket.overflow_log_head() < 0
+                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                         && bucket.stored_slots() > 0
                         && slack_span > u64::from(bucket.stored_slots())
                     {
@@ -594,44 +594,14 @@ where
                                 storage: ScalarInsertStorage::Slab,
                             }));
                         }
-                        Ok(InsertLocation::Log { logical_slot, .. })
-                            if !has_edge_inline_property =>
-                        {
-                            return Ok(Some(ScalarInsertLocation {
-                                logical_slot,
-                                storage: ScalarInsertStorage::OverflowLog,
-                            }));
-                        }
-                        Ok(InsertLocation::Log { logical_slot, .. }) => {
-                            bucket = self
-                                .buckets
-                                .read_label_bucket_slot(bucket_slot)
-                                .ok_or_else(|| {
-                                    log_collect_overflow(
-                                        "insert_edge_skip_leaf_cascade: cannot re-read bucket after log insert",
-                                    );
-                                    LaraOperationError::CollectAllocationOverflow
-                                })?;
-                            let bucket = self.write_edge_inline_property_after_insert(
-                                src,
-                                bucket_slot,
-                                bucket,
-                                &attempt_edge,
-                            )?;
-                            self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-                            return Ok(Some(ScalarInsertLocation {
-                                logical_slot,
-                                storage: ScalarInsertStorage::OverflowLog,
-                            }));
-                        }
-                        Ok(InsertLocation::LogOnly { .. }) => {
+                        Ok(InsertLocation::Spill { logical_slot, .. }) => {
                             if has_edge_inline_property {
                                 bucket = self
                                     .buckets
                                     .read_label_bucket_slot(bucket_slot)
                                     .ok_or_else(|| {
                                         log_collect_overflow(
-                                            "insert_edge_skip_leaf_cascade: cannot re-read bucket after log insert",
+                                            "insert_edge_skip_leaf_cascade: cannot re-read bucket after spill insert",
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
@@ -643,37 +613,35 @@ where
                                 )?;
                                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                             }
-                            return Ok(None);
+                            return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
+                                logical_slot,
+                                storage: ScalarInsertStorage::Spill,
+                            }));
                         }
-                        Err(LaraOperationError::SegmentLogFull) => {
-                            let vertex = self.vertices.get(src);
-                            if vertex.is_default_edge_labeled()
-                                && !has_edge_inline_property
-                                && label_id == self.bypass_storage_label_for(&vertex)
-                            {
-                                self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge)?;
-                                return Ok(None);
-                            }
-                            self.rebalance_edge_log_leaf_for_labeled(src, true, true)?;
-                            let vertex = self.vertices.get(src);
-                            let bucket_slot =
-                                Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                            bucket = self
-                                .buckets
-                                .read_label_bucket_slot(bucket_slot)
-                                .ok_or_else(|| {
-                                    log_collect_overflow(
-                                        "insert_edge_skip_leaf_cascade: cannot re-read bucket after log rebalance",
-                                    );
-                                    LaraOperationError::CollectAllocationOverflow
-                                })?;
+                        Err(LaraOperationError::SpillNeedsPromotion) => {
+                            // The bucket's run cannot serve another row (ADR 0097 §6): its class is
+                            // full at MAX_ROWS, or the arena cannot address the growth. Tree mode is
+                            // the chunked path with no fixed row ceiling, so promote and re-dispatch
+                            // through the mode dispatcher - exactly as the tiny->slab promotion
+                            // does, because the bucket is no longer slab mode and this loop's
+                            // remaining steps do not apply to it. This replaces the retired
+                            // log-full leaf rebalance: a per-bucket run has no shared area to empty.
+                            super::promote::promote_bucket_to_tree_mode(self, src, label_id)?;
+                            return self.insert_edge_skip_leaf_cascade_impl(
+                                src,
+                                label_id,
+                                edge,
+                                placement,
+                                location_capture,
+                            );
                         }
                         Err(e) => return Err(LabeledOperationError::from(e)),
                     }
                 }
-                Err(LabeledOperationError::from(
-                    LaraOperationError::SegmentLogFull,
-                ))
+                // The retry loop is bounded; reaching here means the bucket still could not admit
+                // the row after repeated promotion and inline-property-bytes preparation, so the
+                // last attempt's outcome is reported: the spill still needs promotion.
+                Err(LaraOperationError::SpillNeedsPromotion.into())
             }
         }
     }
@@ -1026,7 +994,7 @@ where
         );
         let bucket = bucket
             .with_edge_range(edge_start, 0)
-            .with_overflow_log_head(-1);
+            .without_edge_spill_run();
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         if initial_slots > 0 {
             self.vertices
@@ -1388,8 +1356,7 @@ where
             transcribed, degree,
             "transcribed live count must match bucket degree"
         );
-        let fresh =
-            LabelBucket::from_parts(bucket.bucket_label_key(), span_base, degree, degree, -1);
+        let fresh = LabelBucket::from_parts(bucket.bucket_label_key(), span_base, degree, degree);
         self.buckets.write_label_bucket_slot(bucket_slot, fresh)?;
         let vertex = self.vertices.get(src);
         self.vertices
@@ -1429,7 +1396,7 @@ where
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.overflow_log_head() >= 0 {
+            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                 bucket = self.ensure_label_bucket_folded_to_slab(
                     src,
                     0,
@@ -1856,7 +1823,7 @@ mod tests {
         assert!(vertex.stored_slots >= graph.edges().header().segment_size);
         assert!(vertex.stored_slots > bucket.stored_slots());
         assert_eq!(bucket.stored_slots(), edge_count);
-        assert_eq!(bucket.overflow_log_head(), -1);
+        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 0);
     }
 
@@ -2308,7 +2275,7 @@ mod tests {
         let bucket = read_tiny_bucket(&graph, vid, label);
         assert!(bucket.is_tiny_mode(), "4th edge still fits inline at K=4");
         assert_eq!((bucket.degree(), bucket.tiny_used_width()), (4, 4));
-        assert_eq!(bucket.overflow_log_head(), -1);
+        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(
             graph.leaf_segment_counts_for_vid(vid).actual,
             actual_before,
@@ -2328,7 +2295,7 @@ mod tests {
         assert!(!bucket.is_tiny_mode(), "5th edge must promote");
         assert!(!bucket.is_tree_mode());
         assert_eq!((bucket.degree(), bucket.stored_slots_raw()), (5, 5));
-        assert_eq!(bucket.overflow_log_head(), -1);
+        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         // Transcribed 4 never counted before (+4), appended 5th bumps (+1).
         assert_eq!(
             graph.leaf_segment_counts_for_vid(vid).actual,

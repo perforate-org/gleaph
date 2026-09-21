@@ -7,7 +7,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::iter::{OutEdgeSlabIter, leaf_segment};
+use super::iter::OutEdgeSlabIter;
 use super::{DeleteTarget, EdgeLayout, EdgeStore, InsertLocation};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -22,9 +22,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
 
-        // Tombstone rows may still hold slab/log material while incremental
+        // Tombstone rows may still hold slab/spill material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
         if V::record_is_vertex_tombstone(&v)
             && v.stored_degree() == 0
@@ -134,9 +133,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
         let logical_log_slot =
-            self.logical_slot_before_insert(&edge_layout, vertices, v_ord, log_owner, &v)?;
+            self.logical_slot_before_insert(&edge_layout, vertices, v_ord, &v)?;
         self.insert_edge_inner(vertices, vid, edge, Some(logical_log_slot))
     }
 
@@ -176,10 +174,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         let log_owner = vertices.log_leaf_vertex(vid);
 
-        let _next_degree = v
-            .degree()
-            .checked_add(1)
-            .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let next_num_edges = edge_layout
             .num_edges
             .checked_add(1)
@@ -209,21 +203,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             }
             InsertLocation::Slab(v.stored_degree())
         } else {
-            let log_index = self.insert_into_log_with_layout(
-                &edge_layout,
-                vertices,
-                vid,
-                log_owner,
-                v,
-                _next_degree,
-                edge,
-            )?;
-            match logical_log_slot {
-                Some(logical_slot) => InsertLocation::Log {
-                    log_index,
-                    logical_slot,
-                },
-                None => InsertLocation::LogOnly { log_index },
+            let run = self.insert_into_spill_with_layout(vertices, vid, v, edge)?;
+            InsertLocation::Spill {
+                run,
+                logical_slot: logical_log_slot,
             }
         };
         {
@@ -238,7 +221,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         edge_layout: &EdgeLayout,
         vertices: &A,
         v_ord: u32,
-        log_owner: VertexId,
         v: &V,
     ) -> Result<u32, LaraOperationError>
     where
@@ -248,14 +230,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let slab_count = self
             .on_slab_edges_with_layout(edge_layout, vertices, v_ord, v)?
             .min(v.stored_degree());
-        let log_len = if v.log_head() >= 0 {
-            let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-            self.overflow_log_chain_len(leaf, v.log_head())
-        } else {
-            0
+        let spill_rows = match self.spill_mint(v.spill_run()) {
+            Ok(run) => self.spill_used_len(run),
+            // Unset (`NO_SPILL_RUN`) or outside the arena: no rows beyond the prefix.
+            Err(_) => 0,
         };
         slab_count
-            .checked_add(log_len)
+            .checked_add(spill_rows)
             .ok_or(LaraOperationError::CollectAllocationOverflow)
     }
 
@@ -344,7 +325,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        if v.log_head() >= 0 {
+        if v.spill_run() != crate::traits::NO_SPILL_RUN {
             return Err(LaraOperationError::RowEdgeReadRequiresSlabOnlyRow);
         }
         if offset >= v.degree() {
@@ -382,10 +363,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         F: FnMut(&E) -> bool,
     {
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(None);
         }
-        if v.log_head() >= 0 {
+        if v.spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
         let mut it =
@@ -411,7 +395,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
-        if v.log_head() >= 0 || slot_index >= v.stored_degree() {
+        if v.spill_run() != crate::traits::NO_SPILL_RUN || slot_index >= v.stored_degree() {
             return Ok(None);
         }
         let rm_slot = v
@@ -446,14 +430,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
         let log_owner = vertices.log_leaf_vertex(vid);
-        if v.log_head() >= 0 {
+        if v.spill_run() != crate::traits::NO_SPILL_RUN {
             return Err(LaraOperationError::ClearRowRequiresSlabOnlyRow);
         }
         let removed = v.degree();
         if removed == 0 {
             return Ok(0);
         }
-        vertices.set(vid, &v.with_degree(0).with_log_head(-1));
+        vertices.set(vid, &v.with_degree(0));
         let next_global = edge_layout
             .num_edges
             .checked_sub(u64::from(removed))

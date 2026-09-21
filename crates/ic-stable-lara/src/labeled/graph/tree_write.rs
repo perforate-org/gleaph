@@ -22,7 +22,7 @@
 //! when the bucket's `stored_slots >= T_PROMOTE` (placeholder-gap form).
 //! When the weighted `alloc_gap` is introduced the trigger switches to the
 //! `compute_bucket_allocation < T_PROMOTE` form. See
-//! `super::promote::promote_bypass_to_tree_mode` for the cap semantics.
+//! `super::promote::promote_bucket_to_tree_mode` for the cap semantics.
 //!
 //! Unordered placement tombstone reuse is implemented for tree buckets
 //! (Plan 0340, ADR 0088 follow-up `tree-mode-tombstone-reuse`): the
@@ -36,7 +36,7 @@
 //! holding a ≥ T_PROMOTE-edge bucket to density 1.0 and trigger relocation
 //! cascades that move no slab payload. Tree inserts and removes therefore
 //! never touch `actual`; the two mode transitions are the only adjusting
-//! sites: [`promote_path::promote_bypass_to_tree_mode`] subtracts the live
+//! sites: [`promote_path::promote_bucket_to_tree_mode`] subtracts the live
 //! degree (slab era → tree) and [`tree_mode_demote_to_slab`] re-adds it
 //! (tree → slab era). `num_edges` and every tree/pin geometry count are
 //! unaffected by this rule.
@@ -2008,7 +2008,7 @@ where
 /// Check whether the pre-promotion slab span `[edge_start, edge_start + len)`
 /// lies **inside** a currently-pinned leaf physical block for `vid`.
 ///
-/// Used by [`super::promote::promote_bypass_to_tree_mode`] (Plan 0318
+/// Used by [`super::promote::promote_bucket_to_tree_mode`] (Plan 0318
 /// §Step 4 amend note 5, hazard ledger option b — compaction delegation)
 /// to skip the post-promotion release of the slab prefix when the prefix
 /// is pin-sheltered: the leaf compaction pass will reclaim the subrange
@@ -2073,7 +2073,7 @@ where
         return Ok(());
     }
     if bucket.stored_slots() >= super::T_PROMOTE {
-        promote_path::promote_bypass_to_tree_mode(graph, src, label)?;
+        promote_path::promote_bucket_to_tree_mode(graph, src, label)?;
     }
     Ok(())
 }
@@ -2316,7 +2316,7 @@ where
 /// **Why we don't need a pin-sheltered helper here**: the old root
 /// span is a standalone `allocate_span`'d range (not a subrange of a
 /// leaf physical block), so leaf-pin invariants don't apply. The
-/// pre-promotion span inside `promote_bypass_to_tree_mode` (which IS
+/// pre-promotion span inside `promote_bucket_to_tree_mode` (which IS
 /// a slab leaf subrange) still uses
 /// Plan 0326 REWORK F-6: `tree_mode_deepen` combined layout.
 /// Deepen packs the old edge root into `ceil(old_root_len / K)`
@@ -2760,7 +2760,7 @@ where
 /// bucket.
 ///
 /// **Preconditions** (typed, before any state change — mirrors the
-/// promote path's Precondition 1-4 from `promote_bypass_to_tree_mode`):
+/// promote path's Precondition 1-4 from `promote_bucket_to_tree_mode`):
 /// 1. `bucket.is_tree_mode()` (caller's responsibility; assert).
 /// 2. `E::BYTES == TREE_MODE_REQUIRED_EDGE_BYTES` (typed
 ///    `TreeModeEdgeWidthUnsupported`).
@@ -3163,7 +3163,7 @@ mod tests {
             .expect("read_label_bucket_slot");
         let edge_start = bucket.edge_start();
         super::super::promote::tests::fill_leg_slab_prefix(graph, edge_start, stored_slots);
-        super::super::promote::promote_bypass_to_tree_mode(graph, vid, label).expect("promote");
+        super::super::promote::promote_bucket_to_tree_mode(graph, vid, label).expect("promote");
     }
 
     #[test]
@@ -3483,7 +3483,7 @@ mod tests {
             .write_slots_contiguous_bytes(0, &all_bytes)
             .expect("write_slots_contiguous");
         // Promote to tree mode.
-        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        super::super::promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
         // Insert an inline-property edge via the dispatcher. The
         // dispatcher checks `bucket.is_tree_mode()` and then
         // `has_edge_inline_property`; the bucket has width 0, the edge
@@ -4353,7 +4353,7 @@ mod tests {
         );
         // The leaf is not pinned; the helper returns false → release
         // runs. We just confirm the promote succeeds.
-        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        super::super::promote::promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
         let vertex = graph.vertices().get(vid);
         let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
             BucketSearch::Found { bucket, .. } => bucket,
@@ -5452,7 +5452,7 @@ mod tests {
     ///   directly (without Step 2 wiring) and verify the demotion
     ///   itself
     /// - after demote, re-promote by raising stored above T_PROMOTE
-    ///   and call promote_bypass_to_tree_mode again
+    ///   and call promote_bucket_to_tree_mode again
     /// - assert mode transitions land at the two thresholds exactly
     #[test]
     #[cfg(not(feature = "canbench"))]

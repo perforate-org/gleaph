@@ -55,7 +55,7 @@ pub enum LabeledOperationError {
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
     /// `alloc_space = stored_slots + alloc_gap` reached the mode cap. The caller
-    /// must trigger `promote_bypass_to_tree_mode` (slab mode) or `deepen` (tree
+    /// must trigger `promote_bucket_to_tree_mode` (slab mode) or `deepen` (tree
     /// mode) before retrying. Plan 0318 §Step 3 cap enforcement.
     AllocSpaceCapReached {
         /// Current `alloc_space` (capped at the mode cap).

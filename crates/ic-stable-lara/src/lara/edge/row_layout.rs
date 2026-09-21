@@ -182,7 +182,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        if v.log_head() < 0 {
+        if v.spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(v.stored_degree());
         }
         let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
@@ -190,8 +190,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_sub(v.base_slot_start())
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
-        // Once the overflow log is active, the slab prefix is at most the CSR window
-        // width; additional live edges are chained through `log_head`.
+        // Once the spill run is active, the slab prefix is at most the CSR window width;
+        // additional live edges live in the row's own run (ADR 0097 §3).
         Ok(if v.stored_degree() > span_u32 {
             span_u32
         } else {

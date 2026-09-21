@@ -604,7 +604,7 @@ pub fn exercise_labeled_hub_scan_paths(
 /// Plan 0321 Step 1 test helper: forces the `(vid, label)` bucket
 /// to tree mode by routing through the natural promotion path
 /// (`force_bucket_to_stored_slots` + `fill_leg_slab_prefix` +
-/// `promote_bypass_to_tree_mode`). Used by the tree-run
+/// `promote_bucket_to_tree_mode`). Used by the tree-run
 /// fail-closed guard tests in `batch_write_test` and any other
 /// test that needs an already-tree bucket without paying the
 /// 4096-insert promotion cost.
@@ -630,7 +630,7 @@ pub(crate) fn force_tree_mode_for_test(
     let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
     let edge_start = bucket.edge_start();
     fill_leg_slab_prefix_pub(graph, edge_start, T_PROMOTE);
-    crate::labeled::graph::promote::promote_bypass_to_tree_mode_pub(graph, vid, label)
+    crate::labeled::graph::promote::promote_bucket_to_tree_mode_pub(graph, vid, label)
         .expect("promote");
 }
 

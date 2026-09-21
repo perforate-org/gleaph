@@ -1,10 +1,15 @@
 //! Tree-mode promotion for label buckets (Plan 0318 §Step 4).
 //!
-//! `promote_bypass_to_tree_mode(vid, label)` is the failure-atomic
+//! `promote_bucket_to_tree_mode(vid, label)` is the failure-atomic
 //! transition that moves a slab-mode or bypass-mode bucket into LTB-backed
 //! tree mode once its `alloc_space` crosses the `T_PROMOTE` cap. The
 //! transition is a 3-phase reserve/commit/publish pattern modeled after
 //! the existing `promote_bypass_to_bucket_mode`.
+//!
+//! The entry is mode-generic: it takes `(vid, label)`, locates the bucket, returns early when the
+//! bucket is already tree mode (an already-tree bucket deepens rather than promotes), and enforces
+//! the `T_PROMOTE` precondition. Both producers - slab growth and the spill run reaching its
+//! largest class (ADR 0097 §6) - reach it here, so there is one promotion path.
 //!
 //! Storage architecture (per f6c426d1c amend):
 //! - `edge_start` = LEG slab offset (root region span containing a
@@ -46,12 +51,13 @@ use crate::traits::CsrEdgeTombstone;
 
 /// 3-phase promotion entry point.
 ///
-/// Phase 0a — Fold: a slab bucket's live rows may sit in the leaf **overflow
-/// log** when its physical window is full, so the trigger can fire with
-/// `degree > stored_slots`. Tree mode has no log (ADR 0088 §2), so the log is
-/// folded into the prefix first; otherwise transcription would orphan those rows
-/// (`overflow_log_head = -1`), leaving them counted in `degree` but unreachable
-/// from every scan (GAP-2026-09-20-001).
+/// Phase 0 - Locate and gate: find the bucket, return early when it is already tree mode, and
+/// enforce the preconditions. A slab bucket's rows are its slab prefix plus its own spill run (ADR
+/// 0097 §3), so there is no shared overflow log to fold first and no drain guard to protect such a
+/// fold: the pre-promotion fold (GAP-2026-09-20-001) is deleted with the log it existed for. The
+/// transcription below still reads only the slab prefix, so promoting a bucket that owns a run is
+/// not yet row-safe; making it read `prefix + run` (and publish `stored_slots = degree`) is the
+/// reader conversion that follows.
 ///
 /// Phase 1 — Reserve: read the bucket descriptor, verify preconditions,
 /// derive the depth and required root length, mint all LTB blocks (which
@@ -72,7 +78,7 @@ use crate::traits::CsrEdgeTombstone;
 /// descriptor (single canonical write), then release the old edge span
 /// and the old inline-property span (if any) so the slab prefix space
 /// becomes recyclable.
-pub(super) fn promote_bypass_to_tree_mode<E, M>(
+pub(super) fn promote_bucket_to_tree_mode<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     label: BucketLabelKey,
@@ -81,12 +87,12 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    // Plan 0321: see `promote_bypass_to_tree_mode_pub` for the
+    // Plan 0321: see `promote_bucket_to_tree_mode_pub` for the
     // `pub(crate)` test-only wrapper.
-    promote_bypass_to_tree_mode_impl(graph, vid, label)
+    promote_bucket_to_tree_mode_impl(graph, vid, label)
 }
 
-fn promote_bypass_to_tree_mode_impl<E, M>(
+fn promote_bucket_to_tree_mode_impl<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     label: BucketLabelKey,
@@ -98,7 +104,7 @@ where
     // Phase 0: locate the bucket (read-only; no canonical writes).
     let vertex = graph.vertices().get(vid);
     let search = graph.find_bucket(vid, &vertex, label)?;
-    let (mut bucket_slot, mut bucket) = match search {
+    let (bucket_slot, bucket) = match search {
         BucketSearch::Found { slot, bucket } => (slot, bucket),
         BucketSearch::Missing { .. } => {
             // No such bucket. The promotion can only proceed once the
@@ -119,33 +125,12 @@ where
         return Ok(());
     }
 
-    // Phase 0a (GAP-2026-09-20-001): fold a non-empty overflow log into the slab
-    // prefix before transcription. Slab mode admits live rows to the log when the
-    // bucket's physical window is full, so `degree` can exceed `stored_slots`
-    // here; tree mode has no log (ADR 0088 §2), so transcribing only the prefix
-    // and publishing `overflow_log_head = -1` would orphan those rows — they stay
-    // counted in `degree`, vanish from every scan, and the inserts that admitted
-    // them already returned `Ok`. The fold may rewrite the vertex edge span, so
-    // the descriptor is re-located afterwards; a fold that cannot make room fails
-    // closed (the caller keeps the slab bucket and its log intact).
-    if bucket.overflow_log_head() >= 0 {
-        let bucket_index =
-            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        graph.ensure_label_bucket_folded_to_slab(vid, bucket_index, bucket_slot, bucket)?;
-        let vertex = graph.vertices().get(vid);
-        (bucket_slot, bucket) = match graph.find_bucket(vid, &vertex, label)? {
-            BucketSearch::Found { slot, bucket } => (slot, bucket),
-            BucketSearch::Missing { .. } => {
-                return Err(LabeledOperationError::BucketNotFound { vid, label });
-            }
-        };
-        debug_assert!(
-            bucket.overflow_log_head() < 0,
-            "folding must clear the overflow log before tree transcription"
-        );
-    }
+    // Phase 0a (GAP-2026-09-20-001, retired by ADR 0097 §3): the pre-promotion fold of a non-empty
+    // overflow log into the slab prefix is deleted with the log. A slab bucket's rows are its slab
+    // prefix plus its own spill run, and transcription reads that pair directly, so there is no
+    // shared area to drain first - and the I2 drain guard protected only that fold.
 
-    // Precondition 2: stored_slots must have reached T_PROMOTE.
+    // Precondition 2: the bucket's resident width must have reached T_PROMOTE.
     //
     // The cap semantics document (Plan 0317 §3.5) says the trigger is
     // on `alloc_space = stored_slots + alloc_gap`, but the current
@@ -158,10 +143,15 @@ where
     // `stored_slots` directly as the equivalent stricter form. When
     // the weighted gap is introduced the trigger switches back to
     // `compute_bucket_allocation(&bucket) < T_PROMOTE`.
-    let stored_slots_check = bucket.stored_slots();
-    if stored_slots_check < T_PROMOTE {
+    let spill_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
+        Ok(run) => graph.edges().spill_used_len(run),
+        // Unset (NO_SPILL_RUN) or outside the arena: the bucket's rows are all in its prefix.
+        Err(_) => 0,
+    };
+    let resident_slots = bucket.stored_slots().saturating_add(spill_rows);
+    if resident_slots < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
-            current_alloc_space: stored_slots_check,
+            current_alloc_space: resident_slots,
             cap: T_PROMOTE,
             mode: BucketMode::Slab,
         });
@@ -602,9 +592,9 @@ where
 
     // ==================== Phase 3: Publish ====================
     // Build the new tree-mode descriptor. The descriptor's `edge_start`
-    // is the LEG offset to the root region. `overflow_log_head = -1` to
-    // mark the log chain as unused (tree mode does not use overflow
-    // logs). `degree` and `stored_slots` carry over unchanged.
+    // is the LEG offset to the root region. `degree` and `stored_slots` carry over unchanged, and
+    // the descriptor carries no edge spill run: tree mode keeps its rows in LTB blocks referenced
+    // from the tree root (ADR 0097 §3), so the run id is cleared.
     //
     // `inline_property_byte_width = 0` so the inline-property
     // related fields are all zero: no schema, no offset, no log head.
@@ -613,9 +603,8 @@ where
         new_edge_start,
         bucket.degree,
         bucket.stored_slots(),
-        -1, // overflow_log_head = -1 (tree mode does not use log)
-        w,  // inline_property_byte_width (preserved)
-        0,  // inline_property_bytes_offset = 0 (unused in tree mode;
+        w, // inline_property_byte_width (preserved)
+        0, // inline_property_bytes_offset = 0 (unused in tree mode;
         //   property root is contiguous at edge_start + root_len)
         0,  // inline_property_bytes_slab_slots = 0
         -1, // inline_property_bytes_log_head = -1
@@ -701,8 +690,8 @@ where
 /// (and any future non-sibling test setup) reach the natural
 /// promotion path without paying the 4096-insert cost. The
 /// wrapper is `pub(crate)` and the function it wraps is identical
-/// to the `pub(super)` `promote_bypass_to_tree_mode_impl`.
-pub(crate) fn promote_bypass_to_tree_mode_pub<E, M>(
+/// to the `pub(super)` `promote_bucket_to_tree_mode_impl`.
+pub(crate) fn promote_bucket_to_tree_mode_pub<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     label: BucketLabelKey,
@@ -711,7 +700,7 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    promote_bypass_to_tree_mode_impl(graph, vid, label)
+    promote_bucket_to_tree_mode_impl(graph, vid, label)
 }
 
 // =========================== Test-only re-exports ===========================
@@ -862,7 +851,7 @@ pub mod tests {
         let vid: VertexId = VertexId::from(0);
         force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 10);
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         match result {
             Err(LabeledOperationError::AllocSpaceCapReached {
                 current_alloc_space,
@@ -887,7 +876,7 @@ pub mod tests {
         let vid: VertexId = VertexId::from(0);
         force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 0);
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         match result {
             Err(LabeledOperationError::AllocSpaceCapReached {
                 current_alloc_space,
@@ -910,7 +899,7 @@ pub mod tests {
         let vid: VertexId = VertexId::from(0);
         // No bucket exists for this label; `find_bucket` returns Missing.
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(99));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(99));
         match result {
             Err(LabeledOperationError::BucketNotFound { .. }) => {}
             other => panic!("expected BucketNotFound, got {other:?}"),
@@ -951,7 +940,7 @@ pub mod tests {
 
         // Promote.
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
 
         // Verify the descriptor is now in tree mode.
@@ -989,7 +978,7 @@ pub mod tests {
         let vid: VertexId = VertexId::from(0);
         force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 10);
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         match result {
             Err(LabeledOperationError::AllocSpaceCapReached {
                 current_alloc_space,
@@ -1032,7 +1021,7 @@ pub mod tests {
         fill_leg_slab_prefix(&graph, pre_edge_start, stored);
 
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         let post_bucket = graph
             .buckets()
@@ -1073,7 +1062,7 @@ pub mod tests {
         fill_leg_slab_prefix(&graph, pre_edge_start, stored);
 
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         let post_bucket = graph
             .buckets()
@@ -1137,7 +1126,7 @@ pub mod tests {
         fill_leg_slab_prefix(&graph, pre_edge_start, stored);
 
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
 
         // Read the LTB blocks: `root_len` blocks × B edges == `stored` edges.
@@ -1191,7 +1180,7 @@ pub mod tests {
         fill_leg_slab_prefix(&graph, pre_edge_start, stored);
 
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         let post_bucket = graph
             .buckets()
@@ -1236,7 +1225,7 @@ pub mod tests {
         fill_leg_slab_prefix(&graph, pre_edge_start, stored);
 
         let result =
-            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+            promote_bucket_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         let post_bucket = graph
             .buckets()
@@ -1306,7 +1295,7 @@ pub mod tests {
             .set_labeled_vertex(vid, vertex.try_with_bucket_row(0, 1).expect("bucket row"))
             .expect("set vertex");
 
-        let result = promote_bypass_to_tree_mode(&graph, vid, label);
+        let result = promote_bucket_to_tree_mode(&graph, vid, label);
         match result {
             Err(LabeledOperationError::TreeModeEdgeWidthUnsupported { actual, expected }) => {
                 assert_eq!(actual, 8);

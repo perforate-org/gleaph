@@ -15,7 +15,7 @@
 //!   publish, so a descriptor is never pointed at a freed run.
 //! * [`EdgeStore::spill_release`] derives the run's class from the run's own header.
 
-use crate::labeled::spill_run_store::{ArenaRows, SpillRunError, SpillRunId};
+use crate::labeled::spill_run_store::{ArenaRows, MAX_ROWS, SpillRunError, SpillRunId};
 use crate::lara::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
     VertexId,
@@ -157,16 +157,96 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     where
         E: crate::traits::CsrEdgeTombstone,
     {
-        let tombstone = E::tombstone_edge();
+        self.spill_write_edge_row(run, index, &E::tombstone_edge())
+    }
+
+    /// Encodes `edge` and writes it as row `index` of `run` (the row must already exist).
+    fn spill_write_edge_row(
+        &self,
+        run: SpillRunId,
+        index: u32,
+        edge: &E,
+    ) -> Result<(), LaraOperationError> {
+        Self::with_encoded_edge_row(edge, |row| self.spill_write_row(run, index, row))
+    }
+
+    /// Encodes `edge` and appends it at the run's dense end. `Ok(false)` is the class-full signal.
+    fn spill_append_edge_row(&self, run: SpillRunId, edge: &E) -> Result<bool, LaraOperationError> {
+        Self::with_encoded_edge_row(edge, |row| self.spill_append(run, row))
+    }
+
+    /// Encodes `edge` and hands its row bytes to `write`. The buffer is stack-resident for inline
+    /// edge widths and heap-allocated only for wider edge types, so the common width pays nothing.
+    fn with_encoded_edge_row<T>(
+        edge: &E,
+        write: impl FnOnce(&[u8]) -> Result<T, LaraOperationError>,
+    ) -> Result<T, LaraOperationError> {
         if E::BYTES <= super::INLINE_EDGE_BYTES {
             let mut payload = [0u8; super::INLINE_EDGE_BYTES];
-            tombstone.write_to(&mut payload[..E::BYTES]);
-            self.spill_write_row(run, index, &payload[..E::BYTES])
+            edge.write_to(&mut payload[..E::BYTES]);
+            write(&payload[..E::BYTES])
         } else {
             let mut payload = vec![0u8; E::BYTES];
-            tombstone.write_to(&mut payload);
-            self.spill_write_row(run, index, &payload)
+            edge.write_to(&mut payload);
+            write(&payload)
         }
+    }
+
+    /// Appends `edge` to `v`'s spill run, publishes the grown row and returns the run that owns it.
+    ///
+    /// ADR 0097 §4/§7: the first row that does not fit the prefix allocates the smallest class for
+    /// exactly one row (nothing is pre-allocated for growth); later rows append at the run's dense
+    /// end. A full class grows by one row - in place at the arena tail, otherwise into the next
+    /// class with a copy and a release - and the caller publishes the id `spill_grow` returns. A run
+    /// already at [`MAX_ROWS`], the largest class, is the promotion outcome: a bigger bucket is a
+    /// tree bucket (ADR 0097 §6), and so is an arena that cannot address the allocation. The row is
+    /// written before the descriptor is published, so a published spill length is always backed
+    /// (ADR 0097 §8).
+    pub(super) fn insert_into_spill_with_layout<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        v: V,
+        edge: E,
+    ) -> Result<SpillRunId, LaraOperationError>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        let run = match self.spill_mint(v.spill_run()) {
+            Ok(run) => {
+                if self.spill_append_edge_row(run, &edge)? {
+                    run
+                } else {
+                    let used = self.spill_used_len(run);
+                    if used >= MAX_ROWS {
+                        // The spill tops out at the largest class; beyond it the bucket promotes.
+                        return Err(LaraOperationError::SpillNeedsPromotion);
+                    }
+                    let grown = self.spill_grow(run, used, used + 1)?;
+                    self.spill_write_edge_row(grown, used, &edge)?;
+                    grown
+                }
+            }
+            Err(_) => {
+                // Unset (`NO_SPILL_RUN`) or an id outside the arena: the row does not fit its
+                // prefix, so the run is minted now, with room for exactly this row.
+                let run = self.spill.allocate(1).map_err(LaraOperationError::from)?;
+                self.spill_write_edge_row(run, 0, &edge)?;
+                run
+            }
+        };
+        // Publish: the run id first, then the growth of one live row. The live setters reject the
+        // sentinel and validate the arena range, so a failure here is an invariant break - the
+        // arena's bound is the minimum over every row type that references it.
+        let published = v
+            .try_with_spill_run(run.get())
+            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+        let grown = published
+            .try_grow_packed_slab_by_one()
+            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+        vertices.set(vid, &grown);
+        Ok(run)
     }
 
     /// The run's rows as replay entries (`None` = a tombstoned row), in ordinal order.

@@ -2084,7 +2084,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         // Promote the bucket to tree mode via the natural promotion
         // path (force_bucket_to_stored_slots = T_PROMOTE, then
-        // promote_bypass_to_tree_mode).
+        // promote_bucket_to_tree_mode).
         let label = BucketLabelKey::directed_from_index(1);
         force_tree_mode_for_test(&graph, VertexId::from(0), label);
         // Confirm the bucket is now in tree mode with stored_slots

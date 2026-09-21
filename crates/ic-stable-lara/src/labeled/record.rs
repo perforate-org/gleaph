@@ -5,8 +5,8 @@ use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
     BUCKET_EDGE_RUN_LOW_BITS, BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, checked_add_slot_index,
     decode_bucket_label_key, decode_bucket_word_edge_run_low, decode_meta28,
-    decode_overflow_log_byte, decode_slot_index, encode_locator_word, encode_overflow_log_byte,
-    read_u40, replace_bucket_label_key, replace_bucket_word_edge_run_low, slot_index_fits,
+    decode_overflow_log_byte, decode_slot_index, encode_locator_word, read_u40,
+    replace_bucket_label_key, replace_bucket_word_edge_run_low, slot_index_fits,
     try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
     try_replace_slot_index, write_u40,
 };
@@ -616,6 +616,20 @@ impl LabelBucket {
             .expect("LabelBucket::with_edge_spill_run: run id out of range")
     }
 
+    /// Returns a copy with no edge-plane spill run: every edge row lives in the bucket's slab
+    /// prefix (ADR 0097 §4).
+    ///
+    /// Clearing is its own infallible transition: [`Self::try_with_edge_spill_run`] validates
+    /// *live* run ids and so rejects the sentinel, while a released (or never-allocated) run must
+    /// still be representable.
+    #[inline]
+    pub fn without_edge_spill_run(self) -> Self {
+        Self {
+            edge_spill_run: NO_SPILL_RUN,
+            ..self
+        }
+    }
+
     /// Values-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
     #[inline]
     pub fn values_spill_run(self) -> u32 {
@@ -1119,7 +1133,14 @@ impl CsrVertex for LabelBucket {
 
     fn try_grow_packed_slab_by_one(self) -> Result<Self, ()> {
         let next_degree = self.degree.checked_add(1).ok_or(())?;
-        {
+        if self.edge_spill_run != NO_SPILL_RUN {
+            // Spill-backed growth (ADR 0097 §7): the edge lives in the bucket's own run, not in
+            // the slab window, so only the logical degree grows. `stored_slots` is the slab prefix
+            // width, and leaving it alone is what keeps the spill ordinals (`prefix + i`) and every
+            // reader's prefix derivation stable. The retired log head expressed this same branch;
+            // it was dropped with the head, and the spill producer's publish needs it back.
+            Ok(self.with_degree(next_degree))
+        } else {
             // Packed slab append: the edge is appended inside the bucket's slab
             // window, so both logical degree and stored width grow.
             let next_stored = self.stored_slots().checked_add(1).ok_or(())?;

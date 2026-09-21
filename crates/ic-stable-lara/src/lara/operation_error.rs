@@ -49,8 +49,6 @@ pub enum LaraOperationError {
     RowEdgeReadRequiresSlabOnlyRow,
     /// Clearing a row slab needs a slab-only row.
     ClearRowRequiresSlabOnlyRow,
-    /// Overflow log has no free slot for another entry.
-    SegmentLogFull,
 
     /// A leaf's overflow-log segment was about to be released while at least one
     /// bucket still chained rows in it. `LogStore::release_segment` zeroes the
@@ -98,7 +96,6 @@ impl fmt::Display for LaraOperationError {
                 write!(f, "row edge read requires slab-only row")
             }
             Self::ClearRowRequiresSlabOnlyRow => write!(f, "clear row requires slab-only row"),
-            Self::SegmentLogFull => write!(f, "segment log full"),
             Self::LogSegmentNotDrained => write!(
                 f,
                 "overflow-log segment still chains rows and cannot be released"

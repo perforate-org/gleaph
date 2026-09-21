@@ -17,8 +17,13 @@ pub(crate) enum DeleteTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertLocation {
     Slab(u32),
-    Log { log_index: u32, logical_slot: u32 },
-    LogOnly { log_index: u32 },
+    /// The row was written into the bucket's own spill run (ADR 0097 §7). `run` is the run the
+    /// producer published, and `logical_slot` is the row's logical slot when the caller asked for
+    /// one (scalar capture); a caller that did not ask gets `None`.
+    Spill {
+        run: crate::labeled::spill_run_store::SpillRunId,
+        logical_slot: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,20 +43,6 @@ impl From<EdgeHeaderV1> for EdgeLayout {
             segment_size: header.segment_size,
             num_edges: header.num_edges,
             initial_vertex_edge_slots: header.initial_vertex_edge_slots,
-        }
-    }
-}
-
-impl InsertLocation {
-    pub(crate) fn inserted_into_log(self) -> bool {
-        matches!(self, Self::Log { .. } | Self::LogOnly { .. })
-    }
-
-    pub(crate) fn logical_slot(self) -> Option<u32> {
-        match self {
-            Self::Slab(slot) => Some(slot),
-            Self::Log { logical_slot, .. } => Some(logical_slot),
-            Self::LogOnly { .. } => None,
         }
     }
 }

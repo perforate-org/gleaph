@@ -3579,7 +3579,7 @@ fn seed_w32_sweep_bucket(
     // `ensure_label_bucket_inline_property_byte_width` helper.
     //
     // At T_PROMOTE = 4096 the dispatcher auto-promotes via
-    // `promote_bypass_to_tree_mode` (Plan 0326 carve-out path:
+    // `promote_bucket_to_tree_mode` (Plan 0326 carve-out path:
     // accepts w=32). Subsequent inserts go through
     // `tree_mode_insert_edge` which writes property rows to LPB
     // at the combined `[edge root | property root]` span. This
