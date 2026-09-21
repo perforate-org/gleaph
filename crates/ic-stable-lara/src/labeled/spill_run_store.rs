@@ -237,10 +237,19 @@ impl<M: Memory> SpillRunStore<M> {
             start
         };
         self.set_used_len(run, len)?;
-        // Touch the last data row so the backing is grown even before the caller writes it.
-        let last = self.data_address(run, capacity - 1);
-        safe_write(&self.memory, last, &[0u8; 1])?;
+        // Grow the backing over **every byte** of the run's addressable rows, not just the first
+        // byte of the last one: with a row width that does not divide the page size the last row
+        // can straddle a page boundary, and a later write into its tail must not need a grow (which
+        // could fail after the run was published).
+        self.touch_last_row(run, capacity)?;
         Ok(run)
+    }
+
+    /// Writes one byte at the last byte of data row `capacity - 1`, growing the backing to cover the
+    /// whole run.
+    fn touch_last_row(&self, run: RunId, capacity: u32) -> Result<(), GrowFailed> {
+        let last = self.data_address(run, capacity - 1) + u64::from(self.row_bytes) - 1;
+        safe_write(&self.memory, last, &[0u8; 1])
     }
 
     /// Returns the arena end after handing out `requested` rows at `start`, or
@@ -302,8 +311,7 @@ impl<M: Memory> SpillRunStore<M> {
         let end = self.reserve_arena_rows(arena, target - current)?;
         safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
         self.set_used_len(run, to_len)?;
-        let last = self.data_address(run, target - 1);
-        safe_write(&self.memory, last, &[0u8; 1])?;
+        self.touch_last_row(run, target)?;
         Ok(Some(run))
     }
 
@@ -633,6 +641,38 @@ mod tests {
             store.read_row(first, index, &mut buf);
             assert_eq!(u32::from_le_bytes(buf), index);
         }
+    }
+
+    #[test]
+    fn allocate_grows_the_backing_over_every_byte_of_the_last_row() {
+        // With an 8000-byte row and a class-8 run at row 0, the last data row spans
+        // [64 + 8*8000, 64 + 9*8000) = [64064, 72064), which straddles the 65536-byte page
+        // boundary. Touching only the row's first byte would leave its tail unbacked, so a later
+        // write into that tail would need a grow that can fail after the run was published.
+        let memory = crate::test_support::FailpointMemory::new();
+        let store = SpillRunStore::new(memory.clone(), 8000, ARENA_ROWS_LIMIT).expect("store");
+        let run = store.allocate(MIN_ROWS).expect("straddling run");
+        assert_eq!(run, 0);
+        let last_row_start = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS - 1) * 8000;
+        let last_row_end = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS) * 8000;
+        assert!(
+            last_row_start < crate::WASM_PAGE_SIZE && last_row_end > crate::WASM_PAGE_SIZE,
+            "the fixture's last row must straddle the first page boundary"
+        );
+        // The backing covers the final byte of that row, not just its first byte.
+        assert!(
+            memory.byte_len() as u64 >= last_row_end,
+            "allocate must grow over the whole last row"
+        );
+        // So writing and reading its tail needs no grow at all.
+        memory.fail_at_grow(memory.grow_count() + 1);
+        let row = vec![0xABu8; 8000];
+        store
+            .write_row(run, MIN_ROWS - 1, &row)
+            .expect("write tail");
+        let mut back = vec![0u8; 8000];
+        store.read_row(run, MIN_ROWS - 1, &mut back);
+        assert_eq!(back, row);
     }
 
     #[test]
