@@ -1,6 +1,6 @@
 //! EdgeStore `init` implementation.
 
-use crate::labeled::spill_run_store::{ARENA_ROWS_LIMIT, SpillRunStore};
+use crate::labeled::spill_run_store::{ArenaRows, SpillRunStore};
 use crate::{GrowFailed, VertexCount, traits::CsrEdge};
 use ic_stable_structures::Memory;
 use std::cell::Cell;
@@ -51,7 +51,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             span_meta.push(SegmentSpanMeta::default())?;
         }
         let edges = EdgeSlabStore::new(edges, header)?;
-        let spill = SpillRunStore::new(spill, E::BYTES as u32, ARENA_ROWS_LIMIT)?;
+        let spill = SpillRunStore::new(spill, E::BYTES as u32, ArenaRows::EDGE)?;
         let free_spans =
             FreeSpanStore::new(free_spans, free_span_by_start).map_err(|_| GrowFailed {
                 current_size: 0,
@@ -111,7 +111,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let header = edges.header().map_err(InitError::Edges)?;
         let _ = elem_capacity;
         // The spill store validates its own header and width and fails closed.
-        let spill = SpillRunStore::new(spill, E::BYTES as u32, ARENA_ROWS_LIMIT)
+        let spill = SpillRunStore::new(spill, E::BYTES as u32, ArenaRows::EDGE)
             .map_err(|_| InitError::OutOfMemory)?;
         let span_meta = SegmentSpanMetaStore::init(span_meta).map_err(InitError::SpanMeta)?;
         let free_spans = FreeSpanStore::init(free_spans, free_span_by_start)
