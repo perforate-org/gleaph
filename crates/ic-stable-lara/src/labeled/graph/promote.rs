@@ -192,7 +192,7 @@ where
             "compaction must release the run before tree transcription"
         );
     }
-    if bucket.inline_property_bytes_log_head() >= 0 {
+    if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
         let bucket_index =
             LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
         let folded = graph.fold_label_bucket_inline_property_bytes_log_to_slab(

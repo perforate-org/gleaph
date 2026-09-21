@@ -2219,7 +2219,7 @@ where
                 // published alongside the new slab prefix and break edge/inline-property-bytes
                 // ordinal alignment.
                 if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                    || bucket.inline_property_bytes_log_head() >= 0
+                    || bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
                 {
                     return self.preflight_overflow_log_run(
                         run,
@@ -2398,17 +2398,14 @@ where
             inline_property_bytes_byte_count = u64::from(edge_slot_count)
                 .checked_mul(u64::from(run.inline_property_width))
                 .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-            let log_len = if bucket.inline_property_bytes_log_head() >= 0 {
-                let chain_len = self
-                    .values
-                    .inline_property_bytes_log_chain_asc_indices(
-                        self.inline_property_bytes_log_leaf(run.owner_vertex_id),
-                        bucket.inline_property_bytes_log_head(),
-                    )
-                    .len();
+            let log_len = if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
+                let chain_len = match self.values.spill_mint(bucket.values_spill_run()) {
+                    Ok(run) => self.values.spill_used_len(run) as usize,
+                    Err(_) => 0,
+                };
                 let log_len = u32::try_from(chain_len)
                     .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
-                let metadata_len = u32::from(bucket.inline_property_bytes_log_len());
+                let metadata_len = self.bucket_values_run_rows(&bucket);
                 if log_len != metadata_len || log_len != edge_log_len {
                     return Err(
                         OneOrientationBatchError::InlinePropertyBytesLogLengthMismatch {
@@ -2419,7 +2416,7 @@ where
                 }
                 log_len
             } else {
-                if edge_log_len != 0 || bucket.inline_property_bytes_log_len() != 0 {
+                if edge_log_len != 0 || self.bucket_values_run_rows(&bucket) != 0 {
                     return Err(
                         OneOrientationBatchError::InlinePropertyBytesLogLengthMismatch {
                             edge_log_len,
@@ -2464,8 +2461,8 @@ where
             }
             log_len
         } else {
-            if bucket.inline_property_bytes_log_head() >= 0
-                || bucket.inline_property_bytes_log_len() != 0
+            if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+                || self.bucket_values_run_rows(&bucket) != 0
             {
                 return Err(
                     OneOrientationBatchError::InlinePropertyBytesLogLengthMismatch {
@@ -3368,11 +3365,11 @@ where
                 .expect("reserve guaranteed relocated inline property bytes offset");
             let width = u64::from(res.inline_property_width);
             if inline_property_bytes_log_len > 0 {
-                let leaf = graph.inline_property_bytes_log_leaf(owner);
-                let chain = graph.values.inline_property_bytes_log_chain_asc_indices(
-                    leaf,
-                    bucket.inline_property_bytes_log_head(),
-                );
+                let values_run = graph
+                    .values
+                    .spill_mint(bucket.values_spill_run())
+                    .expect("reserve guaranteed a values run id");
+                let chain = graph.values.spill_asc_indices(values_run);
                 let width_bytes = usize::from(res.inline_property_width);
                 let mut folded = vec![
                     0u8;
@@ -3386,8 +3383,8 @@ where
                         .expect("reserve guaranteed relocated inline property fold offset");
                     graph
                         .values
-                        .read_inline_property_bytes_log_entry(
-                            leaf,
+                        .spill_read(
+                            values_run,
                             log_idx,
                             res.inline_property_width,
                             &mut folded[start..start + width_bytes],
@@ -3822,11 +3819,11 @@ where
 
             // Fold existing inline property bytes overflow-log entries into the slab.
             if inline_property_bytes_log_len > 0 {
-                let inline_property_bytes_log_leaf = graph.inline_property_bytes_log_leaf(owner);
-                let chain = graph.values.inline_property_bytes_log_chain_asc_indices(
-                    inline_property_bytes_log_leaf,
-                    new_bucket.inline_property_bytes_log_head(),
-                );
+                let values_run = graph
+                    .values
+                    .spill_mint(new_bucket.values_spill_run())
+                    .expect("reserve guaranteed a values run id");
+                let chain = graph.values.spill_asc_indices(values_run);
                 let width_bytes = usize::from(res.inline_property_width);
                 let mut folded = vec![
                     0u8;
@@ -3841,8 +3838,8 @@ where
                         .expect("reserve guaranteed inline property fold offset");
                     graph
                         .values
-                        .read_inline_property_bytes_log_entry(
-                            inline_property_bytes_log_leaf,
+                        .spill_read(
+                            values_run,
                             log_idx,
                             res.inline_property_width,
                             &mut folded[start..start + width_bytes],

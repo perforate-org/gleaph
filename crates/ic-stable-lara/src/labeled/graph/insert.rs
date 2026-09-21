@@ -94,11 +94,10 @@ where
         let header = self.edges.header();
         let target = segment_tree_leaf_count(self.vertices.len().into(), header.segment_size);
         if target > header.segment_count {
+            // ADR 0097 §5: the values plane has no per-leaf segments to grow - its rows live in
+            // a spill arena that grows lazily with the runs themselves.
             self.edges
                 .grow_segment_tree_to(target)
-                .map_err(LabeledOperationError::from)?;
-            self.values
-                .grow_segment_count_to(target)
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(VertexId::from(id))
@@ -145,11 +144,10 @@ where
         let header = self.edges.header();
         let target = segment_tree_leaf_count(self.vertices.len().into(), header.segment_size);
         if target > header.segment_count {
+            // ADR 0097 §5: the values plane has no per-leaf segments to grow - its rows live in
+            // a spill arena that grows lazily with the runs themselves.
             self.edges
                 .grow_segment_tree_to(target)
-                .map_err(LabeledOperationError::from)?;
-            self.values
-                .grow_segment_count_to(target)
                 .map_err(LabeledOperationError::from)?;
         }
         Ok((start..self.vertices.len()).map(VertexId::from).collect())
@@ -462,10 +460,11 @@ where
                     let attempt_edge = edge.clone();
                     let vertex = self.vertices.get(src);
                     if has_edge_inline_property
-                        && bucket.inline_property_bytes_log_len() > 0
-                        && self.values.inline_property_bytes_log_segment_is_full(
-                            self.inline_property_bytes_log_leaf(src),
-                        )
+                        && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+                        && self
+                            .values
+                            .spill_mint(bucket.values_spill_run())
+                            .is_ok_and(|run| self.values.spill_run_is_full(run))
                     {
                         self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
                         let vertex = self.vertices.get(src);
@@ -795,7 +794,7 @@ where
         if bucket.stored_slots() <= bucket.degree() {
             return Ok(None);
         }
-        if bucket.inline_property_bytes_log_head() >= 0 {
+        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
         let mut ordinal_before = 0u32;
@@ -2126,7 +2125,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        let crafted = bucket.try_with_inline_property_bytes_log(1, 1).unwrap();
+        // ADR 0097 §5: values beyond the slab live in the bucket's run, so "log-backed" in this
+        // test's sense means "run-backed".
+        let crafted = bucket.try_with_values_spill_run(0).unwrap();
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, crafted)

@@ -752,10 +752,10 @@ where
                         .checked_add(u64::from(self.edges.spill_used_len(run)))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
-                if bucket.inline_property_bytes_log_head() >= 0 {
+                if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
                     stats.total_inline_property_bytes_overflow_log_slots = stats
                         .total_inline_property_bytes_overflow_log_slots
-                        .checked_add(u64::from(bucket.inline_property_bytes_log_len()))
+                        .checked_add(u64::from(self.bucket_values_run_rows(&bucket)))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
             }
@@ -1068,16 +1068,13 @@ where
         Ok(())
     }
 
-    pub(super) fn bucket_inline_property_bytes_log_chain(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-    ) -> Vec<u32> {
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        self.values.inline_property_bytes_log_chain_asc_indices(
-            leaf,
-            bucket.inline_property_bytes_log_head(),
-        )
+    /// The bucket's values rows, oldest first. ADR 0097 §5: a values run is ordinal, so this is
+    /// the run's row indices rather than a chain walk; callers that precompute it share one list.
+    pub(super) fn bucket_inline_property_bytes_log_chain(&self, bucket: &LabelBucket) -> Vec<u32> {
+        match self.values.spill_mint(bucket.values_spill_run()) {
+            Ok(run) => self.values.spill_asc_indices(run),
+            Err(_) => Vec::new(),
+        }
     }
 }
 

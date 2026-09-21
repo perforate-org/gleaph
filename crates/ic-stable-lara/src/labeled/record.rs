@@ -653,6 +653,17 @@ impl LabelBucket {
         })
     }
 
+    /// Returns a copy with the values-plane spill run id cleared. The sentinel cannot go through
+    /// [`Self::try_with_values_spill_run`], which exists to reject it, so clearing is its own
+    /// operation (mirroring [`Self::without_edge_spill_run`]).
+    #[inline]
+    pub fn without_values_spill_run(self) -> Self {
+        Self {
+            values_spill_run: NO_SPILL_RUN,
+            ..self
+        }
+    }
+
     /// Returns a copy with the values-plane spill run id set.
     #[inline]
     pub fn with_values_spill_run(self, run: u32) -> Self {

@@ -1985,7 +1985,7 @@ where
         }
         bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
             && (bucket.inline_property_byte_width() == 0
-                || (bucket.inline_property_bytes_log_head() < 0
+                || (bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
                     && bucket.inline_property_bytes_slab_slots() == bucket.degree()))
     }
 
@@ -2059,7 +2059,7 @@ where
         let vacated = checked_add_slot_index(bucket.edge_start(), u64::from(swap.vacated_slot))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let width = bucket.inline_property_byte_width();
-        if width > 0 && bucket.inline_property_bytes_log_head() < 0 {
+        if width > 0 && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN {
             let degree = bucket.degree();
             let k_ord = swap.hole_ordinal;
             let m_ord = degree
@@ -2675,27 +2675,25 @@ where
             !bucket.is_tiny_mode(),
             "tiny bucket must not reach value-log fold"
         );
-        if bucket.inline_property_bytes_log_head() < 0
+        if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
             || !bucket.is_inline_property_bytes_allocated()
         {
             return Ok(bucket);
         }
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        let inline_property_bytes_chain = self.values.inline_property_bytes_log_chain_asc_indices(
-            leaf,
-            bucket.inline_property_bytes_log_head(),
-        );
+        let run = self
+            .values
+            .spill_mint(bucket.values_spill_run())
+            .map_err(LabeledOperationError::from)?;
+
         let mut saved = Vec::with_capacity(bucket.degree() as usize);
         for ordinal in 0..bucket.degree() {
-            saved.push(
-                self.read_bucket_inline_property_bytes_for_slot(src, &bucket, ordinal, None)?,
-            );
+            saved.push(self.read_bucket_inline_property_bytes_for_slot(&bucket, ordinal, None)?);
         }
         let old_inline_property_bytes_slots =
             self.bucket_resident_inline_property_bytes_slots_for(src, &bucket);
-        let mut bucket = bucket
-            .try_with_inline_property_bytes_log_head(-1)
-            .map_err(LabeledOperationError::from)?;
+        // The rows are about to move into the slab, so the descriptor stops pointing at the run
+        // *before* admission: `needed_slots` must cover every row the slab will hold.
+        let mut bucket = bucket.without_values_spill_run();
         bucket = self.ensure_bucket_inline_property_bytes_span(
             src,
             bucket_slot,
@@ -2713,8 +2711,12 @@ where
                 .write_inline_property_bytes_slot(offset, width, bytes)
                 .map_err(LabeledOperationError::from)?;
         }
+        // The fold copied the run's rows into the slab, so the run is released and the
+        // descriptor stops pointing at it (ADR 0097 §5: compaction is the only place a run is
+        // freed besides bucket death).
         self.values
-            .sweep_inline_property_bytes_log_chain(leaf, &inline_property_bytes_chain);
+            .spill_release(run)
+            .map_err(LabeledOperationError::from)?;
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(bucket)
     }
@@ -2741,7 +2743,7 @@ where
                 if bucket.is_tiny_mode() {
                     continue;
                 }
-                if bucket.inline_property_bytes_log_head() < 0 {
+                if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN {
                     continue;
                 }
                 let bucket_index = bucket_index as u32;
@@ -2755,9 +2757,6 @@ where
                 )?;
             }
         }
-        self.values
-            .release_inline_property_bytes_log_segment(leaf)
-            .map_err(LabeledOperationError::from)?;
         Ok(())
     }
 
@@ -4748,12 +4747,11 @@ mod tests {
         };
         let before = read_bucket();
         assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        assert!(before.inline_property_bytes_log_head() >= 0);
+        assert!(before.values_spill_run() != crate::traits::NO_SPILL_RUN);
         let inline_property_bytes_state = (
             before.inline_property_bytes_offset(),
             before.inline_property_bytes_slab_slots(),
-            before.inline_property_bytes_log_head(),
-            before.inline_property_bytes_log_len(),
+            before.values_spill_run(),
         );
 
         // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
@@ -4771,8 +4769,7 @@ mod tests {
             (
                 after.inline_property_bytes_offset(),
                 after.inline_property_bytes_slab_slots(),
-                after.inline_property_bytes_log_head(),
-                after.inline_property_bytes_log_len(),
+                after.values_spill_run(),
             ),
             inline_property_bytes_state
         );

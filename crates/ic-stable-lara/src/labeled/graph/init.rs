@@ -9,7 +9,7 @@ use crate::{
         record::LabeledVertex,
     },
     lara::{
-        edge::{EdgeStore, counts::SegmentEdgeCounts, segment_tree_leaf_count},
+        edge::{EdgeStore, counts::SegmentEdgeCounts},
         edge_inline_property::EdgeInlinePropertyBytesStore,
         operation_error::LaraOperationError,
         vertex::VertexStore,
@@ -142,7 +142,6 @@ where
     ) -> Result<Self, crate::GrowFailed> {
         let segment_size = segment_size.max(1);
         crate::slab_index::validate_elem_capacity_grow_failed(capacities.edge_slots, edges.size())?;
-        let segment_count = segment_tree_leaf_count(VertexCount::default(), segment_size);
         Ok(Self {
             vertices: VertexStore::new(vertices)?,
             buckets: LabelBucketStore::new(
@@ -170,7 +169,6 @@ where
                 value_free_spans,
                 value_free_span_by_start,
                 capacities.inline_property_bytes,
-                segment_count,
             )?,
             ltb: LtbRawBlockStore::new(ltb)?,
             default_label,
@@ -241,7 +239,6 @@ where
             DEFAULT_SEGMENT_SIZE,
         )
         .map_err(InitError::Edges)?;
-        let edge_segment_count = edges.header().segment_count;
         Ok(Self {
             vertices: VertexStore::init(vertices).map_err(InitError::Vertices)?,
             buckets: LabelBucketStore::init(
@@ -260,7 +257,6 @@ where
                 value_free_spans,
                 value_free_span_by_start,
                 capacities.inline_property_bytes,
-                edge_segment_count,
             )
             .map_err(InitError::InlinePropertyBytes)?,
             // Plan 0318 §Step 2: LTB reopen. `LtbRawBlockStore::init` already

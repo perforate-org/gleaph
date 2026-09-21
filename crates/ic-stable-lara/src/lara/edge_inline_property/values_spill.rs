@@ -18,12 +18,9 @@
 //!   therefore re-keys the moved rows' blob sites inside the growth step, before it puts the new
 //!   row's own site, so a published run id always reads every row it is said to hold.
 //!
-//! **Status (slice 5a).** The store lands here, fully tested, before its wiring: the graph's values
-//! store still reads its rows through the retired log until the next sub-slice, so nothing
-//! constructs [`ValuesSpillStore`] in production yet. The `dead_code` allow below is the
-//! transitional half of that split and is removed by the wiring commit, which also folds the two
-//! error types here into the ones the callers match on.
-#![allow(dead_code)]
+//! The outer `EdgeInlinePropertyBytesStore` owns the blob map and delegates here, so this module
+//! holds only the arena and the row encoding; the two error types are mapped into the ones the
+//! callers match on at that boundary.
 
 use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use super::blob_store::BlobStoreError;

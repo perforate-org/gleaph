@@ -1,7 +1,5 @@
 //! Segment overflow-log head index (`0..170` valid, [`LogHead::NONE`] = no log).
 
-use crate::lara::edge::DEFAULT_MAX_LOG_ENTRIES;
-
 /// Head index into a per-segment overflow log, or [`Self::NONE`] when absent.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -11,13 +9,15 @@ impl LogHead {
     /// Sentinel: no overflow log chain (`u8::MAX` on wire).
     pub const NONE: Self = Self(u8::MAX);
 
-    /// Maximum valid entry index (`0..`[`DEFAULT_MAX_LOG_ENTRIES`]).
-    pub const MAX_VALID_INDEX: u8 = (DEFAULT_MAX_LOG_ENTRIES - 1) as u8;
+    /// Maximum valid entry index. The retired per-leaf log's 170-entry bound is the widest a
+    /// single byte could address under the old layout; the byte survives only until the
+    /// descriptor's final 34-byte row removes it.
+    pub const MAX_VALID_INDEX: u8 = 169;
 
     /// Creates a log head from a valid entry index.
     #[inline]
     pub const fn from_index(index: u8) -> Option<Self> {
-        if index < DEFAULT_MAX_LOG_ENTRIES as u8 {
+        if index < Self::MAX_VALID_INDEX {
             Some(Self(index))
         } else {
             None
@@ -29,7 +29,7 @@ impl LogHead {
     pub const fn from_i32(head: i32) -> Option<Self> {
         if head < 0 {
             Some(Self::NONE)
-        } else if head < DEFAULT_MAX_LOG_ENTRIES as i32 {
+        } else if head < Self::MAX_VALID_INDEX as i32 {
             Some(Self(head as u8))
         } else {
             None

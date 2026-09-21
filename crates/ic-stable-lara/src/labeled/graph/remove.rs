@@ -648,7 +648,7 @@ where
         else {
             return Err(LaraOperationError::LogChainShort.into());
         };
-        if bucket.inline_property_bytes_log_head() >= 0 {
+        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
             self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
             bucket = self
                 .buckets
@@ -818,7 +818,7 @@ where
                             }
                             let bucket_index = lo + bidx as u32;
                             let log_chains =
-                                self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
+                                self.bucket_inline_property_bytes_log_chain_opt(bucket);
                             let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
                             let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                             if let ControlFlow::Break(value) = visit(
@@ -851,7 +851,7 @@ where
                             }
                             let bucket_index = lo + local as u32;
                             let log_chains =
-                                self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
+                                self.bucket_inline_property_bytes_log_chain_opt(bucket);
                             for slot in 0..bucket.degree() {
                                 let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                                 if let ControlFlow::Break(value) = visit(
@@ -884,7 +884,7 @@ where
                     if bucket.degree() == 0 {
                         continue;
                     }
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
+                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
                     let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
                     let successor = self.bucket_slab_window_end_exclusive_after_bucket(
                         vertex,
@@ -947,7 +947,7 @@ where
                     if bucket.degree() == 0 {
                         continue;
                     }
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
+                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
                     let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
                     let successor = self.bucket_slab_window_end_exclusive_after_bucket(
                         vertex,
@@ -1309,8 +1309,7 @@ where
                         return Ok(None);
                     }
                     if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-                        let log_chains =
-                            self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
+                        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                         let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
                         for slot_index in 0..slab_prefix_slots {
                             let edge_slot =
@@ -1390,8 +1389,7 @@ where
                     let stored = bucket.stored_slots_raw();
                     let mut found = None;
                     if bucket.is_inline_property_bytes_allocated() {
-                        let log_chains =
-                            self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
+                        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                         for offset in 0..stored {
                             let edge_slot =
                                 checked_add_slot_index(bucket.edge_start(), u64::from(offset))
@@ -1937,16 +1935,18 @@ mod tests {
         let rail_vertex = graph.vertices().get(VertexId::from(1));
         let rail_slot = graph.find_bucket_slot(&rail_vertex, rail).unwrap().unwrap();
         let rail_bucket = graph.buckets().read_label_bucket_slot(rail_slot).unwrap();
-        assert!(road_bucket.inline_property_bytes_log_head() >= 0);
-        assert!(rail_bucket.inline_property_bytes_log_head() >= 0);
-        let leaf = graph.inline_property_bytes_log_leaf(VertexId::from(1));
-        let rail_head = u32::try_from(rail_bucket.inline_property_bytes_log_head()).unwrap();
+        assert_ne!(road_bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_ne!(rail_bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        let rail_run = graph
+            .values()
+            .spill_mint(rail_bucket.values_spill_run())
+            .expect("rail values run");
         let mut before = [0u8; 2];
         graph
             .values()
-            .read_inline_property_bytes_log_entry(
-                leaf,
-                rail_head,
+            .spill_read(
+                rail_run,
+                0,
                 rail_bucket.inline_property_byte_width(),
                 &mut before,
             )
@@ -1960,9 +1960,9 @@ mod tests {
         let mut after = [0u8; 2];
         graph
             .values()
-            .read_inline_property_bytes_log_entry(
-                leaf,
-                rail_head,
+            .spill_read(
+                rail_run,
+                0,
                 rail_bucket.inline_property_byte_width(),
                 &mut after,
             )

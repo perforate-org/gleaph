@@ -4,17 +4,16 @@ mod blob_id;
 mod blob_store;
 mod blobs;
 mod cell;
-mod log;
 mod values_spill;
 
+use crate::labeled::spill_run_store::SpillRunId;
 use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
 use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
-use crate::lara::edge_inline_property::cell::{
-    INLINE_PROPERTY_BYTES_LOG_CELL_BYTES, inline_property_bytes_log_uses_blob,
+use crate::lara::edge_inline_property::cell::inline_property_bytes_log_uses_blob;
+use crate::lara::edge_inline_property::values_spill::{
+    ValuesSpillReadError, ValuesSpillStore, ValuesSpillWriteError,
 };
-use crate::lara::edge_inline_property::log::{
-    HeaderV1 as InlinePropertyBytesLogHeaderV1, InlinePropertyBytesLogStore,
-};
+use crate::lara::operation_error::LaraOperationError;
 use crate::lara::reserved::{region_is_zero, write_zeroes};
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
@@ -26,10 +25,6 @@ pub use blob_store::{
     BlobStoreError, EdgeInlinePropertyBytesBlobStore, NoopEdgeInlinePropertyBytesBlobStore,
 };
 pub use cell::InlinePropertyBytesLogCell;
-pub use log::{
-    InitError as InlinePropertyBytesLogInitError,
-    InlinePropertyBytesLogStore as ValueOverflowLogStore,
-};
 
 /// Reserve room for a malformed wide blob before invoking the B-tree getter, which
 /// decodes its whole body before the width can be checked. A mismatch stops the read.
@@ -135,10 +130,9 @@ pub enum InitError {
     ByteCapacityOverflow,
     /// The inline property bytes slab free-span index could not be reopened.
     FreeSpansInvalid,
-    /// The inline property bytes overflow log could not be reopened.
-    PayloadLog(log::InitError),
-    /// The inline property bytes overflow-log segment count does not match the edge store.
-    PayloadLogLayoutMismatch,
+    /// The values spill store could not be reopened: its header, version or row width disagrees
+    /// with this build (it fails closed rather than reading rows at the wrong width).
+    PayloadLog,
     /// The backing memories are partially initialized (some regions are empty
     /// while others are populated), so the store must not be reopened or recreated.
     PartialLayout,
@@ -156,13 +150,7 @@ impl fmt::Display for InitError {
             Self::InvalidLayout => write!(f, "invalid inline property bytes slab layout"),
             Self::ByteCapacityOverflow => write!(f, "value byte_capacity exceeds 40-bit space"),
             Self::FreeSpansInvalid => write!(f, "value free-span init failed"),
-            Self::PayloadLog(e) => write!(f, "inline property bytes log init failed: {e}"),
-            Self::PayloadLogLayoutMismatch => {
-                write!(
-                    f,
-                    "inline property bytes log segment_count does not match edge store"
-                )
-            }
+            Self::PayloadLog => write!(f, "values spill store init failed"),
             Self::PartialLayout => {
                 write!(
                     f,
@@ -182,8 +170,13 @@ pub enum InlinePropertyBytesLogWriteError {
     Grow(GrowFailed),
     /// External blob storage rejected the inline property bytes.
     Blob(BlobStoreError),
-    /// The inline property bytes overflow-log segment is full.
-    SegmentLogFull,
+    /// The values run is at its largest class: the caller folds it into the values slab.
+    ValuesRunFull,
+    /// The row is past the run's used length.
+    RowOutOfRange {
+        /// Rejected row index.
+        index: u32,
+    },
 }
 
 impl fmt::Display for InlinePropertyBytesLogWriteError {
@@ -191,7 +184,46 @@ impl fmt::Display for InlinePropertyBytesLogWriteError {
         match self {
             Self::Grow(err) => write!(f, "inline property bytes log write failed: {err}"),
             Self::Blob(err) => write!(f, "value blob write failed: {err}"),
-            Self::SegmentLogFull => write!(f, "inline property bytes log segment is full"),
+            Self::ValuesRunFull => write!(f, "values run is full"),
+            Self::RowOutOfRange { index } => write!(f, "values run row {index} is out of range"),
+        }
+    }
+}
+
+/// The values arena's refusals all mean the same thing to a caller: this run cannot take another
+/// row here, so fold it into the values slab (ADR 0097 §5).
+fn map_values_spill_write_error(err: ValuesSpillWriteError) -> InlinePropertyBytesLogWriteError {
+    match err {
+        ValuesSpillWriteError::Grow(err) => InlinePropertyBytesLogWriteError::Grow(err),
+        ValuesSpillWriteError::Blob(err) => InlinePropertyBytesLogWriteError::Blob(err),
+        ValuesSpillWriteError::RunFull => InlinePropertyBytesLogWriteError::ValuesRunFull,
+        ValuesSpillWriteError::RowOutOfRange { index } => {
+            InlinePropertyBytesLogWriteError::RowOutOfRange { index }
+        }
+    }
+}
+
+fn map_values_spill_read_error(err: ValuesSpillReadError) -> InlinePropertyBytesLogReadError {
+    match err {
+        ValuesSpillReadError::OutputTooSmall { width, out_len } => {
+            InlinePropertyBytesLogReadError::OutputTooSmall { width, out_len }
+        }
+        ValuesSpillReadError::RowOutOfRange { index } => {
+            InlinePropertyBytesLogReadError::MissingAscLogIndex {
+                asc_log_index: index,
+            }
+        }
+        ValuesSpillReadError::MissingBlob { run, row } => {
+            InlinePropertyBytesLogReadError::MissingBlob { run, row }
+        }
+        ValuesSpillReadError::BlobWidthMismatch { width, actual } => {
+            InlinePropertyBytesLogReadError::BlobWidthMismatch {
+                expected: width,
+                actual,
+            }
+        }
+        ValuesSpillReadError::InvalidInlineCell { width } => {
+            InlinePropertyBytesLogReadError::InvalidInlineCell { width }
         }
     }
 }
@@ -201,7 +233,7 @@ impl std::error::Error for InlinePropertyBytesLogWriteError {
         match self {
             Self::Grow(err) => Some(err),
             Self::Blob(err) => Some(err),
-            Self::SegmentLogFull => None,
+            Self::ValuesRunFull | Self::RowOutOfRange { .. } => None,
         }
     }
 }
@@ -233,12 +265,17 @@ pub enum InlinePropertyBytesLogReadError {
         /// Expected edge-inline-property-bytes byte width.
         width: u16,
     },
-    /// Blob-tagged log entry has no corresponding inline property bytes blob.
+    /// Blob-tagged values row has no corresponding inline property bytes blob.
     MissingBlob {
-        /// Value-log leaf segment.
-        leaf_segment: u32,
-        /// Value-log entry index inside the segment.
-        entry_idx: u32,
+        /// Values run id.
+        run: u32,
+        /// Row index inside the run.
+        row: u32,
+    },
+    /// The row is past the run's used length.
+    RowOutOfRange {
+        /// Rejected row index.
+        index: u32,
     },
     /// Inline property bytes blob length does not match the expected edge-inline-property-bytes width.
     BlobWidthMismatch {
@@ -267,13 +304,12 @@ impl fmt::Display for InlinePropertyBytesLogReadError {
                     "invalid inline property bytes log cell for width {width}"
                 )
             }
-            Self::MissingBlob {
-                leaf_segment,
-                entry_idx,
-            } => write!(
-                f,
-                "missing value blob for leaf segment {leaf_segment}, entry {entry_idx}"
-            ),
+            Self::MissingBlob { run, row } => {
+                write!(f, "missing value blob for values run {run}, row {row}")
+            }
+            Self::RowOutOfRange { index } => {
+                write!(f, "values run row {index} is out of range")
+            }
             Self::BlobWidthMismatch { expected, actual } => write!(
                 f,
                 "value blob width mismatch: expected {expected} bytes, got {actual}"
@@ -422,7 +458,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
 /// Combined stable edge-inline-property-bytes storage for labeled graphs.
 pub struct EdgeInlinePropertyBytesStore<M: Memory> {
     slab: PayloadByteSlabStore<M>,
-    log: InlinePropertyBytesLogStore<M>,
+    values_spill: ValuesSpillStore<M>,
     blobs: EdgeInlinePropertyBytesBlobMap<M>,
     free_spans: FreeSpanStore<M>,
     header: Cell<HeaderV1>,
@@ -447,12 +483,11 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     /// Creates a new edge-inline-property-bytes store over empty stable memories.
     pub fn new(
         slab_memory: M,
-        inline_property_bytes_log: M,
+        values_spill_memory: M,
         value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
         byte_capacity: u64,
-        segment_count: u32,
     ) -> Result<Self, GrowFailed> {
         if !byte_exclusive_end_fits(byte_capacity) {
             return Err(GrowFailed {
@@ -462,15 +497,13 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         }
         let header = HeaderV1::new(byte_capacity);
         let slab = PayloadByteSlabStore::new(slab_memory, header)?;
-        let log = InlinePropertyBytesLogStore::new(
-            inline_property_bytes_log,
-            InlinePropertyBytesLogHeaderV1::new(segment_count),
-        )?;
+        // ADR 0097 §5: the values plane's rows live in a spill arena exactly like the edge plane's.
+        let values_spill = ValuesSpillStore::new(values_spill_memory)?;
         let blobs = EdgeInlinePropertyBytesBlobMap::init(value_blobs);
         let free_spans = FreeSpanStore::new(free_spans, free_span_by_start)?;
         Ok(Self {
             slab,
-            log,
+            values_spill,
             blobs,
             free_spans,
             header: Cell::new(header),
@@ -480,12 +513,11 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     /// Reopens an edge-inline-property-bytes store, initializing empty inline property bytes memories when needed.
     pub fn init(
         slab_memory: M,
-        inline_property_bytes_log: M,
+        values_spill_memory: M,
         value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
         byte_capacity: u64,
-        edge_segment_count: u32,
     ) -> Result<Self, InitError> {
         // The inline property bytes slab, overflow log, and free-span pair must move together.
         // `value_blobs` is asymmetric: on reopen it may be empty (a populated
@@ -494,7 +526,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         // regions is partial loss.
         match crate::classify_composite_init([
             slab_memory.size(),
-            inline_property_bytes_log.size(),
+            values_spill_memory.size(),
             free_spans.size(),
             free_span_by_start.size(),
         ]) {
@@ -512,19 +544,9 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         } else {
             PayloadByteSlabStore::init(slab_memory)?
         };
-        let log = if inline_property_bytes_log.size() == 0 {
-            InlinePropertyBytesLogStore::new(
-                inline_property_bytes_log,
-                InlinePropertyBytesLogHeaderV1::new(edge_segment_count),
-            )
-            .map_err(|_| InitError::InvalidLayout)?
-        } else {
-            InlinePropertyBytesLogStore::init(inline_property_bytes_log)
-                .map_err(InitError::PayloadLog)?
-        };
-        if log.header().segment_count != edge_segment_count {
-            return Err(InitError::PayloadLogLayoutMismatch);
-        }
+        // The values spill store validates its own header, version and row width and fails closed.
+        let values_spill =
+            ValuesSpillStore::new(values_spill_memory).map_err(|_| InitError::PayloadLog)?;
         let free_spans = if free_spans.size() == 0 {
             FreeSpanStore::new(free_spans, free_span_by_start)
                 .map_err(|_| InitError::InvalidLayout)?
@@ -536,333 +558,91 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         let header = slab.header()?;
         Ok(Self {
             slab,
-            log,
+            values_spill,
             blobs,
             free_spans,
             header: Cell::new(header),
         })
     }
 
-    pub(crate) fn grow_segment_count_to(&self, new_count: u32) -> Result<(), GrowFailed> {
-        self.log.grow_segment_count_to(new_count)
+    // ---------------------------------------------------------------- values run tier (ADR 0097 §5)
+
+    /// Mints a descriptor's raw values id against the values arena's capacity.
+    pub(crate) fn spill_mint(&self, run: u32) -> Result<SpillRunId, LaraOperationError> {
+        self.values_spill
+            .mint(run)
+            .map_err(LaraOperationError::from)
     }
 
-    pub(crate) fn release_inline_property_bytes_log_segment(
+    /// Used length of a values run: the rows `0..used_len` that exist.
+    pub(crate) fn spill_used_len(&self, run: SpillRunId) -> u32 {
+        self.values_spill.used_len(run)
+    }
+
+    /// True when `run` is at its largest class and cannot take another row: the caller's trigger to
+    /// fold the run into the values slab.
+    pub(crate) fn spill_run_is_full(&self, run: SpillRunId) -> bool {
+        self.values_spill.run_is_full(run)
+    }
+
+    /// The run's row indices in ordinal order (`0..used_len`): a values run has no chain.
+    pub(crate) fn spill_asc_indices(&self, run: SpillRunId) -> Vec<u32> {
+        self.values_spill.asc_indices(run)
+    }
+
+    /// Reads row `row` of `run` into `out`. Fail-closed past the used length.
+    pub(crate) fn spill_read(
         &self,
-        leaf_segment: u32,
-    ) -> Result<(), GrowFailed> {
-        let high_water = self.inline_property_bytes_log_segment_high_water(leaf_segment);
-        self.blobs.drain_leaf_segment(leaf_segment, high_water);
-        self.log.release_segment(leaf_segment)
-    }
-
-    pub(crate) fn inline_property_bytes_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
-        let h = self.log.header();
-        self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
-    }
-
-    pub(crate) fn inline_property_bytes_log_segment_is_full(&self, leaf_segment: u32) -> bool {
-        let h = self.log.header();
-        self.inline_property_bytes_log_segment_high_water(leaf_segment) >= h.max_log_entries
-    }
-
-    pub(crate) fn sweep_inline_property_bytes_log_chain(
-        &self,
-        leaf_segment: u32,
-        inline_property_bytes_chain: &[u32],
-    ) {
-        for &entry_idx in inline_property_bytes_chain {
-            self.blobs.drop_log_site(leaf_segment, entry_idx);
-            self.clear_inline_property_bytes_log_cell(leaf_segment, entry_idx);
-        }
-    }
-
-    fn read_inline_property_bytes_log_cell(
-        &self,
-        leaf_segment: u32,
-        entry_idx: u32,
-    ) -> InlinePropertyBytesLogCell {
-        let mut inline_property_bytes = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
-        let h = self.log.header();
-        self.log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut inline_property_bytes);
-        InlinePropertyBytesLogCell::from_bytes(inline_property_bytes)
-    }
-
-    pub(crate) fn clear_inline_property_bytes_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
-        let h = self.log.header();
-        let mut scratch = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
-        let prev = self
-            .log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut scratch);
-        let zeros = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
-        let _ = self
-            .log
-            .write_entry_with_header(&h, leaf_segment, entry_idx, prev, &zeros);
-    }
-
-    pub(crate) fn write_inline_property_bytes_log_entry(
-        &self,
-        leaf_segment: u32,
-        entry_idx: u32,
-        prev_head: i32,
-        width: u16,
-        inline_property_bytes: &[u8],
-    ) -> Result<(), InlinePropertyBytesLogWriteError> {
-        self.blobs.drop_log_site(leaf_segment, entry_idx);
-        let cell = if inline_property_bytes_log_uses_blob(width) {
-            let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
-            self.blobs.put_blob(id, inline_property_bytes)?;
-            InlinePropertyBytesLogCell::EMPTY
-        } else {
-            let w = usize::from(width);
-            debug_assert_eq!(inline_property_bytes.len(), w);
-            InlinePropertyBytesLogCell::inline(width, inline_property_bytes)
-        };
-        let h = self.log.header();
-        self.log.write_entry_with_header(
-            &h,
-            leaf_segment,
-            entry_idx,
-            prev_head,
-            cell.as_bytes(),
-        )?;
-        self.log.write_idx_at_least(
-            leaf_segment,
-            i32::try_from(entry_idx).unwrap_or(i32::MAX) + 1,
-        );
-        Ok(())
-    }
-
-    pub(crate) fn append_inline_property_bytes_log_entry(
-        &self,
-        leaf_segment: u32,
-        prev_head: i32,
-        width: u16,
-        inline_property_bytes: &[u8],
-    ) -> Result<u32, InlinePropertyBytesLogWriteError> {
-        let h = self.log.header();
-        let idx = self.log.read_idx_with_header(&h, leaf_segment);
-        if idx < 0 || idx >= h.max_log_entries as i32 {
-            return Err(InlinePropertyBytesLogWriteError::SegmentLogFull);
-        }
-        let entry_idx =
-            u32::try_from(idx).map_err(|_| InlinePropertyBytesLogWriteError::SegmentLogFull)?;
-        self.write_inline_property_bytes_log_entry(
-            leaf_segment,
-            entry_idx,
-            prev_head,
-            width,
-            inline_property_bytes,
-        )?;
-        Ok(entry_idx)
-    }
-
-    pub(crate) fn read_inline_property_bytes_log_idx(&self, leaf_segment: u32) -> i32 {
-        let h = self.log.header();
-        self.log.read_idx_with_header(&h, leaf_segment)
-    }
-
-    pub(crate) fn read_inline_property_bytes_log_state(&self, leaf_segment: u32) -> (i32, u32) {
-        let h = self.log.header();
-        (
-            self.log.read_idx_with_header(&h, leaf_segment),
-            h.max_log_entries,
-        )
-    }
-
-    pub(crate) fn write_inline_property_bytes_log_entries(
-        &self,
-        leaf_segment: u32,
-        start_idx: u32,
-        prev_head: i32,
-        width: u16,
-        inline_property_bytes: &[u8],
-    ) -> Result<(), InlinePropertyBytesLogWriteError> {
-        let w = usize::from(width);
-        if w == 0 {
-            return Ok(());
-        }
-        debug_assert_eq!(
-            inline_property_bytes.len() % w,
-            0,
-            "inline property bytes count must be a multiple of width"
-        );
-        let count = inline_property_bytes.len() / w;
-        let h = self.log.header();
-        for i in 0..count {
-            let entry_idx = start_idx + i as u32;
-            let prev = if i == 0 {
-                prev_head
-            } else {
-                (entry_idx - 1) as i32
-            };
-            let bytes = &inline_property_bytes[i * w..(i + 1) * w];
-            let cell = if inline_property_bytes_log_uses_blob(width) {
-                let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
-                self.blobs.put_blob(id, bytes)?;
-                InlinePropertyBytesLogCell::EMPTY
-            } else {
-                InlinePropertyBytesLogCell::inline(width, bytes)
-            };
-            self.log
-                .write_entry_with_header(&h, leaf_segment, entry_idx, prev, cell.as_bytes())?;
-        }
-        let next_idx = (start_idx as i32).saturating_add(count as i32);
-        self.log.write_idx_at_least(leaf_segment, next_idx);
-        Ok(())
-    }
-
-    pub(crate) fn read_inline_property_bytes_log_entry(
-        &self,
-        leaf_segment: u32,
-        entry_idx: u32,
+        run: SpillRunId,
+        row: u32,
         width: u16,
         out: &mut [u8],
     ) -> Result<(), InlinePropertyBytesLogReadError> {
-        let w = usize::from(width);
-        if w == 0 || out.len() < w {
-            return Err(InlinePropertyBytesLogReadError::OutputTooSmall {
-                width,
-                out_len: out.len(),
-            });
-        }
-        if inline_property_bytes_log_uses_blob(width) {
-            let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
-            let mut buf = Vec::with_capacity(w);
-            if !self.blobs.get_blob(id, &mut buf) {
-                return Err(InlinePropertyBytesLogReadError::MissingBlob {
-                    leaf_segment,
-                    entry_idx,
-                });
-            }
-            if buf.len() != w {
-                return Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
-                    expected: width,
-                    actual: buf.len(),
-                });
-            }
-            out[..w].copy_from_slice(&buf);
-            return Ok(());
-        }
-        let cell = self.read_inline_property_bytes_log_cell(leaf_segment, entry_idx);
-        if cell.decode_inline(width, out).is_some() {
-            return Ok(());
-        }
-        Err(InlinePropertyBytesLogReadError::InvalidInlineCell { width })
+        self.values_spill
+            .read(&self.blobs, run, row, width, out)
+            .map_err(map_values_spill_read_error)
     }
 
+    /// Writes row `row` of `run`, which must already exist: the compaction path claims a row it has
+    /// just folded.
+    pub(crate) fn spill_write(
+        &self,
+        run: SpillRunId,
+        row: u32,
+        width: u16,
+        bytes: &[u8],
+    ) -> Result<(), InlinePropertyBytesLogWriteError> {
+        self.values_spill
+            .write(&self.blobs, run, row, width, bytes)
+            .map_err(map_values_spill_write_error)
+    }
+
+    /// Appends `bytes` as the run's next row, allocating the run when `run` is `None` and growing
+    /// its class when that class is full. Returns the run the caller must publish and the row it
+    /// wrote, so a descriptor is never pointed at a freed run.
+    pub(crate) fn spill_append(
+        &self,
+        run: Option<SpillRunId>,
+        width: u16,
+        bytes: &[u8],
+    ) -> Result<(SpillRunId, u32), InlinePropertyBytesLogWriteError> {
+        self.values_spill
+            .append(&self.blobs, run, width, bytes)
+            .map_err(map_values_spill_write_error)
+    }
+
+    /// Releases `run` to its class's free list, dropping the blob sites it owned.
+    pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
+        self.values_spill
+            .release(&self.blobs, run)
+            .map_err(LaraOperationError::from)
+    }
+
+    /// Drops one row's blob site, for tests that need a missing blob.
     #[cfg(test)]
-    pub(crate) fn drop_inline_property_bytes_blob_for_test(
-        &self,
-        leaf_segment: u32,
-        entry_idx: u32,
-    ) {
-        self.blobs.drop_log_site(leaf_segment, entry_idx);
-    }
-
-    /// Reconstruct exactly the descriptor's property-log extent, or fail without a prefix.
-    /// The u8 descriptor count bounds reads/indices independently of other rows in the leaf.
-    pub(crate) fn inline_property_bytes_log_chain_exact(
-        &self,
-        leaf_segment: u32,
-        log_head: i32,
-        expected_len: u8,
-    ) -> Result<Vec<u32>, crate::LaraOperationError> {
-        use crate::LaraOperationError;
-        if expected_len == 0 {
-            return if log_head == -1 {
-                Ok(Vec::new())
-            } else {
-                Err(LaraOperationError::LogChainShort)
-            };
-        }
-        let h = self.log.header();
-        let allocated = self.log.read_idx_with_header(&h, leaf_segment);
-        if allocated < 0
-            || allocated as u32 > h.max_log_entries
-            || i32::from(expected_len) > allocated
-        {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        let mut chain = Vec::with_capacity(usize::from(expected_len));
-        let mut current = log_head;
-        for _ in 0..expected_len {
-            if current < 0 || current >= allocated {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            chain.push(current as u32);
-            let mut cell = [0; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
-            current = self
-                .log
-                .read_entry_with_header(&h, leaf_segment, current as u32, &mut cell);
-        }
-        if current != -1 {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        chain.reverse();
-        Ok(chain)
-    }
-
-    /// Returns value-log entry indices from oldest to newest by walking `log_head`.
-    pub(crate) fn inline_property_bytes_log_chain_asc_indices(
-        &self,
-        leaf_segment: u32,
-        log_head: i32,
-    ) -> Vec<u32> {
-        if log_head < 0 {
-            return Vec::new();
-        }
-        let mut chain = Vec::new();
-        let mut cur = log_head;
-        while cur >= 0 {
-            chain.push(cur as u32);
-            let mut scratch = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
-            let h = self.log.header();
-            let prev = self
-                .log
-                .read_entry_with_header(&h, leaf_segment, cur as u32, &mut scratch);
-            cur = prev;
-        }
-        chain.reverse();
-        chain
-    }
-
-    /// Reads inline property bytess using a precomputed oldest-to-newest chain (avoids rebuilding per call).
-    pub(crate) fn read_inline_property_bytes_log_chain_entry(
-        &self,
-        leaf_segment: u32,
-        inline_property_bytes_chain: &[u32],
-        asc_log_index: u32,
-        width: u16,
-        out: &mut [u8],
-    ) -> Result<(), InlinePropertyBytesLogReadError> {
-        let Some(&entry_idx) = inline_property_bytes_chain.get(asc_log_index as usize) else {
-            return Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index });
-        };
-        self.read_inline_property_bytes_log_entry(leaf_segment, entry_idx, width, out)
-    }
-
-    /// Reads the value stored at `asc_log_index` in oldest-to-newest log order.
-    pub(crate) fn read_inline_property_bytes_log_asc_index(
-        &self,
-        leaf_segment: u32,
-        log_head: i32,
-        asc_log_index: u32,
-        width: u16,
-        out: &mut [u8],
-    ) -> Result<(), InlinePropertyBytesLogReadError> {
-        if log_head < 0 || width == 0 {
-            return Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index });
-        }
-        let chain = self.inline_property_bytes_log_chain_asc_indices(leaf_segment, log_head);
-        self.read_inline_property_bytes_log_chain_entry(
-            leaf_segment,
-            &chain,
-            asc_log_index,
-            width,
-            out,
-        )
+    pub(crate) fn drop_inline_property_bytes_blob_for_test(&self, run: u32, row: u32) {
+        self.blobs
+            .drop_blob(EdgeInlinePropertyBytesBlobId::from_run_row(run, row));
     }
 
     /// Returns the cached inline-property-bytes-slab header.
@@ -1152,55 +932,7 @@ mod tests {
     }
 
     fn test_store() -> EdgeInlinePropertyBytesStore<VectorMemory> {
-        EdgeInlinePropertyBytesStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1)
-            .expect("store")
-    }
-
-    #[test]
-    fn exact_inline_property_log_requires_its_declared_extent() {
-        use crate::LaraOperationError;
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entries(0, 0, -1, 2, &[1, 2, 3, 4])
-            .unwrap();
-        assert_eq!(
-            store
-                .inline_property_bytes_log_chain_exact(0, 1, 2)
-                .unwrap(),
-            vec![0, 1]
-        );
-        for (head, len) in [(1, 1), (1, 3), (-1, 1), (-2, 0), (1, 0)] {
-            assert!(matches!(
-                store.inline_property_bytes_log_chain_exact(0, head, len),
-                Err(LaraOperationError::LogChainShort)
-            ));
-        }
-        assert!(
-            store
-                .inline_property_bytes_log_chain_exact(0, -1, 0)
-                .unwrap()
-                .is_empty()
-        );
-        // A next pointer beyond the admitted chain must never be followed.
-        store
-            .write_inline_property_bytes_log_entry(0, 0, i32::MAX, 2, &[1, 2])
-            .unwrap();
-        assert!(matches!(
-            store.inline_property_bytes_log_chain_exact(0, 1, 2),
-            Err(LaraOperationError::LogChainShort)
-        ));
-        // A cycle does not become a successful truncated chain.
-        store
-            .write_inline_property_bytes_log_entry(0, 0, 1, 2, &[1, 2])
-            .unwrap();
-        assert!(matches!(
-            store.inline_property_bytes_log_chain_exact(0, 1, 2),
-            Err(LaraOperationError::LogChainShort)
-        ));
-        assert!(matches!(
-            store.inline_property_bytes_log_chain_exact(0, i32::MAX, 2),
-            Err(LaraOperationError::LogChainShort)
-        ));
+        EdgeInlinePropertyBytesStore::new(mem(), mem(), mem(), mem(), mem(), 1024).expect("store")
     }
 
     #[test]
@@ -1220,7 +952,6 @@ mod tests {
         let reopened = PayloadByteSlabStore::init(memory).expect("reopen");
         assert_eq!(reopened.header().expect("header").byte_capacity, 1024);
     }
-
     #[test]
     fn slab_init_rejects_nonzero_reserved_byte_in_each_region() {
         for (offset, size) in [
@@ -1242,7 +973,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn allocator_stats_reports_retired_inline_property_spans() {
         let store = test_store();
@@ -1262,111 +992,6 @@ mod tests {
         );
         assert_eq!(second, 10);
     }
-
-    #[test]
-    fn inline_property_bytes_log_blob_round_trips_wide_inline_property_bytes() {
-        let store = test_store();
-        let inline_property_bytes = vec![0xABu8; 100];
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 100, &inline_property_bytes)
-            .expect("write");
-        let mut out = vec![0u8; 100];
-        store
-            .read_inline_property_bytes_log_entry(0, 0, 100, &mut out)
-            .expect("read");
-        assert_eq!(out, inline_property_bytes);
-    }
-
-    #[test]
-    fn inline_property_bytes_log_round_trips_inline_property_bytes() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
-            .expect("write");
-        let mut out = [0u8; 4];
-        store
-            .read_inline_property_bytes_log_entry(0, 0, 4, &mut out)
-            .expect("read");
-        assert_eq!(out, [1, 2, 3, 4]);
-        store
-            .read_inline_property_bytes_log_asc_index(0, 0, 0, 4, &mut out)
-            .expect("read asc");
-        assert_eq!(out, [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn inline_property_bytes_log_read_rejects_undersized_output_buffer() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
-            .expect("write");
-        let mut out = [0u8; 3];
-        assert_eq!(
-            store.read_inline_property_bytes_log_entry(0, 0, 4, &mut out),
-            Err(InlinePropertyBytesLogReadError::OutputTooSmall {
-                width: 4,
-                out_len: 3
-            })
-        );
-    }
-
-    #[test]
-    fn inline_property_bytes_log_read_rejects_bucket_width_blob_without_body() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
-            .expect("write");
-        store.drop_inline_property_bytes_blob_for_test(0, 0);
-        let mut out = [0u8; 9];
-        assert_eq!(
-            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
-            Err(InlinePropertyBytesLogReadError::MissingBlob {
-                leaf_segment: 0,
-                entry_idx: 0
-            })
-        );
-    }
-
-    #[test]
-    fn inline_property_bytes_log_read_rejects_missing_blob() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
-            .expect("write");
-        store.blobs.drop_log_site(0, 0);
-        let mut out = [0u8; 9];
-        assert_eq!(
-            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
-            Err(InlinePropertyBytesLogReadError::MissingBlob {
-                leaf_segment: 0,
-                entry_idx: 0
-            })
-        );
-    }
-
-    #[test]
-    fn inline_property_bytes_log_read_rejects_blob_width_mismatch() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
-            .expect("write");
-        store
-            .blobs
-            .put_blob(
-                EdgeInlinePropertyBytesBlobId::from_log_site(0, 0),
-                &[1, 2, 3, 4, 5],
-            )
-            .expect("overwrite blob");
-        let mut out = [0u8; 9];
-        assert_eq!(
-            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
-            Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
-                expected: 9,
-                actual: 5
-            })
-        );
-    }
-
     #[test]
     fn inline_property_bytes_slab_round_trips_bytes() {
         let store = test_store();
@@ -1375,7 +1000,6 @@ mod tests {
         store.read_bytes(10, &mut buf);
         assert_eq!(buf, [1, 2, 3, 4]);
     }
-
     #[test]
     fn retire_byte_span_reuses_via_free_list() {
         let store = test_store();
@@ -1388,7 +1012,6 @@ mod tests {
         store.read_bytes(b, &mut buf);
         assert_eq!(buf, [1, 2, 3, 4]);
     }
-
     #[test]
     fn release_byte_span_at_tail_does_not_recycle() {
         let store = test_store();
@@ -1397,43 +1020,6 @@ mod tests {
         let b = store.allocate_byte_span(4).expect("b");
         assert_eq!(b, 4, "tail bump alloc after release at occupied tail");
     }
-
-    #[test]
-    fn inline_property_bytes_log_asc_index_follows_oldest_to_newest() {
-        let store = test_store();
-        store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 2, &[10, 0])
-            .expect("entry 0");
-        store
-            .write_inline_property_bytes_log_entry(0, 1, 0, 2, &[20, 0])
-            .expect("entry 1");
-        let mut out = [0u8; 2];
-        store
-            .read_inline_property_bytes_log_asc_index(0, 1, 0, 2, &mut out)
-            .expect("read oldest");
-        assert_eq!(out, [10, 0]);
-        store
-            .read_inline_property_bytes_log_asc_index(0, 1, 1, 2, &mut out)
-            .expect("read newest");
-        assert_eq!(out, [20, 0]);
-    }
-
-    #[test]
-    fn inline_property_bytes_log_grows_segment_count() {
-        let store = test_store();
-        assert_eq!(store.log.header().segment_count, 1);
-        store.grow_segment_count_to(4).expect("grow");
-        assert_eq!(store.log.header().segment_count, 4);
-        store
-            .write_inline_property_bytes_log_entry(3, 0, -1, 1, &[7])
-            .expect("leaf 3");
-        let mut out = [0u8; 1];
-        store
-            .read_inline_property_bytes_log_entry(3, 0, 1, &mut out)
-            .expect("read leaf 3");
-        assert_eq!(out, [7]);
-    }
-
     #[test]
     fn grow_byte_span_in_place_extends_tail_span() {
         let store = test_store();
@@ -1448,7 +1034,6 @@ mod tests {
         store.read_bytes(offset, &mut buf);
         assert_eq!(buf, [1, 2, 3, 4, 0, 0, 0, 0]);
     }
-
     #[test]
     fn init_rejects_partial_layout_when_log_wiped() {
         let slab = mem();
@@ -1463,16 +1048,14 @@ mod tests {
             free_spans.clone(),
             by_start.clone(),
             1024,
-            1,
         )
         .expect("store");
         // Slab, free-span pair populated, inline property bytes log wiped (miswired region).
         assert!(matches!(
-            EdgeInlinePropertyBytesStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
+            EdgeInlinePropertyBytesStore::init(slab, mem(), blobs, free_spans, by_start, 1024),
             Err(InitError::PartialLayout)
         ));
     }
-
     #[test]
     fn init_reopens_fully_populated_layout() {
         let slab = mem();
@@ -1487,15 +1070,13 @@ mod tests {
             free_spans.clone(),
             by_start.clone(),
             1024,
-            1,
         )
         .expect("store");
         assert!(
-            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024, 1)
+            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024)
                 .is_ok()
         );
     }
-
     #[test]
     fn init_rejects_fresh_when_only_blob_region_populated() {
         let blobs = mem();
@@ -1503,11 +1084,10 @@ mod tests {
         // is partial loss, not a fresh create.
         crate::safe_write(&blobs, 0, &[1]).expect("populate blob region");
         assert!(matches!(
-            EdgeInlinePropertyBytesStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
+            EdgeInlinePropertyBytesStore::init(mem(), mem(), blobs, mem(), mem(), 1024),
             Err(InitError::PartialLayout)
         ));
     }
-
     #[test]
     fn init_reopens_when_blob_region_is_empty() {
         let slab = mem();
@@ -1522,40 +1102,124 @@ mod tests {
             free_spans.clone(),
             by_start.clone(),
             1024,
-            1,
         )
         .expect("store");
         // Reopen with an empty blob region: valid for a store that never wrote a
         // wide-inline-property-bytes blob.
         assert!(
-            EdgeInlinePropertyBytesStore::init(slab, log, mem(), free_spans, by_start, 1024, 1)
+            EdgeInlinePropertyBytesStore::init(slab, log, mem(), free_spans, by_start, 1024)
                 .is_ok()
         );
     }
+    /// ADR 0097 §5: the values plane's rows live in the bucket's own run, addressed by ordinal.
+    #[test]
+    fn a_values_run_round_trips_inline_property_bytes() {
+        let store = test_store();
+        let (run, row) = store.spill_append(None, 2, &[1, 2]).expect("append");
+        assert_eq!(row, 0);
+        let mut out = [0u8; 2];
+        store.spill_read(run, 0, 2, &mut out).expect("read");
+        assert_eq!(out, [1, 2]);
+        // An overwrite claims a row that already exists; the used length does not change.
+        store.spill_write(run, 0, 2, &[9, 9]).expect("write");
+        store.spill_read(run, 0, 2, &mut out).expect("read");
+        assert_eq!(out, [9, 9]);
+        assert_eq!(store.spill_used_len(run), 1);
+    }
 
     #[test]
-    fn init_rejects_mismatched_log_segment_count() {
-        let slab = mem();
-        let log = mem();
-        let blobs = mem();
-        let free_spans = mem();
-        let by_start = mem();
-        // Fully populate every region with a inline-property-bytes-log segment_count of 2.
-        EdgeInlinePropertyBytesStore::new(
-            slab.clone(),
-            log.clone(),
-            blobs.clone(),
-            free_spans.clone(),
-            by_start.clone(),
-            1024,
-            2,
-        )
-        .expect("store with two log segments");
-        // Reopen claiming the edge store has three segments: a real layout
-        // mismatch on an otherwise consistent, fully populated memory set.
+    fn a_values_run_round_trips_wide_inline_property_bytes_through_the_blob_map() {
+        let store = test_store();
+        let wide = [0xA5u8; 24];
+        let (run, _) = store.spill_append(None, 24, &wide).expect("append");
+        let mut out = [0u8; 24];
+        store.spill_read(run, 0, 24, &mut out).expect("read");
+        assert_eq!(out, wide);
+    }
+
+    #[test]
+    fn values_read_rejects_undersized_output_buffer() {
+        let store = test_store();
+        let (run, _) = store.spill_append(None, 4, &[1, 2, 3, 4]).expect("append");
+        let mut out = [0u8; 2];
         assert!(matches!(
-            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
-            Err(InitError::PayloadLogLayoutMismatch)
+            store.spill_read(run, 0, 4, &mut out),
+            Err(InlinePropertyBytesLogReadError::OutputTooSmall { .. })
+        ));
+    }
+
+    #[test]
+    fn values_read_rejects_missing_blob() {
+        let store = test_store();
+        let (run, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
+        store.drop_inline_property_bytes_blob_for_test(run.get(), 0);
+        let mut out = [0u8; 24];
+        assert!(matches!(
+            store.spill_read(run, 0, 24, &mut out),
+            Err(InlinePropertyBytesLogReadError::MissingBlob { .. })
+        ));
+    }
+
+    #[test]
+    fn values_read_rejects_blob_width_mismatch() {
+        let store = test_store();
+        let (run, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
+        // A body shorter than the row's width must fail closed, not be zero-padded.
+        store
+            .blobs
+            .put_blob(
+                EdgeInlinePropertyBytesBlobId::from_run_row(run.get(), 0),
+                &[7u8; 8],
+            )
+            .expect("blob");
+        let mut out = [0u8; 24];
+        assert!(matches!(
+            store.spill_read(run, 0, 24, &mut out),
+            Err(InlinePropertyBytesLogReadError::BlobWidthMismatch { .. })
+        ));
+    }
+
+    /// ADR 0097 §5: a values run is ordinal, so ascending index order is append order.
+    #[test]
+    fn a_values_run_reads_oldest_to_newest_by_ordinal() {
+        let store = test_store();
+        let mut run = None;
+        for value in 1..=4u8 {
+            let (next, _) = store.spill_append(run, 1, &[value]).expect("append");
+            run = Some(next);
+        }
+        let run = run.expect("run");
+        assert_eq!(store.spill_asc_indices(run), vec![0, 1, 2, 3]);
+        let mut out = [0u8; 1];
+        for (row, expected) in (1..=4u8).enumerate() {
+            store
+                .spill_read(run, row as u32, 1, &mut out)
+                .expect("read");
+            assert_eq!(out, [expected]);
+        }
+    }
+
+    /// Releasing a run drops the rows: the descriptor must not keep pointing at it.
+    #[test]
+    fn releasing_a_values_run_frees_it_for_reuse() {
+        let store = test_store();
+        let (run, _) = store.spill_append(None, 1, &[7]).expect("append");
+        store.spill_release(run).expect("release");
+        let (reused, _) = store.spill_append(None, 1, &[8]).expect("append");
+        assert_eq!(reused, run);
+        let mut out = [0u8; 1];
+        store.spill_read(reused, 0, 1, &mut out).expect("read");
+        assert_eq!(out, [8]);
+    }
+
+    #[test]
+    fn values_read_rejects_a_row_past_the_used_length() {
+        let store = test_store();
+        let (run, _) = store.spill_append(None, 2, &[1, 2]).expect("append");
+        let mut out = [0u8; 2];
+        assert!(matches!(
+            store.spill_read(run, 1, 2, &mut out),
+            Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index: 1 })
         ));
     }
 }

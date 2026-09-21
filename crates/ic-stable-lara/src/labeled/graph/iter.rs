@@ -438,7 +438,6 @@ where
             Some(
                 self.graph
                     .attach_edge_inline_property_at_ordinal(
-                        self.src,
                         &self.bucket,
                         ordinal,
                         edge,

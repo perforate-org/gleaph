@@ -804,7 +804,7 @@ where
                     src,
                 );
                 let log_chains = if attach_inline_property_bytes {
-                    self.bucket_inline_property_bytes_log_chain_opt(src, bucket)
+                    self.bucket_inline_property_bytes_log_chain_opt(bucket)
                 } else {
                     None
                 };
@@ -2363,7 +2363,7 @@ where
                 // bulk reads slab bytes, so tree diverts to LPB/slow; the
                 // `!is_tree_mode()` conjunct is that routing, not a mode guard.
                 if !bucket.is_tree_mode()
-                    && bucket.inline_property_bytes_log_head() < 0
+                    && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
@@ -2400,7 +2400,7 @@ where
                     );
                 }
 
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                 // Plan 0326 LPB-in-tree: tree-mode path with property
                 // bytes. The dense path above is slab-only (`!is_tree_mode()`);
                 // the slow `single_bucket_span_iter` below is slab-only too
@@ -2458,7 +2458,6 @@ where
                 while let Some(result) = iter.next_with_slot() {
                     let (slot, edge) = result?;
                     self.read_bucket_inline_property_bytes_for_slot_into(
-                        owner,
                         &bucket,
                         ordinal,
                         log_chains.as_ref(),
@@ -2609,7 +2608,7 @@ where
                 return Ok(());
             }
             BucketMode::Slab => {
-                if bucket.inline_property_bytes_log_head() < 0
+                if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
@@ -2935,7 +2934,7 @@ where
     {
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
         let inline_property_bytes_slab_slots = bucket.inline_property_bytes_slab_slots();
-        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, bucket);
+        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
 
         if order == OutEdgeOrder::Descending {
             // A run is contiguous, so descending and ascending replay are the same ordinal list
@@ -2968,7 +2967,6 @@ where
                 log_chains.as_ref(),
             )?;
             let _ = self.visit_inline_property_bytes_log_ordinals_in_edge_slab_next(
-                owner,
                 bucket,
                 value_slab_slots,
                 edge_slab_slots,
@@ -3014,7 +3012,6 @@ where
             true,
         )?;
         let _ = self.visit_inline_property_bytes_log_ordinals_in_edge_slab_next(
-            owner,
             bucket,
             value_slab_slots,
             edge_slab_slots,
@@ -3166,7 +3163,6 @@ where
 
     fn visit_inline_property_bytes_log_ordinals_in_edge_slab_next<B>(
         &self,
-        owner: VertexId,
         bucket: &LabelBucket,
         start_ordinal: u32,
         end_ordinal: u32,
@@ -3193,7 +3189,6 @@ where
                     let first = start_ordinal + remaining - take;
                     for ordinal in first..first + take {
                         self.read_bucket_inline_property_bytes_for_slot_into(
-                            owner,
                             bucket,
                             ordinal,
                             log_chain,
@@ -3209,7 +3204,6 @@ where
                     let high = start_ordinal + remaining;
                     for ordinal in (high - take..high).rev() {
                         self.read_bucket_inline_property_bytes_for_slot_into(
-                            owner,
                             bucket,
                             ordinal,
                             log_chain,
@@ -3279,7 +3273,7 @@ where
         for chunk in live_slots.chunks(batch_edges) {
             scratch.clear();
             self.append_ordered_inline_property_bytes_ordinals_next(
-                owner, bucket, chunk, log_chains, scratch,
+                bucket, chunk, log_chains, scratch,
             )?;
             if !scratch.slot_indices.is_empty()
                 && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
@@ -3344,7 +3338,7 @@ where
         for chunk in live_slots.chunks(batch_edges) {
             scratch.clear();
             self.append_ordered_inline_property_bytes_ordinals_next(
-                owner, bucket, chunk, log_chains, scratch,
+                bucket, chunk, log_chains, scratch,
             )?;
             if !scratch.slot_indices.is_empty()
                 && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
@@ -3374,7 +3368,6 @@ where
 
     fn append_ordered_inline_property_bytes_ordinals_next(
         &self,
-        owner: VertexId,
         bucket: &LabelBucket,
         slots_and_ordinals: &[(u32, u32)],
         log_chain: Option<&Vec<u32>>,
@@ -3387,7 +3380,6 @@ where
             let (_, ordinal) = slots_and_ordinals[i];
             if ordinal >= slab_slots {
                 self.read_bucket_inline_property_bytes_for_slot_into(
-                    owner,
                     bucket,
                     ordinal,
                     log_chain,
@@ -3833,7 +3825,7 @@ where
             // ADR 0096 §5: tiny selections route through the canonical visitor
             // (whose funnel arm serves them inline); the direct slot-read path
             // below would misread the anchor span.
-            || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN || bucket.inline_property_bytes_log_head() >= 0;
+            || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN || bucket.values_spill_run() != crate::traits::NO_SPILL_RUN;
         if canonical_candidate && canonical_scan_len <= (selected.len() as u32).saturating_mul(2) {
             enum SelectedVisitOutcome<B> {
                 User(B),
@@ -3883,7 +3875,7 @@ where
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
         let inline_property_bytes_log_chains =
-            self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+            self.bucket_inline_property_bytes_log_chain_opt(&bucket);
         let mut selected_edges = Vec::with_capacity(selected.len());
         for slot_index in selected {
             let Some(edge) = (match self.read_edge_state_at_slot(
@@ -3983,7 +3975,6 @@ where
         let mut inline_property_bytes = Vec::new();
         for (slot_index, edge, ordinal) in selected_edges {
             self.read_bucket_inline_property_bytes_for_slot_into(
-                owner,
                 &bucket,
                 ordinal,
                 inline_property_bytes_log_chains.as_ref(),
@@ -4381,7 +4372,7 @@ where
         match self.find_bucket(owner, vertex, label)? {
             BucketSearch::Found { slot, bucket } => {
                 let bucket_index = Self::labeled_bucket_descriptor_index(vertex, slot)?;
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                 Ok((bucket, bucket_index, log_chains))
             }
             BucketSearch::Missing { .. } => Ok((LabelBucket::default(), 0, None)),
@@ -4420,19 +4411,12 @@ where
                 LaraOperationError::CollectAllocationOverflow,
             ))?
         };
-        self.read_inline_property_bytes_for_ordinal(
-            owner,
-            label,
-            &bucket,
-            ordinal,
-            log_chains.as_ref(),
-        )
+        self.read_inline_property_bytes_for_ordinal(label, &bucket, ordinal, log_chains.as_ref())
     }
 
     /// Reads the exact inline-property bytes at a known live ordinal.
     fn read_inline_property_bytes_for_ordinal(
         &self,
-        owner: VertexId,
         _label: BucketLabelKey,
         bucket: &LabelBucket,
         ordinal: u32,
@@ -4442,8 +4426,7 @@ where
         if width == 0 {
             return Ok(InlinePropertyBytes::empty());
         }
-        let bytes =
-            self.read_bucket_inline_property_bytes_for_slot(owner, bucket, ordinal, log_chains)?;
+        let bytes = self.read_bucket_inline_property_bytes_for_slot(bucket, ordinal, log_chains)?;
         if bytes.len() != usize::from(width) {
             return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
                 bucket_width: width,
@@ -6155,10 +6138,10 @@ mod tests {
         else {
             panic!("label bucket missing");
         };
+        // A descriptor that claims values beyond its slab while no run holds them.
         let malformed = bucket
             .with_inline_property_bytes_slab_slots(0)
-            .try_with_inline_property_bytes_log(0, 1)
-            .unwrap();
+            .without_values_spill_run();
         graph
             .buckets
             .write_label_bucket_slot_for_test(slot, malformed)
@@ -6672,11 +6655,6 @@ mod tests {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         let a = graph.push_vertex(LabeledVertex::default()).unwrap();
         let b = graph.push_vertex(LabeledVertex::default()).unwrap();
-        assert_eq!(
-            graph.inline_property_bytes_log_leaf(a),
-            graph.inline_property_bytes_log_leaf(b),
-            "test requires two vertices sharing one inline-property-bytes-log leaf"
-        );
         let road = BucketLabelKey::from_raw(2);
         for v in [a, b] {
             graph

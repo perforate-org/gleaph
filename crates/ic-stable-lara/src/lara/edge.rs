@@ -74,7 +74,6 @@ pub(crate) use edges::EdgeSlabStore;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::FreeSpanStore;
 use ic_stable_structures::Memory;
-pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};
 use span_meta::SegmentSpanMetaStore;
 use std::cell::Cell;
 
@@ -159,3 +158,4 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.write_slots_contiguous(start_slot, src)
     }
 }
+pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};
