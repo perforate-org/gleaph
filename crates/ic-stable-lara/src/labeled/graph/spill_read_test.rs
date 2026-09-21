@@ -274,12 +274,13 @@ fn exercise<const N: usize>(bypass: bool) {
             assert_eq!(bucket.edge_spill_run(), raw_run);
             assert_eq!(bucket.stored_slots_raw(), prefix);
             let mut after = Vec::new();
-            graph
+            let flow = graph
                 .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
                     after.push((slot.raw(), edge.0));
                     ControlFlow::<()>::Continue(())
                 })
                 .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
             assert_eq!(after, survivors);
             assert_all_label_rows(
                 &graph,
