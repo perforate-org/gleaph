@@ -107,12 +107,12 @@ impl CsrVertex for Vertex {
         Self(self.0.with_degree(degree))
     }
 
-    fn log_head(self) -> i32 {
-        self.0.log_head()
+    fn spill_run(self) -> u32 {
+        self.0.spill_run()
     }
 
-    fn with_log_head(self, idx: i32) -> Self {
-        Self(self.0.with_log_head(idx))
+    fn try_with_spill_run(self, run: u32) -> Result<Self, ()> {
+        self.0.try_with_spill_run(run).map(Self)
     }
 
     fn after_slab_tombstone_delete(self) -> Self {
