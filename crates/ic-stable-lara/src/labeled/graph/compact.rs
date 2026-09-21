@@ -2256,14 +2256,18 @@ where
             // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
             // Tiny buckets are excluded from the packed check (holes make
             // `stored != degree` legitimate inline state, not slab slack).
-            // A run-backed bucket is only a reason to rewrite when the caller may fold it: the
-            // compacting rewrite materializes `prefix + run`, which folds the run (and the values
-            // run with it). A non-forcing caller leaves it where it is.
-            let run_backed_blocks_packing = span_policy == SpanResolutionPolicy::Required
-                && buckets
-                    .iter()
-                    .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-            if vertex.stored_slots > total_live || run_backed_blocks_packing {
+            // The span is published by the compacting rewrite whatever the caller's policy: it
+            // sizes the new span for the rows the materializer produces (a bucket's prefix plus
+            // the run it folds), so it fits by construction and cannot need a relocation - and a
+            // bucket whose rows live in its run still holds nothing in the *span* beyond its
+            // prefix, which is exactly what this step shrinks. Leaving it unshrunk was the
+            // deterministic-delete benches' regression (ADR 0097 §7 at this level).
+            if vertex.stored_slots > total_live
+                || buckets.iter().any(|b| {
+                    b.edge_spill_run() != crate::traits::NO_SPILL_RUN
+                        || (!b.is_tiny_mode() && b.stored_slots_raw() != b.degree())
+                })
+            {
                 self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
             }
             return Ok(VertexEdgeSpanCompactOneStep::Finished);

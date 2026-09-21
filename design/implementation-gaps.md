@@ -180,6 +180,32 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
+### Landing evidence — the finalize guard, fixed at the span level
+
+The non-forcing compaction had also gated the packed-span check, so a run-backed bucket's
+*vertex span* was never shrunk. A bucket whose rows live in its own run holds nothing in the
+span beyond its prefix, so the check runs again for every policy: the compacting rewrite
+sizes the new span for what the materializer produces (prefix plus the run it folds), so it
+fits by construction and cannot need a relocation.
+
+| bench | main (measured) | pre-fix | post-fix |
+| --- | --- | --- | --- |
+| `bench_l_s2_h_del_1024` | 127,160,000 | 193,429,761 | 193,655,245 |
+| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
+| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
+| `bench_l_s2_det_hub_st_1024` | 45,845,565 | 57,849,414 | 45,848,699 |
+| `bench_l_s2_det_sat_1024` | 465,196 | 937,953 | 465,286 |
+| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,909,616 | 77,908,562 |
+| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
+| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
+| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
+
+Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
+cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
+descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
 - **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
