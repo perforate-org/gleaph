@@ -92,6 +92,48 @@ where
     promote_bucket_to_tree_mode_impl(graph, vid, label)
 }
 
+/// Copies a bucket's spill run into its slab prefix and releases the run, growing the
+/// vertex span once and retrying when the prefix has no room for it yet.
+///
+/// This is the only shape that moves a run's rows back into the span (ADR 0097 §7): a
+/// relocation keeps the run, so every caller that needs the rows in the prefix - the
+/// promotion's Phase 0a transcription, and the wide-edge carve-out that cannot promote
+/// because tree mode stores one 4-byte target per slot - goes through here rather than
+/// through a rewrite. The growth step replaces the pre-swap fold's copy: it asks the
+/// rebalance for room (`preferred_extra` = the run's rows) while keeping the run where it
+/// is, and the retry then performs the explicit compaction that fills it.
+pub(super) fn compact_run_into_prefix_with_growth_retry<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    bucket_index: u32,
+    bucket: LabelBucket,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    let spill_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
+        Ok(run) => graph.edges().spill_used_len(run),
+        Err(_) => 0,
+    };
+    match graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, bucket) {
+        Ok(_) => Ok(()),
+        Err(LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)) => {
+            graph.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
+            let grown_vertex = graph.vertices().get(vid);
+            let grown_slot =
+                LabeledLaraGraph::<E, M>::labeled_vertex_bucket_slot(&grown_vertex, bucket_index)?;
+            let grown = graph
+                .buckets()
+                .read_label_bucket_slot(grown_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, grown)?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn promote_bucket_to_tree_mode_impl<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
@@ -137,29 +179,7 @@ where
     if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
         let bucket_index =
             LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let spill_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
-            Ok(run) => graph.edges().spill_used_len(run),
-            Err(_) => 0,
-        };
-        match graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, bucket) {
-            Ok(_) => {}
-            Err(LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)) => {
-                // The prefix has no room for the run's rows yet: grow the vertex span and retry -
-                // the same recovery the retired fold used before its copy.
-                graph.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
-                let grown_vertex = graph.vertices().get(vid);
-                let grown_slot = LabeledLaraGraph::<E, M>::labeled_vertex_bucket_slot(
-                    &grown_vertex,
-                    bucket_index,
-                )?;
-                let grown = graph
-                    .buckets()
-                    .read_label_bucket_slot(grown_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, grown)?;
-            }
-            Err(error) => return Err(error),
-        }
+        compact_run_into_prefix_with_growth_retry(graph, vid, bucket_index, bucket)?;
         let vertex = graph.vertices().get(vid);
         (bucket_slot, bucket) = match graph.find_bucket(vid, &vertex, label)? {
             BucketSearch::Found { slot, bucket } => (slot, bucket),

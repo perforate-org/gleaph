@@ -431,3 +431,84 @@ fn a_spill_delete_never_shifts_the_runs_other_rows() {
         .collect();
     assert_eq!(ascending, vec![0, 1, 2, 3, 4, 6, 7, 8]);
 }
+
+/// A relocation keeps the run, so the rewrite that follows a spill insert must not ask the
+/// span for room to hold the run's rows.
+///
+/// GAP-2026-09-20-007: the plan counted them (`bucket_resident_rows` = prefix + run), so
+/// `min_required` (65) exceeded the span it already had (64), the plan asked for a wider one
+/// (144) and the dense leaf could not place it, trapping the insert with
+/// `CollectAllocationOverflow`. The shape is the one `bench_l_nt_bp_ins_1024` uses: a promoted
+/// bypass bucket with 64 rows, 256 successors pushed after it so the row is not the tail, then
+/// same-label inserts that land in the run while the leaf cascade runs its rewrite.
+#[test]
+fn a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals() {
+    let graph = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::new(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        crate::labeled::InitialCapacities::uniform(8192),
+        BucketLabelKey::directed_from_index(1),
+    )
+    .unwrap();
+    graph.push_vertex(LabeledVertex::default()).unwrap();
+    graph.enable_default_edge_bypass(VertexId::from(0)).unwrap();
+    let label = graph.default_label();
+    for target in 0..64u32 {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge::read_from(&target.to_le_bytes()),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    for _ in 0..256 {
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+    }
+    for target in 1_000_000..1_000_016u32 {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge::read_from(&target.to_le_bytes()),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap_or_else(|error| panic!("insert {target}: {error:?}"));
+    }
+
+    let after = bucket_of(&graph, VertexId::from(0), label);
+    assert_eq!(after.degree(), 80, "every insert landed");
+    assert_ne!(
+        after.edge_spill_run(),
+        NO_SPILL_RUN,
+        "the rows beyond the prefix live in the run the rewrite kept"
+    );
+    assert_eq!(
+        run_rows(&graph, &after),
+        16,
+        "the run keeps its rows and its ordinals"
+    );
+    assert_eq!(
+        graph
+            .iter_edges_for_label(VertexId::from(0), label)
+            .unwrap()
+            .len(),
+        80,
+        "the run is still reachable through the published descriptor"
+    );
+}

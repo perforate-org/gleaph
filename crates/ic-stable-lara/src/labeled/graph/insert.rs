@@ -622,20 +622,18 @@ where
                             if E::BYTES != super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES {
                                 // Wide-edge carve-out (ADR 0097 §6, mirroring the slab-growth
                                 // trigger's): tree mode stores one 4-byte target per LTB slot, so a
-                                // wider edge type can never be promoted. Such a bucket stays slab
-                                // and keeps growing its prefix - the pre-swap behavior for a
-                                // wide-edge bucket that ran out of overflow room - so grow the
-                                // vertex span and retry instead of promoting.
-                                let spill_rows =
-                                    match self.edges.spill_mint(bucket.edge_spill_run()) {
-                                        Ok(run) => self.edges.spill_used_len(run),
-                                        Err(_) => 0,
-                                    };
-                                self.rebalance_vertex_edge_span(
+                                // wider edge type can never be promoted. Such a bucket stays slab,
+                                // and it gets a writable prefix back the only way ADR 0097 §7
+                                // allows: the explicit compaction copies the run's rows into the
+                                // prefix and releases the run, so the retry below writes into the
+                                // slab again - the pre-swap behavior for a wide-edge bucket that ran
+                                // out of overflow room, expressed with the mechanism that replaces
+                                // the fold.
+                                super::promote::compact_run_into_prefix_with_growth_retry(
+                                    self,
                                     src,
-                                    Some(bucket_index),
-                                    spill_rows,
-                                    true,
+                                    bucket_index,
+                                    bucket,
                                 )?;
                                 let vertex = self.vertices.get(src);
                                 let bucket_slot =

@@ -826,7 +826,13 @@ where
             let resident = if compact {
                 bucket.degree()
             } else {
-                self.bucket_resident_rows(bucket)?
+                // ADR 0097 §7: a relocation keeps the bucket's run where it is, so the span it
+                // asks for has to hold the slab prefix alone. Counting the run's rows here made
+                // the plan grow a span it did not need (`min_required` > `old_alloc`), and when
+                // that wider span could not be placed the insert trapped
+                // (GAP-2026-09-20-007). `bucket_resident_rows` stays the *leaf geometry* SSOT -
+                // a folding leaf relocation must reserve room for the rows it copies in.
+                bucket_physical_resident_slots(bucket)
             };
             total_live = total_live
                 .checked_add(resident)
@@ -850,13 +856,18 @@ where
         }
         let new_alloc = if compact {
             total_live
-        } else if total_live == 0 {
-            // A spanless vertex (all buckets tiny) owns zero slab slots by ADR 0096 §5, so
-            // it must not request slack: the request would be a real span
+        } else if total_live == 0 && preferred_extra == 0 {
+            // A spanless vertex (all buckets tiny, no room requested) owns zero slab slots by
+            // ADR 0096 §5, so it must not request slack: the request would be a real span
             // (`next_vertex_edge_span_allocation` returns at least `segment_size`), and when
             // it cannot be placed the slack tail has no base to report
             // (`labeled_edge_base_from_first_bucket` needs a non-tiny bucket), which failed
             // the whole leaf-wide log recovery (class C).
+            //
+            // `preferred_extra` is the caller's real room request, so it vetoes the shortcut: the
+            // promotion's Phase 0a recovery grows the span for a bucket whose rows sit in its run
+            // (`total_live` counts the prefix alone, ADR 0097 §7) and must get a span that can hold
+            // the compaction target it is about to write.
             0
         } else if !force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             old_alloc
@@ -1002,8 +1013,11 @@ where
         // rows and the vertex row. The three per-branch fast paths that used to do
         // this inline reproduced the same logic and drifted apart
         // (GAP-2026-09-20-005).
+        // ADR 0097 §7: a compacting rewrite folds a bucket's run into its prefix; a
+        // relocation keeps the run and materializes the slab prefix alone, so the
+        // prefix width - and with it every spill ordinal - survives the move.
         let (per_bucket_edges, per_bucket_raw) =
-            self.materialize_labeled_vertex_edge_plan(&buckets, true, compact)?;
+            self.materialize_labeled_vertex_edge_plan(&buckets, compact, compact)?;
         let mut edge_buf: Vec<u8> = Vec::new();
         let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
         self.commit_vertex_edge_span_layout(
@@ -1018,9 +1032,9 @@ where
             new_alloc,
             preferred_bucket.map(|index| index as usize),
             preferred_extra,
-            false, // not a leaf-relocation commit
-            true,  // this path folds overflow logs into the published rows
-            true,  // the finalize block below owns the vertex-footprint release
+            false,   // not a leaf-relocation commit
+            compact, // a compacting rewrite folds runs into the published rows; a relocation keeps them
+            true,    // the finalize block below owns the vertex-footprint release
         )?;
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1436,11 +1450,12 @@ where
 
     /// `fold_logs` selects which owner keeps a bucket's spill rows (ADR 0097 §7):
     /// `true` materializes prefix + run and lets the commit publish them as one
-    /// prefix, clearing and releasing the run (the rewrite and leaf-relocation paths
-    /// compact that way), `false` materializes the slab prefix alone and leaves the
-    /// run where it is, which is the rebalance contract: it re-anchors the prefix and
-    /// preserves the run id (`compact_vertex_edge_span_one_step` compacts one bucket's
-    /// run on its own and relies on this).
+    /// prefix, clearing and releasing the run - only a *compacting* rewrite does that,
+    /// and it owns the slot-move notification those shifted ordinals require
+    /// (`vertex_edge_span_slot_moves`); `false` materializes the slab prefix alone and
+    /// leaves the run where it is, which is the contract for every relocation: it
+    /// re-anchors the prefix, preserves the prefix width and with it every spill
+    /// ordinal, and needs no move notification.
     fn materialize_labeled_vertex_edge_plan(
         &self,
         buckets: &[LabelBucket],
@@ -1645,11 +1660,16 @@ where
                     .unwrap_or(0);
                 let resident_slots = u32::try_from(resident_slots)
                     .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-                resident_buckets.push(
-                    bucket
-                        .with_stored_slots(resident_slots)
-                        .without_edge_spill_run(),
-                );
+                // The resident scratch is what the tiling and the published row are built
+                // from, so it has to keep whatever owner holds the bucket's rows: a folding
+                // rewrite moved them into the prefix (`fold_logs`), a relocation left them in
+                // the run, which the published descriptor must keep pointing at (ADR 0097 §7).
+                let resident = bucket.with_stored_slots(resident_slots);
+                resident_buckets.push(if fold_logs {
+                    resident.without_edge_spill_run()
+                } else {
+                    resident
+                });
             }
             resident_buckets
         };
@@ -2400,8 +2420,18 @@ where
             // the planner reserved (`span_slots=80 < effective_live=81`), which the
             // rewrite tests surfaced as `CollectAllocationOverflow`
             // (GAP-2026-09-20-005). Non-tiny buckets take the resident-region SSOT:
-            // slab keeps the degree floor, tree takes its root region alone (its
+            // slab takes its materialized width, tree its root region alone (its
             // `stored_slots` is a logical count, not a readable span).
+            //
+            // The slab case used to carry a `.max(degree)` floor, from the world where a
+            // rewrite folded a bucket's overflow rows into its prefix: the tiling then had
+            // to cover `degree`, because the fold put every live row inside the span. ADR
+            // 0097 §7 gives those rows their own owner — the run, in the arena — and the
+            // materialized width already is the SSOT for what the span must hold: the
+            // prefix of a relocation, the packed live rows (`degree`) of a compaction.
+            // Keeping the floor made a run-backed bucket demand a span its prefix did not
+            // need (`span_slots=64 < effective_live=65`), which trapped the non-tail bypass
+            // insert (GAP-2026-09-20-007).
             let resident = if bucket.is_tiny_mode() {
                 0
             } else if bucket.is_tree_mode() {
@@ -2409,7 +2439,6 @@ where
             } else {
                 crate::labeled::graph::bucket_resident_region(bucket)
                     .map_or(bucket.stored_slots_raw(), |(_, len)| len)
-                    .max(bucket.degree())
             };
             let resident = resident
                 .checked_add(extra)
