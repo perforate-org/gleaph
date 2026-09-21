@@ -214,15 +214,21 @@ when a tail capacity window offers slab space: extending that prefix would shift
 spill ordinals. The common core insertion decision excludes slab append for active runs, and
 preflights row growth before modifying published storage. Run-class exhaustion keeps the
 existing typed promotion outcome; it does not force a fold or reinterpret capacity as content.
-Consuming that outcome at every caller remains incomplete (ADR 0097 §6); typed rejection alone
-is not automatic promotion. Bypass-to-bucket conversion transfers the initialized prefix and
+The tail, same-label four-byte caller now consumes that outcome through a prepared tree
+transition including the pending append. Wide edges, arena exhaustion and other caller shapes
+remain separate incomplete contracts (ADR 0097 §6); typed rejection alone is not automatic promotion. Bypass-to-bucket conversion transfers the initialized prefix and
 run unchanged, including zero-live retained runs, then clears the old vertex reference.
 The bucket-to-tree promoter admits using the original initialized prefix plus used spill rows,
 not live degree. It preserves that high-water extent and surviving ordinals, writes native edge
 leaf tombstone counts, and maps sidecars through their independent source prefix/run. Both target
 streams are unpublished until transcription succeeds; preparation errors release target allocations
-without folding or releasing source runs. This does not yet make bypass conversion/promotion/retry
-one failure-atomic public operation. See the [promotion evidence](../evidence/adr0097-promotion-prerequisite.md).
+without folding or releasing source runs. For tail four-byte bypass class exhaustion, the same
+owner prepares native storage plus the pending append, then prepares bucket capacity before
+publishing the final tree directly. Allocation failure leaves the original bypass canonical;
+there is no intermediate published conversion. Leaf relocation now snapshots and republishes
+bypass prefixes before retiring their former footprint. See the
+[capacity integration evidence](../evidence/adr0097-capacity-integration.md) for tested scopes and
+remaining normal-bucket relocation, arena, and broader atomicity limitations.
 Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:

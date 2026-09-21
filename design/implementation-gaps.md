@@ -498,11 +498,42 @@ root allocation. Native tree visitors intentionally emit tombstone rows; tests a
 positions and leaf-header counts rather than filtering them out. These replace the earlier promoter
 counterexamples, not the public caller-integration requirement.
 
-Public bypass conversion/promotion/retry remains unimplemented as one failure boundary. Separately,
+At `15ab44efb`, public bypass conversion/promotion/retry remained unimplemented as one failure boundary. Separately,
 a cascade-path fixture exposed an active prefix `[256,261)` already present in free span `[256,267)`
 before promotion. Its next root allocation reused that source prefix. The actual deferred forward
 fixture does not reproduce this ownership defect. No allocator workaround or automatic promotion
 routing was added. [Evidence and exact validation](evidence/adr0097-promotion-prerequisite.md).
+
+#### Bypass footprint and public class-boundary corrections
+
+`1846cb7d3` fixes the first corrupting cascade append (**67**, both 4/10-byte rows): leaf planning
+and snapshots skipped bypass vertices, then retired their still-referenced prefixes. The common
+leaf commit now moves captured bypass prefixes and republishes their origin before footprint
+retirement, without folding their runs. Durable regressions assert every append, run ownership,
+free-span disjointness and subsequent allocation/conversion/promotion. The exact original diagnostic
+is preserved under `design/evidence/sources/adr0097-cascade-fixture.rs`.
+
+`4deef5a2c` replaces periodic sidecars with injective target identities and checks the neighboring
+label. A property-leaf alias passes the old fixture but fails the strengthened fixture. Deletion
+is explicitly asserted to fold away the values run; retained values-run-plus-holes coverage is not
+claimed.
+
+`6c5822a79` integrates tail, same-label four-byte class exhaustion through the actual
+`insert_forward_out_edge` call. Native tree plus pending append and bucket capacity are prepared
+while the bypass remains canonical; only the final tree is published. Success with 0/8/16 holes and
+a real target-allocation failure with byte-exact source preservation, allocation cleanup and retry
+are covered. Direct store-level typed rejection witnesses remain. Final library **650/0**, strict
+library clippy and scoped formatting passed. Wide edges, arena exhaustion, other caller shapes,
+normal bucket-mode relocation folding, and broader first/second-write atomicity remain open.
+
+A fresh disposable `git archive` of `9a64049f4` and the branch ran the same 33×50 native probe,
+sequentially sharing the normal target. Main stores most rows in prefixes; the branch retains
+33 runs. Both decode/call back exactly 1,650 live rows. The branch performs **492 more reads** per
+traversal, with slightly fewer total bytes: bucket reads increase by 330 and the log/run memory
+reads increase from 6 to 198, offset by 30 fewer slab reads. These are measured differences,
+not individual IC instruction-cost attribution. Focused current canbench: **896,221 ascending**,
+**713,437 descending**, **106,087 bypass conversion**; no full artifacts changed. Mixed-hub and
+broader performance work remains open. [Detailed evidence](evidence/adr0097-capacity-integration.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 

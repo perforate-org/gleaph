@@ -2,6 +2,10 @@
 
 Implementation: `15ab44efb`, on `spill-swap`. This is a bucket-promotion correction, not public capacity integration or main-landing approval.
 
+Subsequent [capacity integration evidence](adr0097-capacity-integration.md) records the cascade
+ownership correction, stronger sidecars and the tail four-byte public transition. The findings
+and limitations below describe the prerequisite revision, not that later implementation.
+
 ## Contract and ownership
 
 `promote_bucket_to_tree_mode_impl` no longer compacts edge runs or folds values before admission. It uses initialized edge prefix plus used spill rows, including holes. The 4-byte fixture retains prefix 5 + run 1024 = 1029 slots with 0, 8 and 16 deletions. `T_PROMOTE` stays 1024. Wide edges still receive the exact unsupported-width error.

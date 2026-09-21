@@ -209,15 +209,16 @@ bucket.
    larger than the largest class is simply a tree bucket. (Generalising tree mode into the spill is the separate
    follow-up question already recorded, not part of this swap.)
 
-   **Implementation status: incomplete caller integration.** The low-level typed rejection is not
-   automatic promotion. `insert_forward_out_edge` currently propagates a tail bypass's
-   `Forward(Store(SpillNeedsPromotion))`. The regular bucket arm has separate tree-capable and
-   wide-edge treatments. The bucket promoter now admits against original resident width and
-   transcribes prefix/run ordinals into unpublished native trees without folding either source
-   plane. Publication precedes source retirement; tested allocation failure releases target roots
-   and blocks. Bypass conversion plus promotion/retry still needs a combined failure boundary;
-   sequentially publishing conversion before a failing promotion is not unchanged-state rejection.
-   Runtime witnesses and remaining ownership/integration blockers are recorded in
+   **Implementation status: tail, same-label four-byte bypass class exhaustion integrated.**
+   The low-level store still rejects without mutation. `insert_forward_out_edge` consumes that
+   signal for tree-capable bypass rows by preparing the native tree and pending append while the
+   bypass remains canonical, then preparing bucket capacity and publishing the final tree directly.
+   There is no intermediate canonical slab-bucket conversion or rollback after publication.
+   The shared promoter admits against original resident width, preserves native ordinals and
+   transcribes independent source planes without folding. Preparation errors release unpublished
+   target roots/blocks; source storage is retired only after successful publication.
+   Wide edges, other caller shapes and arena exhaustion remain separate incomplete contracts.
+   Runtime witnesses and remaining ownership/integration limitations are recorded in
    [the implementation ledger](../implementation-gaps.md#gap-2026-09-20-009--experimental-redundant-header-reads-and-scalar-spill-payload-reads).
    Section 6 remains the required contract, not a claim that rejection fulfills it. Class-limit
    witnesses do not validate arena exhaustion or every outer write path.
