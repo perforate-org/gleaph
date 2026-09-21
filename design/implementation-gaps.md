@@ -47,6 +47,46 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-09-20-007 — The leaf cascade's span rewrite fails for a bucket that owns a spill run
+
+- **Status:** Open, found 2026-09-20 by the canbench gate on the `spill-swap` branch
+  (`bench_l_nt_bp_ins_1024` traps; the same fixture passes on `main`). Not in the
+  tests' reach: the four gates (`cargo check --lib`, `cargo test --lib`, fmt,
+  clippy) are green, and the canbench feature's benches are the only witness.
+- **Owner:** the labeled leaf cascade (`rebalance_cascade_after_labeled_mutation` →
+  `rewrite_vertex_edge_span` / `materialize_labeled_vertex_edge_plan` /
+  `commit_vertex_edge_span_layout`) and the span geometry it sizes
+  (`bucket_resident_rows`).
+- **Reproduction (isolated):** a `uniform(8192)` graph; a default-label bypass row
+  at vertex 0 seeded with 64 edges; 256 successors pushed after it (so the row is
+  not the tail); then 16 same-label `insert_edge` calls. `main` passes; the swap
+  head fails on the *first* one with `Store(CollectAllocationOverflow)`.
+- **Isolation (measured):** `promote_bypass_to_bucket_mode` succeeds and publishes
+  a correct bucket row (degree 64, stored 64, base 0); the edge producer succeeds
+  on its own (`InsertLocation::Spill { run: 0, logical_slot: 64 }`);
+  `insert_edge_skip_leaf_cascade` succeeds; the failure is the public `insert_edge`'s
+  post-step `rebalance_cascade_after_labeled_mutation` (the leaf is dense), i.e. the
+  vertex-span rewrite of a bucket that now owns a spill run.
+- **Analysis (evidence, no fix yet):** the rewrite materializes `prefix + run`
+  (`materialize_labeled_vertex_edge_plan(.., fold_logs = true, ..)`), so the new span
+  must hold 65 rows and the successors occupy that space. On `main` the
+  pre-promotion fold grew the vertex span first - the step ADR 0097 deletes - which
+  is what made room. The ADR's "no span growth, the spill absorbs it" is about the
+  *insert* path's prediction, not about a physical rewrite, so the likely fix is to
+  let the maintenance rewrite grow the span (or to keep the run and move only the
+  prefix, which needs the ordinal question below settled).
+- **Rejected fix, and why:** forcing the materializer to keep a run-owning bucket's
+  run (materializing the prefix alone) and reducing `bucket_resident_rows` to the
+  physical rows **breaks 47 tests** (575/47): the run term is load-bearing for the
+  compaction paths, which really do move the run's rows into the prefix and must
+  size the span for them. The distinction is per *path* (compaction folds; a
+  relocation may not), not per bucket, so it cannot be made inside the shared
+  materializer without that split.
+- **Next decision:** whether the rewrite keeps the run (and then the prefix width
+  must be preserved exactly, since the run's rows are addressed as `prefix_len + i`)
+  or folds it like compaction; either way the *span growth* the deleted fold
+  performed must be re-expressed in the rewrite path.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
@@ -5795,6 +5835,12 @@ ic-stable-lara` clean; `cargo clippy -p ic-stable-lara --lib` no crate warning. 
 straddle page boundaries: tiny insert 150R/44W (derived 149/44), tiny delete 109R/44W (105/44), tiny
 scan 109R/0W (105/0), slab control 425R/73W (411/72). Each test records the measured value and the
 disagreement it replaces.
+
+Open defect found by the canbench gate after F4d (recorded as GAP-2026-09-20-007):
+`bench_l_nt_bp_ins_1024` traps with `CollectAllocationOverflow` in the leaf
+cascade's span rewrite for a bucket that owns a spill run, while the same fixture
+passes on `main`; the four gates cannot see it. See the GAP entry for the isolation
+and the rejected fix.
 
 Deviations recorded rather than absorbed: (1) the batch defers a run that would spill to the scalar
 path (a recoverable `SpillRunDeferred`) instead of reserving a class-growth copy, because
