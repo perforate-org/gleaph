@@ -228,9 +228,26 @@ where
 
         let src_vertex = self.vertices.get(src);
         if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_rewrite_vertex_edge_span");
-            self.rewrite_vertex_edge_span(src, None, 0, false, true, None)?;
+            // ADR 0097 §7, with the slack rule db04af585 states - speculative slack must not
+            // force allocation when the content already fits, and may use extra space only when
+            // it is currently placeable. This rewrite is the cascade's *forced-slack* rewrite:
+            // its whole purpose is to grow this vertex's span so the leaf gets room back. A
+            // bucket whose rows live in its run has no span content to grow - the run holds
+            // them, in the arena, and the plan keeps the prefix width - so the rewrite
+            // re-publishes the same layout while still materializing and committing every
+            // bucket, and the leaf's density does not move. Running it once per insert is what
+            // made the non-tail bypass path 2.97x its `main` cost (GAP-2026-09-20-007); the
+            // slack it asks for is not placeable and is not a reason to search a dense leaf.
+            // Skip it when the vertex is not span-resident; the rest of the cascade still runs.
+            let span_resident = self
+                .read_vertex_label_buckets(&src_vertex)?
+                .iter()
+                .all(|bucket| bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
+            if span_resident {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("labeled_rewrite_vertex_edge_span");
+                self.rewrite_vertex_edge_span(src, None, 0, false, true, None)?;
+            }
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }

@@ -512,3 +512,94 @@ fn a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals() {
         "the run is still reachable through the published descriptor"
     );
 }
+
+/// The cascade's forced-slack rewrite is skipped for a bucket whose rows live in its run.
+///
+/// GAP-2026-09-20-007, second half: the rewrite exists to grow this vertex's span so the
+/// leaf gets room back, and a run-backed bucket has no span content to grow - the plan keeps
+/// the prefix width. The rewrite therefore re-published the same layout while materializing
+/// and committing every bucket, once per insert, because the leaf's density never moved.
+/// db04af585's slack rule says speculative slack must not force allocation when the content
+/// already fits; this is that rule at the cascade.
+#[test]
+fn a_run_backed_vertex_is_not_force_rewritten_by_the_cascade() {
+    use super::compact::{
+        reset_rewrite_vertex_edge_span_test_metrics, rewrite_vertex_edge_span_calls,
+    };
+
+    let graph = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::new(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        crate::labeled::InitialCapacities::uniform(8192),
+        BucketLabelKey::directed_from_index(1),
+    )
+    .unwrap();
+    graph.push_vertex(LabeledVertex::default()).unwrap();
+    graph.enable_default_edge_bypass(VertexId::from(0)).unwrap();
+    let label = graph.default_label();
+    for target in 0..64u32 {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge::read_from(&target.to_le_bytes()),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    for _ in 0..256 {
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+    }
+    // The first same-label insert promotes the bypass row; the rest land in the bucket's run
+    // and each used to re-enter the cascade's forced-slack rewrite.
+    graph
+        .insert_edge(
+            VertexId::from(0),
+            label,
+            TestEdge::read_from(&1_000_000u32.to_le_bytes()),
+            EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    let bucket = bucket_of(&graph, VertexId::from(0), label);
+    assert_ne!(
+        bucket.edge_spill_run(),
+        NO_SPILL_RUN,
+        "the rows are in the run"
+    );
+
+    reset_rewrite_vertex_edge_span_test_metrics();
+    for target in 1_000_001..1_000_016u32 {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge::read_from(&target.to_le_bytes()),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap_or_else(|error| panic!("insert {target}: {error:?}"));
+    }
+    assert_eq!(
+        rewrite_vertex_edge_span_calls(),
+        0,
+        "a run-backed vertex has no span content to grow, so the cascade must not force a rewrite"
+    );
+    assert_eq!(
+        bucket_of(&graph, VertexId::from(0), label).degree(),
+        80,
+        "the inserts still landed"
+    );
+}
