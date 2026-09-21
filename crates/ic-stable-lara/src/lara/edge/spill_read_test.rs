@@ -107,6 +107,84 @@ fn replay<const N: usize>() {
     // One length snapshot plus one checked-header and one payload read per chunk.
     assert_eq!(memory.reads.get(), 1 + 2 * 3);
 }
+fn skipping_fixture<const N: usize>() -> (
+    EdgeStore<Row<N>, CountMemory>,
+    crate::labeled::spill_run_store::SpillRunId,
+) {
+    let store = EdgeStore::<Row<N>, _>::new(
+        CountMemory::default(),
+        CountMemory::default(),
+        CountMemory::default(),
+        CountMemory::default(),
+        CountMemory::default(),
+        CountMemory::default(),
+        8,
+        1,
+        0,
+    )
+    .unwrap();
+    let run = store
+        .spill
+        .allocate(OUT_EDGE_SLAB_CHUNK_SLOTS * 2 + 3)
+        .unwrap();
+    for i in 0..OUT_EDGE_SLAB_CHUNK_SLOTS * 2 + 3 {
+        let mut bytes = vec![0; N];
+        Row::<N>(100 + i).write_to(&mut bytes);
+        store.spill.write_row(run, i, &bytes).unwrap();
+    }
+    (store, run)
+}
+#[test]
+fn spill_iterator_fresh_nth_loads_requested_chunk() {
+    fn check<const N: usize>() {
+        let (store, run) = skipping_fixture::<N>();
+        assert_eq!(
+            store
+                .spill_edges_iter(run)
+                .unwrap()
+                .nth(1)
+                .unwrap()
+                .unwrap(),
+            Row::<N>(101)
+        );
+    }
+    check::<4>();
+    check::<10>();
+}
+#[test]
+fn spill_iterator_nth_crosses_loaded_chunk() {
+    fn check<const N: usize>() {
+        let (store, run) = skipping_fixture::<N>();
+        let mut iter = store.spill_edges_iter(run).unwrap();
+        assert_eq!(iter.next().unwrap().unwrap(), Row::<N>(100));
+        assert_eq!(
+            iter.nth(OUT_EDGE_SLAB_CHUNK_SLOTS as usize)
+                .unwrap()
+                .unwrap(),
+            Row::<N>(101 + OUT_EDGE_SLAB_CHUNK_SLOTS)
+        );
+    }
+    check::<4>();
+    check::<10>();
+}
+#[test]
+fn spill_iterator_last_loads_partial_tail() {
+    fn check<const N: usize>() {
+        let (store, run) = skipping_fixture::<N>();
+        assert_eq!(
+            store
+                .spill_edges_iter(run)
+                .unwrap()
+                .last()
+                .unwrap()
+                .unwrap(),
+            Row::<N>(102 + OUT_EDGE_SLAB_CHUNK_SLOTS * 2)
+        );
+    }
+    check::<4>();
+    check::<10>();
+}
+
 #[test]
 fn spill_replay_reads_chunks_not_scalar_rows() {
     replay::<4>();

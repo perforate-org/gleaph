@@ -144,19 +144,22 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         bytes.resize(size, 0);
         let mut failed = false;
+        let mut loaded_chunk = None;
         Ok((0..used).map(move |index| {
             if failed {
                 return Err(LaraOperationError::SpillRowOutOfRange);
             }
-            if index % chunk == 0 {
-                let count = (used - index).min(chunk) as usize;
+            let start = index - index % chunk;
+            if loaded_chunk != Some(start) {
+                let count = (used - start).min(chunk) as usize;
                 if !self
                     .spill
-                    .read_rows(run, index, &mut bytes[..count * E::BYTES])
+                    .read_rows(run, start, &mut bytes[..count * E::BYTES])
                 {
                     failed = true;
                     return Err(LaraOperationError::SpillRowOutOfRange);
                 }
+                loaded_chunk = Some(start);
             }
             let offset = (index % chunk) as usize * E::BYTES;
             Ok(E::read_from(&bytes[offset..offset + E::BYTES]))
