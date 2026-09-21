@@ -208,7 +208,7 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: initialized extent and retained-run append corrected; mixed-hub differences remain open. Broader landing remains open.** Diagnostic source
+**Status: demonstrated read/append/transfer corrections; public capacity promotion is blocked. Mixed-hub differences and broader landing remain open.** Diagnostic source
 revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
 reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
@@ -459,6 +459,32 @@ rounded main; neither their remaining cause nor the distinct values-batch regres
 The earlier complete YAML is preserved; no filtered results were persisted. Runtime red/green,
 source parity, counter evidence, exact variants and the source-only all-label bypass-reader
 follow-up are recorded in [append/mixed-hub evidence](evidence/adr0097-append-mixed-hub.md).
+
+#### All-label, transfer and checked-growth boundary follow-up
+
+`f142a45de` corrects runtime-red 4/10-byte all-label descending bypass reads by delegating to
+`visit_edges`. It also fixes the reproduced reverse-conversion `SpillRunOnNormalRow` panic,
+transferring prefix/run ownership without compaction, including zero-live retained runs.
+`4451efbd3` fixes the kernel wrapper's fallible-growth forwarding. LARA **637/0**, kernel
+**202/0**, scoped formatting and strict library clippy passed.
+
+**Capacity integration remains a prerequisite, not accepted rejection semantics.** Actual public
+`insert_forward_out_edge` returns `Forward(Store(SpillNeedsPromotion))` at MAX_ROWS for 4/10-byte
+rows with and without tombstones. After safe conversion, directly invoking the existing 4-byte
+promoter with prefix 5, used 1024 and 16 tombstones returns `AllocSpaceCapReached`
+(`current_alloc_space=1018, cap=1024, mode=Slab`) after freeing the run and moving target 16 from ordinal 16 to 5. With eight tombstones it returns
+success but emits five prefix tombstone sentinels and renumbers survivors. The owner is
+`promote_bucket_to_tree_mode_impl`'s Phase 0a fold before admission/transcription. Promotion must
+preserve ordinals and preflight admission before mutation; do not blindly wire the bypass signal
+there, lower thresholds, or force compaction. The wide-edge carve-out is distinct from the
+four-byte tree path. Arena exhaustion and other outer-write atomicity remain unvalidated.
+
+Focused correctness-source checks at `4451efbd3`: mixed ascending **904,471**, descending
+**713,437**, non-tail bypass insertion 256 **363,627**; no new cause is assigned to small deltas.
+The existing main-reference worktree is dirty, so the required main-side counters and subsequent
+optimization experiment are blocked. No reference files or full artifacts were changed.
+[Detailed evidence](evidence/adr0097-append-mixed-hub.md#capacity-integration-blocked-not-relabeled-as-success)
+records exact public states, red/green evidence, caller trace and the remaining decision.
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 

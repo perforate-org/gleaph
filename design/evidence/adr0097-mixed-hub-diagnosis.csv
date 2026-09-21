@@ -5,3 +5,6 @@ zero-width helper guard,bench_l_mix_hub_asc_33x50,904624,84ac9203f,focused non-p
 zero-width helper guard,bench_l_mix_hub_scn_33x50,713437,84ac9203f,focused non-persisted canbench final production
 zero-width topology delegation,bench_l_mix_hub_asc_33x50,996543,diagnostic patch 02,rejected experiment
 zero-width topology delegation,bench_l_mix_hub_scn_33x50,713437,diagnostic patch 02,rejected experiment
+read and transfer correctness check,bench_l_mix_hub_asc_33x50,904471,4451efbd3,focused non-persisted canbench; not a main-gap attribution experiment
+read and transfer correctness check,bench_l_mix_hub_scn_33x50,713437,4451efbd3,focused non-persisted canbench; not a main-gap attribution experiment
+read and transfer correctness check,bench_l_nt_bp_ins_256,363627,4451efbd3,focused non-persisted canbench

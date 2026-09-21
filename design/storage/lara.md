@@ -214,6 +214,9 @@ when a tail capacity window offers slab space: extending that prefix would shift
 spill ordinals. The common core insertion decision excludes slab append for active runs, and
 preflights row growth before modifying published storage. Run-class exhaustion keeps the
 existing typed promotion outcome; it does not force a fold or reinterpret capacity as content.
+Consuming that outcome at every caller remains incomplete (ADR 0097 §6); typed rejection alone
+is not automatic promotion. Bypass-to-bucket conversion transfers the initialized prefix and
+run unchanged, including zero-live retained runs, then clears the old vertex reference.
 Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:

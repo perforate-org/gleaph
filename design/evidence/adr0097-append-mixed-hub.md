@@ -85,10 +85,9 @@ change, were not changed or validated by the mixed-hub experiment.
 
 ## Remaining gates
 
-Source-only structural follow-up, not runtime-verified here: the bypass descending arm of
-`visit_all_labels_with_inline_property` still constructs a slab-only iterator, unlike the
-per-label iterator paths covered by the lifecycle tests. It needs its own retained-run witness;
-no claim that all bypass read surfaces are validated is made.
+The all-label descending bypass concern was source-only at `359212b5f`. It is now reproduced
+and corrected by `f142a45de`, as detailed below. This does not establish blanket read-surface
+or insertion acceptance.
 
 The reviewed full YAML at `3ea7dc739` is preserved byte-for-byte. Its 189-name comparison and
 22 >+5% rows describe that source revision, not a new full run after these changes. No filtered
@@ -96,3 +95,105 @@ results were persisted; another complete unfiltered run is deferred while mixed-
 and the broader investigation remain open. Space, PocketIC, structural/atomicity review and
 other landing gates are not revalidated here. Commands, exact CSVs, counters, reproducible
 probe and rejected patch are preserved in `/tmp/spill-append/` and `/tmp/mixed-hub/`.
+
+## All-label read and reverse conversion: runtime correction
+
+`f142a45de` replaces the two bypass arms of `visit_all_labels_with_inline_property` with
+`visit_edges` plus label annotation, matching the topology sibling. No new traversal abstraction
+was added. The 4/10-byte tests invoke the actual all-label API using the real 67-row conversion
+fixture, with nonempty prefix (5/1) and spill (62/66). Their test edge observes label annotation
+without adding bytes to its serialized row. Both pre-fix tests failed in descending order:
+4-byte output began with 62 zero targets, and 10-byte output was all zero targets instead of
+66 down to 0. Exact labels, both orders before/after tombstones, and `Break(0xfeed)` after exactly
+three callbacks are asserted. The final tests also check the reverse conversion and zero-live
+retained runs; they are not substitutes using only the per-label visitor.
+
+Capacity investigation exposed a second runtime failure in the reverse conversion:
+`commit_promote_bypass_to_bucket_mode` panicked with `SpillRunOnNormalRow`. It neither transferred
+the run into the bucket nor cleared the vertex's reference, and passed total width as prefix.
+`f142a45de` uses the existing initialized-extent owner to build the bucket, preserves its run,
+and explicitly clears the old reference at commit. The existing typed setter rejects the sentinel;
+a crate-local `without_bypass_spill_run` operation clears ownership without weakening that setter.
+Allocation policy is unchanged. Zero live degree with a retained run no longer drops into the
+empty/no-run conversion. Tests preserve prefix, used length, exact row ordinals and edge count.
+
+## Checked-growth forwarding: bounded witnesses
+
+`4451efbd3` forwards graph-kernel `Vertex::try_grow_packed_slab_by_one` to `LabeledVertex`.
+The runtime red panicked in the infallible inner method instead of returning `Err(())`.
+The final test covers live overflow, stored-width overflow, normal label-bucket-count overflow,
+and successful forwarding. The wrapper's stale layout test separately failed (25 actual versus
+21 expected); it now pins the existing 25-byte layout. No wire layout was changed.
+
+The repository has four production `CsrVertex` implementations: core `Vertex`, `LabelBucket`,
+`LabeledVertex`, and graph-kernel `Vertex`. Each now explicitly implements checked growth.
+Core width-overflow tests remain; a small bucket test checks overflow and unchanged prefix/run
+on spill-backed growth. The wrapper test also exercises the inner bypass and normal-row bounds.
+These are concrete implementation witnesses, not a guarantee about arbitrary implementations
+using the trait default. GraphStore's `vertex_row.rs` and `vertex.rs` convert the kernel wrapper
+to/from `LabeledVertex`; LARA's production `VertexStore` owns `LabeledVertex`, not the wrapper.
+The wrapper defect is therefore not claimed as the cause of the earlier native append failure.
+
+## Capacity integration: blocked, not relabeled as success
+
+The actual public `DeferredBidirectionalLabeledLaraGraph::insert_forward_out_edge` calls
+`write_half_interruptible(MaterializeRetry::Surface)`. That handles inline-property materialization,
+not `SpillNeedsPromotion`; the tail-bypass error is wrapped as
+`Forward(Store(SpillNeedsPromotion))`. No promotion occurs. Public diagnostic witnesses used
+real insertion and conversion, filled the run without changing thresholds, then verified exact
+unchanged vertex/count/rows after rejection:
+
+| Row bytes | Prefix | Used | Stored | Live | Tombstones | Public result |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 4 | 5 | 1024 | 1029 | 1029 | 0 | Forward(Store(SpillNeedsPromotion)) |
+| 4 | 5 | 1024 | 1029 | 1021 | 8 | same |
+| 10 | 1 | 1024 | 1025 | 1025 | 0 | same |
+| 10 | 1 | 1024 | 1025 | 1017 | 8 | same |
+| 4 | 5 | 1024 | 1029 | 1013 | 16 | same |
+
+The public-promotion assertion fails after recording the four zero/eight-tombstone cases.
+The lower-level exact typed rejection and unchanged-state test is retained in the repository.
+This is missing integration, not fulfillment of ADR 0097 §6.
+
+After the transfer correction, invoking the existing 4-byte promoter directly exposed the
+reason not to wire it blindly into the caller:
+
+- With eight tombstones, promotion returns `Ok`, releases the run and publishes stored width
+  1026/live degree 1021. The scan emits five prefix tombstone sentinels as targets and shifts
+  target 8 from slot 8 to slot 5. The exact row assertion fails.
+- With sixteen tombstones, promotion returns
+  `AllocSpaceCapReached { current_alloc_space: 1018, cap: 1024, mode: Slab }` **after** releasing
+  the run and shifting target 16 from slot 16 to slot 5. The unchanged-state assertion fails.
+
+The inspected owner is `promote_bucket_to_tree_mode_impl`: Phase 0a folds the run through
+`compact_run_into_prefix_with_growth_retry` before checking the resulting resident width against
+`T_PROMOTE`. Used length can reach MAX_ROWS independently of live degree. This needs a promotion
+prerequisite that preserves tombstone-inclusive ordinals and checks admission before mutation;
+merely catching the signal, lowering `T_PROMOTE`, or forcing that fold is not a safe correction.
+The regular bucket arm distinguishes 4-byte tree-capable rows from the wide-edge carve-out,
+which uses explicit prefix compaction/growth rather than the four-byte tree. The bypass does
+not currently reach either treatment. No wide-edge tree support, threshold, ordering or
+compaction policy was introduced. Arena exhaustion and other outer-write atomicity remain unvalidated.
+
+## Validation and comparison availability at 4451efbd3
+
+- LARA library: **637 passed / 0 failed**; final strengthened transfer assertions also passed
+  in both focused all-label tests after the full run.
+- Graph-kernel library: **202 passed / 0 failed**.
+- Strict library clippy for both crates, scoped formatting and diff checks passed.
+- Non-persisted correctness-source benchmark checks: mixed ascending **904,471**, descending
+  **713,437**, non-tail bypass insertion 256 **363,627**. These are not a main-gap attribution
+  experiment; the small differences from previous branch figures are not assigned a cause.
+
+Main-side counters are unavailable under the authorized reference constraint. The existing
+`/private/tmp/lara-ntbp-main` at `9a64049f4` has modified `Cargo.lock` and `graph.rs`, plus an
+untracked `tmp_ntbp.rs`. The reviewer main checkout is also dirty. Other listed worktrees are
+at different revisions. Neither checkout nor its foreign files was modified. No new optimization
+was attempted without the required same-fixture main comparison. The nonzero-value batch paths
+and `0b6673a0d` remain separate and unvalidated by these measurements.
+
+The complete YAML, workspace full CSV and benchmark source hashes are unchanged. Raw red/green
+logs, diagnostic source, patches, caller searches, reference statuses and focused CSVs are in
+`/tmp/spill-all-label/`. The capacity probes are deliberately outside production tests: they
+remain failing counterexamples, not ignored tests or assertions weakened to bless rejection.
+This slice is blocked on promotion correctness/integration, not ready for main landing.

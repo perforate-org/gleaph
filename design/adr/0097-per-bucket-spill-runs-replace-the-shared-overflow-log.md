@@ -200,13 +200,24 @@ bucket.
    coalescing. Because a run's used length is **monotone** (deletes tombstone in place; rows leave the spill only
    when compaction copies them back into the prefix, and the run is released with exactly the length it has),
    `ceil_pow2(length)` always equals the allocated class — so the descriptor needs **no capacity field**.
-6. **Growth.** Appending past the current class allocates the next class, copies at most 2x the live rows and
-   releases the old run (amortized O(1), waste <2x), and grows in place when the run is the arena tail (see the slot
+6. **Growth.** Appending past the current class allocates the next class, copies its used rows (including
+   tombstones) and releases the old run (amortized O(1), capacity <2x used length), and grows in place when
+   the run is the arena tail (see the slot
    rules). **The spill tops out at `MAX_ROWS` (1024 rows); beyond that the bucket promotes to tree mode** — the
    existing, already-validated chunked path with its own thresholds — instead of inventing a second level in this
    change. That removes the level-2 block-list question entirely: there is no block list to format, and a bucket
    larger than the largest class is simply a tree bucket. (Generalising tree mode into the spill is the separate
    follow-up question already recorded, not part of this swap.)
+
+   **Implementation status: incomplete caller integration.** The low-level typed rejection is not
+   automatic promotion. `insert_forward_out_edge` currently propagates a tail bypass's
+   `Forward(Store(SpillNeedsPromotion))`. The regular bucket arm has separate tree-capable and
+   wide-edge treatments, but merely routing the bypass there is not sufficient: promotion's
+   pre-fold can change tombstone-inclusive ordinals, and can reject below `T_PROMOTE` after that
+   mutation. Runtime witnesses and the required promotion prerequisite are recorded in
+   [the implementation ledger](../implementation-gaps.md#gap-2026-09-20-009--experimental-redundant-header-reads-and-scalar-spill-payload-reads).
+   Section 6 remains the required contract, not a claim that rejection fulfills it. Class-limit
+   witnesses do not validate arena exhaustion or every outer write path.
 
    **Arena exhaustion is fail-closed, never a panic.** When a bucket's run cannot be allocated because the arena
    has no addressable row left (an exhaustion the 29-bit ids make reachable, and which the store currently turns
@@ -232,7 +243,10 @@ bucket.
    reads the run length and rejects invalid extents. Ascending/descending scans, slot location,
    and bypass matching/removal share this decision. A capacity window may extend beyond the
    initialized prefix and must not supply logical rows. Tombstones count toward both prefix
-   extent and run length; conversion does not change their ordinals.
+   extent and run length; conversion does not change their ordinals. All-label bypass visitors
+   delegate both orders to the canonical topology visitor. Bypass-to-bucket conversion transfers
+   the prefix and retained run, including a zero-live run, before clearing the vertex's reference;
+   it neither folds rows nor treats zero live degree as permission to release the run.
 
    **Checked contiguous reads.** Scalar and bounded reads share `SpillRunStore` used-range
    validation. A single header snapshot per bounded read must not exceed `MAX_ROWS`; empty
