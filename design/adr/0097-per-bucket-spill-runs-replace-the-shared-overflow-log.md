@@ -56,6 +56,21 @@ bucket.
    descriptor holds only the run id. The store change (a header row per run, classes counting data rows) is part of
    the first slice.
 
+   **Two run ids, not one.** The edge log and the inline-property-bytes log are separate planes: their rows
+   have different widths and their counts differ (a bucket can have edges without values), so a single keyed id
+   would either over-provision values for valueless rows or couple two allocators with different classes. Slab mode
+   therefore carries an **edge spill run id** and, when values exist, an **independent values spill run id**, each
+   allocated lazily by its own arena. "One owner per row" is per plane, and the values run exists only because
+   values exist — the same rule as for edges.
+   **Packing constraints (the exact bit budget is the implementer's to derive, with these bounds).** The row stays
+   29 bytes wide, or widens only if the derived table cannot cover the intended arena scale — and if it widens, say
+   so with the numbers. Retired by this change: the 8-bit log head (an in-segment index that cannot address an
+   arena) and, in slab mode only, the bytes tiny uses for its payload (modes are mutually exclusive, the wire is
+   already mode-dependent). `stored_slots` may narrow only if the promotion cap is *proved* (a test that a slab
+   bucket never exceeds the promotion threshold, since the field's width would otherwise silently truncate), and
+   the same applies to `ipb_width`. The unlabeled core path already has a 27-bit head at tail28 and needs no
+   packing change, so the labeled ids should follow that precedent where the numbers allow. The derivation must
+   state the arena size each id can address and the first workload scale at which that would fail.
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
