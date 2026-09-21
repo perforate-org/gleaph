@@ -156,23 +156,25 @@ pub fn validate_elem_capacity_grow_failed(
     })
 }
 
-/// Unlabeled [`crate::lara::vertex::Vertex`] tail28: bit 0 tombstone; bits 1–27 encode `(log_head + 1)` (`0` = no log).
+/// Unlabeled [`crate::lara::vertex::Vertex`] tail28: bit 0 tombstone; bits 1–27 encode `(spill_run + 1)`
+/// (`0` = no spill run). ADR 0097 §3: the field that used to hold a per-segment overflow-log entry
+/// index now holds the bucket's spill run id, so the whole 27-bit payload is addressable.
 const VERTEX_TAIL_TOMBSTONE_BIT: u32 = 1;
-const VERTEX_TAIL_LOG_SHIFT: u32 = 1;
-/// Maximum `(log_head + 1)` encoding for unlabeled vertex tail28.
-pub const VERTEX_TAIL_LOG_MASK: u32 = (1 << 27) - 1;
+const VERTEX_TAIL_RUN_SHIFT: u32 = 1;
+/// Maximum `(spill_run + 1)` encoding for unlabeled vertex tail28.
+pub const VERTEX_TAIL_RUN_MASK: u32 = (1 << 27) - 1;
 
-/// Packs overflow-log head and tombstone into 28 bits of a locator word.
+/// Packs the spill run id and tombstone into 28 bits of a locator word.
 #[inline]
-pub fn pack_vertex_tail28(log_head: i32, tombstone: bool) -> u32 {
-    let enc = if log_head < 0 {
+pub fn pack_vertex_tail28(spill_run: i32, tombstone: bool) -> u32 {
+    let enc = if spill_run < 0 {
         0u32
     } else {
-        let e = (log_head as u32).wrapping_add(1);
-        debug_assert!(e <= VERTEX_TAIL_LOG_MASK);
+        let e = (spill_run as u32).wrapping_add(1);
+        debug_assert!(e <= VERTEX_TAIL_RUN_MASK);
         e
     };
-    let mut raw = enc << VERTEX_TAIL_LOG_SHIFT;
+    let mut raw = enc << VERTEX_TAIL_RUN_SHIFT;
     if tombstone {
         raw |= VERTEX_TAIL_TOMBSTONE_BIT;
     }
@@ -184,21 +186,21 @@ pub fn pack_vertex_tail28(log_head: i32, tombstone: bool) -> u32 {
 #[inline]
 pub fn unpack_vertex_tail28(raw: u32) -> (i32, bool) {
     let deleted = (raw & VERTEX_TAIL_TOMBSTONE_BIT) != 0;
-    let enc = (raw >> VERTEX_TAIL_LOG_SHIFT) & VERTEX_TAIL_LOG_MASK;
-    let log_head = if enc == 0 { -1 } else { (enc - 1) as i32 };
-    (log_head, deleted)
+    let enc = (raw >> VERTEX_TAIL_RUN_SHIFT) & VERTEX_TAIL_RUN_MASK;
+    let spill_run = if enc == 0 { -1 } else { (enc - 1) as i32 };
+    (spill_run, deleted)
 }
 
-/// Fallible [`pack_vertex_tail28`] (log head must fit in 27 payload bits).
+/// Fallible [`pack_vertex_tail28`] (the spill run id must fit in 27 payload bits).
 #[inline]
-pub fn try_pack_vertex_tail28(log_head: i32, tombstone: bool) -> Option<u32> {
-    if log_head >= 0 {
-        let e = (log_head as u32).wrapping_add(1);
-        if e > VERTEX_TAIL_LOG_MASK {
+pub fn try_pack_vertex_tail28(spill_run: i32, tombstone: bool) -> Option<u32> {
+    if spill_run >= 0 {
+        let e = (spill_run as u32).wrapping_add(1);
+        if e > VERTEX_TAIL_RUN_MASK {
             return None;
         }
     }
-    Some(pack_vertex_tail28(log_head, tombstone))
+    Some(pack_vertex_tail28(spill_run, tombstone))
 }
 
 /// Encodes an overflow-log head (`-1` → [`OVERFLOW_LOG_NONE`]).

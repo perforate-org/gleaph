@@ -13,7 +13,7 @@
 //!
 //! For [`Vertex`], each row is 16 bytes: bytes `0..8` are the locator word (LE)
 //! — low 36 bits are `base_slot_start`, high 28 bits are tail metadata (bit 0 tombstone;
-//! bits 1–27 encode `(log_head + 1)`, `0` = no overflow log) — then `live_edges` and `slab_slots`.
+//! bits 1–27 encode `(spill_run + 1)`, `0` = no spill run) — then `live_edges` and `slab_slots`.
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
@@ -39,7 +39,6 @@
 
 use crate::{
     GrowFailed, VertexId,
-    lara::edge::DEFAULT_MAX_LOG_ENTRIES,
     lara::reserved::{region_is_zero, write_zeroes},
     read_u32, safe_write,
     slab_index::{
@@ -131,10 +130,8 @@ pub enum VertexFieldError {
     WireLengthMismatch,
     /// `base_slot_start` does not fit in 36 bits.
     SlotIndexOverflow,
-    /// Overflow log head does not fit in the packed tail28 encoding.
-    LogHeadOverflow,
-    /// Overflow log head is not in `0..`[`DEFAULT_MAX_LOG_ENTRIES`].
-    OverflowLogHeadOutOfRange,
+    /// Spill run id does not fit in the packed tail28 encoding.
+    SpillRunOverflow,
 }
 
 impl fmt::Display for VertexFieldError {
@@ -144,11 +141,9 @@ impl fmt::Display for VertexFieldError {
             Self::SlotIndexOverflow => {
                 write!(f, "vertex base_slot_start exceeds 36-bit slot index")
             }
-            Self::LogHeadOverflow => write!(f, "vertex log head does not fit in packed tail28"),
-            Self::OverflowLogHeadOutOfRange => write!(
-                f,
-                "vertex overflow log head must be < {DEFAULT_MAX_LOG_ENTRIES}"
-            ),
+            Self::SpillRunOverflow => {
+                write!(f, "vertex spill run id does not fit in packed tail28")
+            }
         }
     }
 }
@@ -159,7 +154,8 @@ impl std::error::Error for VertexFieldError {}
 ///
 /// `live_edges` is the logical out-degree (clean scans, rebalance packing).
 /// `slab_slots` is the physical slab prefix width; it may be larger while tombstoned cells from
-/// logical deletes await compaction on leaf rebalance.
+/// logical deletes await compaction on leaf rebalance. The locator's tail28 carries the bucket's
+/// spill run id (ADR 0097 §3), or `-1` when nothing has spilled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vertex {
@@ -181,15 +177,17 @@ impl Vertex {
     pub const BYTES: usize = 16;
 
     /// Builds a row from logical fields (panics on invalid input in debug).
+    ///
+    /// `spill_run` is the bucket's spill run id (ADR 0097 §3), or `-1` when nothing has spilled.
     #[inline]
     pub fn from_parts(
         base_slot_start: u64,
         live_edges: u32,
         slab_slots: u32,
-        log_head: i32,
+        spill_run: i32,
         deleted: bool,
     ) -> Self {
-        Self::try_from_parts(base_slot_start, live_edges, slab_slots, log_head, deleted)
+        Self::try_from_parts(base_slot_start, live_edges, slab_slots, spill_run, deleted)
             .expect("Vertex::from_parts: invalid fields")
     }
 
@@ -199,15 +197,14 @@ impl Vertex {
         base_slot_start: u64,
         live_edges: u32,
         slab_slots: u32,
-        log_head: i32,
+        spill_run: i32,
         deleted: bool,
     ) -> Result<Self, VertexFieldError> {
         if !slot_index_fits(base_slot_start) {
             return Err(VertexFieldError::SlotIndexOverflow);
         }
-        Self::validate_log_head(log_head)?;
         let tail =
-            try_pack_vertex_tail28(log_head, deleted).ok_or(VertexFieldError::LogHeadOverflow)?;
+            try_pack_vertex_tail28(spill_run, deleted).ok_or(VertexFieldError::SpillRunOverflow)?;
         let locator = try_encode_locator_word(base_slot_start, tail)
             .ok_or(VertexFieldError::SlotIndexOverflow)?;
         Ok(Self {
@@ -223,7 +220,10 @@ impl Vertex {
         decode_slot_index(self.locator)
     }
 
-    /// Head entry in the per-segment overflow log, or `-1` when no log is present.
+    /// This bucket's spill run id (ADR 0097 §3), or `-1` when nothing has spilled.
+    ///
+    /// Named `log_head` until the labeled packing slice renames the shared accessor once for both
+    /// modes; the value is already a spill run id on this (unlabeled) row.
     #[inline]
     pub fn log_head(self) -> i32 {
         unpack_vertex_tail28(decode_meta28(self.locator)).0
@@ -255,12 +255,11 @@ impl Vertex {
         Ok(self.with_locator(encode_locator_word(start, decode_meta28(self.locator))))
     }
 
-    /// Returns a copy with a new overflow log head (rejects out-of-range indices).
+    /// Returns a copy with a new spill run id (rejects ids that do not fit the 27-bit tail).
     #[inline]
     pub fn try_with_log_head(self, idx: i32) -> Result<Self, VertexFieldError> {
-        Self::validate_log_head(idx)?;
-        let tail =
-            try_pack_vertex_tail28(idx, self.deleted()).ok_or(VertexFieldError::LogHeadOverflow)?;
+        let tail = try_pack_vertex_tail28(idx, self.deleted())
+            .ok_or(VertexFieldError::SpillRunOverflow)?;
         Ok(self.with_tail28(tail))
     }
 
@@ -289,20 +288,12 @@ impl Vertex {
     }
 
     #[inline]
-    fn validate_log_head(log_head: i32) -> Result<(), VertexFieldError> {
-        if log_head >= 0 && log_head >= DEFAULT_MAX_LOG_ENTRIES as i32 {
-            return Err(VertexFieldError::OverflowLogHeadOutOfRange);
-        }
-        Ok(())
-    }
-
-    #[inline]
     fn ensure_valid_wire(self) -> Result<Self, VertexFieldError> {
         if !slot_index_fits(self.base_slot_start()) {
             return Err(VertexFieldError::SlotIndexOverflow);
         }
-        let (log_head, _) = unpack_vertex_tail28(decode_meta28(self.locator));
-        Self::validate_log_head(log_head)?;
+        // The tail is a fixed-width 27-bit run id, so every decoded value is in range by
+        // construction: there is no separate range to validate here (ADR 0097 §3).
         Ok(self)
     }
 }
@@ -357,7 +348,7 @@ impl CsrVertex for Vertex {
 
     fn with_log_head(self, idx: i32) -> Self {
         self.try_with_log_head(idx)
-            .expect("vertex overflow log head is invalid for packed LARA row")
+            .expect("vertex spill run id is invalid for packed LARA row")
     }
 }
 
@@ -624,8 +615,9 @@ mod tests {
     use super::{InitError, RESERVED_OFFSET, RESERVED_SIZE, Vertex, VertexFieldError, VertexStore};
     use crate::VectorMemory;
     use crate::{
-        lara::edge::DEFAULT_MAX_LOG_ENTRIES,
-        slab_index::{SLOT_INDEX_MASK, encode_locator_word, pack_vertex_tail28},
+        slab_index::{
+            SLOT_INDEX_MASK, VERTEX_TAIL_RUN_MASK, encode_locator_word, pack_vertex_tail28,
+        },
         traits::{CsrVertex, CsrVertexTombstone},
     };
     use ic_stable_structures::{Memory, Storable};
@@ -660,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn vertex_default_has_no_overflow_log() {
+    fn vertex_default_has_no_spill_run() {
         assert_eq!(Vertex::default().log_head(), -1);
     }
 
@@ -690,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_bit_preserves_log_head() {
+    fn tombstone_bit_preserves_spill_run() {
         let v = Vertex::from_parts(1, 2, 2, 42, false).with_tombstone(true);
         assert!(v.is_tombstone());
         assert_eq!(v.log_head(), 42);
@@ -708,18 +700,24 @@ mod tests {
     }
 
     #[test]
-    fn try_from_parts_rejects_overflow_log_head() {
+    fn try_from_parts_rejects_spill_run_overflow() {
+        // The tail28 field is a full 27-bit run id (ADR 0097 §3), so the old 170-entry log cap is
+        // gone: 170 is a valid run id now, and only a value that cannot be encoded is rejected.
+        // The tail stores `run + 1`, so the largest encodable id is one below the all-ones mask.
+        let max_run = VERTEX_TAIL_RUN_MASK as i32 - 1;
+        assert!(Vertex::try_from_parts(0, 0, 0, 170, false).is_ok());
+        assert!(Vertex::try_from_parts(0, 0, 0, max_run, false).is_ok());
         assert_eq!(
-            Vertex::try_from_parts(0, 0, 0, DEFAULT_MAX_LOG_ENTRIES as i32, false),
-            Err(VertexFieldError::OverflowLogHeadOutOfRange)
+            Vertex::try_from_parts(0, 0, 0, max_run + 1, false),
+            Err(VertexFieldError::SpillRunOverflow)
         );
     }
 
     #[test]
-    #[should_panic(expected = "vertex overflow log head is invalid for packed LARA row")]
-    fn oversized_log_head_panics() {
+    #[should_panic(expected = "vertex spill run id is invalid for packed LARA row")]
+    fn oversized_spill_run_panics() {
         let v = Vertex::default();
-        let _ = v.with_log_head(DEFAULT_MAX_LOG_ENTRIES as i32);
+        let _ = v.with_log_head(VERTEX_TAIL_RUN_MASK as i32);
     }
 
     #[test]
@@ -731,15 +729,20 @@ mod tests {
     }
 
     #[test]
-    fn try_read_from_rejects_overflow_log_on_wire() {
-        let tail = pack_vertex_tail28(DEFAULT_MAX_LOG_ENTRIES as i32, false);
-        let locator = encode_locator_word(0, tail);
-        let mut bytes = [0u8; Vertex::BYTES];
-        bytes[0..8].copy_from_slice(&locator.to_le_bytes());
-        assert_eq!(
-            Vertex::try_read_from(&bytes),
-            Err(VertexFieldError::OverflowLogHeadOutOfRange)
-        );
+    fn try_read_from_accepts_the_full_spill_run_range() {
+        // A 27-bit field cannot hold an out-of-range id, so the wire check that remains is the
+        // round trip: the retired 170-entry log cap no longer rejects a wire row, and the largest
+        // encodable run id (`mask - 1`, because the tail stores `run + 1`) survives encode/decode.
+        for run in [170i32, VERTEX_TAIL_RUN_MASK as i32 - 1] {
+            let tail = pack_vertex_tail28(run, false);
+            let locator = encode_locator_word(0, tail);
+            let mut bytes = [0u8; Vertex::BYTES];
+            bytes[0..8].copy_from_slice(&locator.to_le_bytes());
+            assert_eq!(
+                Vertex::try_read_from(&bytes).expect("wire row").log_head(),
+                run
+            );
+        }
     }
 
     #[test]
