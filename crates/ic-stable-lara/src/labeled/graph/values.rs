@@ -585,11 +585,7 @@ where
                 Err(LabeledOperationError::InlinePropertyBytesLogWrite(
                     InlinePropertyBytesLogWriteError::ValuesRunFull,
                 )) => {
-                    self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
-                    bucket = self
-                        .buckets
-                        .read_label_bucket_slot(bucket_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
                     return self.write_edge_inline_property_to_log(&bucket, -1, edge);
                 }
                 Err(err) => return Err(err),
@@ -1356,11 +1352,7 @@ where
             BucketSearch::Missing { .. } => return Ok(false),
         };
         if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
-            bucket = self
-                .buckets
-                .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            bucket = self.fold_bucket_values_run_into_slab(src, slot, bucket)?;
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         if !self.labeled_bucket_slot_is_live_edge(

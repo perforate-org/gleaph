@@ -362,13 +362,13 @@ benches:
   bench_l_df_ip_frag_enq_6:
     total:
       calls: 1
-      instructions: 87051151
+      instructions: 87051135
       heap_increase: 1310
       stable_memory_increase: 0
     scopes:
       inline_property_deferred_enqueue_insert:
         calls: 1
-        instructions: 69566
+        instructions: 69564
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
@@ -383,13 +383,13 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 4
-        instructions: 90617
+        instructions: 90609
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_df_ip_frag_mnt_6:
     total:
       calls: 1
-      instructions: 87162594
+      instructions: 87162578
       heap_increase: 1310
       stable_memory_increase: 0
     scopes:
@@ -410,7 +410,7 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 4
-        instructions: 90617
+        instructions: 90609
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_df_mnt_cv_1:
@@ -1175,7 +1175,7 @@ benches:
   bench_l_ip_exg_256:
     total:
       calls: 1
-      instructions: 49900483
+      instructions: 49900227
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -1187,7 +1187,7 @@ benches:
   bench_l_ip_frag_comp:
     total:
       calls: 1
-      instructions: 43470223
+      instructions: 43470216
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -1208,19 +1208,19 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 45323
+        instructions: 45319
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_frag_s4_ctl:
     total:
       calls: 1
-      instructions: 43458770
+      instructions: 43458762
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
       inline_property_fragmented_control_insert:
         calls: 1
-        instructions: 31783
+        instructions: 31782
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
@@ -1235,19 +1235,19 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 45323
+        instructions: 45319
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_frag_s6:
     total:
       calls: 1
-      instructions: 43527777
+      instructions: 43527769
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
       inline_property_fragmented_trigger_insert:
         calls: 1
-        instructions: 100790
+        instructions: 100789
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
@@ -1262,13 +1262,13 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 45323
+        instructions: 45319
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_pstats_16:
     total:
       calls: 1
-      instructions: 46569447
+      instructions: 46569383
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -1284,13 +1284,13 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 16
-        instructions: 475813
+        instructions: 475781
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_pstats_256:
     total:
       calls: 1
-      instructions: 312687671
+      instructions: 312686647
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -1306,13 +1306,13 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 256
-        instructions: 9135412
+        instructions: 9134900
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_pstats_64:
     total:
       calls: 1
-      instructions: 67018830
+      instructions: 67018574
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -1328,7 +1328,7 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 64
-        instructions: 2062521
+        instructions: 2062393
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ip_spill_8b_of:
@@ -4157,7 +4157,7 @@ benches:
   tiny_delete_d2_1024:
     total:
       calls: 1
-      instructions: 6574077
+      instructions: 6574065
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

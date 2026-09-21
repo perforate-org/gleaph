@@ -649,11 +649,8 @@ where
             return Err(LaraOperationError::LogChainShort.into());
         };
         if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
-            bucket = self
-                .buckets
-                .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            // Only this bucket's rows are about to be shifted, so only this bucket is folded.
+            bucket = self.fold_bucket_values_run_into_slab(src, slot, bucket)?;
         }
         let inline_property_bytes_delete = self.plan_bucket_inline_property_bytes_delete(
             src,

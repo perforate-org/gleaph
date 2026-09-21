@@ -466,18 +466,9 @@ where
                             .spill_mint(bucket.values_spill_run())
                             .is_ok_and(|run| self.values.spill_run_is_full(run))
                     {
-                        self.rebalance_inline_property_bytes_log_leaf_for_labeled(src)?;
                         let vertex = self.vertices.get(src);
                         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                        bucket = self
-                            .buckets
-                            .read_label_bucket_slot(bucket_slot)
-                            .ok_or_else(|| {
-                                log_collect_overflow(
-                                    "insert_edge_skip_leaf_cascade: cannot re-read bucket after inline property bytes log rebalance",
-                                );
-                                LaraOperationError::CollectAllocationOverflow
-                            })?;
+                        bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
                         continue;
                     }
                     // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab

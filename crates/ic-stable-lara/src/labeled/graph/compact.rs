@@ -2721,43 +2721,30 @@ where
         Ok(bucket)
     }
 
-    pub(super) fn rebalance_inline_property_bytes_log_leaf_for_labeled(
+    /// Folds one bucket's values run into its slab.
+    ///
+    /// The caller needs those rows in the slab - a delete shifts the dense slab sequence, and a
+    /// full run needs slab room - and that is the only reason to fold. ADR 0097 §5 leaves nothing
+    /// leaf-level to sweep for: the per-leaf log this used to release is gone, so the leaf-wide
+    /// version of this forced the same copy on every run-backed bucket in the leaf (one delete
+    /// fanned out into ~56 leaf rewrites where main did one). db04af585's rule applies - relief is
+    /// not forced for rows that are not span content - so the fold is per bucket, at the one call
+    /// site that needs it.
+    pub(super) fn fold_bucket_values_run_into_slab(
         &self,
         src: VertexId,
-    ) -> Result<(), LabeledOperationError> {
-        let seg_size = self.edges.header().segment_size.max(1);
-        let leaf = u32::from(src) / seg_size;
-        let start_vid = leaf.saturating_mul(seg_size);
-        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
-        for vid_u in start_vid..end_vid {
-            let vid = VertexId::from(vid_u);
-            let vertex = self.vertices.get(vid);
-            if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
-                continue;
-            }
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            for (bucket_index, bucket) in buckets.iter().enumerate() {
-                // ADR 0096 §5: tiny buckets hold no value log and no values —
-                // skip before the log-head check below (payload bytes are not
-                // log state for degree 3).
-                if bucket.is_tiny_mode() {
-                    continue;
-                }
-                if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN {
-                    continue;
-                }
-                let bucket_index = bucket_index as u32;
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                self.fold_label_bucket_inline_property_bytes_log_to_slab(
-                    vid,
-                    &vertex,
-                    bucket_index,
-                    slot,
-                    *bucket,
-                )?;
-            }
-        }
-        Ok(())
+        bucket_slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        let vertex = self.vertices.get(src);
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        self.fold_label_bucket_inline_property_bytes_log_to_slab(
+            src,
+            &vertex,
+            bucket_index,
+            bucket_slot,
+            bucket,
+        )
     }
 
     /// Plan 0341 (GAP-2026-09-07-001 bypass side): left-pack a tombstoned
