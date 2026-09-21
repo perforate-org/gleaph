@@ -305,8 +305,9 @@ impl From<LabeledVertexFieldError> for LaraOperationError {
             LabeledVertexFieldError::LabelBucketCountOverflow
             | LabeledVertexFieldError::LabelBucketDescriptorSpanOverflow => Self::RowDegreeOverflow,
             LabeledVertexFieldError::SlotIndexOverflow
-            | LabeledVertexFieldError::MetadataReservedBitSet
-            | LabeledVertexFieldError::BypassOverflowLogHeadOutOfRange
+            | LabeledVertexFieldError::MetadataReservedBitsSet
+            | LabeledVertexFieldError::SpillRunOutOfRange
+            | LabeledVertexFieldError::SpillRunOnNormalRow
             | LabeledVertexFieldError::ValueAllocatedBytesOverflow => {
                 Self::CollectAllocationOverflow
             }

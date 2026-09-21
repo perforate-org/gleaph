@@ -1169,16 +1169,18 @@ impl CsrEdge for LabelBucket {
 /// bit 0      vertex tombstone (highest-priority scan gate)
 /// bit 1      default-label bypass active
 /// bit 2      bypass stores undirected homogeneous edges
-/// bit 3      reserved
-/// bits 4–11  bypass overflow log head (`u8`, `0xFF` = none; max index 169)
-/// bits 12–27 LabelBucket descriptor slack beyond [`LabeledVertex::degree`] (`u16`, normal only)
+/// bits 3–27  bypass mode: named reserve (ADR 0097 §3) - "reserve for the next bound widening,
+///            not padding". The retired 8-bit bypass edge overflow-log head freed bits 4–11; bits
+///            3 and 12–27 were already unused in bypass mode. It cannot raise the edge arena's
+///            bound (the shared tail28 sets it), and the bypass run id lives in its own field.
+/// bits 12–27 normal mode: LabelBucket descriptor slack beyond [`LabeledVertex::degree`] (`u16`)
 /// ```
 const VERTEX_TOMBSTONE_BIT: u32 = 1;
 const DEFAULT_EDGE_LABELED_BIT: u32 = 1 << 1;
 const BYPASS_UNDIRECTED_BIT: u32 = 1 << 2;
-const METADATA28_RESERVED_BIT: u32 = 1 << 3;
-const BYPASS_LOG_HEAD_SHIFT: u32 = 4;
-const BYPASS_LOG_HEAD_MASK: u32 = 0xFF << BYPASS_LOG_HEAD_SHIFT;
+/// Bypass-mode metadata28 bits 3..28: named reserve (ADR 0097 §3), zero on the wire.
+const BYPASS_METADATA_RESERVE_BITS: u32 = 25;
+const BYPASS_METADATA_RESERVE_MASK: u32 = ((1 << BYPASS_METADATA_RESERVE_BITS) - 1) << 3;
 const BUCKET_SLACK_SHIFT: u32 = 12;
 const BUCKET_SLACK_BITS: u32 = 16;
 const BUCKET_SLACK_MASK: u32 = ((1 << BUCKET_SLACK_BITS) - 1) << BUCKET_SLACK_SHIFT;
@@ -1198,10 +1200,12 @@ pub enum LabeledVertexFieldError {
     LabelBucketDescriptorSpanOverflow,
     /// `base_slot_start` does not fit in the 36-bit slot index.
     SlotIndexOverflow,
-    /// Metadata bit 3 (reserved) must be zero on wire.
-    MetadataReservedBitSet,
-    /// Bypass overflow log head byte is out of range.
-    BypassOverflowLogHeadOutOfRange,
+    /// Bypass-mode metadata28 reserve bits are not zero on the wire.
+    MetadataReservedBitsSet,
+    /// A bypass spill run id is out of the shared arena's range or is the sentinel.
+    SpillRunOutOfRange,
+    /// A normal (bucket-mode) vertex carries a bypass spill run id, which only bypass rows may.
+    SpillRunOnNormalRow,
     /// [`Self::inline_property_bytes_allocated_bytes`] does not fit in the 40-bit byte-offset space.
     ValueAllocatedBytesOverflow,
 }
@@ -1222,11 +1226,20 @@ impl core::fmt::Display for LabeledVertexFieldError {
             Self::SlotIndexOverflow => {
                 write!(f, "vertex base_slot_start exceeds 36-bit slot index")
             }
-            Self::MetadataReservedBitSet => {
-                write!(f, "vertex metadata reserved bit 3 must be zero")
+            Self::MetadataReservedBitsSet => {
+                write!(f, "vertex bypass metadata reserve bits must be zero")
             }
-            Self::BypassOverflowLogHeadOutOfRange => {
-                write!(f, "bypass overflow log head out of range")
+            Self::SpillRunOutOfRange => {
+                write!(
+                    f,
+                    "vertex bypass spill run id is out of range or is the sentinel"
+                )
+            }
+            Self::SpillRunOnNormalRow => {
+                write!(
+                    f,
+                    "normal (bucket-mode) vertex must not carry a bypass spill run id"
+                )
             }
             Self::ValueAllocatedBytesOverflow => {
                 write!(
@@ -1240,28 +1253,16 @@ impl core::fmt::Display for LabeledVertexFieldError {
 
 impl std::error::Error for LabeledVertexFieldError {}
 
-#[inline]
-fn encode_bypass_overflow_log_head(head: i32) -> u32 {
-    let byte = encode_overflow_log_byte(head);
-    u32::from(byte) << BYPASS_LOG_HEAD_SHIFT
-}
-
-#[inline]
-fn decode_bypass_overflow_log_head(raw: u32) -> i32 {
-    let byte = ((raw & BYPASS_LOG_HEAD_MASK) >> BYPASS_LOG_HEAD_SHIFT) as u8;
-    decode_overflow_log_byte(byte)
-}
-
 /// Per-vertex locator for one labeled CSR orientation (21 bytes).
 ///
 /// - **Normal:** [`Self::degree`] is the live [`LabelBucket`] row count (≤ [`MAX_VERTEX_LABEL_BUCKETS`]);
 ///   locator bits 36–63 hold [`Self::bucket_slack_slots`] so the physical descriptor span is
 ///   `degree + slack`; [`Self::stored_slots`] is the separate VertexEdgeSpan width for edge bytes.
 /// - **Bypass:** [`Self::degree`] is the logical out-edge count (full `u32`); [`Self::stored_slots`]
-///   is the stored slab width (tombstones included). Overflow-log head lives in metadata28
-///   bits 4–11 ([`CsrVertex::log_head`], wire byte `0xFF` = slab-only).
+///   is the stored slab width (tombstones included). The bypass spill run id lives in its own
+///   field at bytes 21..25; metadata28 bits 3..27 are a named reserve in bypass mode (ADR 0097 §3).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabeledVertex {
     locator: u64,
     /// Logical out-degree or live label-bucket row count (mode-dependent).
@@ -1270,11 +1271,27 @@ pub struct LabeledVertex {
     pub stored_slots: u32,
     /// Physical byte width of this vertex's value span in `EdgeInlinePropertyBytesStore` (slack included).
     inline_property_bytes_allocated_bytes: u64,
+    /// Bypass-mode spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`]. 27 bits of this `u32` field are
+    /// used (the shared arena's range, `ArenaRows::EDGE`); the top 5 bits are zero. A normal
+    /// (bucket-mode) row carries no level-1 spill, so the field must be [`NO_SPILL_RUN`] there.
+    bypass_spill_run: u32,
+}
+
+impl Default for LabeledVertex {
+    /// All-zero row with no spill run: `bypass_spill_run` must default to [`NO_SPILL_RUN`], not to
+    /// the derived `0`, which would read as a live run id.
+    fn default() -> Self {
+        Self::try_from_parts(0, 0, 0, 0, 0).expect("LabeledVertex::default: zero row")
+    }
 }
 
 impl LabeledVertex {
     /// Fixed byte width of one encoded vertex row.
-    pub const BYTES: usize = 21;
+    ///
+    /// ADR 0097 §3: 21 -> 25 bytes for the bypass spill run id, in its own `u32` field. The 25
+    /// metadata28 bits the retired bypass edge log head freed are a named reserve, not scattered
+    /// into the id (one packing helper per field, ADR 0096 §2).
+    pub const BYTES: usize = 25;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -1303,8 +1320,10 @@ impl LabeledVertex {
         if !byte_offset_fits(inline_property_bytes_allocated_bytes) {
             return Err(LabeledVertexFieldError::ValueAllocatedBytesOverflow);
         }
-        if metadata28 & METADATA28_RESERVED_BIT != 0 {
-            return Err(LabeledVertexFieldError::MetadataReservedBitSet);
+        if metadata28 & BYPASS_METADATA_RESERVE_MASK != 0
+            && (metadata28 & DEFAULT_EDGE_LABELED_BIT) == 0
+        {
+            // Normal-mode rows own bits 12..27 as bucket slack; the reserve is bypass-only.
         }
         let locator = try_encode_locator_word(base_slot_start, metadata28)
             .ok_or(LabeledVertexFieldError::SlotIndexOverflow)?;
@@ -1313,6 +1332,7 @@ impl LabeledVertex {
             degree,
             stored_slots,
             inline_property_bytes_allocated_bytes,
+            bypass_spill_run: NO_SPILL_RUN,
         })
     }
 
@@ -1384,15 +1404,14 @@ impl LabeledVertex {
         if enabled {
             raw |= DEFAULT_EDGE_LABELED_BIT;
             raw &= !BUCKET_SLACK_MASK;
-            raw &= !BYPASS_LOG_HEAD_MASK;
-            raw |= encode_bypass_overflow_log_head(-1);
+            raw &= !BYPASS_METADATA_RESERVE_MASK;
             self.with_metadata_word(raw)
                 .with_degree(0)
                 .with_stored_slots(0)
         } else {
             raw &= !DEFAULT_EDGE_LABELED_BIT;
             raw &= !BYPASS_UNDIRECTED_BIT;
-            raw &= !BYPASS_LOG_HEAD_MASK;
+            raw &= !BYPASS_METADATA_RESERVE_MASK;
             self.with_metadata_word(raw)
         }
     }
@@ -1489,38 +1508,47 @@ impl LabeledVertex {
         u16::try_from(slack).ok()
     }
 
-    /// Bypass-only overflow log head from metadata bits 4–11 (`-1` when absent).
+    /// Bypass-mode spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
     #[inline]
-    pub fn bypass_overflow_log_head(self) -> i32 {
-        if self.is_default_edge_labeled() {
-            decode_bypass_overflow_log_head(self.metadata_word())
-        } else {
-            -1
-        }
+    pub fn bypass_spill_run(self) -> u32 {
+        self.bypass_spill_run
     }
 
-    /// Returns a copy with the bypass overflow log head changed (bypass mode only).
+    /// Fallible setter for the bypass spill run id: it must fit the shared arena's capacity
+    /// ([`ArenaRows::EDGE`], the unlabeled tail28's 27-bit range) and must not be the sentinel.
     #[inline]
-    pub fn with_bypass_overflow_log_head(self, head: i32) -> Self {
+    pub fn try_with_bypass_spill_run(self, run: u32) -> Result<Self, LabeledVertexFieldError> {
+        if SpillRunId::mint(run, ArenaRows::EDGE).is_err() {
+            return Err(LabeledVertexFieldError::SpillRunOutOfRange);
+        }
+        Ok(Self {
+            bypass_spill_run: run,
+            ..self
+        })
+    }
+
+    /// Returns a copy with the bypass spill run id set (bypass mode only).
+    #[inline]
+    pub fn with_bypass_spill_run(self, run: u32) -> Self {
         debug_assert!(self.is_default_edge_labeled());
-        let mut raw = self.metadata_word() & !BYPASS_LOG_HEAD_MASK;
-        raw |= encode_bypass_overflow_log_head(head);
-        self.with_metadata_word(raw)
+        self.try_with_bypass_spill_run(run)
+            .expect("LabeledVertex::with_bypass_spill_run: run id out of range")
     }
 
     /// Validates normal-mode label-bucket row count and descriptor span.
     #[inline]
     pub fn ensure_valid_normal_row(self) -> Result<Self, LabeledVertexFieldError> {
-        if self.metadata_word() & METADATA28_RESERVED_BIT != 0 {
-            return Err(LabeledVertexFieldError::MetadataReservedBitSet);
-        }
         if self.is_default_edge_labeled() {
-            let head_byte =
-                ((self.metadata_word() & BYPASS_LOG_HEAD_MASK) >> BYPASS_LOG_HEAD_SHIFT) as u8;
-            if head_byte != OVERFLOW_LOG_NONE && head_byte >= 170 {
-                return Err(LabeledVertexFieldError::BypassOverflowLogHeadOutOfRange);
+            // ADR 0097 §3: the retired bypass edge log head left metadata28 bits 3..28 as a named
+            // reserve; they are zero on the wire, and the bypass run id lives in its own field.
+            if self.metadata_word() & BYPASS_METADATA_RESERVE_MASK != 0 {
+                return Err(LabeledVertexFieldError::MetadataReservedBitsSet);
             }
             return Ok(self);
+        }
+        // A normal (bucket-mode) vertex carries no level-1 spill.
+        if self.bypass_spill_run != NO_SPILL_RUN {
+            return Err(LabeledVertexFieldError::SpillRunOnNormalRow);
         }
         if !Self::label_bucket_count_fits(self.degree) {
             return Err(LabeledVertexFieldError::LabelBucketCountOverflow);
@@ -1622,6 +1650,7 @@ impl LabeledVertex {
             "LabeledVertex inline_property_bytes_allocated_bytes wire slice must be 5 bytes",
         );
         write_u40(self.inline_property_bytes_allocated_bytes, value_alloc_wire);
+        bytes[21..25].copy_from_slice(&self.bypass_spill_run.to_le_bytes());
     }
 
     /// Decodes a vertex row from exactly [`Self::BYTES`] bytes.
@@ -1643,6 +1672,7 @@ impl LabeledVertex {
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
             stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
             inline_property_bytes_allocated_bytes,
+            bypass_spill_run: u32::from_le_bytes(chunk[21..25].try_into().unwrap()),
         };
         vertex.ensure_valid_normal_row()
     }
@@ -1682,16 +1712,19 @@ impl CsrVertex for LabeledVertex {
         self
     }
 
+    /// A bypass bucket's edges live in the core EdgeStore, whose per-leaf log dies with the
+    /// conversion (ADR 0097 §3): the per-bucket spill run replaces it, so there is no log head.
     fn log_head(self) -> i32 {
-        self.bypass_overflow_log_head()
+        -1
     }
 
-    fn with_log_head(self, idx: i32) -> Self {
-        if self.is_default_edge_labeled() {
-            LabeledVertex::with_bypass_overflow_log_head(self, idx)
-        } else {
-            self
-        }
+    /// Interim: turn 2 deletes the trait method. A log write would lose its head silently, so this
+    /// fails closed instead.
+    fn with_log_head(self, _idx: i32) -> Self {
+        panic!(
+            "LabeledVertex has no edge overflow log head (ADR 0097 §3); the spill run replaces it, \
+             and this interim trait method is deleted when the log API is converted"
+        )
     }
 
     fn slab_append_exclusive_end(self, base: u64) -> Option<u64> {

@@ -2446,6 +2446,8 @@ mod g6_zero_read_tests {
             .unwrap();
         let sr = reads.get();
         let sw = writes.get();
+        // Derived at the current head: 372 + 5 descriptor reads x 7 + 1 vertex read x 4 = 411 reads,
+        // 65 + 1 descriptor write x 7 = 72 writes.
         assert_eq!((sr, sw), (411, 72), "slab control byte shape changed");
         assert!(
             sr > r && sw > w,

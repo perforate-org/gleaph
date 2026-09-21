@@ -82,13 +82,10 @@ where
             .map_err(LabeledOperationError::from)
     }
 
-    fn default_bypass_edge_log_slots(&self, src: VertexId, vertex: &LabeledVertex) -> u32 {
-        let head = vertex.bypass_overflow_log_head();
-        if head < 0 {
-            return 0;
-        }
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        self.edges.overflow_log_chain_asc_indices(leaf, head).len() as u32
+    /// Resident spill rows of a bypass bucket: the run's used length (ADR 0097 §3). Replaces the
+    /// retired per-leaf log chain walk.
+    fn default_bypass_edge_log_slots(&self, _src: VertexId, vertex: &LabeledVertex) -> u32 {
+        self.edges.spill_used_len(vertex.bypass_spill_run())
     }
 
     fn default_bypass_slab_prefix_slots(&self, src: VertexId, vertex: &LabeledVertex) -> u32 {

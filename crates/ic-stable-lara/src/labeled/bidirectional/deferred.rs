@@ -1718,7 +1718,7 @@ where
         }
         // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the
         // existing fold mechanism.
-        if vertex.bypass_overflow_log_head() >= 0 {
+        if vertex.bypass_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(());
         }
         let stored = u64::from(vertex.stored_slots);
