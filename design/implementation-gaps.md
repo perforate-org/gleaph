@@ -5816,3 +5816,23 @@ work list ("File-by-file plan for the log-to-spill swap", including the recommen
 that wants a fresh, focused session rather than the tail of this one, and the session's job has been to make it
 cheap to start: the problem is measured, the alternatives are argued, the invariants and the deletion list are
 written down, the allocator's first two slices are implemented and tested, and the workspace is prepared.
+
+## Delegation record: the swap is being implemented outside this checkout (2026-09-20)
+
+The log-to-spill swap is delegated to the Herdr agent `gleaph-lara-impl` (pane `w1:pS`, kind `pi`, cwd
+`/Users/yota/dev/gleaph`), which was renamed from an unnamed pane for this purpose via
+`herdr agent rename w1:pS gleaph-lara-impl` (the name had not reached Herdr's server state before that, which is why
+`herdr agent get gleaph-lara-impl` initially returned `agent_not_found` while `herdr agent list` showed only
+`vecdeque-impl` and the reference-repo `lara-impl` in `w2:p2`).
+
+Its instructions are the file `~/dev/gleaph-spill/SPILL_SWAP_BRIEF.md`: work only in the prepared worktree
+(`git worktree add ~/dev/gleaph-spill HEAD`, detached at `0d176b579`), start a `spill-swap` branch, follow ADR 0097
+as the contract and the file-by-file plan as the work list, keep the two existing spill-store slices, and report per
+slice with evidence (test counts, gate output, the GAP-006 audit re-run showing zero fixed log capacity, and the
+`bench_l_nt_bp` number). The brief also carries the rules this session learned the hard way: no `git stash`, no
+tree-wide state operations, scoped `fmt`/`clippy` only, never weaken a test to make an implementation pass, and
+re-derive a test with its justification when a mechanism changes.
+
+This checkout stays the reviewer's copy: `main` remains at 621/0 and must not receive any of the swap's intermediate
+states. The review gate on its report is: re-run `cargo test -p ic-stable-lara --lib`, scoped `fmt`/`clippy`, the
+audit probe, and `canbench compact`/`ins`; only then decide which commits land, in code-then-docs order.
