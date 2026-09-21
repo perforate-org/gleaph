@@ -38,35 +38,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    fn overflow_chain_slot_moves_after_delete(
-        &self,
-        leaf: u32,
-        chain: &[u32],
-        removed_ordinal: usize,
-        slab_prefix_slots: u32,
-        label_id: BucketLabelKey,
-    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError> {
-        let mut moves = Vec::with_capacity(chain.len().saturating_sub(removed_ordinal + 1));
-        for (ordinal, entry_idx) in chain.iter().enumerate().skip(removed_ordinal + 1) {
-            let (_, edge) = self.edges.read_overflow_log_entry(leaf, *entry_idx);
-            if edge.is_deleted_slot() {
-                continue;
-            }
-            let old_slot_index = slab_prefix_slots
-                .checked_add(
-                    u32::try_from(ordinal)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-                )
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            moves.push(EdgeSlotMove {
-                label_id,
-                old_slot_index,
-                new_slot_index: old_slot_index - 1,
-            });
-        }
-        Ok(moves)
-    }
-
     fn decrement_edge_counts_after_remove(
         &self,
         src: VertexId,
@@ -126,17 +97,16 @@ where
                 let edge = self.edges.read_slot(physical);
                 return Ok(!edge.is_deleted_slot() && !edge.is_tombstone_edge());
             }
-            let leaf = self.inline_property_bytes_log_leaf(src);
             let ordinal = slot_index
                 .checked_sub(prefix)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let chain = self
-                .edges
-                .overflow_log_chain_asc_indices(leaf, vertex.bypass_overflow_log_head());
-            let Some(&entry_idx) = chain.get(ordinal as usize) else {
+            let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
                 return Ok(false);
             };
-            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            if ordinal >= self.edges.spill_used_len(run) {
+                return Ok(false);
+            }
+            let edge = self.edges.spill_edge_at(run, ordinal)?;
             return Ok(!edge.is_tombstone_edge());
         }
         let BucketSearch::Found { bucket, .. } = self.find_bucket(src, &vertex, label_id)? else {
@@ -165,47 +135,33 @@ where
         }
         let slab_prefix_slots = self.default_bypass_slab_prefix_slots(src, &vertex);
         if slot_index >= slab_prefix_slots {
-            let leaf = self.inline_property_bytes_log_leaf(src);
             let log_ordinal = slot_index
                 .checked_sub(slab_prefix_slots)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let chain = self
-                .edges
-                .overflow_log_chain_asc_indices(leaf, vertex.bypass_overflow_log_head());
-            let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
+            let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
                 return Ok(None);
             };
-            let newer_entry_idx = chain.get(log_ordinal as usize + 1).copied();
-            let (_, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            if log_ordinal >= self.edges.spill_used_len(run) {
+                return Ok(None);
+            }
+            let removed = self.edges.spill_edge_at(run, log_ordinal)?;
             if removed.is_tombstone_edge() {
                 return Ok(None);
             }
-            let moves = self.overflow_chain_slot_moves_after_delete(
-                leaf,
-                &chain,
-                log_ordinal as usize,
-                slab_prefix_slots,
-                label_id,
-            )?;
-            let new_head = self
-                .edges
-                .unlink_overflow_log_entry(
-                    leaf,
-                    vertex.bypass_overflow_log_head(),
-                    entry_idx,
-                    newer_entry_idx,
-                )
-                .unwrap_or_else(|_| panic!("preflighted edge-log unlink failed"));
-            self.vertices.set(
-                src,
-                &vertex.with_log_head(new_head).after_slab_tombstone_delete(),
-            );
+            // ADR 0097 §7: a delete tombstones the row in place and the run's length is unchanged,
+            // so no ordinal shifts and no observer move is produced. This is a semantic change from
+            // the chain splice (which reported the shifted ordinals), and it strengthens "no row
+            // ever shifts": the delete path can no longer move anything. Deletion still reaches
+            // observers through the removal callback, not through `moves`.
+            self.edges.spill_tombstone_row(run, log_ordinal)?;
+            self.vertices
+                .set(src, &vertex.after_slab_tombstone_delete());
             self.decrement_edge_counts_after_remove(src)?;
             return Ok(Some(EdgeRemoval {
                 removed: removed
                     .with_slot_index(slot_index)
                     .with_label_id(label_id.raw()),
-                moves,
+                moves: Vec::new(),
             }));
         }
 
@@ -266,20 +222,16 @@ where
         if vertex.bypass_spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        let chain = self
-            .edges
-            .overflow_log_chain_asc_indices(leaf, vertex.bypass_overflow_log_head());
-        for (ordinal, entry_idx) in chain.into_iter().enumerate() {
-            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
+            return Ok(None);
+        };
+        for ordinal in 0..self.edges.spill_used_len(run) {
+            let edge = self.edges.spill_edge_at(run, ordinal)?;
             if edge.is_tombstone_edge() {
                 continue;
             }
             let slot_index = slab_prefix_slots
-                .checked_add(
-                    u32::try_from(ordinal)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-                )
+                .checked_add(ordinal)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = edge
                 .with_slot_index(slot_index)
