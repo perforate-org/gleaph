@@ -208,7 +208,7 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: production measured; scan regressions and newly exposed bypass traversal failure remain.** Diagnostic source
+**Status: initialized-extent correctness fixed; scoped scan/delete comparison passes. Broader landing remains open.** Diagnostic source
 revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
 reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
@@ -351,18 +351,18 @@ Rust `1.100.0-nightly (574ff7d98)`: its `Map` has no `nth` override and visits s
 items. No reproduced red signal is claimed for that report. The original 202-versus-7 replay
 read-count witness remains valid.
 
-The stronger graph fixture fails against both `e5f374594` and the correction. It seeds a
+Before `bbe4d04e5`, the stronger graph fixture failed against both `e5f374594` and the correction. It seeds a
 real label bucket, converts with `enable_default_edge_bypass`, verifies the run, tombstones
 slots 31/32/66, then checks exact slot/target order. Ascending traversal returns the five real
 prefix rows followed by zero-filled span rows instead of the run's live rows. The owning
 path is `out_edges_iter -> on_slab_edges_with_layout`: bypass `stored_degree` includes run
 rows, while prefix sizing uses the slab window. This exposes a separate prefix-extent
-contract problem; do not weaken the assertion or claim bypass spill-matching coverage until
-it is resolved. The failing fixture remains in the worktree, with a preserved patch at
+contract problem, now fixed in `bbe4d04e5` with the strengthened fixture committed. The old
+failing fixture and output were preserved at
 `/tmp/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
 sidecar spill preconditions are included; sidecar checks pass.
 
-Current library validation with that fixture: **630 passed / 1 failed**. Scoped formatting
+Historical validation before the extent fix: **630 passed / 1 failed**. Scoped formatting
 and `cargo clippy -p ic-stable-lara --lib -- -D warnings` pass. Production focused runs completed
 without persistence; [exact totals and matching scope](evidence/adr0097-production-read-granularity.csv):
 
@@ -381,15 +381,66 @@ bench_l_s2_h_scn_d_1024 --csv` (5 seconds) and `timeout 120 canbench
 bench_l_s2_h_del_1024 --csv` (4 seconds). All exited 0. Logs, exact CSVs, standard-library
 source evidence and red/green results are in `/tmp/spill-corrections/`.
 
-The unfiltered final persistence gate is **not run** because the coverage gate fails and
-scan acceptance is unmet. Benchmark source and persisted YAML remain unchanged; no final
-artifact, space/headline revalidation or broader landing acceptance is claimed.
+#### Completed correctness and production follow-up
 
-Historical headline (not rerun here): measured main 390.60 K / 391.09 K / 391.09 K versus
-current persisted 365,548 / 365,548 / 365,497 for `bench_l_nt_bp_ins_256/1024/4096`.
-Historical capacity audit (not rerun here): **66 -> 41 pages**; no experimental layout change.
-The recovered 189-name comparison reports **38 differences above +5%** against rounded main;
-this is not the last landing gate.
+`bbe4d04e5` fixes the shared initialized-extent decision. `CsrVertex::initialized_slab_slots`
+projects total width minus run rows for core/bypass rows; `LabelBucket` projects its stored
+prefix directly. `EdgeStore::initialized_slab_slots` validates the run and checked extent,
+replacing capacity-window inference in both scans and slot-location consumers. Bypass
+existence/matching/removal use that same owner; the separate saturating helper is deleted.
+The graph-kernel wrapper inherits the core/bypass projection through its delegated width.
+No storage layout, row movement or compaction policy changes. The committed real conversion
+fixture now verifies 4/10-byte rows, mintable runs crossing a chunk, pre/post-tombstone scans,
+first prefix/first spill/middle/last/miss cases, predicate order, exact surviving slots and
+empty movements. The inherited conversion witness now explicitly requires a nonempty run.
+
+Performance follow-up measured one change at a time (exact instructions):
+
+| Variant | point | scan | delete total | matching scope |
+| --- | ---: | ---: | ---: | ---: |
+| Extent fix only | 23,177,877 | 23,125,194 | 50,004,983 | 46,647,860 |
+| Remove speculative loaded-chunk state | 22,441,437 | 22,388,754 | 46,310,515 | 42,953,392 |
+| Additionally collect replay directly in checked chunks | 17,178,033 | 17,125,350 | 46,310,515 | 42,953,392 |
+| Final shared checked buffer setup, `d654992be` | 17,121,984 | 17,069,301 | 46,311,545 | 42,954,414 |
+| Diagnostic direct labeled matching, not landed | not measured | not measured | 25,245,782 | 21,886,622 |
+
+The matching-only experiment retains the same safety checks and callback order; native
+header/payload/byte/decode/predicate counts are identical to final production matching.
+It attributes a substantial remaining prototype gap to iteration execution overhead, not
+capacity. Its diagnostic-only API/loop patch was reverted and preserved, not published as a
+production implementation. It remains an optimization opportunity, not a correctness gate
+or an unavoidable representation cost. Final replay and streaming iteration share checked
+buffer setup; full replay avoids per-row fallible iterator overhead. The identity tests remain;
+the withdrawn nth/last claim is not used as a reason to retain loaded-chunk state.
+
+Final native counters: each no-delete 51-scan workload has 1,734 header reads / 6,936 bytes,
+1,632 spill payload reads / 521,730 bytes, 52,224 live decodes/callbacks and zero dead decodes.
+Matching removal has 9,949 header reads / 39,796 bytes, 8,416 payload reads / 2,692,970 bytes,
+131,328 live / 130,816 dead decodes and 131,328 predicate visits. Prefix and compaction phases
+remain separately recorded in `/tmp/spill-perf/native-final.log`.
+
+Validation: **631 passed / 0 failed**, library clippy `-D warnings` and touched-file formatting
+checks passed. Final focused point/scan/delete commands all passed, without persistence.
+The subsequent **unfiltered `canbench --csv --persist` completed all 189 benchmarks** in
+176 seconds, exit 0, and reproduces the final named totals above. All 189 totals were compared
+name-by-name with recovered rounded main: **22 remain above +5%**, down from 38 at `c501`;
+none of the 189 totals regress by more than 5% against the `c501` exact totals. This is not
+broader landing approval. Main delete total still has different compaction semantics; its
+matching scope is the comparable loop. Final scan totals are below rounded main 17.77 M /
+17.72 M. The final headline rows `bench_l_nt_bp_ins_256/1024/4096` were actually remeasured at
+364,463 / 364,463 / 364,412, below rounded main 390.60 K / 391.09 K / 391.09 K. Capacity
+**66 -> 41 pages remains historical, not remeasured in this slice**.
+
+Raw commands, patches, native probes/logs, focused/full CSVs and all-name comparison are in
+`/tmp/spill-extent/` and `/tmp/spill-perf/`. Durable final name-by-name evidence is
+[evidence/adr0097-final-read-comparison.csv](evidence/adr0097-final-read-comparison.csv).
+The benchmark source hash is unchanged; the YAML changed only through the complete final run.
+Main is untouched and unmerged.
+
+For provenance, the original diagnostic used `c501` headline totals 365,548 / 365,548 /
+365,497 and the recovered comparison then had 38 differences above +5%. The completed
+follow-up numbers above supersede those branch measurements; they do not replace the historical
+capacity audit or authorize landing.
 
 Durable instruction evidence: [ADR 0097 read-granularity CSV](evidence/adr0097-read-granularity.csv)
 records exact current/H1/H2 totals and matching scopes at the diagnostic source revision.

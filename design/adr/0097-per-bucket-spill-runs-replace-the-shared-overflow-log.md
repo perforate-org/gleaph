@@ -219,6 +219,20 @@ bucket.
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
    the only place a run is freed besides bucket death — and skipping compaction is always allowed.
+   **Initialized extent is not capacity.** Core vertices and labeled bypass rows store total
+   backing width (prefix plus used spill rows); `LabelBucket` stores prefix width directly.
+   `CsrVertex::initialized_slab_slots` projects that row-specific contract, and `EdgeStore`
+   reads the run length and rejects invalid extents. Ascending/descending scans, slot location,
+   and bypass matching/removal share this decision. A capacity window may extend beyond the
+   initialized prefix and must not supply logical rows. Tombstones count toward both prefix
+   extent and run length; conversion does not change their ordinals.
+
+   **Checked contiguous reads.** Scalar and bounded reads share `SpillRunStore` used-range
+   validation. A single header snapshot per bounded read must not exceed `MAX_ROWS`; empty
+   ranges are allowed at or before the used end, and rejection leaves output unchanged.
+   Full replay reads bounded contiguous chunks; a streaming matcher may stop decoding early.
+   Chunk sizing and allocation are checked, without changing layout, capacity or write semantics.
+
 8. **Invariants.** One owner per row at a time; every published width *and every spill length* is a claim that must
    be backed; ordinals of existing rows never change; resident content is `prefix + spill`, one definition shared by
    sizing, placement and publish.

@@ -202,14 +202,19 @@ Inline property bytes slab ([labeled-edge-inline-properties.md](./labeled-edge-i
 **Homogeneous bypass insertion is tail-only (GAP-2026-07-11-004).** A default-label bypass row may extend its contiguous slab region only while it is the tail vertex; extending a non-tail region forces every later row's origin to be rescanned and rewritten, which measured linearly (~1.08M instructions per insert at 4,096 successors). The labeled insert dispatcher therefore promotes a non-tail bypass row to bucket mode — via the existing preflighted `promote_bypass_to_bucket_mode` transition — before its next same-label insert, so per-insert cost is bounded by the owning PMA leaf/segment rather than vertex count: 343K / 363K / 382K instructions for 16 inserts at 256 / 1,024 / 4,096 successors (`bench_labeled_non_tail_bypass_insert_*`). While the row remains the tail, same-label inserts keep the direct slab fast path unchanged.
 
 **Bypass-origin geometry contract (Plan 0341, GAP-2026-09-07-001 bypass side).** A default-label
-homogeneous bypass row is a vertex-level span `[base_slot_start, base_slot_start + stored_slots)`
-in the shared edge slab, optionally with a spill run beyond `stored_slots`
-(`bypass_spill_run`; the row's slab prefix is `stored_degree − run rows`, ADR 0097 §3). The row's live edges are the first `degree` slots of the
-slab prefix; removes tombstone in place (`remove_default_bypass_edge_at_slot`, remove.rs:147-230)
-and `after_slab_tombstone_delete` keeps `stored_slots` while decrementing `degree` (record.rs:1306),
-so `stored_slots − degree` is the tombstone count. Every later tail row's `base_slot_start` anchors
+homogeneous bypass row stores total logical backing width in `stored_slots`: initialized slab
+prefix plus used spill rows. Its initialized slab region is
+`[base_slot_start, base_slot_start + stored_degree − run rows)`; the run is separate.
+Live rows are selected by tombstone state, not by taking the first `degree` positions.
+Removes tombstone in place and preserve stored width while decrementing live degree, so
+`stored_slots − degree` counts tombstones across prefix and spill. The shared initialized-extent
+projection and range validation are defined in [ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
+Capacity-window limits are not initialized extents. Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:
+
+The following span-shift/shrink rules concern slab-only rows. With a retained run, changing
+prefix width changes run ordinals and requires the existing compaction/movement contract.
 
 - **(a) In-row slot shift is safe.** Moving a live slot `j` to an earlier free slot `j′` within the
   SAME row changes no other row's origin — the row's `base_slot_start` and every later row's origin
