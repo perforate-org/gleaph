@@ -263,6 +263,13 @@ fn promotion_retained_wide_rejects_without_mutation() {
         before
     );
 }
+fn distinct_sidecar(target: u32, width: u16) -> Vec<u8> {
+    let identity = (u64::from(target) + 1).to_le_bytes();
+    (0..usize::from(width))
+        .map(|i| identity[i % 8] ^ ((i / 8) as u8).wrapping_mul(53))
+        .collect()
+}
+
 #[test]
 fn promotion_retained_sidecars_keep_slot_identity() {
     use super::super::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
@@ -282,14 +289,12 @@ fn promotion_retained_sidecars_keep_slot_identity() {
                 g.insert_edge_skip_leaf_cascade(
                     v,
                     other,
-                    InlinePropertyTestEdge::with_bytes(99999, &vec![7; usize::from(width)]),
+                    InlinePropertyTestEdge::with_bytes(99999, &distinct_sidecar(99999, width)),
                     super::super::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             }
-            let value: Vec<u8> = (0..width)
-                .map(|j| (i.wrapping_mul(17) + u32::from(j)) as u8)
-                .collect();
+            let value = distinct_sidecar(i, width);
             g.insert_edge_skip_leaf_cascade(
                 v,
                 label,
@@ -310,23 +315,32 @@ fn promotion_retained_sidecars_keep_slot_identity() {
         let old = bucket(&g, label);
         assert!(!old.is_tree_mode());
         assert_ne!(old.edge_spill_run(), crate::traits::NO_SPILL_RUN);
-        if !holes {
-            assert_ne!(old.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        }
+        assert_eq!(
+            old.values_spill_run() == crate::traits::NO_SPILL_RUN,
+            holes,
+            "deletion folds values; retained values-run cases here have no holes"
+        );
         assert_ne!(
             old.stored_slots(),
             old.inline_property_bytes_slab_slots(),
             "independent source prefixes"
         );
         let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+        assert_eq!(
+            rows(&g, label, super::super::OutEdgeOrder::Descending),
+            before.iter().cloned().rev().collect::<Vec<_>>()
+        );
+        let other = BucketLabelKey::from_raw(3);
+        let neighbor = vec![(0, 99999, distinct_sidecar(99999, width))];
+        for order in [
+            super::super::OutEdgeOrder::Ascending,
+            super::super::OutEdgeOrder::Descending,
+        ] {
+            assert_eq!(rows(&g, other, order), neighbor);
+        }
         for (slot, target, value) in &before {
             assert_eq!(slot, target);
-            assert_eq!(
-                *value,
-                (0..width)
-                    .map(|j| (target.wrapping_mul(17) + u32::from(j)) as u8)
-                    .collect::<Vec<_>>()
-            );
+            assert_eq!(*value, distinct_sidecar(*target, width));
         }
         promote_bucket_to_tree_mode(&g, v, label).unwrap();
         let after = bucket(&g, label);
@@ -334,6 +348,12 @@ fn promotion_retained_sidecars_keep_slot_identity() {
         assert_eq!(after.degree(), old.degree());
         assert_eq!(after.stored_slots(), T_PROMOTE);
         assert_tree(&g, label, T_PROMOTE, &before);
+        for order in [
+            super::super::OutEdgeOrder::Ascending,
+            super::super::OutEdgeOrder::Descending,
+        ] {
+            assert_eq!(rows(&g, other, order), neighbor);
+        }
     }
 }
 
