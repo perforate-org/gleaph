@@ -5,6 +5,7 @@ mod blob_store;
 mod blobs;
 mod cell;
 mod log;
+mod values_spill;
 
 use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
 use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
