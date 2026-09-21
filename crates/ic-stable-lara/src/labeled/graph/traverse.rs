@@ -430,11 +430,11 @@ where
         // ADR 0096 §5: tiny buckets hold live edges but zero reserved
         // capacity (placement reports stored 0); the logical width is the
         // dense prefix itself. Without this the scan below covers 0 slots.
-        let logical_slots = if info.stored_edge_slots == 0 && info.edge_overflow_log_len == 0 {
+        let logical_slots = if info.stored_edge_slots == 0 && info.edge_spill_rows == 0 {
             info.degree
         } else {
             info.stored_edge_slots
-                .checked_add(info.edge_overflow_log_len)
+                .checked_add(info.edge_spill_rows)
                 .ok_or(LabeledOperationError::from(
                     LaraOperationError::CollectAllocationOverflow,
                 ))?
@@ -531,11 +531,11 @@ where
         // ADR 0096 §5: tiny buckets hold live edges but zero reserved
         // capacity (placement reports stored 0); the logical width is the
         // dense prefix itself. Without this the scan below covers 0 slots.
-        let logical_slots = if info.stored_edge_slots == 0 && info.edge_overflow_log_len == 0 {
+        let logical_slots = if info.stored_edge_slots == 0 && info.edge_spill_rows == 0 {
             info.degree
         } else {
             info.stored_edge_slots
-                .checked_add(info.edge_overflow_log_len)
+                .checked_add(info.edge_spill_rows)
                 .ok_or(LabeledOperationError::from(
                     LaraOperationError::CollectAllocationOverflow,
                 ))?
@@ -2173,7 +2173,7 @@ where
                 return Ok((start_slot, true));
             };
             info.stored_edge_slots
-                .checked_add(info.edge_overflow_log_len)
+                .checked_add(info.edge_spill_rows)
                 .ok_or(LabeledOperationError::from(
                     LaraOperationError::CollectAllocationOverflow,
                 ))?

@@ -35,8 +35,8 @@ pub struct LeafBucketPlacementStats {
     pub bucket_mode_vertices: u32,
     /// Sum of edge-slab slots reserved by all buckets on this leaf.
     pub total_stored_edge_slots: u64,
-    /// Sum of edge overflow-log entries across all buckets on this leaf.
-    pub total_edge_overflow_log_slots: u64,
+    /// Sum of resident edge spill rows across all buckets on this leaf (ADR 0097 §3).
+    pub total_edge_spill_rows: u64,
     /// Sum of inline-property-bytes slab slots across all buckets on this leaf.
     pub total_inline_property_bytes_slab_slots: u64,
     /// Sum of inline-property-bytes overflow-log entries across all buckets on this leaf.
@@ -55,10 +55,11 @@ pub struct LabelBucketPlacementInfo {
     pub degree: u32,
     /// Edge-slab slots reserved for this bucket (may exceed [`Self::degree`]).
     pub stored_edge_slots: u32,
-    /// Edge overflow log head, or `-1` when all edges are on the slab.
-    pub edge_overflow_log_head: i32,
-    /// Number of edges stored in the per-bucket overflow log chain.
-    pub edge_overflow_log_len: u32,
+    /// This bucket's edge-plane spill run id (ADR 0097 §3), or `NO_SPILL_RUN` when all edges are
+    /// on the slab.
+    pub edge_spill_run: u32,
+    /// Resident edge spill rows: the run's used length.
+    pub edge_spill_rows: u32,
     /// Physical byte width per edge inline property slot (`0` = no inline property bytes).
     pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
@@ -223,22 +224,6 @@ where
                 }
             }
             return Ok(());
-        }
-
-        if self.edges.overflow_log_segment_high_water(leaf) > 0 {
-            if sole_active_labeled_vertex {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("labeled_rebalance_edge_log_vertex");
-                self.rebalance_edge_log_vertex_for_labeled(src, true, false)?;
-                self.release_leaf_overflow_log(leaf)?;
-            } else {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("labeled_rebalance_edge_log_leaf");
-                self.rebalance_edge_log_leaf_for_labeled(src, true, false)?;
-            }
-            if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
-                return Ok(());
-            }
         }
 
         let src_vertex = self.vertices.get(src);
@@ -693,7 +678,7 @@ where
         let mut stats = LeafBucketPlacementStats {
             bucket_mode_vertices: 0,
             total_stored_edge_slots: 0,
-            total_edge_overflow_log_slots: 0,
+            total_edge_spill_rows: 0,
             total_inline_property_bytes_slab_slots: 0,
             total_inline_property_bytes_overflow_log_slots: 0,
             inline_property_byte_widths: BTreeSet::new(),
@@ -711,11 +696,10 @@ where
                     .total_stored_edge_slots
                     .checked_add(u64::from(vertex.stored_slots))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if vertex.log_head() >= 0 {
-                    let log_len = self.edges.overflow_log_chain_len(leaf, vertex.log_head());
-                    stats.total_edge_overflow_log_slots = stats
-                        .total_edge_overflow_log_slots
-                        .checked_add(u64::from(log_len))
+                if let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) {
+                    stats.total_edge_spill_rows = stats
+                        .total_edge_spill_rows
+                        .checked_add(u64::from(self.edges.spill_used_len(run)))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
                 continue;
@@ -745,13 +729,10 @@ where
                         .inline_property_byte_widths
                         .insert(bucket.inline_property_byte_width());
                 }
-                if bucket.overflow_log_head() >= 0 {
-                    let log_len = self
-                        .edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head());
-                    stats.total_edge_overflow_log_slots = stats
-                        .total_edge_overflow_log_slots
-                        .checked_add(u64::from(log_len))
+                if let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) {
+                    stats.total_edge_spill_rows = stats
+                        .total_edge_spill_rows
+                        .checked_add(u64::from(self.edges.spill_used_len(run)))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
                 if bucket.inline_property_bytes_log_head() >= 0 {
@@ -792,27 +773,24 @@ where
                     return Ok(Some(LabelBucketPlacementInfo {
                         degree: bucket.degree,
                         stored_edge_slots: 0,
-                        edge_overflow_log_head: -1,
-                        edge_overflow_log_len: 0,
+                        edge_spill_run: crate::traits::NO_SPILL_RUN,
+                        edge_spill_rows: 0,
                         inline_property_byte_width: 0,
                         inline_property_bytes_slab_slots: 0,
                         inline_property_bytes_overflow_log_head: -1,
                         inline_property_bytes_overflow_log_len: 0,
                     }));
                 }
-                let header = self.edges.header();
-                let leaf = Self::leaf_index_for_vid(src, header.segment_size);
-                let edge_overflow_log_len = if bucket.overflow_log_head() >= 0 {
-                    self.edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                } else {
-                    0
+                let edge_spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+                    Ok(run) => self.edges.spill_used_len(run),
+                    // Unset (NO_SPILL_RUN) or out of the arena's range: no spill rows.
+                    Err(_) => 0,
                 };
                 Ok(Some(LabelBucketPlacementInfo {
                     degree: bucket.degree,
                     stored_edge_slots: bucket.stored_slots_raw(),
-                    edge_overflow_log_head: bucket.overflow_log_head(),
-                    edge_overflow_log_len,
+                    edge_spill_run: bucket.edge_spill_run(),
+                    edge_spill_rows,
                     inline_property_byte_width: bucket.inline_property_byte_width(),
                     inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
                     inline_property_bytes_overflow_log_head: bucket
@@ -832,7 +810,9 @@ where
             return Ok(false);
         }
         let buckets = self.read_vertex_label_buckets(vertex)?;
-        Ok(buckets.iter().any(|b| b.overflow_log_head() >= 0))
+        Ok(buckets
+            .iter()
+            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN))
     }
 
     pub(super) fn bucket_successor_start(
@@ -1009,7 +989,10 @@ where
         if buckets.iter().any(|b| b.is_tiny_mode()) {
             return Ok(false);
         }
-        if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
+        if buckets
+            .iter()
+            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+        {
             return Ok(false);
         }
         if buckets.iter().any(|b| b.stored_slots_raw() != b.degree()) {
@@ -1078,7 +1061,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.overflow_log_head() < 0 {
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(bucket);
         }
         let vertex = self.vertices.get(src);
@@ -1119,7 +1102,7 @@ mod tests {
     use crate::VertexId;
 
     #[test]
-    fn visit_out_edges_with_raw_still_applies_matches_on_log_backed_bucket() {
+    fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -1140,7 +1123,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
 
         let mut visited = Vec::new();
         let mut raw_all = |_bytes: &[u8]| true;

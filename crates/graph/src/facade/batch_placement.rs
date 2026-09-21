@@ -768,7 +768,7 @@ fn group_intents_for_placement(
                     .map(|count| u64::try_from(count).expect("batch run count fits u64"))
                     .unwrap_or(0),
                 resident_slab_edge_slots: existing.map(|e| e.stored_edge_slots).unwrap_or(0),
-                resident_log_edge_slots: existing.map(|e| e.edge_overflow_log_len).unwrap_or(0),
+                resident_log_edge_slots: existing.map(|e| e.edge_spill_rows).unwrap_or(0),
                 resident_slab_inline_property_bytes_slots: existing
                     .map(|e| e.inline_property_bytes_slab_slots)
                     .unwrap_or(0),
@@ -859,7 +859,7 @@ fn group_intents_for_placement(
             .get_mut(&leaf_key)
             .expect("leaf summary present");
         leaf_entry.full_leaf_resident_slab_edge_slots = stats.total_stored_edge_slots;
-        leaf_entry.full_leaf_resident_log_edge_slots = stats.total_edge_overflow_log_slots;
+        leaf_entry.full_leaf_resident_log_edge_slots = stats.total_edge_spill_rows;
         leaf_entry.full_leaf_resident_slab_inline_property_bytes_slots =
             stats.total_inline_property_bytes_slab_slots;
         leaf_entry.full_leaf_resident_log_inline_property_bytes_slots =
