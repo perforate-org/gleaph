@@ -480,6 +480,34 @@ high-bit handle key traps at decode rather than silently aliasing.
 its own packed payloads (`VERTEX_PAYLOAD_MASK`) and rejects out-of-domain ids
 with a typed error.
 
+## Spill arena bounds (ADR 0097)
+
+The spill tier's arena is a per-store region that mints **run ids** (the arena
+row offset of a run's header row). An arena's row limit is **derived from the
+row types that reference it** — the minimum of their id capacities — never a
+constant chosen in the store: every id the arena mints must be storable by every
+descriptor that references it. Enforced fail-closed by
+`SpillRunId::mint(id, capacity)` (`labeled/spill_run_store.rs`): a value at or
+above the capacity, or the `u32::MAX` sentinel, is rejected with
+`SpillRunError::RunIdOutOfRange`, never masked into an aliased neighbour.
+`ArenaRows::min_of(&[...])` is the derivation; `ArenaRows::EDGE` and
+`ArenaRows::VALUES` are the two blessed capacities.
+
+**Edge arena (shared).** Bound: `2^27 - 1 = 134,217,727` ids, i.e. legal run ids
+`0 ..= 2^27 - 2` (134,217,726) = 512 MiB of 4-byte rows. Unit: run ids (= arena
+rows). Rationale: this arena is shared by the unlabeled `Vertex`, `LabelBucket`
+and the bypass `LabeledVertex` (one `SpillRunStore`, owned by `EdgeStore`), and
+the binding row is the unlabeled locator's tail28, whose field stores `id + 1` in
+27 bits — that row cannot store a wider id. Widen trigger: a product requirement
+for more than 134.2M concurrently spilled edge rows in one orientation; the cost
+is a wider vertex locator word, i.e. an ADR-level layout change.
+
+**Values arena (separate instance, replacing the values log).** Bound:
+`u32::MAX` ids, i.e. legal run ids `0 ..= 2^32 - 2` (the last run needs its
+header row; `u32::MAX` stays the sentinel). Unit: run ids. Rationale: referenced
+only by `LabelBucket`'s `u32` field. Widen trigger: a subnet memory limit above
+`2^32 x row_bytes`; the cost is 64-bit ids and a wider descriptor row.
+
 ---
 
 ## Consensus checklist
