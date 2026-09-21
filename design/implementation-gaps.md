@@ -177,6 +177,26 @@ defect from being rediscovered without its prior reasoning.
   The values plane's own `ipb_log` (16 pages, 1,048,576 B) is unchanged on both sides: it is the
   values twin's log, still awaiting the final-row slice, and it shows the same eager-capacity shape
   this entry describes.
+- **Slice 5 measurement (2026-09-20), same shape and same probe, three heads side by side**
+  (segment 16, `InitialCapacities::uniform(256)`, 5000 vertices x 1 edge, 5000 buckets, all
+  tiny: cover 0, zero overflow usage; pages are `Memory::size()` over `FailpointMemory`):
+
+  | region | `main` 9a64049f4 | `spill-swap` before slice 5 (36 B row) | `spill-swap` 5c/5d (34 B row) |
+  |---|---|---|---|
+  | **committed pages, total** | **66** | **56** | **41** |
+  | edge log / edge spill (mem 6) | 11 | 1 | **1** |
+  | values ipb_log / values spill (mem 13) | **16** | **16** | **1** |
+  | bucket descriptors | 25,000 x 29 B = 725,000 B | 25,000 x 36 B = 900,000 B | 25,000 x **34 B = 850,000 B** |
+  | buckets memory | 15 | 15 | 15 |
+
+  Both eager reservations the entry describes are gone: the edge log's 10 pages went with
+  the edge swap, the values log's **15 pages** (16 -> 1, the values spill arena's header) with
+  slice 5, and the descriptor reached its final 34-byte row. Net over the audit shape:
+  **66 -> 41 pages (-25)**, of which slice 5 is **-15 pages** and the 34-byte row takes back
+  50,000 B of the interim 36-byte row's 175,000 B. Against `main` the descriptor is
+  **+5 B/row (+125,000 B)** - the price of the two run ids - bought back many times by the
+  25 pages of never-used capacity the graph no longer commits.
+
 - **Next decision:** decide whether to fold this into the same space-first slice as
   GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
   bench for the slack trade.
