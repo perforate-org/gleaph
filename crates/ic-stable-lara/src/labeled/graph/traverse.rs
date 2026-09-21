@@ -224,11 +224,6 @@ impl<'a> InlinePropertyBytesRef<'a> {
 /// Target inline property bytes per batch; matches the legacy traverse batch sizing.
 const EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES: usize = 2048;
 
-#[inline]
-fn slab_slot_deleted(slot: u32, deleted_slab_offsets: &[u32]) -> bool {
-    deleted_slab_offsets.binary_search(&slot).is_ok()
-}
-
 /// A live edge row with a borrowed view of its inline-property bytes.
 ///
 /// The edge row remains an owned value because rows are decoded from fixed-width
@@ -2803,9 +2798,9 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        // A phase-1 call always resets the cached replay so a stale replay from a previous
-        // `(owner, label)` can never survive an early return and be reused by a later phase 2.
-        scratch.hybrid_overflow_replay.clear();
+        // A new phase one owns both the batch buffers and the replay. Neither
+        // may leak from an earlier label, direction, or interrupted scan.
+        scratch.clear_all();
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
         if vertex.is_default_edge_labeled() {
@@ -2906,450 +2901,101 @@ where
         E: CsrEdgeTombstone,
     {
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
-        let inline_property_bytes_slab_slots = bucket.inline_property_bytes_slab_slots();
-        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
-
-        if order == OutEdgeOrder::Descending {
-            // A run is contiguous, so descending and ascending replay are the same ordinal list
-            // (ADR 0097 §3): both take the run's live-row tags.
-            let prefetched = self
-                .edges
-                .prefetch_spill_replay_tags(self.edges.spill_mint(bucket.edge_spill_run())?)?;
-            let reserved_log_slots = u32::try_from(prefetched.len())
-                .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-            let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
-            // `reserved` counts the prefix's *width*, tombstones included, so a single dead
-            // prefix slot used to make it disagree with `degree` and send the whole scan to the
-            // sparse iterator. That fallback was the run-backed bucket's span tax: the rows live
-            // in the run, the run's live tags are already what the replay emits, and the prefix
-            // pass skips its own dead slots (ADR 0097 §7: a bucket whose rows live in its own run
-            // pays no extra span work). The replay runs; `reserved` stays only as the sanity
-            // input for the slot arithmetic below.
-            let _ = reserved;
-            let edge_slab_slots = slab_slots;
-            let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
-            // Descending order: spill rows have the highest logical slots,
-            // followed by edge-slab entries whose inline_property_bytes lives in the overflow log,
-            // followed by the dense inline_property_bytes-slab prefix.
-            let _ = self.emit_hybrid_overflow_log_inline_property_values_desc_next(
-                owner,
-                bucket,
-                prefetched,
-                order,
-                scratch,
-                visit,
-                log_chains.as_ref(),
-            )?;
-            let _ = self.visit_inline_property_bytes_log_ordinals_in_edge_slab_next(
-                bucket,
-                value_slab_slots,
-                edge_slab_slots,
-                order,
-                scratch,
-                visit,
-                log_chains.as_ref(),
-            )?;
-            let _ = self.visit_dense_out_inline_property_batches_for_slab_prefix_next(
-                bucket,
-                value_slab_slots,
-                &[],
-                order,
-                scratch,
-                visit,
-                false,
-                true,
-            )?;
-            return Ok(ControlFlow::Continue(()));
-        }
-
         let prefetched = self
             .edges
             .prefetch_spill_replay_tags(self.edges.spill_mint(bucket.edge_spill_run())?)?;
-        let reserved_log_slots =
+        let used =
             u32::try_from(prefetched.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        // Ascending order takes the same path as descending: the run's live tags are emitted and
-        // the prefix pass skips its own dead slots, so a tombstoned prefix is not a reason to
-        // fall back to the sparse iterator (ADR 0097 §7, GAP-2026-09-20-009).
-        let _ = bucket.stored_slots().saturating_add(reserved_log_slots);
-        let edge_slab_slots = slab_slots;
-        let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
-        let _ = self.visit_dense_out_inline_property_batches_for_slab_prefix_next(
-            bucket,
-            value_slab_slots,
-            &[],
-            order,
-            scratch,
-            visit,
-            false,
-            true,
-        )?;
-        let _ = self.visit_inline_property_bytes_log_ordinals_in_edge_slab_next(
-            bucket,
-            value_slab_slots,
-            edge_slab_slots,
-            order,
-            scratch,
-            visit,
-            log_chains.as_ref(),
-        )?;
-        let _ = self.emit_hybrid_overflow_log_inline_property_values_asc_next(
-            owner,
-            bucket,
-            prefetched,
-            order,
-            scratch,
-            visit,
-            log_chains.as_ref(),
-        )?;
-        Ok(ControlFlow::Continue(()))
-    }
-
-    fn visit_dense_out_inline_property_batches_for_slab_prefix_next<B>(
-        &self,
-        bucket: &LabelBucket,
-        scan_slots: u32,
-        deleted_slab_offsets: &[u32],
-        order: OutEdgeOrder,
-        scratch: &mut LabeledInlinePropertyValueBatchScratch,
-        visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
-        _dense: bool,
-        omit_edge_slab_reads: bool,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if scan_slots == 0 {
-            return Ok(ControlFlow::Continue(()));
+        let extent = slab_slots
+            .checked_add(used)
+            .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        // Replay length includes tombstones. Only a hole-free extent makes an
+        // edge slot also a value ordinal; sparse traversal owns rank mapping.
+        if extent != bucket.degree() {
+            return self.visit_sparse_out_inline_property_batches_for_bucket_next(
+                owner,
+                bucket.bucket_label_key(),
+                bucket,
+                order,
+                scratch,
+                visit,
+            );
+        }
+        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
+        let value_slab_slots = bucket.inline_property_bytes_slab_slots().min(slab_slots);
+        // Preserve the existing batch boundaries between physical planes, but
+        // let one ordered-value reader pair ordinals with bytes in either order.
+        let mut ranges = [
+            0..value_slab_slots,
+            value_slab_slots..slab_slots,
+            slab_slots..extent,
+        ];
+        if order == OutEdgeOrder::Descending {
+            ranges.reverse();
         }
         let width = usize::from(bucket.inline_property_byte_width());
         let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let label_id = bucket.bucket_label_key();
-
-        // Fast path: when the caller has already verified the edge slab is live and
-        // there are no tombstone offsets to skip, bulk-read the contiguous inline_property_bytes
-        // span and slice it into batches. This matches the legacy hybrid batch path
-        // and avoids per-slot stable-memory round-trips.
-        if omit_edge_slab_reads && deleted_slab_offsets.is_empty() {
-            let mut remaining = scan_slots;
+        let mut ordinals = Vec::with_capacity(batch_edges.min(extent as usize));
+        for range in ranges {
+            let mut remaining = range.end - range.start;
             while remaining > 0 {
                 let take = remaining.min(batch_edges as u32);
-                let first_ordinal = match order {
-                    OutEdgeOrder::Descending => remaining - take,
-                    OutEdgeOrder::Ascending => scan_slots - remaining,
+                let first = match order {
+                    OutEdgeOrder::Ascending => range.end - remaining,
+                    OutEdgeOrder::Descending => range.start + remaining - take,
                 };
-                scratch.clear();
-                scratch.slot_indices.reserve(take as usize);
-                scratch.values.reserve(take as usize * width);
-                let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
-                    bucket,
-                    first_ordinal,
-                )?;
-                let byte_len = take as usize * width;
-                let raw_values = scratch.io_inline_property_bytes_slice_mut(byte_len);
-                self.values.read_bytes(offset, raw_values);
-                // Copy out the slice values into the public batch buffers so the borrow
-                // of the reusable IO buffer can end before the visitor callback runs.
-                scratch
-                    .values
-                    .extend_from_slice(&scratch.io_inline_property_bytes[..byte_len]);
-                match order {
-                    OutEdgeOrder::Ascending => {
-                        for i in 0..take as usize {
-                            let ordinal = first_ordinal + i as u32;
-                            scratch.slot_indices.push(ordinal);
-                        }
-                    }
-                    OutEdgeOrder::Descending => {
-                        for i in (0..take as usize).rev() {
-                            let ordinal = first_ordinal + i as u32;
-                            scratch.slot_indices.push(ordinal);
-                        }
-                    }
+                ordinals.clear();
+                ordinals.extend(first..first + take);
+                if order == OutEdgeOrder::Descending {
+                    ordinals.reverse();
                 }
-                if !scratch.slot_indices.is_empty()
-                    && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                        label_id,
-                        byte_width: bucket.inline_property_byte_width(),
-                        order,
-                        slot_indices: &scratch.slot_indices,
-                        values: &scratch.values,
-                        dense: false,
-                    })
-                {
+                scratch.clear();
+                self.append_ordered_inline_property_bytes_ordinals_next(
+                    bucket,
+                    &ordinals,
+                    log_chains.as_ref(),
+                    scratch,
+                )?;
+                if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
+                    label_id: bucket.bucket_label_key(),
+                    byte_width: bucket.inline_property_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: false,
+                }) {
                     return Ok(ControlFlow::Break(value));
                 }
                 remaining -= take;
             }
-            return Ok(ControlFlow::Continue(()));
         }
-
-        let mut ordered: Vec<(u32, u32)> = (0..scan_slots)
-            .filter(|slot| {
-                if slab_slot_deleted(*slot, deleted_slab_offsets) {
-                    return false;
-                }
-                if omit_edge_slab_reads {
-                    return true;
-                }
-                let edge = self.edges.read_slot(bucket.edge_start() + u64::from(*slot));
-                !edge.is_deleted_slot() && !edge.is_tombstone_edge()
-            })
-            .enumerate()
-            .map(|(ordinal, slot)| {
-                u32::try_from(ordinal)
-                    .map(|ordinal| (slot, ordinal))
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)
-            })
-            .collect::<Result<_, _>>()?;
-        if matches!(order, OutEdgeOrder::Descending) {
-            ordered.reverse();
-        }
-        for chunk in ordered.chunks(batch_edges) {
-            scratch.clear();
-            for &(slot, ordinal) in chunk {
-                let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
-                    bucket, ordinal,
-                )?;
-                let value = scratch.io_inline_property_bytes_slice_mut(width);
-                self.values.read_bytes(offset, value);
-                scratch.slot_indices.push(slot);
-                scratch
-                    .values
-                    .extend_from_slice(&scratch.io_inline_property_bytes[..width]);
-            }
-            if !scratch.slot_indices.is_empty()
-                && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &scratch.slot_indices,
-                    values: &scratch.values,
-                    dense: false,
-                })
-            {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
-        Ok(ControlFlow::Continue(()))
-    }
-
-    fn visit_inline_property_bytes_log_ordinals_in_edge_slab_next<B>(
-        &self,
-        bucket: &LabelBucket,
-        start_ordinal: u32,
-        end_ordinal: u32,
-        order: OutEdgeOrder,
-        scratch: &mut LabeledInlinePropertyValueBatchScratch,
-        visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
-        log_chain: Option<&Vec<u32>>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if start_ordinal >= end_ordinal {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let label_id = bucket.bucket_label_key();
-        let mut remaining = end_ordinal - start_ordinal;
-        while remaining > 0 {
-            let take = remaining.min(batch_edges as u32);
-            scratch.clear();
-            match order {
-                OutEdgeOrder::Ascending => {
-                    let first = start_ordinal + remaining - take;
-                    for ordinal in first..first + take {
-                        self.read_bucket_inline_property_bytes_for_slot_into(
-                            bucket,
-                            ordinal,
-                            log_chain,
-                            &mut scratch.io_inline_property_bytes,
-                        )?;
-                        scratch.slot_indices.push(ordinal);
-                        scratch
-                            .values
-                            .extend_from_slice(&scratch.io_inline_property_bytes[..width]);
-                    }
-                }
-                OutEdgeOrder::Descending => {
-                    let high = start_ordinal + remaining;
-                    for ordinal in (high - take..high).rev() {
-                        self.read_bucket_inline_property_bytes_for_slot_into(
-                            bucket,
-                            ordinal,
-                            log_chain,
-                            &mut scratch.io_inline_property_bytes,
-                        )?;
-                        scratch.slot_indices.push(ordinal);
-                        scratch
-                            .values
-                            .extend_from_slice(&scratch.io_inline_property_bytes[..width]);
-                    }
-                }
-            }
-            if !scratch.slot_indices.is_empty()
-                && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &scratch.slot_indices,
-                    values: &scratch.values,
-                    dense: false,
-                })
-            {
-                return Ok(ControlFlow::Break(value));
-            }
-            remaining -= take;
-        }
-        Ok(ControlFlow::Continue(()))
-    }
-
-    fn emit_hybrid_overflow_log_inline_property_values_desc_next<B>(
-        &self,
-        owner: VertexId,
-        bucket: &LabelBucket,
-        prefetched: Vec<Option<u32>>,
-        order: OutEdgeOrder,
-        scratch: &mut LabeledInlinePropertyValueBatchScratch,
-        visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
-        log_chains: Option<&Vec<u32>>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let mut replay_entries = prefetched;
-        let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
-        let label_id = bucket.bucket_label_key();
-        let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let reserved_log_slots = u32::try_from(replay_entries.len())
-            .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        let mut next_log_slot = slab_slots
-            .saturating_add(reserved_log_slots)
-            .saturating_sub(1);
-        let mut next_inline_property_bytes_ordinal = bucket.degree().saturating_sub(1);
-
-        let mut live_slots = Vec::with_capacity(replay_entries.len());
-        for &log_entry in &replay_entries {
-            if log_entry.is_none() {
-                next_log_slot = next_log_slot.saturating_sub(1);
-                continue;
-            }
-            let slot = next_log_slot;
-            next_log_slot = next_log_slot.saturating_sub(1);
-            live_slots.push((slot, next_inline_property_bytes_ordinal));
-            next_inline_property_bytes_ordinal =
-                next_inline_property_bytes_ordinal.saturating_sub(1);
-        }
-        for chunk in live_slots.chunks(batch_edges) {
-            scratch.clear();
-            self.append_ordered_inline_property_bytes_ordinals_next(
-                bucket, chunk, log_chains, scratch,
-            )?;
-            if !scratch.slot_indices.is_empty()
-                && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &scratch.slot_indices,
-                    values: &scratch.values,
-                    dense: false,
-                })
-            {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
+        // Phase two indexes this map by canonical run ordinal, never visit order.
+        // An interrupted phase one must not publish a partially observed replay.
         let replay = &mut scratch.hybrid_overflow_replay;
         replay.clear();
         replay.src = owner;
-        replay.label_id = label_id;
+        replay.label_id = bucket.bucket_label_key();
         replay.slab_slots = slab_slots;
         replay.degree = bucket.degree();
         replay.stored_slots = bucket.stored_slots();
         replay.spill_run = self.edges.spill_mint(bucket.edge_spill_run()).ok();
         replay.edge_start = bucket.edge_start();
-        replay_entries.reverse();
-        replay.spill_indices_by_slot = replay_entries;
-        Ok(ControlFlow::Continue(()))
-    }
-
-    fn emit_hybrid_overflow_log_inline_property_values_asc_next<B>(
-        &self,
-        owner: VertexId,
-        bucket: &LabelBucket,
-        prefetched: Vec<Option<u32>>,
-        order: OutEdgeOrder,
-        scratch: &mut LabeledInlinePropertyValueBatchScratch,
-        visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
-        log_chains: Option<&Vec<u32>>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let inserted_entries = prefetched;
-        let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
-        let label_id = bucket.bucket_label_key();
-        let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let mut next_inserted_log_slot = slab_slots;
-        let mut next_inline_property_bytes_ordinal = slab_slots;
-
-        let mut live_slots = Vec::with_capacity(inserted_entries.len());
-        for &log_entry in &inserted_entries {
-            if log_entry.is_none() {
-                next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
-                continue;
-            }
-            let slot = next_inserted_log_slot;
-            next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
-            live_slots.push((slot, next_inline_property_bytes_ordinal));
-            next_inline_property_bytes_ordinal =
-                next_inline_property_bytes_ordinal.saturating_add(1);
-        }
-        for chunk in live_slots.chunks(batch_edges) {
-            scratch.clear();
-            self.append_ordered_inline_property_bytes_ordinals_next(
-                bucket, chunk, log_chains, scratch,
-            )?;
-            if !scratch.slot_indices.is_empty()
-                && let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &scratch.slot_indices,
-                    values: &scratch.values,
-                    dense: false,
-                })
-            {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
-        let replay = &mut scratch.hybrid_overflow_replay;
-        replay.clear();
-        replay.src = owner;
-        replay.label_id = label_id;
-        replay.slab_slots = slab_slots;
-        replay.degree = bucket.degree();
-        replay.stored_slots = bucket.stored_slots();
-        replay.spill_run = self.edges.spill_mint(bucket.edge_spill_run()).ok();
-        replay.edge_start = bucket.edge_start();
-        replay.spill_indices_by_slot = inserted_entries;
+        replay.spill_indices_by_slot = prefetched;
         Ok(ControlFlow::Continue(()))
     }
 
     fn append_ordered_inline_property_bytes_ordinals_next(
         &self,
         bucket: &LabelBucket,
-        slots_and_ordinals: &[(u32, u32)],
+        ordinals: &[u32],
         log_chain: Option<&Vec<u32>>,
         scratch: &mut LabeledInlinePropertyValueBatchScratch,
     ) -> Result<(), LabeledOperationError> {
         let width = usize::from(bucket.inline_property_byte_width());
         let slab_slots = bucket.inline_property_bytes_slab_slots();
         let mut i = 0usize;
-        while i < slots_and_ordinals.len() {
-            let (_, ordinal) = slots_and_ordinals[i];
+        while i < ordinals.len() {
+            let ordinal = ordinals[i];
             if ordinal >= slab_slots {
                 self.read_bucket_inline_property_bytes_for_slot_into(
                     bucket,
@@ -3357,7 +3003,7 @@ where
                     log_chain,
                     &mut scratch.io_inline_property_bytes,
                 )?;
-                scratch.slot_indices.push(slots_and_ordinals[i].0);
+                scratch.slot_indices.push(ordinal);
                 scratch
                     .values
                     .extend_from_slice(&scratch.io_inline_property_bytes[..width]);
@@ -3366,16 +3012,16 @@ where
             }
 
             let mut end = i + 1;
-            while end < slots_and_ordinals.len() {
-                let previous = slots_and_ordinals[end - 1].1;
-                let next = slots_and_ordinals[end].1;
+            while end < ordinals.len() {
+                let previous = ordinals[end - 1];
+                let next = ordinals[end];
                 if next >= slab_slots || previous.abs_diff(next) != 1 {
                     break;
                 }
                 end += 1;
             }
-            let first = slots_and_ordinals[i].1;
-            let last = slots_and_ordinals[end - 1].1;
+            let first = ordinals[i];
+            let last = ordinals[end - 1];
             let low = first.min(last);
             let count = end - i;
             let byte_len = count
@@ -3385,13 +3031,13 @@ where
                 crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(bucket, low)?;
             let bytes = scratch.io_inline_property_bytes_slice_mut(byte_len);
             self.values.read_bytes(offset, bytes);
-            for &(slot, ordinal) in &slots_and_ordinals[i..end] {
+            for &ordinal in &ordinals[i..end] {
                 let value_index = usize::try_from(ordinal.saturating_sub(low))
                     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
                 let start = value_index
                     .checked_mul(width)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                scratch.slot_indices.push(slot);
+                scratch.slot_indices.push(ordinal);
                 scratch
                     .values
                     .extend_from_slice(&scratch.io_inline_property_bytes[start..start + width]);
@@ -5132,7 +4778,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::LEAF_VERTEX_EDGE_SEGMENT_DENSITY;
+    use super::super::{EdgePlacementPolicy, LEAF_VERTEX_EDGE_SEGMENT_DENSITY};
     #[test]
     fn inline_property_bytes_zero_width_is_empty() {
         let v = InlinePropertyBytes::empty();
@@ -6615,6 +6261,267 @@ mod tests {
                 .len(),
             total
         );
+    }
+
+    fn hybrid_contract_value(target: u32, width: u16) -> Vec<u8> {
+        let mut bytes: Vec<_> = (0..width)
+            .map(|i| (target.wrapping_add(u32::from(i) * 17) & 255) as u8)
+            .collect();
+        bytes[..8].copy_from_slice(&(u64::from(target) + 1).to_le_bytes());
+        bytes
+    }
+
+    fn hybrid_contract_fixture(
+        width: u16,
+        holes: bool,
+    ) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(owner, label, width)
+            .unwrap();
+        let bucket = || {
+            let vertex = graph.vertices().get(owner);
+            let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+            graph.buckets().read_label_bucket_slot(slot).unwrap()
+        };
+        for target in 0..96 {
+            if target == 8 {
+                super::super::promote::compact_run_into_prefix_with_growth_retry(
+                    &graph,
+                    owner,
+                    0,
+                    bucket(),
+                )
+                .unwrap();
+            }
+            if target == 32 {
+                let other = BucketLabelKey::from_raw(3);
+                graph
+                    .ensure_label_bucket_inline_property_byte_width(owner, other, width)
+                    .unwrap();
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        owner,
+                        other,
+                        InlinePropertyTestEdge::with_bytes(
+                            9000,
+                            &hybrid_contract_value(9000, width),
+                        ),
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    owner,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &hybrid_contract_value(target, width),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        if holes {
+            for slot in [0, 3, 31, 63] {
+                graph
+                    .remove_edge_at_slot(owner, label, slot)
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+        let other = BucketLabelKey::from_raw(4);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(owner, other, width)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                other,
+                InlinePropertyTestEdge::with_bytes(9001, &hybrid_contract_value(9001, width)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                InlinePropertyTestEdge::with_bytes(96, &hybrid_contract_value(96, width)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let b = bucket();
+        assert!(b.stored_slots() > 3 && b.stored_slots() <= 31);
+        assert_ne!(b.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_ne!(b.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_ne!(b.stored_slots(), b.inline_property_bytes_slab_slots());
+        graph
+    }
+
+    #[test]
+    fn hybrid_contract_holes_keep_exact_nonzero_values() {
+        for width in [8, 33] {
+            let graph = hybrid_contract_fixture(width, true);
+            let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+            graph
+                .visit_out_inline_property_batches_for_label(
+                    VertexId::from(0),
+                    BucketLabelKey::from_raw(3),
+                    OutEdgeOrder::Ascending,
+                    &mut scratch,
+                    |_| {},
+                )
+                .unwrap();
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                let mut actual = Vec::new();
+                let flow = graph
+                    .visit_out_inline_property_batches_for_label_next(
+                        VertexId::from(0),
+                        BucketLabelKey::from_raw(2),
+                        order,
+                        &mut scratch,
+                        |batch| {
+                            assert_eq!(batch.byte_width, width);
+                            actual.extend(
+                                batch.slot_indices.iter().copied().zip(
+                                    batch
+                                        .values
+                                        .chunks_exact(width as usize)
+                                        .map(<[u8]>::to_vec),
+                                ),
+                            );
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )
+                    .unwrap();
+                let mut expected: Vec<_> = (0..97)
+                    .filter(|slot| ![0, 3, 31, 63].contains(slot))
+                    .map(|slot| (slot, hybrid_contract_value(slot, width)))
+                    .collect();
+                if order == OutEdgeOrder::Descending {
+                    expected.reverse();
+                }
+                assert_eq!(flow, ControlFlow::Continue(()));
+                assert_eq!(actual, expected, "width={width} order={order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_contract_break_stops_between_stages() {
+        for width in [8, 33] {
+            for holes in [false, true] {
+                let graph = hybrid_contract_fixture(width, holes);
+                let vertex = graph.vertices().get(VertexId::from(0));
+                let slot = graph
+                    .find_bucket_slot(&vertex, BucketLabelKey::from_raw(2))
+                    .unwrap()
+                    .unwrap();
+                let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+                assert!(bucket.inline_property_bytes_slab_slots() >= bucket.stored_slots());
+                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                    let mut expected: Vec<_> = (0..97)
+                        .filter(|slot| {
+                            if holes {
+                                ![0, 3, 31, 63].contains(slot)
+                            } else if order == OutEdgeOrder::Ascending {
+                                *slot < bucket.stored_slots()
+                            } else {
+                                *slot >= bucket.stored_slots()
+                            }
+                        })
+                        .collect();
+                    if order == OutEdgeOrder::Descending {
+                        expected.reverse();
+                    }
+                    expected.truncate(EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / usize::from(width));
+                    let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+                    let mut calls = 0;
+                    let flow = graph
+                        .visit_out_inline_property_batches_for_label_next(
+                            VertexId::from(0),
+                            BucketLabelKey::from_raw(2),
+                            order,
+                            &mut scratch,
+                            |batch| {
+                                assert_eq!(batch.slot_indices, expected);
+                                assert_eq!(
+                                    batch.values,
+                                    expected
+                                        .iter()
+                                        .flat_map(|&slot| hybrid_contract_value(slot, width))
+                                        .collect::<Vec<_>>()
+                                );
+                                calls += 1;
+                                ControlFlow::Break(17)
+                            },
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        flow,
+                        ControlFlow::Break(17),
+                        "width={width} holes={holes} order={order:?}"
+                    );
+                    assert_eq!(calls, 1);
+                    assert!(!scratch.hybrid_overflow_replay.is_active());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_contract_phase_two_keeps_run_ordinals() {
+        for width in [8, 33] {
+            let graph = hybrid_contract_fixture(width, false);
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+                let mut selected = Vec::new();
+                graph
+                    .visit_out_inline_property_batches_for_label(
+                        VertexId::from(0),
+                        BucketLabelKey::from_raw(2),
+                        order,
+                        &mut scratch,
+                        |batch| {
+                            for (&slot, value) in batch
+                                .slot_indices
+                                .iter()
+                                .zip(batch.values.chunks_exact(width as usize))
+                            {
+                                assert_eq!(value, hybrid_contract_value(slot, width));
+                                if [8, 31, 63, 96].contains(&slot) {
+                                    selected.push(BucketEntryPosition::new(slot));
+                                }
+                            }
+                        },
+                    )
+                    .unwrap();
+                assert!(scratch.hybrid_overflow_replay.is_active());
+                let mut actual = Vec::new();
+                let flow = graph
+                    .visit_edges_at_with_replay(
+                        VertexId::from(0),
+                        BucketLabelKey::from_raw(2),
+                        &selected,
+                        order,
+                        Some(&scratch.hybrid_overflow_replay),
+                        |slot, edge| {
+                            actual.push((slot.raw(), edge.target));
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )
+                    .unwrap();
+                let mut expected = vec![(8, 8), (31, 31), (63, 63), (96, 96)];
+                if order == OutEdgeOrder::Descending {
+                    expected.reverse();
+                }
+                assert_eq!(flow, ControlFlow::Continue(()));
+                assert_eq!(actual, expected, "width={width} order={order:?}");
+            }
+        }
     }
 
     /// A hybrid-overflow replay built for a **different vertex that shares the same inline_property_bytes-log
