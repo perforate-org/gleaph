@@ -209,7 +209,12 @@ Live rows are selected by tombstone state, not by taking the first `degree` posi
 Removes tombstone in place and preserve stored width while decrementing live degree, so
 `stored_slots − degree` counts tombstones across prefix and spill. The shared initialized-extent
 projection and range validation are defined in [ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
-Capacity-window limits are not initialized extents. Every later tail row's `base_slot_start` anchors
+Capacity-window limits are not initialized extents. A retained run owns subsequent appends even
+when a tail capacity window offers slab space: extending that prefix would shift all existing
+spill ordinals. The common core insertion decision excludes slab append for active runs, and
+preflights row growth before modifying published storage. Run-class exhaustion keeps the
+existing typed promotion outcome; it does not force a fold or reinterpret capacity as content.
+Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:
 

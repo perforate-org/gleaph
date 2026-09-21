@@ -219,6 +219,13 @@ bucket.
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
    the only place a run is freed besides bucket death — and skipping compaction is always allowed.
+   **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
+   window offers additional slab space. Increasing the initialized prefix would shift existing
+   spill ordinals. Existing tombstone reuse does not extend the prefix; explicit compaction or
+   mode transition remains separate. The common core insertion decision enforces this for core
+   and bypass rows. Row growth is preflighted before writing a slab row or modifying a published
+   run; class exhaustion preserves the existing typed promotion outcome without publishing an append.
+
    **Initialized extent is not capacity.** Core vertices and labeled bypass rows store total
    backing width (prefix plus used spill rows); `LabelBucket` stores prefix width directly.
    `CsrVertex::initialized_slab_slots` projects that row-specific contract, and `EdgeStore`

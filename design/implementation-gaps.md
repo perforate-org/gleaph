@@ -208,7 +208,7 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: initialized-extent correctness fixed; scoped scan/delete comparison passes. Broader landing remains open.** Diagnostic source
+**Status: initialized extent and retained-run append corrected; mixed-hub differences remain open. Broader landing remains open.** Diagnostic source
 revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
 reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
@@ -447,6 +447,18 @@ records exact current/H1/H2 totals and matching scopes at the diagnostic source 
 Reproduction artifacts: `/tmp/remove-scan-diagnostic/` contains the installer, native probe,
 bounds test, H1/H2 patches, raw native logs and exact canbench CSVs, original rounded-main log,
 reviewer comparison, checksums and `README.md` with commands. `main` was not edited or rerun.
+
+#### Retained-run append and mixed-hub follow-up
+
+`c632f5fc5` fixes the runtime-reproduced tail-bypass append failure at the common core insertion
+decision, retaining prefix/ordinals and typed exhaustion. `84ac9203f` avoids zero-width property
+helper work: mixed-hub ascending **1,017,187 -> 904,624**, descending unchanged **713,437**.
+The separate topology-delegation experiment was rejected. **634/0** library tests, scoped
+formatting and strict library clippy passed. Mixed-hub differences remain approximately 2x
+rounded main; neither their remaining cause nor the distinct values-batch regressions is closed.
+The earlier complete YAML is preserved; no filtered results were persisted. Runtime red/green,
+source parity, counter evidence, exact variants and the source-only all-label bypass-reader
+follow-up are recorded in [append/mixed-hub evidence](evidence/adr0097-append-mixed-hub.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
