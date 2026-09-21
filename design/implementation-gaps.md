@@ -103,8 +103,11 @@ session did.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
-- **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)** — the fold-prelude path is closed with a
-  regression test; a second path is still open (details below). Discovered while auditing
+- **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, then **closed by deletion 2026-09-20
+  (ADR 0097)**: the fold-prelude path and the whole log-fold machinery are gone, and a per-bucket run
+  is compacted into its own prefix (with a span-growth retry), so no fold can extend a vertex cover
+  over a leaf mate. The second path below is unreachable with the log deleted.
+  Discovered while auditing
   production capacity/latency balance;
   regression-adjacent to ADR 0096 §3b Phase 2 (`91575bc29`), which made it reachable in a
   production-shaped skew where the K=3 wire was not.
@@ -1315,7 +1318,12 @@ session did.
 
 ### GAP-2026-09-20-001 — Promote silently drops overflow-log rows (tree mode has no log)
 
-- **Status:** Fixed 2026-09-20 (commit `164e27cfa`) — recorded the same day while
+- **Status:** Fixed 2026-09-20 (commit `164e27cfa`), then **closed by deletion 2026-09-20 (ADR 0097)**:
+  the shared log is gone, and `promote_bucket_to_tree_mode`'s Phase 0a compacts the bucket first - the
+  run's live rows into the prefix (ADR 0097 §7) and the value log into the value slab - so the
+  transcription reads a prefix that already covers every resident row and the failure mode is
+  unrepresentable. The retired fold's span-growth retry survives as the compaction's retry.
+  Originally recorded while
   triaging the `T_PROMOTE = 1024` flip (found by classifying the 11 failures that
   appear at the lower threshold; see GAP-2026-09-17-001 for the density-accounting
   context). Fix: promotion folds the slab overflow log into the prefix first
@@ -5450,6 +5458,11 @@ grows, across 512 allocated segment-tree leaves. That is ~696 KB, matching the a
 buckets 15, **log 11**, edges 5, vertices 2; one page is 64 KiB). So the fixed cost is per *segment*, i.e. it scales
 with the **vertex count** and not with usage.
 
+**As landed (2026-09-20, ADR 0097):** the edge log store and its segment table are deleted, so the
+~696 KB of fixed log capacity is not merely unused - it does not exist. The spill region's only fixed
+storage is the store header (64 B) plus eight per-class free-list heads (32 B); everything else tracks
+spilled rows. The reviewer's space-audit re-run is the gate that confirms the ledger reads zero.
+
 The spill design removes that cost at the root rather than tuning it:
 
 * **Nothing is pre-provisioned per segment, because segments do not exist.** The only fixed storage is the
@@ -5757,6 +5770,33 @@ keeps the swap invisible to readers). Recommended slice order: (1) layout/region
 test, (2) descriptor rename and the insert producer, (3) reads and the residents, (4) removes and compaction,
 (5) batch and the values twin, (6) deletion of the log API and its tests, (7) ADR 0096 §5 / `design/storage/lara.md` /
 D-GAP contract text, then the audit re-run (the 696 KB must read zero) and the full gates.
+
+# Spill swap landed (2026-09-20, ADR 0097) — branch `spill-swap`
+
+The log-to-spill swap is implemented in this worktree as one ordered series, one mechanism per
+commit: the store in the log's region and the descriptor field (S1-S3), the delete path
+(`BucketEdgeDeleteLocation::Spill`), the placement surface and the labeled CSR accessor, the spill
+wrapper contract tests, the producer plus the single mode-generic promotion entry, the deletion of
+the fold/drain/segment-release choreography, the compaction and resident-definition readers, the
+hybrid inline-property replay and the traverse readers, the batch boundary, the edge log store's
+deletion, the packing/order defects the running suite exposed, and the promotion's two-plane
+compaction. `labeled/graph/spill_swap_test.rs` carries one witness per mechanism.
+
+Gates at the branch head: `cargo check -p ic-stable-lara --lib` 0 errors; `cargo test -p
+ic-stable-lara --lib` 621 passed / 0 failed; `labeled::spill_run_store` 21 passed; `cargo fmt -p
+ic-stable-lara` clean; `cargo clippy -p ic-stable-lara --lib` no crate warning. G6 byte shapes were
+**measured** and disagree with the derived table - the wider 36 B descriptor and 25 B vertex rows
+straddle page boundaries: tiny insert 150R/44W (derived 149/44), tiny delete 109R/44W (105/44), tiny
+scan 109R/0W (105/0), slab control 425R/73W (411/72). Each test records the measured value and the
+disagreement it replaces.
+
+Deviations recorded rather than absorbed: (1) the batch defers a run that would spill to the scalar
+path (a recoverable `SpillRunDeferred`) instead of reserving a class-growth copy, because
+`EdgeStore` has no allocate-without-copy and a reserve-time growth would free the run the descriptor
+still points at; (2) the promotion compacts both planes before transcription instead of reading
+`prefix + run`, because the values plane still keeps its own log (slice 5); (3) wide-edge buckets
+keep the slab-growth recovery instead of promoting; (4) the ADR's final 34-byte row and the values
+twin's deletion (slice 5) are not part of this swap, so the row stays at the interim 36 bytes.
 
 # Session handover index (2026-09-20) — read this first
 

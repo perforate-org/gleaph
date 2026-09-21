@@ -42,7 +42,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 ┌─────────────────────────────────────────────────────────────────┐
 │ Scan contract (DGAP vertex row)                                   │
 │   Vertex / LabeledVertex: base_slot_start, degree, stored_*     │
-│   Walk live slab prefix + optional overflow log                   │
+│   Walk live slab prefix + optional spill run                      │
 │   MUST NOT read: PMA counts, span_meta, free_span               │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -78,7 +78,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 
 | Storage behavior | DGAP | Core LARA | Labeled (target) | Labeled (today) |
 |------------------|------|-----------|------------------|-----------------|
-| Scan adjacency | `index`, `degree`, `offset` | `base_slot_start`, `degree`, `log_head` | + `LabelBucket` rows | Implemented |
+| Scan adjacency | `index`, `degree`, `offset` | `base_slot_start`, `degree`, `spill_run` | + `LabelBucket` rows | Implemented |
 | Insert slack in window | CSR successor boundary | Same (`row_layout`) | Per-label slack inside vertex span | Implemented |
 | Overflow | Per-leaf log | Per-leaf log | Per-leaf log (shared) | Implemented |
 | Density trigger | PMA `actual/total` | Same (`counts_store`) | Leaf cascade (partial) | Partial |
@@ -95,7 +95,7 @@ Inline properties are a separate physical domain: bucket-local live order associ
 
 **Crate modules:** `lara.rs`, `lara/edge/*`, `lara/vertex/*`
 
-- **Vertex row** matches DGAP `vertex_element`: locator packs `base_slot_start`; `degree` / `stored_degree` play the live vs reserved roles; `log_head` ≡ `offset`.
+- **Vertex row** matches DGAP `vertex_element`: locator packs `base_slot_start`; `degree` / `stored_degree` play the live vs reserved roles; `spill_run` plays the role DGAP gives `offset` (ADR 0097 replaced the shared log with a per-bucket run, so the field addresses the run, not a chain head).
 - **PMA segment tree:** `segment_count`, `segment_size`, `segment_edges_actual`, `segment_edges_total` in `counts_store` — the same *density semantics* as DGAP (`reference/DGAP/dgap/src/graph.h`, `recount_segment_*`: the decision reads the leaf row). One maintenance deviation: Gleaph keeps the **leaf rows canonical** and treats the internal rows as derived — mutations apply their delta to the leaf only and `EdgeStore::rebuild_counts_internal_nodes` recomputes the internal path on demand (segment growth, audits, future aggregate readers), because no runtime consumer reads an internal row (GAP-2026-09-20-004). DGAP maintains the tree eagerly. The labeled layer keeps the same definition from the row side: `actual` counts live edge records that occupy edge-slab slots, so the modes whose rows are not slab-resident (tiny inline prefix, tree LTB blocks) contribute zero and adjust only at their mode transition (ADR 0096 §5; LARA `segment_actual` likewise excludes tree rows).
 - **Weighted rebalance:** `rebalance_weighted_with_layout` redistributes edges and slack across a vertex index range inside the segment's physical capacity — DGAP `spread_weighted` / `rebalance_weighted`.
 - **Segment relocation:** `segment_slide`, hot-segment relocate tests — physical block moves; vertex bases rewritten; then old physical range → **`FreeSpanStore`** (core LARA; DGAP often folds equivalent space recovery into `resize_V1` instead of an explicit retirement pool).
@@ -110,7 +110,7 @@ Inline properties are a separate physical domain: bucket-local live order associ
 Normal labeled vertices:
 
 - `LabeledVertex.degree` — live `LabelBucket` count (not edge count).
-- `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `overflow_log_head`.
+- `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `edge_spill_run`.
   Degree ≤ 4 buckets with 4-byte edges are born tiny (ADR 0096): targets live
   in the descriptor (T0..T3; `edge_start` is an empty-span anchor, byte 28 holds
   the used prefix width 0..=4, log NONE), holding zero slab slots until
@@ -127,7 +127,7 @@ Default-label bypass uses core `Vertex` row semantics directly.
 
 - One **PMA leaf physical reservation** holds edge bytes for up to `segment_size` vertices.
 - Each vertex's labels occupy **sub-ranges** inside that leaf block (proportional slack by label degree), analogous to DGAP vertices sharing one segment `[from, to)`.
-- When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block; overflow logs fold; old physical span → free list.
+- When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block; a bucket's spill run is compacted into its prefix when the live rows fit (ADR 0097 §7); old physical span → free list.
 - **No per-vertex `release_span` on routine growth.**
 
 **Today (implemented — `labeled/graph/compact.rs`):**
@@ -180,7 +180,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 1. **Pin labeled edge bytes to PMA leaf `span_meta.physical_start`** — vertices in a leaf share one contiguous physical block (like DGAP `recount_segment_total`).
 2. **Drive density / cascade from leaf `segment_edges_actual/total`**, not isolated `VertexEdgeSpan` rewrite.
-3. **On leaf rebalance:** fold label overflow logs, run weighted slide on the leaf vertex range, update bucket `edge_start` values — mirror `rebalance_data_V1`.
+3. **On leaf rebalance:** compact a bucket's spill run into its prefix, run weighted slide on the leaf vertex range, update bucket `edge_start` values — mirror `rebalance_data_V1`.
 4. **Retire old leaf physical block via single `release_span`** (segment footprint), not per-vertex peel.
 5. **Remove per-vertex `stored_slots` append-at-tail** for normal labeled rows once leaf slide covers growth (bypass mode may keep core vertex path).
 

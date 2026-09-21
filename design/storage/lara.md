@@ -42,7 +42,8 @@ LARA is a **storage algorithm and contract**, not an Internet Computer feature. 
 - PMA segment tree and leaf density (`actual` = live edge records occupying
   edge-slab slots / `total` = assigned physical width)
 - Weighted rebalance inside a fixed physical window (`rebalance_weighted`)
-- Per-segment overflow logs when the slab window is full
+- Per-bucket spill runs when the slab window is full (ADR 0097 replaced the shared per-segment
+  overflow log; a bucket owns a lazily allocated run instead)
 
 **LARA adopts DGAP semantics for scan and in-window slide.** It **extends** DGAP with explicit structures for incremental physical relocation and reuse. Those extensions are **part of LARA**, not IC quirks.
 
@@ -68,11 +69,11 @@ All LARA code — core and labeled — must respect these boundaries.
 
 **Who:** iterators, planners, read-only graph APIs.
 
-**May read:** vertex row fields needed for visibility (`base_slot_start`, live `degree`, `log_head` / bucket descriptors).
+**May read:** vertex row fields needed for visibility (`base_slot_start`, live `degree`, `spill_run` / bucket descriptors).
 
 **Must not read:** PMA counts, `SegmentSpanMetaStore`, `FreeSpanStore`, maintenance flags.
 
-**Path:** `vertex_id → row → live slab prefix (+ overflow log chain)`.
+**Path:** `vertex_id → row → live slab prefix (+ its own spill run)`.
 
 ### 2. Vertex-local update contract
 
@@ -80,7 +81,8 @@ All LARA code — core and labeled — must respect these boundaries.
 
 **Geometry:** CSR successor boundary inside a PMA leaf (next vertex `base_slot_start`, leaf `total`, slab `elem_capacity`).
 
-**Overflow:** per-leaf segment log when the in-window slab is full.
+**Overflow:** the bucket's own spill run when the in-window slab is full (ADR 0097; the shared
+per-leaf log is gone, so nothing is provisioned before the first row that does not fit).
 
 **Slack:** tombstones and `stored_degree` vs live `degree` until rebalance packs the row.
 
@@ -117,9 +119,9 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 
 **Failure-atomic stable mutations.** Two owner-level mutations are split into an infallible validation phase, a preflight phase that only grows backing memory, and a commit phase that publishes logical metadata:
 
-1. `EdgeStore::grow_segment_tree_to` reserves `counts_store`, `span_meta`, and overflow-log capacity before it migrates counts, appends span-meta rows, resets new log indexes, and writes the edge header.
+1. `EdgeStore::grow_segment_tree_to` reserves `counts_store` and `span_meta` before it migrates counts, appends span-meta rows, and writes the edge header (ADR 0097 removed the per-segment log capacity this step used to reserve).
 2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
-3. `LabeledLaraGraph::reserve_one_orientation_batch` (Plans 0122–0124) validates the plan, reserves edge-slab `elem_capacity` and inline property bytes slab spans for clean-slab runs, and reserves per-leaf edge/inline-property-bytes overflow-log capacity for existing-bucket runs that do not fit the slab window, returning an opaque `BatchReservation` token before any canonical write. On failure it restores the logical edge capacity and inline property bytes occupied tail; inline property bytes already appended are retired to the inline property bytes free-list as reusable slack, and the underlying stable-memory pages are not shrunk. Overflow-log runs do not touch logical capacity or the inline property bytes tail before commit. `BatchReservation::rollback` consumes the token and applies the same restoration. `BatchReservation::commit` validates the token, graph instance, and bucket fingerprints before the first canonical byte write; after that, panic is an invariant violation and, in an ICP message, traps the whole message. Plans 0125 and 0128 extend the same boundary to pending-aware one-shot PMA leaf expansion: when neither the clean slab window nor the per-leaf overflow log can absorb the projected geometry (existing slab slots + existing overflow-log entries + pending batch edges), reserve expands the pinned leaf block in place by consuming an adjacent free span or growing the edge-store tail capacity, records the consumed free span for rollback, and commit rebalances the vertex span, folds preserved edge/inline-property-bytes overflow-log entries into the new slab layout, writes the pending edge/inline-property-bytes values, and publishes the leaf block growth in segment counts. Plan 0125 covers edge-only runs; Plan 0128 admits fixed, uniform non-zero inline property byte widths when the inline property bytes span is reusable or grows at the occupied tail, while rejecting non-tail relocation. GraphStore observes only the resulting admission classification and rollback boundary; PMA/log cursors and bucket heads remain LARA-owned.
+3. `LabeledLaraGraph::reserve_one_orientation_batch` (Plans 0122–0124) validates the plan, reserves edge-slab `elem_capacity` and inline property bytes slab spans for clean-slab runs, and rejects, before reserving anything, an existing-bucket run whose rows would land in the bucket's spill run: those runs take the scalar fallback, which appends to the run, grows it by class and promotes the bucket when it must (ADR 0097 §7). It returns an opaque `BatchReservation` token before any canonical write. On failure it restores the logical edge capacity and inline property bytes occupied tail; inline property bytes already appended are retired to the inline property bytes free-list as reusable slack, and the underlying stable-memory pages are not shrunk. Deferred runs touch nothing: the rejection happens before any reservation. `BatchReservation::rollback` consumes the token and applies the same restoration. `BatchReservation::commit` validates the token, graph instance, and bucket fingerprints before the first canonical byte write; after that, panic is an invariant violation and, in an ICP message, traps the whole message. Plans 0125 and 0128 extend the same boundary to pending-aware one-shot PMA leaf expansion: when the clean slab window cannot absorb the projected geometry (existing slab slots + pending batch edges — a bucket that owns a spill run is deferred above), reserve expands the pinned leaf block in place by consuming an adjacent free span or growing the edge-store tail capacity, records the consumed free span for rollback, and commit rebalances the vertex span, folds preserved inline-property-bytes log entries into the new slab layout, writes the pending edge/inline-property-bytes values, and publishes the leaf block growth in segment counts. Plan 0125 covers edge-only runs; Plan 0128 admits fixed, uniform non-zero inline property byte widths when the inline property bytes span is reusable or grows at the occupied tail, while rejecting non-tail relocation. GraphStore observes only the resulting admission classification and rollback boundary; PMA/log cursors and bucket heads remain LARA-owned.
 
 The edge slab keeps `elem_capacity` exact while reserving one additional physical stable-memory page
 when crossing a page boundary. This amortizes repeated `Memory::grow` calls during relocation-heavy
@@ -137,7 +139,7 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 **Layout/version skew at the upgrade boundary:** every store header carries `magic` + `LAYOUT_VERSION` + `stride` (= `V::BYTES`), and `init` rejects a mismatch with a typed `InitError` (`BadMagic`, `IncompatibleVersion`, `StrideMismatch`) rather than decoding old-width rows as the new layout. This makes the header — not an ad-hoc schema-version cell — the single source of truth for on-disk row compatibility. A layout-changing upgrade shipped without a stable-memory migration is therefore caught at reopen, not as a silent misread. The graph canister forces this check at the upgrade boundary: `post_upgrade` calls `ensure_graph_initialized()` so a skew traps immediately with an actionable message (`graph stable layout is incompatible with this canister build (...); a stable-memory migration is required`), instead of lazily on the first post-upgrade query.
 
-**Backing-memory-size guard at reopen:** after the magic/version/stride checks pass, the segmented overflow logs (`LogStore`, `InlinePropertyBytesLogStore`) and `FreeSpanStore` additionally verify that the backing memory is at least as large as the layout the header declares (`memory.size() * WASM_PAGE_SIZE >= required_bytes(header)`), returning a typed `InitError` (`OutOfMemory` / `InvalidLayout`) when it is not. These stores address per-segment slots at computed offsets (`HEADER_SIZE + leaf * segment_block_size + ...`); a truncated backing region or a corrupt `segment_count` would otherwise pass the header checks and only fail later as an opaque out-of-bounds trap on the first segment read. The guard turns that into an actionable reopen error.
+**Backing-memory-size guard at reopen:** after the magic/version/stride checks pass, the segmented inline-property-bytes log store (`InlinePropertyBytesLogStore`) and `FreeSpanStore` additionally verify that the backing memory is at least as large as the layout the header declares (`memory.size() * WASM_PAGE_SIZE >= required_bytes(header)`), returning a typed `InitError` (`OutOfMemory` / `InvalidLayout`) when it is not. These stores address per-segment slots at computed offsets (`HEADER_SIZE + leaf * segment_block_size + ...`); a truncated backing region or a corrupt `segment_count` would otherwise pass the header checks and only fail later as an opaque out-of-bounds trap on the first segment read. The guard turns that into an actionable reopen error.
 
 **`value_blobs` asymmetry:** the inline property bytes blob map is excluded from the required-region set because a populated inline property bytes store with no wide-inline-property-bytes blobs legiticounterpartly leaves it empty. `EdgeInlinePropertyBytesStore::init` still enforces the asymmetric rule: when the required regions are **Fresh**, `value_blobs` must also be empty (a surviving blob region alongside empty required regions is partial loss); when they are **Reopen**, `value_blobs` may be empty or populated.
 
@@ -201,9 +203,8 @@ Inline property bytes slab ([labeled-edge-inline-properties.md](./labeled-edge-i
 
 **Bypass-origin geometry contract (Plan 0341, GAP-2026-09-07-001 bypass side).** A default-label
 homogeneous bypass row is a vertex-level span `[base_slot_start, base_slot_start + stored_slots)`
-in the shared edge slab, optionally with an overflow-log suffix appended beyond `stored_slots`
-(`bypass_overflow_log_head`, `DEFAULT_MAX_LOG_ENTRIES = 170` per leaf segment; the fold path is the
-existing mechanism for log-backed rows). The row's live edges are the first `degree` slots of the
+in the shared edge slab, optionally with a spill run beyond `stored_slots`
+(`bypass_spill_run`; the row's slab prefix is `stored_degree − run rows`, ADR 0097 §3). The row's live edges are the first `degree` slots of the
 slab prefix; removes tombstone in place (`remove_default_bypass_edge_at_slot`, remove.rs:147-230)
 and `after_slab_tombstone_delete` keeps `stored_slots` while decrementing `degree` (record.rs:1306),
 so `stored_slots − degree` is the tombstone count. Every later tail row's `base_slot_start` anchors
@@ -312,7 +313,7 @@ mixed-label buckets are evaluated independently. These are candidate precedences
 pair-rank, and block-permutation formats still require mutation maintenance, stale/rebuild
 handling, and stable-layout accounting before ordinary callers can activate them.
 
-Plan 0181 adds an owner-facing physical-slot reader for slab and overflow-log locations. The current
+Plan 0181 adds an owner-facing physical-slot reader for slab and spill locations. The current
 Published bridge uses it only for singleton counterpart buckets; mixed-neighbor validation keeps a
 full scan because exact equal-neighbor count and rank cannot be derived from bucket degree alone.
 This is a transitional, crate-private implementation path, not the target query contract of ADR
@@ -321,12 +322,12 @@ surface; it must not become a Graph, Router, or graph-index identity API.
 
 Plan 0163 confirms the self-loop shape boundary with isolated fixtures: directed self-loops have
 two orientation rows, whereas undirected self-loops have one row and zero counterpart metadata. Plan
-0164 adds a real isolated two-label fixture and a feature-gated physical slab/log location reader;
-overflow-log indices are high-bit encoded only in measurement identities.
+0164 adds a real isolated two-label fixture and a feature-gated physical slab/spill location reader;
+spill row indices are high-bit encoded only in measurement identities.
 
 The measurement gate can encode directed self-loops through the directed rank adapter and confirms
 that undirected self-loops carry no per-edge counterpart payload. The mixed-label fixture keeps both label
-buckets independent, and sparse-slot uses real deletion-churn overflow-log locations rather than
+buckets independent, and sparse-slot uses real deletion-churn spill-run locations rather than
 logical live ordinals.
 
 Synthetic topology probes measure sparse directed slots at 192 B ranked versus 148 B shared; the
@@ -529,7 +530,7 @@ Use this when reviewing LARA PRs:
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
-- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, inline property bytes allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append implemented** (`reserve_one_orientation_batch` admits existing-bucket runs to the shared per-leaf edge/inline-property-bytes overflow logs, reserve checks log and inline property bytes log capacity before any canonical write, commit appends entries in logical ordinal order and updates bucket heads/degree without changing stored_slots or vertex slab span, scalar fallback preserved for unsupported geometry); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/inline-property-bytes-log fold, fixed-width inline property bytes span reuse or occupied-tail growth, edge and inline property bytes read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/overflow-log edge and inline property bytes locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent counterpart index, and public wire integration remain planned
+- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, inline property bytes allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append superseded** (ADR 0097 §7: `reserve_one_orientation_batch` now rejects a run whose rows would land in a bucket's spill run *before* any reservation and lets the scalar path append to the run, grow it by class and promote; the shared per-leaf edge log no longer exists, so no log capacity is reserved or checked, and the batch commits only clean-slab and expanded-slab runs); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/inline-property-bytes-log fold, fixed-width inline property bytes span reuse or occupied-tail growth, edge and inline property bytes read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/spill edge and inline property bytes locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent counterpart index, and public wire integration remain planned
 - [adr/0048-lara-counterpart-resolution.md](../adr/0048-lara-counterpart-resolution.md) — accepted physical-pairing design; Plans 0132, 0142, and 0143 add one-pass live-slot traversal, exact scalar location consumption, canonical read-only leaf enumeration, and mutation invalidation/rebuild scheduling for supported named buckets. The Published Sampled/Packed lookup work described by the older plans is historical benchmark evidence only: it is superseded by ADR 0048's metadata-free `CounterpartScan` and is not an activation dependency or authoritative runtime contract. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Plans 0147–0177 provide isolated AliasOnly/ScanOnly/rank-indexed fixtures, topology-specific selector logic, compact-only storage, and aggregate adoption status; these remain historical evidence and do not authorize ordinary-caller activation or alias removal
 - The older ADR 0049 summary below predates the active public ordered endpoint and is retained only as historical context; the current status is recorded in ADR 0049 itself.
 - [adr/0050-lara-traverse-read-api.md](../adr/0050-lara-traverse-read-api.md) — planned canonical logical-slot traversal and explicit inline-property read contract; activation is gated on the ADR 0048 counterpart replacement and full forward/reverse caller migration
