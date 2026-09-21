@@ -186,6 +186,17 @@ fn spill_iterator_last_loads_partial_tail() {
 }
 
 #[test]
+fn core_vertex_append_preflight_rejects_width_overflow() {
+    use crate::{lara::vertex::Vertex, traits::CsrVertex};
+    for (live, stored) in [(u32::MAX, u32::MAX), (1, u32::MAX)] {
+        let vertex = Vertex::from_parts(0, live, stored, -1, false);
+        assert!(vertex.try_grow_packed_slab_by_one().is_err());
+        assert_eq!(vertex.degree(), live);
+        assert_eq!(vertex.stored_degree(), stored);
+    }
+}
+
+#[test]
 fn spill_replay_reads_chunks_not_scalar_rows() {
     replay::<4>();
 }

@@ -242,6 +242,153 @@ fn spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors() 
     );
 }
 
+fn append_lifecycle<const N: usize>() {
+    let m = crate::test_support::vector_memory;
+    let graph = LabeledLaraGraph::<Row<N>, _>::new(
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::from_raw(1),
+    )
+    .unwrap();
+    let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    for i in 0..67 {
+        graph
+            .insert_edge_skip_leaf_cascade(vid, label, Row(i), EdgePlacementPolicy::Insertion)
+            .unwrap();
+    }
+    graph.enable_default_edge_bypass(vid).unwrap();
+    let label = graph.default_label();
+    let vertex = graph.vertices().get(vid);
+    let run = graph.edges().spill_mint(vertex.bypass_spill_run()).unwrap();
+    let initial_used = graph.edges().spill_used_len(run);
+    assert!(initial_used > 32);
+    let prefix = graph.edges().initialized_slab_slots(&vertex).unwrap();
+    let initial_class = initial_used.next_power_of_two();
+    let mut dead = Vec::new();
+    for target in 67..prefix + initial_class + 3 {
+        if target == 71 {
+            for slot in [0, prefix, 31, 32, 66] {
+                assert_eq!(
+                    graph
+                        .remove_edge_at_slot(vid, label, slot)
+                        .unwrap()
+                        .unwrap()
+                        .0,
+                    slot
+                );
+                dead.push(slot);
+            }
+        }
+        graph
+            .insert_edge(vid, label, Row(target), EdgePlacementPolicy::Insertion)
+            .unwrap();
+        let vertex = graph.vertices().get(vid);
+        assert!(vertex.is_default_edge_labeled());
+        assert_eq!(
+            vertex.bypass_spill_run(),
+            run.get(),
+            "tail run grows in place"
+        );
+        assert_eq!(
+            graph.edges().spill_used_len(run),
+            initial_used + target - 66
+        );
+        assert_eq!(
+            graph.edges().initialized_slab_slots(&vertex).unwrap(),
+            prefix
+        );
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            let mut seen = Vec::new();
+            let _ = graph
+                .visit_edges(vid, label, order, |slot, edge| {
+                    seen.push((slot.raw(), edge.0));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut expected: Vec<_> = (0..=target)
+                .filter(|i| !dead.contains(i))
+                .map(|i| (i, i))
+                .collect();
+            if order == OutEdgeOrder::Descending {
+                expected.reverse();
+            }
+            assert_eq!(
+                seen, expected,
+                "width={N}, appended={target}, order={order:?}"
+            );
+        }
+    }
+    assert!(graph.edges().spill_used_len(run) > initial_class);
+    let end = prefix + crate::labeled::spill_run_store::MAX_ROWS;
+    for target in prefix + initial_class + 3..end {
+        graph
+            .insert_edge(vid, label, Row(target), EdgePlacementPolicy::Insertion)
+            .unwrap();
+    }
+    let before = graph.vertices().get(vid);
+    let before_count = graph.edges().header().num_edges;
+    let error = graph
+        .insert_edge(vid, label, Row(end), EdgePlacementPolicy::Insertion)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        LabeledOperationError::Store(
+            crate::lara::operation_error::LaraOperationError::SpillNeedsPromotion
+        )
+    ));
+    let after = graph.vertices().get(vid);
+    assert_eq!(after.degree(), before.degree());
+    assert_eq!(after.stored_degree(), before.stored_degree());
+    assert_eq!(after.bypass_spill_run(), run.get());
+    assert_eq!(
+        graph.edges().spill_used_len(run),
+        crate::labeled::spill_run_store::MAX_ROWS
+    );
+    assert_eq!(graph.edges().header().num_edges, before_count);
+    assert_eq!(
+        graph.edges().initialized_slab_slots(&after).unwrap(),
+        prefix
+    );
+    let mut seen = Vec::new();
+    let _ = graph
+        .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+            seen.push((slot.raw(), edge.0));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(
+        seen,
+        (0..end)
+            .filter(|i| !dead.contains(i))
+            .map(|i| (i, i))
+            .collect::<Vec<_>>()
+    );
+}
+#[test]
+fn retained_run_append_preserves_prefix_and_ordinals_four_bytes() {
+    append_lifecycle::<4>();
+}
+#[test]
+fn retained_run_append_preserves_prefix_and_ordinals_ten_bytes() {
+    append_lifecycle::<10>();
+}
+
 #[test]
 fn spill_matching_preserves_ordinals_and_stops_predicates_at_match() {
     exercise::<4>(false);

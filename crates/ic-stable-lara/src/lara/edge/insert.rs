@@ -176,8 +176,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .base_slot_start()
             .checked_add(u64::from(v.stored_degree()))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let has_space = { self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) };
+        // A retained run fixes the prefix extent and every existing run ordinal. Capacity
+        // beyond that prefix is not permission to append another initialized slab row.
+        let has_space = v.spill_run() == crate::traits::NO_SPILL_RUN
+            && self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout);
         let location = if has_space {
+            let grown = v
+                .try_grow_packed_slab_by_one()
+                .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
             {
                 let write_end = loc
                     .checked_add(1)
@@ -189,12 +195,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 self.write_slot(loc, edge)
                     .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             }
-            {
-                let grown = v
-                    .try_grow_packed_slab_by_one()
-                    .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
-                vertices.set(vid, &grown);
-            }
+            vertices.set(vid, &grown);
             InsertLocation::Slab(v.stored_degree())
         } else {
             let run = self.insert_into_spill_with_layout(vertices, vid, v, edge)?;

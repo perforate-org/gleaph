@@ -37,7 +37,9 @@ pub trait CsrVertex: Storable + Copy {
     fn base_slot_start(&self) -> u64;
     /// Logical out-degree (or label-bucket row count) visible through graph APIs.
     fn degree(&self) -> u32;
-    /// Physical width backing this row in slab / log storage (never less than [`Self::degree`]).
+    /// Stored backing width in this row's representation. Core/bypass rows include used spill
+    /// rows; bucket descriptors store only the prefix, which can be smaller than live degree.
+    /// Use [`Self::initialized_slab_slots`] to project the initialized prefix.
     fn stored_degree(&self) -> u32 {
         self.degree()
     }

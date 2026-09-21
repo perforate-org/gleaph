@@ -341,10 +341,15 @@ impl CsrVertex for Vertex {
         self
     }
 
-    fn grow_packed_slab_by_one(mut self) -> Self {
-        self.live_edges = self.live_edges.saturating_add(1);
-        self.slab_slots = self.slab_slots.saturating_add(1);
-        self
+    fn try_grow_packed_slab_by_one(mut self) -> Result<Self, ()> {
+        self.live_edges = self.live_edges.checked_add(1).ok_or(())?;
+        self.slab_slots = self.slab_slots.checked_add(1).ok_or(())?;
+        Ok(self)
+    }
+
+    fn grow_packed_slab_by_one(self) -> Self {
+        self.try_grow_packed_slab_by_one()
+            .expect("Vertex::grow_packed_slab_by_one: row width overflow")
     }
 
     fn after_slab_insert_reuse_tail_tombstone(mut self) -> Self {

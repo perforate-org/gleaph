@@ -261,10 +261,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        let run = match self.spill_mint(v.spill_run()) {
+        let prepare = |run: SpillRunId| {
+            v.try_with_spill_run(run.get())
+                .and_then(CsrVertex::try_grow_packed_slab_by_one)
+                .map_err(|()| LaraOperationError::RowDegreeOverflow)
+        };
+        let (run, prepared) = match self.spill_mint(v.spill_run()) {
             Ok(run) => {
+                // Preflight before appending or growing/releasing the published run.
+                let prepared = prepare(run)?;
                 if self.spill_append_edge_row(run, &edge)? {
-                    run
+                    (run, prepared)
                 } else {
                     let used = self.spill_used_len(run);
                     if used >= MAX_ROWS {
@@ -273,27 +280,30 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     }
                     let grown = self.spill_grow(run, used, used + 1)?;
                     self.spill_write_edge_row(grown, used, &edge)?;
-                    grown
+                    (grown, prepared)
                 }
             }
             Err(_) => {
                 // Unset (`NO_SPILL_RUN`) or an id outside the arena: the row does not fit its
                 // prefix, so the run is minted now, with room for exactly this row.
                 let run = self.spill.allocate(1).map_err(LaraOperationError::from)?;
+                let prepared = match prepare(run) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        self.spill_release(run)?;
+                        return Err(error);
+                    }
+                };
                 self.spill_write_edge_row(run, 0, &edge)?;
-                run
+                (run, prepared)
             }
         };
-        // Publish: the run id first, then the growth of one live row. The live setters reject the
-        // sentinel and validate the arena range, so a failure here is an invariant break - the
-        // arena's bound is the minimum over every row type that references it.
-        let published = v
+        // Publish the preflighted width and the final run id. Arena bounds are the minimum
+        // encodable bound of all referencing row types, including after run relocation.
+        let published = prepared
             .try_with_spill_run(run.get())
             .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
-        let grown = published
-            .try_grow_packed_slab_by_one()
-            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
-        vertices.set(vid, &grown);
+        vertices.set(vid, &published);
         Ok(run)
     }
 
