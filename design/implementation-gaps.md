@@ -117,6 +117,51 @@ defect from being rediscovered without its prior reasoning.
   `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
   0 after).
 
+### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
+
+- **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
+  family's regression (`bench_l_s2_h_del_1024` 127.2M -> 266.5M, `bench_l_s2_h_pt_d_1024`
+  17.8M -> 52.0M, `bench_l_s2_h_scn_d_1024` 17.7M -> 51.9M, `offset_workload_baseline_*`
+  +24.7% / +37.0%).
+- **Owner:** `compact_vertex_edge_span_one_step` (compact.rs, the `resume_bucket_index == 0`
+  run-handling block) and the span-resolution policy it reaches.
+- **Mechanism (code path, measured).** The delete benches' measured region is 512
+  `remove_edge_matching` plus the compaction loop `compact_vertex_edge_span_until_overflow_or_done`,
+  which calls `compact_vertex_edge_span_one_step` and resets its cursor on
+  `OverflowRewrite`. That step, whenever the cursor is at 0 and *any* bucket owns a run,
+  folds the first such bucket with `compact_label_bucket_overflow_to_slab`; when the prefix
+  has no room for the run's rows it grows the span with
+  `rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)` and **recurses**.
+  That rebalance resolves its base under `SpanResolutionPolicy::SlackMayBeDropped`, so when
+  the pinned leaf cannot place the wider span it silently keeps the *old* span
+  (`finish_span_resolution` returns the vertex's current width). The fold therefore fails
+  again, the span never grows, and the recursion repeats: one delete's compaction loop
+  rewrote the span and relocated/slid the leaf ~56 times. Scope calls for
+  `bench_l_s2_h_del_1024`: `labeled_leaf_try_expand_in_place` 1 -> 56,
+  `labeled_leaf_weighted_slide_commit` 1 -> 56, `labeled_rewrite_read_and_plan` 3 -> 58,
+  `labeled_vertex_write_edge_runs` 3 -> 58, `labeled_leaf_materialize_plans` absent -> 52,
+  while `labeled_remove_edge_skip_leaf` stays 512 on both sides. `main` never enters the
+  block at all: with no runs the `find(...)` matches nothing and the step goes straight to
+  per-bucket packing.
+- **Two candidate fixes, both measured, both rejected as guesses:**
+  1. **Skip the bucket when the fold cannot be placed** (advance the cursor instead of
+     growing). Breaks the compaction's contract: `compaction_cursor_packs_alternating_tombstones_across_steps`
+     (0 moves where 4 are required) and `compaction_cursor_survives_interleaved_delete_in_packed_prefix`
+     (`[2,4,6,8]` where `[4,6,8]` is required - the finalize truncates a live edge). The
+     cursor path *requires* the fold to happen, so room must be made for it.
+  2. **Grow with `SpanResolutionPolicy::Required`** (a real relocation, once). Reaches the
+     deferred path's partial-mutation hazard:
+     `directed_insert_deferred_materialize_via_wrapper_retry_after_drain` publishes a width
+     of 0 where 8 is required, i.e. the required rewrite releases the old span before the
+     new one is committed, so a failed rewrite leaves the row empty. The maintenance policy
+     exists precisely to avoid that.
+- **Decision needed (owner):** the compaction must fold run-backed buckets (its cursor
+  contract says so), so the room is *needed* rather than speculative - but obtaining it
+  either spins under the maintenance policy or risks a partial publish under the required
+  one. Which of the two the compaction should carry - a bounded growth that reports
+  "cannot compact yet" without mutating, or a required rewrite made atomic - is a policy
+  call this slice should not make on its own.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
