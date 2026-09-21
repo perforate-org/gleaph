@@ -331,7 +331,7 @@ impl<M: Memory> SpillRunStore<M> {
             self.read_row(run, index, &mut row);
             self.write_row(target, index, &row)?;
         }
-        self.release(run, from_len)?;
+        self.release(run)?;
         Ok(target)
     }
 
@@ -355,16 +355,26 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(true)
     }
 
-    /// Returns a run to its class's free list, turning its header word into the free-list link.
-    /// `len` is the used length; the class follows from it, which is why the descriptor only needs
-    /// the run id.
-    pub(crate) fn release(&self, run: RunId, len: u32) -> Result<(), SpillRunError> {
+    /// Returns a live run to its class's free list, turning its header word into the free-list link.
+    ///
+    /// The class is derived from the **run's own header**, never from a caller-supplied number: the
+    /// used length is what `class_rows` maps to the allocated class, and a caller passing a live-row
+    /// count instead would free a class-128 run into the 8-row list to be handed out with the wrong
+    /// capacity. Deriving it here makes that mistake unrepresentable.
+    ///
+    /// Ordering: both target ranges are backed before the first write (`new` writes the 64-byte
+    /// header, `allocate` touches the run's last row), so the only fallible step is the first write,
+    /// which happens before any mutation - a failed release leaves the run live rather than
+    /// freed-and-reported. The second write is infallible by construction.
+    pub(crate) fn release(&self, run: RunId) -> Result<(), SpillRunError> {
         assert!(run != NONE, "cannot release the sentinel run");
-        let capacity = Self::class_rows(len.max(1));
-        let class = Self::class_index(capacity);
+        let class = Self::class_index(Self::class_rows(self.read_used_len(run).max(1)));
         let head = self.free_head(class);
         safe_write(&self.memory, self.header_address(run), &head.to_le_bytes())?;
-        self.set_free_head(class, run)?;
+        // The free-head word lives in the 64-byte store header, which `new` wrote; no growth can be
+        // needed and no error can follow the write above.
+        self.memory
+            .write(OFFSET_FREE_HEADS + (class as u64) * 4, &run.to_le_bytes());
         Ok(())
     }
 
@@ -445,7 +455,7 @@ mod tests {
             })
         );
         // A free run of the same class still serves the request: reuse needs no arena row.
-        store.release(run, 5).expect("release");
+        store.release(run).expect("release");
         assert_eq!(store.allocate(5).expect("reuse"), run);
     }
 
@@ -563,6 +573,68 @@ mod tests {
     }
 
     #[test]
+    fn release_takes_the_class_from_the_run_header() {
+        let store = store();
+        // A class-128 run (used 65) must come back to the class-128 list, not to class 8.
+        let big = store.allocate(65).expect("big");
+        assert_eq!(store.arena_rows(), 128 + RUN_HEADER_ROWS);
+        store.release(big).expect("release");
+        // A class-8 request cannot take it: it bumps a fresh run instead.
+        let small = store.allocate(MIN_ROWS).expect("small");
+        assert_ne!(small, big);
+        // A class-128 request gets exactly it back.
+        assert_eq!(store.allocate(65).expect("reuse"), big);
+    }
+
+    #[test]
+    fn release_needs_no_growth_so_it_cannot_fail_after_freeing() {
+        // The class comes from the run's header and both writes target already-backed rows, so a
+        // memory that refuses to grow must not change the outcome: release cannot report a failure
+        // after it has freed the run.
+        let memory = crate::test_support::FailpointMemory::new();
+        let store = SpillRunStore::new(memory.clone(), 4, ARENA_ROWS_LIMIT).expect("store");
+        let run = store.allocate(5).expect("allocate");
+        memory.fail_at_grow(memory.grow_count() + 1);
+        store.release(run).expect("release needs no growth");
+        assert_eq!(store.allocate(5).expect("reuse"), run);
+    }
+
+    #[test]
+    fn a_failed_grow_during_grow_to_leaves_the_old_run_allocated() {
+        let memory = crate::test_support::FailpointMemory::new();
+        let store = SpillRunStore::new(memory.clone(), 4, ARENA_ROWS_LIMIT).expect("store");
+        let first = store.allocate(MIN_ROWS).expect("first");
+        let _tail = store.allocate(MIN_ROWS).expect("tail");
+        for index in 0..MIN_ROWS {
+            store
+                .write_row(first, index, &index.to_le_bytes())
+                .expect("write");
+        }
+        // Fill the backing so the class-16 allocation that `grow_to` will make must grow the
+        // memory. The probe uses that class, not `MAX_ROWS`, because the fill runs are much bigger.
+        loop {
+            let next_end =
+                HEADER_SIZE + u64::from(store.arena_rows() + RUN_HEADER_ROWS + 2 * MIN_ROWS) * 4;
+            if next_end > memory.byte_len() as u64 {
+                break;
+            }
+            store.allocate(MAX_ROWS).expect("fill");
+        }
+        memory.fail_at_grow(memory.grow_count() + 1);
+        assert!(matches!(
+            store.grow_to(first, MIN_ROWS, MIN_ROWS + 1),
+            Err(SpillRunError::Grow(_))
+        ));
+        // The old run is still allocated, at its own id, with its length and rows intact.
+        assert_eq!(store.read_used_len(first), MIN_ROWS);
+        for index in 0..MIN_ROWS {
+            let mut buf = [0u8; 4];
+            store.read_row(first, index, &mut buf);
+            assert_eq!(u32::from_le_bytes(buf), index);
+        }
+    }
+
+    #[test]
     fn classes_are_powers_of_two_bounded_by_the_two_ends() {
         assert_eq!(
             SpillRunStore::<crate::VectorMemory>::class_rows(1),
@@ -614,7 +686,7 @@ mod tests {
         let run = store.allocate(5).expect("allocate");
         assert_eq!(store.read_used_len(run), 5);
         store.write_row(run, 0, &7u32.to_le_bytes()).expect("write");
-        store.release(run, 5).expect("release");
+        store.release(run).expect("release");
         // A released run's header is the free-list terminator, not a length.
         assert_eq!(store.free_head(0), run);
         assert_eq!(store.read_used_len(run), NONE);
@@ -630,7 +702,7 @@ mod tests {
         let small = store.allocate(5).expect("small");
         let big = store.allocate(200).expect("big");
         assert_ne!(small, big);
-        store.release(small, 5).expect("release");
+        store.release(small).expect("release");
         // A run of another class does not take the freed eight-row run.
         let other = store.allocate(300).expect("other");
         assert_ne!(other, small);
@@ -688,7 +760,7 @@ mod tests {
         let run = {
             let store = SpillRunStore::new(memory.clone(), 4, ARENA_ROWS_LIMIT).expect("store");
             let run = store.allocate(5).expect("allocate");
-            store.release(run, 5).expect("release");
+            store.release(run).expect("release");
             run
         };
         let store = SpillRunStore::new(memory, 4, ARENA_ROWS_LIMIT).expect("reopen");
