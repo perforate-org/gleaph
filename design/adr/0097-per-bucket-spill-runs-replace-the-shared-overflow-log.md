@@ -152,6 +152,22 @@ bucket.
    packed to the blessed bound afterwards, with leftover bits reinvested rather than padded.
 
 
+   **What the id encodes, and the byte budget it needs.** A run id is the **arena row index of the run's
+   header row** (`header_address = HEADER_SIZE + run * row_bytes`; data row `i` follows at `run + 1 + i`), so its
+   range must cover the arena's row count, not a fixed per-segment capacity: the retired shared log's head was an
+   index into 170 entries and fitted in one byte, which is exactly why it cannot hold a run id. The row's byte
+   budget: the shared log's retirement frees the 8-bit log head and the 2 reserved bits immediately, and the
+   8-bit `ipb_log_byte` plus the 8-bit `ipb_log_len` (bytes 27–28) once slice 5 deletes the values log — 26 bits
+   recycled in total — so each new byte buys 8 more bits for the two ids (edge and values). The width is decided by
+   one unanswered fact: `SpillRunStore` is a single instance owned by `EdgeStore` today, and whether the slab
+   buckets' spill joins that same arena or gets its own store determines whether the mintable id range is capped by
+   the unlabeled `Vertex` tail28's 27-bit field or can use 32 bits. **Preferred (own store): 32-bit ids, row
+   29 → 34 bytes final (+5 B; 26 recycled + 40 new = 66 ≥ 64 bits, 2 spare), 36 bytes interim. Fallback (shared
+   arena): 27-bit ids, 33 bytes final, 35 bytes interim.** The interim width is the final width plus the two bytes
+   the values twin still owns. The choice costs 25 KB across the audit's 25 000 descriptor rows and buys an 8×
+   larger arena (2 GiB → 16 GiB of 4-byte edge rows), against the 696 KB of declared log capacity the swap removes.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
