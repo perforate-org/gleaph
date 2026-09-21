@@ -88,6 +88,25 @@ bucket.
    for as a precondition and it disproved the assumption it was testing; the widening is therefore forced, not chosen.
 
 
+   **Interim width, and why the final wire is still 35 bytes.** The values twin is log-based until slice 5 and reads
+   bytes 27–28 as `inline_property_bytes_log_head()/_len()` from 79 sites in `labeled/graph/values.rs`, so those two
+   bytes cannot be the values run id's low half while that path still compiles. The swap therefore uses a **37-byte
+   row for the interim slices**, with both ids in the new bytes (29..37) and bytes 27–28 left to the values twin; every
+   slice keeps compiling and the packing tests are verified directly rather than behind a shim. **Slice 5 deletes the
+   values log, and with it that last reader of bytes 27–28: the values id then moves down into the freed bits (27..35)
+   and the row returns to the 35-byte final layout above.** The 2-byte difference is the price of verifiable
+   intermediate states — ~50 KB across the audit's 25 000 descriptors against the ~696 KB the swap removes — and it
+   disappears at the end.
+
+   **The bypass row widens too.** `LabeledVertex` (21 bytes) carries its run id in `metadata28` bits 4–11 (eight bits)
+   with `bucket_slack_slots` in bits 12–27 and bit 3 reserved, so bypass mode has 25 free bits, not 32 — it cannot
+   carry the `u32` the store mints, and a 25-bit bypass id would be the same artificial bound this ADR rejected for the
+   labeled row. The bypass row is therefore widened by exactly what a `u32` run id needs, with the existing fields
+   kept in place and the new width reported; if the bypass still reaches its log through an interim path, the interim
+   encoding stays compiling now and the final one lands when that path dies, exactly as for the labeled row. There is
+   one `RunId` type and one arena for both rows: no second, narrower bound is introduced anywhere.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
