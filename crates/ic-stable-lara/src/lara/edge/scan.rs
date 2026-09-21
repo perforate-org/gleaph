@@ -47,7 +47,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let mut window = OutEdgeVisitWindow::new(offset, limit);
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(());
         }
         let walk = self.out_edges_iter(vertices, vid)?;
@@ -79,7 +82,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Match: FnMut(&E) -> bool,
     {
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(None);
         }
         let walk = self.out_edges_iter(vertices, vid)?;
@@ -126,7 +132,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let v = vertices.get_in_range(vid)?;
         // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(DescOutEdgesIter {
                 store: self,
                 base_slot_start: v.base_slot_start(),
@@ -142,7 +151,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // Clean rows: the full neighborhood is on the slab, so the iterator never
         // walks the overflow log. Skip `edge_layout()` (full slab header read) and
         // log metadata.
-        if v.log_head() < 0 {
+        if v.spill_run() == crate::traits::NO_SPILL_RUN {
             let stored = v.stored_degree();
             let live = v.degree();
             let nbytes = (stored as usize)
@@ -224,10 +233,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(OutEdgesIter::empty(self));
         }
-        if v.log_head() < 0 {
+        if v.spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(OutEdgesIter::slab_only(
                 self,
                 v.base_slot_start(),

@@ -535,7 +535,7 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// materialization order (oldest→newest).
     inserted_replay: Vec<Option<E>>,
     /// Index of the next reserved log entry to yield, walked from the end of the list.
-    inserted_log_pos: usize,
+    inserted_replay_pos: usize,
     /// Logical slot assigned to the next replayed log entry (starts at `slab_slots`).
     next_inserted_log_slot: u32,
 }
@@ -591,7 +591,7 @@ where
             remaining,
             slab_chunk,
             deleted_slab_offsets,
-            inserted_log_pos: inserted_replay.len(),
+            inserted_replay_pos: inserted_replay.len(),
             inserted_replay,
             next_inserted_log_slot: slab_slots,
         }
@@ -677,9 +677,9 @@ where
             self.remaining -= 1;
             return Some((slot_idx, edge.with_slot_index(slot_idx)));
         }
-        while self.inserted_log_pos > 0 {
-            self.inserted_log_pos -= 1;
-            let edge = self.inserted_replay[self.inserted_log_pos].clone();
+        while self.inserted_replay_pos > 0 {
+            self.inserted_replay_pos -= 1;
+            let edge = self.inserted_replay[self.inserted_replay_pos].clone();
             let slot = self.next_inserted_log_slot;
             self.next_inserted_log_slot += 1;
             if let Some(edge) = edge {
@@ -717,9 +717,9 @@ where
             self.remaining -= 1;
             return Some(edge.with_slot_index(slot_idx));
         }
-        while self.inserted_log_pos > 0 {
-            self.inserted_log_pos -= 1;
-            let edge = self.inserted_replay[self.inserted_log_pos].clone();
+        while self.inserted_replay_pos > 0 {
+            self.inserted_replay_pos -= 1;
+            let edge = self.inserted_replay[self.inserted_replay_pos].clone();
             let slot = self.next_inserted_log_slot;
             self.next_inserted_log_slot += 1;
             if let Some(edge) = edge {
