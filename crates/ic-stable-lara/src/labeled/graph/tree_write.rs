@@ -19,7 +19,7 @@
 //!   (i % B) * E::BYTES)`.
 //!
 //! Promotion trigger (Plan 0318 §Step 6 amend): the dispatcher promotes
-//! when the bucket's `stored_slots >= T_PROMOTE` (placeholder-gap form).
+//! when the slab bucket's logical resident width reaches `T_PROMOTE`.
 //! When the weighted `alloc_gap` is introduced the trigger switches to the
 //! `compute_bucket_allocation < T_PROMOTE` form. See
 //! `super::promote::promote_bucket_to_tree_mode` for the cap semantics.
@@ -36,14 +36,14 @@
 //! holding a ≥ T_PROMOTE-edge bucket to density 1.0 and trigger relocation
 //! cascades that move no slab payload. Tree inserts and removes therefore
 //! never touch `actual`; the two mode transitions are the only adjusting
-//! sites: [`promote_path::promote_bucket_to_tree_mode`] subtracts the live
+//! sites: [`super::promote::promote_bucket_to_tree_mode`] subtracts the live
 //! degree (slab era → tree) and [`tree_mode_demote_to_slab`] re-adds it
 //! (tree → slab era). `num_edges` and every tree/pin geometry count are
 //! unaffected by this rule.
 
 use ic_stable_structures::Memory;
 
-use super::{LabeledLaraGraph, promote as promote_path};
+use super::LabeledLaraGraph;
 use crate::GrowFailed;
 use crate::VertexId;
 use crate::labeled::bucket_label_key::BucketLabelKey;
@@ -2045,37 +2045,6 @@ where
         .checked_add(physical_len)
         .expect("physical range overflows u64");
     span_start >= physical_start && span_end <= physical_end
-}
-
-/// Run the promotion path (a thin re-export of the Step 4 entry point)
-/// and return the updated bucket descriptor. Returns `Ok(())` if the
-/// bucket was already tree-mode (no-op).
-///
-/// Used by the insert dispatcher (Commit A) to wire the
-/// `stored_slots >= T_PROMOTE` promote trigger into the production
-/// write path without changing the slab-mode `insert_edge_skip_leaf_cascade_impl`
-/// flow.
-pub(crate) fn promote_bucket_if_needed<E, M>(
-    graph: &LabeledLaraGraph<E, M>,
-    src: VertexId,
-    label: BucketLabelKey,
-) -> Result<(), LabeledOperationError>
-where
-    E: CsrEdgeTombstone,
-    M: Memory,
-{
-    let vertex = graph.vertices().get(src);
-    let bucket = match graph.find_bucket(src, &vertex, label)? {
-        super::BucketSearch::Found { bucket, .. } => bucket,
-        super::BucketSearch::Missing { .. } => return Ok(()),
-    };
-    if bucket.is_tree_mode() {
-        return Ok(());
-    }
-    if bucket.stored_slots() >= super::T_PROMOTE {
-        promote_path::promote_bucket_to_tree_mode(graph, src, label)?;
-    }
-    Ok(())
 }
 
 /// Translate an LTB grow failure into a `LabeledOperationError`.

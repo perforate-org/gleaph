@@ -396,17 +396,15 @@ where
                         )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                 }
-                // Plan 0318 §Step 6 promote trigger: if the slab bucket has
-                // reached T_PROMOTE, promote it to tree mode and recurse through
-                // the new descriptor. The trigger is the placeholder-gap form
-                // (`stored_slots >= T_PROMOTE`); the `compute_bucket_allocation`
-                // form is used when the weighted gap is introduced.
+                // Admission is based on logical resident width (prefix plus used run
+                // rows), not the bytes moved by a run-retaining relocation. A leaf
+                // slide must not be required to fold the run for this cap to apply.
                 //
                 // The additional `< u32::MAX` guard skips promotion for buckets
                 // that are already at the degree cap (e.g. `normal_label_bucket_insert_rejects_edge_len_overflow`).
                 // Those buckets fail with `RowDegreeOverflow` from the slab path
                 // instead of being routed to the tree path, which would otherwise
-                // try to mint `stored_slots / B` LTB blocks and fail in a
+                // try to mint `resident / B` LTB blocks and fail in a
                 // different way.
                 //
                 // The `E::BYTES == 4` carve-out keeps wide edge types on the slab
@@ -417,11 +415,11 @@ where
                 // `bench_l_s2_det_sat_4096` bench drives a 10-byte edge type and
                 // trapped on the tree-append typed guard after the promotion had
                 // already mis-transcribed — promote now rejects before minting.)
-                if bucket.stored_slots() >= super::T_PROMOTE
-                    && bucket.stored_slots() < u32::MAX
-                    && E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES
-                {
-                    super::tree_write::promote_bucket_if_needed(self, src, label_id)?;
+                if E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES && {
+                    let resident = self.bucket_resident_rows(&bucket)?;
+                    (super::T_PROMOTE..u32::MAX).contains(&resident)
+                } {
+                    super::promote::promote_bucket_to_tree_mode(self, src, label_id)?;
                     // Re-read the bucket: after promotion it is tree mode.
                     let vertex = self.vertices.get(src);
                     bucket = match self.find_bucket(src, &vertex, label_id)? {
@@ -1821,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn single_label_log_fold_reserves_edge_only_tail_headroom() {
+    fn single_label_tree_promotion_preserves_edge_only_tail_headroom() {
         use super::super::leaf_pin::labeled_leaf_physical_block_len;
 
         let graph = test_graph();
@@ -1853,6 +1851,7 @@ mod tests {
         );
         assert!(vertex.stored_slots >= graph.edges().header().segment_size);
         assert!(vertex.stored_slots > bucket.stored_slots());
+        assert!(bucket.is_tree_mode());
         assert_eq!(bucket.stored_slots(), edge_count);
         assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 0);

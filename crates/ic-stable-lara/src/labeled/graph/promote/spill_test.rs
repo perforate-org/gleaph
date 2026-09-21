@@ -131,9 +131,17 @@ fn rows<E: CsrEdgeTombstone, M: Memory>(
     label: BucketLabelKey,
     order: super::super::OutEdgeOrder,
 ) -> Vec<(u32, u32, Vec<u8>)> {
+    rows_for_owner(g, VertexId::from(0), label, order)
+}
+fn rows_for_owner<E: CsrEdgeTombstone, M: Memory>(
+    g: &LabeledLaraGraph<E, M>,
+    owner: VertexId,
+    label: BucketLabelKey,
+    order: super::super::OutEdgeOrder,
+) -> Vec<(u32, u32, Vec<u8>)> {
     let mut out = Vec::new();
     let flow = g
-        .visit_edges_with_inline_property(VertexId::from(0), label, order, |slot, item| {
+        .visit_edges_with_inline_property(owner, label, order, |slot, item| {
             out.push((
                 slot.raw(),
                 u32::from(item.edge.neighbor_vid()),
@@ -790,4 +798,405 @@ fn public_bypass_capacity_target_failure_preserves_source() {
     expected.push((old.stored_slots, 99999, Vec::new()));
     assert_tree(g, label, old.stored_slots + 1, &expected);
     assert_eq!(g.leaf_segment_counts_for_vid(v).actual, 0);
+}
+
+#[test]
+fn normal_and_bypass_relocation_retains_runs_and_values() {
+    use super::super::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+    for width in [8, 33] {
+        let g = inline_property_test_graph();
+        let owner = g
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        g.ensure_label_bucket_inline_property_byte_width(owner, label, width)
+            .unwrap();
+        for i in 0..96 {
+            if i == 32 {
+                let other = BucketLabelKey::from_raw(3);
+                g.ensure_label_bucket_inline_property_byte_width(owner, other, width)
+                    .unwrap();
+                g.insert_edge_skip_leaf_cascade(
+                    owner,
+                    other,
+                    InlinePropertyTestEdge::with_bytes(9000, &distinct_sidecar(9000, width)),
+                    super::super::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            }
+            g.insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                InlinePropertyTestEdge::with_bytes(i, &distinct_sidecar(i, width)),
+                super::super::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        }
+        for slot in [0, 3, 31, 63] {
+            g.remove_edge_at_slot(owner, label, slot).unwrap().unwrap();
+        }
+        assert_eq!(
+            bucket(&g, label).values_spill_run(),
+            crate::traits::NO_SPILL_RUN
+        );
+        let other = BucketLabelKey::from_raw(4);
+        g.ensure_label_bucket_inline_property_byte_width(owner, other, width)
+            .unwrap();
+        g.insert_edge_skip_leaf_cascade(
+            owner,
+            other,
+            InlinePropertyTestEdge::with_bytes(9001, &distinct_sidecar(9001, width)),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+        g.insert_edge_skip_leaf_cascade(
+            owner,
+            label,
+            InlinePropertyTestEdge::with_bytes(96, &distinct_sidecar(96, width)),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+        let peer = g
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        for i in 0..67 {
+            g.insert_edge_skip_leaf_cascade(
+                peer,
+                label,
+                InlinePropertyTestEdge::with_bytes(10000 + i, &[]),
+                super::super::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        }
+        g.enable_default_edge_bypass(peer).unwrap();
+        let source = bucket(&g, label);
+        assert_ne!(source.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_ne!(
+            source.stored_slots(),
+            source.inline_property_bytes_slab_slots()
+        );
+        // Occupy the current tail so relocation must allocate a disjoint destination.
+        let _blocker = g.edges().allocate_span(1).unwrap();
+        for streaming in [true, false] {
+            if !streaming {
+                g.insert_edge_skip_leaf_cascade(
+                    owner,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(97, &distinct_sidecar(97, width)),
+                    super::super::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            }
+            let source = bucket(&g, label);
+            let edge_run = g.edges().spill_mint(source.edge_spill_run()).unwrap();
+            let edge_used = g.edges().spill_used_len(edge_run);
+            let value_run = g.values().spill_mint(source.values_spill_run()).unwrap();
+            let value_used = g.values().spill_used_len(value_run);
+            let peer_before = g.vertices().get(peer);
+            let peer_prefix = g.edges().initialized_slab_slots(&peer_before).unwrap();
+            let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+            let count = g.edges().header().num_edges;
+            let neighbors: Vec<_> = [3, 4]
+                .into_iter()
+                .map(|n| {
+                    (
+                        BucketLabelKey::from_raw(n),
+                        rows(
+                            &g,
+                            BucketLabelKey::from_raw(n),
+                            super::super::OutEdgeOrder::Ascending,
+                        ),
+                    )
+                })
+                .collect();
+            let old = g.labeled_leaf_physical_range(owner).unwrap();
+            if streaming {
+                g.relocate_labeled_leaf_physical_block(owner).unwrap();
+            } else {
+                g.rebalance_labeled_leaf_weighted_slide(owner).unwrap();
+            }
+            let (start, len) = g.labeled_leaf_physical_range(owner).unwrap();
+            if streaming {
+                assert!(
+                    start >= old.0 + old.1 || start + len <= old.0,
+                    "disjoint streaming source/destination"
+                );
+            }
+            let after = bucket(&g, label);
+            assert_eq!(
+                after.with_edge_range(source.edge_start(), after.stored_slots()),
+                source,
+                "width={width}, streaming={streaming}: relocation must not fold either plane"
+            );
+            assert_eq!(g.edges().spill_used_len(edge_run), edge_used);
+            assert_eq!(g.values().spill_used_len(value_run), value_used);
+            assert_eq!(
+                rows(&g, label, super::super::OutEdgeOrder::Ascending),
+                before
+            );
+            assert_eq!(
+                rows(&g, label, super::super::OutEdgeOrder::Descending),
+                before.iter().cloned().rev().collect::<Vec<_>>()
+            );
+            assert!(
+                after.edge_start() >= start
+                    && after.edge_start() + u64::from(after.stored_slots()) <= start + len
+            );
+            let peer_after = g.vertices().get(peer);
+            assert_eq!(
+                peer_after.with_base_slot_start(peer_before.base_slot_start()),
+                peer_before
+            );
+            assert!(
+                peer_after.base_slot_start() >= start
+                    && peer_after.base_slot_start() + u64::from(peer_prefix) <= start + len
+            );
+            if !streaming {
+                assert_eq!(
+                    (start, len),
+                    old,
+                    "buffered slide stays inside the same leaf"
+                );
+                assert_ne!(
+                    peer_before.base_slot_start(),
+                    peer_after.base_slot_start(),
+                    "exercise a real move"
+                );
+                assert!(
+                    peer_after.base_slot_start()
+                        < peer_before.base_slot_start() + u64::from(peer_prefix)
+                        && peer_before.base_slot_start()
+                            < peer_after.base_slot_start() + u64::from(peer_prefix),
+                    "exercise overlapping prefix copies"
+                );
+            }
+            for (neighbor, expected) in &neighbors {
+                assert_eq!(
+                    rows(&g, *neighbor, super::super::OutEdgeOrder::Ascending),
+                    *expected
+                );
+                assert_eq!(
+                    rows(&g, *neighbor, super::super::OutEdgeOrder::Descending),
+                    expected.iter().cloned().rev().collect::<Vec<_>>()
+                );
+            }
+            let mut peer_rows = Vec::new();
+            assert_eq!(
+                g.visit_edges(
+                    peer,
+                    g.bypass_storage_label_for(&peer_before),
+                    super::super::OutEdgeOrder::Ascending,
+                    |slot, edge| {
+                        peer_rows.push((slot.raw(), u32::from(edge.neighbor_vid())));
+                        ControlFlow::<()>::Continue(())
+                    }
+                )
+                .unwrap(),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(
+                peer_rows,
+                (0..67).map(|i| (i, 10000 + i)).collect::<Vec<_>>()
+            );
+            for free in g.edges().free_byte_spans() {
+                assert!(
+                    free.start_slot + free.len <= start || start + len <= free.start_slot,
+                    "active leaf overlaps {free:?}"
+                );
+            }
+            assert_eq!(g.edges().header().num_edges, count);
+        }
+    }
+}
+
+#[test]
+fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
+    use super::super::OutEdgeOrder::{Ascending, Descending};
+    use crate::test_support::FailpointMemory;
+    let memories: [FailpointMemory; 33] = std::array::from_fn(|_| FailpointMemory::new());
+    let mut index = 0;
+    let outer = retained_bypass::<4, _>(64, || {
+        let memory = memories[index].clone();
+        index += 1;
+        memory
+    });
+    let g = outer.forward();
+    let peer = VertexId::from(0);
+    g.promote_bypass_to_bucket_mode(peer).unwrap();
+    let owner = outer.push_vertex().unwrap();
+    for i in 0..67 {
+        outer
+            .insert_forward_out_edge(
+                owner,
+                BucketLabelKey::from_raw(2),
+                Edge(i),
+                super::super::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    g.enable_default_edge_bypass(owner).unwrap();
+    let label = g.bypass_storage_label_for(&g.vertices().get(owner));
+    let prefix = g
+        .edges()
+        .initialized_slab_slots(&g.vertices().get(owner))
+        .unwrap();
+    for i in 67..prefix + crate::labeled::spill_run_store::MAX_ROWS {
+        outer
+            .insert_forward_out_edge(
+                owner,
+                label,
+                Edge(i),
+                super::super::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    for i in 0..16 {
+        g.remove_edge_at_slot(owner, label, i).unwrap().unwrap();
+    }
+    // Consume allocatable two-descriptor spans until the real bucket allocator
+    // reaches a page grow. The fixture owns these allocations, not the transition.
+    assert_eq!(memories[1].size(), 5);
+    memories[1].fail_at_grow(memories[1].grow_count() + 1);
+    let mut hit = false;
+    for _ in 0..=memories[1].byte_len() / LabelBucket::BYTES {
+        match g.buckets().allocate_span(2) {
+            Ok(_) => {}
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error,
+                        LaraOperationError::ResizeFailed(crate::GrowFailed {
+                            current_size: 5,
+                            delta: 5
+                        })
+                    ),
+                    "{error:?}"
+                );
+                hit = true;
+                break;
+            }
+        }
+    }
+    assert!(hit, "setup must reach a real bucket page boundary");
+    let peer_lookup = || match g
+        .find_bucket(peer, &g.vertices().get(peer), g.default_label())
+        .unwrap()
+    {
+        BucketSearch::Found { slot, bucket } => (slot, bucket),
+        _ => panic!("peer missing"),
+    };
+    let cached = peer_lookup();
+    assert_eq!(peer_lookup(), cached);
+    let peer_before = g.vertices().get(peer);
+    let peer_rows = rows(g, g.default_label(), Ascending);
+    let source = g.vertices().get(owner);
+    let before = rows_for_owner(g, owner, label, Ascending);
+    let count = g.edges().header().num_edges;
+    let leaf = g.leaf_segment_counts_for_vid(owner);
+    let snapshot = |role: usize| {
+        let mut bytes = vec![0; memories[role].byte_len()];
+        memories[role].read(0, &mut bytes);
+        bytes
+    };
+    let roles = [0, 1, 4, 6, 7, 10, 13, 14];
+    let saved: Vec<_> = roles.iter().map(|&role| snapshot(role)).collect();
+    let free_before: u64 = g
+        .edges()
+        .free_byte_spans()
+        .iter()
+        .map(|span| span.len)
+        .sum();
+    let cap = g.edges().header().elem_capacity;
+    assert_eq!(g.ltb().tail_next(), 0);
+    memories[1].fail_at_grow(memories[1].grow_count() + 1);
+    let error = outer
+        .insert_forward_out_edge(
+            owner,
+            label,
+            Edge(99999),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::labeled::bidirectional::DeferredBidirectionalLabeledError::Forward(
+                LabeledOperationError::Store(LaraOperationError::ResizeFailed(crate::GrowFailed {
+                    current_size: 5,
+                    delta: 5
+                }))
+            )
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        g.ltb().tail_next(),
+        2,
+        "both native edge leaves were prepared before bucket reservation"
+    );
+    assert_eq!(g.ltb().free_count(), 2);
+    let free_after: u64 = g
+        .edges()
+        .free_byte_spans()
+        .iter()
+        .map(|span| span.len)
+        .sum();
+    assert_eq!(
+        free_after - free_before,
+        g.edges().header().elem_capacity - cap
+    );
+    for (&role, bytes) in roles.iter().zip(saved.iter()) {
+        assert_eq!(&snapshot(role), bytes, "canonical memory role {role}");
+    }
+    assert_eq!(g.vertices().get(owner), source);
+    assert_eq!(g.vertices().get(peer), peer_before);
+    assert_eq!(peer_lookup(), cached);
+    assert_eq!(g.leaf_segment_counts_for_vid(owner), leaf);
+    assert_eq!(g.edges().header().num_edges, count);
+    assert_eq!(rows_for_owner(g, owner, label, Ascending), before);
+    assert_eq!(
+        rows_for_owner(g, owner, label, Descending),
+        before.iter().cloned().rev().collect::<Vec<_>>()
+    );
+    assert_eq!(rows(g, g.default_label(), Ascending), peer_rows);
+    memories[1].fail_never();
+    outer
+        .insert_forward_out_edge(
+            owner,
+            label,
+            Edge(99999),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    let now = peer_lookup();
+    assert_eq!(now.1, cached.1);
+    assert_eq!(now.0, g.vertices().get(peer).base_slot_start());
+    assert_ne!(now.0, cached.0, "peer descriptor actually moved");
+    assert_eq!(rows(g, g.default_label(), Ascending), peer_rows);
+    assert_eq!(
+        rows(g, g.default_label(), Descending),
+        peer_rows.iter().cloned().rev().collect::<Vec<_>>()
+    );
+    let expected: Vec<_> = (0..=source.stored_slots)
+        .map(|slot| {
+            if slot < 16 {
+                (slot, u32::MAX, Vec::new())
+            } else if slot == source.stored_slots {
+                (slot, 99999, Vec::new())
+            } else {
+                (slot, slot, Vec::new())
+            }
+        })
+        .collect();
+    assert_eq!(rows_for_owner(g, owner, label, Ascending), expected);
+    assert_eq!(
+        rows_for_owner(g, owner, label, Descending),
+        expected.iter().cloned().rev().collect::<Vec<_>>()
+    );
+    assert_eq!(g.edges().header().num_edges, count + 1);
+    assert_eq!(
+        g.leaf_segment_counts_for_vid(owner).actual,
+        leaf.actual - i64::from(source.degree)
+    );
 }

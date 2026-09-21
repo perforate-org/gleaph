@@ -1395,12 +1395,8 @@ where
             let mut edge_buf = Vec::new();
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) = self
-                    .materialize_labeled_vertex_edge_plan(
-                        &buckets,
-                        !vertex.is_default_edge_labeled(),
-                        false,
-                    )?;
+                let (per_bucket_edges, per_bucket_raw) =
+                    self.materialize_labeled_vertex_edge_plan(&buckets, false, false)?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
@@ -1414,7 +1410,7 @@ where
                     None,
                     0,
                     leaf_relocate_commit,
-                    !vertex.is_default_edge_labeled(),
+                    false,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1423,12 +1419,8 @@ where
             let _scope = bench_scope("labeled_leaf_materialize_plans");
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) = self
-                    .materialize_labeled_vertex_edge_plan(
-                        &buckets,
-                        !vertex.is_default_edge_labeled(),
-                        false,
-                    )?;
+                let (per_bucket_edges, per_bucket_raw) =
+                    self.materialize_labeled_vertex_edge_plan(&buckets, false, false)?;
                 plans.push((
                     vid,
                     vertex,
@@ -1457,7 +1449,7 @@ where
                     None,
                     0,
                     leaf_relocate_commit,
-                    !vertex.is_default_edge_labeled(),
+                    false,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1587,7 +1579,10 @@ where
     /// overflow-log chain. The planner, both leaf-sizing loops and the materializer
     /// used to spell this out separately, and one copy forgot the log term, which
     /// under-sized the span (GAP-2026-09-20-005). One definition, one call each.
-    fn bucket_resident_rows(&self, bucket: &LabelBucket) -> Result<u32, LabeledOperationError> {
+    pub(super) fn bucket_resident_rows(
+        &self,
+        bucket: &LabelBucket,
+    ) -> Result<u32, LabeledOperationError> {
         let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
             Ok(run) => self.edges.spill_used_len(run),
             // Unset (NO_SPILL_RUN) or outside the arena: no rows beyond the prefix.
@@ -2515,17 +2510,12 @@ where
             // Keeping the floor made a run-backed bucket demand a span its prefix did not
             // need (`span_slots=64 < effective_live=65`), which trapped the non-tail bypass
             // insert (GAP-2026-09-20-007).
-            let resident = if bucket.is_tiny_mode() {
-                0
-            } else if bucket.is_tree_mode() {
-                crate::labeled::graph::bucket_resident_region(bucket).map_or(0, |(_, len)| len)
-            } else {
-                crate::labeled::graph::bucket_resident_region(bucket)
-                    .map_or(bucket.stored_slots_raw(), |(_, len)| len)
-            };
-            let resident = resident
+            let resident = bucket_physical_resident_slots(bucket)
                 .checked_add(extra)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            // Keep the validated physical width for the placement pass. The output
+            // entries become starts below; admission and advancement cannot disagree.
+            out.push(u64::from(resident));
             effective_live = effective_live
                 .checked_add(u64::from(resident))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -2558,22 +2548,11 @@ where
         let mut cursor_fp = u128::from(start_slot)
             .checked_mul(P)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        for (index, bucket) in buckets.iter().enumerate() {
+        for (bucket, width_or_start) in buckets.iter().zip(out.iter_mut()) {
+            let resident = u128::from(*width_or_start);
             let start = u64::try_from(cursor_fp / P)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            out.push(start);
-            let extra = if preferred == Some(index) {
-                preferred_extra
-            } else {
-                0
-            };
-            let resident = u128::from(
-                bucket
-                    .stored_slots()
-                    .max(bucket.degree())
-                    .checked_add(extra)
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
-            );
+            *width_or_start = start;
             let start_fp = u128::from(start)
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
