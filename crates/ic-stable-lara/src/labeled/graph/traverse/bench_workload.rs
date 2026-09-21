@@ -259,22 +259,21 @@ impl WorkloadFixture {
             target_pos[idx] = slot;
             live += 1;
         }
-        // Overflow-log suffix: logical slots `[extent, extent + chain_len)`
-        // follow the production replay order (oldest chain entry first; the
-        // head is the newest). Tombstoned log entries consume logical-slot
-        // space exactly as the production slot-order replay does.
-        let leaf = leaf_for_fixture();
+        // Spill-run suffix: logical slots `[extent, extent + used)` follow the production replay
+        // order (the run's rows in ordinal order; ADR 0097 §3 has no chain). Tombstoned rows
+        // consume logical-slot space exactly as the production slot-order replay does.
         let mut chain_entries: Vec<(u32, BenchEdge)> = Vec::new();
-        let mut chain_cur = bucket.overflow_log_head();
-        while chain_cur >= 0 {
-            let (prev, edge) = self
-                .forward()
-                .edges()
-                .read_overflow_log_entry(leaf, chain_cur as u32);
-            chain_entries.push((chain_cur as u32, edge));
-            chain_cur = prev;
+        if let Ok(run) = self.forward().edges().spill_mint(bucket.edge_spill_run()) {
+            let used = self.forward().edges().spill_used_len(run);
+            for index in 0..used {
+                let edge = self
+                    .forward()
+                    .edges()
+                    .spill_edge_at(run, index)
+                    .expect("run row");
+                chain_entries.push((index, edge));
+            }
         }
-        chain_entries.reverse();
         let mut logical = extent;
         for (_, edge) in chain_entries {
             if edge.is_tombstone_edge() || edge.is_deleted_slot() {

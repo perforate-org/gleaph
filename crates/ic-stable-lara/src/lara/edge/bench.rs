@@ -143,7 +143,7 @@ fn bench_r_ed_st_ls_128() -> canbench_rs::BenchResult {
                 )
                 .expect("insert log edge");
         }
-        black_box(vertices.get(VertexId::from(0)).log_head());
+        black_box(vertices.get(VertexId::from(0)).spill_run());
     })
 }
 
