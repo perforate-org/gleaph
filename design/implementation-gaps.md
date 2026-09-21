@@ -208,7 +208,7 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: implementation added; production benchmark validation incomplete.** Diagnostic source
+**Status: production measured; scan regressions and newly exposed bypass traversal failure remain.** Diagnostic source
 revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
 reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
@@ -334,14 +334,56 @@ Owning witnesses: `bounded_reads_reject_slack_overflow_and_corrupt_lengths_witho
 `spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors`. The replay
 read-count witness failed on the old scalar implementation (202 reads versus 7 for 67 rows)
 and passes on the production implementation. Coverage includes 4/10-byte rows, chunk boundaries,
-partial tails, tombstone ordinals, both scan directions, labeled/bypass matching and sidecars.
+partial tails, tombstone ordinals, both scan directions, labeled matching and sidecars.
+The initial claim of bypass spill-matching coverage was incorrect: bypass mode alone did not
+prove a spill existed. The strengthened fixture now requires a mintable non-sentinel run
+with more than one chunk of used rows; its canonical bucket-to-bypass conversion exposes
+the failure described below before all requested matching cases can run.
 
-Production validation: library suite **628 passed / 0 failed**; library clippy with `-D warnings`
-and formatting checks scoped to touched files passed. The focused command
-`timeout 90 canbench bench_l_s2_h_pt_d_1024 --csv` reached its timeout during Wasm compilation;
-no production instruction count was obtained. Remaining focused and unfiltered final runs are
-not run; persisted YAML and benchmark source remain unchanged. Logs and the red/green evidence
-are in `/tmp/spill-production/`. No final artifact or broader landing acceptance is claimed.
+Historical validation at `e5f374594`: library suite **628 passed / 0 failed**, with the
+inadequate bypass fixture. Its 90-second focused canbench timeout was incomplete compilation,
+not a measured regression.
+
+Correction `e9313062d` makes chunk loading depend on the requested index's chunk. Fresh
+`nth(1)`, `next()` followed by `nth(chunk)`, and `last()` identity tests cover 4/10-byte rows
+and a partial last chunk. These three tests also **pass before the correction** on installed
+Rust `1.100.0-nightly (574ff7d98)`: its `Map` has no `nth` override and visits skipped mapped
+items. No reproduced red signal is claimed for that report. The original 202-versus-7 replay
+read-count witness remains valid.
+
+The stronger graph fixture fails against both `e5f374594` and the correction. It seeds a
+real label bucket, converts with `enable_default_edge_bypass`, verifies the run, tombstones
+slots 31/32/66, then checks exact slot/target order. Ascending traversal returns the five real
+prefix rows followed by zero-filled span rows instead of the run's live rows. The owning
+path is `out_edges_iter -> on_slab_edges_with_layout`: bypass `stored_degree` includes run
+rows, while prefix sizing uses the slab window. This exposes a separate prefix-extent
+contract problem; do not weaken the assertion or claim bypass spill-matching coverage until
+it is resolved. The failing fixture remains in the worktree, with a preserved patch at
+`/tmp/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
+sidecar spill preconditions are included; sidecar checks pass.
+
+Current library validation with that fixture: **630 passed / 1 failed**. Scoped formatting
+and `cargo clippy -p ic-stable-lara --lib -- -D warnings` pass. Production focused runs completed
+without persistence; [exact totals and matching scope](evidence/adr0097-production-read-granularity.csv):
+
+| Benchmark / scope | production exact | main rounded console |
+| --- | ---: | ---: |
+| `bench_l_s2_h_pt_d_1024` | 23,176,500 | 17.77 M |
+| `bench_l_s2_h_scn_d_1024` | 23,123,817 | 17.72 M |
+| `bench_l_s2_h_del_1024` | 50,004,983 | 127.16 M |
+| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 46,647,860 | 60.57 M |
+
+The scans remain about 30% above rounded main. Main delete totals have different compaction
+semantics; compare its same matching loop separately. These are production results, not the
+lower diagnostic H2 numbers. Commands from `crates/ic-stable-lara`: `timeout 300 canbench
+bench_l_s2_h_pt_d_1024 --csv` (54 seconds), then `timeout 120 canbench
+bench_l_s2_h_scn_d_1024 --csv` (5 seconds) and `timeout 120 canbench
+bench_l_s2_h_del_1024 --csv` (4 seconds). All exited 0. Logs, exact CSVs, standard-library
+source evidence and red/green results are in `/tmp/spill-corrections/`.
+
+The unfiltered final persistence gate is **not run** because the coverage gate fails and
+scan acceptance is unmet. Benchmark source and persisted YAML remain unchanged; no final
+artifact, space/headline revalidation or broader landing acceptance is claimed.
 
 Historical headline (not rerun here): measured main 390.60 K / 391.09 K / 391.09 K versus
 current persisted 365,548 / 365,548 / 365,497 for `bench_l_nt_bp_ins_256/1024/4096`.

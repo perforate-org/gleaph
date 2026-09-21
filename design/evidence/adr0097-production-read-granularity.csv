@@ -1,0 +1,5 @@
+revision,benchmark,instructions,provenance
+e9313062d,bench_l_s2_h_pt_d_1024,23176500,focused non-persisted canbench
+e9313062d,bench_l_s2_h_scn_d_1024,23123817,focused non-persisted canbench
+e9313062d,bench_l_s2_h_del_1024,50004983,focused non-persisted canbench
+e9313062d,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,46647860,focused non-persisted canbench
