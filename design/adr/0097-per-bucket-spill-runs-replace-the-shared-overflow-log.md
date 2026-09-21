@@ -216,7 +216,12 @@ bucket.
    There is no intermediate canonical slab-bucket conversion or rollback after publication.
    The shared promoter admits against original resident width, preserves native ordinals and
    transcribes independent source planes without folding. Preparation errors release unpublished
-   target roots/blocks; source storage is retired only after successful publication.
+   target roots/blocks; source storage is retired only after successful publication. A real late
+   bucket-reservation failure after tree preparation verifies cleanup, unchanged source prefixes
+   and a cached peer, followed by retry. Normal and bypass leaf relocation now retain runs in both
+   streaming and buffered paths; placement uses admitted physical widths without redefining logical
+   resident counts or reservation policy. Normal slab promotion uses prefix-plus-used-run extent
+   against the unchanged threshold. [Bounded witnesses and measurements](../evidence/adr0097-normal-relocation-header-reads.md).
    Wide edges, other caller shapes and arena exhaustion remain separate incomplete contracts.
    Runtime witnesses and remaining ownership/integration limitations are recorded in
    [the implementation ledger](../implementation-gaps.md#gap-2026-09-20-009--experimental-redundant-header-reads-and-scalar-spill-payload-reads).

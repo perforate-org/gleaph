@@ -209,7 +209,7 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: demonstrated read/append/transfer corrections; public capacity promotion is blocked. Mixed-hub differences and broader landing remain open.** Diagnostic source
+**Status: tail four-byte public capacity promotion and run-retaining leaf relocation have bounded witnesses; header read batching improves mixed-hub measurements. Broader caller/atomicity, performance and landing gates remain open.** Diagnostic source
 revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
 reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
@@ -524,16 +524,38 @@ while the bypass remains canonical; only the final tree is published. Success wi
 a real target-allocation failure with byte-exact source preservation, allocation cleanup and retry
 are covered. Direct store-level typed rejection witnesses remain. Final library **650/0**, strict
 library clippy and scoped formatting passed. Wide edges, arena exhaustion, other caller shapes,
-normal bucket-mode relocation folding, and broader first/second-write atomicity remain open.
+normal bucket-mode relocation folding, and broader first/second-write atomicity remained open at that revision.
 
 A fresh disposable `git archive` of `9a64049f4` and the branch ran the same 33×50 native probe,
 sequentially sharing the normal target. Main stores most rows in prefixes; the branch retains
 33 runs. Both decode/call back exactly 1,650 live rows. The branch performs **492 more reads** per
 traversal, with slightly fewer total bytes: bucket reads increase by 330 and the log/run memory
 reads increase from 6 to 198, offset by 30 fewer slab reads. These are measured differences,
-not individual IC instruction-cost attribution. Focused current canbench: **896,221 ascending**,
+not individual IC instruction-cost attribution. Focused canbench at `6c5822a79`: **896,221 ascending**,
 **713,437 descending**, **106,087 bypass conversion**; no full artifacts changed. Mixed-hub and
 broader performance work remains open. [Detailed evidence](evidence/adr0097-capacity-integration.md).
+
+#### Normal relocation, late reservation failure, and batched headers
+
+`40faf5f59` retains normal runs in both leaf materialization paths. The seven placement failures
+among the earlier nine failures traced to physical-width admission followed by logical-degree
+cursor advancement; placement now reuses the admitted widths. The other two exposed prefix-only
+promotion eligibility, corrected to use logical resident extent at the unchanged threshold. The
+logical resident helper and reservation/slack policy were not redefined. Strengthened fixtures
+(`0017ac655`, `6b144715d`) cover nonempty normal prefixes, holes in prefix and run, independent
+8/33-byte sidecars, mixed normal/bypass owners, disjoint and genuinely overlapping moves, and free
+span ownership. A public bucket-reservation failure after both target leaves are prepared proves
+cleanup, byte-exact prefixes, unchanged source/counts, a cached peer and successful retry; the
+LTB-growth witness remains. Final library **653/0**, strict library clippy and scoped formatting.
+
+`c2088b8e0` batches `EdgeSlabStore::read_header` into one 48-byte read, retaining current-field and
+layout validation. The one-factor comparison against `40faf5f59` measures **896,221 → 790,432**
+ascending and **713,437 → 557,118** descending. Bucket read calls fall **737 → 134** and
+**1,089 → 198**, with unchanged bytes, other-role reads, exact rows, decodes and callbacks. These
+are branch measurements, not a new main comparison or an instruction cost assigned per read.
+No full benchmark artifacts were persisted. Wide/arena/other-caller and broader atomicity gates,
+remaining regressions, space/PocketIC and final all-name validation remain open.
+[Exact witnesses, CSVs, diagnostics and limitations](evidence/adr0097-normal-relocation-header-reads.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 

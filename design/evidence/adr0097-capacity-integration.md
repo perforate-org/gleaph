@@ -2,6 +2,8 @@
 
 Code/test commits: `1846cb7d3`, `4deef5a2c`, `6c5822a79`, on `spill-swap`. Main remains unmerged. This evidence does not approve all relocation, arena-exhaustion, bidirectional-write, or space contracts.
 
+Follow-up: [normal relocation, late bucket-reservation failure and batched header reads](adr0097-normal-relocation-header-reads.md) resolves the normal-leaf folding and late-reservation witness gaps in bounded scopes. The counts and open items below describe the earlier commits named above.
+
 ## Retained-prefix ownership
 
 The original diagnostic is preserved byte-for-byte as [sources/adr0097-cascade-fixture.rs](sources/adr0097-cascade-fixture.rs), SHA256 `548f7c49e84665381015b66d1e39498176644690649d35683dd2c813ecbde5e2`. It is a historical reproduction source, not a registered acceptance suite: its old live-only tree assertions are superseded by the native-tree assertions in the compiled regressions.

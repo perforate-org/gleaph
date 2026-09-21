@@ -225,10 +225,14 @@ streams are unpublished until transcription succeeds; preparation errors release
 without folding or releasing source runs. For tail four-byte bypass class exhaustion, the same
 owner prepares native storage plus the pending append, then prepares bucket capacity before
 publishing the final tree directly. Allocation failure leaves the original bypass canonical;
-there is no intermediate published conversion. Leaf relocation now snapshots and republishes
-bypass prefixes before retiring their former footprint. See the
-[capacity integration evidence](../evidence/adr0097-capacity-integration.md) for tested scopes and
-remaining normal-bucket relocation, arena, and broader atomicity limitations.
+there is no intermediate published conversion. Both streaming and buffered leaf relocation
+snapshot and republish normal and bypass prefixes before retiring their former footprint, retaining
+runs and ordinals. Placement uses the same physical widths as admission; logical resident counts
+still govern the existing reservation policy and normal slab promotion threshold. Explicit
+compaction remains separate. The late bucket-reservation failure witness checks prepared-resource
+cleanup, byte-exact source prefixes, a cached peer and retry. See the
+[follow-up evidence](../evidence/adr0097-normal-relocation-header-reads.md) for tested scopes and
+remaining arena, other-caller and broader atomicity limitations.
 Every later tail row's `base_slot_start` anchors
 at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
 ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:

@@ -817,21 +817,13 @@ where
             if bucket.is_tiny_mode() {
                 continue;
             }
-            // The span must host what the materializer will move: the physical
-            // region plus the overflow-log chain. Counting `degree` alone under-sized
-            // every log-backed bucket — a fixture with `stored_raw = 4` and
-            // `degree = 174` asked for 4 slots and needed 174 — which surfaced as
-            // `CollectAllocationOverflow` in the publish (GAP-2026-09-20-005).
-            // Compacting rewrites move live rows only.
+            // Compaction materializes live rows; relocation copies only existing
+            // physical regions, leaving run rows and ordinals unchanged.
             let resident = if compact {
                 bucket.degree()
             } else {
-                // ADR 0097 §7: a relocation keeps the bucket's run where it is, so the span it
-                // asks for has to hold the slab prefix alone. Counting the run's rows here made
-                // the plan grow a span it did not need (`min_required` > `old_alloc`), and when
-                // that wider span could not be placed the insert trapped
-                // (GAP-2026-09-20-007). `bucket_resident_rows` stays the *leaf geometry* SSOT -
-                // a folding leaf relocation must reserve room for the rows it copies in.
+                // Leaf reservation retains its logical resident/headroom policy;
+                // that reservation width is not the physical copy width here.
                 bucket_physical_resident_slots(bucket)
             };
             total_live = total_live
@@ -1154,11 +1146,9 @@ where
             s.map_err(LabeledOperationError::from)?
         };
 
-        // Pin the new physical block BEFORE folding the leaf log. Log fold may
-        // trigger a vertex-edge-span rebalance; if the leaf is still unpinned,
-        // that rebalance calls back into relocate and we recurse forever.
-        // Publishing the new start early makes the recursive path see a pinned
-        // leaf and resolve an in-place base instead.
+        // Install destination geometry before committing vertex origins. Source
+        // vertices still carry the old prefix locations used by the snapshot;
+        // this relocation retains runs rather than folding them.
         if !grew_in_place {
             self.edges
                 .set_segment_physical_start(SegmentId::from(leaf), new_start)
@@ -1573,12 +1563,9 @@ where
         Ok((per_bucket_edges, per_bucket_raw))
     }
 
-    /// Resident rows a rewrite, relocation or fold must move for this bucket: the
-    /// physical region (`bucket_physical_resident_slots`: tiny nothing, slab its
-    /// tombstone-inclusive prefix, tree its LEG root array) plus its edge
-    /// overflow-log chain. The planner, both leaf-sizing loops and the materializer
-    /// used to spell this out separately, and one copy forgot the log term, which
-    /// under-sized the span (GAP-2026-09-20-005). One definition, one call each.
+    /// Reservation width: physical region plus used spill rows. For slab buckets
+    /// this is the tombstone-inclusive logical extent used for promotion admission.
+    /// It is not the number of prefix rows copied by a run-retaining relocation.
     pub(super) fn bucket_resident_rows(
         &self,
         bucket: &LabelBucket,
@@ -2548,6 +2535,7 @@ where
         let mut cursor_fp = u128::from(start_slot)
             .checked_mul(P)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // Place precisely the physical widths admitted above, not degree or run rows.
         for (bucket, width_or_start) in buckets.iter().zip(out.iter_mut()) {
             let resident = u128::from(*width_or_start);
             let start = u64::try_from(cursor_fp / P)
