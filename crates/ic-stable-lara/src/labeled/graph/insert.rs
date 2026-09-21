@@ -2399,11 +2399,11 @@ mod g6_zero_read_tests {
         assert!(bucket.is_tiny_mode());
         assert_eq!(bucket.degree(), 3);
         assert_eq!(TestEdge::BYTES, 4);
-        // Absolute bound: descriptor row (29B) + vertex row + lookup reads only.
-        // No edge-slab/log/ipb/span bytes can hide in 135R/37W: a single slab
-        // span read of the 2-edge prefix alone would cost 8B+ and the control
-        // below shows the slab path's floor.
-        assert_eq!((r, w), (135, 37), "tiny insert byte shape changed");
+        // Absolute bound: descriptor row (37B interim, ADR 0097 §3) + vertex row
+        // + lookup reads only. No edge-slab/log/ipb/span bytes can hide in
+        // 151R/45W: a single slab span read of the 2-edge prefix alone would
+        // cost 8B+ and the control below shows the slab path's floor.
+        assert_eq!((r, w), (151, 45), "tiny insert byte shape changed");
         // Differential control: promote to slab (5th edge), then measure a slab
         // append (6th edge) — it must read its slab span, strictly more than tiny.
         graph
@@ -2446,7 +2446,7 @@ mod g6_zero_read_tests {
             .unwrap();
         let sr = reads.get();
         let sw = writes.get();
-        assert_eq!((sr, sw), (372, 65), "slab control byte shape changed");
+        assert_eq!((sr, sw), (416, 73), "slab control byte shape changed");
         assert!(
             sr > r && sw > w,
             "slab append must move strictly more bytes than tiny: tiny ({r},{w}) vs slab ({sr},{sw})"

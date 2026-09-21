@@ -7131,6 +7131,6 @@ mod g6_zero_read_tests {
         // Exact shape: one descriptor-row read + vertex/lookup reads, zero writes
         // (scan publishes nothing). Any slab-span read would add >= 4B (one
         // edge target) plus span-meta bytes — the bound has no room for it.
-        assert_eq!((r, w), (98, 0), "tiny scan byte shape changed");
+        assert_eq!((r, w), (110, 0), "tiny scan byte shape changed");
     }
 }
