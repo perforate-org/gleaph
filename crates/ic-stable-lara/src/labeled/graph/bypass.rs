@@ -160,14 +160,7 @@ where
         // fallible allocation. This is the only remaining check inside
         // `bump_vertex_segment_counts` and it cannot grow the store, so checking
         // it here keeps the subsequent reserve and commit infallible.
-        let edge_layout = crate::lara::edge::EdgeLayout::from(self.edges.header());
-        let leaf = Self::leaf_index_for_vid(src, edge_layout.segment_size);
-        let counts_idx = leaf
-            .checked_add(edge_layout.segment_count)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if counts_idx as u64 >= self.edges.counts_store().len() {
-            return Err(LaraOperationError::SegmentCountsTreeTooSmall.into());
-        }
+        self.edges.vertex_segment_counts_index(src)?;
 
         // Reserve all fallible backing capacity while the bypass row is still the
         // canonical interpretation. No vertex row is mutated until reservation

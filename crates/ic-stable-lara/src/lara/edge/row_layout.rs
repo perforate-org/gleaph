@@ -207,6 +207,26 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.bump_counts_leaf_with_layout(&edge_layout, vid, d_actual, d_total)
     }
 
+    pub(crate) fn vertex_segment_counts_index(
+        &self,
+        vid: VertexId,
+    ) -> Result<u64, LaraOperationError> {
+        self.counts_leaf_index(&self.edge_layout(), vid)
+    }
+
+    fn counts_leaf_index(
+        &self,
+        layout: &EdgeLayout,
+        vid: VertexId,
+    ) -> Result<u64, LaraOperationError> {
+        let idx =
+            u64::from(leaf_segment(vid, layout.segment_size)) + u64::from(layout.segment_count);
+        if idx >= self.counts.len() {
+            return Err(LaraOperationError::SegmentCountsTreeTooSmall);
+        }
+        Ok(idx)
+    }
+
     pub(super) fn bump_counts_leaf_with_layout(
         &self,
         edge_layout: &EdgeLayout,
@@ -214,11 +234,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         d_actual: i64,
         d_total: i64,
     ) -> Result<(), LaraOperationError> {
-        let idx =
-            (leaf_segment(vid, edge_layout.segment_size) + edge_layout.segment_count) as usize;
-        if idx as u64 >= self.counts.len() {
-            return Err(LaraOperationError::SegmentCountsTreeTooSmall);
-        }
+        let idx = self.counts_leaf_index(edge_layout, vid)?;
         // **Leaf rows are canonical; internal rows are derived** (GAP-2026-09-20-004).
         // Every runtime consumer reads the leaf row: the density decision
         // (`leaf_segment_counts_for_vid`), the layout audit, and the tests. The
@@ -228,11 +244,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // leaf only; `LaraGraph::rebuild_counts_internal_nodes` restores the
         // internal rows from the leaves where an aggregate is needed (segment
         // growth, audits, or a future reader).
-        let mut c = self.counts.get(idx as u64);
+        let mut c = self.counts.get(idx);
         c.actual += d_actual;
         c.total += d_total;
-        self.counts.set(idx as u64, &c);
-        let _ = edge_layout;
+        self.counts.set(idx, &c);
         Ok(())
     }
 }

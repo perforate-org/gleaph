@@ -517,7 +517,7 @@ fn physical_root_len_ceil(stored_slots: u64, depth: u32) -> Result<u32, LabeledO
 /// `compact::property_root_region_len` (the single source of truth)
 /// in pure form so the write paths and the deepener can compute the
 /// same quantity without a bucket descriptor.
-fn property_root_entry_count(l_p: u64, d: u32) -> u64 {
+pub(super) fn property_root_entry_count(l_p: u64, d: u32) -> u64 {
     debug_assert!((1..=3).contains(&d), "property depth out of range");
     let b = crate::labeled::tree_csr::B as u64;
     let mut r = l_p;

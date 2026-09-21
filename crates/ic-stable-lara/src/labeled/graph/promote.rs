@@ -1,36 +1,9 @@
-//! Tree-mode promotion for label buckets (Plan 0318 §Step 4).
+//! Ordinal-preserving slab-bucket promotion to native edge/property trees.
 //!
-//! `promote_bucket_to_tree_mode(vid, label)` is the failure-atomic
-//! transition that moves a slab-mode or bypass-mode bucket into LTB-backed
-//! tree mode once its `alloc_space` crosses the `T_PROMOTE` cap. The
-//! transition is a 3-phase reserve/commit/publish pattern modeled after
-//! the existing `promote_bypass_to_bucket_mode`.
-//!
-//! The entry is mode-generic: it takes `(vid, label)`, locates the bucket, returns early when the
-//! bucket is already tree mode (an already-tree bucket deepens rather than promotes), and enforces
-//! the `T_PROMOTE` precondition. Both producers - slab growth and the spill run reaching its
-//! largest class (ADR 0097 §6) - reach it here, so there is one promotion path.
-//!
-//! Storage architecture (per f6c426d1c amend):
-//! - `edge_start` = LEG slab offset (root region span containing a
-//!   `u32` block_id array, 4 bytes per block_id).
-//! - Each `block_id` (u32) indexes one 4 KiB block in the LTB store.
-//! - The LTB block holds the actual edge data: 4 bytes per edge × up to
-//!   1024 edges per block.
-//! - For `stored_slots = 4096` at depth 1, the root region is 4 × `u32`
-//!   = 16 bytes; 4 LTB blocks hold 4 × 4096 = 16 384 bytes = 16 KiB.
-//!   Total tree-mode bucket footprint = 16 KiB + 16 bytes (root region)
-//!   ≈ 16.016 KiB.
-//!
-//! The transition is the only path that constructs an LTB block for
-//! production data; subsequent tree-mode operations (Steps 5–6) only
-//! read, write_payload_partial, or mint new tail blocks.
-//!
-//! Prerequisite: [`crate::labeled::ltb_raw_block_store::LtbRawBlockStore`]
-//! mutating methods take `&self` (commit 582d75657 interior-mutability
-//! amend), so the call site operates on a borrowed `&self.ltb` reference
-//! without violating the `&self` convention used by every other graph
-//! operation.
+//! Admission uses the original initialized edge prefix plus used spill rows,
+//! including tombstones. Target roots and blocks remain unpublished until both
+//! streams are transcribed. Source runs and spans are retired only after publication.
+//! Bypass conversion and public capacity-signal integration are separate callers.
 
 use ic_stable_structures::Memory;
 
@@ -47,37 +20,12 @@ use crate::labeled::{
     tree_csr::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
 };
 use crate::lara::operation_error::LaraOperationError;
-use crate::traits::CsrEdgeTombstone;
+use crate::traits::{CsrEdgeTombstone, CsrVertex};
 
-/// 3-phase promotion entry point.
-///
-/// Phase 0 - Locate and gate: find the bucket, return early when it is already tree mode, and
-/// enforce the preconditions. A slab bucket's rows are its slab prefix plus its own spill run (ADR
-/// 0097 §3), so there is no shared overflow log to fold first and no drain guard to protect such a
-/// fold: the pre-promotion fold (GAP-2026-09-20-001) is deleted with the log it existed for. The
-/// transcription below still reads only the slab prefix, so promoting a bucket that owns a run is
-/// not yet row-safe; making it read `prefix + run` (and publish `stored_slots = degree`) is the
-/// reader conversion that follows.
-///
-/// Phase 1 — Reserve: read the bucket descriptor, verify preconditions,
-/// derive the depth and required root length, mint all LTB blocks (which
-/// grows stable memory), and reserve a root region span in the LEG slab.
-/// If any step fails, every minted block is released and the function
-/// returns the typed error without mutating the bucket descriptor.
-///
-/// Phase 2 — Commit: read each slab slot (4-byte target) from the LEG
-/// slab prefix and write the LTB blocks in stack-buffered chunks of
-/// `BLOCK_PAYLOAD_BYTES`. The tail block uses `write_payload_partial`
-/// for the leftover 4-byte rows. Then write the block_id array into the
-/// LEG root region. If any step fails, every minted block is released
-/// and the function returns the typed error without mutating the bucket
-/// descriptor.
-///
-/// Phase 3 — Publish: build a new `LabelBucket` with `with_tree_mode(true)`
-/// and the new `edge_start` pointing into the LEG root region, write the
-/// descriptor (single canonical write), then release the old edge span
-/// and the old inline-property span (if any) so the slab prefix space
-/// becomes recyclable.
+/// Promote an admitted bucket without compacting its source edge or value plane.
+/// Native tree tombstones preserve the original high-water slot extent; sidecars
+/// are resolved through the source value plane's independent live-order mapping.
+/// Recoverable preparation failures release every target block and the root span.
 pub(super) fn promote_bucket_to_tree_mode<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
@@ -97,8 +45,8 @@ where
 ///
 /// This is the only shape that moves a run's rows back into the span (ADR 0097 §7): a
 /// relocation keeps the run, so every caller that needs the rows in the prefix - the
-/// promotion's Phase 0a transcription, and the wide-edge carve-out that cannot promote
-/// because tree mode stores one 4-byte target per slot - goes through here rather than
+/// wide-edge carve-out that cannot promote because tree mode stores one 4-byte
+/// target per slot - goes through here rather than
 /// through a rewrite. The growth step replaces the pre-swap fold's copy: it asks the
 /// rebalance for room (`preferred_extra` = the run's rows) while keeping the run where it
 /// is, and the retry then performs the explicit compaction that fills it.
@@ -143,623 +91,296 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    // Phase 0: locate the bucket (read-only; no canonical writes).
-    let vertex = graph.vertices().get(vid);
-    let search = graph.find_bucket(vid, &vertex, label)?;
-    let (mut bucket_slot, mut bucket) = match search {
-        BucketSearch::Found { slot, bucket } => (slot, bucket),
-        BucketSearch::Missing { .. } => {
-            // No such bucket. The promotion can only proceed once the
-            // bucket exists; the caller is expected to insert an edge
-            // first. The original Step 4 implementation surfaced
-            // `AllocSpaceCapReached { current_alloc_space: 0, .. }` here
-            // which is misleading (a missing bucket is not a cap
-            // overflow). Plan 0318 §Step 4 amend introduces a dedicated
-            // `BucketNotFound` error so the dispatcher can disambiguate
-            // "no bucket" from "alloc_space overflow".
-            return Err(LabeledOperationError::BucketNotFound { vid, label });
-        }
-    };
+    use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
+    use crate::traits::NO_SPILL_RUN;
+    use std::ops::ControlFlow;
 
-    // Precondition 1: bucket must not already be in tree mode.
+    let vertex = graph.vertices().get(vid);
+    let BucketSearch::Found {
+        slot: bucket_slot,
+        bucket,
+    } = graph.find_bucket(vid, &vertex, label)?
+    else {
+        return Err(LabeledOperationError::BucketNotFound { vid, label });
+    };
     if bucket.is_tree_mode() {
-        // Already in tree mode; promote is a no-op success.
         return Ok(());
     }
-
-    // Phase 0a (GAP-2026-09-20-001): the transcription below reads the slab prefix, so a bucket
-    // whose rows are not all in its prefix is compacted first - the run's live rows are copied into
-    // the prefix and the run released (ADR 0097 §7), and the value log is folded into the value
-    // slab. This is the retired log fold's job expressed with the mechanisms that replace it, and
-    // it is why the promotion of a run-owning bucket cannot orphan rows: the prefix covers every
-    // resident row before transcription starts. (The ADR's alternative - transcribing `prefix +
-    // run` directly - is not reachable while the values plane still keeps its own log: the value
-    // rows for spill edges live in that log, so both planes must be compacted before the tree
-    // transcription reads a single prefix.)
-    if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-        let bucket_index =
-            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        compact_run_into_prefix_with_growth_retry(graph, vid, bucket_index, bucket)?;
-        let vertex = graph.vertices().get(vid);
-        (bucket_slot, bucket) = match graph.find_bucket(vid, &vertex, label)? {
-            BucketSearch::Found { slot, bucket } => (slot, bucket),
-            BucketSearch::Missing { .. } => {
-                return Err(LabeledOperationError::BucketNotFound { vid, label });
-            }
-        };
-        debug_assert!(
-            bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
-            "compaction must release the run before tree transcription"
-        );
-    }
-    if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-        let bucket_index =
-            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let folded = graph.fold_label_bucket_inline_property_bytes_log_to_slab(
-            vid,
-            &vertex,
-            bucket_index,
-            bucket_slot,
-            bucket,
-        )?;
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, folded)?;
-        bucket = folded;
-    }
-
-    // Precondition 2: the bucket's resident width must have reached T_PROMOTE.
-    //
-    // The cap semantics document (Plan 0317 §3.5) says the trigger is
-    // on `alloc_space = stored_slots + alloc_gap`, but the current
-    // implementation uses the placeholder `alloc_gap(stored) =
-    // T_PROMOTE - stored` (Plan 0317 §3.5 placeholder, weighted gap
-    // deferred). Under that placeholder
-    // `compute_bucket_allocation(slab) ≡ T_PROMOTE` for any
-    // `stored_slots` in `[0, T_PROMOTE]`, so the alloc_space form of
-    // the trigger never fires for an existing bucket. We use
-    // `stored_slots` directly as the equivalent stricter form. When
-    // the weighted gap is introduced the trigger switches back to
-    // `compute_bucket_allocation(&bucket) < T_PROMOTE`.
-    let spill_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
-        Ok(run) => graph.edges().spill_used_len(run),
-        // Unset (NO_SPILL_RUN) or outside the arena: the bucket's rows are all in its prefix.
-        Err(_) => 0,
+    let edge_run = if bucket.edge_spill_run() == NO_SPILL_RUN {
+        None
+    } else {
+        Some(graph.edges().spill_mint(bucket.edge_spill_run())?)
     };
-    let resident_slots = bucket.stored_slots().saturating_add(spill_rows);
-    if resident_slots < T_PROMOTE {
+    let prefix = graph.edges().initialized_slab_slots(&bucket)?;
+    let resident = prefix
+        .checked_add(edge_run.map_or(0, |run| graph.edges().spill_used_len(run)))
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    if resident < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
-            current_alloc_space: resident_slots,
+            current_alloc_space: resident,
             cap: T_PROMOTE,
             mode: BucketMode::Slab,
         });
     }
-
-    // Precondition 3: Plan 0326 (LPB-in-tree) wires the property
-    // stream through the tree-form path. The carve-out is removed:
-    // - `w == 0`: no property stream (the original Plan 0318 path).
-    // - `0 < w <= payload_bytes`: property stream is transcribed into
-    //   the LPB (depth-1 property tree) during this promotion.
-    // - `w > payload_bytes`: declared ADR bound; typed reject.
-    let w = bucket.inline_property_byte_width();
-    if w > BLOCK_PAYLOAD_BYTES as u16 {
+    let width = bucket.inline_property_byte_width();
+    if usize::from(width) > BLOCK_PAYLOAD_BYTES {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-            bucket_width: w,
+            bucket_width: width,
             edge_inline_property_width: 0,
         });
     }
-
-    // Precondition 4: tree mode stores one 4-byte target per LTB slot (ADR
-    // 0088 §1 wire truth, `B = BLOCK_PAYLOAD_BYTES / 4`). Wider edge types
-    // cannot be promoted — the transcription would silently mis-address
-    // slots. Fail closed with the same typed error the tree-mode append
-    // path uses; the insert dispatcher carves such buckets out of the
-    // trigger so they stay slab (mirroring the inline-property carve-out).
     if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
         return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
             actual: E::BYTES,
             expected: TREE_MODE_REQUIRED_EDGE_BYTES,
         });
     }
-
-    let stored_slots = bucket.stored_slots();
-    let _depth = derive_depth(stored_slots);
-    let root_len = u32::try_from(derived_root_len(stored_slots)).expect("root_len fits u32");
-    debug_assert!(root_len as usize <= 1024);
-
-    let pre_edge_start = bucket.edge_start();
-    let pre_stored_slots = stored_slots;
-    let pre_property_offset = bucket.inline_property_bytes_offset();
-    let _pre_property_slab_slots = bucket.inline_property_bytes_slab_slots();
-
-    // ==================== Phase 1: Reserve ====================
-    // Mint `root_len` LTB blocks. The LTB store grows stable memory at
-    // mint time (header counter + per-block page); on mint failure, every
-    // prior mint is released (LIFO) and the function returns the error.
-    let mut reserved_block_ids: Vec<u32> = Vec::with_capacity(root_len as usize);
-    let mut mint_failed: Option<crate::GrowFailed> = None;
-    for _ in 0..root_len {
-        match graph.ltb().mint() {
-            Ok(id) => reserved_block_ids.push(id),
-            Err(e) => {
-                mint_failed = Some(e);
-                break;
-            }
-        }
-    }
-    if let Some(mint_err) = mint_failed {
-        // Rollback: release every block we managed to mint (LIFO).
-        for &id in reserved_block_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        return Err(mint_err.into());
-    }
-
-    // Plan 0326 LPB-in-tree (REWORK): the combined LEG span holds
-    // `[edge root | property root]` (gap 0, ADR 0088 §2). For `w > 0`,
-    // the property root is contiguous after the edge root; the read
-    // path derives the property root start as `edge_start +
-    // bucket_span_region_len(bucket)`. The `inline_property_bytes_offset`
-    // descriptor field is set to 0 in tree mode (the property root is
-    // contiguous, not at a stored offset). The combined length is
-    // computed up front so a single `allocate_span` produces the
-    // contiguous region.
-    //
-    // Property root length per ADR §2 wire truth: `ceil(S / K)` where
-    // `K = floor(4096 / w)`. No tail buffer. Plan 0327: instead of
-    // fail-closing at `R_MAX`, the property tree is built at the
-    // correct depth directly — the root holds leaf ids at `d' == 1`
-    // and `InlinePropertyInterior` ids at `d' >= 2` (ceil(L_p / B)
-    // entries). The typed `PropertyTreeRootCapacityReached` now fires
-    // only at the 2^30 backstop (depth-3 coverage exceeded) via
-    // `property_depth_for_leaves`.
-    let property_depth: u32;
-    let property_root_len: u32 = if w > 0 && pre_stored_slots > 0 {
-        let k_prop = (BLOCK_PAYLOAD_BYTES as u32) / (w as u32);
-        let live_prop_root = pre_stored_slots.div_ceil(k_prop);
-        property_depth = match super::tree_write::property_depth_for_leaves(
-            u64::from(live_prop_root),
-            k_prop,
-            pre_stored_slots,
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                // Surface the typed error to the caller; release the
-                // edge LTB blocks we already minted before returning.
-                for &id in reserved_block_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                return Err(e);
-            }
-        };
-        if property_depth == 1 {
-            live_prop_root
-        } else {
-            live_prop_root.div_ceil(BLOCK_B as u32)
-        }
+    let value_run = if bucket.values_spill_run() == NO_SPILL_RUN {
+        None
     } else {
-        property_depth = 1;
+        Some(graph.values().spill_mint(bucket.values_spill_run())?)
+    };
+    let depth = derive_depth(resident);
+    let edge_root_len = u32::try_from(derived_root_len(resident))
+        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+    let property_slots_per_block = if width == 0 {
         0
+    } else {
+        BLOCK_PAYLOAD_BYTES as u32 / u32::from(width)
     };
-    let combined_root_len: u32 = root_len.checked_add(property_root_len).expect(
-        "combined_root_len overflow: edge_root_len + property_root_len must fit in u32          (edge_root_len <= R_MAX = 1024, property_root_len <= R_MAX = 1024, total <= 2048)",
-    );
-    // Reserve the combined LEG root region span. This is the slot range
-    // in the LEG slab that will hold BOTH the edge block_id array
-    // (offset 0..root_len) AND the property block_id array
-    // (offset root_len..combined_root_len). If the allocation
-    // fails, release the LTB blocks and return the typed error.
-    let new_edge_start: u64 = match graph.edges().allocate_span(u64::from(combined_root_len)) {
-        Ok(start) => start,
-        Err(e) => {
-            // Rollback: release LTB blocks in LIFO order.
-            for &id in reserved_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
+    let property_leaves = if width == 0 {
+        0
+    } else {
+        resident.div_ceil(property_slots_per_block)
+    };
+    let property_depth = if width == 0 {
+        1
+    } else {
+        super::tree_write::property_depth_for_leaves(
+            u64::from(property_leaves),
+            property_slots_per_block,
+            resident,
+        )?
+    };
+    let property_root_len = u32::try_from(super::tree_write::property_root_entry_count(
+        u64::from(property_leaves),
+        property_depth,
+    ))
+    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+    let combined_len = edge_root_len
+        .checked_add(property_root_len)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    // Construct all descriptor fields before reserving target storage. Only its root address
+    // will change after allocation; the old descriptor and both source planes remain owned.
+    let template =
+        LabelBucket::try_from_parts(label, 0, bucket.degree, resident, width, 0, 0, -1, 0)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            .with_tree_mode(true)
+            .with_tree_mode_property_depth(property_depth);
+    graph.edges().vertex_segment_counts_index(vid)?;
+    graph.edges().free_span_store().reserve_for_releases(2)?;
+    graph.values().reserve_retired_byte_spans(1)?;
+    let new_start = graph.edges().allocate_span(u64::from(combined_len))?;
+    let mut allocated_blocks = Vec::new();
+    let prepared = (|| -> Result<(), LabeledOperationError> {
+        let base_header = BlockHeader {
+            kind: BlockKind::Edge,
+            bucket_label_key_wire: 0,
+            owner_or_next_free: 0,
+            ordinal: 0,
+            level: 0,
+            tombstone_count: 0,
+            reserved: [0; 1],
+        };
+        let mut mint = |header: BlockHeader, bytes: &[u8]| -> Result<u32, LabeledOperationError> {
+            let id = graph.ltb().mint()?;
+            allocated_blocks.push(id);
+            graph.ltb().write_block_header(id, &header);
+            graph.ltb().write_payload_partial(id, 0, bytes)?;
+            Ok(id)
+        };
+        let mut edge_ids = Vec::new();
+        let mut property_ids = Vec::new();
+        let mut edge_payload = [0u8; BLOCK_PAYLOAD_BYTES];
+        let mut property_payload = [0u8; BLOCK_PAYLOAD_BYTES];
+        let mut dead = 0u16;
+        let tombstone = E::tombstone_edge();
+        // Source slots are explicit; missing ordinals are emitted as native tree tombstones.
+        // The source visitor resolves values through their own live-order prefix/run mapping.
+        let mut emit = |slot: u32, edge: &E, value: &[u8]| -> Result<(), LabeledOperationError> {
+            let epos = slot as usize % BLOCK_B;
+            edge.write_to(&mut edge_payload[epos * 4..epos * 4 + 4]);
+            dead += u16::from(edge.is_deleted_slot());
+            if epos + 1 == BLOCK_B || slot + 1 == resident {
+                edge_ids.push(mint(
+                    BlockHeader {
+                        tombstone_count: dead,
+                        ..base_header
+                    },
+                    &edge_payload[..(epos + 1) * 4],
+                )?);
+                dead = 0;
             }
-            return Err(e.into());
+            if width > 0 {
+                let ppos = (slot % property_slots_per_block) as usize * usize::from(width);
+                let dst = &mut property_payload[ppos..ppos + usize::from(width)];
+                if edge.is_deleted_slot() {
+                    dst.fill(0);
+                } else {
+                    if value.len() != usize::from(width) {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    dst.copy_from_slice(value);
+                }
+                if slot % property_slots_per_block + 1 == property_slots_per_block
+                    || slot + 1 == resident
+                {
+                    property_ids.push(mint(
+                        BlockHeader {
+                            kind: BlockKind::InlineProperty,
+                            ..base_header
+                        },
+                        &property_payload[..ppos + usize::from(width)],
+                    )?);
+                }
+            }
+            Ok(())
+        };
+        let mut next = 0;
+        let mut live = 0u32;
+        let flow = graph.visit_edges_with_inline_property(
+            vid,
+            label,
+            super::OutEdgeOrder::Ascending,
+            |slot, item| {
+                let result = (|| -> Result<(), LabeledOperationError> {
+                    let slot = slot.raw();
+                    if slot < next || slot >= resident {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    while next < slot {
+                        emit(next, &tombstone, &[])?;
+                        next += 1;
+                    }
+                    emit(slot, &item.edge, item.inline_property.bytes())?;
+                    next += 1;
+                    live += 1;
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(error) => ControlFlow::Break(error),
+                }
+            },
+        )?;
+        if let ControlFlow::Break(error) = flow {
+            return Err(error);
         }
-    };
+        if live != bucket.degree {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        while next < resident {
+            emit(next, &tombstone, &[])?;
+            next += 1;
+        }
 
-    // ==================== Phase 2: Commit ====================
-    // Phase 2a: transcribe the slab prefix (stored_slots × 4 bytes) into
-    // the LTB blocks, one block at a time using a 4 KiB stack buffer.
-    //
-    // The block write loop uses `write_payload` for full blocks and
-    // `write_payload_partial` for the tail block (4-byte leftover rows).
-    //
-    // `E::BYTES == 4` was verified as typed Precondition 4 above; the
-    // transcription below can therefore treat every LEG slot as one
-    // 4-byte target row.
-    let ltb = graph.ltb();
-    let mut cursor: usize = 0;
-    let mut slot_in_block: usize = 0;
-    let mut payload = [0u8; BLOCK_PAYLOAD_BYTES];
-    let mut current_block_id: u32 = reserved_block_ids[0];
-    // The 4-byte target read from the LEG slab prefix.
-    let mut target_bytes = [0u8; 4];
-    let mut commit_err: Option<LabeledOperationError> = None;
-    while cursor < pre_stored_slots as usize {
-        // Read the 4-byte target from the LEG slab prefix.
+        // The same native id-block encoding builds either stream's unpublished interior levels.
+        let mut root = |mut ids: Vec<u32>,
+                        depth: u32,
+                        kind: BlockKind|
+         -> Result<Vec<u8>, LabeledOperationError> {
+            for level in 1..depth {
+                let mut parents = Vec::new();
+                for chunk in ids.chunks(BLOCK_B) {
+                    let bytes: Vec<_> = chunk.iter().flat_map(|id| id.to_le_bytes()).collect();
+                    let header_level = if kind == BlockKind::InlinePropertyInterior {
+                        level + 1
+                    } else {
+                        level
+                    };
+                    parents.push(mint(
+                        BlockHeader {
+                            kind,
+                            level: header_level as u8,
+                            ..base_header
+                        },
+                        &bytes,
+                    )?);
+                }
+                ids = parents;
+            }
+            Ok(ids.iter().flat_map(|id| id.to_le_bytes()).collect())
+        };
+        let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior)?;
+        let property_root = root(
+            property_ids,
+            property_depth,
+            BlockKind::InlinePropertyInterior,
+        )?;
+        if edge_root.len() != edge_root_len as usize * 4
+            || property_root.len() != property_root_len as usize * 4
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
         graph
             .edges()
-            .read_slot_bytes(pre_edge_start + cursor as u64, &mut target_bytes);
-        // Place the 4 bytes at `slot_in_block * 4` within the payload.
-        let in_block_offset = slot_in_block * 4;
-        payload[in_block_offset..in_block_offset + 4].copy_from_slice(&target_bytes);
-        slot_in_block += 1;
-        cursor += 1;
-        if slot_in_block == BLOCK_B || cursor == pre_stored_slots as usize {
-            // Flush the current block. Full block → write_payload; tail
-            // block → write_payload_partial with `slot_in_block * 4` bytes.
-            let block_id = current_block_id;
-            let write_result = if slot_in_block == BLOCK_B {
-                ltb.write_payload(block_id, &payload)
-            } else {
-                let used = slot_in_block * 4;
-                ltb.write_payload_partial(block_id, 0, &payload[..used])
-            };
-            if let Err(e) = write_result {
-                commit_err = Some(e.into());
-                break;
-            }
-            // Move to the next block.
-            slot_in_block = 0;
-            // Reset payload to zero to avoid leaking tail bytes into
-            // the next block.
-            payload = [0u8; BLOCK_PAYLOAD_BYTES];
-            let next_idx = (cursor as u32) / BLOCK_B as u32;
-            if (next_idx as usize) < reserved_block_ids.len() {
-                current_block_id = reserved_block_ids[next_idx as usize];
-            }
-        }
-    }
-    if let Some(err) = commit_err {
-        // Rollback: release LTB blocks in LIFO order, then release the
-        // LEG root region span. (The LEG span was never written, so
-        // releasing it is a no-op cost-wise; the slot range will simply
-        // be reused on the next `allocate_span` call.)
-        for &id in reserved_block_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(root_len));
-        return Err(err);
-    }
-
-    // Phase 2b: write the block_id array into the LEG root region.
-    // The root region is a `u32` array of length `root_len`; we pack
-    // each block_id into 4 little-endian bytes.
-    let mut root_bytes: Vec<u8> = Vec::with_capacity(root_len as usize * 4);
-    for &id in &reserved_block_ids {
-        root_bytes.extend_from_slice(&id.to_le_bytes());
-    }
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_edge_start, &root_bytes)
-    {
-        // Rollback: release LTB blocks in LIFO order, release the LEG
-        // root region span.
-        for &id in reserved_block_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(root_len));
-        return Err(LaraOperationError::WriteEdgeSlotFailed(e).into());
-    }
-
-    // ==================== Phase 2c: Property stream (Plan 0326 REWORK) ====================
-    // The property root is contiguous in the COMBINED span: it starts
-    // at `new_edge_start + root_len` (immediately after the edge
-    // root). The descriptor field `inline_property_bytes_offset` is
-    // set to 0 in tree mode; the read path derives the property root
-    // start as `edge_start + bucket_span_region_len(bucket)`.
-    //
-    // Failure atomicity: any error retires the minted LTB blocks
-    // (LIFO) and the LEG combined span is released.
-    let mut property_block_ids: Vec<u32> = Vec::new();
-    // Plan 0327: at property depth >= 2 the root holds
-    // `InlinePropertyInterior` ids instead of leaf ids; these are the
-    // freshly minted interiors (released LIFO on any failure).
-    let mut property_interior_ids: Vec<u32> = Vec::new();
-    let property_root_span_start: u64 = new_edge_start + u64::from(root_len);
-    if w > 0 && pre_stored_slots > 0 {
-        // K = floor(4096 / w). Guarded above (w <= payload) so K >= 1.
-        let k = (BLOCK_PAYLOAD_BYTES as u32) / (w as u32);
-        // 1. Mint LTB blocks (LIFO rollback on failure).
-        let mut mint_err: Option<LabeledOperationError> = None;
-        for _ in 0..property_root_len {
-            match graph.ltb().mint() {
-                Ok(id) => property_block_ids.push(id),
-                Err(e) => {
-                    mint_err = Some(e.into());
-                    break;
-                }
-            }
-        }
-        if let Some(err) = mint_err {
-            for &id in property_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            for &id in reserved_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            let _ = graph
+            .write_slots_contiguous_bytes(new_start, &edge_root)
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+        if !property_root.is_empty() {
+            graph
                 .edges()
-                .release_span(new_edge_start, u64::from(combined_root_len));
-            return Err(err);
+                .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
+                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
         }
-        // 2. Mark each block as InlineProperty (mint leaves kind = Free).
-        for &id in &property_block_ids {
-            let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 0,
-                tombstone_count: 0,
-
-                reserved: [0u8; 1],
-            };
-            graph.ltb().write_block_header(id, &header);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, template.with_base_slot_start(new_start))?;
+        Ok(())
+    })();
+    if let Err(error) = prepared {
+        for id in allocated_blocks.into_iter().rev() {
+            graph
+                .ltb()
+                .release(id)
+                .expect("unpublished promotion block must remain owned");
         }
-        // 3. Transcribe slab property bytes into LPB blocks.
-        let ltb = graph.ltb();
-        let mut prop_cursor: usize = 0;
-        let mut prop_slot_in_block: usize = 0;
-        let mut prop_payload = [0u8; BLOCK_PAYLOAD_BYTES];
-        let mut prop_block_idx: usize = 0;
-        let mut prop_write_err: Option<LabeledOperationError> = None;
-        while prop_cursor < pre_stored_slots as usize {
-            let mut value_bytes = vec![0u8; usize::from(w)];
-            let source = pre_property_offset
-                .checked_add((prop_cursor as u64) * u64::from(w))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            graph.values().read_bytes(source, &mut value_bytes);
-            let in_block_offset = prop_slot_in_block * usize::from(w);
-            prop_payload[in_block_offset..in_block_offset + usize::from(w)]
-                .copy_from_slice(&value_bytes);
-            prop_slot_in_block += 1;
-            prop_cursor += 1;
-            if prop_slot_in_block == k as usize || prop_cursor == pre_stored_slots as usize {
-                let block_id = property_block_ids[prop_block_idx];
-                let used = prop_slot_in_block * usize::from(w);
-                let write_result = if prop_slot_in_block == k as usize {
-                    ltb.write_payload(block_id, &prop_payload)
-                } else {
-                    ltb.write_payload_partial(block_id, 0, &prop_payload[..used])
-                };
-                if let Err(e) = write_result {
-                    prop_write_err = Some(e.into());
-                    break;
-                }
-                prop_slot_in_block = 0;
-                prop_payload = [0u8; BLOCK_PAYLOAD_BYTES];
-                prop_block_idx += 1;
-            }
-        }
-        if let Some(err) = prop_write_err {
-            for &id in property_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            for &id in reserved_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            let _ = graph
-                .edges()
-                .release_span(new_edge_start, u64::from(combined_root_len));
-            return Err(err);
-        }
-        // 4. Write the property root block_id array at
-        //    `property_root_span_start` (the second half of the
-        //    combined span). At `d' == 1` the root holds the leaf ids;
-        //    at `d' >= 2` the leaf ids are packed into
-        //    `ceil(L_p / B)` freshly minted `InlinePropertyInterior`
-        //    blocks (`B` ids per block) and the root holds the
-        //    interior ids. Failure releases the interiors, the LPB
-        //    blocks + the combined span.
-        let root_entry_ids: &[u32] = if property_depth == 1 {
-            &property_block_ids
-        } else {
-            // 4a. Mint the interior blocks (LIFO rollback).
-            let interior_count = property_block_ids.len().div_ceil(BLOCK_B);
-            let mut mint_err: Option<LabeledOperationError> = None;
-            for _ in 0..interior_count {
-                match graph.ltb().mint() {
-                    Ok(id) => property_interior_ids.push(id),
-                    Err(e) => {
-                        mint_err = Some(e.into());
-                        break;
-                    }
-                }
-            }
-            if let Some(err) = mint_err {
-                for &id in property_interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                for &id in property_block_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                for &id in reserved_block_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                let _ = graph
-                    .edges()
-                    .release_span(new_edge_start, u64::from(combined_root_len));
-                return Err(err);
-            }
-            // 4b. Mark each interior as `InlinePropertyInterior`.
-            for &id in &property_interior_ids {
-                let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                    kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
-                    bucket_label_key_wire: 0,
-                    owner_or_next_free: 0,
-                    ordinal: 0,
-                    level: property_depth as u8,
-                    tombstone_count: 0,
-
-                    reserved: [0u8; 1],
-                };
-                graph.ltb().write_block_header(id, &header);
-            }
-            // 4c. Pack the leaf ids into the interiors (B per block).
-            let mut pack_err: Option<LabeledOperationError> = None;
-            for (chunk_idx, interior_id) in property_interior_ids.iter().enumerate() {
-                let start = chunk_idx * BLOCK_B;
-                let end = (start + BLOCK_B).min(property_block_ids.len());
-                let chunk: Vec<u8> = property_block_ids[start..end]
-                    .iter()
-                    .flat_map(|id| id.to_le_bytes())
-                    .collect();
-                if let Err(e) = graph.ltb().write_payload_partial(*interior_id, 0, &chunk) {
-                    pack_err = Some(LabeledOperationError::LtbBlock(e));
-                    break;
-                }
-            }
-            if let Some(err) = pack_err {
-                for &id in property_interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                for &id in property_block_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                for &id in reserved_block_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                let _ = graph
-                    .edges()
-                    .release_span(new_edge_start, u64::from(combined_root_len));
-                return Err(err);
-            }
-            &property_interior_ids
-        };
-        let mut property_root_bytes: Vec<u8> = Vec::with_capacity(root_entry_ids.len() * 4);
-        for &id in root_entry_ids {
-            property_root_bytes.extend_from_slice(&id.to_le_bytes());
-        }
-        if let Err(e) = graph
+        graph
             .edges()
-            .write_slots_contiguous_bytes(property_root_span_start, &property_root_bytes)
-        {
-            for &id in property_interior_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            for &id in property_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            for &id in reserved_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            let _ = graph
-                .edges()
-                .release_span(new_edge_start, u64::from(combined_root_len));
-            return Err(LaraOperationError::WriteEdgeSlotFailed(e).into());
-        }
+            .release_span(new_start, u64::from(combined_len))
+            .expect("promotion rollback capacity was reserved");
+        return Err(error);
     }
-    // After this point, the combined span
-    // `[new_edge_start, new_edge_start + combined_root_len)` holds
-    // `[edge root (length root_len) | property root (length
-    // property_root_len)]` (gap 0). The descriptor invariants for
-    // tree mode are:
-    //   `edge_start = new_edge_start`
-    //   `inline_property_bytes_offset = 0` (the property root is
-    //     derived from `edge_start + bucket_span_region_len(bucket)`,
-    //     not from a stored offset).
-    //   `inline_property_bytes_slab_slots = 0` (no slab form).
-
-    // ==================== Phase 3: Publish ====================
-    // Build the new tree-mode descriptor. The descriptor's `edge_start`
-    // is the LEG offset to the root region. `degree` and `stored_slots` carry over unchanged, and
-    // the descriptor carries no edge spill run: tree mode keeps its rows in LTB blocks referenced
-    // from the tree root (ADR 0097 §3), so the run id is cleared.
-    //
-    // `inline_property_byte_width = 0` so the inline-property
-    // related fields are all zero: no schema, no offset, no log head.
-    let new_bucket = LabelBucket::try_from_parts(
-        label,
-        new_edge_start,
-        bucket.degree,
-        bucket.stored_slots(),
-        w, // inline_property_byte_width (preserved)
-        0, // inline_property_bytes_offset = 0 (unused in tree mode;
-        //   property root is contiguous at edge_start + root_len)
-        0,  // inline_property_bytes_slab_slots = 0
-        -1, // inline_property_bytes_log_head = -1
-        0,  // inline_property_bytes_log_len = 0 (depth byte = 0 = depth 1)
-    )
-    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-    .with_tree_mode(true)
-    .with_tree_mode_property_depth(property_depth);
-
-    // Phase 3b: single canonical write of the new descriptor.
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
-    {
-        // Phase 3 failure is the canonical write itself: the bucket is
-        // still in slab mode; release the new tree-mode LTB blocks
-        // (edge + property interiors + property leaves) and the
-        // combined LEG root region so we don't leak.
-        for &id in property_interior_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        for &id in property_block_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        for &id in reserved_block_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(combined_root_len));
-        return Err(e.into());
-    }
-
-    // Phase 3b-2 (ADR 0096 §5 density parity): the promoted edges leave the
-    // leaf PMA accounting. `actual` counts live slab/log edge records; a tree
-    // bucket's rows live in LTB blocks (only the root region stays resident),
-    // so the tree bucket contributes zero. Subtract the live degree the slab
-    // era counted — LARA does the same at promote (`segment_actual[leaf] -=
-    // live`). The mirror re-add lives in `tree_write::tree_mode_demote_to_slab`.
-    //
-    // Subtract `degree`, not `stored_slots`: tombstones were already excluded
-    // from `actual` when they were removed.
+    // No recoverable errors after publication. Only old allocations are retired here.
     graph
         .edges()
-        .bump_vertex_segment_counts(vid, -i64::from(bucket.degree), 0)?;
-
-    // Phase 3c: release the old edge span. The slab prefix is no longer
-    // referenced (the new descriptor points at the LEG root region),
-    // so the slab prefix slots become recyclable.
-    //
-    // **Leaf-physical caveat (Plan 0318 §Step 4 amend note 5, Step 6
-    // amend)**: the released pre-promotion edge span is a subrange of
-    // an existing leaf physical block. The release returns the
-    // subrange to the slab free list, but if the leaf is currently
-    // pinned by a `labeled_leaf_physical_range`, the pin is invalidated
-    // by the recycle. To preserve the pin invariant we adopt hazard
-    // ledger option (b): when the pre-promotion span lies inside a
-    // currently-pinned leaf physical block, the release is **deferred**
-    // and the subrange stays inside the leaf until the leaf is
-    // recycled (pin-sheltered). The upper bound on the deferred
-    // reclaim is T_PROMOTE = 4096 slots = 16 KiB per bucket — leaf
-    // compaction eventually reclaims it. Non-leaf-pinned spans (test
-    // raw spans, future slab-only paths) take the original release.
+        .bump_vertex_segment_counts(vid, -i64::from(bucket.degree), 0)
+        .expect("promotion counts were preflighted");
+    if let Some(run) = edge_run {
+        graph
+            .edges()
+            .spill_release(run)
+            .expect("source edge run was validated");
+    }
+    if let Some(run) = value_run {
+        graph
+            .values()
+            .spill_release(run)
+            .expect("source values run was validated");
+    }
     if !super::tree_write::pre_promotion_span_inside_pinned_leaf(
         graph,
         vid,
-        pre_edge_start,
-        pre_stored_slots,
+        bucket.edge_start(),
+        prefix,
     ) {
-        let _ = graph
+        graph
             .edges()
-            .release_span(pre_edge_start, u64::from(pre_stored_slots));
+            .release_span(bucket.edge_start(), u64::from(prefix))
+            .expect("source prefix retirement was reserved");
     }
-
-    // Phase 3d: no inline-property span to release (we asserted
-    // `inline_property_byte_width == 0` in the preconditions).
-
+    graph
+        .release_bucket_inline_property_bytes_span(vid, &bucket)
+        .expect("source value retirement was reserved");
     Ok(())
 }
 
@@ -1418,3 +1039,6 @@ pub mod tests {
         assert_eq!(bucket.degree, 4097);
     }
 }
+
+#[cfg(test)]
+mod spill_test;
