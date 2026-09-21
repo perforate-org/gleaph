@@ -123,13 +123,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    /// Lazily decodes rows in ordinal order from checked, bounded contiguous reads. Tombstones
-    /// retain their positions; callers decide liveness and can stop before decoding a suffix.
-    pub(crate) fn spill_edges_iter(
-        &self,
-        run: SpillRunId,
-    ) -> Result<impl ExactSizeIterator<Item = Result<E, LaraOperationError>> + '_, LaraOperationError>
-    {
+    /// Bounded scratch shared by streaming and full-replay readers. Range validation still
+    /// belongs to the spill store on every payload read.
+    fn spill_read_buffer(&self, run: SpillRunId) -> Result<(u32, Vec<u8>), LaraOperationError> {
         let used = self.spill_used_len(run);
         if used > MAX_ROWS {
             return Err(LaraOperationError::SpillRowOutOfRange);
@@ -143,23 +139,32 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .try_reserve_exact(size)
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         bytes.resize(size, 0);
+        Ok((used, bytes))
+    }
+
+    /// Lazily decodes rows in ordinal order from checked, bounded contiguous reads. Tombstones
+    /// retain their positions; callers decide liveness and can stop before decoding a suffix.
+    pub(crate) fn spill_edges_iter(
+        &self,
+        run: SpillRunId,
+    ) -> Result<impl ExactSizeIterator<Item = Result<E, LaraOperationError>> + '_, LaraOperationError>
+    {
+        let (used, mut bytes) = self.spill_read_buffer(run)?;
+        let chunk = super::OUT_EDGE_SLAB_CHUNK_SLOTS;
         let mut failed = false;
-        let mut loaded_chunk = None;
         Ok((0..used).map(move |index| {
             if failed {
                 return Err(LaraOperationError::SpillRowOutOfRange);
             }
-            let start = index - index % chunk;
-            if loaded_chunk != Some(start) {
-                let count = (used - start).min(chunk) as usize;
+            if index % chunk == 0 {
+                let count = (used - index).min(chunk) as usize;
                 if !self
                     .spill
-                    .read_rows(run, start, &mut bytes[..count * E::BYTES])
+                    .read_rows(run, index, &mut bytes[..count * E::BYTES])
                 {
                     failed = true;
                     return Err(LaraOperationError::SpillRowOutOfRange);
                 }
-                loaded_chunk = Some(start);
             }
             let offset = (index % chunk) as usize * E::BYTES;
             Ok(E::read_from(&bytes[offset..offset + E::BYTES]))
@@ -297,16 +302,26 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         run: SpillRunId,
     ) -> Result<Vec<Option<E>>, LaraOperationError> {
-        let edges = self.spill_edges_iter(run)?;
+        let (used, mut bytes) = self.spill_read_buffer(run)?;
+        let chunk = super::OUT_EDGE_SLAB_CHUNK_SLOTS;
         let mut out = Vec::new();
-        out.try_reserve_exact(edges.len())
+        out.try_reserve_exact(used as usize)
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        for edge in edges {
-            let edge = edge?;
-            if edge.is_deleted_slot() {
-                out.push(None);
-            } else {
-                out.push(Some(edge));
+        for start in (0..used).step_by(chunk as usize) {
+            let count = (used - start).min(chunk) as usize;
+            if !self
+                .spill
+                .read_rows(run, start, &mut bytes[..count * E::BYTES])
+            {
+                return Err(LaraOperationError::SpillRowOutOfRange);
+            }
+            for row in bytes[..count * E::BYTES].chunks_exact(E::BYTES) {
+                let edge = E::read_from(row);
+                if edge.is_deleted_slot() {
+                    out.push(None);
+                } else {
+                    out.push(Some(edge));
+                }
             }
         }
         Ok(out)
