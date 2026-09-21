@@ -206,6 +206,32 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
+### GAP-2026-09-20-009 — A run-backed bucket's ordered scan falls back to the sparse iterator
+
+- **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is both remaining
+  items: `bench_l_s2_h_scn_d_1024` 51,932,493 vs main 17,720,000 (+193%) and
+  `bench_l_s2_h_pt_d_1024` 51,985,176 vs 17,770,000 (+192%) - which measure a *scan* of a
+  1024-edge hub, not a delete - and `labeled_remove_edge_skip_leaf` at 189.7M of the delete
+  bench's 266M (its match scan goes through the same path).
+- **Side of the fix: the code, not the fixture.** Those two benches seed their hub outside
+  the measured region and then scan it; they measure the scan path, which the swap changed
+  (the hub's rows now live in its edge run instead of the per-leaf log), so the fixture is
+  measuring what it intends.
+- **Mechanism (code path).** The ordered batch scan for a run-backed bucket
+  (`visit_ordered_out_inline_property_batches_for_bucket_next`, traverse.rs ~2930/2990)
+  prefetches the run's live-row tags and computes
+  `reserved = bucket.stored_slots() + prefetched.len()`. `stored_slots()` is the *prefix*
+  width, so as soon as the prefix carries a tombstone the sum exceeds `degree` and the scan
+  falls back to `visit_sparse_out_inline_property_batches_for_bucket_next` - the sparse
+  iterator, which is the expensive path. The delete benches reach that state immediately
+  (their first remove tombstones a prefix slot), which is why their match scan is ~3x main's.
+- **Fix (next slice):** the replay must emit the run's live rows *and* skip the prefix's
+  dead slots, rather than treating a tombstoned prefix as a reason to abandon the replay -
+  the same rule as GAP-007, the values fold, the compaction policy and the finalize guard: a
+  bucket whose rows live in its own run pays no extra span work. Not attempted here: it needs
+  its own measurement, and the last unmeasured change to this path (the compaction policy)
+  cost +3716% on `bench_l_uo_swap_h_del_1024` before it was parameterised.
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
 - **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
