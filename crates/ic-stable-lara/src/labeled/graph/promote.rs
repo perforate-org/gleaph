@@ -91,10 +91,6 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
-    use crate::traits::NO_SPILL_RUN;
-    use std::ops::ControlFlow;
-
     let vertex = graph.vertices().get(vid);
     let BucketSearch::Found {
         slot: bucket_slot,
@@ -106,6 +102,27 @@ where
     if bucket.is_tree_mode() {
         return Ok(());
     }
+    transcribe_and_publish_tree(graph, vid, bucket, None, |target| {
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, target)?;
+        Ok(())
+    })
+}
+
+/// All target allocations stay owned here until the caller's prepared publication succeeds.
+/// The optional edge is an insertion committed together with bypass-to-tree conversion.
+fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    bucket: LabelBucket,
+    pending: Option<&E>,
+    publish: impl FnOnce(LabelBucket) -> Result<(), LabeledOperationError>,
+) -> Result<(), LabeledOperationError> {
+    use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
+    use crate::traits::NO_SPILL_RUN;
+    use std::ops::ControlFlow;
+    let label = bucket.bucket_label_key();
     let edge_run = if bucket.edge_spill_run() == NO_SPILL_RUN {
         None
     } else {
@@ -122,6 +139,15 @@ where
             mode: BucketMode::Slab,
         });
     }
+    let source_extent = resident;
+    let added = u32::from(pending.is_some());
+    let resident = resident
+        .checked_add(added)
+        .ok_or(LaraOperationError::RowDegreeOverflow)?;
+    let degree = bucket
+        .degree
+        .checked_add(added)
+        .ok_or(LaraOperationError::RowDegreeOverflow)?;
     let width = bucket.inline_property_byte_width();
     if usize::from(width) > BLOCK_PAYLOAD_BYTES {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -172,11 +198,10 @@ where
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     // Construct all descriptor fields before reserving target storage. Only its root address
     // will change after allocation; the old descriptor and both source planes remain owned.
-    let template =
-        LabelBucket::try_from_parts(label, 0, bucket.degree, resident, width, 0, 0, -1, 0)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-            .with_tree_mode(true)
-            .with_tree_mode_property_depth(property_depth);
+    let template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
+        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+        .with_tree_mode(true)
+        .with_tree_mode_property_depth(property_depth);
     graph.edges().vertex_segment_counts_index(vid)?;
     graph.edges().free_span_store().reserve_for_releases(2)?;
     graph.values().reserve_retired_byte_spans(1)?;
@@ -255,7 +280,7 @@ where
             |slot, item| {
                 let result = (|| -> Result<(), LabeledOperationError> {
                     let slot = slot.raw();
-                    if slot < next || slot >= resident {
+                    if slot < next || slot >= source_extent {
                         return Err(LaraOperationError::CollectAllocationOverflow.into());
                     }
                     while next < slot {
@@ -279,9 +304,13 @@ where
         if live != bucket.degree {
             return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
-        while next < resident {
+        while next < source_extent {
             emit(next, &tombstone, &[])?;
             next += 1;
+        }
+
+        if let Some(edge) = pending {
+            emit(next, edge, &[])?;
         }
 
         // The same native id-block encoding builds either stream's unpublished interior levels.
@@ -332,9 +361,7 @@ where
                 .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
         }
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, template.with_base_slot_start(new_start))?;
+        publish(template.with_base_slot_start(new_start))?;
         Ok(())
     })();
     if let Err(error) = prepared {
@@ -382,6 +409,49 @@ where
         .release_bucket_inline_property_bytes_span(vid, &bucket)
         .expect("source value retirement was reserved");
     Ok(())
+}
+
+/// Prepare the tree and pending append while the original bypass is canonical.
+pub(super) fn promote_bypass_with_edge<E: CsrEdgeTombstone, M: Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    edge: &E,
+) -> Result<(), LabeledOperationError> {
+    let vertex = graph.vertices().get(vid);
+    let source = graph.bypass_bucket_view(&vertex)?;
+    let next_count = graph
+        .edges()
+        .header()
+        .num_edges
+        .checked_add(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    transcribe_and_publish_tree(graph, vid, source, Some(edge), |target| {
+        let new_alloc = super::compact::combined_span_region_len(&target);
+        let mut plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
+            graph.vertices(),
+            vid,
+            target,
+            new_alloc,
+        )?;
+        graph
+            .buckets()
+            .reserve_promote_bypass_to_bucket_mode(&mut plan)?;
+        // Reservation is the last recoverable failure. Publish the final tree directly,
+        // never an intermediate bucket descriptor referring to the original run.
+        graph
+            .buckets()
+            .commit_promote_bypass_to_bucket_mode(graph.vertices(), plan)
+            .expect("reserved bypass publication");
+        graph
+            .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+            .expect("preflighted bucket segment");
+        graph
+            .edges()
+            .bump_vertex_segment_counts(vid, 0, i64::from(new_alloc))
+            .expect("preflighted counts row");
+        graph.edges().set_num_edges(next_count);
+        Ok(())
+    })
 }
 
 /// Plan 0321 Step 1: `pub(crate)` test-only wrapper that lets

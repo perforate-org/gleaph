@@ -253,7 +253,18 @@ where
             if label_id == self.bypass_storage_label_for(&vertex)
                 && self.may_use_homogeneous_bypass(src)
             {
-                self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
+                if E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES {
+                    match self.insert_homogeneous_bypass_edge(src, label_id, edge.clone()) {
+                        Err(LabeledOperationError::Store(
+                            LaraOperationError::SpillNeedsPromotion,
+                        )) => {
+                            super::promote::promote_bypass_with_edge(self, src, &edge)?;
+                        }
+                        result => result?,
+                    }
+                } else {
+                    self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
+                }
                 return Ok(None);
             }
             // A same-label insert into a bypass row that stopped being the tail

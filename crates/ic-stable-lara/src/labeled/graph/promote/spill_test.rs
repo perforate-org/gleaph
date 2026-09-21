@@ -31,7 +31,17 @@ impl<const N: usize> CsrEdgeTombstone for Edge<N> {
 fn retained<const N: usize>(
     used: u32,
 ) -> crate::labeled::bidirectional::DeferredBidirectionalLabeledLaraGraph<Edge<N>, VectorMemory> {
-    let m = crate::test_support::vector_memory;
+    let outer = retained_bypass::<N, _>(used, crate::test_support::vector_memory);
+    outer
+        .forward()
+        .promote_bypass_to_bucket_mode(VertexId::from(0))
+        .unwrap();
+    outer
+}
+fn retained_bypass<const N: usize, M: Memory>(
+    used: u32,
+    mut m: impl FnMut() -> M,
+) -> crate::labeled::bidirectional::DeferredBidirectionalLabeledLaraGraph<Edge<N>, M> {
     let outer = crate::labeled::bidirectional::DeferredBidirectionalLabeledLaraGraph::new(
         m(),
         m(),
@@ -98,7 +108,6 @@ fn retained<const N: usize>(
             )
             .unwrap();
     }
-    g.promote_bypass_to_bucket_mode(v).unwrap();
     outer
 }
 fn bucket<E: CsrEdgeTombstone, M: Memory>(
@@ -137,8 +146,8 @@ fn rows<E: CsrEdgeTombstone, M: Memory>(
     out
 }
 // Native tree visitors retain tombstone rows; verify the whole slot stream and headers.
-fn assert_tree<E: CsrEdgeTombstone>(
-    g: &LabeledLaraGraph<E, VectorMemory>,
+fn assert_tree<E: CsrEdgeTombstone, M: Memory>(
+    g: &LabeledLaraGraph<E, M>,
     label: BucketLabelKey,
     extent: u32,
     live: &[(u32, u32, Vec<u8>)],
@@ -615,4 +624,170 @@ fn cascade_retained_prefix_ownership_four_bytes() {
 #[test]
 fn cascade_retained_prefix_ownership_ten_bytes() {
     check_cascade_ownership::<10>();
+}
+
+fn check_public_capacity(holes: u32) {
+    let outer = retained_bypass::<4, _>(
+        crate::labeled::spill_run_store::MAX_ROWS,
+        crate::test_support::vector_memory,
+    );
+    let g = outer.forward();
+    let v = VertexId::from(0);
+    let label = g.default_label();
+    for i in 0..holes {
+        assert_eq!(
+            g.remove_edge_at_slot(v, label, i).unwrap().unwrap(),
+            Edge(i)
+        );
+    }
+    let old = g.vertices().get(v);
+    assert!(old.is_default_edge_labeled());
+    let mut expected = rows(g, label, super::super::OutEdgeOrder::Ascending);
+    let count = g.edges().header().num_edges;
+    outer
+        .insert_forward_out_edge(
+            v,
+            label,
+            Edge(99999),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    expected.push((old.stored_slots, 99999, Vec::new()));
+    assert_tree(g, label, old.stored_slots + 1, &expected);
+    assert_eq!(bucket(g, label).degree(), old.degree + 1);
+    assert_eq!(g.edges().header().num_edges, count + 1);
+    assert!(!g.vertices().get(v).is_default_edge_labeled());
+}
+#[test]
+fn public_bypass_capacity_no_holes() {
+    check_public_capacity(0);
+}
+#[test]
+fn public_bypass_capacity_eight_holes() {
+    check_public_capacity(8);
+}
+#[test]
+fn public_bypass_capacity_sixteen_holes() {
+    check_public_capacity(16);
+}
+
+#[test]
+fn public_bypass_capacity_target_failure_preserves_source() {
+    use crate::test_support::FailpointMemory;
+    let memories: [FailpointMemory; 33] = std::array::from_fn(|_| FailpointMemory::new());
+    let mut index = 0;
+    let outer = retained_bypass::<4, _>(crate::labeled::spill_run_store::MAX_ROWS, || {
+        let memory = memories[index].clone();
+        index += 1;
+        memory
+    });
+    let g = outer.forward();
+    let v = VertexId::from(0);
+    let label = g.default_label();
+    for i in 0..16 {
+        g.remove_edge_at_slot(v, label, i).unwrap().unwrap();
+    }
+    for _ in 0..14 {
+        g.ltb().mint().unwrap();
+    }
+    let old = g.vertices().get(v);
+    let run = g.edges().spill_mint(old.bypass_spill_run()).unwrap();
+    let used = g.edges().spill_used_len(run);
+    let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
+    let count = g.edges().header().num_edges;
+    let free_before: u64 = g
+        .edges()
+        .free_byte_spans()
+        .iter()
+        .map(|span| span.len)
+        .sum();
+    let capacity = g.edges().header().elem_capacity;
+    let counts = g.leaf_segment_counts_for_vid(v);
+    let snapshot = |memory: &FailpointMemory| {
+        let mut bytes = vec![0; memory.byte_len()];
+        memory.read(0, &mut bytes);
+        bytes
+    };
+    let source_roles = [0, 1, 2, 3, 4, 6, 7, 10, 13, 14];
+    let source_bytes: Vec<_> = source_roles
+        .iter()
+        .map(|&role| snapshot(&memories[role]))
+        .collect();
+    let prefix = g.edges().initialized_slab_slots(&old).unwrap();
+    let mut prefix_bytes = vec![0; prefix as usize * 4];
+    g.edges()
+        .read_slots_contiguous(old.base_slot_start(), &mut prefix_bytes);
+    memories[15].fail_at_grow(memories[15].grow_count() + 1);
+    let result = outer.insert_forward_out_edge(
+        v,
+        label,
+        Edge(99999),
+        super::super::EdgePlacementPolicy::Insertion,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(
+                crate::labeled::bidirectional::DeferredBidirectionalLabeledError::Forward(
+                    LabeledOperationError::Store(LaraOperationError::RebalanceFailed(
+                        crate::GrowFailed {
+                            current_size: 1,
+                            delta: 1
+                        }
+                    ))
+                )
+            )
+        ),
+        "{result:?}"
+    );
+    assert_eq!(g.vertices().get(v), old);
+    assert_eq!(g.edges().spill_used_len(run), used);
+    assert_eq!(g.edges().header().num_edges, count);
+    assert_eq!(
+        rows(g, label, super::super::OutEdgeOrder::Ascending),
+        before
+    );
+    assert_eq!(
+        rows(g, label, super::super::OutEdgeOrder::Descending),
+        before.iter().cloned().rev().collect::<Vec<_>>()
+    );
+    assert_eq!(g.leaf_segment_counts_for_vid(v), counts);
+    for (&role, bytes) in source_roles.iter().zip(&source_bytes) {
+        assert_eq!(
+            &snapshot(&memories[role]),
+            bytes,
+            "source memory role {role}"
+        );
+    }
+    let mut after_prefix = vec![0; prefix_bytes.len()];
+    g.edges()
+        .read_slots_contiguous(old.base_slot_start(), &mut after_prefix);
+    assert_eq!(after_prefix, prefix_bytes);
+    assert_eq!(g.ltb().tail_next(), 15);
+    assert_eq!(g.ltb().free_count(), 1);
+    let free_after: u64 = g
+        .edges()
+        .free_byte_spans()
+        .iter()
+        .map(|span| span.len)
+        .sum();
+    assert_eq!(
+        free_after - free_before,
+        g.edges().header().elem_capacity - capacity
+    );
+    memories[15].fail_never();
+    outer
+        .insert_forward_out_edge(
+            v,
+            label,
+            Edge(99999),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    assert_eq!(bucket(g, label).degree(), old.degree + 1);
+    assert_eq!(g.edges().header().num_edges, count + 1);
+    let mut expected = before;
+    expected.push((old.stored_slots, 99999, Vec::new()));
+    assert_tree(g, label, old.stored_slots + 1, &expected);
+    assert_eq!(g.leaf_segment_counts_for_vid(v).actual, 0);
 }

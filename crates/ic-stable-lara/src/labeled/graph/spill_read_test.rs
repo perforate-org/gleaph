@@ -459,14 +459,15 @@ fn append_lifecycle<const N: usize>() {
     }
     let before = graph.vertices().get(vid);
     let before_count = graph.edges().header().num_edges;
+    // The store still rejects before mutation; the public four-byte caller now
+    // consumes this signal through a separately tested prepared tree transition.
     let error = graph
-        .insert_edge(vid, label, Row(end, 0), EdgePlacementPolicy::Insertion)
+        .edges()
+        .insert_edge(graph.vertices(), vid, Row(end, 0))
         .unwrap_err();
     assert!(matches!(
         error,
-        LabeledOperationError::Store(
-            crate::lara::operation_error::LaraOperationError::SpillNeedsPromotion
-        )
+        crate::lara::operation_error::LaraOperationError::SpillNeedsPromotion
     ));
     let after = graph.vertices().get(vid);
     assert_eq!(after.degree(), before.degree());
