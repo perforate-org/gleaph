@@ -1203,11 +1203,20 @@ where
         Ok(())
     }
 
+    /// Include bypass-owned prefixes in the same leaf snapshot as bucket-owned spans.
+    fn leaf_span_buckets(
+        &self,
+        vertex: &LabeledVertex,
+    ) -> Result<Vec<LabelBucket>, LabeledOperationError> {
+        if vertex.is_default_edge_labeled() {
+            Ok(vec![self.bypass_bucket_view(vertex)?])
+        } else {
+            self.read_vertex_label_buckets(vertex)
+        }
+    }
+
     /// Computes one relocation target from the leaf's current resident geometry.
-    ///
-    /// This is deliberately mutation-free. Callers that need admission
-    /// atomicity can reserve the returned destination before publishing the new
-    /// segment start; the scalar relocation path consumes the same target.
+    /// This is mutation-free: callers can reserve before publishing the new segment start.
     pub(crate) fn plan_labeled_leaf_relocation(
         &self,
         src: VertexId,
@@ -1224,16 +1233,16 @@ where
         let active_vertices = (start_vid..end_vid)
             .filter(|vid_u| {
                 let vertex = self.vertices.get(VertexId::from(*vid_u));
-                !vertex.is_default_edge_labeled() && vertex.degree() > 0
+                vertex.degree() > 0 || vertex.stored_slots > 0
             })
             .count() as u64;
         let mut resident_geometry = 0u64;
         for vid_u in start_vid..end_vid {
             let vertex = self.vertices.get(VertexId::from(vid_u));
-            if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            if vertex.degree() == 0 && vertex.stored_slots == 0 {
                 continue;
             }
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            let buckets = self.leaf_span_buckets(&vertex)?;
             let mut resident_slots = 0u32;
             for bucket in &buckets {
                 // ADR 0096 §5: tiny buckets occupy zero leaf slots (relocation
@@ -1310,10 +1319,10 @@ where
             for vid_u in start_vid..end_vid {
                 let vid = VertexId::from(vid_u);
                 let vertex = self.vertices.get(vid);
-                if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+                if vertex.degree() == 0 && vertex.stored_slots == 0 {
                     continue;
                 }
-                let buckets = self.read_vertex_label_buckets(&vertex)?;
+                let buckets = self.leaf_span_buckets(&vertex)?;
                 let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
                     acc.checked_add(self.bucket_resident_rows(bucket)?)
                         .ok_or(LaraOperationError::RowDegreeOverflow)
@@ -1386,8 +1395,12 @@ where
             let mut edge_buf = Vec::new();
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(&buckets, true, false)?;
+                let (per_bucket_edges, per_bucket_raw) = self
+                    .materialize_labeled_vertex_edge_plan(
+                        &buckets,
+                        !vertex.is_default_edge_labeled(),
+                        false,
+                    )?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
@@ -1401,7 +1414,7 @@ where
                     None,
                     0,
                     leaf_relocate_commit,
-                    true,
+                    !vertex.is_default_edge_labeled(),
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1410,8 +1423,12 @@ where
             let _scope = bench_scope("labeled_leaf_materialize_plans");
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(&buckets, true, false)?;
+                let (per_bucket_edges, per_bucket_raw) = self
+                    .materialize_labeled_vertex_edge_plan(
+                        &buckets,
+                        !vertex.is_default_edge_labeled(),
+                        false,
+                    )?;
                 plans.push((
                     vid,
                     vertex,
@@ -1440,7 +1457,7 @@ where
                     None,
                     0,
                     leaf_relocate_commit,
-                    true,
+                    !vertex.is_default_edge_labeled(),
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1617,6 +1634,17 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        if vertex.is_default_edge_labeled() {
+            // Leaf relocation owns the physical cover. Move only the captured prefix,
+            // then publish its new origin; the vertex's run and logical width stay owned.
+            assert!(!fold_logs);
+            let raw = per_bucket_raw[0]
+                .as_ref()
+                .expect("bypass prefix must be captured before leaf writes");
+            self.edges.write_slots_contiguous(new_base, raw)?;
+            self.set_labeled_vertex(src, vertex.with_base_slot_start(new_base))?;
+            return Ok(());
+        }
         let old_alloc = vertex.stored_slots;
         // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
         // placeholders; releasing from an anchor poisons the free store with

@@ -443,3 +443,156 @@ fn promotion_retained_allocation_failure_releases_target_and_preserves_source() 
     mems[15].fail_never();
     promote_bucket_to_tree_mode(&g, v, label).unwrap();
 }
+
+fn check_cascade_ownership<const N: usize>() {
+    let m = crate::test_support::vector_memory;
+    let g = LabeledLaraGraph::new(
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        m(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::from_raw(1),
+    )
+    .unwrap();
+    let v = g
+        .push_vertex(crate::labeled::record::LabeledVertex::default())
+        .unwrap();
+    for i in 0..67 {
+        g.insert_edge_skip_leaf_cascade(
+            v,
+            BucketLabelKey::from_raw(2),
+            Edge::<N>(i),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    }
+    g.enable_default_edge_bypass(v).unwrap();
+    let prefix = g
+        .edges()
+        .initialized_slab_slots(&g.vertices().get(v))
+        .unwrap();
+    for i in 67..prefix + crate::labeled::spill_run_store::MAX_ROWS {
+        let before = g.vertices().get(v);
+        g.insert_edge(
+            v,
+            g.default_label(),
+            Edge::<N>(i),
+            super::super::EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+        let after = g.vertices().get(v);
+        let start = after.base_slot_start();
+        if i == 67 {
+            assert_eq!(
+                after.bypass_spill_run(),
+                before.bypass_spill_run(),
+                "relocation must retain the run"
+            );
+        }
+        let run = g.edges().spill_mint(after.bypass_spill_run()).unwrap();
+        assert_eq!(g.edges().spill_used_len(run), i + 1 - prefix);
+        assert_eq!(
+            g.edges().initialized_slab_slots(&after).unwrap(),
+            prefix,
+            "append {i}"
+        );
+        for span in g.edges().free_byte_spans() {
+            assert!(
+                start + u64::from(prefix) <= span.start_slot || span.start_slot + span.len <= start,
+                "append {i}, width {N}: active [{start}, {}) free={span:?}; before={before:?} after={after:?}",
+                start + u64::from(prefix)
+            );
+        }
+        let actual = rows(&g, g.default_label(), super::super::OutEdgeOrder::Ascending);
+        assert_eq!(
+            actual.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(),
+            (0..=i).map(|j| (j, j)).collect::<Vec<_>>(),
+            "append {i}"
+        );
+    }
+    let retained = g.vertices().get(v);
+    let run = retained.bypass_spill_run();
+    let extent = retained.stored_slots;
+    let count = g.edges().header().num_edges;
+    let allocation = g.edges().allocate_span(2).unwrap();
+    assert!(
+        allocation + 2 <= retained.base_slot_start()
+            || retained.base_slot_start() + u64::from(prefix) <= allocation
+    );
+    g.edges()
+        .write_slots_contiguous(allocation, &vec![0xab; 2 * N])
+        .unwrap();
+    g.promote_bypass_to_bucket_mode(v).unwrap();
+    let b = bucket(&g, g.default_label());
+    assert_eq!(b.stored_slots(), prefix);
+    assert_eq!(b.edge_spill_run(), run);
+    let expected: Vec<_> = (0..extent).map(|i| (i, i, Vec::new())).collect();
+    assert_eq!(
+        rows(&g, g.default_label(), super::super::OutEdgeOrder::Ascending),
+        expected
+    );
+    assert_eq!(
+        rows(
+            &g,
+            g.default_label(),
+            super::super::OutEdgeOrder::Descending
+        ),
+        expected.iter().cloned().rev().collect::<Vec<_>>()
+    );
+    if N == 4 {
+        promote_bucket_to_tree_mode(&g, v, g.default_label()).unwrap();
+        assert_tree(&g, g.default_label(), extent, &expected);
+    } else {
+        assert!(matches!(
+            promote_bucket_to_tree_mode(&g, v, g.default_label()),
+            Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
+                actual: 10,
+                expected: 4
+            })
+        ));
+        assert_eq!(bucket(&g, g.default_label()), b);
+    }
+    let b = bucket(&g, g.default_label());
+    let physical = if N == 4 {
+        extent.div_ceil(BLOCK_B as u32)
+    } else {
+        prefix
+    };
+    for free in g.edges().free_byte_spans() {
+        assert!(
+            free.start_slot + free.len <= b.edge_start()
+                || b.edge_start() + u64::from(physical) <= free.start_slot
+        );
+    }
+    let next = g.edges().allocate_span(2).unwrap();
+    assert!(next + 2 <= b.edge_start() || b.edge_start() + u64::from(physical) <= next);
+    g.edges()
+        .write_slots_contiguous(next, &vec![0xcd; 2 * N])
+        .unwrap();
+    assert_eq!(
+        rows(&g, g.default_label(), super::super::OutEdgeOrder::Ascending),
+        expected
+    );
+    assert_eq!(g.edges().header().num_edges, count);
+}
+#[test]
+fn cascade_retained_prefix_ownership_four_bytes() {
+    check_cascade_ownership::<4>();
+}
+#[test]
+fn cascade_retained_prefix_ownership_ten_bytes() {
+    check_cascade_ownership::<10>();
+}

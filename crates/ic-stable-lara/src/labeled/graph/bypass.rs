@@ -118,6 +118,28 @@ where
         self.insert_homogeneous_bypass_edge(src, label_id, edge)
     }
 
+    /// Read-only bucket view of a bypass row; the vertex retains ownership.
+    pub(super) fn bypass_bucket_view(
+        &self,
+        vertex: &LabeledVertex,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        assert!(vertex.is_default_edge_labeled());
+        let prefix = self.edges.initialized_slab_slots(vertex)?;
+        let bucket = LabelBucket::from_parts(
+            self.bypass_storage_label_for(vertex),
+            vertex.base_slot_start(),
+            vertex.degree,
+            prefix,
+        );
+        Ok(
+            if vertex.bypass_spill_run() == crate::traits::NO_SPILL_RUN {
+                bucket
+            } else {
+                bucket.with_edge_spill_run(vertex.bypass_spill_run())
+            },
+        )
+    }
+
     pub(super) fn promote_bypass_to_bucket_mode(
         &self,
         src: VertexId,
@@ -126,11 +148,9 @@ where
         if !vertex.is_default_edge_labeled() {
             return Ok(());
         }
-        let bypass_label = self.bypass_storage_label_for(&vertex);
-        let edge_start = vertex.base_slot_start();
         let stored_slots = vertex.stored_slots;
         let logical_degree = vertex.degree;
-        let prefix = self.edges.initialized_slab_slots(&vertex)?;
+        let bucket = self.bypass_bucket_view(&vertex)?;
         let run = vertex.bypass_spill_run();
         if logical_degree == 0 && run == crate::traits::NO_SPILL_RUN {
             // Clearing default-label bypass must also reset locator fields so the row is a
@@ -145,10 +165,6 @@ where
 
         // Plan the segment-bucket rewrite without allocating or mutating anything.
         let new_alloc = self.edges.header().segment_size.max(1).max(stored_slots);
-        let mut bucket = LabelBucket::from_parts(bypass_label, edge_start, logical_degree, prefix);
-        if run != crate::traits::NO_SPILL_RUN {
-            bucket = bucket.with_edge_spill_run(run);
-        }
         let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
