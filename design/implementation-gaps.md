@@ -103,10 +103,16 @@ session did.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
-- **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, then **closed by deletion 2026-09-20
-  (ADR 0097)**: the fold-prelude path and the whole log-fold machinery are gone, and a per-bucket run
-  is compacted into its own prefix (with a span-growth retry), so no fold can extend a vertex cover
-  over a leaf mate. The second path below is unreachable with the log deleted.
+- **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
+  deletion 2026-09-20 (ADR 0097)**: the fold-prelude path and the whole log-fold machinery are gone,
+  and a per-bucket run is compacted into its own prefix (with a span-growth retry), so no fold can
+  extend a vertex cover over a leaf mate. **The second path is still open and pre-existing**: the
+  GAP-006 audit probe's skew phase (`/tmp/space_audit_probe.rs`, the 160/48/24/12/8/3/1-degree shape
+  in a `segment16` graph) trips the same `assert_no_labeled_leaf_mate_overlap` guard at
+  `leaf_pin.rs:534` ("leaf-mate edge spans overlap in leaf 328: vid 5255 reserves up to 1384 but vid
+  5248 starts at 1184") on `main` **and** on the `spill-swap` head, so the swap neither causes nor
+  fixes it - it is a span-reservation defect in the promotion/skew path, not a log defect, and it
+  needs its own slice. Reproduced 2026-09-20 on both heads.
   Discovered while auditing
   production capacity/latency balance;
   regression-adjacent to ADR 0096 §3b Phase 2 (`91575bc29`), which made it reachable in a
