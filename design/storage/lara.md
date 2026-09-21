@@ -411,6 +411,35 @@ boundary under ADR 0039. Checked locator ranges, canonical epoch, cardinality, a
 validation reject malformed, stale, truncated, or oversized records before a published value is
 returned.
 
+## Capacity bounds are blessed bounds (general rule)
+
+A number that limits **how many of something can exist** is a capacity bound, and a capacity bound is
+never a side effect of bit packing. Every such bound must be, in the same change that introduces it:
+
+1. **Named** as a constant with a doc comment stating what it bounds.
+2. **Stated here** with its rationale and its unit (ids, rows, slots, bytes).
+3. **Enforced fail-closed** by the type that mints or decodes the value: a value above the bound is
+   **rejected**, never masked into an aliased neighbour (`VertexRef` is the model; see below).
+4. **Tested on both sides** of the boundary: the largest legal value round-trips, the first illegal
+   value is rejected.
+5. **Given a widen trigger**: what product requirement would justify widening it, and what that costs
+   (a wider row, a new layout, an ADR).
+
+A width that is merely what remains after other fields are laid out is **not** a bound. Leftover bits
+must never be used to justify a limit, and they must not be left as padding either: within a fixed-width
+row the field widths sum to the row's bits exactly, each field is the tightest width its blessed bound
+needs, and any remaining bits are **reinvested** into raising the bound of the field that most limits the
+system. The bucket word is the precedent (`36` slot index + `16` label + `8` log + `3` mode + `1` = `64`
+bits exactly). When a byte-granular row leaves bits over, they are assigned to a field and the resulting
+new bound is blessed in the same change.
+
+**First offender: the spill run id (ADR 0097).** Today the same arena is described by three different,
+unblessed numbers: `27` bits in the unlabeled `tail28` meta, `8` bits in the bucket word's retired log
+field, and `u32` guarded by `ARENA_ROWS_LIMIT = 1 << 29` in `spill_run_store`. None of these is a blessed
+bound, so no row width may be chosen from them. The bound must first be **derived from the type chain** of
+what the store can actually reference, blessed here, enforced by a typed run-id constructor, and only then
+used to pack the row.
+
 ## Shard capacity bounds (edge-row payload)
 
 The labeled CSR edge slab stores one adjacency row per 4 bytes. The whole row

@@ -143,6 +143,15 @@ bucket.
    incompletely backed tail. A test writes and reads back the final bytes of the last row of such a run.
 
 
+   **The id widths in this ADR are provisional until the bound is blessed.** `design/storage/lara.md`
+   ("Capacity bounds are blessed bounds") now states the rule this ADR previously violated: a capacity bound is
+   never the leftover of a bit layout, and the spill run id currently has three different unblessed numbers
+   (27 bits in the unlabeled `tail28` meta, 8 bits in the bucket word's retired log field, `u32` under
+   `ARENA_ROWS_LIMIT = 1 << 29` in the store). Until a typed run-id bound is derived from the type chain and
+   blessed, **no row width, no packing choice, and no arena limit in this ADR is decided** — the row fields are
+   packed to the blessed bound afterwards, with leftover bits reinvested rather than padded.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
