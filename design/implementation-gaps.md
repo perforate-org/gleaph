@@ -83,7 +83,7 @@ defect from being rediscovered without its prior reasoning.
   (the bench's fixture). It fails before the fix (`insert 1000000:
   Store(CollectAllocationOverflow)`) and passes after, with the run and its ordinals intact
   and the descriptor still pointing at it.
-- **Open (reported, not absorbed): the repaired path's cost, attributed.**
+- **Cost, attributed and closed (F8).**
   `cd crates/ic-stable-lara && canbench bench_l_nt_bp` (same command, same fixture) measures
 
   | bench | `main` 9a64049f4 | `spill-swap` 52b2c7796 | ratio |
@@ -92,8 +92,8 @@ defect from being rediscovered without its prior reasoning.
   | `bench_l_nt_bp_ins_1024` | 391,094 | 1,163,272 | 2.97x |
   | `bench_l_nt_bp_ins_4096` | 391,094 | 1,163,272 | 2.97x |
 
-  Flat across all three fixture densities on *both* sides, so this is a regression of the
-  swap, not a cost of the fixture shape. The scope call counts name the mechanism: `main`
+  Flat across all three fixture densities on *both* sides, so this was a regression of the
+  swap, not a cost of the fixture shape. The scope call counts named the mechanism: `main`
   runs the leaf cascade **once** for the 16 inserts (`labeled_rebalance_leaf_cascade`
   1 call / 194,089 instructions, of which `labeled_rebalance_edge_log_vertex` - the fold -
   is 185,893), because that single run re-lays the leaf and drops its density below the
@@ -102,9 +102,20 @@ defect from being rediscovered without its prior reasoning.
   810,149): a bucket whose rows live in its run keeps its span in place, so the rewrite
   changes nothing about the leaf's geometry, the density stays at 1.0, and every insert
   re-enters the cascade and repeats the same rewrite. The slack placement search is only
-  `labeled_rewrite_read_and_plan` (16 calls / 60,155, ~5% of the total); the cost is the
-  repetition. What the cascade should do for a bucket whose rows are no longer span content
-  is a policy question the ADR does not answer, so it is reported rather than guessed.
+  `labeled_rewrite_read_and_plan` (16 calls / 60,155, ~5% of the total); the cost was the
+  repetition.
+
+  **Fix (F8):** the rule was already in the tree - db04af585: speculative slack must not
+  force allocation when the content already fits, and may use extra space only when it is
+  currently placeable. The cascade's rewrite of the source vertex is a *forced-slack*
+  rewrite, so it is skipped when the vertex is not span-resident (any bucket owning a run):
+  there is no span content to grow, the run holds those rows, and the rewrite could only
+  re-publish the same layout. The rest of the cascade still runs. Measured with the same
+  command and fixture: 364,070 / 363,906 / 363,906 for `ins_256` / `ins_1024` / `ins_4096`
+  against `main`'s 390,604 / 391,094 / 391,094 - the cascade's 16 calls now cost 129,776 in
+  total and no `labeled_rewrite_vertex_edge_span` scope appears. Witness:
+  `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
+  0 after).
 
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
