@@ -2457,12 +2457,14 @@ where
                 };
                 while let Some(result) = iter.next_with_slot() {
                     let (slot, edge) = result?;
-                    self.read_bucket_inline_property_bytes_for_slot_into(
-                        &bucket,
-                        ordinal,
-                        log_chains.as_ref(),
-                        &mut inline_property_bytes,
-                    )?;
+                    if width > 0 {
+                        self.read_bucket_inline_property_bytes_for_slot_into(
+                            &bucket,
+                            ordinal,
+                            log_chains.as_ref(),
+                            &mut inline_property_bytes,
+                        )?;
+                    }
                     let flow = visit(
                         BucketEntryPosition::new(slot),
                         EdgeWithInlinePropertyRef {

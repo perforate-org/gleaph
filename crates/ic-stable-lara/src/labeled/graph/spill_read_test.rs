@@ -139,6 +139,21 @@ fn exercise<const N: usize>(bypass: bool) {
                 seen, expected,
                 "width={N} bypass={bypass} target={target} order={order:?}"
             );
+            let mut with_empty_values = Vec::new();
+            let flow = graph
+                .visit_edges_with_inline_property(vid, label, order, |slot, item| {
+                    assert_eq!(item.inline_property.width(), 0);
+                    assert!(item.inline_property.bytes().is_empty());
+                    with_empty_values.push((slot.raw(), item.edge.0));
+                    if with_empty_values.len() == 3 {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                })
+                .unwrap();
+            assert_eq!(flow, ControlFlow::Break(()));
+            assert_eq!(with_empty_values, expected[..3]);
         }
         let mut visited = Vec::new();
         let result = graph
