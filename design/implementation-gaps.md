@@ -143,6 +143,27 @@ defect from being rediscovered without its prior reasoning.
   while `labeled_remove_edge_skip_leaf` stays 512 on both sides. `main` never enters the
   block at all: with no runs the `find(...)` matches nothing and the step goes straight to
   per-bucket packing.
+- **What the third measurement showed (2026-09-20, after the owner asked for the per-path fix).**
+  The step cannot serve both callers, and the reason is the cursor contract itself: the
+  tombstones the deferred cursor packs are *beyond the prefix* (the run's rows), so packing
+  them requires the fold, and the fold requires span room. Measured per path:
+  - **Fall through to prefix-only packing** (no growth): `compaction_cursor_*` still fail -
+    0 moves where 4 are required, because the prefix alone has no tombstones to pack - and
+    `edge_overflow_compaction_does_not_fold_inline_property_bytes_log` fails too. 620/3.
+  - **Grow with `SpanResolutionPolicy::Required`** (a real relocation, one attempt per call):
+    the cursor tests pass, but `directed_insert_deferred_materialize_via_wrapper_retry_after_drain`
+    fails - "width published: left 0, right 8" - the required rewrite pre-empts the pending
+    width materialization and leaves the row empty. 622/1.
+  - A guard that stops `finalize_bucket_slab_metadata` from shrinking or clearing a run-backed
+    bucket's prefix (its ordinals are `prefix_len + i`, so shrinking truncates them) is
+    required by *both* variants and is correct on its own; it is kept in the note rather than
+    landed because no variant that needs it passes yet.
+  The sharp policy question is therefore: the compaction's cursor contract requires folding
+  run-backed buckets, which requires forcing span room (a leaf relocation). Should that
+  forcing be (i) an atomic required rewrite that cannot leave a half-published row, or
+  (ii) a per-caller policy the step carries, so the deferred cursor may relocate while a
+  delete-driven compaction may not? The step currently has no policy parameter; both callers
+  share one behaviour, which is why every single-behaviour fix breaks one of them.
 - **Two candidate fixes, both measured, both rejected as guesses:**
   1. **Skip the bucket when the fold cannot be placed** (advance the cursor instead of
      growing). Breaks the compaction's contract: `compaction_cursor_packs_alternating_tombstones_across_steps`
