@@ -5396,8 +5396,9 @@ superseded slack rule is gone.
 
 The next slices need the small-run store to become part of the graph, and the obvious wiring — a seventeenth
 `Memory` — would churn every construction site (`LabeledLaraGraph::new` appears at 16+ call sites across tests,
-benches and the facade, each listing its memories positionally). Decision instead: **the spill store lives in the
-LTB region as a separate segment with its own header**, which is coherent because both levels of the spill are
+benches and the facade, each listing its memories positionally). Decision (superseded by the correction below: the spill store takes the **log's** region slot, which the same
+change frees — see "What happens to the memory the log uses today"). The original note was: **the spill store lives
+in the LTB region as a separate segment with its own header**, which is coherent because both levels of the spill are
 spill storage — level 1 is the packed small-run arena, level 2 is the LTB blocks — and it keeps the graph's memory
 count and every construction signature unchanged. The two allocators stay strictly separate inside that region
 (each owns a segment, each has its own magic/version header, neither reads the other's bytes), so the only shared
