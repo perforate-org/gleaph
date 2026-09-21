@@ -898,7 +898,7 @@ where
                         successor,
                         src,
                     );
-                    if bucket.overflow_log_head() < 0 {
+                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
                         let it = OutEdgeSlabIter::try_new(
                             &self.edges,
                             bucket.edge_start(),
