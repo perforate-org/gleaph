@@ -338,7 +338,7 @@ pub(crate) fn bucket_resident_region(bucket: &LabelBucket) -> Option<(u64, u32)>
 
 /// Which outcome a caller accepts when the requested span cannot be placed.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SpanResolutionPolicy {
+pub(crate) enum SpanResolutionPolicy {
     /// The span must exist: fail when nothing can back it — the insert path, which has
     /// to grow for real.
     Required,
@@ -2141,6 +2141,12 @@ where
         if bucket.is_tiny_mode() {
             return bucket;
         }
+        // ADR 0097 §5: a run-backed bucket's rows are addressed as `prefix_len + i`, so shrinking
+        // the prefix to `degree` (and clearing the run) would shift every one of them onto the
+        // wrong ordinal. Only a bucket whose rows are all in its prefix may be finalized.
+        if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+            return bucket;
+        }
         bucket
             .with_stored_slots(bucket.degree())
             .without_edge_spill_run()
@@ -2152,6 +2158,34 @@ where
         resume_bucket_index: u32,
         resume_slot_index: u32,
         policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+    ) -> Result<VertexEdgeSpanCompactOneStep, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.compact_vertex_edge_span_one_step_with_span_policy(
+            vid,
+            resume_bucket_index,
+            resume_slot_index,
+            policy_for_label,
+            SpanResolutionPolicy::Required,
+        )
+    }
+
+    /// The same step, with the caller's span-resolution policy (ADR 0097 §7).
+    ///
+    /// `Required` may force room for a run-backed bucket's rows (a real relocation): that is what a
+    /// compaction asked to make the span compact needs. `SlackMayBeDropped` never forces it - the
+    /// rows already live in the bucket's own run, so a delete-driven compaction packs the prefix
+    /// alone and leaves the run where it is. Forcing it under the maintenance policy was a spin:
+    /// the policy keeps the old span, the fold fails again, and the retry repeated (~56 leaf
+    /// rewrites per delete; scope calls 1 -> 56 for `labeled_leaf_try_expand_in_place`).
+    pub(crate) fn compact_vertex_edge_span_one_step_with_span_policy(
+        &self,
+        vid: VertexId,
+        resume_bucket_index: u32,
+        resume_slot_index: u32,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+        span_policy: SpanResolutionPolicy,
     ) -> Result<VertexEdgeSpanCompactOneStep, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -2189,15 +2223,30 @@ where
                 Ok(moves) => {
                     return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
                 }
+                // Whether to force room for the run's rows is the caller's call (ADR 0097 §7 and
+                // the slack rule db04af585 states): a delete-driven compaction must not relocate
+                // the leaf for rows that already live in the bucket's own run, while a compaction
+                // asked to make the span compact may.
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
                 )) => {
-                    let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
-                        Ok(run) => self.edges.spill_used_len(run),
-                        Err(_) => 0,
-                    };
-                    self.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
-                    return self.compact_vertex_edge_span_one_step(vid, 0, 0, policy_for_label);
+                    if span_policy == SpanResolutionPolicy::Required {
+                        let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+                            Ok(run) => self.edges.spill_used_len(run),
+                            Err(_) => 0,
+                        };
+                        self.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
+                        return self.compact_vertex_edge_span_one_step_with_span_policy(
+                            vid,
+                            0,
+                            0,
+                            policy_for_label,
+                            span_policy,
+                        );
+                    }
+                    // Non-forcing caller: fall through to the per-bucket path, which packs the
+                    // prefix - safe without folding because `finalize_bucket_slab_metadata` leaves
+                    // a run-backed bucket's width and run alone.
                 }
                 Err(error) => return Err(error),
             }
@@ -2207,12 +2256,14 @@ where
             // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
             // Tiny buckets are excluded from the packed check (holes make
             // `stored != degree` legitimate inline state, not slab slack).
-            if vertex.stored_slots > total_live
-                || buckets.iter().any(|b| {
-                    b.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                        || (!b.is_tiny_mode() && b.stored_slots_raw() != b.degree())
-                })
-            {
+            // A run-backed bucket is only a reason to rewrite when the caller may fold it: the
+            // compacting rewrite materializes `prefix + run`, which folds the run (and the values
+            // run with it). A non-forcing caller leaves it where it is.
+            let run_backed_blocks_packing = span_policy == SpanResolutionPolicy::Required
+                && buckets
+                    .iter()
+                    .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+            if vertex.stored_slots > total_live || run_backed_blocks_packing {
                 self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
             }
             return Ok(VertexEdgeSpanCompactOneStep::Finished);

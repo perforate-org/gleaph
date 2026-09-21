@@ -486,12 +486,31 @@ fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone
     graph: &LabeledLaraGraph<E, crate::VectorMemory>,
     vid: VertexId,
 ) {
+    // The explicit-compaction variant: it may fold a run-backed bucket into its prefix.
+    compact_vertex_edge_span_until_overflow_or_done_with_policy(
+        graph,
+        vid,
+        crate::labeled::graph::SpanResolutionPolicy::Required,
+    )
+}
+
+/// Delete-driven variant: the caller does not want the leaf relocated for rows that already live
+/// in the bucket's own run, so the compaction packs the prefix alone (ADR 0097 §7).
+fn compact_vertex_edge_span_until_overflow_or_done_with_policy<E: CsrEdge + CsrEdgeTombstone>(
+    graph: &LabeledLaraGraph<E, crate::VectorMemory>,
+    vid: VertexId,
+    span_policy: crate::labeled::graph::SpanResolutionPolicy,
+) {
     let mut resume = 0u32;
     loop {
         match graph
-            .compact_vertex_edge_span_one_step(vid, resume, 0, &|_| {
-                crate::labeled::graph::EdgePlacementPolicy::Insertion
-            })
+            .compact_vertex_edge_span_one_step_with_span_policy(
+                vid,
+                resume,
+                0,
+                &|_| crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                span_policy,
+            )
             .expect("compact step")
         {
             VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
@@ -1929,7 +1948,11 @@ fn bench_l_s2_h_del_1024() -> canbench_rs::BenchResult {
                 .expect("remove")
                 .expect("removed");
         }
-        compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+        compact_vertex_edge_span_until_overflow_or_done_with_policy(
+            &graph,
+            vid,
+            crate::labeled::graph::SpanResolutionPolicy::SlackMayBeDropped,
+        );
         let mut count = 0usize;
         graph
             .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
@@ -2246,7 +2269,11 @@ macro_rules! stage2b_crossover_benches {
                         .expect("remove")
                         .expect("removed");
                 }
-                compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+                compact_vertex_edge_span_until_overflow_or_done_with_policy(
+                    &graph,
+                    vid,
+                    crate::labeled::graph::SpanResolutionPolicy::SlackMayBeDropped,
+                );
                 let mut count = 0usize;
                 graph
                     .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {

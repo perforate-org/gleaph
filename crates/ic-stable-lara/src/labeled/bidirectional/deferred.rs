@@ -3606,11 +3606,12 @@ where
                                 .map(|(_, policy)| *policy)
                                 .unwrap_or(EdgePlacementPolicy::Insertion)
                         };
-                        match graph.compact_vertex_edge_span_one_step(
+                        match graph.compact_vertex_edge_span_one_step_with_span_policy(
                             *vid,
                             *resume_bucket_index,
                             *resume_slot_index,
                             &policy_for_label,
+                            crate::labeled::graph::SpanResolutionPolicy::SlackMayBeDropped,
                         ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
                                 observer.edge_slot_moved(*orientation, *vid, moved);

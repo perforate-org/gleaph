@@ -251,6 +251,7 @@ pub(crate) mod traverse;
 mod tree_read;
 mod tree_write;
 
+pub(crate) use compact::SpanResolutionPolicy;
 pub use traverse::BucketEntryPosition;
 pub(crate) mod values;
 
