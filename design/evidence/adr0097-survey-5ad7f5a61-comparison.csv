@@ -1,0 +1,956 @@
+name,kind,current_5ad_exact,historical_3ea_exact,delta_vs_3ea,percent_vs_3ea,current_calls,historical_calls,main_original_name,main_display_rounded,main_nominal_not_exact,percent_vs_rounded_main,main_calls,comparison_note
+bench_cmp_edge_sc_128,total,1224,1224,0,0.000000,,,bench_cmp_edge_sc_128,1224,1224,0.000000,,
+bench_l_b_eo_exp,total,,,,,,,bench_l_b_eo_exp,33.26 K,33260,,,retired shared-log fixture; absent current/historical; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_b_ipe_exp,total,,,,,,,bench_l_b_ipe_exp,191.51 K,191510,,,retired shared-log fixture; absent current/historical; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_b_uo_hf_256,total,113180,121077,-7897,-6.522296,,,bench_l_b_uo_hf_256,120.32 K,120320,-5.934176,,
+bench_l_bp_promo,total,85698,105907,-20209,-19.081836,,,bench_l_bp_promo,104.30 K,104300,-17.835091,,
+bench_l_bp_promo::labeled_bypass_promotion,scope,84291,104500,-20209,-19.338756,1,1,bench_l_bp_promo::labeled_bypass_promotion,102.90 K,102900,-18.084548,1,
+bench_l_bp_promo::labeled_insert_new_label_bucket,scope,32989,40793,-7804,-19.130733,1,1,bench_l_bp_promo::labeled_insert_new_label_bucket,40.27 K,40270,-18.080457,1,
+bench_l_cap_s_hub_s16_256e,total,2429372,2836803,-407431,-14.362330,,,bench_l_cap_s_hub_s16_256e,2.80 M,2800000,-13.236714,,
+bench_l_cap_s_hub_s16_256e::labeled_insert_new_label_bucket,scope,64279,74591,-10312,-13.824724,1,1,bench_l_cap_s_hub_s16_256e::labeled_insert_new_label_bucket,74.24 K,74240,-13.417295,1,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_allocate_span,scope,72872,76836,-3964,-5.159040,5,5,bench_l_cap_s_hub_s16_256e::labeled_leaf_allocate_span,76.84 K,76840,-5.163977,5,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_calculate_positions,scope,9037,9053,-16,-0.176737,8,8,bench_l_cap_s_hub_s16_256e::labeled_leaf_calculate_positions,9047,9047,-0.110534,8,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_collect_slices,scope,20777,27283,-6506,-23.846351,8,8,bench_l_cap_s_hub_s16_256e::labeled_leaf_collect_slices,30.43 K,30430,-31.721985,8,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_materialize_plans,scope,94866,122470,-27604,-22.539397,3,3,bench_l_cap_s_hub_s16_256e::labeled_leaf_materialize_plans,121.31 K,121310,-21.798698,3,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_cap_s_hub_s16_256e::labeled_leaf_release_log_segment,14.23 K,14230,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_cap_s_hub_s16_256e::labeled_leaf_release_old_footprint,scope,58067,58067,0,0.000000,5,5,bench_l_cap_s_hub_s16_256e::labeled_leaf_release_old_footprint,58.07 K,58070,-0.005166,5,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_stream_disjoint_relocation,scope,147672,190418,-42746,-22.448508,5,5,bench_l_cap_s_hub_s16_256e::labeled_leaf_stream_disjoint_relocation,196.54 K,196540,-24.864150,5,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_try_expand_in_place,scope,79887,79887,0,0.000000,8,8,bench_l_cap_s_hub_s16_256e::labeled_leaf_try_expand_in_place,79.89 K,79890,-0.003755,8,
+bench_l_cap_s_hub_s16_256e::labeled_leaf_weighted_slide_commit,scope,350756,427800,-77044,-18.009350,8,8,bench_l_cap_s_hub_s16_256e::labeled_leaf_weighted_slide_commit,428.53 K,428530,-18.149021,8,
+bench_l_cap_s_hub_s16_256e::labeled_rebalance_leaf_cascade,scope,712327,799659,-87332,-10.921155,8,8,bench_l_cap_s_hub_s16_256e::labeled_rebalance_leaf_cascade,830.35 K,830350,-14.213645,8,
+bench_l_cap_s_hub_s16_256e::labeled_relocate_leaf_physical_block,scope,675712,762906,-87194,-11.429193,8,8,bench_l_cap_s_hub_s16_256e::labeled_relocate_leaf_physical_block,798.34 K,798340,-15.360373,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_build_resident_buckets,scope,5215,5449,-234,-4.294366,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_build_resident_buckets,5138,5138,1.498638,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_calculate_bucket_positions,scope,8228,8332,-104,-1.248200,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_calculate_bucket_positions,8424,8424,-2.326686,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_encode_edge_run,scope,,5002,,,,1,bench_l_cap_s_hub_s16_256e::labeled_vertex_encode_edge_run,5002,5002,,1,not observed in 5ad run; not zero
+bench_l_cap_s_hub_s16_256e::labeled_vertex_prepare_edge_buffer,scope,2632,2647,-15,-0.566679,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_prepare_edge_buffer,2647,2647,-0.566679,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_update_accounting,scope,9747,9769,-22,-0.225202,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_update_accounting,9558,9558,1.977401,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_write_bucket_row,scope,5680,5720,-40,-0.699301,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_write_bucket_row,5512,5512,3.047896,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_write_edge_run,scope,4336,15520,-11184,-72.061856,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_write_edge_run,15.52 K,15520,-72.061856,8,
+bench_l_cap_s_hub_s16_256e::labeled_vertex_write_edge_runs,scope,35839,54957,-19118,-34.787197,8,8,bench_l_cap_s_hub_s16_256e::labeled_vertex_write_edge_runs,55.62 K,55620,-35.564545,8,
+bench_l_cap_s_sp_l1024_1e,total,349713287,372478769,-22765482,-6.111887,,,bench_l_cap_s_sp_l1024_1e,367.82 M,367820000,-4.922710,,
+bench_l_cap_s_sp_l1024_1e::labeled_insert_new_label_bucket,scope,341688342,363448256,-21759914,-5.987073,1024,1024,bench_l_cap_s_sp_l1024_1e::labeled_insert_new_label_bucket,359.73 M,359730000,-5.015333,1024,
+bench_l_cap_s_sp_l32_1e,total,10596637,11343963,-747326,-6.587874,,,bench_l_cap_s_sp_l32_1e,11.17 M,11170000,-5.133062,,
+bench_l_cap_s_sp_l32_1e::labeled_insert_new_label_bucket,scope,10136326,10852228,-715902,-6.596820,32,32,bench_l_cap_s_sp_l32_1e::labeled_insert_new_label_bucket,10.71 M,10710000,-5.356433,32,
+bench_l_cap_s_sp_s16_1024v_1e,total,222743750,239249443,-16505693,-6.898947,,,bench_l_cap_s_sp_s16_1024v_1e,236.80 M,236800000,-5.935916,,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_insert_new_label_bucket,scope,178320320,191761181,-13440861,-7.009167,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_insert_new_label_bucket,189.68 M,189680000,-5.988865,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_allocate_span,scope,1083392,1146816,-63424,-5.530443,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_allocate_span,1.15 M,1150000,-5.792000,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_calculate_positions,scope,412030,412030,0,0.000000,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_calculate_positions,417.71 K,417710,-1.359795,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_collect_slices,scope,2057053,3019869,-962816,-31.882707,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_collect_slices,2.95 M,2950000,-30.269390,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_release_log_segment,65.66 K,65660,,64,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_release_old_footprint,scope,453013,453013,0,0.000000,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_release_old_footprint,453.02 K,453020,-0.001545,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_stream_disjoint_relocation,scope,28258750,28318142,-59392,-0.209731,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_stream_disjoint_relocation,28.40 M,28400000,-0.497359,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_try_expand_in_place,scope,32768,32768,0,0.000000,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_try_expand_in_place,32.77 K,32770,-0.006103,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_weighted_slide_commit,scope,31937582,32959790,-1022208,-3.101379,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_leaf_weighted_slide_commit,32.87 M,32870000,-2.836684,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_rebalance_leaf_cascade,scope,37082364,39107836,-2025472,-5.179197,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_rebalance_leaf_cascade,38.94 M,38940000,-4.770508,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_relocate_leaf_physical_block,scope,36739683,38765155,-2025472,-5.224981,64,64,bench_l_cap_s_sp_s16_1024v_1e::labeled_relocate_leaf_physical_block,38.69 M,38690000,-5.040881,64,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_build_resident_buckets,scope,655613,655613,0,0.000000,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_build_resident_buckets,644.53 K,644530,1.719548,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_calculate_bucket_positions,scope,1054899,1065139,-10240,-0.961377,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_calculate_bucket_positions,1.08 M,1080000,-2.324167,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_prepare_edge_buffer,scope,336896,336896,0,0.000000,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_prepare_edge_buffer,336.90 K,336900,-0.001187,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_update_accounting,scope,1254621,1254621,0,0.000000,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_update_accounting,1.24 M,1240000,1.179113,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_bucket_row,scope,727040,732160,-5120,-0.699301,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_bucket_row,705.54 K,705540,3.047311,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_edge_run,scope,562008,562008,0,0.000000,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_edge_run,562.01 K,562010,-0.000356,1024,
+bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_edge_runs,scope,4395514,4395514,0,0.000000,1024,1024,bench_l_cap_s_sp_s16_1024v_1e::labeled_vertex_write_edge_runs,4.65 M,4650000,-5.472817,1024,
+bench_l_cap_sp_l32_1e,total,10486378,11325023,-838645,-7.405239,,,bench_l_cap_sp_l32_1e,11.26 M,11260000,-6.870533,,
+bench_l_cap_sp_l32_1e::labeled_insert_new_label_bucket,scope,6843839,7533806,-689967,-9.158279,32,32,bench_l_cap_sp_l32_1e::labeled_insert_new_label_bucket,7.47 M,7470000,-8.382343,32,
+bench_l_cap_sp_l32_1e::labeled_leaf_allocate_span,scope,33600,36580,-2980,-8.146528,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_allocate_span,36.58 K,36580,-8.146528,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_calculate_positions,scope,12877,12877,0,0.000000,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_calculate_positions,12.87 K,12870,0.054390,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_collect_slices,scope,67435,115187,-47752,-41.456067,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_collect_slices,113.41 K,113410,-40.538753,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_cap_sp_l32_1e::labeled_leaf_release_log_segment,2356,2356,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_cap_sp_l32_1e::labeled_leaf_release_old_footprint,scope,17771,17771,0,0.000000,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_release_old_footprint,17.77 K,17770,0.005627,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_stream_disjoint_relocation,scope,887309,888013,-704,-0.079278,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_stream_disjoint_relocation,891.90 K,891900,-0.514744,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_try_expand_in_place,scope,1192,1192,0,0.000000,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_try_expand_in_place,1192,1192,0.000000,2,
+bench_l_cap_sp_l32_1e::labeled_leaf_weighted_slide_commit,scope,1003746,1052202,-48456,-4.605199,2,2,bench_l_cap_sp_l32_1e::labeled_leaf_weighted_slide_commit,1.05 M,1050000,-4.405143,2,
+bench_l_cap_sp_l32_1e::labeled_rebalance_leaf_cascade,scope,1170647,1269117,-98470,-7.758938,2,2,bench_l_cap_sp_l32_1e::labeled_rebalance_leaf_cascade,1.27 M,1270000,-7.823071,2,
+bench_l_cap_sp_l32_1e::labeled_relocate_leaf_physical_block,scope,1160125,1258595,-98470,-7.823804,2,2,bench_l_cap_sp_l32_1e::labeled_relocate_leaf_physical_block,1.26 M,1260000,-7.926587,2,
+bench_l_cap_sp_l32_1e::labeled_vertex_build_resident_buckets,scope,20696,20696,0,0.000000,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_build_resident_buckets,20.32 K,20320,1.850394,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_calculate_bucket_positions,scope,32922,33242,-320,-0.962638,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_calculate_bucket_positions,34.23 K,34230,-3.821209,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_prepare_edge_buffer,scope,10528,10528,0,0.000000,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_prepare_edge_buffer,10.53 K,10530,-0.018993,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_update_accounting,scope,44445,43773,672,1.535193,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_update_accounting,42.79 K,42790,3.867726,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_write_bucket_row,scope,24192,24352,-160,-0.657030,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_write_bucket_row,22.98 K,22980,5.274151,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_write_edge_run,scope,18944,18944,0,0.000000,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_write_edge_run,18.94 K,18940,0.021119,32,
+bench_l_cap_sp_l32_1e::labeled_vertex_write_edge_runs,scope,140515,140515,0,0.000000,32,32,bench_l_cap_sp_l32_1e::labeled_vertex_write_edge_runs,144.32 K,144320,-2.636502,32,
+bench_l_def_bp_iter_128,total,34607,24993,9614,38.466771,,,bench_l_def_bp_iter_128,25.04 K,25040,38.206869,,
+bench_l_df_ins_1024,total,33236902,43080778,-9843876,-22.849810,,,bench_l_df_ins_1024,89.05 M,89050000,-62.676135,,
+bench_l_df_ins_1024::labeled_insert_new_label_bucket,scope,85548,113904,-28356,-24.894648,2,2,bench_l_df_ins_1024::labeled_insert_new_label_bucket,113.19 K,113190,-24.420885,2,
+bench_l_df_ins_1024::labeled_leaf_allocate_span,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_allocate_span,119.15 K,119150,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_calculate_positions,9022,9022,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_collect_slices,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_collect_slices,571.71 K,571710,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_release_log_segment,399.43 K,399430,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_release_old_footprint,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_release_old_footprint,107.82 K,107820,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_stream_disjoint_relocation,2.37 M,2370000,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_try_expand_in_place,17.17 K,17170,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_df_ins_1024::labeled_leaf_weighted_slide_commit,3.04 M,3040000,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_build_resident_buckets,5045,5045,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_calculate_bucket_positions,8551,8551,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_encode_edge_run,211.98 K,211980,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_prepare_edge_buffer,2752,2752,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_update_accounting,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_update_accounting,10.68 K,10680,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_write_bucket_row,5744,5744,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_write_edge_run,45.03 K,45030,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ins_1024::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_df_ins_1024::labeled_vertex_write_edge_runs,232.00 K,232000,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_df_ip_frag_enq_6,total,86876632,87052304,-175672,-0.201801,,,bench_l_df_ip_frag_enq_6,76.55 M,76550000,13.490048,,
+bench_l_df_ip_frag_enq_6::inline_property_deferred_enqueue_insert,scope,52059,69214,-17155,-24.785448,1,1,bench_l_df_ip_frag_enq_6::inline_property_deferred_enqueue_insert,65.55 K,65550,-20.581236,1,
+bench_l_df_ip_frag_enq_6::labeled_find_bucket_slot,scope,4136,10452,-6316,-60.428626,2,2,bench_l_df_ip_frag_enq_6::labeled_find_bucket_slot,15.16 K,15160,-72.717678,3,
+bench_l_df_ip_frag_enq_6::labeled_insert_new_label_bucket,scope,169223,232285,-63062,-27.148546,8,8,bench_l_df_ip_frag_enq_6::labeled_insert_new_label_bucket,227.39 K,227390,-25.580281,8,
+bench_l_df_ip_frag_enq_6::labeled_remove_edge_skip_leaf,scope,92457,92445,12,0.012981,4,4,bench_l_df_ip_frag_enq_6::labeled_remove_edge_skip_leaf,94.22 K,94220,-1.871153,4,
+bench_l_df_ip_frag_mnt_6,total,86981528,87163516,-181988,-0.208789,,,bench_l_df_ip_frag_mnt_6,76.66 M,76660000,13.464033,,
+bench_l_df_ip_frag_mnt_6::inline_property_deferred_maintenance_compaction,scope,105246,111562,-6316,-5.661426,1,1,bench_l_df_ip_frag_mnt_6::inline_property_deferred_maintenance_compaction,110.96 K,110960,-5.149603,1,
+bench_l_df_ip_frag_mnt_6::labeled_find_bucket_slot,scope,4136,10452,-6316,-60.428626,2,2,bench_l_df_ip_frag_mnt_6::labeled_find_bucket_slot,15.16 K,15160,-72.717678,3,
+bench_l_df_ip_frag_mnt_6::labeled_insert_new_label_bucket,scope,169223,232285,-63062,-27.148546,8,8,bench_l_df_ip_frag_mnt_6::labeled_insert_new_label_bucket,227.39 K,227390,-25.580281,8,
+bench_l_df_ip_frag_mnt_6::labeled_remove_edge_skip_leaf,scope,92457,92445,12,0.012981,4,4,bench_l_df_ip_frag_mnt_6::labeled_remove_edge_skip_leaf,94.22 K,94220,-1.871153,4,
+bench_l_df_mnt_cv_1,total,29257005,32197708,-2940703,-9.133268,,,bench_l_df_mnt_cv_1,35.58 M,35580000,-17.771206,,
+bench_l_df_mnt_cv_1::labeled_compact_label_bucket_vertex_segment,scope,339505,369433,-29928,-8.101063,1,1,bench_l_df_mnt_cv_1::labeled_compact_label_bucket_vertex_segment,365.77 K,365770,-7.180742,1,
+bench_l_df_mnt_cv_1::labeled_insert_new_label_bucket,scope,17267466,18913392,-1645926,-8.702437,81,81,bench_l_df_mnt_cv_1::labeled_insert_new_label_bucket,18.77 M,18770000,-8.004976,81,
+bench_l_df_mnt_cv_1::labeled_remove_edge_skip_leaf,scope,2127484,2240596,-113112,-5.048300,144,144,bench_l_df_mnt_cv_1::labeled_remove_edge_skip_leaf,4.63 M,4630000,-54.050022,144,
+bench_l_du_span_compact_mnt,total,50411331,50972404,-561073,-1.100739,,,bench_l_du_log_fold_mnt,46.35 M,46350000,8.762311,,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_l_du_log_fold_mnt::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_allocate_span,scope,13479,29938,-16459,-54.976952,1,2,bench_l_du_log_fold_mnt::labeled_leaf_allocate_span,33.44 K,33440,-59.691986,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_calculate_positions,scope,1126,2251,-1125,-49.977788,1,2,bench_l_du_log_fold_mnt::labeled_leaf_calculate_positions,2287,2287,-50.765195,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_collect_slices,scope,2705,8213,-5508,-67.064410,1,2,bench_l_du_log_fold_mnt::labeled_leaf_collect_slices,17.41 K,17410,-84.462952,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_du_log_fold_mnt::labeled_leaf_release_log_segment,18.23 K,18230,,2,linked-log unlink/fold vs retained-run tombstone/compaction; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_du_span_compact_mnt::labeled_leaf_release_old_footprint,scope,9127,23966,-14839,-61.916882,1,2,bench_l_du_log_fold_mnt::labeled_leaf_release_old_footprint,23.96 K,23960,-61.907346,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_stream_disjoint_relocation,scope,33734,97594,-63860,-65.434350,1,2,bench_l_du_log_fold_mnt::labeled_leaf_stream_disjoint_relocation,102.81 K,102810,-67.188017,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_try_expand_in_place,scope,596,3259,-2663,-81.712182,1,2,bench_l_du_log_fold_mnt::labeled_leaf_try_expand_in_place,3259,3259,-81.712182,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_leaf_weighted_slide_commit,scope,46358,126822,-80464,-63.446405,1,2,bench_l_du_log_fold_mnt::labeled_leaf_weighted_slide_commit,141.65 K,141650,-67.272856,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_remove_edge_skip_leaf,scope,138589,138517,72,0.051979,24,24,bench_l_du_log_fold_mnt::labeled_remove_edge_skip_leaf,836.25 K,836250,-83.427324,24,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_rewrite_finalize,scope,2399,2391,8,0.334588,2,2,bench_l_du_log_fold_mnt::labeled_rewrite_finalize,2369,2369,1.266357,2,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_rewrite_read_and_plan,scope,98483,259163,-160680,-61.999591,3,4,bench_l_du_log_fold_mnt::labeled_rewrite_read_and_plan,325.28 K,325280,-69.723623,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_build_resident_buckets,scope,2002,2641,-639,-24.195381,3,4,bench_l_du_log_fold_mnt::labeled_vertex_build_resident_buckets,2606,2606,-23.177283,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_calculate_bucket_positions,scope,3110,4183,-1073,-25.651446,3,4,bench_l_du_log_fold_mnt::labeled_vertex_calculate_bucket_positions,4307,4307,-27.791967,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_encode_edge_run,scope,,6723,,,,1,bench_l_du_log_fold_mnt::labeled_vertex_encode_edge_run,5716,5716,,1,linked-log unlink/fold vs retained-run tombstone/compaction; not observed in 5ad run; not zero
+bench_l_du_span_compact_mnt::labeled_vertex_prepare_edge_buffer,scope,987,1331,-344,-25.845229,3,4,bench_l_du_log_fold_mnt::labeled_vertex_prepare_edge_buffer,1331,1331,-25.845229,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_update_accounting,scope,3643,4971,-1328,-26.714947,3,4,bench_l_du_log_fold_mnt::labeled_vertex_update_accounting,4891,4891,-25.516254,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_write_bucket_row,scope,2268,3044,-776,-25.492773,3,4,bench_l_du_log_fold_mnt::labeled_vertex_write_bucket_row,2872,2872,-21.030641,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_write_edge_run,scope,2006,4032,-2026,-50.248016,3,4,bench_l_du_log_fold_mnt::labeled_vertex_write_edge_run,3342,3342,-39.976062,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_span_compact_mnt::labeled_vertex_write_edge_runs,scope,14547,28276,-13729,-48.553544,3,4,bench_l_du_log_fold_mnt::labeled_vertex_write_edge_runs,26.73 K,26730,-45.578002,4,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_du_spill_del_scn,total,1049273,1129241,-79968,-7.081571,,,bench_l_du_log_del_scn,1.17 M,1170000,-10.318547,,linked-log unlink/fold vs retained-run tombstone/compaction
+bench_l_fe_24x51,total,482204,271574,210630,77.558971,,,bench_l_fe_24x51,267.53 K,267530,80.242963,,
+bench_l_fe_48x51,total,806564,387038,419526,108.394008,,,bench_l_fe_48x51,382.90 K,382900,110.646122,,
+bench_l_ins_ap_hub_1024,total,8258,11471,-3213,-28.009764,,,bench_l_ins_ap_hub_1024,10.32 K,10320,-19.980620,,
+bench_l_ins_ap_hub_1024::labeled_insertion_append_on_tombstone_hub,scope,7300,10423,-3123,-29.962583,1,1,bench_l_ins_ap_hub_1024::labeled_insertion_append_on_tombstone_hub,9270,9270,-21.251348,1,
+bench_l_ins_ex_bucket_128,total,8402318,10977290,-2574972,-23.457265,,,bench_l_ins_ex_bucket_128,10.81 M,10810000,-22.272729,,
+bench_l_ins_ex_bucket_128::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_l_ins_ex_bucket_128::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_l_ins_ex_bucket_128::labeled_leaf_allocate_span,scope,139528,149958,-10430,-6.955281,9,9,bench_l_ins_ex_bucket_128::labeled_leaf_allocate_span,149.96 K,149960,-6.956522,9,
+bench_l_ins_ex_bucket_128::labeled_leaf_calculate_positions,scope,20517,20300,217,1.068966,18,18,bench_l_ins_ex_bucket_128::labeled_leaf_calculate_positions,20.43 K,20430,0.425844,18,
+bench_l_ins_ex_bucket_128::labeled_leaf_collect_slices,scope,48867,72774,-23907,-32.851018,18,18,bench_l_ins_ex_bucket_128::labeled_leaf_collect_slices,78.16 K,78160,-37.478250,18,
+bench_l_ins_ex_bucket_128::labeled_leaf_materialize_plans,scope,275986,441526,-165540,-37.492696,9,9,bench_l_ins_ex_bucket_128::labeled_leaf_materialize_plans,441.07 K,441070,-37.428073,9,
+bench_l_ins_ex_bucket_128::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_ex_bucket_128::labeled_leaf_release_log_segment,28.63 K,28630,,18,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_ex_bucket_128::labeled_leaf_release_old_footprint,scope,141852,141852,0,0.000000,9,9,bench_l_ins_ex_bucket_128::labeled_leaf_release_old_footprint,141.85 K,141850,0.001410,9,
+bench_l_ins_ex_bucket_128::labeled_leaf_stream_disjoint_relocation,scope,285085,427132,-142047,-33.255996,9,9,bench_l_ins_ex_bucket_128::labeled_leaf_stream_disjoint_relocation,438.96 K,438960,-35.054447,9,
+bench_l_ins_ex_bucket_128::labeled_leaf_try_expand_in_place,scope,296624,296624,0,0.000000,18,18,bench_l_ins_ex_bucket_128::labeled_leaf_try_expand_in_place,296.62 K,296620,0.001349,18,
+bench_l_ins_ex_bucket_128::labeled_leaf_weighted_slide_commit,scope,811269,1141541,-330272,-28.932119,18,18,bench_l_ins_ex_bucket_128::labeled_leaf_weighted_slide_commit,1.15 M,1150000,-29.454870,18,
+bench_l_ins_ex_bucket_128::labeled_rebalance_leaf_cascade,scope,1715031,2078702,-363671,-17.495100,18,18,bench_l_ins_ex_bucket_128::labeled_rebalance_leaf_cascade,2.17 M,2170000,-20.966313,18,
+bench_l_ins_ex_bucket_128::labeled_relocate_leaf_physical_block,scope,1633071,1996232,-363161,-18.192324,18,18,bench_l_ins_ex_bucket_128::labeled_relocate_leaf_physical_block,2.10 M,2100000,-22.234714,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_build_resident_buckets,scope,12055,11864,191,1.609912,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_build_resident_buckets,11.39 K,11390,5.838455,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_calculate_bucket_positions,scope,18504,18753,-249,-1.327788,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_calculate_bucket_positions,19.26 K,19260,-3.925234,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_l_ins_ex_bucket_128::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_l_ins_ex_bucket_128::labeled_vertex_prepare_edge_buffer,scope,5922,5937,-15,-0.252653,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_prepare_edge_buffer,5937,5937,-0.252653,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_update_accounting,scope,24779,24353,426,1.749271,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_update_accounting,24.33 K,24330,1.845458,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_write_bucket_row,scope,13608,13698,-90,-0.657030,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_write_bucket_row,12.92 K,12920,5.325077,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_write_edge_run,scope,10656,75140,-64484,-85.818472,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_write_edge_run,75.14 K,75140,-85.818472,18,
+bench_l_ins_ex_bucket_128::labeled_vertex_write_edge_runs,scope,84348,161070,-76722,-47.632706,18,18,bench_l_ins_ex_bucket_128::labeled_vertex_write_edge_runs,162.02 K,162020,-47.939761,18,
+bench_l_ins_fresh_256,total,30900536,39159484,-8258948,-21.090543,,,bench_l_ins_fresh_256,33.15 M,33150000,-6.785713,,
+bench_l_ins_fresh_256::labeled_insert_new_label_bucket,scope,22069690,23839147,-1769457,-7.422485,256,256,bench_l_ins_fresh_256::labeled_insert_new_label_bucket,17.90 M,17900000,23.294358,256,
+bench_l_ins_fresh_256::labeled_leaf_allocate_span,scope,76784,82744,-5960,-7.202939,5,5,bench_l_ins_fresh_256::labeled_leaf_allocate_span,82.74 K,82740,-7.198453,5,
+bench_l_ins_fresh_256::labeled_leaf_calculate_positions,scope,9024,9055,-31,-0.342352,8,8,bench_l_ins_fresh_256::labeled_leaf_calculate_positions,9024,9024,0.000000,8,
+bench_l_ins_fresh_256::labeled_leaf_collect_slices,scope,629751,506445,123306,24.347362,8,8,bench_l_ins_fresh_256::labeled_leaf_collect_slices,512.25 K,512250,22.938214,8,
+bench_l_ins_fresh_256::labeled_leaf_materialize_plans,scope,708492,3871465,-3162973,-81.699641,3,3,bench_l_ins_fresh_256::labeled_leaf_materialize_plans,3.86 M,3860000,-81.645285,3,
+bench_l_ins_fresh_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_fresh_256::labeled_leaf_release_log_segment,401.25 K,401250,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_fresh_256::labeled_leaf_release_old_footprint,scope,72231,72228,3,0.004154,5,5,bench_l_ins_fresh_256::labeled_leaf_release_old_footprint,72.23 K,72230,0.001384,5,
+bench_l_ins_fresh_256::labeled_leaf_stream_disjoint_relocation,scope,724163,3883592,-3159429,-81.353268,5,5,bench_l_ins_fresh_256::labeled_leaf_stream_disjoint_relocation,3.88 M,3880000,-81.336005,5,
+bench_l_ins_fresh_256::labeled_leaf_try_expand_in_place,scope,102580,102580,0,0.000000,8,8,bench_l_ins_fresh_256::labeled_leaf_try_expand_in_place,102.58 K,102580,0.000000,8,
+bench_l_ins_fresh_256::labeled_leaf_weighted_slide_commit,scope,2149724,8350579,-6200855,-74.256587,8,8,bench_l_ins_fresh_256::labeled_leaf_weighted_slide_commit,8.33 M,8330000,-74.192989,8,
+bench_l_ins_fresh_256::labeled_rebalance_leaf_cascade,scope,3171182,9255378,-6084196,-65.736872,8,8,bench_l_ins_fresh_256::labeled_rebalance_leaf_cascade,9.66 M,9660000,-67.172029,8,
+bench_l_ins_fresh_256::labeled_relocate_leaf_physical_block,scope,3132862,9217124,-6084262,-66.010417,8,8,bench_l_ins_fresh_256::labeled_relocate_leaf_physical_block,9.63 M,9630000,-67.467684,8,
+bench_l_ins_fresh_256::labeled_vertex_build_resident_buckets,scope,187702,187424,278,0.148327,8,8,bench_l_ins_fresh_256::labeled_vertex_build_resident_buckets,166.40 K,166400,12.801683,8,
+bench_l_ins_fresh_256::labeled_vertex_calculate_bucket_positions,scope,442979,452035,-9056,-2.003385,8,8,bench_l_ins_fresh_256::labeled_vertex_calculate_bucket_positions,452.13 K,452130,-2.023975,8,
+bench_l_ins_fresh_256::labeled_vertex_encode_edge_run,scope,,1136108,,,,239,bench_l_ins_fresh_256::labeled_vertex_encode_edge_run,1.17 M,1170000,,239,not observed in 5ad run; not zero
+bench_l_ins_fresh_256::labeled_vertex_prepare_edge_buffer,scope,37176,40761,-3585,-8.795172,8,8,bench_l_ins_fresh_256::labeled_vertex_prepare_edge_buffer,40.76 K,40760,-8.792934,8,
+bench_l_ins_fresh_256::labeled_vertex_update_accounting,scope,11059,10783,276,2.559585,8,8,bench_l_ins_fresh_256::labeled_vertex_update_accounting,10.76 K,10760,2.778810,8,
+bench_l_ins_fresh_256::labeled_vertex_write_bucket_row,scope,226770,227635,-865,-0.379994,8,8,bench_l_ins_fresh_256::labeled_vertex_write_bucket_row,141.69 K,141690,60.046581,8,
+bench_l_ins_fresh_256::labeled_vertex_write_edge_run,scope,4736,611944,-607208,-99.226073,8,1024,bench_l_ins_fresh_256::labeled_vertex_write_edge_run,611.94 K,611940,-99.226068,1024,
+bench_l_ins_fresh_256::labeled_vertex_write_edge_runs,scope,199086,5303885,-5104799,-96.246412,8,8,bench_l_ins_fresh_256::labeled_vertex_write_edge_runs,5.43 M,5430000,-96.333591,8,
+bench_l_ins_last_1024,total,12517765,23685572,-11167807,-47.150252,,,bench_l_ins_last_1024,25.41 M,25410000,-50.736856,,
+bench_l_ins_last_1024::labeled_leaf_allocate_span,scope,100299,106410,-6111,-5.742881,6,6,bench_l_ins_last_1024::labeled_leaf_allocate_span,106.34 K,106340,-5.680835,6,
+bench_l_ins_last_1024::labeled_leaf_calculate_positions,scope,16894,16916,-22,-0.130054,15,15,bench_l_ins_last_1024::labeled_leaf_calculate_positions,16.92 K,16920,-0.153664,15,
+bench_l_ins_last_1024::labeled_leaf_collect_slices,scope,1182219,877315,304904,34.754222,15,15,bench_l_ins_last_1024::labeled_leaf_collect_slices,1.14 M,1140000,3.703421,15,
+bench_l_ins_last_1024::labeled_leaf_materialize_plans,scope,1603489,7977023,-6373534,-79.898654,9,9,bench_l_ins_last_1024::labeled_leaf_materialize_plans,8.52 M,8520000,-81.179707,9,
+bench_l_ins_last_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_last_1024::labeled_leaf_release_log_segment,877.96 K,877960,,15,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_last_1024::labeled_leaf_release_old_footprint,scope,109373,109373,0,0.000000,6,6,bench_l_ins_last_1024::labeled_leaf_release_old_footprint,109.37 K,109370,0.002743,6,
+bench_l_ins_last_1024::labeled_leaf_stream_disjoint_relocation,scope,1067144,5456223,-4389079,-80.441708,6,6,bench_l_ins_last_1024::labeled_leaf_stream_disjoint_relocation,5.94 M,5940000,-82.034613,6,
+bench_l_ins_last_1024::labeled_leaf_try_expand_in_place,scope,290702,290702,0,0.000000,15,15,bench_l_ins_last_1024::labeled_leaf_try_expand_in_place,290.70 K,290700,0.000688,15,
+bench_l_ins_last_1024::labeled_leaf_weighted_slide_commit,scope,4004660,14465648,-10460988,-72.316069,15,15,bench_l_ins_last_1024::labeled_leaf_weighted_slide_commit,15.75 M,15750000,-74.573587,15,
+bench_l_ins_last_1024::labeled_rebalance_leaf_cascade,scope,5961578,16124000,-10162422,-63.026681,15,15,bench_l_ins_last_1024::labeled_rebalance_leaf_cascade,18.56 M,18560000,-67.879429,15,
+bench_l_ins_last_1024::labeled_relocate_leaf_physical_block,scope,5883903,16045652,-10161749,-63.330234,15,15,bench_l_ins_last_1024::labeled_relocate_leaf_physical_block,18.49 M,18490000,-68.177918,15,
+bench_l_ins_last_1024::labeled_vertex_build_resident_buckets,scope,352347,352947,-600,-0.169997,15,15,bench_l_ins_last_1024::labeled_vertex_build_resident_buckets,312.65 K,312650,12.696945,15,
+bench_l_ins_last_1024::labeled_vertex_calculate_bucket_positions,scope,830416,847809,-17393,-2.051523,15,15,bench_l_ins_last_1024::labeled_vertex_calculate_bucket_positions,848.27 K,848270,-2.104754,15,
+bench_l_ins_last_1024::labeled_vertex_encode_edge_run,scope,,372026,,,,30,bench_l_ins_last_1024::labeled_vertex_encode_edge_run,375.10 K,375100,,30,not observed in 5ad run; not zero
+bench_l_ins_last_1024::labeled_vertex_prepare_edge_buffer,scope,69705,70155,-450,-0.641437,15,15,bench_l_ins_last_1024::labeled_vertex_prepare_edge_buffer,70.16 K,70160,-0.648518,15,
+bench_l_ins_last_1024::labeled_vertex_update_accounting,scope,20652,20360,292,1.434185,15,15,bench_l_ins_last_1024::labeled_vertex_update_accounting,20.09 K,20090,2.797412,15,
+bench_l_ins_last_1024::labeled_vertex_write_bucket_row,scope,425588,425491,97,0.022797,15,15,bench_l_ins_last_1024::labeled_vertex_write_bucket_row,262.61 K,262610,62.060851,15,
+bench_l_ins_last_1024::labeled_vertex_write_edge_run,scope,8880,1190640,-1181760,-99.254183,15,1920,bench_l_ins_last_1024::labeled_vertex_write_edge_run,1.19 M,1190000,-99.253782,1920,
+bench_l_ins_last_1024::labeled_vertex_write_edge_runs,scope,377025,8803389,-8426364,-95.717274,15,15,bench_l_ins_last_1024::labeled_vertex_write_edge_runs,9.20 M,9200000,-95.901902,15,
+bench_l_ins_mv_l32_2048,total,32052651,36644098,-4591447,-12.529840,,,bench_l_ins_mv_l32_2048,36.86 M,36860000,-13.042184,,
+bench_l_ins_mv_l32_2048::labeled_leaf_allocate_span,scope,374100,383702,-9602,-2.502463,19,19,bench_l_ins_mv_l32_2048::labeled_leaf_allocate_span,383.68 K,383680,-2.496872,19,
+bench_l_ins_mv_l32_2048::labeled_leaf_calculate_positions,scope,156017,154784,1233,0.796594,24,24,bench_l_ins_mv_l32_2048::labeled_leaf_calculate_positions,154.47 K,154470,1.001489,24,
+bench_l_ins_mv_l32_2048::labeled_leaf_collect_slices,scope,892846,1435165,-542319,-37.787920,24,24,bench_l_ins_mv_l32_2048::labeled_leaf_collect_slices,1.46 M,1460000,-38.846164,24,
+bench_l_ins_mv_l32_2048::labeled_leaf_materialize_plans,scope,2199615,2944660,-745045,-25.301563,5,5,bench_l_ins_mv_l32_2048::labeled_leaf_materialize_plans,2.91 M,2910000,-24.411856,5,
+bench_l_ins_mv_l32_2048::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_mv_l32_2048::labeled_leaf_release_log_segment,840.88 K,840880,,24,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_mv_l32_2048::labeled_leaf_release_old_footprint,scope,328092,328092,0,0.000000,19,19,bench_l_ins_mv_l32_2048::labeled_leaf_release_old_footprint,328.09 K,328090,0.000610,19,
+bench_l_ins_mv_l32_2048::labeled_leaf_stream_disjoint_relocation,scope,8555593,10661839,-2106246,-19.754997,19,19,bench_l_ins_mv_l32_2048::labeled_leaf_stream_disjoint_relocation,10.55 M,10550000,-18.904332,19,
+bench_l_ins_mv_l32_2048::labeled_leaf_try_expand_in_place,scope,203483,203483,0,0.000000,24,24,bench_l_ins_mv_l32_2048::labeled_leaf_try_expand_in_place,203.48 K,203480,0.001474,24,
+bench_l_ins_mv_l32_2048::labeled_leaf_weighted_slide_commit,scope,12251283,15642653,-3391370,-21.680274,24,24,bench_l_ins_mv_l32_2048::labeled_leaf_weighted_slide_commit,15.53 M,15530000,-21.112151,24,
+bench_l_ins_mv_l32_2048::labeled_rebalance_leaf_cascade,scope,14622750,18543011,-3920261,-21.141448,24,24,bench_l_ins_mv_l32_2048::labeled_rebalance_leaf_cascade,19.43 M,19430000,-24.741379,24,
+bench_l_ins_mv_l32_2048::labeled_relocate_leaf_physical_block,scope,14490138,18410167,-3920029,-21.292740,24,24,bench_l_ins_mv_l32_2048::labeled_relocate_leaf_physical_block,19.29 M,19290000,-24.882644,24,
+bench_l_ins_mv_l32_2048::labeled_vertex_build_resident_buckets,scope,248404,244990,3414,1.393526,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_build_resident_buckets,242.49 K,242490,2.438863,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_calculate_bucket_positions,scope,395403,398567,-3164,-0.793844,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_calculate_bucket_positions,410.84 K,410840,-3.757424,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_encode_edge_run,scope,,1389859,,,,210,bench_l_ins_mv_l32_2048::labeled_vertex_encode_edge_run,1.39 M,1390000,,210,not observed in 5ad run; not zero
+bench_l_ins_mv_l32_2048::labeled_vertex_prepare_edge_buffer,scope,126336,129486,-3150,-2.432695,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_prepare_edge_buffer,129.49 K,129490,-2.435709,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_update_accounting,scope,531137,519658,11479,2.208953,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_update_accounting,516.19 K,516190,2.895639,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_write_bucket_row,scope,290304,292224,-1920,-0.657030,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_write_bucket_row,275.71 K,275710,5.293243,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_write_edge_run,scope,227328,354928,-127600,-35.950953,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_write_edge_run,354.93 K,354930,-35.951314,384,
+bench_l_ins_mv_l32_2048::labeled_vertex_write_edge_runs,scope,1864176,2972913,-1108737,-37.294633,384,384,bench_l_ins_mv_l32_2048::labeled_vertex_write_edge_runs,2.91 M,2910000,-35.938969,384,
+bench_l_ins_rr_64l_1024,total,12580095,23680625,-11100530,-46.876001,,,bench_l_ins_rr_64l_1024,23.43 M,23430000,-46.307746,,
+bench_l_ins_rr_64l_1024::labeled_find_bucket_slot,scope,24672,26078,-1406,-5.391518,1,1,bench_l_ins_rr_64l_1024::labeled_find_bucket_slot,20.76 K,20760,18.843931,1,
+bench_l_ins_rr_64l_1024::labeled_leaf_allocate_span,scope,133571,141183,-7612,-5.391584,8,8,bench_l_ins_rr_64l_1024::labeled_leaf_allocate_span,141.06 K,141060,-5.309088,8,
+bench_l_ins_rr_64l_1024::labeled_leaf_calculate_positions,scope,19164,19155,9,0.046985,17,17,bench_l_ins_rr_64l_1024::labeled_leaf_calculate_positions,19.18 K,19180,-0.083420,17,
+bench_l_ins_rr_64l_1024::labeled_leaf_collect_slices,scope,692497,654389,38108,5.823448,17,17,bench_l_ins_rr_64l_1024::labeled_leaf_collect_slices,764.01 K,764010,-9.360218,17,
+bench_l_ins_rr_64l_1024::labeled_leaf_materialize_plans,scope,959170,5930393,-4971223,-83.826198,9,9,bench_l_ins_rr_64l_1024::labeled_leaf_materialize_plans,5.80 M,5800000,-83.462586,9,
+bench_l_ins_rr_64l_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_rr_64l_1024::labeled_leaf_release_log_segment,582.43 K,582430,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_rr_64l_1024::labeled_leaf_release_old_footprint,scope,132886,132886,0,0.000000,8,8,bench_l_ins_rr_64l_1024::labeled_leaf_release_old_footprint,132.89 K,132890,-0.003010,8,
+bench_l_ins_rr_64l_1024::labeled_leaf_stream_disjoint_relocation,scope,850026,5442411,-4592385,-84.381444,8,8,bench_l_ins_rr_64l_1024::labeled_leaf_stream_disjoint_relocation,5.32 M,5320000,-84.022068,8,
+bench_l_ins_rr_64l_1024::labeled_leaf_try_expand_in_place,scope,296028,296028,0,0.000000,17,17,bench_l_ins_rr_64l_1024::labeled_leaf_try_expand_in_place,296.03 K,296030,-0.000676,17,
+bench_l_ins_rr_64l_1024::labeled_leaf_weighted_slide_commit,scope,2688745,12213400,-9524655,-77.985287,17,17,bench_l_ins_rr_64l_1024::labeled_leaf_weighted_slide_commit,12.06 M,12060000,-77.705265,17,
+bench_l_ins_rr_64l_1024::labeled_rebalance_leaf_cascade,scope,4198315,13692899,-9494584,-69.339473,17,17,bench_l_ins_rr_64l_1024::labeled_rebalance_leaf_cascade,14.30 M,14300000,-70.641154,17,
+bench_l_ins_rr_64l_1024::labeled_relocate_leaf_physical_block,scope,4121937,13616078,-9494141,-69.727428,17,17,bench_l_ins_rr_64l_1024::labeled_relocate_leaf_physical_block,14.23 M,14230000,-71.033472,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_build_resident_buckets,scope,205557,204930,627,0.305958,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_build_resident_buckets,183.18 K,183180,12.215853,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_calculate_bucket_positions,scope,477535,487082,-9547,-1.960040,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_calculate_bucket_positions,488.06 K,488060,-2.156497,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_encode_edge_run,scope,,3551201,,,,674,bench_l_ins_rr_64l_1024::labeled_vertex_encode_edge_run,3.57 M,3570000,,674,not observed in 5ad run; not zero
+bench_l_ins_rr_64l_1024::labeled_vertex_prepare_edge_buffer,scope,42007,52117,-10110,-19.398661,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_prepare_edge_buffer,52.12 K,52120,-19.403300,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_update_accounting,scope,23473,23009,464,2.016602,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_update_accounting,22.84 K,22840,2.771454,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_write_bucket_row,scope,252028,256496,-4468,-1.741937,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_write_bucket_row,162.25 K,162250,55.333128,17,
+bench_l_ins_rr_64l_1024::labeled_vertex_write_edge_run,scope,11134,723792,-712658,-98.461713,17,1088,bench_l_ins_rr_64l_1024::labeled_vertex_write_edge_run,723.79 K,723790,-98.461709,1088,
+bench_l_ins_rr_64l_1024::labeled_vertex_write_edge_runs,scope,252691,7090551,-6837860,-96.436229,17,17,bench_l_ins_rr_64l_1024::labeled_vertex_write_edge_runs,7.08 M,7080000,-96.430918,17,
+bench_l_ins_sb_1024,total,8402326,10977298,-2574972,-23.457248,,,bench_l_ins_sb_1024,10.81 M,10810000,-22.272655,,
+bench_l_ins_sb_1024::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_l_ins_sb_1024::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_l_ins_sb_1024::labeled_leaf_allocate_span,scope,139528,149958,-10430,-6.955281,9,9,bench_l_ins_sb_1024::labeled_leaf_allocate_span,149.96 K,149960,-6.956522,9,
+bench_l_ins_sb_1024::labeled_leaf_calculate_positions,scope,20517,20300,217,1.068966,18,18,bench_l_ins_sb_1024::labeled_leaf_calculate_positions,20.43 K,20430,0.425844,18,
+bench_l_ins_sb_1024::labeled_leaf_collect_slices,scope,48867,72774,-23907,-32.851018,18,18,bench_l_ins_sb_1024::labeled_leaf_collect_slices,78.16 K,78160,-37.478250,18,
+bench_l_ins_sb_1024::labeled_leaf_materialize_plans,scope,275986,441526,-165540,-37.492696,9,9,bench_l_ins_sb_1024::labeled_leaf_materialize_plans,441.07 K,441070,-37.428073,9,
+bench_l_ins_sb_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ins_sb_1024::labeled_leaf_release_log_segment,28.63 K,28630,,18,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ins_sb_1024::labeled_leaf_release_old_footprint,scope,141852,141852,0,0.000000,9,9,bench_l_ins_sb_1024::labeled_leaf_release_old_footprint,141.85 K,141850,0.001410,9,
+bench_l_ins_sb_1024::labeled_leaf_stream_disjoint_relocation,scope,285085,427132,-142047,-33.255996,9,9,bench_l_ins_sb_1024::labeled_leaf_stream_disjoint_relocation,438.96 K,438960,-35.054447,9,
+bench_l_ins_sb_1024::labeled_leaf_try_expand_in_place,scope,296624,296624,0,0.000000,18,18,bench_l_ins_sb_1024::labeled_leaf_try_expand_in_place,296.62 K,296620,0.001349,18,
+bench_l_ins_sb_1024::labeled_leaf_weighted_slide_commit,scope,811269,1141541,-330272,-28.932119,18,18,bench_l_ins_sb_1024::labeled_leaf_weighted_slide_commit,1.15 M,1150000,-29.454870,18,
+bench_l_ins_sb_1024::labeled_rebalance_leaf_cascade,scope,1715031,2078702,-363671,-17.495100,18,18,bench_l_ins_sb_1024::labeled_rebalance_leaf_cascade,2.17 M,2170000,-20.966313,18,
+bench_l_ins_sb_1024::labeled_relocate_leaf_physical_block,scope,1633071,1996232,-363161,-18.192324,18,18,bench_l_ins_sb_1024::labeled_relocate_leaf_physical_block,2.10 M,2100000,-22.234714,18,
+bench_l_ins_sb_1024::labeled_vertex_build_resident_buckets,scope,12055,11864,191,1.609912,18,18,bench_l_ins_sb_1024::labeled_vertex_build_resident_buckets,11.39 K,11390,5.838455,18,
+bench_l_ins_sb_1024::labeled_vertex_calculate_bucket_positions,scope,18504,18753,-249,-1.327788,18,18,bench_l_ins_sb_1024::labeled_vertex_calculate_bucket_positions,19.26 K,19260,-3.925234,18,
+bench_l_ins_sb_1024::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_l_ins_sb_1024::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_l_ins_sb_1024::labeled_vertex_prepare_edge_buffer,scope,5922,5937,-15,-0.252653,18,18,bench_l_ins_sb_1024::labeled_vertex_prepare_edge_buffer,5937,5937,-0.252653,18,
+bench_l_ins_sb_1024::labeled_vertex_update_accounting,scope,24779,24353,426,1.749271,18,18,bench_l_ins_sb_1024::labeled_vertex_update_accounting,24.33 K,24330,1.845458,18,
+bench_l_ins_sb_1024::labeled_vertex_write_bucket_row,scope,13608,13698,-90,-0.657030,18,18,bench_l_ins_sb_1024::labeled_vertex_write_bucket_row,12.92 K,12920,5.325077,18,
+bench_l_ins_sb_1024::labeled_vertex_write_edge_run,scope,10656,75140,-64484,-85.818472,18,18,bench_l_ins_sb_1024::labeled_vertex_write_edge_run,75.14 K,75140,-85.818472,18,
+bench_l_ins_sb_1024::labeled_vertex_write_edge_runs,scope,84348,161070,-76722,-47.632706,18,18,bench_l_ins_sb_1024::labeled_vertex_write_edge_runs,162.02 K,162020,-47.939761,18,
+bench_l_ip_exg_256,total,47734876,49718558,-1983682,-3.989822,,,bench_l_ip_exg_256,44.74 M,44740000,6.693956,,
+bench_l_ip_exg_256::labeled_insert_new_label_bucket,scope,38512,51110,-12598,-24.648797,1,1,bench_l_ip_exg_256::labeled_insert_new_label_bucket,50.80 K,50800,-24.188976,1,
+bench_l_ip_exg_256::labeled_leaf_allocate_span,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_allocate_span,14.80 K,14800,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_calculate_positions,1126,1126,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_collect_slices,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_collect_slices,70.11 K,70110,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_release_log_segment,48.62 K,48620,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_release_old_footprint,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_release_old_footprint,9123,9123,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_stream_disjoint_relocation,256.23 K,256230,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_try_expand_in_place,596,596,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_ip_exg_256::labeled_leaf_weighted_slide_commit,336.21 K,336210,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_build_resident_buckets,633,633,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_calculate_bucket_positions,1067,1067,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_encode_edge_run,8245,8245,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_prepare_edge_buffer,337,337,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_update_accounting,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_update_accounting,1335,1335,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_write_bucket_row,718,718,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_write_edge_run,1215,1215,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_exg_256::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_ip_exg_256::labeled_vertex_write_edge_runs,12.44 K,12440,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_frag_comp,total,43398994,43471165,-72171,-0.166020,,,bench_l_ip_frag_comp,38.22 M,38220000,13.550481,,
+bench_l_ip_frag_comp::inline_property_fragmented_compaction_only,scope,65650,71964,-6314,-8.773831,1,1,bench_l_ip_frag_comp::inline_property_fragmented_compaction_only,71.40 K,71400,-8.053221,1,
+bench_l_ip_frag_comp::labeled_find_bucket_slot,scope,2068,5226,-3158,-60.428626,1,1,bench_l_ip_frag_comp::labeled_find_bucket_slot,5061,5061,-59.138510,1,
+bench_l_ip_frag_comp::labeled_insert_new_label_bucket,scope,54089,76163,-22074,-28.982577,3,3,bench_l_ip_frag_comp::labeled_insert_new_label_bucket,74.65 K,74650,-27.543202,3,
+bench_l_ip_frag_comp::labeled_remove_edge_skip_leaf,scope,46247,46241,6,0.012975,2,2,bench_l_ip_frag_comp::labeled_remove_edge_skip_leaf,47.13 K,47130,-1.873541,2,
+bench_l_ip_frag_s4_ctl,total,43374794,43459487,-84693,-0.194878,,,bench_l_ip_frag_s4_ctl,38.21 M,38210000,13.516865,,
+bench_l_ip_frag_s4_ctl::inline_property_fragmented_control_insert,scope,22353,31717,-9364,-29.523599,1,1,bench_l_ip_frag_s4_ctl::inline_property_fragmented_control_insert,29.34 K,29340,-23.813906,1,
+bench_l_ip_frag_s4_ctl::labeled_find_bucket_slot,scope,2068,5226,-3158,-60.428626,1,1,bench_l_ip_frag_s4_ctl::labeled_find_bucket_slot,10.10 K,10100,-79.524752,2,
+bench_l_ip_frag_s4_ctl::labeled_insert_new_label_bucket,scope,62710,89522,-26812,-29.950180,4,4,bench_l_ip_frag_s4_ctl::labeled_insert_new_label_bucket,87.16 K,87160,-28.051859,4,
+bench_l_ip_frag_s4_ctl::labeled_remove_edge_skip_leaf,scope,46247,46241,6,0.012975,2,2,bench_l_ip_frag_s4_ctl::labeled_remove_edge_skip_leaf,47.13 K,47130,-1.873541,2,
+bench_l_ip_frag_s6,total,43437644,43528653,-91009,-0.209078,,,bench_l_ip_frag_s6,38.28 M,38280000,13.473469,,
+bench_l_ip_frag_s6::inline_property_fragmented_trigger_insert,scope,85203,100883,-15680,-15.542757,1,1,bench_l_ip_frag_s6::inline_property_fragmented_trigger_insert,98.12 K,98120,-13.164492,1,
+bench_l_ip_frag_s6::labeled_find_bucket_slot,scope,2068,5226,-3158,-60.428626,1,1,bench_l_ip_frag_s6::labeled_find_bucket_slot,10.10 K,10100,-79.524752,2,
+bench_l_ip_frag_s6::labeled_insert_new_label_bucket,scope,62710,89522,-26812,-29.950180,4,4,bench_l_ip_frag_s6::labeled_insert_new_label_bucket,87.16 K,87160,-28.051859,4,
+bench_l_ip_frag_s6::labeled_remove_edge_skip_leaf,scope,46247,46241,6,0.012975,2,2,bench_l_ip_frag_s6::labeled_remove_edge_skip_leaf,47.13 K,47130,-1.873541,2,
+bench_l_ip_pstats_16,total,45934879,46570559,-635680,-1.364983,,,bench_l_ip_pstats_16,41.16 M,41160000,11.600775,,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_16::inline_property_pressure_stats_16,scope,36157,36157,0,0.000000,1,1,bench_l_ip_pstats_16::inline_property_pressure_stats_16,36.15 K,36150,0.019364,1,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_16::labeled_find_bucket_slot,scope,,,,,,,bench_l_ip_pstats_16::labeled_find_bucket_slot,126.32 K,126320,,15,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_16::labeled_insert_new_label_bucket,scope,816260,1029298,-213038,-20.697407,32,32,bench_l_ip_pstats_16::labeled_insert_new_label_bucket,928.91 K,928910,-12.127117,32,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_16::labeled_remove_edge_skip_leaf,scope,483857,483809,48,0.009921,16,16,bench_l_ip_pstats_16::labeled_remove_edge_skip_leaf,489.94 K,489940,-1.241581,16,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_256,total,303322427,312710508,-9388081,-3.002164,,,bench_l_ip_pstats_256,285.06 M,285060000,6.406520,,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_256::inline_property_pressure_stats_256,scope,36157,36157,0,0.000000,1,1,bench_l_ip_pstats_256::inline_property_pressure_stats_256,36.15 K,36150,0.019364,1,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_256::labeled_find_bucket_slot,scope,,,,,,,bench_l_ip_pstats_256::labeled_find_bucket_slot,18.32 M,18320000,,255,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_insert_new_label_bucket,scope,77651854,80228973,-2577119,-3.212205,512,512,bench_l_ip_pstats_256::labeled_insert_new_label_bucket,58.38 M,58380000,33.011055,512,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_256::labeled_leaf_allocate_span,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_allocate_span,44.41 K,44410,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_calculate_positions,3378,3378,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_collect_slices,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_collect_slices,486.39 K,486390,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_release_log_segment,437.70 K,437700,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_release_old_footprint,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_release_old_footprint,38.85 K,38850,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_stream_disjoint_relocation,5.49 M,5490000,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_try_expand_in_place,5922,5922,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_ip_pstats_256::labeled_leaf_weighted_slide_commit,6.01 M,6010000,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_remove_edge_skip_leaf,scope,9261012,9260244,768,0.008294,256,256,bench_l_ip_pstats_256::labeled_remove_edge_skip_leaf,9.37 M,9370000,-1.163159,256,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_256::labeled_rewrite_finalize,scope,,,,,,,bench_l_ip_pstats_256::labeled_rewrite_finalize,2751,2751,,3,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_rewrite_read_and_plan,scope,,,,,,,bench_l_ip_pstats_256::labeled_rewrite_read_and_plan,8.78 M,8780000,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_build_resident_buckets,310.73 K,310730,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_calculate_bucket_positions,895.09 K,895090,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_encode_edge_run,1.36 M,1360000,,255,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_prepare_edge_buffer,72.88 K,72880,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_update_accounting,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_update_accounting,6632,6632,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_write_bucket_row,266.53 K,266530,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_write_edge_run,538.30 K,538300,,1020,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_256::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_ip_pstats_256::labeled_vertex_write_edge_runs,6.58 M,6580000,,6,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_64,total,64619574,67030312,-2410738,-3.596489,,,bench_l_ip_pstats_64,59.40 M,59400000,8.787162,,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_64::inline_property_pressure_stats_64,scope,36157,36157,0,0.000000,1,1,bench_l_ip_pstats_64::inline_property_pressure_stats_64,36.15 K,36150,0.019364,1,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_64::labeled_find_bucket_slot,scope,,,,,,,bench_l_ip_pstats_64::labeled_find_bucket_slot,1.31 M,1310000,,63,constructor and seeding inside measured total; pressure scope separate; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_ip_pstats_64::labeled_insert_new_label_bucket,scope,6007837,6718269,-710432,-10.574629,128,128,bench_l_ip_pstats_64::labeled_insert_new_label_bucket,5.30 M,5300000,13.355415,128,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_pstats_64::labeled_remove_edge_skip_leaf,scope,2095234,2095042,192,0.009164,64,64,bench_l_ip_pstats_64::labeled_remove_edge_skip_leaf,2.12 M,2120000,-1.168208,64,constructor and seeding inside measured total; pressure scope separate
+bench_l_ip_spill_8b_of,total,1275736,1356265,-80529,-5.937556,,,bench_l_ip_log_8b_of,1.60 M,1600000,-20.266500,,same value-batch API; shared log vs per-bucket run
+bench_l_iter_128,total,40105,19371,20734,107.036291,,,bench_l_iter_128,18.93 K,18930,111.859482,,
+bench_l_mix_hub_asc_33x50,total,790432,1017187,-226755,-22.292361,,,bench_l_mix_hub_asc_33x50,452.96 K,452960,74.503709,,
+bench_l_mix_hub_asc_33x50::labeled_find_bucket_slot,scope,13740,15317,-1577,-10.295750,1,1,bench_l_mix_hub_asc_33x50::labeled_find_bucket_slot,12.80 K,12800,7.343750,1,
+bench_l_mix_hub_ins_33x50,total,59092295,62108771,-3016476,-4.856763,,,bench_l_mix_hub_ins_33x50,64.52 M,64520000,-8.412438,,
+bench_l_mix_hub_ins_33x50::labeled_insert_new_label_bucket,scope,932997,1204374,-271377,-22.532619,33,33,bench_l_mix_hub_ins_33x50::labeled_insert_new_label_bucket,1.15 M,1150000,-18.869826,33,
+bench_l_mix_hub_ins_33x50::labeled_leaf_allocate_span,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_allocate_span,84.00 K,84000,,5,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_calculate_positions,9024,9024,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_collect_slices,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_collect_slices,620.25 K,620250,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_materialize_plans,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_materialize_plans,1.39 M,1390000,,3,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_release_log_segment,439.05 K,439050,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_release_old_footprint,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_release_old_footprint,68.91 K,68910,,5,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_stream_disjoint_relocation,1.77 M,1770000,,5,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_try_expand_in_place,101.77 K,101770,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_leaf_weighted_slide_commit,3.86 M,3860000,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_rewrite_finalize,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_rewrite_finalize,8351,8351,,9,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_rewrite_read_and_plan,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_rewrite_read_and_plan,6.29 M,6290000,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_build_resident_buckets,55.03 K,55030,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_calculate_bucket_positions,135.66 K,135660,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_encode_edge_run,271.59 K,271590,,39,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_prepare_edge_buffer,15.29 K,15290,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_update_accounting,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_update_accounting,18.58 K,18580,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_write_bucket_row,61.19 K,61190,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_write_edge_run,304.68 K,304680,,285,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_ins_33x50::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_mix_hub_ins_33x50::labeled_vertex_write_edge_runs,1.66 M,1660000,,17,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_mix_hub_scn_33x50,total,557118,713437,-156319,-21.910694,,,bench_l_mix_hub_scn_33x50,350.32 K,350320,59.031172,,
+bench_l_mix_hub_scn_33x50::labeled_find_bucket_slot,scope,13598,15175,-1577,-10.392092,1,1,bench_l_mix_hub_scn_33x50::labeled_find_bucket_slot,12.76 K,12760,6.567398,1,
+bench_l_nt_bp_ins_1024,total,277040,364463,-87423,-23.986797,,,bench_l_nt_bp_ins_1024,391.09 K,391090,-29.162085,,
+bench_l_nt_bp_ins_1024::labeled_leaf_allocate_span,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_allocate_span,14.97 K,14970,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_leaf_collect_slices,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_collect_slices,8353,8353,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_leaf_materialize_plans,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_materialize_plans,44.09 K,44090,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_release_log_segment,8899,8899,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_leaf_weighted_slide_commit,61.26 K,61260,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_non_tail_bypass_insert,scope,275606,363029,-87423,-24.081547,1,1,bench_l_nt_bp_ins_1024::labeled_non_tail_bypass_insert,386.53 K,386530,-28.697384,1,
+bench_l_nt_bp_ins_1024::labeled_rebalance_edge_log_vertex,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_rebalance_edge_log_vertex,185.89 K,185890,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_rebalance_leaf_cascade,scope,105104,130336,-25232,-19.359195,16,16,bench_l_nt_bp_ins_1024::labeled_rebalance_leaf_cascade,194.09 K,194090,-45.847803,1,
+bench_l_nt_bp_ins_1024::labeled_rewrite_finalize,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_rewrite_finalize,940,940,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_rewrite_read_and_plan,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_rewrite_read_and_plan,129.25 K,129250,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_build_resident_buckets,1263,1263,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_calculate_bucket_positions,2140,2140,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_encode_edge_run,6614,6614,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_prepare_edge_buffer,673,673,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_update_accounting,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_update_accounting,2209,2209,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_write_bucket_row,1436,1436,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_write_edge_run,2488,2488,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_1024::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_nt_bp_ins_1024::labeled_vertex_write_edge_runs,15.61 K,15610,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256,total,277040,364463,-87423,-23.986797,,,bench_l_nt_bp_ins_256,390.60 K,390600,-29.073221,,
+bench_l_nt_bp_ins_256::labeled_leaf_allocate_span,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_allocate_span,14.97 K,14970,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_leaf_collect_slices,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_collect_slices,8353,8353,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_leaf_materialize_plans,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_materialize_plans,43.66 K,43660,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_release_log_segment,8899,8899,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_leaf_weighted_slide_commit,60.83 K,60830,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_non_tail_bypass_insert,scope,275606,363029,-87423,-24.081547,1,1,bench_l_nt_bp_ins_256::labeled_non_tail_bypass_insert,386.04 K,386040,-28.606880,1,
+bench_l_nt_bp_ins_256::labeled_rebalance_edge_log_vertex,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_rebalance_edge_log_vertex,185.31 K,185310,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_rebalance_leaf_cascade,scope,105104,130336,-25232,-19.359195,16,16,bench_l_nt_bp_ins_256::labeled_rebalance_leaf_cascade,193.51 K,193510,-45.685494,1,
+bench_l_nt_bp_ins_256::labeled_rewrite_finalize,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_rewrite_finalize,940,940,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_rewrite_read_and_plan,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_rewrite_read_and_plan,128.82 K,128820,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_build_resident_buckets,1263,1263,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_calculate_bucket_positions,2140,2140,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_encode_edge_run,6614,6614,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_prepare_edge_buffer,673,673,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_update_accounting,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_update_accounting,2209,2209,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_write_bucket_row,1436,1436,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_write_edge_run,2488,2488,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_256::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_nt_bp_ins_256::labeled_vertex_write_edge_runs,15.61 K,15610,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096,total,276989,364412,-87423,-23.990154,,,bench_l_nt_bp_ins_4096,391.09 K,391090,-29.175126,,
+bench_l_nt_bp_ins_4096::labeled_leaf_allocate_span,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_allocate_span,14.97 K,14970,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_leaf_calculate_positions,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_leaf_collect_slices,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_collect_slices,8353,8353,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_leaf_materialize_plans,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_materialize_plans,44.09 K,44090,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_release_log_segment,8899,8899,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_leaf_weighted_slide_commit,61.26 K,61260,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_non_tail_bypass_insert,scope,275560,362983,-87423,-24.084599,1,1,bench_l_nt_bp_ins_4096::labeled_non_tail_bypass_insert,386.53 K,386530,-28.709285,1,
+bench_l_nt_bp_ins_4096::labeled_rebalance_edge_log_vertex,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_rebalance_edge_log_vertex,185.89 K,185890,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_rebalance_leaf_cascade,scope,104928,130160,-25232,-19.385372,16,16,bench_l_nt_bp_ins_4096::labeled_rebalance_leaf_cascade,194.09 K,194090,-45.938482,1,
+bench_l_nt_bp_ins_4096::labeled_rewrite_finalize,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_rewrite_finalize,940,940,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_rewrite_read_and_plan,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_rewrite_read_and_plan,129.25 K,129250,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_build_resident_buckets,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_build_resident_buckets,1263,1263,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_calculate_bucket_positions,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_calculate_bucket_positions,2140,2140,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_encode_edge_run,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_encode_edge_run,6614,6614,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_prepare_edge_buffer,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_prepare_edge_buffer,673,673,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_update_accounting,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_update_accounting,2209,2209,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_write_bucket_row,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_write_bucket_row,1436,1436,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_write_edge_run,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_write_edge_run,2488,2488,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_nt_bp_ins_4096::labeled_vertex_write_edge_runs,scope,,,,,,,bench_l_nt_bp_ins_4096::labeled_vertex_write_edge_runs,15.61 K,15610,,2,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_det_hub_1024,total,13182480,18061223,-4878743,-27.012252,,,bench_l_s2_det_hub_1024,17.88 M,17880000,-26.272483,,
+bench_l_s2_det_hub_1024::labeled_remove_edge_skip_leaf,scope,5150986,6762762,-1611776,-23.833103,1024,1024,bench_l_s2_det_hub_1024::labeled_remove_edge_skip_leaf,6.65 M,6650000,-22.541564,1024,
+bench_l_s2_det_hub_4096,total,48172453,66763656,-18591203,-27.846293,,,bench_l_s2_det_hub_4096,65.94 M,65940000,-26.945021,,
+bench_l_s2_det_hub_4096::labeled_remove_edge_skip_leaf,scope,20483061,26999424,-6516363,-24.135193,4096,4096,bench_l_s2_det_hub_4096::labeled_remove_edge_skip_leaf,26.53 M,26530000,-22.792835,4096,
+bench_l_s2_det_hub_st_1024,total,39347331,45845651,-6498320,-14.174343,,,bench_l_s2_det_hub_st_1024,45.57 M,45570000,-13.655188,,
+bench_l_s2_det_hub_st_1024::labeled_remove_edge_skip_leaf,scope,30342794,31954570,-1611776,-5.043961,1024,1024,bench_l_s2_det_hub_st_1024::labeled_remove_edge_skip_leaf,31.87 M,31870000,-4.791986,1024,
+bench_l_s2_det_hub_st_4096,total,156157124,182138397,-25981273,-14.264578,,,bench_l_s2_det_hub_st_4096,181.05 M,181050000,-13.749172,,
+bench_l_s2_det_hub_st_4096::labeled_remove_edge_skip_leaf,scope,121638092,128088667,-6450575,-5.036023,4096,4096,bench_l_s2_det_hub_st_4096::labeled_remove_edge_skip_leaf,127.77 M,127770000,-4.799177,4096,
+bench_l_s2_det_sat_1024,total,446456,465326,-18870,-4.055222,,,bench_l_s2_det_sat_1024,464.48 K,464480,-3.880468,,
+bench_l_s2_det_sat_1024::labeled_remove_edge_skip_leaf,scope,338128,338125,3,0.000887,1,1,bench_l_s2_det_sat_1024::labeled_remove_edge_skip_leaf,338.17 K,338170,-0.012420,1,
+bench_l_s2_det_sat_4096,total,1462666,1481536,-18870,-1.273678,,,bench_l_s2_det_sat_4096,1.48 M,1480000,-1.171216,,
+bench_l_s2_det_sat_4096::labeled_remove_edge_skip_leaf,scope,1345744,1345741,3,0.000223,1,1,bench_l_s2_det_sat_4096::labeled_remove_edge_skip_leaf,1.35 M,1350000,-0.315259,1,
+bench_l_s2_h_del_1024,total,45382228,46311545,-929317,-2.006664,,,bench_l_s2_h_del_1024,127.16 M,127160000,-64.310925,,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_allocate_span,scope,12811,14301,-1490,-10.418852,1,1,bench_l_s2_h_del_1024::labeled_leaf_allocate_span,25.72 K,25720,-50.190513,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_calculate_positions,scope,1126,1126,0,0.000000,1,1,bench_l_s2_h_del_1024::labeled_leaf_calculate_positions,1159,1159,-2.847282,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_collect_slices,scope,2705,4201,-1496,-35.610569,1,1,bench_l_s2_h_del_1024::labeled_leaf_collect_slices,13.46 K,13460,-79.903418,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_s2_h_del_1024::labeled_leaf_release_log_segment,17.34 K,17340,,1,main compaction policy differs; total not operation-equivalent; not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_h_del_1024::labeled_leaf_release_old_footprint,scope,9127,9130,-3,-0.032859,1,1,bench_l_s2_h_del_1024::labeled_leaf_release_old_footprint,14.95 K,14950,-38.949833,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_stream_disjoint_relocation,scope,33419,577143,-543724,-94.209581,1,1,bench_l_s2_h_del_1024::labeled_leaf_stream_disjoint_relocation,178.73 K,178730,-81.301964,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_try_expand_in_place,scope,596,596,0,0.000000,1,1,bench_l_s2_h_del_1024::labeled_leaf_try_expand_in_place,2663,2663,-77.619226,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_leaf_weighted_slide_commit,scope,45226,590446,-545220,-92.340366,1,1,bench_l_s2_h_del_1024::labeled_leaf_weighted_slide_commit,201.28 K,201280,-77.530803,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,scope,42955950,42954414,1536,0.003576,512,512,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,60.57 M,60570000,-29.080485,512,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_rewrite_finalize,scope,1449,1440,9,0.625000,1,1,bench_l_s2_h_del_1024::labeled_rewrite_finalize,2369,2369,-38.834951,2,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_rewrite_read_and_plan,scope,95932,653691,-557759,-85.324565,2,2,bench_l_s2_h_del_1024::labeled_rewrite_read_and_plan,325.93 K,325930,-70.566686,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_build_resident_buckets,scope,1285,1280,5,0.390625,2,2,bench_l_s2_h_del_1024::labeled_vertex_build_resident_buckets,1897,1897,-32.261465,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_calculate_bucket_positions,scope,2055,2078,-23,-1.106833,2,2,bench_l_s2_h_del_1024::labeled_vertex_calculate_bucket_positions,3242,3242,-36.613202,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_encode_edge_run,scope,26371,48900,-22529,-46.071575,1,1,bench_l_s2_h_del_1024::labeled_vertex_encode_edge_run,47.86 K,47860,-44.899707,1,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_prepare_edge_buffer,scope,673,673,0,0.000000,2,2,bench_l_s2_h_del_1024::labeled_vertex_prepare_edge_buffer,1002,1002,-32.834331,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_update_accounting,scope,2738,2713,25,0.921489,2,2,bench_l_s2_h_del_1024::labeled_vertex_update_accounting,3567,3567,-23.240819,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_write_bucket_row,scope,1512,1522,-10,-0.657030,2,2,bench_l_s2_h_del_1024::labeled_vertex_write_bucket_row,2154,2154,-29.805014,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_write_edge_run,scope,6318,16548,-10230,-61.820160,2,2,bench_l_s2_h_del_1024::labeled_vertex_write_edge_run,26.89 K,26890,-76.504277,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_1024::labeled_vertex_write_edge_runs,scope,33644,63238,-29594,-46.797811,2,2,bench_l_s2_h_del_1024::labeled_vertex_write_edge_runs,76.87 K,76870,-56.232600,3,main compaction policy differs; total not operation-equivalent
+bench_l_s2_h_del_h_1024,total,37231311,77202325,-39971014,-51.774366,,,bench_l_s2_h_del_h_1024,72.74 M,72740000,-48.815905,,
+bench_l_s2_h_del_h_1024::labeled_leaf_allocate_span,scope,12811,68059,-55248,-81.176626,1,4,bench_l_s2_h_del_h_1024::labeled_leaf_allocate_span,25.37 K,25370,-49.503350,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_calculate_positions,scope,1126,63110,-61984,-98.215814,1,56,bench_l_s2_h_del_h_1024::labeled_leaf_calculate_positions,1128,1128,-0.177305,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_collect_slices,scope,2705,226032,-223327,-98.803267,1,56,bench_l_s2_h_del_h_1024::labeled_leaf_collect_slices,13.46 K,13460,-79.903418,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_materialize_plans,scope,,3872212,,,,52,,,,,,not observed in 5ad run; not zero; no same-name rounded-main observation
+bench_l_s2_h_del_h_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_s2_h_del_h_1024::labeled_leaf_release_log_segment,17.32 K,17320,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_h_del_h_1024::labeled_leaf_release_old_footprint,scope,9127,54044,-44917,-83.111909,1,4,bench_l_s2_h_del_h_1024::labeled_leaf_release_old_footprint,14.95 K,14950,-38.949833,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_stream_disjoint_relocation,scope,30715,793472,-762757,-96.129038,1,4,bench_l_s2_h_del_h_1024::labeled_leaf_stream_disjoint_relocation,178.72 K,178720,-82.813899,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_try_expand_in_place,scope,596,1577635,-1577039,-99.962222,1,56,bench_l_s2_h_del_h_1024::labeled_leaf_try_expand_in_place,2663,2663,-77.619226,1,
+bench_l_s2_h_del_h_1024::labeled_leaf_weighted_slide_commit,scope,42912,5441705,-5398793,-99.211424,1,56,bench_l_s2_h_del_h_1024::labeled_leaf_weighted_slide_commit,201.24 K,201240,-78.676208,1,
+bench_l_s2_h_del_h_1024::labeled_rewrite_finalize,scope,2376,2391,-15,-0.627353,2,2,bench_l_s2_h_del_h_1024::labeled_rewrite_finalize,2369,2369,0.295483,2,
+bench_l_s2_h_del_h_1024::labeled_rewrite_read_and_plan,scope,92209,8871967,-8779758,-98.960670,3,58,bench_l_s2_h_del_h_1024::labeled_rewrite_read_and_plan,325.01 K,325010,-71.628873,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_build_resident_buckets,scope,1925,37707,-35782,-94.894847,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_build_resident_buckets,1897,1897,1.476015,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_calculate_bucket_positions,scope,3111,60282,-57171,-94.839255,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_calculate_bucket_positions,3239,3239,-3.951837,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_encode_edge_run,scope,,48621,,,,1,bench_l_s2_h_del_h_1024::labeled_vertex_encode_edge_run,47.58 K,47580,,1,not observed in 5ad run; not zero
+bench_l_s2_h_del_h_1024::labeled_vertex_prepare_edge_buffer,scope,987,19097,-18110,-94.831649,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_prepare_edge_buffer,1002,1002,-1.497006,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_update_accounting,scope,3620,78922,-75302,-95.413193,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_update_accounting,3521,3521,2.811701,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_write_bucket_row,scope,2268,44138,-41870,-94.861571,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_write_bucket_row,2154,2154,5.292479,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_write_edge_run,scope,6886,622580,-615694,-98.893957,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_write_edge_run,26.89 K,26890,-74.391967,3,
+bench_l_s2_h_del_h_1024::labeled_vertex_write_edge_runs,scope,18869,881472,-862603,-97.859376,3,58,bench_l_s2_h_del_h_1024::labeled_vertex_write_edge_runs,75.39 K,75390,-74.971482,3,
+bench_l_s2_h_ins_1024,total,8402325,10977297,-2574972,-23.457250,,,bench_l_s2_h_ins_1024,10.81 M,10810000,-22.272664,,
+bench_l_s2_h_ins_1024::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_l_s2_h_ins_1024::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_l_s2_h_ins_1024::labeled_leaf_allocate_span,scope,139528,149958,-10430,-6.955281,9,9,bench_l_s2_h_ins_1024::labeled_leaf_allocate_span,149.96 K,149960,-6.956522,9,
+bench_l_s2_h_ins_1024::labeled_leaf_calculate_positions,scope,20517,20300,217,1.068966,18,18,bench_l_s2_h_ins_1024::labeled_leaf_calculate_positions,20.43 K,20430,0.425844,18,
+bench_l_s2_h_ins_1024::labeled_leaf_collect_slices,scope,48867,72774,-23907,-32.851018,18,18,bench_l_s2_h_ins_1024::labeled_leaf_collect_slices,78.16 K,78160,-37.478250,18,
+bench_l_s2_h_ins_1024::labeled_leaf_materialize_plans,scope,275986,441526,-165540,-37.492696,9,9,bench_l_s2_h_ins_1024::labeled_leaf_materialize_plans,441.07 K,441070,-37.428073,9,
+bench_l_s2_h_ins_1024::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_s2_h_ins_1024::labeled_leaf_release_log_segment,28.63 K,28630,,18,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_h_ins_1024::labeled_leaf_release_old_footprint,scope,141852,141852,0,0.000000,9,9,bench_l_s2_h_ins_1024::labeled_leaf_release_old_footprint,141.85 K,141850,0.001410,9,
+bench_l_s2_h_ins_1024::labeled_leaf_stream_disjoint_relocation,scope,285085,427132,-142047,-33.255996,9,9,bench_l_s2_h_ins_1024::labeled_leaf_stream_disjoint_relocation,438.96 K,438960,-35.054447,9,
+bench_l_s2_h_ins_1024::labeled_leaf_try_expand_in_place,scope,296624,296624,0,0.000000,18,18,bench_l_s2_h_ins_1024::labeled_leaf_try_expand_in_place,296.62 K,296620,0.001349,18,
+bench_l_s2_h_ins_1024::labeled_leaf_weighted_slide_commit,scope,811269,1141541,-330272,-28.932119,18,18,bench_l_s2_h_ins_1024::labeled_leaf_weighted_slide_commit,1.15 M,1150000,-29.454870,18,
+bench_l_s2_h_ins_1024::labeled_rebalance_leaf_cascade,scope,1715031,2078702,-363671,-17.495100,18,18,bench_l_s2_h_ins_1024::labeled_rebalance_leaf_cascade,2.17 M,2170000,-20.966313,18,
+bench_l_s2_h_ins_1024::labeled_relocate_leaf_physical_block,scope,1633071,1996232,-363161,-18.192324,18,18,bench_l_s2_h_ins_1024::labeled_relocate_leaf_physical_block,2.10 M,2100000,-22.234714,18,
+bench_l_s2_h_ins_1024::labeled_vertex_build_resident_buckets,scope,12055,11864,191,1.609912,18,18,bench_l_s2_h_ins_1024::labeled_vertex_build_resident_buckets,11.39 K,11390,5.838455,18,
+bench_l_s2_h_ins_1024::labeled_vertex_calculate_bucket_positions,scope,18504,18753,-249,-1.327788,18,18,bench_l_s2_h_ins_1024::labeled_vertex_calculate_bucket_positions,19.26 K,19260,-3.925234,18,
+bench_l_s2_h_ins_1024::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_l_s2_h_ins_1024::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_l_s2_h_ins_1024::labeled_vertex_prepare_edge_buffer,scope,5922,5937,-15,-0.252653,18,18,bench_l_s2_h_ins_1024::labeled_vertex_prepare_edge_buffer,5937,5937,-0.252653,18,
+bench_l_s2_h_ins_1024::labeled_vertex_update_accounting,scope,24779,24353,426,1.749271,18,18,bench_l_s2_h_ins_1024::labeled_vertex_update_accounting,24.33 K,24330,1.845458,18,
+bench_l_s2_h_ins_1024::labeled_vertex_write_bucket_row,scope,13608,13698,-90,-0.657030,18,18,bench_l_s2_h_ins_1024::labeled_vertex_write_bucket_row,12.92 K,12920,5.325077,18,
+bench_l_s2_h_ins_1024::labeled_vertex_write_edge_run,scope,10656,75140,-64484,-85.818472,18,18,bench_l_s2_h_ins_1024::labeled_vertex_write_edge_run,75.14 K,75140,-85.818472,18,
+bench_l_s2_h_ins_1024::labeled_vertex_write_edge_runs,scope,84348,161070,-76722,-47.632706,18,18,bench_l_s2_h_ins_1024::labeled_vertex_write_edge_runs,162.02 K,162020,-47.939761,18,
+bench_l_s2_h_pt_d_1024,total,17041455,17121984,-80529,-0.470325,,,bench_l_s2_h_pt_d_1024,17.77 M,17770000,-4.099859,,
+bench_l_s2_h_scn_d_1024,total,16988772,17069301,-80529,-0.471777,,,bench_l_s2_h_scn_d_1024,17.72 M,17720000,-4.126569,,
+bench_l_s2_iso_256,total,2631614,3301214,-669600,-20.283447,,,bench_l_s2_iso_256,3.28 M,3280000,-19.767866,,
+bench_l_s2_iso_256::labeled_insert_new_label_bucket,scope,74111,89790,-15679,-17.461855,1,1,bench_l_s2_iso_256::labeled_insert_new_label_bucket,89.28 K,89280,-16.990367,1,
+bench_l_s2_iso_256::labeled_leaf_allocate_span,scope,76784,82744,-5960,-7.202939,5,5,bench_l_s2_iso_256::labeled_leaf_allocate_span,82.74 K,82740,-7.198453,5,
+bench_l_s2_iso_256::labeled_leaf_calculate_positions,scope,9022,9020,2,0.022173,8,8,bench_l_s2_iso_256::labeled_leaf_calculate_positions,9146,9146,-1.355784,8,
+bench_l_s2_iso_256::labeled_leaf_collect_slices,scope,55942,62589,-6647,-10.620077,8,8,bench_l_s2_iso_256::labeled_leaf_collect_slices,69.55 K,69550,-19.565780,8,
+bench_l_s2_iso_256::labeled_leaf_materialize_plans,scope,95780,123280,-27500,-22.306944,3,3,bench_l_s2_iso_256::labeled_leaf_materialize_plans,122.24 K,122240,-21.645942,3,
+bench_l_s2_iso_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_s2_iso_256::labeled_leaf_release_log_segment,20.89 K,20890,,8,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_iso_256::labeled_leaf_release_old_footprint,scope,72228,72228,0,0.000000,5,5,bench_l_s2_iso_256::labeled_leaf_release_old_footprint,72.23 K,72230,-0.002769,5,
+bench_l_s2_iso_256::labeled_leaf_stream_disjoint_relocation,scope,148986,191466,-42480,-22.186707,5,5,bench_l_s2_iso_256::labeled_leaf_stream_disjoint_relocation,201.83 K,201830,-26.182431,5,
+bench_l_s2_iso_256::labeled_leaf_try_expand_in_place,scope,102580,102580,0,0.000000,8,8,bench_l_s2_iso_256::labeled_leaf_try_expand_in_place,102.58 K,102580,0.000000,8,
+bench_l_s2_iso_256::labeled_leaf_weighted_slide_commit,scope,389232,464750,-75518,-16.249166,8,8,bench_l_s2_iso_256::labeled_leaf_weighted_slide_commit,474.37 K,474370,-17.947594,8,
+bench_l_s2_iso_256::labeled_rebalance_leaf_cascade,scope,894736,982389,-87653,-8.922433,8,8,bench_l_s2_iso_256::labeled_rebalance_leaf_cascade,1.03 M,1030000,-13.132427,8,
+bench_l_s2_iso_256::labeled_relocate_leaf_physical_block,scope,826433,913948,-87515,-9.575490,8,8,bench_l_s2_iso_256::labeled_relocate_leaf_physical_block,967.88 K,967880,-14.614105,8,
+bench_l_s2_iso_256::labeled_vertex_build_resident_buckets,scope,5571,5449,122,2.238943,8,8,bench_l_s2_iso_256::labeled_vertex_build_resident_buckets,5069,5069,9.903334,8,
+bench_l_s2_iso_256::labeled_vertex_calculate_bucket_positions,scope,8217,8332,-115,-1.380221,8,8,bench_l_s2_iso_256::labeled_vertex_calculate_bucket_positions,8560,8560,-4.007009,8,
+bench_l_s2_iso_256::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_l_s2_iso_256::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_l_s2_iso_256::labeled_vertex_prepare_edge_buffer,scope,2632,2647,-15,-0.566679,8,8,bench_l_s2_iso_256::labeled_vertex_prepare_edge_buffer,2647,2647,-0.566679,8,
+bench_l_s2_iso_256::labeled_vertex_update_accounting,scope,11019,10880,139,1.277574,8,8,bench_l_s2_iso_256::labeled_vertex_update_accounting,10.69 K,10690,3.077643,8,
+bench_l_s2_iso_256::labeled_vertex_write_bucket_row,scope,6048,6088,-40,-0.657030,8,8,bench_l_s2_iso_256::labeled_vertex_write_bucket_row,5744,5744,5.292479,8,
+bench_l_s2_iso_256::labeled_vertex_write_edge_run,scope,4736,14920,-10184,-68.257373,8,8,bench_l_s2_iso_256::labeled_vertex_write_edge_run,14.92 K,14920,-68.257373,8,
+bench_l_s2_iso_256::labeled_vertex_write_edge_runs,scope,36207,54332,-18125,-33.359714,8,8,bench_l_s2_iso_256::labeled_vertex_write_edge_runs,54.98 K,54980,-34.145144,8,
+bench_l_s2_sat_256,total,6176535,7497209,-1320674,-17.615542,,,bench_l_s2_sat_256,7.84 M,7840000,-21.217666,,
+bench_l_s2_sat_256::labeled_insert_new_label_bucket,scope,335113,366693,-31580,-8.612109,1,1,bench_l_s2_sat_256::labeled_insert_new_label_bucket,364.70 K,364700,-8.112695,1,
+bench_l_s2_sat_256::labeled_leaf_allocate_span,scope,79948,85908,-5960,-6.937654,5,5,bench_l_s2_sat_256::labeled_leaf_allocate_span,85.91 K,85910,-6.939821,5,
+bench_l_s2_sat_256::labeled_leaf_calculate_positions,scope,45521,45388,133,0.293029,7,7,bench_l_s2_sat_256::labeled_leaf_calculate_positions,45.38 K,45380,0.310710,7,
+bench_l_s2_sat_256::labeled_leaf_collect_slices,scope,239556,407834,-168278,-41.261396,7,7,bench_l_s2_sat_256::labeled_leaf_collect_slices,422.41 K,422410,-43.288274,7,
+bench_l_s2_sat_256::labeled_leaf_materialize_plans,scope,892229,1026764,-134535,-13.102816,2,2,bench_l_s2_sat_256::labeled_leaf_materialize_plans,1.03 M,1030000,-13.375825,2,
+bench_l_s2_sat_256::labeled_leaf_release_log_segment,scope,,,,,,,bench_l_s2_sat_256::labeled_leaf_release_log_segment,349.97 K,349970,,7,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_l_s2_sat_256::labeled_leaf_release_old_footprint,scope,88379,88411,-32,-0.036195,5,5,bench_l_s2_sat_256::labeled_leaf_release_old_footprint,88.30 K,88300,0.089468,5,
+bench_l_s2_sat_256::labeled_leaf_stream_disjoint_relocation,scope,2231864,2428284,-196420,-8.088840,5,5,bench_l_s2_sat_256::labeled_leaf_stream_disjoint_relocation,2.48 M,2480000,-10.005484,5,
+bench_l_s2_sat_256::labeled_leaf_try_expand_in_place,scope,73463,73463,0,0.000000,7,7,bench_l_s2_sat_256::labeled_leaf_try_expand_in_place,73.46 K,73460,0.004084,7,
+bench_l_s2_sat_256::labeled_leaf_weighted_slide_commit,scope,3542142,4041453,-499311,-12.354740,7,7,bench_l_s2_sat_256::labeled_leaf_weighted_slide_commit,4.11 M,4110000,-13.816496,7,
+bench_l_s2_sat_256::labeled_rebalance_leaf_cascade,scope,4182649,4851480,-668831,-13.786123,7,7,bench_l_s2_sat_256::labeled_rebalance_leaf_cascade,5.29 M,5290000,-20.932911,7,
+bench_l_s2_sat_256::labeled_relocate_leaf_physical_block,scope,4145552,4814383,-668831,-13.892351,7,7,bench_l_s2_sat_256::labeled_relocate_leaf_physical_block,5.26 M,5260000,-21.187224,7,
+bench_l_s2_sat_256::labeled_vertex_build_resident_buckets,scope,71591,71565,26,0.036331,112,112,bench_l_s2_sat_256::labeled_vertex_build_resident_buckets,71.12 K,71120,0.662261,112,
+bench_l_s2_sat_256::labeled_vertex_calculate_bucket_positions,scope,115192,116318,-1126,-0.968036,112,112,bench_l_s2_sat_256::labeled_vertex_calculate_bucket_positions,119.89 K,119890,-3.918592,112,
+bench_l_s2_sat_256::labeled_vertex_encode_edge_run,scope,,58720,,,,6,bench_l_s2_sat_256::labeled_vertex_encode_edge_run,60.12 K,60120,,6,not observed in 5ad run; not zero
+bench_l_s2_sat_256::labeled_vertex_prepare_edge_buffer,scope,36848,36938,-90,-0.243652,112,112,bench_l_s2_sat_256::labeled_vertex_prepare_edge_buffer,36.94 K,36940,-0.249053,112,
+bench_l_s2_sat_256::labeled_vertex_update_accounting,scope,121554,118969,2585,2.172835,112,112,bench_l_s2_sat_256::labeled_vertex_update_accounting,117.99 K,117990,3.020595,112,
+bench_l_s2_sat_256::labeled_vertex_write_bucket_row,scope,84672,85232,-560,-0.657030,112,112,bench_l_s2_sat_256::labeled_vertex_write_bucket_row,80.42 K,80420,5.287242,112,
+bench_l_s2_sat_256::labeled_vertex_write_edge_run,scope,66424,73648,-7224,-9.808820,112,112,bench_l_s2_sat_256::labeled_vertex_write_edge_run,73.65 K,73650,-9.811270,112,
+bench_l_s2_sat_256::labeled_vertex_write_edge_runs,scope,493262,576653,-83391,-14.461210,112,112,bench_l_s2_sat_256::labeled_vertex_write_edge_runs,596.43 K,596430,-17.297587,112,
+bench_l_uo_swap_h_del_1024,total,240737,243982,-3245,-1.330016,,,bench_l_uo_swap_h_del_1024,243.80 K,243800,-1.256358,,
+bench_l_uo_swap_h_del_1024::labeled_unordered_swap_compact_half_deleted,scope,239779,243024,-3245,-1.335259,1,1,bench_l_uo_swap_h_del_1024::labeled_unordered_swap_compact_half_deleted,242.84 K,242840,-1.260501,1,
+bench_l_uo_tomb_h_del_1024,total,5764,7432,-1668,-22.443488,,,bench_l_uo_tomb_h_del_1024,7255,7255,-20.551344,,
+bench_l_uo_tomb_h_del_1024::labeled_unordered_tombstone_reuse_half_deleted,scope,4806,6384,-1578,-24.718045,1,1,bench_l_uo_tomb_h_del_1024::labeled_unordered_tombstone_reuse_half_deleted,6207,6207,-22.571290,1,
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,total,15498702117,43376650,15455325467,35630.518878,,,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,15.54 B,15540000000,-0.265752,,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_finalize,scope,1440,1439,1,0.069493,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_finalize,1428,1428,0.840336,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_read_and_plan,7344,7344,-40.740741,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_build_resident_buckets,scope,641,639,2,0.312989,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_build_resident_buckets,632,632,1.424051,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_calculate_bucket_positions,1070,1070,-3.831776,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_encode_edge_run,scope,,359587,,,,1,,,,,,main compaction policy differs; total not operation-equivalent; not observed in 5ad run; not zero; no same-name rounded-main observation
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_prepare_edge_buffer,scope,329,344,-15,-4.360465,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_prepare_edge_buffer,329,329,0.000000,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_update_accounting,scope,1389,1367,22,1.609364,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_update_accounting,1335,1335,4.044944,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_bucket_row,718,718,5.292479,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_run,scope,82502,82526,-24,-0.029082,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_run,82.50 K,82500,0.002424,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_runs,scope,85335,362948,-277613,-76.488367,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_runs,85.31 K,85310,0.029305,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096,total,7592601,990340635,-982748034,-99.233334,,,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096,989.95 M,989950000,-99.233032,,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_rewrite_finalize,1428,1428,0.840336,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_rewrite_read_and_plan,7344,7344,-40.740741,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_build_resident_buckets,scope,639,641,-2,-0.312012,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_build_resident_buckets,632,632,1.107595,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_calculate_bucket_positions,1070,1070,-3.831776,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_encode_edge_run,scope,92323,,,,1,,,,,,,main compaction policy differs; total not operation-equivalent; not observed in historical run; not zero; no same-name rounded-main observation
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_prepare_edge_buffer,scope,344,329,15,4.559271,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_prepare_edge_buffer,329,329,4.559271,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_update_accounting,scope,1389,1368,21,1.535088,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_update_accounting,1335,1335,4.044944,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_bucket_row,718,718,5.292479,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_edge_run,scope,21086,21062,24,0.113949,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_edge_run,21.06 K,21060,0.123457,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_edge_runs,scope,95693,23891,71802,300.539952,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_write_edge_runs,23.87 K,23870,300.892333,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536,total,247215140133,247370209604,-155069471,-0.062687,,,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536,247.36 B,247360000000,-0.058562,,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_rewrite_finalize,scope,1440,1439,1,0.069493,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_rewrite_finalize,1428,1428,0.840336,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_rewrite_read_and_plan,7344,7344,-40.740741,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_build_resident_buckets,scope,641,641,0,0.000000,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_build_resident_buckets,632,632,1.424051,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_calculate_bucket_positions,1070,1070,-3.831776,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_prepare_edge_buffer,scope,329,329,0,0.000000,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_prepare_edge_buffer,329,329,0.000000,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_update_accounting,scope,1389,1367,22,1.609364,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_update_accounting,1335,1335,4.044944,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_bucket_row,718,718,5.292479,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_edge_run,scope,328262,328262,0,0.000000,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_edge_run,328.26 K,328260,0.000609,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_edge_runs,scope,331095,331091,4,0.001208,1,1,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536::labeled_vertex_write_edge_runs,331.07 K,331070,0.007551,1,main compaction policy differs; total not operation-equivalent
+bench_labeled_stage2_hub_insert_grow_16384,total,98938418,149338803,-50400385,-33.749022,,,bench_labeled_stage2_hub_insert_grow_16384,145.44 M,145440000,-31.973035,,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_labeled_stage2_hub_insert_grow_16384::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_allocate_span,scope,263880,280470,-16590,-5.915071,16,16,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_allocate_span,280.83 K,280830,-6.035680,16,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_calculate_positions,scope,46392,46228,164,0.354763,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_calculate_positions,46.37 K,46370,0.047444,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_collect_slices,scope,106689,167409,-60720,-36.270451,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_collect_slices,170.46 K,170460,-37.411123,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_materialize_plans,scope,4033324,4238211,-204887,-4.834280,25,25,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_materialize_plans,4.23 M,4230000,-4.649551,25,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_release_log_segment,scope,,,,,,,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_release_log_segment,55.73 K,55730,,41,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_release_old_footprint,scope,250724,250724,0,0.000000,16,16,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_release_old_footprint,250.73 K,250730,-0.002393,16,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_stream_disjoint_relocation,scope,2161279,2319961,-158682,-6.839856,16,16,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_stream_disjoint_relocation,2.33 M,2330000,-7.241245,16,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_try_expand_in_place,scope,794847,794847,0,0.000000,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_try_expand_in_place,794.85 K,794850,-0.000377,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_weighted_slide_commit,scope,6747033,7174321,-427288,-5.955797,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_leaf_weighted_slide_commit,7.16 M,7160000,-5.767696,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_rebalance_leaf_cascade,scope,8742589,9243224,-500635,-5.416238,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_rebalance_leaf_cascade,9.43 M,9430000,-7.289618,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_relocate_leaf_physical_block,scope,8562747,9063150,-500403,-5.521292,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_relocate_leaf_physical_block,9.26 M,9260000,-7.529730,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_build_resident_buckets,scope,26798,27175,-377,-1.387305,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_build_resident_buckets,25.93 K,25930,3.347474,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_calculate_bucket_positions,scope,42171,42612,-441,-1.034920,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_calculate_bucket_positions,43.93 K,43930,-4.004097,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_prepare_edge_buffer,scope,13489,13504,-15,-0.111078,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_prepare_edge_buffer,13.50 K,13500,-0.081481,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_update_accounting,scope,56726,55679,1047,1.880422,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_update_accounting,55.57 K,55570,2.080259,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_bucket_row,scope,30996,31201,-205,-0.657030,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_bucket_row,29.44 K,29440,5.285326,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_edge_run,scope,1256202,1320686,-64484,-4.882614,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_edge_run,1.32 M,1320000,-4.833182,41,
+bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_edge_runs,scope,1423451,1510818,-87367,-5.782761,41,41,bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_write_edge_runs,1.51 M,1510000,-5.731722,41,
+bench_labeled_stage2_hub_insert_grow_4096,total,27919183,39461970,-11542787,-29.250407,,,bench_labeled_stage2_hub_insert_grow_4096,38.57 M,38570000,-27.614252,,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_labeled_stage2_hub_insert_grow_4096::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_allocate_span,scope,213959,227569,-13610,-5.980604,13,13,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_allocate_span,227.93 K,227930,-6.129513,13,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_calculate_positions,scope,34017,33836,181,0.534933,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_calculate_positions,33.96 K,33960,0.167845,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_collect_slices,scope,79035,122848,-43813,-35.664398,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_collect_slices,126.98 K,126980,-37.757915,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_materialize_plans,scope,1171954,1356676,-184722,-13.615779,17,17,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_materialize_plans,1.35 M,1350000,-13.188593,17,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_release_log_segment,scope,,,,,,,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_release_log_segment,42.77 K,42770,,30,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_release_old_footprint,scope,195658,195658,0,0.000000,13,13,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_release_old_footprint,195.66 K,195660,-0.001022,13,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_stream_disjoint_relocation,scope,824513,976114,-151601,-15.531075,13,13,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_stream_disjoint_relocation,986.23 K,986230,-16.397493,13,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_try_expand_in_place,scope,542901,542901,0,0.000000,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_try_expand_in_place,542.90 K,542900,0.000184,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_weighted_slide_commit,scope,2402576,2784788,-382212,-13.724995,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_leaf_weighted_slide_commit,2.78 M,2780000,-13.576403,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_rebalance_leaf_cascade,scope,3866672,4303067,-436395,-10.141487,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_rebalance_leaf_cascade,4.45 M,4450000,-13.108494,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_relocate_leaf_physical_block,scope,3734864,4170749,-435885,-10.451001,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_relocate_leaf_physical_block,4.32 M,4320000,-13.544815,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_build_resident_buckets,scope,19747,19680,67,0.340447,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_build_resident_buckets,18.98 K,18980,4.041096,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_calculate_bucket_positions,scope,30852,31205,-353,-1.131229,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_calculate_bucket_positions,32.16 K,32160,-4.067164,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_prepare_edge_buffer,scope,9870,9885,-15,-0.151745,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_prepare_edge_buffer,9885,9885,-0.151745,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_update_accounting,scope,41447,40769,678,1.663028,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_update_accounting,40.64 K,40640,1.985728,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_bucket_row,scope,22680,22830,-150,-0.657030,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_bucket_row,21.54 K,21540,5.292479,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_edge_run,scope,286760,351244,-64484,-18.358748,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_edge_run,351.24 K,351240,-18.357818,30,
+bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_edge_runs,scope,408116,490370,-82254,-16.773865,30,30,bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_write_edge_runs,491.03 K,491030,-16.885730,30,
+bench_labeled_stage2_hub_insert_grow_65536,total,392882229,598521840,-205639611,-34.357913,,,bench_labeled_stage2_hub_insert_grow_65536,582.47 M,582470000,-32.548933,,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_insert_new_label_bucket,scope,65816,81480,-15664,-19.224350,1,1,bench_labeled_stage2_hub_insert_grow_65536::labeled_insert_new_label_bucket,81.14 K,81140,-18.885876,1,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_allocate_span,scope,12110501,12130071,-19570,-0.161335,19,19,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_allocate_span,12.13 M,12130000,-0.160750,19,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_calculate_positions,scope,59913,59785,128,0.214101,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_calculate_positions,59.91 K,59910,0.005008,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_collect_slices,scope,136857,215529,-78672,-36.501816,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_collect_slices,217.88 K,217880,-37.186984,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_materialize_plans,scope,16812666,17038241,-225575,-1.323934,34,34,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_materialize_plans,17.02 M,17020000,-1.218179,34,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_release_log_segment,scope,,,,,,,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_release_log_segment,69.86 K,69860,,53,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_release_old_footprint,scope,305959,305959,0,0.000000,19,19,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_release_old_footprint,305.96 K,305960,-0.000327,19,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_stream_disjoint_relocation,scope,6322594,6488504,-165910,-2.556984,19,19,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_stream_disjoint_relocation,6.50 M,6500000,-2.729323,19,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_try_expand_in_place,scope,1078250,1078250,0,0.000000,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_try_expand_in_place,1.08 M,1080000,-0.162037,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_weighted_slide_commit,scope,23847472,24320527,-473055,-1.945085,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_leaf_weighted_slide_commit,24.30 M,24300000,-1.862255,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_rebalance_leaf_cascade,scope,38213996,38780993,-566997,-1.462049,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_rebalance_leaf_cascade,39.01 M,39010000,-2.040513,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_relocate_leaf_physical_block,scope,37984306,38551071,-566765,-1.470167,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_relocate_leaf_physical_block,38.79 M,38790000,-2.077066,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_build_resident_buckets,scope,34490,35237,-747,-2.119931,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_build_resident_buckets,33.51 K,33510,2.924500,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_calculate_bucket_positions,scope,54519,55065,-546,-0.991555,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_calculate_bucket_positions,56.77 K,56770,-3.965122,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_encode_edge_run,scope,,5052,,,,1,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_encode_edge_run,5052,5052,,1,not observed in 5ad run; not zero
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_prepare_edge_buffer,scope,17437,17452,-15,-0.085950,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_prepare_edge_buffer,17.45 K,17450,-0.074499,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_update_accounting,scope,73394,71980,1414,1.964435,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_update_accounting,71.87 K,71870,2.120495,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_bucket_row,scope,40068,40333,-265,-0.657030,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_bucket_row,38.05 K,38050,5.303548,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_edge_run,scope,5407506,5471990,-64484,-1.178438,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_edge_run,5.47 M,5470000,-1.142486,53,
+bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_edge_runs,scope,5622419,5715318,-92899,-1.625439,53,53,bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_write_edge_runs,5.72 M,5720000,-1.705962,53,
+bench_r_ct_gs_i_1024,total,560378,560378,0,0.000000,,,bench_r_ct_gs_i_1024,560.38 K,560380,-0.000357,,
+bench_r_ct_gs_i_1024::lara_counts_get_set_iter,scope,559409,559409,0,0.000000,1,1,bench_r_ct_gs_i_1024::lara_counts_get_set_iter,559.41 K,559410,-0.000179,1,
+bench_r_ct_pp_1024,total,491669,491669,0,0.000000,,,bench_r_ct_pp_1024,491.67 K,491670,-0.000203,,
+bench_r_ct_pp_1024::lara_counts_push_plain,scope,490726,490726,0,0.000000,1,1,bench_r_ct_pp_1024::lara_counts_push_plain,490.73 K,490730,-0.000815,1,
+bench_r_ed_lwr_1024,total,1093567,1093567,0,0.000000,,,bench_r_ed_lwr_1024,1.12 M,1120000,-2.360089,,
+bench_r_ed_lwr_1024::lara_edge_log_write_read_release,scope,1092593,1092593,0,0.000000,1,1,bench_r_ed_lwr_1024::lara_edge_log_write_read_release,1.12 M,1120000,-2.447054,1,
+bench_r_ed_st_d_oi_lb_128,total,21024,21024,0,0.000000,,,bench_r_ed_st_d_oi_lb_128,27.09 K,27090,-22.392027,,
+bench_r_ed_st_d_oi_lb_128::lara_edge_store_desc_out_edges_iter_log_backed,scope,20046,20046,0,0.000000,1,1,bench_r_ed_st_d_oi_lb_128::lara_edge_store_desc_out_edges_iter_log_backed,26.12 K,26120,-23.254211,1,
+bench_r_ed_st_ls_128,total,322264,361850,-39586,-10.939892,,,bench_r_ed_st_ls_128,346.75 K,346750,-7.061572,,
+bench_r_ed_st_ls_128::lara_edge_store_log_spill,scope,321303,360889,-39586,-10.969024,1,1,bench_r_ed_st_ls_128::lara_edge_store_log_spill,345.79 K,345790,-7.081466,1,
+bench_r_ed_st_oi_1024,total,157626,157626,0,0.000000,,,bench_r_ed_st_oi_1024,157.67 K,157670,-0.027906,,
+bench_r_ed_st_oi_1024::lara_edge_store_out_edges_iter,scope,156638,156638,0,0.000000,1,1,bench_r_ed_st_oi_1024::lara_edge_store_out_edges_iter,156.68 K,156680,-0.026806,1,
+bench_r_ed_st_oi_col_1024,total,66537,66537,0,0.000000,,,bench_r_ed_st_oi_col_1024,66.58 K,66580,-0.064584,,
+bench_r_ed_st_oi_col_1024::lara_edge_store_out_edges_collect,scope,65561,65561,0,0.000000,1,1,bench_r_ed_st_oi_col_1024::lara_edge_store_out_edges_collect,65.60 K,65600,-0.059451,1,
+bench_r_ed_st_oi_lb_128,total,29313,29313,0,0.000000,,,bench_r_ed_st_oi_lb_128,35.38 K,35380,-17.148106,,
+bench_r_ed_st_oi_lb_128::lara_edge_store_out_edges_iter_log_backed,scope,28325,28325,0,0.000000,1,1,bench_r_ed_st_oi_lb_128::lara_edge_store_out_edges_iter_log_backed,34.39 K,34390,-17.635941,1,
+bench_r_ed_st_si_1024,total,2059778,2014690,45088,2.237962,,,bench_r_ed_st_si_1024,2.17 M,2170000,-5.079355,,
+bench_r_ed_st_si_1024::lara_edge_store_slab_insert,scope,2058835,2013747,45088,2.239010,1,1,bench_r_ed_st_si_1024::lara_edge_store_slab_insert,2.17 M,2170000,-5.122811,1,
+bench_r_ed_swr_1024,total,352470,352470,0,0.000000,,,bench_r_ed_swr_1024,352.47 K,352470,0.000000,,
+bench_r_ed_swr_1024::lara_edge_slab_write_read,scope,351507,351507,0,0.000000,1,1,bench_r_ed_swr_1024::lara_edge_slab_write_read,351.51 K,351510,-0.000853,1,
+bench_r_fs_bff_sc_256,total,3650548,3650548,0,0.000000,,,bench_r_fs_bff_sc_256,3.65 M,3650000,0.015014,,
+bench_r_fs_bff_sc_256::lara_free_span_store_best_fit_fallback_scan,scope,3649583,3649583,0,0.000000,1,1,bench_r_fs_bff_sc_256::lara_free_span_store_best_fit_fallback_scan,3.65 M,3650000,-0.011425,1,
+bench_r_fs_bff_sc_4096,total,58086468,58086468,0,0.000000,,,bench_r_fs_bff_sc_4096,58.09 M,58090000,-0.006080,,
+bench_r_fs_bff_sc_4096::lara_free_span_store_best_fit_fallback_scan,scope,58085423,58085423,0,0.000000,1,1,bench_r_fs_bff_sc_4096::lara_free_span_store_best_fit_fallback_scan,58.09 M,58090000,-0.007879,1,
+bench_r_fs_lbin_256,total,1598771,1598771,0,0.000000,,,bench_r_fs_lbin_256,1.60 M,1600000,-0.076813,,
+bench_r_fs_lbin_256::lara_free_span_largest_bin_recovery,scope,1597806,1597806,0,0.000000,1,1,bench_r_fs_lbin_256::lara_free_span_largest_bin_recovery,1.60 M,1600000,-0.137125,1,
+bench_r_fs_lbin_4096,total,5084163,5084163,0,0.000000,,,bench_r_fs_lbin_4096,5.08 M,5080000,0.081949,,
+bench_r_fs_lbin_4096::lara_free_span_largest_bin_recovery,scope,5083118,5083118,0,0.000000,1,1,bench_r_fs_lbin_4096::lara_free_span_largest_bin_recovery,5.08 M,5080000,0.061378,1,
+bench_r_fs_rel_1024,total,219013,219013,0,0.000000,,,bench_r_fs_rel_1024,219.01 K,219010,0.001370,,
+bench_r_fs_rel_1024::lara_free_span_release_coalesce,scope,218027,218027,0,0.000000,1,1,bench_r_fs_rel_1024::lara_free_span_release_coalesce,218.03 K,218030,-0.001376,1,
+bench_r_fs_ro_1024,total,2870946,2870946,0,0.000000,,,bench_r_fs_ro_1024,2.87 M,2870000,0.032962,,
+bench_r_fs_ro_1024::lara_free_span_store_reopen,scope,2869971,2869971,0,0.000000,1,1,bench_r_fs_ro_1024::lara_free_span_store_reopen,2.87 M,2870000,-0.001010,1,
+bench_r_fs_ro_16384,total,47721942,47721942,0,0.000000,,,bench_r_fs_ro_16384,47.72 M,47720000,0.004070,,
+bench_r_fs_ro_16384::lara_free_span_store_reopen,scope,47720967,47720967,0,0.000000,1,1,bench_r_fs_ro_16384::lara_free_span_store_reopen,47.72 M,47720000,0.002026,1,
+bench_r_fs_ro_256,total,712377,712377,0,0.000000,,,bench_r_fs_ro_256,712.38 K,712380,-0.000421,,
+bench_r_fs_ro_256::lara_free_span_store_reopen,scope,711402,711402,0,0.000000,1,1,bench_r_fs_ro_256::lara_free_span_store_reopen,711.40 K,711400,0.000281,1,
+bench_r_fs_ro_262144,total,796907381,796907381,0,0.000000,,,bench_r_fs_ro_262144,796.91 M,796910000,-0.000329,,
+bench_r_fs_ro_262144::lara_free_span_store_reopen,scope,796906406,796906406,0,0.000000,1,1,bench_r_fs_ro_262144::lara_free_span_store_reopen,796.91 M,796910000,-0.000451,1,
+bench_r_fs_ro_4096,total,11604645,11604645,0,0.000000,,,bench_r_fs_ro_4096,11.60 M,11600000,0.040043,,
+bench_r_fs_ro_4096::lara_free_span_store_reopen,scope,11603670,11603670,0,0.000000,1,1,bench_r_fs_ro_4096::lara_free_span_store_reopen,11.60 M,11600000,0.031638,1,
+bench_r_fs_ro_65536,total,195025378,195025378,0,0.000000,,,bench_r_fs_ro_65536,195.03 M,195030000,-0.002370,,
+bench_r_fs_ro_65536::lara_free_span_store_reopen,scope,195024403,195024403,0,0.000000,1,1,bench_r_fs_ro_65536::lara_free_span_store_reopen,195.02 M,195020000,0.002258,1,
+bench_r_fs_tkbfs_1024,total,1519282,1519282,0,0.000000,,,bench_r_fs_tkbfs_1024,1.52 M,1520000,-0.047237,,
+bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split,scope,1518321,1518321,0,0.000000,1,1,bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split,1.52 M,1520000,-0.110461,1,
+bench_r_fs_tkbfs_256,total,1805705,1805705,0,0.000000,,,bench_r_fs_tkbfs_256,1.81 M,1810000,-0.237293,,
+bench_r_fs_tkbfs_256::lara_free_span_store_take_best_fit_split,scope,1804744,1804744,0,0.000000,1,1,bench_r_fs_tkbfs_256::lara_free_span_store_take_best_fit_split,1.80 M,1800000,0.263556,1,
+bench_r_fs_tkbfs_4096,total,1833263,1833263,0,0.000000,,,bench_r_fs_tkbfs_4096,1.83 M,1830000,0.178306,,
+bench_r_fs_tkbfs_4096::lara_free_span_store_take_best_fit_split,scope,1832222,1832222,0,0.000000,1,1,bench_r_fs_tkbfs_4096::lara_free_span_store_take_best_fit_split,1.83 M,1830000,0.121421,1,
+bench_r_sl_ps_1,total,34345,34345,0,0.000000,,,bench_r_sl_ps_1,34.34 K,34340,0.014560,,
+bench_r_sl_ps_1::lara_slab_patch_sparse,scope,33375,33375,0,0.000000,1,1,bench_r_sl_ps_1::lara_slab_patch_sparse,33.38 K,33380,-0.014979,1,
+bench_r_sl_wc_1,total,5552,5552,0,0.000000,,,bench_r_sl_wc_1,5552,5552,0.000000,,
+bench_r_sl_wc_1::lara_slab_write_contig,scope,4609,4609,0,0.000000,1,1,bench_r_sl_wc_1::lara_slab_write_contig,4609,4609,0.000000,1,
+bench_r_sl_wc_24,total,26028,26028,0,0.000000,,,bench_r_sl_wc_24,26.03 K,26030,-0.007683,,
+bench_r_sl_wc_24::lara_slab_write_contig_24b,scope,25085,25085,0,0.000000,1,1,bench_r_sl_wc_24::lara_slab_write_contig_24b,25.09 K,25090,-0.019928,1,
+bench_r_sl_ws_1,total,252141,252141,0,0.000000,,,bench_r_sl_ws_1,252.14 K,252140,0.000397,,
+bench_r_sl_ws_1::lara_slab_write_single,scope,251176,251176,0,0.000000,1,1,bench_r_sl_ws_1::lara_slab_write_single,251.18 K,251180,-0.001592,1,
+bench_r_sp_pgs_ro_1024,total,817353,817353,0,0.000000,,,bench_r_sp_pgs_ro_1024,817.35 K,817350,0.000367,,
+bench_r_sp_pgs_ro_1024::lara_span_meta_push_get_set_reopen,scope,816390,816390,0,0.000000,1,1,bench_r_sp_pgs_ro_1024::lara_span_meta_push_get_set_reopen,816.39 K,816390,0.000000,1,
+bench_r_vx_gs_1024,total,726245,726245,0,0.000000,,,bench_r_vx_gs_1024,730.34 K,730340,-0.560698,,
+bench_r_vx_gs_1024::lara_vertex_get_set,scope,725282,725282,0,0.000000,1,1,bench_r_vx_gs_1024::lara_vertex_get_set,729.38 K,729380,-0.561847,1,
+bench_r_vx_p_1024,total,759941,759941,0,0.000000,,,bench_r_vx_p_1024,759.94 K,759940,0.000132,,
+bench_r_vx_p_1024::lara_vertex_push,scope,758978,758978,0,0.000000,1,1,bench_r_vx_p_1024::lara_vertex_push,758.98 K,758980,-0.000264,1,
+bench_remove_churn_accumulation,total,9354384,9949814,-595430,-5.984333,,,bench_remove_churn_accumulation,10.08 M,10080000,-7.198571,,
+bench_remove_churn_accumulation::labeled_compact_label_bucket_vertex_segment,scope,51805,64345,-12540,-19.488694,1,1,bench_remove_churn_accumulation::labeled_compact_label_bucket_vertex_segment,63.99 K,63990,-19.042038,1,
+bench_remove_churn_accumulation::labeled_insert_new_label_bucket,scope,3072356,3429054,-356698,-10.402228,17,17,bench_remove_churn_accumulation::labeled_insert_new_label_bucket,3.40 M,3400000,-9.636588,17,
+bench_remove_churn_accumulation::labeled_leaf_allocate_span,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_allocate_span,18.29 K,18290,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_calculate_positions,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_collect_slices,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_collect_slices,13.88 K,13880,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_release_log_segment,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_release_log_segment,12.63 K,12630,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_release_old_footprint,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_release_old_footprint,9202,9202,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_stream_disjoint_relocation,59.64 K,59640,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_try_expand_in_place,596,596,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_remove_churn_accumulation::labeled_leaf_weighted_slide_commit,84.38 K,84380,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_accumulation::labeled_remove_edge_skip_leaf,scope,206004,220143,-14139,-6.422643,18,18,bench_remove_churn_accumulation::labeled_remove_edge_skip_leaf,218.96 K,218960,-5.917062,18,
+bench_remove_churn_accumulation::labeled_rewrite_finalize,scope,2879,2879,0,0.000000,2,2,bench_remove_churn_accumulation::labeled_rewrite_finalize,3798,3798,-24.196946,3,
+bench_remove_churn_accumulation::labeled_rewrite_read_and_plan,scope,16748,23056,-6308,-27.359473,2,2,bench_remove_churn_accumulation::labeled_rewrite_read_and_plan,206.48 K,206480,-91.888803,4,
+bench_remove_churn_accumulation::labeled_vertex_build_resident_buckets,scope,1280,1280,0,0.000000,2,2,bench_remove_churn_accumulation::labeled_vertex_build_resident_buckets,2526,2526,-49.326999,4,
+bench_remove_churn_accumulation::labeled_vertex_calculate_bucket_positions,scope,2089,2109,-20,-0.948317,2,2,bench_remove_churn_accumulation::labeled_vertex_calculate_bucket_positions,4371,4371,-52.207733,4,
+bench_remove_churn_accumulation::labeled_vertex_encode_edge_run,scope,4494,4494,0,0.000000,1,1,bench_remove_churn_accumulation::labeled_vertex_encode_edge_run,5331,5331,-15.700619,1,
+bench_remove_churn_accumulation::labeled_vertex_prepare_edge_buffer,scope,673,673,0,0.000000,2,2,bench_remove_churn_accumulation::labeled_vertex_prepare_edge_buffer,1331,1331,-49.436514,4,
+bench_remove_churn_accumulation::labeled_vertex_update_accounting,scope,2754,2712,42,1.548673,2,2,bench_remove_churn_accumulation::labeled_vertex_update_accounting,4910,4910,-43.910387,4,
+bench_remove_churn_accumulation::labeled_vertex_write_bucket_row,scope,1512,1522,-10,-0.657030,2,2,bench_remove_churn_accumulation::labeled_vertex_write_bucket_row,2872,2872,-47.353760,4,
+bench_remove_churn_accumulation::labeled_vertex_write_edge_run,scope,1418,1418,0,0.000000,2,2,bench_remove_churn_accumulation::labeled_vertex_write_edge_run,2902,2902,-51.137147,4,
+bench_remove_churn_accumulation::labeled_vertex_write_edge_runs,scope,13229,13221,8,0.060510,2,2,bench_remove_churn_accumulation::labeled_vertex_write_edge_runs,26.27 K,26270,-49.642177,4,
+bench_remove_churn_bypass_accumulation,total,9445742,9905715,-459973,-4.643511,,,bench_remove_churn_bypass_accumulation,9.75 M,9750000,-3.120595,,
+bench_remove_churn_bypass_accumulation::labeled_compact_label_bucket_vertex_segment,scope,400841,433883,-33042,-7.615417,2,2,bench_remove_churn_bypass_accumulation::labeled_compact_label_bucket_vertex_segment,431.23 K,431230,-7.047051,2,
+bench_remove_churn_bypass_accumulation::labeled_insert_new_label_bucket,scope,3307154,3673330,-366176,-9.968503,16,16,bench_remove_churn_bypass_accumulation::labeled_insert_new_label_bucket,3.64 M,3640000,-9.144121,16,
+bench_remove_churn_bypass_accumulation::labeled_remove_edge_skip_leaf,scope,12006,12006,0,0.000000,18,18,bench_remove_churn_bypass_accumulation::labeled_remove_edge_skip_leaf,12.13 K,12130,-1.022259,18,
+bench_remove_churn_bypass_no_trigger,total,9436058,9896031,-459973,-4.648055,,,bench_remove_churn_bypass_no_trigger,9.74 M,9740000,-3.120554,,
+bench_remove_churn_bypass_no_trigger::labeled_compact_label_bucket_vertex_segment,scope,400841,433883,-33042,-7.615417,2,2,bench_remove_churn_bypass_no_trigger::labeled_compact_label_bucket_vertex_segment,431.23 K,431230,-7.047051,2,
+bench_remove_churn_bypass_no_trigger::labeled_insert_new_label_bucket,scope,3307154,3673330,-366176,-9.968503,16,16,bench_remove_churn_bypass_no_trigger::labeled_insert_new_label_bucket,3.64 M,3640000,-9.144121,16,
+bench_remove_churn_bypass_no_trigger::labeled_remove_edge_skip_leaf,scope,12006,12006,0,0.000000,18,18,bench_remove_churn_bypass_no_trigger::labeled_remove_edge_skip_leaf,12.13 K,12130,-1.022259,18,
+bench_remove_churn_bypass_spill_regime_probe,total,1436605365,1496767637,-60162272,-4.019480,,,bench_remove_churn_bypass_log_regime_probe,1.50 B,1500000000,-4.226309,,alias; both fixtures assert no active log/run
+bench_remove_churn_bypass_spill_regime_probe::labeled_compact_label_bucket_vertex_segment,scope,74307779,78878633,-4570854,-5.794794,159,159,bench_remove_churn_bypass_log_regime_probe::labeled_compact_label_bucket_vertex_segment,78.31 M,78310000,-5.110741,159,alias; both fixtures assert no active log/run
+bench_remove_churn_bypass_spill_regime_probe::labeled_insert_new_label_bucket,scope,546238860,595122985,-48884125,-8.214121,2432,2432,bench_remove_churn_bypass_log_regime_probe::labeled_insert_new_label_bucket,589.65 M,589650000,-7.362188,2432,alias; both fixtures assert no active log/run
+bench_remove_churn_bypass_spill_regime_probe::labeled_remove_edge_skip_leaf,scope,853760,853760,0,0.000000,1280,1280,bench_remove_churn_bypass_log_regime_probe::labeled_remove_edge_skip_leaf,862.72 K,862720,-1.038576,1280,alias; both fixtures assert no active log/run
+bench_remove_churn_no_trigger,total,9151423,9715332,-563909,-5.804320,,,bench_remove_churn_no_trigger,9.85 M,9850000,-7.092152,,
+bench_remove_churn_no_trigger::labeled_compact_label_bucket_vertex_segment,scope,51805,64345,-12540,-19.488694,1,1,bench_remove_churn_no_trigger::labeled_compact_label_bucket_vertex_segment,63.99 K,63990,-19.042038,1,
+bench_remove_churn_no_trigger::labeled_insert_new_label_bucket,scope,3072356,3429054,-356698,-10.402228,17,17,bench_remove_churn_no_trigger::labeled_insert_new_label_bucket,3.40 M,3400000,-9.636588,17,
+bench_remove_churn_no_trigger::labeled_leaf_allocate_span,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_allocate_span,18.29 K,18290,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_calculate_positions,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_collect_slices,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_collect_slices,13.88 K,13880,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_release_log_segment,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_release_log_segment,12.63 K,12630,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_release_old_footprint,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_release_old_footprint,9202,9202,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_stream_disjoint_relocation,59.64 K,59640,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_try_expand_in_place,596,596,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_remove_churn_no_trigger::labeled_leaf_weighted_slide_commit,84.38 K,84380,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_no_trigger::labeled_remove_edge_skip_leaf,scope,206004,220143,-14139,-6.422643,18,18,bench_remove_churn_no_trigger::labeled_remove_edge_skip_leaf,218.96 K,218960,-5.917062,18,
+bench_remove_churn_no_trigger::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,bench_remove_churn_no_trigger::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+bench_remove_churn_no_trigger::labeled_rewrite_read_and_plan,scope,8207,11361,-3154,-27.761641,1,1,bench_remove_churn_no_trigger::labeled_rewrite_read_and_plan,195.30 K,195300,-95.797747,3,
+bench_remove_churn_no_trigger::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,bench_remove_churn_no_trigger::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+bench_remove_churn_no_trigger::labeled_vertex_calculate_bucket_positions,scope,1060,1070,-10,-0.934579,1,1,bench_remove_churn_no_trigger::labeled_vertex_calculate_bucket_positions,3270,3270,-67.584098,3,
+bench_remove_churn_no_trigger::labeled_vertex_encode_edge_run,scope,4494,4494,0,0.000000,1,1,bench_remove_churn_no_trigger::labeled_vertex_encode_edge_run,5331,5331,-15.700619,1,
+bench_remove_churn_no_trigger::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,bench_remove_churn_no_trigger::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+bench_remove_churn_no_trigger::labeled_vertex_update_accounting,scope,1366,1345,21,1.561338,1,1,bench_remove_churn_no_trigger::labeled_vertex_update_accounting,3544,3544,-61.455982,3,
+bench_remove_churn_no_trigger::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,bench_remove_churn_no_trigger::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+bench_remove_churn_no_trigger::labeled_vertex_write_edge_run,scope,766,766,0,0.000000,1,1,bench_remove_churn_no_trigger::labeled_vertex_write_edge_run,2250,2250,-65.955556,3,
+bench_remove_churn_no_trigger::labeled_vertex_write_edge_runs,scope,8419,8415,4,0.047534,1,1,bench_remove_churn_no_trigger::labeled_vertex_write_edge_runs,20.75 K,20750,-59.426506,3,
+bench_remove_churn_trigger_cost,total,9161039,9726525,-565486,-5.813854,,,bench_remove_churn_trigger_cost,9.86 M,9860000,-7.088854,,
+bench_remove_churn_trigger_cost::labeled_compact_label_bucket_vertex_segment,scope,51805,64345,-12540,-19.488694,1,1,bench_remove_churn_trigger_cost::labeled_compact_label_bucket_vertex_segment,63.99 K,63990,-19.042038,1,
+bench_remove_churn_trigger_cost::labeled_insert_new_label_bucket,scope,3072356,3429054,-356698,-10.402228,17,17,bench_remove_churn_trigger_cost::labeled_insert_new_label_bucket,3.40 M,3400000,-9.636588,17,
+bench_remove_churn_trigger_cost::labeled_leaf_allocate_span,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_allocate_span,18.29 K,18290,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_calculate_positions,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_collect_slices,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_collect_slices,13.88 K,13880,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_release_log_segment,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_release_log_segment,12.63 K,12630,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_release_old_footprint,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_release_old_footprint,9202,9202,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_stream_disjoint_relocation,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_stream_disjoint_relocation,59.64 K,59640,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_try_expand_in_place,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_try_expand_in_place,596,596,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_leaf_weighted_slide_commit,scope,,,,,,,bench_remove_churn_trigger_cost::labeled_leaf_weighted_slide_commit,84.38 K,84380,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+bench_remove_churn_trigger_cost::labeled_remove_edge_skip_leaf,scope,206004,220143,-14139,-6.422643,18,18,bench_remove_churn_trigger_cost::labeled_remove_edge_skip_leaf,218.96 K,218960,-5.917062,18,
+bench_remove_churn_trigger_cost::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,bench_remove_churn_trigger_cost::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+bench_remove_churn_trigger_cost::labeled_rewrite_read_and_plan,scope,8207,11361,-3154,-27.761641,1,1,bench_remove_churn_trigger_cost::labeled_rewrite_read_and_plan,195.30 K,195300,-95.797747,3,
+bench_remove_churn_trigger_cost::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,bench_remove_churn_trigger_cost::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+bench_remove_churn_trigger_cost::labeled_vertex_calculate_bucket_positions,scope,1060,1070,-10,-0.934579,1,1,bench_remove_churn_trigger_cost::labeled_vertex_calculate_bucket_positions,3270,3270,-67.584098,3,
+bench_remove_churn_trigger_cost::labeled_vertex_encode_edge_run,scope,4494,4494,0,0.000000,1,1,bench_remove_churn_trigger_cost::labeled_vertex_encode_edge_run,5331,5331,-15.700619,1,
+bench_remove_churn_trigger_cost::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,bench_remove_churn_trigger_cost::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+bench_remove_churn_trigger_cost::labeled_vertex_update_accounting,scope,1366,1345,21,1.561338,1,1,bench_remove_churn_trigger_cost::labeled_vertex_update_accounting,3544,3544,-61.455982,3,
+bench_remove_churn_trigger_cost::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,bench_remove_churn_trigger_cost::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+bench_remove_churn_trigger_cost::labeled_vertex_write_edge_run,scope,766,766,0,0.000000,1,1,bench_remove_churn_trigger_cost::labeled_vertex_write_edge_run,2250,2250,-65.955556,3,
+bench_remove_churn_trigger_cost::labeled_vertex_write_edge_runs,scope,8419,8415,4,0.047534,1,1,bench_remove_churn_trigger_cost::labeled_vertex_write_edge_runs,20.75 K,20750,-59.426506,3,
+bench_t_lvp_same,total,359646,361225,-1579,-0.437124,,,bench_t_lvp_same,363.10 K,363100,-0.951253,,
+bench_t_off_l1k_e1k_0_a,total,24929,26508,-1579,-5.956692,,,bench_t_off_l1k_e1k_0_a,26.43 K,26430,-5.679152,,
+bench_t_off_l1k_e1k_0_d,total,24990,26569,-1579,-5.943016,,,bench_t_off_l1k_e1k_0_d,26.50 K,26500,-5.698113,,
+bench_t_off_l1k_e1k_960_a,total,24929,26508,-1579,-5.956692,,,bench_t_off_l1k_e1k_960_a,26.43 K,26430,-5.679152,,
+bench_t_off_l1k_e2k_0_a,total,11045,12624,-1579,-12.507921,,,bench_t_off_l1k_e2k_0_a,12.51 K,12510,-11.710631,,
+bench_t_off_l1k_e2k_960_a,total,189665,191244,-1579,-0.825647,,,bench_t_off_l1k_e2k_960_a,191.13 K,191130,-0.766494,,
+bench_t_off_l1k_e4k_0_a,total,9541,11120,-1579,-14.199640,,,bench_t_off_l1k_e4k_0_a,11.01 K,11010,-13.342416,,
+bench_t_off_l1k_e4k_960_a,total,151921,153500,-1579,-1.028664,,,bench_t_off_l1k_e4k_960_a,153.38 K,153380,-0.951232,,
+bench_t_off_l1k_e8k_0_a,total,8789,10368,-1579,-15.229552,,,bench_t_off_l1k_e8k_0_a,10.25 K,10250,-14.253659,,
+bench_t_off_l1k_e8k_0_d,total,9254,10833,-1579,-14.575833,,,bench_t_off_l1k_e8k_0_d,10.69 K,10690,-13.433115,,
+bench_t_off_l1k_e8k_960_a,total,133049,134628,-1579,-1.172862,,,bench_t_off_l1k_e8k_960_a,134.51 K,134510,-1.086165,,
+bench_t_v_at_replay,total,4021,5600,-1579,-28.196429,,,bench_t_v_at_replay,4989,4989,-19.402686,,
+bench_t_v_bypass,total,12250,12250,0,0.000000,,,bench_t_v_bypass,12.31 K,12310,-0.487409,,
+bench_t_v_dense_a,total,75841,18393,57448,312.336215,,,bench_t_v_dense_a,18.31 K,18310,314.205352,,
+bench_t_v_dense_d,total,71821,18137,53684,295.991619,,,bench_t_v_dense_d,18.06 K,18060,297.679956,,
+bench_t_v_ebreak,total,30417,9422,20995,222.829548,,,bench_t_v_ebreak,9339,9339,225.698683,,
+bench_t_v_hyb,total,73674,75253,-1579,-2.098255,,,bench_t_v_hyb,81.01 K,81010,-9.055672,,
+bench_t_v_in_dense,total,88367,89946,-1579,-1.755498,,,bench_t_v_in_dense,88.13 K,88130,0.268921,,
+bench_t_v_in_hyb_ip,total,126123,127702,-1579,-1.236472,,,bench_t_v_in_hyb_ip,74.47 K,74470,69.360816,,
+bench_t_v_pf_then_sel,total,280180,283338,-3158,-1.114570,,,bench_t_v_pf_then_sel,152.75 K,152750,83.423895,,
+bench_t_v_sparse,total,53220,55236,-2016,-3.649794,,,bench_t_v_sparse,55.11 K,55110,-3.429505,,
+bench_t_v_w_ip,total,154677,154194,483,0.313242,,,bench_t_v_w_ip,155.53 K,155530,-0.548447,,
+bench_t_v_window,total,48008,9893,38115,385.272415,,,bench_t_v_window,9819,9819,388.929626,,
+bench_t_vip,total,28588,31740,-3152,-9.930687,,,bench_t_vip,28.06 K,28060,1.881682,,
+bench_t_vip_descending,total,28593,31745,-3152,-9.929123,,,bench_t_vip_descending,27.01 K,27010,5.860792,,
+bench_t_vip_descending_tail,total,6157,7736,-1579,-20.411065,,,bench_t_vip_descending_tail,180.85 K,180850,-96.595521,,
+bench_t_vip_filtered_reference,total,152721,151996,725,0.476986,,,bench_t_vip_filtered_reference,154.22 K,154220,-0.971988,,
+bench_t_vip_sparse,total,11620,13199,-1579,-11.963028,,,bench_t_vip_sparse,254.47 K,254470,-95.433646,,
+bench_t_vip_tail,total,6142,7721,-1579,-20.450719,,,bench_t_vip_tail,181.34 K,181340,-96.612992,,
+bounded_inline_64_full,total,39320,40899,-1579,-3.860730,,,bounded_inline_64_full,18.97 K,18970,107.274644,,main setup folds log; branch retains runs; same API not same physical fixture
+bounded_inline_promote_full,total,442969,444548,-1579,-0.355192,,,bounded_inline_promote_full,216.85 K,216850,104.274383,,main setup folds log; branch retains runs; same API not same physical fixture
+bounded_topology_4k_slab_full,total,220575,230215,-9640,-4.187390,,,bounded_topology_4k_slab_full,222.91 K,222910,-1.047508,,
+bounded_topology_4k_tree_full,total,229639,239279,-9640,-4.028770,,,bounded_topology_4k_tree_full,231.98 K,231980,-1.009139,,
+bounded_topology_64_full,total,25802,27381,-1579,-5.766773,,,bounded_topology_64_full,32.95 K,32950,-21.693475,,
+ltb_pop_remint_repop_4096,total,9891,9891,0,0.000000,,,ltb_pop_remint_repop_4096,9891,9891,0.000000,,
+ltb_reopen_1024,total,346113,346113,0,0.000000,,,ltb_reopen_1024,346.11 K,346110,0.000867,,
+ltb_reopen_4096,total,1381345,1381345,0,0.000000,,,ltb_reopen_4096,1.38 M,1380000,0.097464,,
+offset_slab4096_d875_off960,total,133039,134570,-1531,-1.137698,,,offset_slab4096_d875_off960,134.45 K,134450,-1.049461,,
+offset_tree_1m_d50_off_first,total,12901,14480,-1579,-10.904696,,,offset_tree_1m_d50_off_first,14.42 K,14420,-10.533981,,
+offset_tree_1m_d50_off_first_l1,total,911828,913706,-1878,-0.205537,,,offset_tree_1m_d50_off_first_l1,912.40 K,912400,-0.062692,,
+offset_tree_1m_d875_off_deep,total,12901,14480,-1579,-10.904696,,,offset_tree_1m_d875_off_deep,14.42 K,14420,-10.533981,,
+offset_tree_1m_d875_off_deep_l1,total,914068,915946,-1878,-0.205034,,,offset_tree_1m_d875_off_deep_l1,914.64 K,914640,-0.062538,,
+offset_tree_1m_d875_off_first,total,12901,14480,-1579,-10.904696,,,offset_tree_1m_d875_off_first,14.42 K,14420,-10.533981,,
+offset_tree_1m_d875_off_first_l1,total,913748,915626,-1878,-0.205106,,,offset_tree_1m_d875_off_first_l1,914.32 K,914320,-0.062560,,
+offset_tree_d875_s0,total,39789590,39791169,-1579,-0.003968,,,offset_tree_d875_s0,39.79 M,39790000,-0.001030,,
+offset_tree_d875_s1,total,12124,13703,-1579,-11.523024,,,offset_tree_d875_s1,13.65 K,13650,-11.179487,,
+offset_tree_d875_s1s2,total,12906,14485,-1579,-10.900932,,,offset_tree_d875_s1s2,14.43 K,14430,-10.561331,,
+offset_tree_inwindow_s0,total,64286673,64288252,-1579,-0.002456,,,offset_tree_inwindow_s0,64.29 M,64290000,-0.005175,,
+offset_tree_inwindow_s1,total,55860377,55861956,-1579,-0.002827,,,offset_tree_inwindow_s1,55.86 M,55860000,0.000675,,
+offset_tree_inwindow_s1s2,total,40917062,40918641,-1579,-0.003859,,,offset_tree_inwindow_s1s2,40.92 M,40920000,-0.007180,,
+offset_workload_baseline_bursty,total,270867483,275506507,-4639024,-1.683816,,,offset_workload_baseline_bursty,304.33 M,304330000,-10.995471,,
+offset_workload_baseline_churn_light,total,273406964,277324486,-3917522,-1.412613,,,offset_workload_baseline_churn_light,279.53 M,279530000,-2.190475,,
+offset_workload_baseline_uniform,total,270873930,275224916,-4350986,-1.580884,,,offset_workload_baseline_uniform,301.93 M,301930000,-10.285851,,
+offset_workload_candidate_bursty,total,395157791,399142734,-3984943,-0.998375,,,offset_workload_candidate_bursty,1.39 B,1390000000,-71.571382,,
+offset_workload_candidate_bursty::labeled_leaf_calculate_positions,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_leaf_collect_slices,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_collect_slices,35.98 K,35980,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_leaf_materialize_plans,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_materialize_plans,1.06 M,1060000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_leaf_release_log_segment,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_release_log_segment,26.10 K,26100,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_leaf_try_expand_in_place,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_try_expand_in_place,29.93 K,29930,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_leaf_weighted_slide_commit,scope,,,,,,,offset_workload_candidate_bursty::labeled_leaf_weighted_slide_commit,1.10 M,1100000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_bursty::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,offset_workload_candidate_bursty::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+offset_workload_candidate_bursty::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,offset_workload_candidate_bursty::labeled_rewrite_read_and_plan,1.26 M,1260000,-99.654603,3,
+offset_workload_candidate_bursty::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,offset_workload_candidate_bursty::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+offset_workload_candidate_bursty::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,offset_workload_candidate_bursty::labeled_vertex_calculate_bucket_positions,3242,3242,-68.260333,3,
+offset_workload_candidate_bursty::labeled_vertex_encode_edge_run,scope,47910,47779,131,0.274179,1,1,offset_workload_candidate_bursty::labeled_vertex_encode_edge_run,363.66 K,363660,-86.825606,1,
+offset_workload_candidate_bursty::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,offset_workload_candidate_bursty::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+offset_workload_candidate_bursty::labeled_vertex_update_accounting,scope,1389,1368,21,1.535088,1,1,offset_workload_candidate_bursty::labeled_vertex_update_accounting,3567,3567,-61.059714,3,
+offset_workload_candidate_bursty::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,offset_workload_candidate_bursty::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+offset_workload_candidate_bursty::labeled_vertex_write_edge_run,scope,10846,10846,0,0.000000,1,1,offset_workload_candidate_bursty::labeled_vertex_write_edge_run,177.47 K,177470,-93.888545,3,
+offset_workload_candidate_bursty::labeled_vertex_write_edge_runs,scope,51275,51140,135,0.263981,1,1,offset_workload_candidate_bursty::labeled_vertex_write_edge_runs,469.69 K,469690,-89.083225,3,
+offset_workload_candidate_churn_light,total,393905218,397626768,-3721550,-0.935941,,,offset_workload_candidate_churn_light,1.25 B,1250000000,-68.487583,,
+offset_workload_candidate_churn_light::labeled_leaf_calculate_positions,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_leaf_collect_slices,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_collect_slices,7930,7930,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_leaf_materialize_plans,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_materialize_plans,962.40 K,962400,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_leaf_release_log_segment,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_release_log_segment,7288,7288,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_leaf_try_expand_in_place,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_try_expand_in_place,29.96 K,29960,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_leaf_weighted_slide_commit,scope,,,,,,,offset_workload_candidate_churn_light::labeled_leaf_weighted_slide_commit,978.75 K,978750,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_churn_light::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,offset_workload_candidate_churn_light::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+offset_workload_candidate_churn_light::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,offset_workload_candidate_churn_light::labeled_rewrite_read_and_plan,1.06 M,1060000,-99.589434,3,
+offset_workload_candidate_churn_light::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,offset_workload_candidate_churn_light::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+offset_workload_candidate_churn_light::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,offset_workload_candidate_churn_light::labeled_vertex_calculate_bucket_positions,3242,3242,-68.260333,3,
+offset_workload_candidate_churn_light::labeled_vertex_encode_edge_run,scope,47910,47779,131,0.274179,1,1,offset_workload_candidate_churn_light::labeled_vertex_encode_edge_run,360.58 K,360580,-86.713073,1,
+offset_workload_candidate_churn_light::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,offset_workload_candidate_churn_light::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+offset_workload_candidate_churn_light::labeled_vertex_update_accounting,scope,1389,1368,21,1.535088,1,1,offset_workload_candidate_churn_light::labeled_vertex_update_accounting,3567,3567,-61.059714,3,
+offset_workload_candidate_churn_light::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,offset_workload_candidate_churn_light::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+offset_workload_candidate_churn_light::labeled_vertex_write_edge_run,scope,10846,10846,0,0.000000,1,1,offset_workload_candidate_churn_light::labeled_vertex_write_edge_run,176.05 K,176050,-93.839250,3,
+offset_workload_candidate_churn_light::labeled_vertex_write_edge_runs,scope,51275,51140,135,0.263981,1,1,offset_workload_candidate_churn_light::labeled_vertex_write_edge_runs,465.89 K,465890,-88.994183,3,
+offset_workload_candidate_uniform,total,418613476,422572399,-3958923,-0.936863,,,offset_workload_candidate_uniform,1.40 B,1400000000,-70.099037,,
+offset_workload_candidate_uniform::labeled_leaf_calculate_positions,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_leaf_collect_slices,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_collect_slices,33.21 K,33210,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_leaf_materialize_plans,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_materialize_plans,1.05 M,1050000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_leaf_release_log_segment,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_release_log_segment,24.25 K,24250,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_leaf_try_expand_in_place,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_try_expand_in_place,29.93 K,29930,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_leaf_weighted_slide_commit,scope,,,,,,,offset_workload_candidate_uniform::labeled_leaf_weighted_slide_commit,1.09 M,1090000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_candidate_uniform::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,offset_workload_candidate_uniform::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+offset_workload_candidate_uniform::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,offset_workload_candidate_uniform::labeled_rewrite_read_and_plan,1.24 M,1240000,-99.649032,3,
+offset_workload_candidate_uniform::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,offset_workload_candidate_uniform::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+offset_workload_candidate_uniform::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,offset_workload_candidate_uniform::labeled_vertex_calculate_bucket_positions,3242,3242,-68.260333,3,
+offset_workload_candidate_uniform::labeled_vertex_encode_edge_run,scope,47910,47779,131,0.274179,1,1,offset_workload_candidate_uniform::labeled_vertex_encode_edge_run,363.36 K,363360,-86.814729,1,
+offset_workload_candidate_uniform::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,offset_workload_candidate_uniform::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+offset_workload_candidate_uniform::labeled_vertex_update_accounting,scope,1389,1368,21,1.535088,1,1,offset_workload_candidate_uniform::labeled_vertex_update_accounting,3567,3567,-61.059714,3,
+offset_workload_candidate_uniform::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,offset_workload_candidate_uniform::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+offset_workload_candidate_uniform::labeled_vertex_write_edge_run,scope,10846,10846,0,0.000000,1,1,offset_workload_candidate_uniform::labeled_vertex_write_edge_run,177.33 K,177330,-93.883720,3,
+offset_workload_candidate_uniform::labeled_vertex_write_edge_runs,scope,51275,51140,135,0.263981,1,1,offset_workload_candidate_uniform::labeled_vertex_write_edge_runs,469.32 K,469320,-89.074619,3,
+offset_workload_counter_scan,total,139016,140595,-1579,-1.123084,,,offset_workload_counter_scan,140.39 K,140390,-0.978702,,
+offset_workload_restored_query,total,28588,30257,-1669,-5.516079,,,offset_workload_restored_query,30.07 K,30070,-4.928500,,
+offset_workload_scan_only,total,132651,134230,-1579,-1.176339,,,offset_workload_scan_only,134.03 K,134030,-1.028874,,
+offset_workload_targeted_compaction,total,577775,592806,-15031,-2.535568,,,offset_workload_targeted_compaction,945.31 M,945310000,-99.938880,,
+offset_workload_targeted_compaction::labeled_leaf_calculate_positions,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_calculate_positions,1128,1128,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_leaf_collect_slices,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_collect_slices,29.26 K,29260,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_leaf_materialize_plans,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_materialize_plans,1.03 M,1030000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_leaf_release_log_segment,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_release_log_segment,21.60 K,21600,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_leaf_try_expand_in_place,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_try_expand_in_place,29.93 K,29930,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_leaf_weighted_slide_commit,scope,,,,,,,offset_workload_targeted_compaction::labeled_leaf_weighted_slide_commit,1.07 M,1070000,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+offset_workload_targeted_compaction::labeled_rewrite_finalize,scope,1440,1440,0,0.000000,1,1,offset_workload_targeted_compaction::labeled_rewrite_finalize,2369,2369,-39.214859,2,
+offset_workload_targeted_compaction::labeled_rewrite_read_and_plan,scope,4352,7506,-3154,-42.019718,1,1,offset_workload_targeted_compaction::labeled_rewrite_read_and_plan,1.21 M,1210000,-99.640331,3,
+offset_workload_targeted_compaction::labeled_vertex_build_resident_buckets,scope,639,639,0,0.000000,1,1,offset_workload_targeted_compaction::labeled_vertex_build_resident_buckets,1894,1894,-66.261880,3,
+offset_workload_targeted_compaction::labeled_vertex_calculate_bucket_positions,scope,1029,1039,-10,-0.962464,1,1,offset_workload_targeted_compaction::labeled_vertex_calculate_bucket_positions,3242,3242,-68.260333,3,
+offset_workload_targeted_compaction::labeled_vertex_encode_edge_run,scope,47910,47779,131,0.274179,1,1,offset_workload_targeted_compaction::labeled_vertex_encode_edge_run,362.93 K,362930,-86.799107,1,
+offset_workload_targeted_compaction::labeled_vertex_prepare_edge_buffer,scope,344,344,0,0.000000,1,1,offset_workload_targeted_compaction::labeled_vertex_prepare_edge_buffer,1002,1002,-65.668663,3,
+offset_workload_targeted_compaction::labeled_vertex_update_accounting,scope,1389,1368,21,1.535088,1,1,offset_workload_targeted_compaction::labeled_vertex_update_accounting,3567,3567,-61.059714,3,
+offset_workload_targeted_compaction::labeled_vertex_write_bucket_row,scope,756,761,-5,-0.657030,1,1,offset_workload_targeted_compaction::labeled_vertex_write_bucket_row,2154,2154,-64.902507,3,
+offset_workload_targeted_compaction::labeled_vertex_write_edge_run,scope,10846,10846,0,0.000000,1,1,offset_workload_targeted_compaction::labeled_vertex_write_edge_run,177.13 K,177130,-93.876814,3,
+offset_workload_targeted_compaction::labeled_vertex_write_edge_runs,scope,51275,51140,135,0.263981,1,1,offset_workload_targeted_compaction::labeled_vertex_write_edge_runs,468.78 K,468780,-89.062033,3,
+tcsr_1048576_deepen_beyond_r_max,total,148702,152064,-3362,-2.210911,,,tcsr_1048576_deepen_beyond_r_max,151.22 K,151220,-1.665124,,
+tcsr_1048576_deepen_then_interior_grow,total,3024384,4641017,-1616633,-34.833594,,,tcsr_1048576_deepen_then_interior_grow,4.51 M,4510000,-32.940488,,
+tcsr_1048576_full_scan_descending,total,18951710,18953289,-1579,-0.008331,,,tcsr_1048576_full_scan_descending,18.95 M,18950000,0.009024,,
+tcsr_1048576_insert_grow_below_cap,total,2643504,4242780,-1599276,-37.694059,,,tcsr_1048576_insert_grow_below_cap,4.12 M,4120000,-35.837282,,
+tcsr_1048576_random_ordinal_access,total,28895448,28897027,-1579,-0.005464,,,tcsr_1048576_random_ordinal_access,28.90 M,28900000,-0.015751,,
+tcsr_131072_full_scan_descending,total,2370334,2371913,-1579,-0.066571,,,tcsr_131072_full_scan_descending,2.37 M,2370000,0.014093,,
+tcsr_131072_insert_grow_below_cap,total,3203959,4837403,-1633444,-33.766961,,,tcsr_131072_insert_grow_below_cap,4.71 M,4710000,-31.975393,,
+tcsr_4096_full_scan_descending,total,169472,169472,0,0.000000,,,tcsr_4096_full_scan_descending,169.47 K,169470,0.001180,,
+tcsr_4096_insert_grow,total,69920087,69920087,0,0.000000,,,tcsr_4096_insert_grow,69.92 M,69920000,0.000124,,
+tcsr_4096_property_read_w32,total,3663109,3664778,-1669,-0.045542,,,tcsr_4096_property_read_w32,3.66 M,3660000,0.084945,,
+tcsr_4096_random_ordinal_access,total,847588,847588,0,0.000000,,,tcsr_4096_random_ordinal_access,847.59 K,847590,-0.000236,,
+tcsr_65536_full_scan_descending,total,2707532,2707532,0,0.000000,,,tcsr_65536_full_scan_descending,2.71 M,2710000,-0.091070,,
+tcsr_65536_insert_grow,total,1118273942,1118273942,0,0.000000,,,tcsr_65536_insert_grow,1.12 B,1120000000,-0.154112,,
+tcsr_65536_property_read_w32,total,58515949,58517618,-1669,-0.002852,,,tcsr_65536_property_read_w32,58.52 M,58520000,-0.006922,,
+tcsr_65536_random_ordinal_access,total,847588,847588,0,0.000000,,,tcsr_65536_random_ordinal_access,847.59 K,847590,-0.000236,,
+tcsr_promote_edge_only,total,152936,152936,0,0.000000,,,tcsr_promote_edge_only,152.94 K,152940,-0.002615,,
+tcsr_promote_inline_property_w32,total,1121719,1121719,0,0.000000,,,tcsr_promote_inline_property_w32,1.12 M,1120000,0.153482,,
+tiny_append_d1_1024,total,2428705,4043553,-1614848,-39.936363,,,tiny_append_d1_1024,3.93 M,3930000,-38.200891,,
+tiny_delete_d2_1024,total,3338231,6569973,-3231742,-49.189578,,,tiny_delete_d2_1024,6.54 M,6540000,-48.956713,,
+tiny_promote_d3_1024,total,2421537,4036385,-1614848,-40.007284,,,tiny_promote_d3_1024,3.92 M,3920000,-38.226097,,
+tiny_relocate_mixed_leaf,total,318619,402134,-83515,-20.767953,,,tiny_relocate_mixed_leaf,611.83 K,611830,-47.923606,,
+tiny_relocate_mixed_leaf::labeled_leaf_allocate_span,scope,24291,24581,-290,-1.179773,1,1,tiny_relocate_mixed_leaf::labeled_leaf_allocate_span,24.32 K,24320,-0.119243,1,
+tiny_relocate_mixed_leaf::labeled_leaf_calculate_positions,scope,1128,1128,0,0.000000,1,1,tiny_relocate_mixed_leaf::labeled_leaf_calculate_positions,1128,1128,0.000000,1,
+tiny_relocate_mixed_leaf::labeled_leaf_collect_slices,scope,34677,33520,1157,3.451671,1,1,tiny_relocate_mixed_leaf::labeled_leaf_collect_slices,73.93 K,73930,-53.094819,1,
+tiny_relocate_mixed_leaf::labeled_leaf_release_log_segment,scope,,,,,,,tiny_relocate_mixed_leaf::labeled_leaf_release_log_segment,55.98 K,55980,,1,not observed in 5ad run; not zero; not observed in historical run; not zero
+tiny_relocate_mixed_leaf::labeled_leaf_release_old_footprint,scope,14991,14991,0,0.000000,1,1,tiny_relocate_mixed_leaf::labeled_leaf_release_old_footprint,14.99 K,14990,0.006671,1,
+tiny_relocate_mixed_leaf::labeled_leaf_stream_disjoint_relocation,scope,188511,274061,-85550,-31.215678,1,1,tiny_relocate_mixed_leaf::labeled_leaf_stream_disjoint_relocation,346.28 K,346280,-45.561107,1,
+tiny_relocate_mixed_leaf::labeled_leaf_try_expand_in_place,scope,2636,2636,0,0.000000,1,1,tiny_relocate_mixed_leaf::labeled_leaf_try_expand_in_place,2636,2636,0.000000,1,
+tiny_relocate_mixed_leaf::labeled_leaf_weighted_slide_commit,scope,232772,316596,-83824,-26.476645,1,1,tiny_relocate_mixed_leaf::labeled_leaf_weighted_slide_commit,429.23 K,429230,-45.769867,1,
+tiny_relocate_mixed_leaf::labeled_vertex_build_resident_buckets,scope,12089,12013,76,0.632648,1,1,tiny_relocate_mixed_leaf::labeled_vertex_build_resident_buckets,8198,8198,47.462796,1,
+tiny_relocate_mixed_leaf::labeled_vertex_calculate_bucket_positions,scope,33572,34697,-1125,-3.242355,1,1,tiny_relocate_mixed_leaf::labeled_vertex_calculate_bucket_positions,34.42 K,34420,-2.463684,1,
+tiny_relocate_mixed_leaf::labeled_vertex_encode_edge_run,scope,,12293,,,,2,tiny_relocate_mixed_leaf::labeled_vertex_encode_edge_run,12.29 K,12290,,2,not observed in 5ad run; not zero
+tiny_relocate_mixed_leaf::labeled_vertex_prepare_edge_buffer,scope,3017,3029,-12,-0.396170,1,1,tiny_relocate_mixed_leaf::labeled_vertex_prepare_edge_buffer,3029,3029,-0.396170,1,
+tiny_relocate_mixed_leaf::labeled_vertex_update_accounting,scope,1366,1345,21,1.561338,1,1,tiny_relocate_mixed_leaf::labeled_vertex_update_accounting,1357,1357,0.663228,1,
+tiny_relocate_mixed_leaf::labeled_vertex_write_bucket_row,scope,17934,17502,432,2.468289,1,1,tiny_relocate_mixed_leaf::labeled_vertex_write_bucket_row,11.37 K,11370,57.730871,1,
+tiny_relocate_mixed_leaf::labeled_vertex_write_edge_run,scope,8580,12446,-3866,-31.062189,16,16,tiny_relocate_mixed_leaf::labeled_vertex_write_edge_run,12.45 K,12450,-31.084337,16,
+tiny_relocate_mixed_leaf::labeled_vertex_write_edge_runs,scope,77763,92076,-14313,-15.544767,1,1,tiny_relocate_mixed_leaf::labeled_vertex_write_edge_runs,91.86 K,91860,-15.346179,1,
+tiny_scan_d2_1024,total,1400771,3017667,-1616896,-53.580995,,,tiny_scan_d2_1024,2.98 M,2980000,-52.994262,,
+tiny_workload_4x1024,total,223304648,247201765,-23897117,-9.667050,,,tiny_workload_4x1024,245.18 M,245180000,-8.922160,,
+tiny_workload_4x1024::labeled_insert_new_label_bucket,scope,213525472,232580093,-19054621,-8.192714,1024,1024,tiny_workload_4x1024::labeled_insert_new_label_bucket,231.00 M,231000000,-7.564731,1024,
+tiny_workload_skewed_mix,total,90566966,110228239,-19661273,-17.836875,,,tiny_workload_skewed_mix,116.29 M,116290000,-22.119730,,
+tiny_workload_skewed_mix::labeled_insert_new_label_bucket,scope,53291928,58086934,-4795006,-8.254879,256,256,tiny_workload_skewed_mix::labeled_insert_new_label_bucket,57.67 M,57670000,-7.591594,256,
+tiny_workload_skewed_mix::labeled_leaf_allocate_span,scope,195255,209915,-14660,-6.983779,12,12,tiny_workload_skewed_mix::labeled_leaf_allocate_span,209.87 K,209870,-6.963835,12,
+tiny_workload_skewed_mix::labeled_leaf_calculate_positions,scope,120719,124957,-4238,-3.391567,27,28,tiny_workload_skewed_mix::labeled_leaf_calculate_positions,137.58 K,137580,-12.255415,30,
+tiny_workload_skewed_mix::labeled_leaf_collect_slices,scope,734960,1165466,-430506,-36.938529,27,28,tiny_workload_skewed_mix::labeled_leaf_collect_slices,2.19 M,2190000,-66.440183,30,
+tiny_workload_skewed_mix::labeled_leaf_materialize_plans,scope,5190482,7311178,-2120696,-29.006215,15,16,tiny_workload_skewed_mix::labeled_leaf_materialize_plans,9.72 M,9720000,-46.599979,18,
+tiny_workload_skewed_mix::labeled_leaf_release_log_segment,scope,,,,,,,tiny_workload_skewed_mix::labeled_leaf_release_log_segment,1.82 M,1820000,,30,not observed in 5ad run; not zero; not observed in historical run; not zero
+tiny_workload_skewed_mix::labeled_leaf_release_old_footprint,scope,216534,206194,10340,5.014695,12,12,tiny_workload_skewed_mix::labeled_leaf_release_old_footprint,206.58 K,206580,4.818472,12,
+tiny_workload_skewed_mix::labeled_leaf_stream_disjoint_relocation,scope,2805884,3626170,-820286,-22.621278,12,12,tiny_workload_skewed_mix::labeled_leaf_stream_disjoint_relocation,4.03 M,4030000,-30.375087,12,
+tiny_workload_skewed_mix::labeled_leaf_try_expand_in_place,scope,478931,497053,-18122,-3.645889,27,28,tiny_workload_skewed_mix::labeled_leaf_try_expand_in_place,555.95 K,555950,-13.853584,30,
+tiny_workload_skewed_mix::labeled_leaf_weighted_slide_commit,scope,9245986,12638267,-3392281,-26.841346,27,28,tiny_workload_skewed_mix::labeled_leaf_weighted_slide_commit,16.52 M,16520000,-44.031562,30,
+tiny_workload_skewed_mix::labeled_rebalance_leaf_cascade,scope,11348997,14932585,-3583588,-23.998444,27,27,tiny_workload_skewed_mix::labeled_rebalance_leaf_cascade,13.61 M,13610000,-16.612807,22,
+tiny_workload_skewed_mix::labeled_relocate_leaf_physical_block,scope,11224546,14808259,-3583713,-24.200772,27,27,tiny_workload_skewed_mix::labeled_relocate_leaf_physical_block,13.52 M,13520000,-16.978210,22,
+tiny_workload_skewed_mix::labeled_vertex_build_resident_buckets,scope,175770,183403,-7633,-4.161873,278,289,tiny_workload_skewed_mix::labeled_vertex_build_resident_buckets,200.69 K,200690,-12.417161,320,
+tiny_workload_skewed_mix::labeled_vertex_calculate_bucket_positions,scope,282313,298634,-16321,-5.465218,278,289,tiny_workload_skewed_mix::labeled_vertex_calculate_bucket_positions,341.14 K,341140,-17.244240,320,
+tiny_workload_skewed_mix::labeled_vertex_encode_edge_run,scope,,337233,,,,42,tiny_workload_skewed_mix::labeled_vertex_encode_edge_run,379.71 K,379710,,43,not observed in 5ad run; not zero
+tiny_workload_skewed_mix::labeled_vertex_prepare_edge_buffer,scope,92018,95911,-3893,-4.058971,278,289,tiny_workload_skewed_mix::labeled_vertex_prepare_edge_buffer,106.18 K,106180,-13.337728,320,
+tiny_workload_skewed_mix::labeled_vertex_update_accounting,scope,314662,315089,-427,-0.135517,278,289,tiny_workload_skewed_mix::labeled_vertex_update_accounting,339.25 K,339250,-7.247752,320,
+tiny_workload_skewed_mix::labeled_vertex_write_bucket_row,scope,210168,219929,-9761,-4.438251,278,289,tiny_workload_skewed_mix::labeled_vertex_write_bucket_row,229.76 K,229760,-8.527159,320,
+tiny_workload_skewed_mix::labeled_vertex_write_edge_run,scope,150120,244926,-94806,-38.708018,278,289,tiny_workload_skewed_mix::labeled_vertex_write_edge_run,282.17 K,282170,-46.798030,320,
+tiny_workload_skewed_mix::labeled_vertex_write_edge_runs,scope,1274021,1770566,-496545,-28.044422,278,289,tiny_workload_skewed_mix::labeled_vertex_write_edge_runs,1.95 M,1950000,-34.665590,320,
+tree_churn_alternating_append,total,250913539,276780420,-25866881,-9.345633,,,tree_churn_alternating_append,275.50 M,275500000,-8.924305,,
+tree_churn_alternating_reuse,total,254750607,280617488,-25866881,-9.217844,,,tree_churn_alternating_reuse,279.21 M,279210000,-8.760214,,
+tree_churn_bursty_append,total,247507233,266931794,-19424561,-7.276975,,,tree_churn_bursty_append,265.86 M,265860000,-6.903170,,
+tree_churn_bursty_reuse,total,1022317421,1041741982,-19424561,-1.864623,,,tree_churn_bursty_reuse,1.04 B,1040000000,-1.700248,,
+tree_visit_stop_4k_first,total,10366,11945,-1579,-13.218920,,,tree_visit_stop_4k_first,11.89 K,11890,-12.817494,,
+tree_visit_stop_4k_full,total,274861,276440,-1579,-0.571191,,,tree_visit_stop_4k_full,276.38 K,276380,-0.549606,,
+tree_visit_stop_65k_first,total,10366,11945,-1579,-13.218920,,,tree_visit_stop_65k_first,11.89 K,11890,-12.817494,,
+tree_visit_stop_65k_full,total,4241761,4243340,-1579,-0.037211,,,tree_visit_stop_65k_full,4.24 M,4240000,0.041533,,

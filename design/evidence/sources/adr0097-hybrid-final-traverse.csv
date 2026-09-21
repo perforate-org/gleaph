@@ -1,0 +1,19 @@
+status,name,scope_calls,scope_calls Δ,scope_calls Δ%,instructions,instructions Δ,instructions Δ%,heap_increase,heap_increase Δ,heap_increase Δ%,stable_memory_increase,stable_memory_increase Δ,stable_memory_increase Δ%
+,bench_t_v_at_replay,,,,4021,-1579,-28.20%,0,0,0.00%,0,0,0.00%
+,bench_t_v_bypass,,,,12250,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_t_v_dense_a,,,,75841,57448,312.34%,0,0,0.00%,0,0,0.00%
+,bench_t_v_dense_d,,,,71821,53684,295.99%,0,0,0.00%,0,0,0.00%
+,bench_t_v_ebreak,,,,30417,20995,222.83%,0,0,0.00%,0,0,0.00%
+,bench_t_v_hyb,,,,73674,-1579,-2.10%,0,0,0.00%,0,0,0.00%
+,bench_t_v_in_dense,,,,88367,-1579,-1.76%,0,0,0.00%,0,0,0.00%
+,bench_t_v_in_hyb_ip,,,,111370,-16332,-12.79%,0,0,0.00%,0,0,0.00%
+,bench_t_v_pf_then_sel,,,,266211,-17127,-6.04%,0,0,0.00%,0,0,0.00%
+,bench_t_v_sparse,,,,53220,-2016,-3.65%,0,0,0.00%,0,0,0.00%
+,bench_t_v_w_ip,,,,154677,483,0.31%,0,0,0.00%,0,0,0.00%
+,bench_t_v_window,,,,48008,38115,385.27%,0,0,0.00%,0,0,0.00%
+,bench_t_vip,,,,28588,-3152,-9.93%,0,0,0.00%,0,0,0.00%
+,bench_t_vip_descending,,,,28593,-3152,-9.93%,0,0,0.00%,0,0,0.00%
+,bench_t_vip_descending_tail,,,,6157,-1579,-20.41%,0,0,0.00%,0,0,0.00%
+,bench_t_vip_filtered_reference,,,,152721,725,0.48%,0,0,0.00%,0,0,0.00%
+,bench_t_vip_sparse,,,,11620,-1579,-11.96%,0,0,0.00%,0,0,0.00%
+,bench_t_vip_tail,,,,6142,-1579,-20.45%,0,0,0.00%,0,0,0.00%

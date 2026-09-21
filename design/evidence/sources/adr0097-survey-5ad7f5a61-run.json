@@ -1,0 +1,14 @@
+{
+  "source": "5ad7f5a61696588bda6ea07c952093d2ee59b3f1",
+  "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+  "command": [
+    "timeout",
+    "240",
+    "canbench",
+    "--csv"
+  ],
+  "build_cmd": "# Dedicated CARGO_TARGET_DIR (../../target/canbench) so the canbench wasm never clobbers the\n# pocket-ic-e2e artifacts under ../../target (see crates/router/canbench.yml).\nbuild_cmd: \"sh -c 'CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown --features canbench'\"\nwasm_path: \"../../target/canbench/wasm32-unknown-unknown/release/ic_stable_lara.wasm\"\n",
+  "exit": 0,
+  "elapsed_seconds": 189.5046267079888,
+  "yaml_unchanged_before_restore": true
+}

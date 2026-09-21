@@ -1,0 +1,7 @@
+status,name,scope_calls,scope_calls Δ,scope_calls Δ%,instructions,instructions Δ,instructions Δ%,heap_increase,heap_increase Δ,heap_increase Δ%,stable_memory_increase,stable_memory_increase Δ,stable_memory_increase Δ%
+,bench_l_mix_hub_asc_33x50,,,,790432,-226755,-22.29%,0,0,0.00%,0,0,0.00%
+,bench_l_mix_hub_asc_33x50::labeled_find_bucket_slot,1,0,0.00%,13740,-1577,-10.30%,0,0,0.00%,0,0,0.00%
+,bench_l_mix_hub_ins_33x50,,,,58998829,-3109942,-5.01%,752,0,0.00%,0,0,0.00%
+,bench_l_mix_hub_ins_33x50::labeled_insert_new_label_bucket,33,0,0.00%,839531,-364843,-30.29%,0,0,0.00%,0,0,0.00%
+,bench_l_mix_hub_scn_33x50,,,,557118,-156319,-21.91%,0,0,0.00%,0,0,0.00%
+,bench_l_mix_hub_scn_33x50::labeled_find_bucket_slot,1,0,0.00%,13598,-1577,-10.39%,0,0,0.00%,0,0,0.00%

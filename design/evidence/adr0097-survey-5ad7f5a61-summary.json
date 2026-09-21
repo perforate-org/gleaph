@@ -1,0 +1,80 @@
+{
+  "current_totals": 189,
+  "current_scopes": 554,
+  "historical_totals": 189,
+  "historical_scopes": 572,
+  "rounded_main_totals": 191,
+  "rounded_main_scopes": 761,
+  "main_only_totals": [
+    "bench_l_b_eo_exp",
+    "bench_l_b_ipe_exp"
+  ],
+  "aliases": {
+    "bench_l_du_log_del_scn": "bench_l_du_spill_del_scn",
+    "bench_l_ip_log_8b_of": "bench_l_ip_spill_8b_of",
+    "bench_l_du_log_fold_mnt": "bench_l_du_span_compact_mnt",
+    "bench_remove_churn_bypass_log_regime_probe": "bench_remove_churn_bypass_spill_regime_probe"
+  },
+  "over_5_percent_vs_rounded_main": [
+    "bench_l_def_bp_iter_128",
+    "bench_l_df_ip_frag_enq_6",
+    "bench_l_df_ip_frag_mnt_6",
+    "bench_l_du_span_compact_mnt",
+    "bench_l_fe_24x51",
+    "bench_l_fe_48x51",
+    "bench_l_ip_exg_256",
+    "bench_l_ip_frag_comp",
+    "bench_l_ip_frag_s4_ctl",
+    "bench_l_ip_frag_s6",
+    "bench_l_ip_pstats_16",
+    "bench_l_ip_pstats_256",
+    "bench_l_ip_pstats_64",
+    "bench_l_iter_128",
+    "bench_l_mix_hub_asc_33x50",
+    "bench_l_mix_hub_scn_33x50",
+    "bench_t_v_dense_a",
+    "bench_t_v_dense_d",
+    "bench_t_v_ebreak",
+    "bench_t_v_in_hyb_ip",
+    "bench_t_v_pf_then_sel",
+    "bench_t_v_window",
+    "bench_t_vip_descending",
+    "bounded_inline_64_full",
+    "bounded_inline_promote_full"
+  ],
+  "over_5_percent_vs_exact_historical": [
+    "bench_l_def_bp_iter_128",
+    "bench_l_fe_24x51",
+    "bench_l_fe_48x51",
+    "bench_l_iter_128",
+    "bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384",
+    "bench_t_v_dense_a",
+    "bench_t_v_dense_d",
+    "bench_t_v_ebreak",
+    "bench_t_v_window"
+  ],
+  "scopes_added_vs_history": [
+    "bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096::labeled_vertex_encode_edge_run"
+  ],
+  "scopes_absent_vs_history": [
+    "bench_l_cap_s_hub_s16_256e::labeled_vertex_encode_edge_run",
+    "bench_l_du_span_compact_mnt::labeled_vertex_encode_edge_run",
+    "bench_l_ins_ex_bucket_128::labeled_vertex_encode_edge_run",
+    "bench_l_ins_fresh_256::labeled_vertex_encode_edge_run",
+    "bench_l_ins_last_1024::labeled_vertex_encode_edge_run",
+    "bench_l_ins_mv_l32_2048::labeled_vertex_encode_edge_run",
+    "bench_l_ins_rr_64l_1024::labeled_vertex_encode_edge_run",
+    "bench_l_ins_sb_1024::labeled_vertex_encode_edge_run",
+    "bench_l_s2_h_del_h_1024::labeled_leaf_materialize_plans",
+    "bench_l_s2_h_del_h_1024::labeled_vertex_encode_edge_run",
+    "bench_l_s2_h_ins_1024::labeled_vertex_encode_edge_run",
+    "bench_l_s2_iso_256::labeled_vertex_encode_edge_run",
+    "bench_l_s2_sat_256::labeled_vertex_encode_edge_run",
+    "bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_encode_edge_run",
+    "bench_labeled_stage2_hub_insert_grow_16384::labeled_vertex_encode_edge_run",
+    "bench_labeled_stage2_hub_insert_grow_4096::labeled_vertex_encode_edge_run",
+    "bench_labeled_stage2_hub_insert_grow_65536::labeled_vertex_encode_edge_run",
+    "tiny_relocate_mixed_leaf::labeled_vertex_encode_edge_run",
+    "tiny_workload_skewed_mix::labeled_vertex_encode_edge_run"
+  ]
+}

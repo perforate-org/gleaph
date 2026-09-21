@@ -1,0 +1,13 @@
+status,name,scope_calls,scope_calls Δ,scope_calls Δ%,instructions,instructions Δ,instructions Δ%,heap_increase,heap_increase Δ,heap_increase Δ%,stable_memory_increase,stable_memory_increase Δ,stable_memory_increase Δ%
+,bench_l_ip_pstats_16,,,,45848389,-722170,-1.55%,656,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_16::inline_property_pressure_stats_16,1,0,0.00%,36157,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_16::labeled_insert_new_label_bucket,32,0,0.00%,729770,-299528,-29.10%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_16::labeled_remove_edge_skip_leaf,16,0,0.00%,483857,48,0.01%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_256,,,,276081039,-36629469,-11.71%,656,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_256::inline_property_pressure_stats_256,1,0,0.00%,36157,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_256::labeled_insert_new_label_bucket,512,0,0.00%,50410466,-29818507,-37.17%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_256::labeled_remove_edge_skip_leaf,256,0,0.00%,9261012,768,0.01%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_64,,,,62985048,-4045264,-6.03%,656,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_64::inline_property_pressure_stats_64,1,0,0.00%,36157,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_64::labeled_insert_new_label_bucket,128,0,0.00%,4373311,-2344958,-34.90%,0,0,0.00%,0,0,0.00%
+,bench_l_ip_pstats_64::labeled_remove_edge_skip_leaf,64,0,0.00%,2095234,192,0.01%,0,0,0.00%,0,0,0.00%
