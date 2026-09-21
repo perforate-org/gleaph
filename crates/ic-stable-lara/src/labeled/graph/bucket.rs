@@ -1051,37 +1051,6 @@ where
         Ok(())
     }
 
-    pub(super) fn ensure_label_bucket_folded_to_slab(
-        &self,
-        src: VertexId,
-        bucket_index: u32,
-        bucket_slot: u64,
-        bucket: LabelBucket,
-    ) -> Result<LabelBucket, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
-            return Ok(bucket);
-        }
-        let vertex = self.vertices.get(src);
-        match self.fold_label_bucket_edges_to_slab(src, &vertex, bucket_index, bucket_slot, bucket)
-        {
-            Ok(folded) => {
-                self.buckets.write_label_bucket_slot(bucket_slot, folded)?;
-                Ok(folded)
-            }
-            Err(_) => {
-                self.rewrite_vertex_edge_span(src, Some(bucket_index), 0, true, false, None)?;
-                let vertex = self.vertices.get(src);
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                self.buckets
-                    .read_label_bucket_slot(slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow.into())
-            }
-        }
-    }
-
     pub(super) fn bucket_inline_property_bytes_log_chain(
         &self,
         src: VertexId,

@@ -1927,158 +1927,6 @@ mod tests {
     }
 
     #[test]
-    fn edge_and_inline_property_bytes_maintenance_orders_are_independent_with_zero_width_peer() {
-        for inline_property_bytes_first in [false, true] {
-            let graph = inline_property_test_graph_with_capacity(1 << 16);
-            let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-            let valued = BucketLabelKey::from_raw(2);
-            let plain = BucketLabelKey::from_raw(3);
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, valued, 2)
-                .unwrap();
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, plain, 0)
-                .unwrap();
-            for target in 1..=33u32 {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        src,
-                        valued,
-                        InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
-                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    )
-                    .unwrap();
-            }
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    src,
-                    plain,
-                    InlinePropertyTestEdge::with_bytes(100, &[]),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-
-            let read = |label| {
-                let vertex = graph.vertices().get(src);
-                let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
-                graph.buckets().read_label_bucket_slot(slot).unwrap()
-            };
-            force_inline_property_bytes_log(&graph, src, valued, 2, 33);
-            let before = read(valued);
-            assert_eq!(before.inline_property_bytes_slab_slots(), 33);
-            assert_eq!(before.inline_property_bytes_log_len(), 1);
-            let plain_before = read(plain);
-            assert_eq!(plain_before.inline_property_bytes_slab_slots(), 0);
-            assert_eq!(plain_before.inline_property_bytes_log_len(), 0);
-
-            if inline_property_bytes_first {
-                let edge_state = (
-                    before.edge_start(),
-                    before.stored_slots(),
-                    before.overflow_log_head(),
-                );
-                graph
-                    .rebalance_inline_property_bytes_log_leaf_for_labeled(src)
-                    .unwrap();
-                let after_inline_property_bytes = read(valued);
-                assert_eq!(
-                    (
-                        after_inline_property_bytes.edge_start(),
-                        after_inline_property_bytes.stored_slots(),
-                        after_inline_property_bytes.overflow_log_head(),
-                    ),
-                    edge_state
-                );
-                let inline_property_bytes_state = (
-                    after_inline_property_bytes.inline_property_bytes_offset(),
-                    after_inline_property_bytes.inline_property_bytes_slab_slots(),
-                    after_inline_property_bytes.inline_property_bytes_log_head(),
-                );
-                graph
-                    .rebalance_edge_log_leaf_for_labeled(src, true, true)
-                    .unwrap();
-                let after_edge = read(valued);
-                assert_eq!(
-                    (
-                        after_edge.inline_property_bytes_offset(),
-                        after_edge.inline_property_bytes_slab_slots(),
-                        after_edge.inline_property_bytes_log_head(),
-                    ),
-                    inline_property_bytes_state
-                );
-            } else {
-                let inline_property_bytes_state = (
-                    before.inline_property_bytes_offset(),
-                    before.inline_property_bytes_slab_slots(),
-                    before.inline_property_bytes_log_head(),
-                );
-                graph
-                    .rebalance_edge_log_leaf_for_labeled(src, true, true)
-                    .unwrap();
-                let after_edge = read(valued);
-                assert_eq!(
-                    (
-                        after_edge.inline_property_bytes_offset(),
-                        after_edge.inline_property_bytes_slab_slots(),
-                        after_edge.inline_property_bytes_log_head(),
-                    ),
-                    inline_property_bytes_state
-                );
-                let edge_state = (
-                    after_edge.edge_start(),
-                    after_edge.stored_slots(),
-                    after_edge.overflow_log_head(),
-                );
-                graph
-                    .rebalance_inline_property_bytes_log_leaf_for_labeled(src)
-                    .unwrap();
-                let after_inline_property_bytes = read(valued);
-                assert_eq!(
-                    (
-                        after_inline_property_bytes.edge_start(),
-                        after_inline_property_bytes.stored_slots(),
-                        after_inline_property_bytes.overflow_log_head(),
-                    ),
-                    edge_state
-                );
-            }
-
-            let mut observed = Vec::new();
-            graph
-                .visit_edges_with_inline_property(
-                    src,
-                    valued,
-                    OutEdgeOrder::Descending,
-                    |_slot, item| {
-                        let edge = item
-                            .edge
-                            .with_stored_inline_property_bytes(
-                                item.inline_property.width(),
-                                item.inline_property.bytes(),
-                            )
-                            .with_label_id(valued.raw());
-                        let bytes = edge.edge_inline_property_bytes();
-                        observed.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
-                        ControlFlow::<()>::Continue(())
-                    },
-                )
-                .map(|_| ())
-                .unwrap();
-            observed.sort_unstable_by_key(|(target, _)| *target);
-            assert_eq!(
-                observed,
-                (1..=33u32)
-                    .map(|v| (v, v as u16))
-                    .chain(std::iter::once((33, 33)))
-                    .collect::<Vec<_>>()
-            );
-            let plain_after = read(plain);
-            assert_eq!(plain_after.inline_property_bytes_slab_slots(), 0);
-            assert_eq!(plain_after.inline_property_bytes_log_head(), -1);
-        }
-    }
-
-    #[test]
     fn edge_inline_propertys_round_trip_via_unchecked_label_iteration() {
         let graph = inline_property_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -2473,9 +2321,6 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph
-            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-            .unwrap();
 
         let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
         let mut asc_slots = Vec::new();
@@ -2553,9 +2398,6 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph
-            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-            .unwrap();
 
         let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
         let mut from_values = Vec::new();
@@ -2609,11 +2451,6 @@ mod tests {
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
-            if target == 32 {
-                graph
-                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-                    .unwrap();
-            }
         }
 
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -2687,9 +2524,6 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph
-            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-            .unwrap();
         assert!(
             graph
                 .out_bucket_dense_inline_property_batch_eligible(VertexId::from(0), road)
@@ -2710,11 +2544,6 @@ mod tests {
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
-            if target == 32 {
-                overflow
-                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-                    .unwrap();
-            }
         }
         assert!(
             !overflow
@@ -3236,9 +3065,6 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph
-            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-            .unwrap();
 
         let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         let mut asc = Vec::new();
@@ -3546,11 +3372,6 @@ mod tests {
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
-            if target == 32 {
-                graph
-                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
-                    .unwrap();
-            }
         }
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();

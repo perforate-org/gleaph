@@ -1024,9 +1024,6 @@ fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchRe
             )
             .unwrap();
     }
-    graph
-        .rebalance_edge_log_leaf_for_labeled(src, true, true)
-        .unwrap();
     let crate::labeled::graph::BucketSearch::Found { bucket, .. } = graph
         .find_bucket(src, &graph.vertices().get(src), label)
         .unwrap()

@@ -6848,9 +6848,6 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph
-            .rebalance_edge_log_leaf_for_labeled(src, true, true)
-            .unwrap();
         for target in 49..=64u32 {
             graph
                 .insert_edge_skip_leaf_cascade(

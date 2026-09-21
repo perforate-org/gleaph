@@ -1392,25 +1392,23 @@ where
             return Err(LabeledOperationError::InvalidDefaultBypass);
         }
         if vertex.degree() == 1 {
-            let mut bucket = self
+            let bucket = self
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-                bucket = self.ensure_label_bucket_folded_to_slab(
-                    src,
-                    0,
-                    vertex.base_slot_start(),
-                    bucket,
-                )?;
-            }
             let old_alloc = vertex.stored_slots;
-            let updated = vertex
+            // ADR 0097 §3: a bypass row carries its own spill run id, so the bucket's run is
+            // handed over instead of folded into the slab - no row moves, and the bypass reader's
+            // prefix derivation (`stored_degree - run rows`) reproduces the bucket's prefix width.
+            let mut updated = vertex
                 .with_default_edge_labeled(true)
                 .with_bypass_undirected(bucket.bucket_label_key().is_undirected())
                 .with_base_slot_start(bucket.edge_start())
                 .with_degree(bucket.degree)
                 .with_stored_slots(bucket.stored_slots());
+            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+                updated = updated.with_bypass_spill_run(bucket.edge_spill_run());
+            }
             self.clear_vertex_label_buckets_for_segment(src)?;
             self.set_labeled_vertex(src, updated)?;
             self.edges
