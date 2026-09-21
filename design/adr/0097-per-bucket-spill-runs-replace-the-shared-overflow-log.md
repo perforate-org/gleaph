@@ -71,6 +71,23 @@ bucket.
    the same applies to `ipb_width`. The unlabeled core path already has a 27-bit head at tail28 and needs no
    packing change, so the labeled ids should follow that precedent where the numbers allow. The derivation must
    state the arena size each id can address and the first workload scale at which that would fail.
+   **Layout decision (2026-09-20, from the implementer's derivation).** The 29-byte row cannot carry useful ids:
+   retiring the log head (8 bits), the two reserved bits and `ipb_log_len` (8) and repurposing `ipb_log_byte` (8)
+   yields 26 bits for two ids — 13 each, i.e. 8 192 arena rows and about 4 096 spilled rows. So the row **widens to
+   35 bytes**, carrying **two `u32` run ids** (edge and values) with 10 spare bits. The rationale is not bit
+   economy: the store's `RunId` is already `u32`, so a 29-bit wire id would invent a second, tighter bound than the
+   store has, while `u32` makes the wire and the store agree (SSOT) and leaves the only real limit where it belongs —
+   the arena's `u32` row count (2^32 rows = 16 GiB of edge rows, ≈290 billion edges at the measured spill fraction).
+   The alternatives considered and rejected: 32 bytes (25-bit ids, below the unlabeled core's 27-bit precedent),
+   33 bytes (29-bit ids, the artificial bound above), 34 bytes (two u32 with 2 spare bits). `u32::MAX` stays the
+   sentinel for "no run", so a live id is at most `u32::MAX - 1`; the packing must reject the sentinel.
+   The narrowing this ADR had asked for is **impossible and does not happen**: `stored_slots` has no
+   `<= T_PROMOTE` bound (the repository tests the opposite — `batch_run_past_t_promote_then_scalar_promotes_correctly`
+   drives `stored_slots` to `T_PROMOTE + 100` while still slab, promotion being deferred to the next scalar insert),
+   and `ipb_width` is a full `u16` bounded by `MAX_EDGE_INLINE_PROPERTY_BYTES = u16::MAX`. The derivation was asked
+   for as a precondition and it disproved the assumption it was testing; the widening is therefore forced, not chosen.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
