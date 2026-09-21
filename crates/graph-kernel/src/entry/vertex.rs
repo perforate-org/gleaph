@@ -1,4 +1,4 @@
-//! Labeled CSR vertex row (16 bytes), shared with `ic-stable-lara` labeled storage.
+//! Labeled CSR vertex row, shared with `ic-stable-lara` labeled storage.
 //!
 //! The wire layout matches [`ic_stable_lara::labeled::record::LabeledVertex`]. This
 //! newtype exists so the graph kernel can add Gleaph-facing helpers without orphan
@@ -119,6 +119,10 @@ impl CsrVertex for Vertex {
         Self(self.0.after_slab_tombstone_delete())
     }
 
+    fn try_grow_packed_slab_by_one(self) -> Result<Self, ()> {
+        self.0.try_grow_packed_slab_by_one().map(Self)
+    }
+
     fn grow_packed_slab_by_one(self) -> Self {
         Self(self.0.grow_packed_slab_by_one())
     }
@@ -159,8 +163,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_growth_preserves_inner_overflow_errors() {
+        use ic_stable_lara::labeled::BucketLabelKey;
+        let bypass =
+            LabeledVertex::default().with_homogeneous_bypass_label(BucketLabelKey::from_raw(1));
+        for inner in [
+            bypass.with_degree(u32::MAX).with_stored_slots(u32::MAX),
+            bypass.with_degree(1).with_stored_slots(u32::MAX),
+            LabeledVertex::default()
+                .with_degree(ic_stable_lara::labeled::record::MAX_VERTEX_LABEL_BUCKETS),
+        ] {
+            assert!(inner.try_grow_packed_slab_by_one().is_err());
+            assert_eq!(Vertex(inner).try_grow_packed_slab_by_one(), Err(()));
+        }
+        let inner = bypass.with_degree(7).with_stored_slots(9);
+        assert_eq!(
+            Vertex(inner).try_grow_packed_slab_by_one(),
+            inner.try_grow_packed_slab_by_one().map(Vertex)
+        );
+    }
+
+    #[test]
     fn vertex_width_matches_labeled_vertex_layout() {
-        assert_eq!(Vertex::BYTES, 21);
+        assert_eq!(Vertex::BYTES, 25);
         assert!(
             core::mem::size_of::<Vertex>() >= Vertex::BYTES,
             "Rust layout may include tail padding; wire width is {}",

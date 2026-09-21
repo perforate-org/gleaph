@@ -186,6 +186,38 @@ fn spill_iterator_last_loads_partial_tail() {
 }
 
 #[test]
+fn bucket_append_preflight_checks_width_and_keeps_spill_prefix() {
+    use crate::{
+        labeled::{BucketLabelKey, record::LabelBucket},
+        traits::CsrVertex,
+    };
+    let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 0, 7, 5);
+    assert!(
+        bucket
+            .with_degree(u32::MAX)
+            .try_grow_packed_slab_by_one()
+            .is_err()
+    );
+    assert!(
+        bucket
+            .with_stored_slots(u32::MAX)
+            .try_grow_packed_slab_by_one()
+            .is_err()
+    );
+    let spilled = bucket.try_with_spill_run(0).unwrap();
+    assert!(
+        spilled
+            .with_degree(u32::MAX)
+            .try_grow_packed_slab_by_one()
+            .is_err()
+    );
+    let grown = spilled.try_grow_packed_slab_by_one().unwrap();
+    assert_eq!(grown.degree(), 8);
+    assert_eq!(grown.stored_degree(), 5);
+    assert_eq!(grown.spill_run(), 0);
+}
+
+#[test]
 fn core_vertex_append_preflight_rejects_width_overflow() {
     use crate::{lara::vertex::Vertex, traits::CsrVertex};
     for (live, stored) in [(u32::MAX, u32::MAX), (1, u32::MAX)] {
