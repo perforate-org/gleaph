@@ -7,6 +7,7 @@ use crate::{
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
+        spill_run_store::SpillRunId,
     },
     lara::{edge::OutEdgeSlabIter, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -25,11 +26,12 @@ enum BucketEdgeDeleteLocation {
     Slab {
         physical_slot: u64,
     },
-    OverflowLog {
-        leaf: u32,
-        entry_idx: u32,
-        newer_entry_idx: Option<u32>,
-        moves: Vec<EdgeSlotMove>,
+    /// A row of the bucket's own spill run. ADR 0097 §7: a delete tombstones the row in place and
+    /// the run's length is unchanged, so the variant carries neither a successor index nor the
+    /// moves a chain splice used to report.
+    Spill {
+        run: SpillRunId,
+        index: u32,
     },
 }
 
@@ -429,8 +431,8 @@ where
         bucket: &LabelBucket,
     ) -> Result<(), LabeledOperationError> {
         debug_assert!(
-            bucket.degree() == 0 && bucket.overflow_log_head() < 0,
-            "F1 release requires an emptied log-free bucket"
+            bucket.degree() == 0 && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+            "F1 release requires an emptied run-free bucket"
         );
         if bucket.is_tiny_mode() {
             return Ok(());
@@ -599,31 +601,20 @@ where
                 .then_some((BucketEdgeDeleteLocation::Slab { physical_slot }, edge)));
         }
 
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        let log_ordinal = slot_index
+        let spill_index = slot_index
             .checked_sub(slab_prefix_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let chain = self
-            .edges
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
+        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
             return Ok(None);
         };
-        let newer_entry_idx = chain.get(log_ordinal as usize + 1).copied();
-        let moves = self.overflow_chain_slot_moves_after_delete(
-            leaf,
-            &chain,
-            log_ordinal as usize,
-            slab_prefix_slots,
-            bucket.bucket_label_key(),
-        )?;
-        let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        if spill_index >= self.edges.spill_used_len(run) {
+            return Ok(None);
+        }
+        let edge = self.edges.spill_edge_at(run, spill_index)?;
         Ok((!edge.is_tombstone_edge()).then_some((
-            BucketEdgeDeleteLocation::OverflowLog {
-                leaf,
-                entry_idx,
-                newer_entry_idx,
-                moves,
+            BucketEdgeDeleteLocation::Spill {
+                run,
+                index: spill_index,
             },
             edge,
         )))
@@ -687,34 +678,23 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let (removed_from_log, new_log_head, moves) = match location {
+        // ADR 0097 §7: a delete tombstones the row where it lives — slab slot or spill row — and
+        // leaves the run's length and every other row's ordinal untouched. Nothing is unlinked, so
+        // no successor, no head and no observer move are produced: the descriptor's spill run id is
+        // republished unchanged and only the live degree drops.
+        match location {
             BucketEdgeDeleteLocation::Slab { physical_slot } => {
                 self.edges
                     .write_slot(physical_slot, E::tombstone_edge())
                     .unwrap_or_else(|_| panic!("preflighted edge tombstone write failed"));
-                (false, bucket.overflow_log_head(), Vec::new())
             }
-            BucketEdgeDeleteLocation::OverflowLog {
-                leaf,
-                entry_idx,
-                newer_entry_idx,
-                moves,
-            } => {
-                let new_head = self
-                    .edges
-                    .unlink_overflow_log_entry(
-                        leaf,
-                        bucket.overflow_log_head(),
-                        entry_idx,
-                        newer_entry_idx,
-                    )
-                    .unwrap_or_else(|_| panic!("preflighted edge-log unlink failed"));
-                (true, new_head, moves)
+            BucketEdgeDeleteLocation::Spill { run, index } => {
+                // Same reporting as the bypass delete path (this commit's sibling): the row was
+                // read during location, so only a store fault can fail the tombstone write.
+                self.edges.spill_tombstone_row(run, index)?;
             }
-        };
-        let updated = bucket
-            .with_overflow_log_head(new_log_head)
-            .after_slab_tombstone_delete();
+        }
+        let updated = bucket.after_slab_tombstone_delete();
         // F1: an emptied bucket releases its slab span back to the free store
         // and syncs the vertex cover (stale width/anchor otherwise linger as
         // phantom occupancy until slide heals them; block release reclaims the
@@ -726,7 +706,13 @@ where
         // behavior (slide heals), never fails a successful delete (Plan 0319
         // §Step 2 precedent). The cover sync below always runs (it only
         // shrinks to survivor ends, never below live content).
-        let emptied = updated.degree() == 0 && updated.overflow_log_head() < 0;
+        // "Emptied" keeps its old meaning — the bucket holds nothing outside a clean descriptor —
+        // but the retired log head no longer expresses it. Per ADR 0097 §7 a delete does not free
+        // the run, so a bucket whose rows all came from the spill still owns one (with tombstoned
+        // rows) after its last delete: it is reclaimed by per-bucket compaction, not here, and
+        // zeroing its prefix while the run holds rows would break `resident = prefix + spill`.
+        let emptied =
+            updated.degree() == 0 && updated.edge_spill_run() == crate::traits::NO_SPILL_RUN;
         if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
@@ -738,20 +724,14 @@ where
         } else {
             updated
         };
-        if bucket.inline_property_byte_width() == 0
-            && !removed_from_log
-            && !(updated.degree() == 0 && updated.overflow_log_head() < 0)
-        {
+        if bucket.inline_property_byte_width() == 0 && !emptied {
             self.buckets
                 .write_label_bucket_degree(slot, updated.degree())?;
         } else {
             self.buckets.write_label_bucket_slot(slot, updated)?;
         }
         self.decrement_edge_counts_after_remove(src)?;
-        if removed_from_log {
-            self.invalidate_bucket_lookup_for_label(src, bucket.bucket_label_key());
-        }
-        Ok(moves)
+        Ok(Vec::new())
     }
 
     pub(super) fn for_each_out_edges_by_directedness_impl<B, Visit>(
@@ -1328,7 +1308,7 @@ where
                     if bucket.degree() == 0 {
                         return Ok(None);
                     }
-                    if bucket.overflow_log_head() >= 0 {
+                    if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                         let log_chains =
                             self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
                         let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
@@ -1366,22 +1346,18 @@ where
                                 }));
                             }
                         }
-                        let leaf = self.inline_property_bytes_log_leaf(src);
-                        let chain = self
-                            .edges
-                            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                        for (ordinal, entry_idx) in chain.iter().copied().enumerate() {
-                            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+                        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
+                            return Ok(None);
+                        };
+                        for ordinal in 0..self.edges.spill_used_len(run) {
+                            let edge = self.edges.spill_edge_at(run, ordinal)?;
                             if edge.is_tombstone_edge() {
                                 continue;
                             }
-                            let slot_index =
-                                bucket
-                                    .stored_slots_raw()
-                                    .checked_add(u32::try_from(ordinal).map_err(|_| {
-                                        LaraOperationError::CollectAllocationOverflow
-                                    })?)
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            let slot_index = bucket
+                                .stored_slots_raw()
+                                .checked_add(ordinal)
+                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                             let edge_with_value = self.attach_edge_inline_property(
                                 src,
                                 &vertex,
@@ -1392,25 +1368,15 @@ where
                                 log_chains.as_ref(),
                             )?;
                             if matches(&edge_with_value) {
-                                let moves = self.overflow_chain_slot_moves_after_delete(
-                                    leaf,
-                                    &chain,
-                                    ordinal,
-                                    bucket.stored_slots_raw(),
-                                    bucket.bucket_label_key(),
-                                )?;
-                                let newer_entry_idx = chain.get(ordinal + 1).copied();
                                 let committed_moves = self.remove_bucket_edge_at_location(
                                     src,
                                     &vertex,
                                     slot,
                                     bucket,
                                     slot_index,
-                                    BucketEdgeDeleteLocation::OverflowLog {
-                                        leaf,
-                                        entry_idx,
-                                        newer_entry_idx,
-                                        moves,
+                                    BucketEdgeDeleteLocation::Spill {
+                                        run,
+                                        index: ordinal,
                                     },
                                 )?;
                                 return Ok(Some(EdgeRemoval {
@@ -1710,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_log_edge_unlinks_without_tombstone_and_preserves_scan_order() {
+    fn removing_spill_edge_tombstones_in_place_and_preserves_slots() {
         let graph = inline_property_test_graph_with_capacity(1 << 20);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -1753,25 +1719,15 @@ mod tests {
         let removal = graph
             .remove_edge_matching_with_move(VertexId::from(0), road, |edge| edge.target == 33)
             .unwrap()
-            .expect("log edge removed");
+            .expect("spill edge removed");
         assert_eq!(removal.removed.target, 33);
-        assert_eq!(
-            removal.moves,
-            vec![
-                EdgeSlotMove {
-                    label_id: road,
-                    old_slot_index: later_slot_before,
-                    new_slot_index: removed_slot,
-                },
-                EdgeSlotMove {
-                    label_id: road,
-                    old_slot_index: head_slot_before,
-                    new_slot_index: head_slot_before - 1,
-                },
-            ]
-        );
-        assert_eq!(slot_of(34), later_slot_before - 1);
-        assert_eq!(slot_of(35), head_slot_before - 1);
+        assert_eq!(removal.removed.slot_index, removed_slot);
+        // ADR 0097 §7: the delete tombstones the spill row in place, so no survivor's ordinal
+        // moves and no observer move is reported. The retired chain splice shifted every later row
+        // down and reported two moves; that mechanism, and this assertion's old form, are gone.
+        assert_eq!(removal.moves, vec![]);
+        assert_eq!(slot_of(34), later_slot_before);
+        assert_eq!(slot_of(35), head_slot_before);
         assert!(
             graph
                 .iter_edges_for_label(VertexId::from(0), road)
@@ -1784,15 +1740,27 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         let slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
-        let leaf = graph.inline_property_bytes_log_leaf(VertexId::from(0));
-        let chain = graph
+        let run = graph
             .edges()
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        assert_eq!(chain.len() as u32, bucket.degree() - slab_prefix);
-        assert!(chain.into_iter().all(|entry_idx| {
-            let (_, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
-            !edge.is_deleted_slot()
-        }));
+            .spill_mint(bucket.edge_spill_run())
+            .expect("bucket owns a spill run");
+        let used = graph.edges().spill_used_len(run);
+        let live_in_run = (0..used)
+            .filter(|ordinal| {
+                !graph
+                    .edges()
+                    .spill_edge_at(run, *ordinal)
+                    .expect("run row")
+                    .is_tombstone_edge()
+            })
+            .count() as u32;
+        // The tombstone stays resident (the run's length never shrinks), so the run is longer than
+        // its live rows, and the live rows beyond the prefix still account for the degree.
+        assert_eq!(live_in_run, bucket.degree() - slab_prefix);
+        assert!(
+            live_in_run < used,
+            "the deleted row's tombstone stays in the run"
+        );
         let moved = graph
             .iter_edges_for_label(VertexId::from(0), road)
             .unwrap()
