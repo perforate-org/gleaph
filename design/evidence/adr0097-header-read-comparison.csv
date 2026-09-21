@@ -1,0 +1,3 @@
+direction,before_source,after_source,instructions_before,instructions_after,delta_percent,bucket_reads_before,bucket_reads_after,bucket_bytes_both,live_decodes_both,callbacks_both
+ascending,40faf5f59,c2088b8e0,896221,790432,-11.803897,737,134,7670,1650,1650
+descending,40faf5f59,c2088b8e0,713437,557118,-21.910694,1089,198,8118,1650,1650
