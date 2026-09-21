@@ -284,9 +284,9 @@ pub struct DescOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
     pub(super) yield_remaining: u32,
     /// Reserved overflow-log entries in descending-scan order (newest chain head first).
-    pub(super) log_entries: Vec<Option<E>>,
-    pub(super) log_pos: usize,
-    pub(super) next_log_slot: u32,
+    pub(super) spill_replay: Vec<Option<E>>,
+    pub(super) replay_pos: usize,
+    pub(super) replay_slot: u32,
     pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
     /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries, sorted for
     /// binary search. Slots in this set are skipped during the slab phase without decoding.
@@ -295,15 +295,15 @@ pub struct DescOutEdgesIter<'a, E: CsrEdge, M: Memory> {
 
 /// Descending overflow-log scan pieces for hybrid labeled payload batching.
 pub(crate) struct OutOverflowDescParts<E> {
-    pub log_entries: Vec<Option<E>>,
+    pub spill_replay: Vec<Option<E>>,
     pub deleted_slab_offsets: Vec<u32>,
     pub slab_slots: u32,
-    pub next_log_slot: u32,
+    pub replay_slot: u32,
 }
 
 /// Ascending overflow-log scan pieces for hybrid labeled payload batching.
 pub(crate) struct OutOverflowAscParts<E> {
-    pub inserted_log_entries: Vec<Option<E>>,
+    pub inserted_replay: Vec<Option<E>>,
     pub deleted_slab_offsets: Vec<u32>,
     pub slab_slots: u32,
     pub next_inserted_log_slot: u32,
@@ -321,9 +321,9 @@ where
             base_slot_start: 0,
             remaining_slab: 0,
             yield_remaining: 0,
-            log_entries: Vec::new(),
-            log_pos: 0,
-            next_log_slot: 0,
+            spill_replay: Vec::new(),
+            replay_pos: 0,
+            replay_slot: 0,
             slab_chunk: None,
             deleted_slab_offsets: Vec::new(),
         }
@@ -351,10 +351,10 @@ where
 
     pub(crate) fn into_overflow_desc_parts(self) -> OutOverflowDescParts<E> {
         OutOverflowDescParts {
-            log_entries: self.log_entries,
+            spill_replay: self.spill_replay,
             deleted_slab_offsets: self.deleted_slab_offsets,
             slab_slots: self.remaining_slab,
-            next_log_slot: self.next_log_slot,
+            replay_slot: self.replay_slot,
         }
     }
 }
@@ -371,11 +371,11 @@ where
         if self.yield_remaining == 0 {
             return None;
         }
-        while self.log_pos < self.log_entries.len() {
-            let edge = self.log_entries[self.log_pos].clone();
-            self.log_pos += 1;
-            let slot = self.next_log_slot;
-            self.next_log_slot = self.next_log_slot.saturating_sub(1);
+        while self.replay_pos < self.spill_replay.len() {
+            let edge = self.spill_replay[self.replay_pos].clone();
+            self.replay_pos += 1;
+            let slot = self.replay_slot;
+            self.replay_slot = self.replay_slot.saturating_sub(1);
             if let Some(edge) = edge {
                 self.yield_remaining -= 1;
                 return Some((slot, edge.with_slot_index(slot)));
@@ -415,11 +415,11 @@ where
         if self.yield_remaining == 0 {
             return None;
         }
-        while self.log_pos < self.log_entries.len() {
-            let edge = self.log_entries[self.log_pos].clone();
-            self.log_pos += 1;
-            let slot = self.next_log_slot;
-            self.next_log_slot = self.next_log_slot.saturating_sub(1);
+        while self.replay_pos < self.spill_replay.len() {
+            let edge = self.spill_replay[self.replay_pos].clone();
+            self.replay_pos += 1;
+            let slot = self.replay_slot;
+            self.replay_slot = self.replay_slot.saturating_sub(1);
             if let Some(edge) = edge {
                 self.yield_remaining -= 1;
                 return Some(edge.with_slot_index(slot));
@@ -451,10 +451,10 @@ where
         if n == 0 {
             return Ok(());
         }
-        while n > 0 && self.log_pos < self.log_entries.len() {
-            let live = self.log_entries[self.log_pos].is_some();
-            self.log_pos += 1;
-            self.next_log_slot = self.next_log_slot.saturating_sub(1);
+        while n > 0 && self.replay_pos < self.spill_replay.len() {
+            let live = self.spill_replay[self.replay_pos].is_some();
+            self.replay_pos += 1;
+            self.replay_slot = self.replay_slot.saturating_sub(1);
             if live {
                 self.yield_remaining = self.yield_remaining.saturating_sub(1);
                 n -= 1;
@@ -533,7 +533,7 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Reserved overflow-log entries in head-first chain order (newest→oldest); `None` marks
     /// deleted slots. The iterator walks this list backward so the yielded order is the
     /// materialization order (oldest→newest).
-    inserted_log_entries: Vec<Option<E>>,
+    inserted_replay: Vec<Option<E>>,
     /// Index of the next reserved log entry to yield, walked from the end of the list.
     inserted_log_pos: usize,
     /// Logical slot assigned to the next replayed log entry (starts at `slab_slots`).
@@ -571,7 +571,7 @@ where
         slab_slots: u32,
         remaining: u32,
         deleted_slab_offsets: Vec<u32>,
-        inserted_log_entries: Vec<Option<E>>,
+        inserted_replay: Vec<Option<E>>,
     ) -> Self {
         let nbytes = (slab_slots as usize).saturating_mul(E::BYTES);
         let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
@@ -591,8 +591,8 @@ where
             remaining,
             slab_chunk,
             deleted_slab_offsets,
-            inserted_log_pos: inserted_log_entries.len(),
-            inserted_log_entries,
+            inserted_log_pos: inserted_replay.len(),
+            inserted_replay,
             next_inserted_log_slot: slab_slots,
         }
     }
@@ -603,7 +603,7 @@ where
         slab_slots: u32,
         remaining: u32,
         deleted_slab_offsets: Vec<u32>,
-        inserted_log_entries: Vec<Option<E>>,
+        inserted_replay: Vec<Option<E>>,
     ) -> Self {
         Self::with_log_replay(
             store,
@@ -611,7 +611,7 @@ where
             slab_slots,
             remaining,
             deleted_slab_offsets,
-            inserted_log_entries,
+            inserted_replay,
         )
     }
 
@@ -646,7 +646,7 @@ where
 
     pub(crate) fn into_overflow_asc_parts(self) -> OutOverflowAscParts<E> {
         OutOverflowAscParts {
-            inserted_log_entries: self.inserted_log_entries,
+            inserted_replay: self.inserted_replay,
             deleted_slab_offsets: self.deleted_slab_offsets,
             slab_slots: self.slab_slots,
             next_inserted_log_slot: self.next_inserted_log_slot,
@@ -679,7 +679,7 @@ where
         }
         while self.inserted_log_pos > 0 {
             self.inserted_log_pos -= 1;
-            let edge = self.inserted_log_entries[self.inserted_log_pos].clone();
+            let edge = self.inserted_replay[self.inserted_log_pos].clone();
             let slot = self.next_inserted_log_slot;
             self.next_inserted_log_slot += 1;
             if let Some(edge) = edge {
@@ -719,7 +719,7 @@ where
         }
         while self.inserted_log_pos > 0 {
             self.inserted_log_pos -= 1;
-            let edge = self.inserted_log_entries[self.inserted_log_pos].clone();
+            let edge = self.inserted_replay[self.inserted_log_pos].clone();
             let slot = self.next_inserted_log_slot;
             self.next_inserted_log_slot += 1;
             if let Some(edge) = edge {

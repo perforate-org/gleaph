@@ -132,9 +132,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
                 yield_remaining: 0,
-                log_entries: Vec::new(),
-                log_pos: 0,
-                next_log_slot: 0,
+                spill_replay: Vec::new(),
+                replay_pos: 0,
+                replay_slot: 0,
                 slab_chunk: None,
                 deleted_slab_offsets: Vec::new(),
             });
@@ -162,9 +162,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: stored,
                 yield_remaining: live,
-                log_entries: Vec::new(),
-                log_pos: 0,
-                next_log_slot: 0,
+                spill_replay: Vec::new(),
+                replay_pos: 0,
+                replay_slot: 0,
                 slab_chunk,
                 deleted_slab_offsets: Vec::new(),
             });
@@ -191,19 +191,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let log_header = self.log.header();
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let (log_entries, mut deleted_slab_offsets) =
+        let (spill_replay, mut deleted_slab_offsets) =
             self.prefetch_log_entries_head_first(&log_header, leaf, v.log_head())?;
         deleted_slab_offsets.sort_unstable();
         let reserved_log_slots =
-            u32::try_from(log_entries.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+            u32::try_from(spill_replay.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         Ok(DescOutEdgesIter {
             store: self,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
             yield_remaining: v.degree(),
-            log_entries,
-            log_pos: 0,
-            next_log_slot: slab_count
+            spill_replay,
+            replay_pos: 0,
+            replay_slot: slab_count
                 .saturating_add(reserved_log_slots)
                 .saturating_sub(1),
             slab_chunk,
