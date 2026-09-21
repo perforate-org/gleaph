@@ -359,13 +359,6 @@ where
                 // above routes all tiny selections through the canonical visitor whose
                 // funnel arm serves them inline). No arm needed — documented, not assumed.
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                let overflow_chain =
-                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
-                        self.edges.overflow_log_chain_asc_indices(
-                            self.inline_property_bytes_log_leaf(owner),
-                            bucket.overflow_log_head(),
-                        )
-                    });
                 for slot_index in 0..logical_slots {
                     if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
                         owner,
@@ -374,7 +367,6 @@ where
                         &bucket,
                         slot_index,
                         label,
-                        overflow_chain.as_deref(),
                     )? && let ControlFlow::Break(value) = visit(slot_index, edge)
                     {
                         return Ok(ControlFlow::Break(value));
@@ -1894,15 +1886,11 @@ where
                 let extent = match order {
                     OutEdgeOrder::Ascending => 0,
                     OutEdgeOrder::Descending => {
-                        let log_len = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-                            let leaf =
-                                Self::leaf_index_for_vid(owner, self.edges.header().segment_size);
-                            self.edges
-                                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                        } else {
-                            0
+                        let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+                            Ok(run) => self.edges.spill_used_len(run),
+                            Err(_) => 0,
                         };
-                        bucket.stored_slots_raw().checked_add(log_len).ok_or(
+                        bucket.stored_slots_raw().checked_add(spill_rows).ok_or(
                             LabeledOperationError::from(
                                 LaraOperationError::CollectAllocationOverflow,
                             ),
@@ -2950,11 +2938,12 @@ where
         let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, bucket);
 
         if order == OutEdgeOrder::Descending {
-            let prefetched = self.edges.prefetch_overflow_log_replay_desc(
-                self.inline_property_bytes_log_leaf(owner),
-                bucket.overflow_log_head(),
-            )?;
-            let reserved_log_slots = u32::try_from(prefetched.0.len())
+            // A run is contiguous, so descending and ascending replay are the same ordinal list
+            // (ADR 0097 §3): both take the run's live-row tags.
+            let prefetched = self
+                .edges
+                .prefetch_spill_replay_tags(self.edges.spill_mint(bucket.edge_spill_run())?)?;
+            let reserved_log_slots = u32::try_from(prefetched.len())
                 .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
             let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
             // If the bucket has tombstones in the overflow log, fall back to the sparse
@@ -2964,10 +2953,9 @@ where
                     owner, label, bucket, order, scratch, visit,
                 );
             }
-            let deleted_slab_offsets = prefetched.1.clone();
             let edge_slab_slots = slab_slots;
             let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
-            // Descending order: overflow log entries have the highest logical slots,
+            // Descending order: spill rows have the highest logical slots,
             // followed by edge-slab entries whose inline_property_bytes lives in the overflow log,
             // followed by the dense inline_property_bytes-slab prefix.
             let _ = self.emit_hybrid_overflow_log_inline_property_values_desc_next(
@@ -2992,7 +2980,7 @@ where
             let _ = self.visit_dense_out_inline_property_batches_for_slab_prefix_next(
                 bucket,
                 value_slab_slots,
-                &deleted_slab_offsets,
+                &[],
                 order,
                 scratch,
                 visit,
@@ -3002,25 +2990,23 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        let prefetched = self.edges.prefetch_overflow_log_inserted_tags_asc(
-            self.inline_property_bytes_log_leaf(owner),
-            bucket.overflow_log_head(),
-        )?;
+        let prefetched = self
+            .edges
+            .prefetch_spill_replay_tags(self.edges.spill_mint(bucket.edge_spill_run())?)?;
         let reserved_log_slots =
-            u32::try_from(prefetched.0.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+            u32::try_from(prefetched.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         let reserved = bucket.stored_slots().saturating_add(reserved_log_slots);
         if reserved != bucket.degree() {
             return self.visit_sparse_out_inline_property_batches_for_bucket_next(
                 owner, label, bucket, order, scratch, visit,
             );
         }
-        let deleted_slab_offsets = prefetched.1.clone();
         let edge_slab_slots = slab_slots;
         let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
         let _ = self.visit_dense_out_inline_property_batches_for_slab_prefix_next(
             bucket,
             value_slab_slots,
-            &deleted_slab_offsets,
+            &[],
             order,
             scratch,
             visit,
@@ -3257,7 +3243,7 @@ where
         &self,
         owner: VertexId,
         bucket: &LabelBucket,
-        prefetched: (Vec<Option<u32>>, Vec<u32>, Vec<u8>),
+        prefetched: Vec<Option<u32>>,
         order: OutEdgeOrder,
         scratch: &mut LabeledInlinePropertyValueBatchScratch,
         visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
@@ -3266,9 +3252,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let leaf = self.inline_property_bytes_log_leaf(owner);
-        let (mut replay_entries, mut deleted_slab_offsets, log_table) = prefetched;
-        deleted_slab_offsets.sort_unstable();
+        let mut replay_entries = prefetched;
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
         let label_id = bucket.bucket_label_key();
         let width = usize::from(bucket.inline_property_byte_width());
@@ -3313,17 +3297,14 @@ where
         let replay = &mut scratch.hybrid_overflow_replay;
         replay.clear();
         replay.src = owner;
-        replay.leaf = leaf;
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
         replay.degree = bucket.degree();
         replay.stored_slots = bucket.stored_slots();
-        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.spill_run = self.edges.spill_mint(bucket.edge_spill_run()).ok();
         replay.edge_start = bucket.edge_start();
-        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
-        replay.log_table = log_table;
         replay_entries.reverse();
-        replay.log_indices_by_slot = replay_entries;
+        replay.spill_indices_by_slot = replay_entries;
         Ok(ControlFlow::Continue(()))
     }
 
@@ -3331,7 +3312,7 @@ where
         &self,
         owner: VertexId,
         bucket: &LabelBucket,
-        prefetched: (Vec<Option<u32>>, Vec<u32>, Vec<u8>),
+        prefetched: Vec<Option<u32>>,
         order: OutEdgeOrder,
         scratch: &mut LabeledInlinePropertyValueBatchScratch,
         visit: &mut impl FnMut(LabeledInlinePropertyValueBatch<'_>) -> ControlFlow<B>,
@@ -3340,15 +3321,13 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let leaf = self.inline_property_bytes_log_leaf(owner);
-        let (inserted_entries, deleted_slab_offsets, log_table) = prefetched;
+        let inserted_entries = prefetched;
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
         let label_id = bucket.bucket_label_key();
         let width = usize::from(bucket.inline_property_byte_width());
         let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let mut next_inserted_log_slot = slab_slots;
-        let mut next_inline_property_bytes_ordinal = slab_slots
-            .saturating_sub(u32::try_from(deleted_slab_offsets.len()).unwrap_or(u32::MAX));
+        let mut next_inline_property_bytes_ordinal = slab_slots;
 
         let mut live_slots = Vec::with_capacity(inserted_entries.len());
         for &log_entry in &inserted_entries {
@@ -3383,16 +3362,13 @@ where
         let replay = &mut scratch.hybrid_overflow_replay;
         replay.clear();
         replay.src = owner;
-        replay.leaf = leaf;
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
         replay.degree = bucket.degree();
         replay.stored_slots = bucket.stored_slots();
-        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.spill_run = self.edges.spill_mint(bucket.edge_spill_run()).ok();
         replay.edge_start = bucket.edge_start();
-        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
-        replay.log_table = log_table;
-        replay.log_indices_by_slot = inserted_entries;
+        replay.spill_indices_by_slot = inserted_entries;
         Ok(ControlFlow::Continue(()))
     }
 
@@ -3906,13 +3882,6 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let edge_overflow_log_chains = (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
-            .then(|| {
-                self.edges.overflow_log_chain_asc_indices(
-                    self.inline_property_bytes_log_leaf(owner),
-                    bucket.overflow_log_head(),
-                )
-            });
         let inline_property_bytes_log_chains =
             self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
         let mut selected_edges = Vec::with_capacity(selected.len());
@@ -3924,7 +3893,6 @@ where
                 &bucket,
                 slot_index,
                 label,
-                edge_overflow_log_chains.as_deref(),
             )? {
                 EdgeSlotState::Live(edge) => Some(edge),
                 EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
@@ -4157,13 +4125,6 @@ where
                     return Ok(EdgeSlotState::Missing);
                 }
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, _bucket_slot)?;
-                let overflow_chain =
-                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
-                        self.edges.overflow_log_chain_asc_indices(
-                            self.inline_property_bytes_log_leaf(owner),
-                            bucket.overflow_log_head(),
-                        )
-                    });
                 self.read_edge_state_at_slot(
                     owner,
                     &vertex,
@@ -4171,7 +4132,6 @@ where
                     &bucket,
                     slot_index,
                     label,
-                    overflow_chain.as_deref(),
                 )
             }
         }
@@ -4186,7 +4146,6 @@ where
         bucket: &LabelBucket,
         slot_index: u32,
         label: BucketLabelKey,
-        overflow_chain: Option<&[u32]>,
     ) -> Result<EdgeSlotState<E>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -4236,27 +4195,18 @@ where
             return Ok(EdgeSlotState::Live(edge));
         }
 
-        let log_ordinal =
-            slot_index
-                .checked_sub(slab_prefix)
-                .ok_or(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ))?;
-        let leaf = self.inline_property_bytes_log_leaf(owner);
-        let chain_storage;
-        let chain = match overflow_chain {
-            Some(chain) => chain,
-            None => {
-                chain_storage = self
-                    .edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                &chain_storage
-            }
-        };
-        let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
+        // A run is contiguous, so the logical slot maps straight to a row index (ADR 0097 §3):
+        // there is no chain to walk and no precomputed chain to pass in.
+        let row_index = slot_index
+            .checked_sub(slab_prefix)
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))?;
+        let run = self.edges.spill_mint(bucket.edge_spill_run())?;
+        if row_index >= self.edges.spill_used_len(run) {
             return Ok(EdgeSlotState::Missing);
-        };
-        let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        }
+        let edge = self.edges.spill_edge_at(run, row_index)?;
         if edge.is_deleted_slot() || edge.is_tombstone_edge() {
             return Ok(EdgeSlotState::Tombstone);
         }
@@ -4333,7 +4283,7 @@ where
                     && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
                     && replay.degree == bucket.degree()
                     && replay.stored_slots == bucket.stored_slots_raw()
-                    && replay.overflow_log_head == bucket.overflow_log_head()
+                    && replay.spill_run == self.edges.spill_mint(bucket.edge_spill_run()).ok()
                     && replay.edge_start == bucket.edge_start()
                 {
                     return self.read_selected_slots_with_hybrid_replay(
@@ -4345,15 +4295,6 @@ where
                     );
                 }
 
-                let overflow_chain =
-                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
-                        #[cfg(test)]
-                        crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
-                        self.edges.overflow_log_chain_asc_indices(
-                            self.inline_property_bytes_log_leaf(owner),
-                            bucket.overflow_log_head(),
-                        )
-                    });
                 for slot_index in visit_order {
                     if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
                         owner,
@@ -4362,7 +4303,6 @@ where
                         &bucket,
                         slot_index,
                         label,
-                        overflow_chain.as_deref(),
                     )? {
                         visit(slot_index, edge);
                     }
@@ -4383,12 +4323,8 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let log_table = (!replay.log_table.is_empty()).then_some(replay.log_table.as_slice());
         for &slot_index in visit_order {
             if slot_index < replay.slab_slots {
-                if slab_slot_deleted(slot_index, &replay.deleted_slab_offsets) {
-                    continue;
-                }
                 let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
                     bucket.edge_start(),
                     u64::from(slot_index),
@@ -4407,15 +4343,19 @@ where
                 visit(slot_index, edge);
                 continue;
             }
-            let Some(log_slot) = slot_index.checked_sub(replay.slab_slots) else {
+            let Some(spill_slot) = slot_index.checked_sub(replay.slab_slots) else {
                 continue;
             };
-            let Some(Some(log_idx)) = replay.log_indices_by_slot.get(log_slot as usize) else {
+            let Some(Some(row_index)) = replay.spill_indices_by_slot.get(spill_slot as usize)
+            else {
+                continue;
+            };
+            let Some(run) = replay.spill_run else {
                 continue;
             };
             let edge = self
                 .edges
-                .decode_overflow_log_edge_from_table(replay.leaf, *log_idx, log_table)
+                .spill_edge_at(run, *row_index)?
                 .with_slot_index(slot_index)
                 .with_label_id(label.raw());
             if edge.is_tombstone_edge() {
@@ -4885,13 +4825,23 @@ where
             }
             // Bypass vertices use a single synthetic bucket so the iterator delegates
             // to traverse_next on first `next()`.
-            let bucket = LabelBucket::from_parts(
+            // A bypass row carries its own spill run id (ADR 0097 §3) and its `stored_degree` is
+            // the total backing width, so the synthetic bucket takes the *prefix* width (the
+            // bypass reader's `stored_degree - run rows` derivation) and hands the run over:
+            // without the run the iterator would read only the prefix and lose the spill rows.
+            let spill_rows = match self.edges.spill_mint(vertex.bypass_spill_run()) {
+                Ok(run) => self.edges.spill_used_len(run),
+                Err(_) => 0,
+            };
+            let mut bucket = LabelBucket::from_parts(
                 label,
                 vertex.base_slot_start(),
                 vertex.degree(),
-                vertex.stored_degree(),
-                -1,
+                vertex.stored_degree().saturating_sub(spill_rows),
             );
+            if spill_rows > 0 {
+                bucket = bucket.with_edge_spill_run(vertex.bypass_spill_run());
+            }
             return Ok(LabeledOutEdgesIter::from_buckets(
                 self,
                 src,
@@ -6799,7 +6749,7 @@ mod tests {
         assert!(
             !scratch_b
                 .hybrid_overflow_replay
-                .log_indices_by_slot
+                .spill_indices_by_slot
                 .is_empty()
         );
 
@@ -6992,10 +6942,10 @@ mod tests {
         );
     }
 
-    /// `phase 1 → delete an overflow edge → phase 2` must fall back to sparse. Removing an
-    /// overflow-log edge tombstones the log entry in place: `src`, `label_id`, and the slab/log
-    /// split are all unchanged, so only the bucket snapshot (`degree`) catches the mutation. Without
-    /// it, the stale cached `log_table` would still decode and return the deleted edge.
+    /// `phase 1 → delete an overflow edge → phase 2` must fall back to sparse. Removing a spill
+    /// row tombstones it in place: `src`, `label_id`, and the prefix/spill split are all unchanged,
+    /// so only the bucket snapshot (`degree`) catches the mutation. Without it, the stale cached
+    /// row list would still yield the deleted edge.
     #[test]
     fn hybrid_replay_after_overflow_delete_falls_back_to_sparse() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);

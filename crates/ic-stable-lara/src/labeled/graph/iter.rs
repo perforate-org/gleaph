@@ -85,42 +85,40 @@ pub struct HybridOverflowEdgeReplay {
     /// `leaf = src / segment_size`, so distinct vertices share a leaf; phase 2 matches on `src` to
     /// reject a replay carried over from a different vertex in the same leaf.
     pub(super) src: VertexId,
-    pub(super) leaf: u32,
     pub(super) label_id: BucketLabelKey,
     pub(super) slab_slots: u32,
     /// Snapshot of the source bucket at phase-1 capture time. `src` + `label_id` + `slab_slots`
-    /// stay constant across an in-place overflow-log tombstone delete (the log entry is marked
-    /// removed without changing the slab/log split), so phase 2 also re-checks this snapshot and
-    /// falls back to sparse on any bucket mutation between the two phases.
+    /// stay constant across an in-place tombstone delete (the row is marked removed without
+    /// changing the prefix/spill split), so phase 2 also re-checks this snapshot and falls back to
+    /// sparse on any bucket mutation between the two phases.
     pub(super) degree: u32,
     pub(super) stored_slots: u32,
-    pub(super) overflow_log_head: i32,
+    /// The bucket's edge-plane spill run at capture time (ADR 0097 §3), or `None` when the bucket
+    /// held none. Phase 2 compares it with the descriptor's, so a released or replaced run
+    /// invalidates the replay instead of being read.
+    pub(super) spill_run: Option<crate::labeled::spill_run_store::SpillRunId>,
     pub(super) edge_start: u64,
-    pub(super) deleted_slab_offsets: Vec<u32>,
-    pub(super) log_table: Vec<u8>,
-    /// Overflow-log indices indexed by `raw_slot - slab_slots`. Tombstoned reserved slots are
-    /// retained as `None`, so replay lookup is direct and does not need a per-entry tree node.
-    pub(super) log_indices_by_slot: Vec<Option<u32>>,
+    /// Live rows beyond the prefix, indexed by `raw_slot - slab_slots`: `Some(row index)` for a
+    /// live row and `None` for a tombstoned one. A run is contiguous, so the row index is the
+    /// ordinal and replay lookup stays direct - no chain, no leaf table.
+    pub(super) spill_indices_by_slot: Vec<Option<u32>>,
 }
 
 impl HybridOverflowEdgeReplay {
     /// Returns whether this replay cache contains data that can satisfy a phase-2 topology read.
     pub fn is_active(&self) -> bool {
-        self.slab_slots > 0 || !self.log_indices_by_slot.is_empty()
+        self.slab_slots > 0 || !self.spill_indices_by_slot.is_empty()
     }
 
     pub(super) fn clear(&mut self) {
         self.src = VertexId::default();
-        self.leaf = 0;
         self.label_id = BucketLabelKey::from_raw(0);
         self.slab_slots = 0;
         self.degree = 0;
         self.stored_slots = 0;
-        self.overflow_log_head = -1;
+        self.spill_run = None;
         self.edge_start = 0;
-        self.deleted_slab_offsets.clear();
-        self.log_table.clear();
-        self.log_indices_by_slot.clear();
+        self.spill_indices_by_slot.clear();
     }
 }
 
