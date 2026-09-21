@@ -2397,16 +2397,16 @@ mod g6_zero_read_tests {
         assert!(bucket.is_tiny_mode());
         assert_eq!(bucket.degree(), 3);
         assert_eq!(TestEdge::BYTES, 4);
-        // Absolute bound: descriptor row (36B interim, ADR 0097 §3) + vertex row + lookup reads only.
+        // Absolute bound: descriptor row (34B final, ADR 0097 §3) + vertex row + lookup reads only.
         // No edge-slab/log/ipb/span bytes can hide in 149R/44W: a single slab
         // span read of the 2-edge prefix alone would cost 8B+ and the control
         // below shows the slab path's floor.
         // MEASURED at the spill swap (ADR 0097 §3), and reported as a disagreement with the
         // derived table: the derivation predicted 149R/44W, the measurement is 150R/44W. The extra
-        // read is the wider descriptor row (36 B) straddling a page boundary, which the derivation
-        // did not account for. The contract this test keeps is unchanged: the tiny path reads no
+        // read is the descriptor row's page-boundary straddle, which the derivation did not
+        // account for; the final 34-byte row (ADR 0097 §3) then saved two reads and two writes. The contract this test keeps is unchanged: the tiny path reads no
         // edge-slab/log/value/span bytes, and the slab control below still moves strictly more.
-        assert_eq!((r, w), (150, 44), "tiny insert byte shape changed");
+        assert_eq!((r, w), (148, 42), "tiny insert byte shape changed");
         // Differential control: promote to slab (5th edge), then measure a slab
         // append (6th edge) — it must read its slab span, strictly more than tiny.
         graph
@@ -2451,10 +2451,11 @@ mod g6_zero_read_tests {
         let sw = writes.get();
         // MEASURED at the spill swap, and reported as a disagreement with the derived table: the
         // derivation predicted 411R/72W from the pre-widening row (`372 + 5 x 7 + 4`, `65 + 7`),
-        // the measurement is 425R/73W. The wider 36 B descriptor row and vertex row straddle page
-        // boundaries, which adds page reads the derivation did not model. The control's contract
-        // (a slab append moves strictly more than the tiny append above) still holds.
-        assert_eq!((sr, sw), (425, 73), "slab control byte shape changed");
+        // the measurement is 419R/71W at the final 34-byte descriptor row (425R/73W at the interim
+        // 36-byte one). The descriptor and vertex rows straddle page boundaries, which adds page
+        // reads the derivation did not model. The control's contract (a slab append moves strictly
+        // more than the tiny append above) still holds.
+        assert_eq!((sr, sw), (419, 71), "slab control byte shape changed");
         assert!(
             sr > r && sw > w,
             "slab append must move strictly more bytes than tiny: tiny ({r},{w}) vs slab ({sr},{sw})"

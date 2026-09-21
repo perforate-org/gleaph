@@ -1019,8 +1019,9 @@ mod tests {
             2,
             17,
             4,
-            2,
-            1,
+            // A slab row carries no log state: bytes 27-28 are the run ids' low bytes there.
+            -1,
+            0,
         );
         buckets.write_label_bucket_slot(0, original).unwrap();
         buckets.write_label_bucket_degree(0, 4).unwrap();

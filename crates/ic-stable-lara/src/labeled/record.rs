@@ -111,13 +111,18 @@ impl Default for LabelBucket {
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
     ///
-    /// ADR 0097 §3: 29 -> 36 bytes. The added 7 bytes hold the edge run id's high 17 bits, the whole
-    /// values run id (32 bits) and a 7-bit named reserve (bits 49..56) - "reserve for the next bound
-    /// widening, not padding". Those bits cannot raise the edge arena's bound: the shared unlabeled
-    /// `Vertex` tail28 sets it (`design/storage/lara.md`). The final layout is 34 bytes, when slice 5
-    /// deletes the values log and its two bytes 27-28 join the added region; that move is documented
-    /// in ADR 0097 and has no code path yet.
-    pub const BYTES: usize = 36;
+    /// ADR 0097 §3, final width: 29 -> 34 bytes. Bytes 27..34 hold the edge run id's high 17 bits,
+    /// the whole values run id (32 bits) and a 7-bit named reserve (bits 49..56) - "reserve for the
+    /// next bound widening, not padding". Those bits cannot raise the edge arena's bound: the shared
+    /// unlabeled `Vertex` tail28 sets it (`design/storage/lara.md`).
+    ///
+    /// The region is **mode-dependent**, which is what makes 34 bytes possible: bytes 27-28 were the
+    /// values overflow log's head and length until slice 5 deleted that log, and they were already
+    /// the tiny mode's fourth target byte and used width and the tree mode's packed depth marker. A
+    /// tiny or tree bucket owns no run, so in those modes the two bytes keep that meaning and the
+    /// ids decode as [`NO_SPILL_RUN`]; in slab mode they are the ids' low bytes. The setters reject
+    /// a run on a tiny or tree bucket, so the wire can never disagree with the decoded state.
+    pub const BYTES: usize = 34;
     /// Edge-plane spill run id bits: [`BUCKET_EDGE_RUN_LOW_BITS`] in `word`, the rest in the added
     /// bytes.
     pub const EDGE_RUN_BITS: u32 = 27;
@@ -604,6 +609,11 @@ impl LabelBucket {
     /// ([`ArenaRows::EDGE`], the unlabeled tail28's 27-bit range) and must not be the sentinel.
     #[inline]
     pub fn try_with_edge_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
+        // Tiny and tree rows cannot carry a run on the wire (bytes 27..34 hold their own payload
+        // and depth marker), so a run on one of them is rejected rather than silently dropped.
+        if self.is_tiny_mode() || self.is_tree_mode() {
+            return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
+        }
         if SpillRunId::mint(run, ArenaRows::EDGE).is_err() {
             return Err(LabelBucketFieldError::SpillRunOutOfRange);
         }
@@ -644,6 +654,9 @@ impl LabelBucket {
     /// not be the sentinel.
     #[inline]
     pub fn try_with_values_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
+        if self.is_tiny_mode() || self.is_tree_mode() {
+            return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
+        }
         if SpillRunId::mint(run, ArenaRows::VALUES).is_err() {
             return Err(LabelBucketFieldError::SpillRunOutOfRange);
         }
@@ -828,16 +841,21 @@ impl LabelBucket {
             .expect("LabelBucket inline_property_bytes_offset wire slice must be 5 bytes");
         write_u40(inline_property_bytes_offset, value_wire);
         bytes[25..27].copy_from_slice(&inline_property_byte_width.to_le_bytes());
-        bytes[27] = inline_property_bytes_log_byte;
-        bytes[28] = inline_property_bytes_log_len;
-        // The added region: edge high 17 | values 32 | reserve 7 (56 bits).
-        // The edge run's high bits must be masked to their field width before they share the
-        // packed word with the values id: the sentinel (`u32::MAX`) shifts down to more bits than
-        // the field holds, and without the mask those extra bits corrupt the values run id.
-        let packed = (u64::from(edge_spill_run >> BUCKET_EDGE_RUN_LOW_BITS)
-            & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1))
-            | (u64::from(values_spill_run) << Self::EDGE_RUN_HIGH_BITS);
-        bytes[29..36].copy_from_slice(&packed.to_le_bytes()[..7]);
+        // Bytes 27..34: edge high 17 | values 32 | reserve 7 (56 bits) in slab mode; the mode's own
+        // two bytes plus zeros in tiny/tree mode, where no run can exist.
+        if word & (Self::TINY_MODE_BIT | Self::TREE_MODE_BIT) != 0 {
+            bytes[27] = inline_property_bytes_log_byte;
+            bytes[28] = inline_property_bytes_log_len;
+            bytes[29..34].fill(0);
+        } else {
+            // The edge run's high bits must be masked to their field width before they share the
+            // packed word with the values id: the sentinel (`u32::MAX`) shifts down to more bits
+            // than the field holds, and without the mask those extra bits corrupt the values run id.
+            let packed = (u64::from(edge_spill_run >> BUCKET_EDGE_RUN_LOW_BITS)
+                & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1))
+                | (u64::from(values_spill_run) << Self::EDGE_RUN_HIGH_BITS);
+            bytes[27..34].copy_from_slice(&packed.to_le_bytes()[..7]);
+        }
     }
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
@@ -911,28 +929,42 @@ impl LabelBucket {
             return Err(LabelBucketFieldError::InlinePropertyBytesOffsetOverflow);
         }
         let inline_property_byte_width = u16::from_le_bytes(chunk[25..27].try_into().unwrap());
-        let inline_property_bytes_log_byte = chunk[27];
-        let inline_property_bytes_log_len = chunk[28];
-        let mut added = [0u8; 8];
-        added[..7].copy_from_slice(&chunk[29..36]);
-        let added = u64::from_le_bytes(added);
-        let edge_run_bits = decode_bucket_word_edge_run_low(word)
-            | (((added & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1)) as u32)
-                << BUCKET_EDGE_RUN_LOW_BITS);
-        // The wire word carries the run id's low bits; the decoded row keeps the id in its own
-        // field only, so the word's copy is cleared (`write_to` re-injects it).
-        let word = clear_bucket_word_edge_run_low(word);
-        // ADR 0097 §3: the all-ones pattern is not a legal id, so it is the sentinel's wire
-        // spelling and must decode back to it. Without this mapping a row written with
-        // `NO_SPILL_RUN` would read back as a live-looking id (2^27 - 1) and every reader that
-        // asks "does this row own a run?" would answer yes.
-        let edge_spill_run = if edge_run_bits == Self::EDGE_RUN_ALL_ONES {
-            NO_SPILL_RUN
+        // Bytes 27..34 are mode-dependent: the ids in slab mode, the mode's own payload in
+        // tiny/tree mode (where no run can exist, so the ids are the sentinel).
+        let (
+            inline_property_bytes_log_byte,
+            inline_property_bytes_log_len,
+            edge_spill_run,
+            values_spill_run,
+        ) = if word & (Self::TINY_MODE_BIT | Self::TREE_MODE_BIT) != 0 {
+            (chunk[27], chunk[28], NO_SPILL_RUN, NO_SPILL_RUN)
         } else {
-            edge_run_bits
+            let mut added = [0u8; 8];
+            added[..7].copy_from_slice(&chunk[27..34]);
+            let added = u64::from_le_bytes(added);
+            // The wire word carries the id's low bits, so they are read before the word is
+            // cleared below (`write_to` re-injects them on the way out).
+            let edge_run_bits = decode_bucket_word_edge_run_low(word)
+                | (((added & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1)) as u32)
+                    << BUCKET_EDGE_RUN_LOW_BITS);
+            // ADR 0097 §3: the all-ones pattern is not a legal id, so it is the sentinel's
+            // wire spelling and must decode back to it. Without this mapping a row written
+            // with `NO_SPILL_RUN` would read back as a live-looking id (2^27 - 1) and every
+            // reader that asks "does this row own a run?" would answer yes.
+            let edge_spill_run = if edge_run_bits == Self::EDGE_RUN_ALL_ONES {
+                NO_SPILL_RUN
+            } else {
+                edge_run_bits
+            };
+            let values_spill_run = ((added >> Self::EDGE_RUN_HIGH_BITS)
+                & ((1u64 << Self::VALUES_RUN_BITS) - 1)) as u32;
+            // Bytes 27-28 are the ids' low bytes in this mode, so the retired log's two
+            // fields decode to "no log" - which is what the state-mismatch validation
+            // requires of a slab row.
+            (OVERFLOW_LOG_NONE, 0, edge_spill_run, values_spill_run)
         };
-        let values_spill_run =
-            ((added >> Self::EDGE_RUN_HIGH_BITS) & ((1u64 << Self::VALUES_RUN_BITS) - 1)) as u32;
+        // The decoded row keeps each id in its own field only, so the word's copy is cleared.
+        let word = clear_bucket_word_edge_run_low(word);
         // ADR 0096 §1: tiny buckets carry targets (not value/log state) in the
         // inline-property bytes. Validate the tiny wire rules here and return
         // before the slab/tree consistency rules below, which would misread
@@ -1882,10 +1914,11 @@ mod tests {
 
     #[test]
     fn wire_rows_match_documented_layout() {
-        // ADR 0097 §3: LabeledVertex 21 -> 25 (the bypass run id), LabelBucket 29 -> 36
-        // (interim; the final 34-byte layout waits for the values twin, slice 5).
+        // ADR 0097 §3: LabeledVertex 21 -> 25 (the bypass run id), LabelBucket 29 -> 34 (the
+        // final layout: bytes 27..34 hold the run ids in slab mode and the tiny/tree payload in
+        // those modes).
         assert_eq!(LabeledVertex::BYTES, 25);
-        assert_eq!(LabelBucket::BYTES, 36);
+        assert_eq!(LabelBucket::BYTES, 34);
         assert!(mem::size_of::<LabeledVertex>() >= LabeledVertex::BYTES);
         assert!(mem::size_of::<LabelBucket>() >= LabelBucket::BYTES);
     }
@@ -1907,6 +1940,9 @@ mod tests {
 
     /// A slab bucket with distinct values in every field the run-id setters must leave alone.
     fn populated_slab_bucket() -> LabelBucket {
+        // The retired values log's head and length are not slab state any more (ADR 0097 §3:
+        // bytes 27-28 are the run ids' low bytes in this mode), so a slab row carries the
+        // no-log spelling the decoder produces.
         LabelBucket::from_parts_with_inline_property(
             BucketLabelKey::from_raw(0x1234),
             0x0F_FFFF_FFFE,
@@ -1915,8 +1951,8 @@ mod tests {
             3,
             0xAB_CDEF_0123,
             5,
-            9,
-            4,
+            -1,
+            0,
         )
     }
 
@@ -1965,8 +2001,8 @@ mod tests {
         let base = populated_slab_bucket();
         let mut base_bytes = [0u8; LabelBucket::BYTES];
         base.write_to(&mut base_bytes);
-        // Bytes 8..29 hold the ipb fields and the values log bytes; the added region starts at 29.
-        let untouched = base_bytes[8..29].to_vec();
+        // Bytes 8..27 hold the ipb fields; 27..34 are the run ids' region (ADR 0097 §3).
+        let untouched = base_bytes[8..27].to_vec();
         let edge = base.with_edge_spill_run(0x00AB_CDEF);
         assert_eq!(edge.values_spill_run(), NO_SPILL_RUN);
         assert_eq!(edge.degree(), base.degree());
@@ -1975,28 +2011,26 @@ mod tests {
         assert_eq!(edge.is_tree_mode(), base.is_tree_mode());
         assert_eq!(edge.bucket_label_key(), base.bucket_label_key());
         assert_eq!(edge.edge_start(), base.edge_start());
-        assert_eq!(
-            edge.inline_property_bytes_log_head(),
-            base.inline_property_bytes_log_head()
-        );
-        assert_eq!(
-            edge.inline_property_bytes_log_len(),
-            base.inline_property_bytes_log_len()
-        );
+        // The retired log's two bytes are the ids' low bytes in slab mode, so they carry no log
+        // state there: both rows decode them as "no log".
+        assert_eq!(edge.inline_property_bytes_log_head(), -1);
+        assert_eq!(base.inline_property_bytes_log_head(), -1);
+        assert_eq!(edge.inline_property_bytes_log_len(), 0);
+        assert_eq!(base.inline_property_bytes_log_len(), 0);
         let mut edge_bytes = [0u8; LabelBucket::BYTES];
         edge.write_to(&mut edge_bytes);
-        assert_eq!(edge_bytes[8..29], untouched[..]);
+        assert_eq!(edge_bytes[8..27], untouched[..]);
         let values = base.with_values_spill_run(0x0BAD_F00D);
         assert_eq!(values.edge_spill_run(), NO_SPILL_RUN);
         let mut values_bytes = [0u8; LabelBucket::BYTES];
         values.write_to(&mut values_bytes);
-        assert_eq!(values_bytes[8..29], untouched[..]);
+        assert_eq!(values_bytes[8..27], untouched[..]);
     }
 
     #[test]
     fn tiny_payload_survives_the_spill_run_fields() {
-        // ADR 0096 §1 keeps tiny's payload meaning: the added region (bytes 29..36) is outside the
-        // payload range (12..28), and a tiny bucket must carry no run id.
+        // ADR 0096 §1 keeps tiny's payload meaning, and ADR 0097 §3 makes bytes 27..34 the ids'
+        // region only in slab mode: a tiny row keeps its payload there and carries no run id.
         let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 2, 2)
             .try_enable_tiny_mode()
             .expect("tiny")
@@ -2018,10 +2052,14 @@ mod tests {
         assert_eq!(back.tiny_used_width(), 3);
         assert_eq!(back.edge_spill_run(), NO_SPILL_RUN);
         assert_eq!(back.values_spill_run(), NO_SPILL_RUN);
-        // A wire row that carries a run id on a tiny bucket is rejected.
-        bytes[29] = 1;
+        // A tiny row cannot express a run id on the wire (bytes 27..34 are its payload there),
+        // so the setter is where that state is rejected.
         assert_eq!(
-            LabelBucket::try_read_from(&bytes),
+            tiny.try_with_values_spill_run(1),
+            Err(LabelBucketFieldError::SpillRunOnNonSlabBucket)
+        );
+        assert_eq!(
+            tiny.try_with_edge_spill_run(1),
             Err(LabelBucketFieldError::SpillRunOnNonSlabBucket)
         );
     }
@@ -2096,10 +2134,11 @@ mod tests {
         // tiny rules judge the row. Byte 28 carries the K=4 used width,
         // which a fresh slab descriptor leaves at 0 — valid for an empty bucket;
         // an out-of-range used width must fail with the precise tiny error.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0)
+            .try_enable_tiny_mode()
+            .expect("tiny");
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[6] |= 0x10; // word bit 52 (ADR 0097 §3 moved the tiny flag)
         assert!(LabelBucket::try_read_from(&bytes).is_ok());
         bytes[28] = 9; // used width above TINY_MAX_DEGREE
         assert_eq!(
@@ -2138,10 +2177,11 @@ mod tests {
     fn label_bucket_tree_mode_bit_accepted_by_validator() {
         // The tree flag (word bit 53 since ADR 0097 §3) is not a reserved-bit trigger: a row
         // built with it set must round-trip through encode/decode and report tree mode.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
+        let bucket =
+            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0).with_tree_mode(true);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[6] |= 0x20; // set word bit 53 = tree-mode flag (ADR 0097 §3 moved it)
+        bytes[6] |= 0x20; // word bit 53 = tree-mode flag (ADR 0097 §3 moved it)
         let decoded =
             LabelBucket::try_read_from(&bytes).expect("the tree-mode flag must be accepted");
         assert!(decoded.is_tree_mode());

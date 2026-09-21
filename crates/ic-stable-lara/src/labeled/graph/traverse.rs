@@ -7055,6 +7055,6 @@ mod g6_zero_read_tests {
         // MEASURED at the spill swap, and reported as a disagreement with the derived table
         // (predicted 105R/0W, measured 109R/0W: the wider descriptor row straddles page boundaries
         // on the descriptor reads).
-        assert_eq!((r, w), (109, 0), "tiny scan byte shape changed");
+        assert_eq!((r, w), (107, 0), "tiny scan byte shape changed");
     }
 }
