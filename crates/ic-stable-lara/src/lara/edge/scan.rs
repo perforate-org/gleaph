@@ -7,7 +7,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::iter::{OutEdgeSlabChunk, leaf_segment};
+use super::iter::OutEdgeSlabChunk;
 use super::{
     DescOutEdgesIter, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
 };
@@ -181,7 +181,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let edge_layout = self.edge_layout();
         let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
         let stored = v.stored_degree();
         let slab_count = on_slab.min(stored);
@@ -249,11 +248,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let edge_layout = self.edge_layout();
         let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
         let slab_count = on_slab.min(v.stored_degree());
-        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let log_h = self.log.header();
 
         // The run's rows in ordinal order; the ascending iterator walks them so the yielded
         // order is the materialization order (oldest→newest).
@@ -271,22 +267,18 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         ))
     }
 
-    pub(crate) fn prefetch_overflow_log_replay_desc(
+    /// The run's rows as replay tags: `Some(row index)` for a live row, `None` for a tombstone.
+    /// Descending and ascending replay are the same ordinal list now that a run has no chain.
+    pub(crate) fn prefetch_spill_replay_tags(
         &self,
-        leaf: u32,
-        log_head: i32,
-    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
-        let log_h = self.log.header();
-        self.prefetch_descending_log_replay_tags(&log_h, leaf, log_head)
-    }
-
-    pub(crate) fn prefetch_overflow_log_inserted_tags_asc(
-        &self,
-        leaf: u32,
-        log_head: i32,
-    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
-        let log_h = self.log.header();
-        self.prefetch_ascending_log_inserted_tags(&log_h, leaf, log_head)
+        run: crate::labeled::spill_run_store::SpillRunId,
+    ) -> Result<Vec<Option<u32>>, LaraOperationError> {
+        let entries = self.spill_replay_entries(run)?;
+        Ok(entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, edge)| edge.map(|_| index as u32))
+            .collect())
     }
 }
 
