@@ -11,7 +11,7 @@ use std::cell::Cell;
 /// Row `0` is the live bucket. Row `1` is a synthetic successor whose base is
 /// supplied by the owning VertexEdgeSpan. This gives `EdgeStore` the
 /// same CSR successor-boundary geometry it uses for normal vertex rows while
-/// allowing optional per-label overflow into the shared segment log.
+/// allowing optional per-label overflow into the bucket's own spill run.
 ///
 /// The caller must calculate `successor_start` from the sorted LabelBucket range:
 /// either the next bucket's `edge_start`, or the containing VertexEdgeSpan
@@ -58,17 +58,22 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
         match u32::from(id) {
             0 => bucket,
             1 => {
-                // For a log-backed bucket with no on-slab prefix, present a zero-width
-                // slab window so `EdgeStore::insert_edge` routes new edges into the
-                // shared overflow log instead of writing into the placeholder slab
-                // region. The full successor boundary is still used by scan paths
-                // once the bucket is folded to slab.
-                let succ = if bucket.overflow_log_head() >= 0 && bucket.stored_slots() == 0 {
+                // For a spill-backed bucket with no on-slab prefix, present a zero-width
+                // slab window so `EdgeStore::insert_edge` appends to the bucket's run
+                // instead of writing into the placeholder slab region. The full successor
+                // boundary is still used by scan paths once the bucket is folded to slab.
+                // The successor is synthetic, so it carries no run of its own: a reader
+                // that walked it would otherwise replay the live bucket's rows twice.
+                let succ = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
+                    && bucket.stored_slots() == 0
+                {
                     bucket.edge_start()
                 } else {
                     self.successor_start.max(bucket.edge_start())
                 };
-                bucket.with_edge_range(succ, 0).with_overflow_log_head(-1)
+                bucket
+                    .with_edge_range(succ, 0)
+                    .with_edge_spill_run(crate::traits::NO_SPILL_RUN)
             }
             _ => panic!("LabelEdgeSpanAccess only exposes row 0 and successor row 1"),
         }
