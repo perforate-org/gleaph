@@ -2424,11 +2424,11 @@ mod g6_zero_read_tests {
         let r = reads.get();
         let w = writes.get();
         // Exact shape: find reads (descriptor + vertex rows) + one descriptor
-        // publish (29B row + census). Matches the scan reads (98) with the
-        // insert's publish writes (37) — delete is scan + publish, nothing more.
+        // publish (36B interim row + census). Matches the scan reads (105) with the
+        // insert's publish writes (44) — delete is scan + publish, nothing more.
         // The pre-redesign promote-then-tombstone path would move ~thousands
         // (span reserve + transcribe + release); no room for it here.
-        assert_eq!((r, w), (98, 37), "tiny delete byte shape changed");
+        assert_eq!((r, w), (105, 44), "tiny delete byte shape changed");
         // Sanity: hole tombstoned inline, still tiny.
         let vertex = graph.vertices().get(vid);
         let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {

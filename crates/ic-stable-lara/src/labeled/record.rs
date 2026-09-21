@@ -3,12 +3,14 @@
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
-    BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, checked_add_slot_index, decode_bucket_label_key,
-    decode_meta28, decode_overflow_log_byte, decode_slot_index, encode_locator_word,
-    encode_overflow_log_byte, read_u40, replace_bucket_label_key, slot_index_fits,
+    BUCKET_EDGE_RUN_LOW_BITS, BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, checked_add_slot_index,
+    decode_bucket_label_key, decode_bucket_word_edge_run_low, decode_meta28,
+    decode_overflow_log_byte, decode_slot_index, encode_locator_word, encode_overflow_log_byte,
+    read_u40, replace_bucket_label_key, replace_bucket_word_edge_run_low, slot_index_fits,
     try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
     try_replace_slot_index, write_u40,
 };
+use crate::labeled::spill_run_store::{ArenaRows, SpillRunId};
 use crate::slab_index::byte_offset_fits;
 use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone, NO_SPILL_RUN};
 use ic_stable_structures::{Storable, storable::Bound};
@@ -67,6 +69,12 @@ pub struct LabelBucket {
     inline_property_bytes_log_byte: u8,
     /// Number of inline property bytes entries in this bucket's ordered suffix log.
     inline_property_bytes_log_len: u8,
+    /// Edge-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`]. The low
+    /// [`BUCKET_EDGE_RUN_LOW_BITS`] live in `word`; the high 17 live in the bytes the row gained at
+    /// 29..35, together with the values id and the named reserve.
+    edge_spill_run: u32,
+    /// Values-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`]. 32 bits, in the added bytes.
+    values_spill_run: u32,
 }
 
 impl LabelBucket {
@@ -102,7 +110,24 @@ impl Default for LabelBucket {
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 29;
+    ///
+    /// ADR 0097 §3: 29 -> 36 bytes. The added 7 bytes hold the edge run id's high 17 bits, the whole
+    /// values run id (32 bits) and a 7-bit named reserve (bits 49..56) - "reserve for the next bound
+    /// widening, not padding". Those bits cannot raise the edge arena's bound: the shared unlabeled
+    /// `Vertex` tail28 sets it (`design/storage/lara.md`). The final layout is 34 bytes, when slice 5
+    /// deletes the values log and its two bytes 27-28 join the added region; that move is documented
+    /// in ADR 0097 and has no code path yet.
+    pub const BYTES: usize = 36;
+    /// Edge-plane spill run id bits: [`BUCKET_EDGE_RUN_LOW_BITS`] in `word`, the rest in the added
+    /// bytes.
+    pub const EDGE_RUN_BITS: u32 = 27;
+    /// High bits of the edge run id that live in the added bytes.
+    pub const EDGE_RUN_HIGH_BITS: u32 = Self::EDGE_RUN_BITS - BUCKET_EDGE_RUN_LOW_BITS;
+    /// Values-plane spill run id bits, all in the added bytes.
+    pub const VALUES_RUN_BITS: u32 = 32;
+    /// Named reserve in the added bytes (bits 49..56): reserve for the next bound widening, not
+    /// padding, and it cannot raise the edge arena's bound (the shared tail28 sets it).
+    pub const SPILL_ID_RESERVE_BITS: u32 = 7;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -227,6 +252,8 @@ impl LabelBucket {
             inline_property_byte_width,
             inline_property_bytes_log_byte,
             inline_property_bytes_log_len,
+            edge_spill_run: NO_SPILL_RUN,
+            values_spill_run: NO_SPILL_RUN,
         })
     }
 
@@ -468,6 +495,10 @@ impl LabelBucket {
         if used > Self::TINY_MAX_DEGREE || used < self.degree {
             return Err(LabelBucketFieldError::TinyUsedWidthOutOfRange);
         }
+        // ADR 0097 §3: the level-1 spill arena serves slab buckets only.
+        if self.edge_spill_run != NO_SPILL_RUN || self.values_spill_run != NO_SPILL_RUN {
+            return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
+        }
         Ok(())
     }
 
@@ -557,6 +588,58 @@ impl LabelBucket {
     #[inline]
     pub fn edge_start(self) -> u64 {
         decode_slot_index(self.word)
+    }
+
+    /// Edge-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
+    #[inline]
+    pub fn edge_spill_run(self) -> u32 {
+        self.edge_spill_run
+    }
+
+    /// Fallible setter for the edge-plane spill run id: it must fit the shared arena's capacity
+    /// ([`ArenaRows::EDGE`], the unlabeled tail28's 27-bit range) and must not be the sentinel.
+    #[inline]
+    pub fn try_with_edge_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
+        if SpillRunId::mint(run, ArenaRows::EDGE).is_err() {
+            return Err(LabelBucketFieldError::SpillRunOutOfRange);
+        }
+        Ok(Self {
+            edge_spill_run: run,
+            ..self
+        })
+    }
+
+    /// Returns a copy with the edge-plane spill run id set.
+    #[inline]
+    pub fn with_edge_spill_run(self, run: u32) -> Self {
+        self.try_with_edge_spill_run(run)
+            .expect("LabelBucket::with_edge_spill_run: run id out of range")
+    }
+
+    /// Values-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
+    #[inline]
+    pub fn values_spill_run(self) -> u32 {
+        self.values_spill_run
+    }
+
+    /// Fallible setter for the values-plane spill run id: it must fit [`ArenaRows::VALUES`] and must
+    /// not be the sentinel.
+    #[inline]
+    pub fn try_with_values_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
+        if SpillRunId::mint(run, ArenaRows::VALUES).is_err() {
+            return Err(LabelBucketFieldError::SpillRunOutOfRange);
+        }
+        Ok(Self {
+            values_spill_run: run,
+            ..self
+        })
+    }
+
+    /// Returns a copy with the values-plane spill run id set.
+    #[inline]
+    pub fn with_values_spill_run(self, run: u32) -> Self {
+        self.try_with_values_spill_run(run)
+            .expect("LabelBucket::with_values_spill_run: run id out of range")
     }
 
     /// Byte offset into `EdgeInlinePropertyBytesStore` for this bucket's value span.
@@ -700,7 +783,13 @@ impl LabelBucket {
             inline_property_byte_width,
             inline_property_bytes_log_byte,
             inline_property_bytes_log_len,
+            edge_spill_run,
+            values_spill_run,
         } = self;
+        let word = replace_bucket_word_edge_run_low(
+            word,
+            edge_spill_run & ((1 << BUCKET_EDGE_RUN_LOW_BITS) - 1),
+        );
         bytes[0..8].copy_from_slice(&word.to_le_bytes());
         bytes[8..12].copy_from_slice(&degree.to_le_bytes());
         bytes[12..16].copy_from_slice(&stored_slots.to_le_bytes());
@@ -712,6 +801,10 @@ impl LabelBucket {
         bytes[25..27].copy_from_slice(&inline_property_byte_width.to_le_bytes());
         bytes[27] = inline_property_bytes_log_byte;
         bytes[28] = inline_property_bytes_log_len;
+        // The added region: edge high 17 | values 32 | reserve 7 (56 bits).
+        let packed = u64::from(edge_spill_run >> BUCKET_EDGE_RUN_LOW_BITS)
+            | (u64::from(values_spill_run) << Self::EDGE_RUN_HIGH_BITS);
+        bytes[29..36].copy_from_slice(&packed.to_le_bytes()[..7]);
     }
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
@@ -787,6 +880,14 @@ impl LabelBucket {
         let inline_property_byte_width = u16::from_le_bytes(chunk[25..27].try_into().unwrap());
         let inline_property_bytes_log_byte = chunk[27];
         let inline_property_bytes_log_len = chunk[28];
+        let mut added = [0u8; 8];
+        added[..7].copy_from_slice(&chunk[29..36]);
+        let added = u64::from_le_bytes(added);
+        let edge_spill_run = decode_bucket_word_edge_run_low(word)
+            | (((added & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1)) as u32)
+                << BUCKET_EDGE_RUN_LOW_BITS);
+        let values_spill_run =
+            ((added >> Self::EDGE_RUN_HIGH_BITS) & ((1u64 << Self::VALUES_RUN_BITS) - 1)) as u32;
         // ADR 0096 §1: tiny buckets carry targets (not value/log state) in the
         // inline-property bytes. Validate the tiny wire rules here and return
         // before the slab/tree consistency rules below, which would misread
@@ -802,6 +903,8 @@ impl LabelBucket {
             inline_property_byte_width,
             inline_property_bytes_log_byte,
             inline_property_bytes_log_len,
+            edge_spill_run,
+            values_spill_run,
         };
         if bucket.is_tiny_mode() {
             bucket.check_tiny_invariants()?;
@@ -853,6 +956,12 @@ impl LabelBucket {
                 return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
             }
         }
+        // ADR 0097 §3: tree buckets are already chunked storage, so the arena never serves them.
+        if (word & Self::TREE_MODE_BIT) != 0
+            && (edge_spill_run != NO_SPILL_RUN || values_spill_run != NO_SPILL_RUN)
+        {
+            return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
+        }
         Ok(bucket)
     }
 }
@@ -886,6 +995,11 @@ pub enum LabelBucketFieldError {
     /// Enabling tiny mode on a bucket with live inline-property value state
     /// (width, slots, offset, or log entries present). ADR 0096 §1.
     TinyValueStatePresent,
+    /// A run id is out of the arena's range, is the `u32::MAX` sentinel, or is present on a bucket
+    /// whose mode has no level-1 spill (tiny or tree). ADR 0097 §3.
+    SpillRunOutOfRange,
+    /// A run id is present on a bucket whose mode has no level-1 spill (tiny or tree).
+    SpillRunOnNonSlabBucket,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -939,6 +1053,18 @@ impl core::fmt::Display for LabelBucketFieldError {
             }
             Self::TinyValueStatePresent => {
                 write!(f, "label bucket tiny enable requires empty value state")
+            }
+            Self::SpillRunOutOfRange => {
+                write!(
+                    f,
+                    "label bucket spill run id is out of the arena's range or is the sentinel"
+                )
+            }
+            Self::SpillRunOnNonSlabBucket => {
+                write!(
+                    f,
+                    "label bucket tiny/tree mode must not carry a spill run id"
+                )
             }
         }
     }
@@ -1702,6 +1828,127 @@ mod tests {
         expected[8..12].copy_from_slice(&3u32.to_le_bytes());
         expected[12..16].copy_from_slice(&9u32.to_le_bytes());
         assert_eq!(bytes, expected);
+    }
+
+    /// A slab bucket with distinct values in every field the run-id setters must leave alone.
+    fn populated_slab_bucket() -> LabelBucket {
+        LabelBucket::from_parts_with_inline_property(
+            BucketLabelKey::from_raw(0x1234),
+            0x0F_FFFF_FFFE,
+            7,
+            11,
+            3,
+            0xAB_CDEF_0123,
+            5,
+            9,
+            4,
+        )
+    }
+
+    #[test]
+    fn label_bucket_spill_run_ids_round_trip_at_the_extremes() {
+        // `u32::MAX` is the "no run" sentinel; the edge id is bounded by the shared arena's 27-bit
+        // range (ArenaRows::EDGE), the values id by its own u32 field.
+        for run in [0u32, 1, (1 << 27) - 2] {
+            let edge = populated_slab_bucket().with_edge_spill_run(run);
+            assert_eq!(edge.edge_spill_run(), run);
+            let mut bytes = [0u8; LabelBucket::BYTES];
+            edge.write_to(&mut bytes);
+            assert_eq!(LabelBucket::read_from(&bytes).edge_spill_run(), run);
+        }
+        for run in [0u32, 1, u32::MAX - 1] {
+            let values = populated_slab_bucket().with_values_spill_run(run);
+            assert_eq!(values.values_spill_run(), run);
+            let mut bytes = [0u8; LabelBucket::BYTES];
+            values.write_to(&mut bytes);
+            assert_eq!(LabelBucket::read_from(&bytes).values_spill_run(), run);
+        }
+        // Both sides of the edge bound: the last legal id is accepted, the first illegal one and the
+        // sentinel are refused (never masked).
+        assert!(
+            populated_slab_bucket()
+                .try_with_edge_spill_run((1 << 27) - 1)
+                .is_err()
+        );
+        assert!(
+            populated_slab_bucket()
+                .try_with_edge_spill_run(u32::MAX)
+                .is_err()
+        );
+        assert!(
+            populated_slab_bucket()
+                .try_with_values_spill_run(u32::MAX)
+                .is_err()
+        );
+        let fresh = populated_slab_bucket();
+        assert_eq!(fresh.edge_spill_run(), NO_SPILL_RUN);
+        assert_eq!(fresh.values_spill_run(), NO_SPILL_RUN);
+    }
+
+    #[test]
+    fn setting_one_label_bucket_spill_run_leaves_every_other_field_alone() {
+        let base = populated_slab_bucket();
+        let mut base_bytes = [0u8; LabelBucket::BYTES];
+        base.write_to(&mut base_bytes);
+        // Bytes 8..29 hold the ipb fields and the values log bytes; the added region starts at 29.
+        let untouched = base_bytes[8..29].to_vec();
+        let edge = base.with_edge_spill_run(0x00AB_CDEF);
+        assert_eq!(edge.values_spill_run(), NO_SPILL_RUN);
+        assert_eq!(edge.degree(), base.degree());
+        assert_eq!(edge.stored_slots_raw(), base.stored_slots_raw());
+        assert_eq!(edge.is_tiny_mode(), base.is_tiny_mode());
+        assert_eq!(edge.is_tree_mode(), base.is_tree_mode());
+        assert_eq!(edge.bucket_label_key(), base.bucket_label_key());
+        assert_eq!(edge.edge_start(), base.edge_start());
+        assert_eq!(
+            edge.inline_property_bytes_log_head(),
+            base.inline_property_bytes_log_head()
+        );
+        assert_eq!(
+            edge.inline_property_bytes_log_len(),
+            base.inline_property_bytes_log_len()
+        );
+        let mut edge_bytes = [0u8; LabelBucket::BYTES];
+        edge.write_to(&mut edge_bytes);
+        assert_eq!(edge_bytes[8..29], untouched[..]);
+        let values = base.with_values_spill_run(0x0BAD_F00D);
+        assert_eq!(values.edge_spill_run(), NO_SPILL_RUN);
+        let mut values_bytes = [0u8; LabelBucket::BYTES];
+        values.write_to(&mut values_bytes);
+        assert_eq!(values_bytes[8..29], untouched[..]);
+    }
+
+    #[test]
+    fn tiny_payload_survives_the_spill_run_fields() {
+        // ADR 0096 §1 keeps tiny's payload meaning: the added region (bytes 29..36) is outside the
+        // payload range (12..28), and a tiny bucket must carry no run id.
+        let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 2, 2)
+            .try_enable_tiny_mode()
+            .expect("tiny")
+            .with_tiny_target(0, 0xAABB_CCDD)
+            .with_tiny_target(1, 0x1122_3344)
+            .with_tiny_target(2, 0x5566_7788)
+            .with_tiny_target(3, 0x99AA_BBCC)
+            .with_tiny_used_width(3);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        tiny.write_to(&mut bytes);
+        let back = LabelBucket::read_from(&bytes);
+        assert!(back.is_tiny_mode());
+        for (index, expected) in [0xAABB_CCDDu32, 0x1122_3344, 0x5566_7788, 0x99AA_BBCC]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(back.tiny_target(index as u32), expected);
+        }
+        assert_eq!(back.tiny_used_width(), 3);
+        assert_eq!(back.edge_spill_run(), NO_SPILL_RUN);
+        assert_eq!(back.values_spill_run(), NO_SPILL_RUN);
+        // A wire row that carries a run id on a tiny bucket is rejected.
+        bytes[29] = 1;
+        assert_eq!(
+            LabelBucket::try_read_from(&bytes),
+            Err(LabelBucketFieldError::SpillRunOnNonSlabBucket)
+        );
     }
 
     #[test]

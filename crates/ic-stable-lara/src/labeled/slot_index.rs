@@ -21,16 +21,16 @@ pub const BUCKET_TINY_MODE_BIT: u64 = 1u64 << 52;
 /// 0 = slab mode). See Plan 0318 §Step 1 and ADR 0088 §1. Moved from bit 63 by
 /// ADR 0097 §3.
 pub const BUCKET_TREE_MODE_BIT: u64 = 1u64 << 53;
-/// Word bits 54..64: **reserve for the edge spill run id's low 10 bits**, which
-/// ADR 0097 §3 adds in the next slice. Named rather than left as unexplained
-/// slack, and it cannot raise the edge arena's bound: that bound is set by the
-/// unlabeled `Vertex` tail28, which shares the arena (`design/storage/lara.md`).
-pub const BUCKET_WORD_RESERVE_BITS: u32 = 10;
-/// Shift of [`BUCKET_WORD_RESERVE_BITS`] in the packed word.
-pub const BUCKET_WORD_RESERVE_SHIFT: u32 = 54;
-/// Mask of [`BUCKET_WORD_RESERVE_BITS`] in the packed word.
-pub const BUCKET_WORD_RESERVE_MASK: u64 =
-    ((1u64 << BUCKET_WORD_RESERVE_BITS) - 1) << BUCKET_WORD_RESERVE_SHIFT;
+/// Word bits 54..64: the **low 10 bits of the edge spill run id** (ADR 0097 §3).
+/// The id's other 17 bits and the whole values id live in the bytes the row
+/// gained at 29..35, packed by `record.rs`. These bits cannot raise the edge
+/// arena's bound: that bound is set by the unlabeled `Vertex` tail28, which
+/// shares the arena (`design/storage/lara.md`).
+pub const BUCKET_EDGE_RUN_LOW_BITS: u32 = 10;
+/// Shift of [`BUCKET_EDGE_RUN_LOW_BITS`] in the packed word.
+pub const BUCKET_EDGE_RUN_LOW_SHIFT: u32 = 54;
+const BUCKET_EDGE_RUN_LOW_MASK: u64 =
+    ((1u64 << BUCKET_EDGE_RUN_LOW_BITS) - 1) << BUCKET_EDGE_RUN_LOW_SHIFT;
 
 /// Packs a [`super::record::LabelBucket`] wire word.
 #[inline]
@@ -54,6 +54,19 @@ pub fn replace_bucket_label_key(word: u64, bucket_label_key: BucketLabelKey) -> 
     (word & !BUCKET_LABEL_MASK) | (u64::from(bucket_label_key.raw()) << BUCKET_LABEL_SHIFT)
 }
 
+/// Low bits of the edge spill run id from a packed bucket word.
+#[inline]
+pub fn decode_bucket_word_edge_run_low(word: u64) -> u32 {
+    ((word & BUCKET_EDGE_RUN_LOW_MASK) >> BUCKET_EDGE_RUN_LOW_SHIFT) as u32
+}
+
+/// Replaces only the edge spill run id's low bits in a packed bucket word.
+#[inline]
+pub fn replace_bucket_word_edge_run_low(word: u64, low: u32) -> u64 {
+    debug_assert!(low < (1 << BUCKET_EDGE_RUN_LOW_BITS));
+    (word & !BUCKET_EDGE_RUN_LOW_MASK) | (u64::from(low) << BUCKET_EDGE_RUN_LOW_SHIFT)
+}
+
 /// Label key field from a packed bucket word.
 #[inline]
 pub fn decode_bucket_label_key(word: u64) -> BucketLabelKey {
@@ -72,21 +85,25 @@ mod tests {
     }
 
     #[test]
-    fn the_word_tail_is_the_mode_flags_and_the_named_reserve() {
+    fn the_word_tail_is_the_mode_flags_and_the_edge_id_low_bits() {
         // ADR 0097 §3 retired the 8-bit edge log head: bits 52..64 are now the tiny flag (52), the
-        // tree flag (53) and the named reserve (54..64), which the next slice turns into the edge
-        // spill run id's low 10 bits. Nothing else lives there, and the flags must not overlap it.
+        // tree flag (53) and the edge spill run id's low 10 bits (54..64). Nothing else lives there,
+        // and the flags must not overlap the id.
         let base = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5));
-        let word = base | BUCKET_TINY_MODE_BIT | BUCKET_TREE_MODE_BIT;
+        let word = replace_bucket_word_edge_run_low(
+            base | BUCKET_TINY_MODE_BIT | BUCKET_TREE_MODE_BIT,
+            0x3FF,
+        );
+        assert_eq!(decode_bucket_word_edge_run_low(word), 0x3FF);
         assert_ne!(word & BUCKET_TINY_MODE_BIT, 0);
         assert_ne!(word & BUCKET_TREE_MODE_BIT, 0);
-        assert_eq!(word & BUCKET_WORD_RESERVE_MASK, 0);
         assert_eq!(decode_slot_index(word), 0x0F_FFFF_FFFF);
         assert_eq!(decode_bucket_label_key(word).raw(), 0xA5A5);
-        // The reserve is the top 10 bits, and the flags sit immediately below it.
-        assert_eq!(BUCKET_WORD_RESERVE_SHIFT, 54);
-        assert_eq!(BUCKET_TINY_MODE_BIT, 1 << 52);
-        assert_eq!(BUCKET_TREE_MODE_BIT, 1 << 53);
+        // The flags and the id do not overlap: setting one leaves the others alone.
+        let only_tiny = base | BUCKET_TINY_MODE_BIT;
+        assert_eq!(decode_bucket_word_edge_run_low(only_tiny), 0);
+        assert_eq!(only_tiny & BUCKET_TREE_MODE_BIT, 0);
+        assert_eq!(BUCKET_EDGE_RUN_LOW_SHIFT, 54);
     }
 
     #[test]
@@ -95,5 +112,8 @@ mod tests {
         let relabeled = replace_bucket_label_key(word, BucketLabelKey::from_raw(0xBEEF));
         assert_eq!(decode_bucket_label_key(relabeled).raw(), 0xBEEF);
         assert_eq!(decode_slot_index(relabeled), 100);
+        let with_id = replace_bucket_word_edge_run_low(relabeled, 42);
+        assert_eq!(decode_bucket_word_edge_run_low(with_id), 42);
+        assert_eq!(decode_bucket_label_key(with_id).raw(), 0xBEEF);
     }
 }
