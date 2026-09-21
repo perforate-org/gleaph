@@ -1031,8 +1031,14 @@ fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchRe
         panic!("missing bucket")
     };
     assert!(!bucket.is_tree_mode());
-    assert_eq!(bucket.inline_property_bytes_log_len(), 0);
-    assert_eq!(bucket.stored_slots(), degree);
+    // ADR 0097 §5: a bucket's rows are its slab prefix plus its own spill run, so the prefix is
+    // not required to cover `degree` any more. What must hold is that every row is reachable.
+    let edge_run_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
+        Ok(run) => graph.edges().spill_used_len(run),
+        Err(_) => 0,
+    };
+    assert_eq!(bucket.degree(), degree);
+    assert_eq!(bucket.stored_slots_raw() + edge_run_rows, degree);
     // Setup-time check via the public batch API: collect all rows and
     // verify content once (the measured closure below re-runs the same call).
     let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
