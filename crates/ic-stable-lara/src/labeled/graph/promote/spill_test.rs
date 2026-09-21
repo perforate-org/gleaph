@@ -1117,6 +1117,14 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     let peer_before = g.vertices().get(peer);
     let peer_rows = rows(g, g.default_label(), Ascending);
     let source = g.vertices().get(owner);
+    let raw_prefix = |start: u64, slots: u32| {
+        let mut bytes = vec![0; slots as usize * Edge::<4>::BYTES];
+        g.edges().read_slots_contiguous_bytes(start, &mut bytes);
+        bytes
+    };
+    let source_prefix = g.edges().initialized_slab_slots(&source).unwrap();
+    let source_bytes = raw_prefix(source.base_slot_start(), source_prefix);
+    let peer_bytes = raw_prefix(cached.1.edge_start(), cached.1.stored_slots());
     let before = rows_for_owner(g, owner, label, Ascending);
     let count = g.edges().header().num_edges;
     let leaf = g.leaf_segment_counts_for_vid(owner);
@@ -1175,6 +1183,14 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     for (&role, bytes) in roles.iter().zip(saved.iter()) {
         assert_eq!(&snapshot(role), bytes, "canonical memory role {role}");
     }
+    assert_eq!(
+        raw_prefix(source.base_slot_start(), source_prefix),
+        source_bytes
+    );
+    assert_eq!(
+        raw_prefix(cached.1.edge_start(), cached.1.stored_slots()),
+        peer_bytes
+    );
     assert_eq!(g.vertices().get(owner), source);
     assert_eq!(g.vertices().get(peer), peer_before);
     assert_eq!(peer_lookup(), cached);
