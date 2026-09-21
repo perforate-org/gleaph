@@ -153,6 +153,30 @@ defect from being rediscovered without its prior reasoning.
   high-water counter) so tiny/slab-only graphs commit no log entries; re-tune the bucket-row slack
   with a measured insert-vs-rewrite trade; then re-run the audit probe
   (`/tmp/space_audit_probe.rs`) to confirm the delta.
+- **Post-swap measurement (F8, 2026-09-20), same shape and same probe on both sides**
+  (segment 16, `InitialCapacities::uniform(256)`, 5000 vertices x 1 edge, 5000 buckets, all tiny:
+  cover 0, resident 0, zero overflow usage; pages are `Memory::size()` over `FailpointMemory`,
+  which reports whole 64 KiB pages - `VectorMemory::size()` reports written bytes and was the
+  earlier probe's mislabelling):
+
+  | region | `main` 9a64049f4 | `spill-swap` 1ed1f9843 |
+  |---|---|---|
+  | **committed pages, total** | **66** (4,325,376 B) | **56** (3,670,016 B) |
+  | edge log / spill arena (mem 6) | 11 pages (720,896 B) | **1 page** (65,536 B) |
+  | log capacity declared | 87,040 entries = 696,320 B, **0 used** | no log state exists |
+  | spill arena runs / rows used | - | **0 runs, 0 rows** (the page is the store header) |
+  | bucket descriptors | 25,000 rows x 29 B = 725,000 B | 25,000 rows x 36 B = **900,000 B** |
+  | descriptor delta | - | **+7 B/row = +175,000 B** (absorbed: buckets stay 15 pages both sides) |
+  | buckets promoted to tree | - | **0** |
+  | other regions (identical both sides) | vertices 2, buckets 15, ipb_log 16, edges 5, edge_span_meta 1, free-span stores 1/3/1/3/1/3, ipb_slab 1, value_blobs 1, ltb 1 | same |
+
+  The expectation is **confirmed**: `main` grows its per-leaf log region to the declared capacity
+  (696 KB, 87,040 entries, zero used) for a workload that never spills, while the swap grows no log
+  region at all and zero arena rows - it pays +7 B per descriptor row instead, and for this shape
+  that delta fits inside the page the descriptors already had. Net: **-10 pages (-655,360 B)**.
+  The values plane's own `ipb_log` (16 pages, 1,048,576 B) is unchanged on both sides: it is the
+  values twin's log, still awaiting the final-row slice, and it shows the same eager-capacity shape
+  this entry describes.
 - **Next decision:** decide whether to fold this into the same space-first slice as
   GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
   bench for the slack trade.
