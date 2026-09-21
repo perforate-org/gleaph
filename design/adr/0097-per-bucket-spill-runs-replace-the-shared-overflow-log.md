@@ -117,6 +117,18 @@ bucket.
    numbers are derived from the delta, not observed and adopted.
 
 
+   **`release` learns the class from the run, not from its caller.** A run's class is recoverable from its own header
+   row, which the store owns and which already records the used length, so `release` derives the free list from the
+   run's header and treats a caller-supplied length as a sanity check only. This matters as soon as `grow_to` relocates
+   a run: a run allocated as class 128 and grown at 3 used rows would otherwise be released into the 8-row free list
+   and later handed out with mismatched capacity. Two rules follow, both tested: (i) release **validates before it
+   mutates** and never returns an error after its first metadata write, so a failing release cannot free a run and then
+   report failure (the caller would keep a descriptor pointing at a free run); (ii) a `grow_to` that fails in its
+   allocation leaves the old run allocated and the descriptor unchanged, which is the no-data-loss direction of
+   section 6. The publication order is fixed as well: allocate the new run, copy, return, and let the caller publish
+   the new id — the descriptor is never pointed at a run the store has already freed.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
