@@ -739,10 +739,12 @@ impl<M: Memory> LabelBucketStore<M> {
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?
             };
             row.insert(insert_index as usize, bucket);
-            self.write_label_bucket_slots_contiguous(base, &row)?;
             let insert_at = base
                 .checked_add(u64::from(insert_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            // The full old row was validated above. Only this suffix changes;
+            // the prefix remains owned in place and needs no re-encoding.
+            self.write_label_bucket_slots_contiguous(insert_at, &row[insert_index as usize..])?;
             let next_degree = v
                 .degree()
                 .checked_add(1)
@@ -1007,6 +1009,86 @@ mod tests {
 
     fn store() -> LabelBucketStore<crate::VectorMemory> {
         LabelBucketStore::new(vector_memory(), vector_memory(), vector_memory(), 64, 4).unwrap()
+    }
+
+    #[test]
+    fn in_place_descriptor_insert_preserves_prefix_and_shifts_suffix() {
+        for (index, label) in [(0, 5), (1, 20), (3, 60)] {
+            let buckets = store();
+            let base = buckets.allocate_span(4).unwrap();
+            let mut expected: Vec<_> = [10, 30, 50]
+                .into_iter()
+                .map(|label| {
+                    LabelBucket::default()
+                        .with_bucket_label_key(crate::labeled::BucketLabelKey::from_raw(label))
+                })
+                .collect();
+            buckets
+                .write_label_bucket_slots_contiguous(base, &expected)
+                .unwrap();
+            let vertices = VertexFixture {
+                vertex: RefCell::new(
+                    LabeledVertex::default()
+                        .try_with_bucket_row_and_slack(base, 3, 1)
+                        .unwrap(),
+                ),
+            };
+            let inserted = LabelBucket::default()
+                .with_bucket_label_key(crate::labeled::BucketLabelKey::from_raw(label));
+            assert_eq!(
+                buckets
+                    .insert_label_bucket_at(&vertices, VertexId::from(0), inserted, index)
+                    .unwrap(),
+                (base + u64::from(index), false)
+            );
+            expected.insert(index as usize, inserted);
+            assert_eq!(
+                buckets.read_label_bucket_slots_contiguous(base, 4).unwrap(),
+                expected
+            );
+            let vertex = vertices.get(VertexId::from(0));
+            assert_eq!(
+                (
+                    vertex.base_slot_start(),
+                    vertex.degree(),
+                    vertex.bucket_slack_slots()
+                ),
+                (base, 4, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn in_place_descriptor_append_still_validates_unchanged_prefix() {
+        let memory = vector_memory();
+        let buckets =
+            LabelBucketStore::new(memory.clone(), vector_memory(), vector_memory(), 64, 4).unwrap();
+        let base = buckets.allocate_span(2).unwrap();
+        buckets
+            .write_label_bucket_slot(base, LabelBucket::default())
+            .unwrap();
+        // Invalid values extent at width zero, inside the unchanged prefix.
+        buckets
+            .slab
+            .write_slot_range(base, 16, &1u32.to_le_bytes())
+            .unwrap();
+        let row = LabeledVertex::default()
+            .try_with_bucket_row_and_slack(base, 1, 1)
+            .unwrap();
+        let vertices = VertexFixture {
+            vertex: RefCell::new(row),
+        };
+        let before = memory.borrow().clone();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            buckets.insert_label_bucket_at(&vertices, VertexId::from(0), LabelBucket::default(), 1)
+        }))
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<String>().unwrap(),
+            "invalid LabelBucket wire bytes: InlinePropertyBytesStateWithoutSchema"
+        );
+        assert_eq!(*memory.borrow(), before);
+        assert_eq!(vertices.get(VertexId::from(0)), row);
     }
 
     #[test]
