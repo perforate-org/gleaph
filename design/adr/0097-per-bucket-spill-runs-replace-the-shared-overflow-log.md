@@ -177,6 +177,12 @@ the reference's cap sweep justifies lazy ownership over capacity tuning.
   so "insert at a position" is expressed as delete-then-insert, exactly as today (ADR 0052). Splitting rows across
   prefix and spill introduces no middle-shift case, because neither side ever compacts by shifting: the prefix keeps
   its `used` headroom and the run appends at its dense end.
+* **The store owns the length, and it enforces addressing bounds.** The used length may only move
+  through `allocate`, `grow_in_place` and the release/reuse path — never through a public setter — because
+  those are exactly the operations that keep `class_rows(len)` equal to the class the run was allocated with.
+  Reads and writes whose index falls outside the class derived from the header length are rejected rather than
+  silently addressing the next run's header. Both rules were decided by the implementer during slice 1 and are
+  recorded here because the ADR stated the invariant but not who enforces it.
 * **A deleted slot is reusable.** `Unordered` fills a reusable slot rather than growing, and `Insertion` appends at
   the dense end (`used` grows only there). The *observable* rule is that a delete's slot becomes reusable before
   the bucket grows; the *implementation* may reuse the earliest such slot (today's behaviour) or carry a hint — the
