@@ -168,6 +168,22 @@ bucket.
    larger arena (2 GiB → 16 GiB of 4-byte edge rows), against the 696 KB of declared log capacity the swap removes.
 
 
+   **Decided: the edge arena is shared with the unlabeled path, so its bound is 27 bits.** Verified in code: a
+   `LabeledLaraGraph` owns an `EdgeStore` (`labeled/graph.rs:274`) and a slab bucket's insert reaches that same
+   instance (`labeled/graph/insert.rs:560`), while `LabelBucketStore` owns descriptors only; there is exactly one
+   `SpillRunStore` in the crate (`EdgeStore::spill`, `lara/edge.rs:117`). Because every id the edge arena mints must
+   be storable by *every* descriptor that references it — including the unlabeled `Vertex`, whose tail28 keeps
+   `run + 1` in `VERTEX_TAIL_RUN_MASK = (1 << 27) - 1` (`slab_index.rs:165`) — the edge arena's effective bound is
+   **134 217 726 rows** (2^27 − 2), i.e. 512 MiB of 4-byte edge rows. `ARENA_ROWS_LIMIT = 1 << 29` is therefore 4×
+   wider than any row can store and must come down to the encodable bound. The **values** plane is a separate store
+   (`EdgeInlinePropertyBytesStore` owns its own log instance today), referenced only by `LabelBucket`'s fields, so
+   its id may use the full 32 bits. **Resulting row: 29 → 34 bytes final** (edge 27 bits + values 32 bits = 59 ≤ 26
+   recycled + 40 new = 66), **36 bytes interim**. `LabeledVertex` addresses the edge arena through
+   `bypass_spill_run`, so its id is 27 bits too: 25 free metadata bits plus one new byte holds it, and it widens by
+   one byte (bit-scattered) or four (clean). Widen triggers: the edge arena needs a wider vertex locator word (an
+   ADR-level layout change); the values arena needs a subnet memory limit above 2^32 × row_bytes.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
