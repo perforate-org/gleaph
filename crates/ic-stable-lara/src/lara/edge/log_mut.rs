@@ -233,3 +233,99 @@ impl From<SpillRunError> for LaraOperationError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::test_support::{TestEdge, vector_memory};
+
+    type TestStore = EdgeStore<TestEdge, VectorMemory>;
+
+    fn store() -> TestStore {
+        TestStore::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            1,
+            0,
+        )
+        .expect("edge store")
+    }
+
+    /// One class-8 run holding one used row, minted through the store the wrappers wrap.
+    fn store_with_run() -> (TestStore, SpillRunId) {
+        let store = store();
+        let run = store.spill.allocate(1).expect("spill run");
+        (store, run)
+    }
+
+    #[test]
+    fn spill_read_row_rejects_an_index_at_the_used_length() {
+        let (store, run) = store_with_run();
+        let mut row = [0u8; 4];
+        assert!(store.spill_read_row(run, 0, &mut row).is_ok());
+        // The class has room, but only `used_len` rows exist: unused capacity is never exposed as
+        // a row (fail closed), so a reader cannot address the next run's header or a stale row.
+        assert!(matches!(
+            store.spill_read_row(run, 1, &mut row),
+            Err(LaraOperationError::SpillRowOutOfRange)
+        ));
+        assert_eq!(store.spill_used_len(run), 1);
+    }
+
+    #[test]
+    fn spill_append_signals_a_full_class_without_writing() {
+        let (store, run) = store_with_run();
+        for index in 1..8u32 {
+            assert!(
+                store
+                    .spill_append(run, &index.to_le_bytes())
+                    .expect("append"),
+                "row {index} fits class 8"
+            );
+        }
+        assert_eq!(store.spill_used_len(run), 8);
+        // Class full: the caller's signal to grow or promote, and the length is unchanged.
+        assert!(!store.spill_append(run, &99u32.to_le_bytes()).expect("full"));
+        assert_eq!(store.spill_used_len(run), 8);
+    }
+
+    #[test]
+    fn every_arena_refusal_is_the_single_promotion_outcome() {
+        // `spill_grow` is one `.map_err(Into::into)` over the store's `grow_to`, so both ways the
+        // arena refuses reach the caller as the same outcome: promote the bucket to tree mode
+        // (ADR 0097 section 6). A class cap above `MAX_ROWS` is the producer's own check; the
+        // arena limit and an unaddressable run id are this error path.
+        let arena_limit = SpillRunError::ArenaExhausted {
+            arena_rows: 8,
+            requested_rows: 9,
+            arena_row_limit: 8,
+        };
+        let unaddressable_id = SpillRunError::RunIdOutOfRange {
+            id: u32::MAX - 1,
+            arena_id_capacity: 8,
+        };
+        assert!(matches!(
+            LaraOperationError::from(arena_limit),
+            LaraOperationError::SpillNeedsPromotion
+        ));
+        assert!(matches!(
+            LaraOperationError::from(unaddressable_id),
+            LaraOperationError::SpillNeedsPromotion
+        ));
+        // A genuine growth failure is not a promotion: the caller reports it instead.
+        let grow = SpillRunError::Grow(crate::GrowFailed {
+            current_size: 0,
+            delta: 0,
+        });
+        assert!(!matches!(
+            LaraOperationError::from(grow),
+            LaraOperationError::SpillNeedsPromotion
+        ));
+    }
+}
