@@ -263,7 +263,7 @@ where
             }
         }
 
-        if vertex.bypass_overflow_log_head() < 0 {
+        if vertex.bypass_spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
         let leaf = self.inline_property_bytes_log_leaf(src);
