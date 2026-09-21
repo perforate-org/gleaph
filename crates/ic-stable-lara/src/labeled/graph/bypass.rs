@@ -146,7 +146,7 @@ where
         let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
-            LabelBucket::from_parts(bypass_label, edge_start, logical_degree, stored_slots, -1),
+            LabelBucket::from_parts(bypass_label, edge_start, logical_degree, stored_slots),
             new_alloc,
         )?;
 

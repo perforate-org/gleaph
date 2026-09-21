@@ -266,23 +266,26 @@ where
     /// used width (live slots plus tombstone holes — the mode-aware accessor
     /// returns the live count, which would understate it); slab/tree buckets
     /// declare their stored width plus any overflow-log entries.
-    pub(super) fn bucket_reserved_edge_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
+    /// Slot space a bucket declares (ADR 0096 §5): tiny buckets declare their used width (live
+    /// slots plus tombstone holes); slab/tree buckets declare their stored width plus the resident
+    /// rows of their own spill run (ADR 0097 §8: resident content is `prefix + spill`). `src` is
+    /// kept for the accessor family's shape, like [`Self::bucket_slab_prefix_slots`].
+    pub(super) fn bucket_reserved_edge_slots(&self, _src: VertexId, bucket: &LabelBucket) -> u32 {
         if bucket.is_tiny_mode() {
             return bucket.tiny_used_width();
         }
         bucket
             .stored_slots()
-            .saturating_add(self.bucket_edge_log_slots(src, bucket))
+            .saturating_add(self.bucket_edge_spill_rows(bucket))
     }
 
-    pub(super) fn bucket_edge_log_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
-        if bucket.overflow_log_head() < 0 {
-            return 0;
+    /// Resident rows of the bucket's edge-plane spill run (ADR 0097 §3).
+    pub(super) fn bucket_edge_spill_rows(&self, bucket: &LabelBucket) -> u32 {
+        match self.edges.spill_mint(bucket.edge_spill_run()) {
+            Ok(run) => self.edges.spill_used_len(run),
+            // Unset (NO_SPILL_RUN) or outside the arena: no rows beyond the prefix.
+            Err(_) => 0,
         }
-        self.edges.overflow_log_chain_len(
-            self.inline_property_bytes_log_leaf(src),
-            bucket.overflow_log_head(),
-        )
     }
 
     pub(super) fn bucket_slab_prefix_slots(&self, _src: VertexId, bucket: &LabelBucket) -> u32 {
@@ -1151,7 +1154,7 @@ where
                 let schema_unset = bucket.inline_property_byte_width() == 0
                     && bucket.degree() == 0
                     && bucket.stored_slots() == 0
-                    && bucket.overflow_log_head() < 0
+                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && bucket.inline_property_bytes_log_head() < 0
                     && bucket.inline_property_bytes_log_len() == 0;
                 if !schema_unset {
@@ -1436,7 +1439,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.overflow_log_head() < 0 {
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
             if slot_index >= bucket.stored_slots() {
                 return Ok(false);
             }
@@ -1503,7 +1506,8 @@ where
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
-        let ordinal = if bucket.overflow_log_head() < 0 && bucket.stored_slots() == bucket.degree()
+        let ordinal = if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+            && bucket.stored_slots() == bucket.degree()
         {
             slot_index
         } else {
@@ -2456,7 +2460,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
 
         let mut from_span = Vec::new();
@@ -2574,7 +2578,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
 
         let mut from_span = Vec::new();
         graph
@@ -2729,7 +2733,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         // A later zero-length new bucket may be entirely log-backed until a leaf
         // rebalance folds it; the batch path must still
         // round-trip all values regardless of slab prefix width.
@@ -3227,7 +3231,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
 
         let mut from_iter = Vec::new();
         graph
@@ -3376,7 +3380,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
         graph
             .remove_edge_at_slot(VertexId::from(0), road, 0)
@@ -3513,7 +3517,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(bucket.inline_property_bytes_log_head() >= 0);
 
         let mut weights = Vec::new();
@@ -3629,7 +3633,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(
-            bucket.overflow_log_head() >= 0,
+            bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN,
             "expected edge overflow log for wide values"
         );
         assert!(

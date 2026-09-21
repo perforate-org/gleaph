@@ -335,7 +335,7 @@ fn build_dense_offset_graph(
     let bucket = offset_bucket(&graph, src, label);
     assert_eq!(bucket.degree(), extent);
     assert_eq!(bucket.stored_slots(), extent);
-    assert!(bucket.overflow_log_head() < 0);
+    assert!(bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
     assert_eq!(graph.vertices().get(src).stored_slots, extent);
     (graph, src, label)
 }
@@ -350,7 +350,7 @@ fn collect_offset_truth(
     let bucket = offset_bucket(graph, src, label);
     assert_eq!(bucket.degree(), OFFSET_LIVE_ROWS);
     assert_eq!(bucket.stored_slots(), extent);
-    assert!(bucket.overflow_log_head() < 0);
+    assert!(bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
     let mut tombstones = 0u32;
     for slot in 0..extent {
         let edge = graph

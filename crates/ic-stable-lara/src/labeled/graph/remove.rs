@@ -1671,7 +1671,7 @@ mod tests {
         // spills to the overflow log; the tombstone stays in place until
         // rebalance (positional stability).
         assert_eq!(bucket.stored_slots(), 5);
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert_eq!(bucket.degree(), 5);
     }
 
@@ -1791,7 +1791,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         let leaf = graph.inline_property_bytes_log_leaf(src);
         graph
             .edges()

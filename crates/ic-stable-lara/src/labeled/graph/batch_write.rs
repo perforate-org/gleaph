@@ -2238,7 +2238,9 @@ where
                 // log/fold path. Writing directly into its slab would leave the chain
                 // published alongside the new slab prefix and break edge/inline-property-bytes
                 // ordinal alignment.
-                if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
+                if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
+                    || bucket.inline_property_bytes_log_head() >= 0
+                {
                     return self.preflight_overflow_log_run(
                         run,
                         bucket_slot,
@@ -2469,7 +2471,7 @@ where
             };
         let edge_slot_count = u32::try_from(run.edges.len())
             .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_log_len = if bucket.overflow_log_head() >= 0 {
+        let edge_log_len = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
             self.edges
                 .overflow_log_chain_len(leaf, bucket.overflow_log_head())
         } else {
@@ -3529,7 +3531,7 @@ where
             BucketSearch::Missing { .. } => panic!("relocated bucket disappeared during commit"),
         };
         assert!(
-            bucket.overflow_log_head() < 0,
+            bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
             "relocation must fold the existing edge overflow log before append"
         );
         assert_eq!(
@@ -4054,7 +4056,7 @@ where
         let mut updated_bucket = new_bucket
             .with_stored_slots(updated_stored)
             .with_degree_field(updated_degree)
-            .with_overflow_log_head(-1);
+            .without_edge_spill_run();
 
         // Fold and append inline property values when present.
         let mut inline_property_bytes_slots_written: u64 = 0;
@@ -5554,7 +5556,7 @@ mod tests {
             .expect("test relocated edge slots fit");
         assert_eq!(bucket.degree, expected_slots);
         assert_eq!(bucket.stored_slots(), expected_slots);
-        assert!(bucket.overflow_log_head() < 0);
+        assert!(bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
 
         let edges = graph.out_edges(VertexId::from(0)).unwrap();
         let pending = edges
@@ -6005,7 +6007,7 @@ mod tests {
         );
         assert_eq!(bucket.degree(), 5, "degree grows by the full run size");
         assert!(
-            bucket.overflow_log_head() >= 0,
+            bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN,
             "tail remainder spills to log when the span is full"
         );
     }

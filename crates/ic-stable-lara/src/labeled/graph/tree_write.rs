@@ -2981,7 +2981,7 @@ where
         .with_edge_range(new_edge_start, degree)
         .with_stored_slots(degree)
         .with_degree_field(degree)
-        .with_overflow_log_head(-1)
+        .without_edge_spill_run()
         .with_tree_mode(false)
         .with_tree_mode_physical_depth(1);
     if w > 0 {

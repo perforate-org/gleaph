@@ -1564,7 +1564,7 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
 
 /// Plan 0342: drive a default-label bypass row into the overflow-log regime.
 ///
-/// Inserts distinct edges on a tail vertex until `bypass_overflow_log_head() >= 0`
+/// Inserts distinct edges on a tail vertex until `bypass_spill_run() != crate::traits::NO_SPILL_RUN`
 /// (checked every `DEFAULT_MAX_LOG_ENTRIES`-scale stride). Returns
 /// `(vid, dsts, burst_inserts)`. No maintenance runs during the burst, so the
 /// lara-level fold cannot drain the log before the probe observes it.
@@ -1604,7 +1604,7 @@ fn burst_slab_bypass_row(
 /// log_head)` via `eprintln!` for the trajectory table.
 ///
 /// Empirical deviation from the plan sketch: honest tail appends never enter the
-/// log-backed regime (a 6000-append burst keeps `bypass_overflow_log_head() == -1`;
+/// log-backed regime (a 6000-append burst keeps `bypass_spill_run() == crate::traits::NO_SPILL_RUN`;
 /// the tail slab window absorbs appends), so the fixture asserts the slab-absorbed
 /// state as a tripwire and measures the churn trajectory there instead of on a
 /// log-backed row.
@@ -1619,10 +1619,10 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
             "0342 burst_inserts={BURST} stored={} degree={} head={}",
             v0.stored_slots,
             v0.degree,
-            v0.bypass_overflow_log_head()
+            v0.bypass_spill_run()
         );
         assert!(
-            v0.bypass_overflow_log_head() < 0,
+            v0.bypass_spill_run() == crate::traits::NO_SPILL_RUN,
             "0342 tripwire: burst entered the log-backed regime (head >= 0); \
              the DONE verdict below no longer holds — re-cut the probe slice",
         );
@@ -1654,7 +1654,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
                 "0342 {label} stored={} degree={} head={} live={live_len}",
                 vertex.stored_slots,
                 vertex.degree,
-                vertex.bypass_overflow_log_head(),
+                vertex.bypass_spill_run(),
             );
             black_box((vertex.stored_slots, vertex.degree));
         };
@@ -1703,7 +1703,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         record("delete_only_tail", live.len());
         let drained = graph.forward().vertices().get(vid);
         assert!(
-            drained.bypass_overflow_log_head() < 0,
+            drained.bypass_spill_run() == crate::traits::NO_SPILL_RUN,
             "churn must not push the bypass row into the log-backed regime"
         );
         // 6 alternating rounds x 64 tombstones + 256 delete-only tail = 640.

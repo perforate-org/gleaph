@@ -368,7 +368,11 @@ impl CsrVertexTombstone for Vertex {
     }
 
     fn with_tombstone(self, tomb: bool) -> Self {
-        self.with_tail28(pack_vertex_tail28(self.log_head(), tomb))
+        // Only the tombstone bit changes: the tail's run field is re-packed from its own encoding
+        // (`unpack_vertex_tail28(..).0`, where a negative value means "no run"), so no run id is
+        // re-derived, cast or truncated.
+        let run_encoding = unpack_vertex_tail28(decode_meta28(self.locator)).0;
+        self.with_tail28(pack_vertex_tail28(run_encoding, tomb))
     }
 }
 

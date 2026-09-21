@@ -359,12 +359,13 @@ where
                 // above routes all tiny selections through the canonical visitor whose
                 // funnel arm serves them inline). No arm needed — documented, not assumed.
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-                    self.edges.overflow_log_chain_asc_indices(
-                        self.inline_property_bytes_log_leaf(owner),
-                        bucket.overflow_log_head(),
-                    )
-                });
+                let overflow_chain =
+                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
+                        self.edges.overflow_log_chain_asc_indices(
+                            self.inline_property_bytes_log_leaf(owner),
+                            bucket.overflow_log_head(),
+                        )
+                    });
                 for slot_index in 0..logical_slots {
                     if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
                         owner,
@@ -950,7 +951,7 @@ where
             BucketMode::Slab => {
                 // Dense fast path first so slab buckets skip tree handling
                 // (2% bench parity); arm-guaranteed slab-only, no mode guards.
-                if bucket.overflow_log_head() < 0
+                if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     return self
@@ -1819,7 +1820,7 @@ where
             BucketMode::Slab => {
                 // Dense fast path first so slab buckets skip tree handling
                 // (2% bench parity); arm-guaranteed slab-only, no mode guards.
-                if bucket.overflow_log_head() < 0
+                if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     let degree = bucket.degree();
@@ -1893,7 +1894,7 @@ where
                 let extent = match order {
                     OutEdgeOrder::Ascending => 0,
                     OutEdgeOrder::Descending => {
-                        let log_len = if bucket.overflow_log_head() >= 0 {
+                        let log_len = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                             let leaf =
                                 Self::leaf_index_for_vid(owner, self.edges.header().segment_size);
                             self.edges
@@ -2375,7 +2376,7 @@ where
                 // `!is_tree_mode()` conjunct is that routing, not a mode guard.
                 if !bucket.is_tree_mode()
                     && bucket.inline_property_bytes_log_head() < 0
-                    && bucket.overflow_log_head() < 0
+                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     let inline_property_bytes = if width > 0 {
@@ -2621,7 +2622,7 @@ where
             }
             BucketMode::Slab => {
                 if bucket.inline_property_bytes_log_head() < 0
-                    && bucket.overflow_log_head() < 0
+                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     let width = bucket.inline_property_byte_width();
@@ -2879,7 +2880,7 @@ where
                     );
                 }
 
-                if bucket.overflow_log_head() >= 0 {
+                if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                     return self.visit_hybrid_out_inline_property_batches_for_bucket_next(
                         owner, label, &bucket, order, scratch, &mut visit,
                     );
@@ -3856,7 +3857,7 @@ where
             // ADR 0096 §5: tiny selections route through the canonical visitor
             // (whose funnel arm serves them inline); the direct slot-read path
             // below would misread the anchor span.
-            || bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0;
+            || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN || bucket.inline_property_bytes_log_head() >= 0;
         if canonical_candidate && canonical_scan_len <= (selected.len() as u32).saturating_mul(2) {
             enum SelectedVisitOutcome<B> {
                 User(B),
@@ -3905,12 +3906,13 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let edge_overflow_log_chains = (bucket.overflow_log_head() >= 0).then(|| {
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(owner),
-                bucket.overflow_log_head(),
-            )
-        });
+        let edge_overflow_log_chains = (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+            .then(|| {
+                self.edges.overflow_log_chain_asc_indices(
+                    self.inline_property_bytes_log_leaf(owner),
+                    bucket.overflow_log_head(),
+                )
+            });
         let inline_property_bytes_log_chains =
             self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
         let mut selected_edges = Vec::with_capacity(selected.len());
@@ -4155,12 +4157,13 @@ where
                     return Ok(EdgeSlotState::Missing);
                 }
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, _bucket_slot)?;
-                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-                    self.edges.overflow_log_chain_asc_indices(
-                        self.inline_property_bytes_log_leaf(owner),
-                        bucket.overflow_log_head(),
-                    )
-                });
+                let overflow_chain =
+                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
+                        self.edges.overflow_log_chain_asc_indices(
+                            self.inline_property_bytes_log_leaf(owner),
+                            bucket.overflow_log_head(),
+                        )
+                    });
                 self.read_edge_state_at_slot(
                     owner,
                     &vertex,
@@ -4191,7 +4194,7 @@ where
         if slot_index >= self.bucket_reserved_edge_slots(owner, bucket) {
             return Ok(EdgeSlotState::Missing);
         }
-        if bucket.overflow_log_head() < 0 {
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
             if slot_index >= bucket.stored_slots() {
                 return Ok(EdgeSlotState::Missing);
             }
@@ -4324,7 +4327,7 @@ where
                 // Reuse a matching phase-1 replay when available and consistent.
                 if let Some(replay) = replay
                     && replay.is_active()
-                    && bucket.overflow_log_head() >= 0
+                    && bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
                     && replay.src == owner
                     && replay.label_id == label
                     && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
@@ -4342,14 +4345,15 @@ where
                     );
                 }
 
-                let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-                    #[cfg(test)]
-                    crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
-                    self.edges.overflow_log_chain_asc_indices(
-                        self.inline_property_bytes_log_leaf(owner),
-                        bucket.overflow_log_head(),
-                    )
-                });
+                let overflow_chain =
+                    (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then(|| {
+                        #[cfg(test)]
+                        crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
+                        self.edges.overflow_log_chain_asc_indices(
+                            self.inline_property_bytes_log_leaf(owner),
+                            bucket.overflow_log_head(),
+                        )
+                    });
                 for slot_index in visit_order {
                     if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
                         owner,
@@ -4691,7 +4695,10 @@ where
         if buckets.is_empty() {
             return None;
         }
-        if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
+        if buckets
+            .iter()
+            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+        {
             return None;
         }
         if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
@@ -4724,7 +4731,10 @@ where
         if deg == 0 || buckets.len() != deg {
             return None;
         }
-        if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
+        if buckets
+            .iter()
+            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+        {
             return None;
         }
         if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
@@ -4986,7 +4996,7 @@ where
         };
         Ok(bucket.degree() > 0
             && bucket.inline_property_byte_width() > 0
-            && bucket.overflow_log_head() >= 0)
+            && bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
     }
 
     /// Visits outgoing inline property bytes for one label as batches without materializing edge rows.
@@ -6752,7 +6762,10 @@ mod tests {
         };
         let bucket_a = bucket_of(a);
         let bucket_b = bucket_of(b);
-        assert!(bucket_a.overflow_log_head() >= 0 && bucket_b.overflow_log_head() >= 0);
+        assert!(
+            bucket_a.edge_spill_run() != crate::traits::NO_SPILL_RUN
+                && bucket_b.edge_spill_run() != crate::traits::NO_SPILL_RUN
+        );
         // Same leaf, same label, same slab split: only `src` distinguishes the two replays, so
         // without the `src` check B's replay would be wrongly adopted for A.
         assert_eq!(
@@ -6863,7 +6876,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.stored_slots() > 0);
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert_eq!(
             graph.bucket_reserved_edge_slots(src, &bucket),
             bucket.degree()
@@ -6918,7 +6931,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
 
         let mut scratch = crate::labeled::LabeledInlinePropertyValueBatchScratch::default();
         let mut slots = Vec::new();
@@ -7007,7 +7020,7 @@ mod tests {
             graph.buckets().read_label_bucket_slot(slot).unwrap()
         };
         let bucket = bucket_of(src);
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         let slab_prefix = graph.bucket_slab_prefix_slots(src, &bucket);
 
         // Phase 1: capture the replay and the slot order, then take a stale snapshot of the replay.

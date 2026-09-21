@@ -35,7 +35,7 @@ pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) 
     bucket.degree() > 0
         && bucket.inline_property_byte_width() > 0
         && bucket.inline_property_bytes_log_head() < 0
-        && bucket.overflow_log_head() < 0
+        && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }
 
@@ -236,7 +236,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 ))
             } else if bucket.is_tiny_mode() {
                 0
-            } else if bucket.overflow_log_head() < 0 {
+            } else if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
                 u64::from(bucket.stored_slots_raw())
             } else {
                 gap.min(u64::from(bucket.stored_slots_raw()))
@@ -299,8 +299,8 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: tiny live slots must equal degree"
                 );
                 assert!(
-                    bucket.overflow_log_head() < 0,
-                    "vertex {vidx} bucket {slot}: tiny log head must be none"
+                    bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+                    "vertex {vidx} bucket {slot}: a tiny bucket must carry no spill run"
                 );
             }
             // ADR 0088 §2 + GAP-2026-09-20-001: tree mode has no overflow log, so
@@ -311,8 +311,8 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             // with inline properties also reports `inline_property_bytes_allocated`.
             if bucket.is_tree_mode() {
                 assert!(
-                    bucket.overflow_log_head() < 0,
-                    "vertex {vidx} bucket {slot}: tree log head must be none"
+                    bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+                    "vertex {vidx} bucket {slot}: a tree bucket must carry no spill run"
                 );
                 assert!(
                     bucket.degree() <= bucket.stored_slots_raw(),

@@ -800,7 +800,6 @@ where
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
         let segment_size = self.edges.header().segment_size.max(1);
-        let leaf = u32::from(src) / segment_size;
         let buckets = self.read_vertex_label_buckets(vertex)?;
         let old_alloc = vertex.stored_slots;
         // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
@@ -827,7 +826,7 @@ where
             let resident = if compact {
                 bucket.degree()
             } else {
-                self.bucket_resident_rows(leaf, bucket)?
+                self.bucket_resident_rows(bucket)?
             };
             total_live = total_live
                 .checked_add(resident)
@@ -1003,9 +1002,8 @@ where
         // rows and the vertex row. The three per-branch fast paths that used to do
         // this inline reproduced the same logic and drifted apart
         // (GAP-2026-09-20-005).
-        let leaf = Self::leaf_index_for_vid(src, self.edges.header().segment_size.max(1));
         let (per_bucket_edges, per_bucket_raw) =
-            self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, compact)?;
+            self.materialize_labeled_vertex_edge_plan(&buckets, true, compact)?;
         let mut edge_buf: Vec<u8> = Vec::new();
         let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
         self.commit_vertex_edge_span_layout(
@@ -1237,7 +1235,7 @@ where
                 // `combined_span_region_len` (same helper the retire-interval
                 // path uses).
                 resident_slots = resident_slots
-                    .checked_add(self.bucket_resident_rows(leaf, bucket)?)
+                    .checked_add(self.bucket_resident_rows(bucket)?)
                     .ok_or(LaraOperationError::RowDegreeOverflow)?;
             }
             resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
@@ -1303,7 +1301,7 @@ where
                 }
                 let buckets = self.read_vertex_label_buckets(&vertex)?;
                 let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
-                    acc.checked_add(self.bucket_resident_rows(leaf, bucket)?)
+                    acc.checked_add(self.bucket_resident_rows(bucket)?)
                         .ok_or(LaraOperationError::RowDegreeOverflow)
                         .map_err(LabeledOperationError::from)
                 })?;
@@ -1375,7 +1373,7 @@ where
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, false)?;
+                    self.materialize_labeled_vertex_edge_plan(&buckets, true, false)?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
@@ -1399,7 +1397,7 @@ where
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets, true, false)?;
+                    self.materialize_labeled_vertex_edge_plan(&buckets, true, false)?;
                 plans.push((
                     vid,
                     vertex,
@@ -1436,16 +1434,15 @@ where
         Ok(())
     }
 
-    /// `fold_logs` selects which owner keeps a bucket's overflow-log rows: `true`
-    /// materializes prefix + log and lets the commit publish them as one run (the
-    /// rewrite and leaf-relocation paths compact that way), `false` materializes the
-    /// slab prefix alone and leaves the log where it is, which is the rebalance
-    /// contract: it re-anchors the prefix and preserves `overflow_log_head`
-    /// (`compact_vertex_edge_span_one_step` folds one bucket's log on its own and
-    /// relies on this).
+    /// `fold_logs` selects which owner keeps a bucket's spill rows (ADR 0097 §7):
+    /// `true` materializes prefix + run and lets the commit publish them as one
+    /// prefix, clearing and releasing the run (the rewrite and leaf-relocation paths
+    /// compact that way), `false` materializes the slab prefix alone and leaves the
+    /// run where it is, which is the rebalance contract: it re-anchors the prefix and
+    /// preserves the run id (`compact_vertex_edge_span_one_step` compacts one bucket's
+    /// run on its own and relies on this).
     fn materialize_labeled_vertex_edge_plan(
         &self,
-        leaf: u32,
         buckets: &[LabelBucket],
         fold_logs: bool,
         compact: bool,
@@ -1483,8 +1480,8 @@ where
                 per_bucket_raw.push(Some(raw));
                 continue;
             }
-            let resident_slots = self.bucket_resident_rows(leaf, bucket)?;
-            if bucket.overflow_log_head() < 0 {
+            let resident_slots = self.bucket_resident_rows(bucket)?;
+            if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
                 let run = Self::edge_bytes_for_len(physical_slots as usize)?;
                 let mut raw = vec![0u8; run];
                 if run > 0 {
@@ -1519,20 +1516,27 @@ where
                         resident.push(edge);
                     }
                 }
-                for (log_offset, log_index) in self
-                    .edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
-                    .into_iter()
-                    .enumerate()
-                {
-                    let log_offset = u32::try_from(log_offset)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                    let slot_index = bucket
-                        .stored_slots_raw()
-                        .checked_add(log_offset)
-                        .ok_or(LaraOperationError::RowDegreeOverflow)?;
-                    let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
-                    resident.push(edge.with_slot_index(slot_index));
+                // The bucket's rows beyond its prefix are rows `0..used_len` of its own run,
+                // in ordinal order (ADR 0097 §3). The same dead-row rule as the slab prefix
+                // above applies: a compacting rewrite drops tombstones, a relocation keeps
+                // every resident slot (the run's length is unchanged by deletes, so tombstones
+                // are resident).
+                if let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) {
+                    for (spill_offset, index) in
+                        self.edges.spill_asc_indices(run).into_iter().enumerate()
+                    {
+                        let spill_offset = u32::try_from(spill_offset)
+                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                        let slot_index = bucket
+                            .stored_slots_raw()
+                            .checked_add(spill_offset)
+                            .ok_or(LaraOperationError::RowDegreeOverflow)?;
+                        let edge = self.edges.spill_edge_at(run, index)?;
+                        if compact && (edge.is_tombstone_edge() || edge.is_deleted_slot()) {
+                            continue;
+                        }
+                        resident.push(edge.with_slot_index(slot_index));
+                    }
                 }
                 debug_assert!(
                     compact || resident.len() == resident_slots as usize,
@@ -1551,19 +1555,14 @@ where
     /// overflow-log chain. The planner, both leaf-sizing loops and the materializer
     /// used to spell this out separately, and one copy forgot the log term, which
     /// under-sized the span (GAP-2026-09-20-005). One definition, one call each.
-    fn bucket_resident_rows(
-        &self,
-        leaf: u32,
-        bucket: &LabelBucket,
-    ) -> Result<u32, LabeledOperationError> {
-        let log_len = if bucket.overflow_log_head() >= 0 {
-            self.edges
-                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-        } else {
-            0
+    fn bucket_resident_rows(&self, bucket: &LabelBucket) -> Result<u32, LabeledOperationError> {
+        let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+            Ok(run) => self.edges.spill_used_len(run),
+            // Unset (NO_SPILL_RUN) or outside the arena: no rows beyond the prefix.
+            Err(_) => 0,
         };
         bucket_physical_resident_slots(bucket)
-            .checked_add(log_len)
+            .checked_add(spill_rows)
             .ok_or(LaraOperationError::RowDegreeOverflow)
             .map_err(LabeledOperationError::from)
     }
@@ -1625,7 +1624,7 @@ where
                 // materialized run) while degree stays live, corrupting the
                 // wire. Anchors still advance via positions.
                 if bucket.is_tiny_mode() {
-                    resident_buckets.push(bucket.with_overflow_log_head(-1));
+                    resident_buckets.push(bucket.without_edge_spill_run());
                     continue;
                 }
                 // GAP-2026-09-17-001: tree buckets are NOT slab content —
@@ -1636,7 +1635,7 @@ where
                 // releases as unowned ranges. Keep the descriptor's logical
                 // width untouched (root bytes move by anchor only).
                 if bucket.is_tree_mode() {
-                    resident_buckets.push(bucket.with_overflow_log_head(-1));
+                    resident_buckets.push(bucket.without_edge_spill_run());
                     continue;
                 }
                 let resident_slots = per_bucket_raw[index]
@@ -1649,7 +1648,7 @@ where
                 resident_buckets.push(
                     bucket
                         .with_stored_slots(resident_slots)
-                        .with_overflow_log_head(-1),
+                        .without_edge_spill_run(),
                 );
             }
             resident_buckets
@@ -1686,6 +1685,7 @@ where
             edge_buf.resize(max_run, 0);
         }
         let mut row_buckets = Vec::with_capacity(buckets.len());
+        let mut folded_spill_runs: Vec<crate::labeled::spill_run_store::SpillRunId> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_vertex_write_edge_runs");
@@ -1698,7 +1698,7 @@ where
                     row_buckets.push(
                         buckets[index]
                             .with_edge_range(row_start, buckets[index].stored_slots_raw())
-                            .with_overflow_log_head(-1),
+                            .without_edge_spill_run(),
                     );
                     continue;
                 }
@@ -1733,15 +1733,20 @@ where
                             .write_slots_contiguous(row_start, &edge_buf[..run])?;
                     }
                 }
-                row_buckets.push(
-                    bucket
-                        .with_edge_range(row_start, bucket.stored_slots_raw())
-                        .with_overflow_log_head(if fold_logs {
-                            -1
-                        } else {
-                            buckets[index].overflow_log_head()
-                        }),
-                );
+                let published = bucket.with_edge_range(row_start, bucket.stored_slots_raw());
+                // `fold_logs` publishes the bucket's spill rows inside its new slab prefix, so
+                // the run is cleared and released (ADR 0097 §7: compaction is the only place a
+                // run is freed besides bucket death). The release runs after the descriptor row
+                // is written, so no published descriptor ever points at a freed run.
+                let published = if fold_logs {
+                    if let Ok(run) = self.edges.spill_mint(buckets[index].edge_spill_run()) {
+                        folded_spill_runs.push(run);
+                    }
+                    published.without_edge_spill_run()
+                } else {
+                    published
+                };
+                row_buckets.push(published);
             }
         }
         {
@@ -1757,6 +1762,9 @@ where
                 self.buckets
                     .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
+        }
+        for run in folded_spill_runs {
+            let _ = self.edges.spill_release(run);
         }
         // Vertex-level release of the old footprint (cover-contiguous spans;
         // see R2b triage).
@@ -1797,7 +1805,7 @@ where
             if bucket.is_tiny_mode() {
                 continue;
             }
-            if bucket.overflow_log_head() >= 0 {
+            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
                 continue;
             }
             let mut next_live = 0u32;
@@ -1833,23 +1841,20 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.overflow_log_head() < 0 {
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(Vec::new());
         }
         let mut moves = Vec::new();
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        let chain = self
-            .edges
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        let mut live_log_edges = Vec::with_capacity(chain.len());
-        for (log_offset, log_index) in chain.into_iter().enumerate() {
+        let run = self.edges.spill_mint(bucket.edge_spill_run())?;
+        let mut live_log_edges = Vec::with_capacity(self.edges.spill_used_len(run) as usize);
+        for (log_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
             let log_offset = u32::try_from(log_offset)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             let old_slot_index = bucket
                 .stored_slots()
                 .checked_add(log_offset)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
+            let edge = self.edges.spill_edge_at(run, index)?;
             if edge.is_tombstone_edge() {
                 continue;
             }
@@ -1899,10 +1904,13 @@ where
 
         let compacted = bucket
             .with_stored_slots(new_stored_slots)
-            .with_overflow_log_head(-1);
+            .without_edge_spill_run();
         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
         self.buckets
             .write_label_bucket_slot(bucket_slot, compacted)?;
+        // The run's live rows now live in the prefix: release it (best-effort, like every other
+        // span release on this path - a failed release leaks a class, never loses a row).
+        let _ = self.edges.spill_release(run);
         Ok(moves)
     }
 
@@ -1921,7 +1929,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.degree() == 0 || bucket.overflow_log_head() >= 0 {
+        if bucket.degree() == 0 || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
         let mut next_live = resume_slot_index;
@@ -1955,7 +1963,7 @@ where
         if bucket.is_tiny_mode() {
             return false;
         }
-        bucket.overflow_log_head() < 0
+        bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
             && (bucket.inline_property_byte_width() == 0
                 || (bucket.inline_property_bytes_log_head() < 0
                     && bucket.inline_property_bytes_slab_slots() == bucket.degree()))
@@ -1980,7 +1988,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.degree() == 0 || bucket.overflow_log_head() >= 0 {
+        if bucket.degree() == 0 || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
         let mut first_hole: Option<u32> = None; // slot
@@ -2115,7 +2123,7 @@ where
         }
         bucket
             .with_stored_slots(bucket.degree())
-            .with_overflow_log_head(-1)
+            .without_edge_spill_run()
     }
 
     pub(crate) fn compact_vertex_edge_span_one_step(
@@ -2153,7 +2161,7 @@ where
             && let Some((bucket_index, bucket)) = buckets
                 .iter()
                 .enumerate()
-                .find(|(_, bucket)| bucket.overflow_log_head() >= 0)
+                .find(|(_, bucket)| bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
         {
             let bucket_index = u32::try_from(bucket_index)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -2164,11 +2172,11 @@ where
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
                 )) => {
-                    let log_len = self.edges.overflow_log_chain_len(
-                        self.inline_property_bytes_log_leaf(vid),
-                        bucket.overflow_log_head(),
-                    );
-                    self.rebalance_vertex_edge_span(vid, Some(bucket_index), log_len, true)?;
+                    let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+                        Ok(run) => self.edges.spill_used_len(run),
+                        Err(_) => 0,
+                    };
+                    self.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
                     return self.compact_vertex_edge_span_one_step(vid, 0, 0, policy_for_label);
                 }
                 Err(error) => return Err(error),
@@ -2181,7 +2189,7 @@ where
             // `stored != degree` legitimate inline state, not slab slack).
             if vertex.stored_slots > total_live
                 || buckets.iter().any(|b| {
-                    b.overflow_log_head() >= 0
+                    b.edge_spill_run() != crate::traits::NO_SPILL_RUN
                         || (!b.is_tiny_mode() && b.stored_slots_raw() != b.degree())
                 })
             {
@@ -2752,7 +2760,7 @@ where
             return Ok(BypassRowCompactOutcome::Deferred);
         }
         // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the fold mechanism.
-        if vertex.bypass_overflow_log_head() >= 0 {
+        if vertex.bypass_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(BypassRowCompactOutcome::Deferred);
         }
         let base = vertex.base_slot_start();
@@ -2978,7 +2986,7 @@ mod tests {
         }
 
         let vertex = graph.vertices().get(hub);
-        assert_eq!(vertex.bypass_overflow_log_head(), -1);
+        assert_eq!(vertex.bypass_spill_run(), -1);
         assert_eq!(vertex.degree(), 8);
         assert_eq!(graph.iter_edges_for_label(hub, default).unwrap().len(), 8);
     }
@@ -4718,7 +4726,7 @@ mod tests {
             graph.buckets().read_label_bucket_slot(slot).unwrap()
         };
         let before = read_bucket();
-        assert!(before.overflow_log_head() >= 0);
+        assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(before.inline_property_bytes_log_head() >= 0);
         let inline_property_bytes_state = (
             before.inline_property_bytes_offset(),
