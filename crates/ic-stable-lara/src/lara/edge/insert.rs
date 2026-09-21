@@ -26,10 +26,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
-        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v)
+            && v.stored_degree() == 0
+            && v.spill_run() == crate::traits::NO_SPILL_RUN
+        {
             return Ok(Vec::new());
         }
-        if v.log_head() < 0 {
+        if v.spill_run() == crate::traits::NO_SPILL_RUN {
             let stored = v.stored_degree() as usize;
             let live = v.degree() as usize;
             let base = v.base_slot_start();
@@ -79,60 +82,40 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 ));
             }
         }
-        if v.log_head() < 0 {
+        if v.spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(out);
         }
 
-        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let log_h = self.log.header();
-
-        let mut log_table_buf = Vec::new();
-        self.log
-            .read_segment_entry_table_into(&log_h, leaf, &mut log_table_buf);
-        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
-
-        let mut entries = Vec::new();
-        let mut log_i = v.log_head();
-        let mut steps = 0u32;
-        while log_i >= 0 {
-            if steps >= log_h.max_log_entries {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, edge));
-            log_i = prev;
-            steps = steps
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        }
-        entries.reverse();
-
-        let mut log_slot_index =
+        // The bucket's rows beyond its slab prefix are rows 0..used_len of its own run, in ordinal
+        // order (ADR 0097 §3): no chain, no head, no leaf table.
+        let run = self.spill_mint(v.spill_run())?;
+        let used = self.spill_used_len(run);
+        let mut spill_slot_index =
             u32::try_from(slab_count).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        for (log_idx, edge) in entries {
+        for index in 0..used {
+            let edge = self.spill_edge_at(run, index)?;
             if edge.is_deleted_slot() {
-                log_slot_index = log_slot_index
+                spill_slot_index = spill_slot_index
                     .checked_add(1)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 continue;
             }
             out.push((
-                DeleteTarget::Log(log_idx),
-                edge.with_slot_index(log_slot_index),
+                DeleteTarget::Spill { run, index },
+                edge.with_slot_index(spill_slot_index),
             ));
-            log_slot_index = log_slot_index
+            spill_slot_index = spill_slot_index
                 .checked_add(1)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
         debug_assert_eq!(
             out.len(),
             v.degree() as usize,
-            "logical log replay must yield exactly `degree` live edges"
+            "spill replay must yield exactly `degree` live edges"
         );
         if out.len() != v.degree() as usize {
-            // The log chain may be truncated/corrupt; preserve the old error shape rather than
-            // silently returning a count that violates the vertex row.
+            // The run's length may be corrupt; preserve the old error shape rather than silently
+            // returning a count that violates the vertex row.
             return Err(LaraOperationError::LogChainShort);
         }
         Ok(out)
