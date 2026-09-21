@@ -107,6 +107,16 @@ bucket.
    one `RunId` type and one arena for both rows: no second, narrower bound is introduced anywhere.
 
 
+   **Three encoding rules the swap settles.** (i) A run id is valid **only** on slab and bypass rows: tiny, tree and
+   normal (bucket-mode) rows must reject one on read, because the arena serves the two spill-owning modes and nothing
+   else. (ii) The bypass row widens by exactly 4 bytes (21 → 25) with the run id in a new `u32` field; its log head
+   stays in `metadata28` bits 4–11 for the interim. (iii) `LabeledVertex`'s `Default` becomes a manual impl: the
+   derived zero would decode as the live run id 0, and the sentinel is `u32::MAX`. Widened rows also mean the
+   descriptor/vertex byte-shape tests (G6) move by whole multiples of the row delta (+8 labeled, +4 bypass); those
+   tests keep their contracts (tiny reads no edge bytes, slab append moves strictly more than tiny) and the new
+   numbers are derived from the delta, not observed and adopted.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
