@@ -22,7 +22,12 @@
 //! (`build_mixed_label_hub(20, 500)`: 1 of 20 buckets spilled, 74 of 10 000 rows).
 //!
 //! The spill tops out at [`MAX_ROWS`]; a bucket that needs more promotes to tree mode (ADR 0097 §6),
-//! so there is no level 2 here and no block list to format.
+//! so there is no level 2 here and no block list to format. The **arena** is bounded too: a run id
+//! is a row offset the 29-bit descriptor field must hold, so the arena may hand out at most
+//! [`ARENA_ROWS_LIMIT`] rows. Exhaustion is a stated limit of the spill tier, not a memory failure:
+//! [`SpillRunStore::allocate`] and [`SpillRunStore::grow_in_place`] return
+//! [`SpillRunError::ArenaExhausted`] and the caller promotes that bucket to tree mode, so no insert
+//! loses data and no workload reaches an `expect`-driven abort.
 
 #![allow(
     dead_code,
@@ -49,6 +54,13 @@ pub(crate) const MIN_ROWS: u32 = 8;
 pub(crate) const MAX_ROWS: u32 = 1024;
 /// Number of capacity classes: 8, 16, 32, 64, 128, 256, 512, 1024.
 pub(crate) const CLASS_COUNT: usize = 8;
+/// Largest row offset a run id can address, plus one.
+///
+/// A run id is a row offset that the descriptor's 29-bit field must hold (ADR 0097 §3), so the
+/// arena may hand out at most `2^29 = 536_870_912` rows. That is a **stated limit of the spill
+/// tier**: when it is reached, [`SpillRunError::ArenaExhausted`] tells the caller to promote the
+/// bucket to tree mode (ADR 0097 §6) rather than abort.
+pub(crate) const ARENA_ROWS_LIMIT: u32 = 1 << 29;
 /// Sentinel for "no free run" / "no link".
 const NONE: u32 = u32::MAX;
 /// Offsets inside the 64-byte store header.
@@ -61,20 +73,53 @@ const OFFSET_FREE_HEADS: u64 = 16;
 /// Row offset of a run's header inside the arena. The header's data rows follow it.
 pub(crate) type RunId = u32;
 
+/// Why a spill run could not be allocated or extended.
+///
+/// The two causes are deliberately distinct. [`Self::ArenaExhausted`] is the spill tier's stated
+/// size limit and the caller's **promotion trigger** (ADR 0097 §6); [`Self::Grow`] is a real
+/// memory failure the caller reports instead of promoting, because promoting would not help.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SpillRunError {
+    /// The arena has no addressable row left for the requested run.
+    ArenaExhausted {
+        /// Rows the arena has handed out so far.
+        arena_rows: u32,
+        /// Rows the requested run needs (its class plus the header row).
+        requested_rows: u32,
+        /// Largest addressable row offset plus one ([`ARENA_ROWS_LIMIT`]).
+        arena_row_limit: u32,
+    },
+    /// The backing stable memory could not grow.
+    Grow(GrowFailed),
+}
+
+impl From<GrowFailed> for SpillRunError {
+    fn from(err: GrowFailed) -> Self {
+        Self::Grow(err)
+    }
+}
+
 /// A store of small spill runs over one stable memory.
 pub(crate) struct SpillRunStore<M: Memory> {
     memory: M,
     row_bytes: u32,
+    arena_row_limit: u32,
 }
 
 impl<M: Memory> SpillRunStore<M> {
     /// Opens the store, initialising the header when the memory is fresh. A header with the wrong
     /// magic or version is an invariant violation and panics (fail-closed, matching the LTB store).
-    pub(crate) fn new(memory: M, row_bytes: u32) -> Result<Self, GrowFailed> {
+    ///
+    /// `arena_row_limit` is the largest addressable row offset plus one; it comes from the
+    /// descriptor's run-id width and is not persisted, because it is a property of the packing
+    /// rather than of the data (a reopen re-supplies it, and a layout change is caught by the
+    /// version and row-width checks).
+    pub(crate) fn new(memory: M, row_bytes: u32, arena_row_limit: u32) -> Result<Self, GrowFailed> {
         assert!(
             row_bytes >= 4,
             "a spill row must hold the 4-byte run header word"
         );
+        assert!(arena_row_limit > 0, "a spill arena needs at least one row");
         if memory.size() == 0 {
             let mut header = [0u8; HEADER_SIZE as usize];
             header[..3].copy_from_slice(&MAGIC);
@@ -86,7 +131,11 @@ impl<M: Memory> SpillRunStore<M> {
                 header[at..at + 4].copy_from_slice(&NONE.to_le_bytes());
             }
             safe_write(&memory, 0, &header)?;
-            return Ok(Self { memory, row_bytes });
+            return Ok(Self {
+                memory,
+                row_bytes,
+                arena_row_limit,
+            });
         }
         let header = read_header(&memory);
         assert_eq!(&header[..3], &MAGIC, "spill store magic mismatch");
@@ -100,7 +149,11 @@ impl<M: Memory> SpillRunStore<M> {
                 .unwrap(),
         );
         assert_eq!(stored, row_bytes, "spill store row width mismatch");
-        Ok(Self { memory, row_bytes })
+        Ok(Self {
+            memory,
+            row_bytes,
+            arena_row_limit,
+        })
     }
 
     /// Consumes the store and returns its backing memory.
@@ -158,7 +211,11 @@ impl<M: Memory> SpillRunStore<M> {
     /// Allocates a run of the class that holds `len` data rows and records `len` as its used
     /// length, reusing a free run of the same class when one exists and bump-allocating from the
     /// arena otherwise.
-    pub(crate) fn allocate(&self, len: u32) -> Result<RunId, GrowFailed> {
+    ///
+    /// A bump allocation that the arena cannot address returns [`SpillRunError::ArenaExhausted`]
+    /// (the caller's promotion trigger, ADR 0097 §6); a backing that cannot grow returns
+    /// [`SpillRunError::Grow`]. Reusing a free run never needs the arena, so it never exhausts.
+    pub(crate) fn allocate(&self, len: u32) -> Result<RunId, SpillRunError> {
         assert!(
             len > 0 && len <= MAX_ROWS,
             "spill length {len} outside the store's classes"
@@ -173,9 +230,8 @@ impl<M: Memory> SpillRunStore<M> {
             head
         } else {
             let start = self.arena_rows();
-            let end = start
-                .checked_add(capacity + RUN_HEADER_ROWS)
-                .expect("spill arena overflow");
+            let requested = capacity + RUN_HEADER_ROWS;
+            let end = self.reserve_arena_rows(start, requested)?;
             safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
             start
         };
@@ -184,6 +240,19 @@ impl<M: Memory> SpillRunStore<M> {
         let last = self.data_address(run, capacity - 1);
         safe_write(&self.memory, last, &[0u8; 1])?;
         Ok(run)
+    }
+
+    /// Returns the arena end after handing out `requested` rows at `start`, or
+    /// [`SpillRunError::ArenaExhausted`] when the descriptor's run id cannot address them.
+    fn reserve_arena_rows(&self, start: u32, requested: u32) -> Result<u32, SpillRunError> {
+        start
+            .checked_add(requested)
+            .filter(|end| *end <= self.arena_row_limit)
+            .ok_or(SpillRunError::ArenaExhausted {
+                arena_rows: start,
+                requested_rows: requested,
+                arena_row_limit: self.arena_row_limit,
+            })
     }
 
     /// Used length of a live run, read from its header row.
@@ -209,13 +278,14 @@ impl<M: Memory> SpillRunStore<M> {
     /// `from_len` is the run's current used length (its class follows from it, because a spill's
     /// used length is monotone) and `to_len` the length it must now hold. Returns `Ok(Some(run))`
     /// when the run was extended in place, `Ok(None)` when the caller must allocate, copy and
-    /// release, and `Err` when the backing could not grow.
+    /// release, and `Err` when the arena cannot address the extension (the promotion trigger) or
+    /// the backing cannot grow (a reported failure).
     pub(crate) fn grow_in_place(
         &self,
         run: RunId,
         from_len: u32,
         to_len: u32,
-    ) -> Result<Option<RunId>, GrowFailed> {
+    ) -> Result<Option<RunId>, SpillRunError> {
         assert!(run != NONE, "cannot grow the sentinel run");
         let current = Self::class_rows(from_len.max(1));
         let target = Self::class_rows(to_len.max(1));
@@ -228,9 +298,7 @@ impl<M: Memory> SpillRunStore<M> {
             // Not the tail: another run follows, so growing here would collide with it.
             return Ok(None);
         }
-        let end = arena
-            .checked_add(target - current)
-            .expect("spill arena overflow");
+        let end = self.reserve_arena_rows(arena, target - current)?;
         safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
         self.set_used_len(run, to_len)?;
         let last = self.data_address(run, target - 1);
@@ -241,13 +309,14 @@ impl<M: Memory> SpillRunStore<M> {
     /// Returns a run to its class's free list, turning its header word into the free-list link.
     /// `len` is the used length; the class follows from it, which is why the descriptor only needs
     /// the run id.
-    pub(crate) fn release(&self, run: RunId, len: u32) -> Result<(), GrowFailed> {
+    pub(crate) fn release(&self, run: RunId, len: u32) -> Result<(), SpillRunError> {
         assert!(run != NONE, "cannot release the sentinel run");
         let capacity = Self::class_rows(len.max(1));
         let class = Self::class_index(capacity);
         let head = self.free_head(class);
         safe_write(&self.memory, self.header_address(run), &head.to_le_bytes())?;
-        self.set_free_head(class, run)
+        self.set_free_head(class, run)?;
+        Ok(())
     }
 
     /// Reads data row `index` of `run` into `row`.
@@ -266,7 +335,12 @@ impl<M: Memory> SpillRunStore<M> {
 
     /// Writes `row` as data row `index` of `run`, overwriting in place (a tombstone hole or a slot
     /// the caller just claimed). The used length does not change.
-    pub(crate) fn write_row(&self, run: RunId, index: u32, row: &[u8]) -> Result<(), GrowFailed> {
+    pub(crate) fn write_row(
+        &self,
+        run: RunId,
+        index: u32,
+        row: &[u8],
+    ) -> Result<(), SpillRunError> {
         assert_eq!(
             row.len(),
             self.row_bytes as usize,
@@ -276,7 +350,8 @@ impl<M: Memory> SpillRunStore<M> {
             index < self.capacity(run),
             "spill write outside the run's class"
         );
-        safe_write(&self.memory, self.data_address(run, index), row)
+        safe_write(&self.memory, self.data_address(run, index), row)?;
+        Ok(())
     }
 }
 
@@ -291,7 +366,79 @@ mod tests {
     use super::*;
 
     fn store() -> SpillRunStore<crate::VectorMemory> {
-        SpillRunStore::new(crate::test_support::vector_memory(), 4).expect("store")
+        SpillRunStore::new(crate::test_support::vector_memory(), 4, ARENA_ROWS_LIMIT)
+            .expect("store")
+    }
+
+    /// A store whose arena is one class-8 run plus its header row, so exhaustion is reachable.
+    fn tiny_arena_store() -> SpillRunStore<crate::VectorMemory> {
+        SpillRunStore::new(
+            crate::test_support::vector_memory(),
+            4,
+            MIN_ROWS + RUN_HEADER_ROWS,
+        )
+        .expect("store")
+    }
+
+    #[test]
+    fn a_full_arena_reports_exhaustion_instead_of_aborting() {
+        let store = tiny_arena_store();
+        // The first run exactly fills the addressable arena.
+        let run = store.allocate(5).expect("first run fills the arena");
+        assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
+        // The next bump allocation cannot be addressed: an error, not a panic.
+        assert_eq!(
+            store.allocate(5),
+            Err(SpillRunError::ArenaExhausted {
+                arena_rows: MIN_ROWS + RUN_HEADER_ROWS,
+                requested_rows: MIN_ROWS + RUN_HEADER_ROWS,
+                arena_row_limit: MIN_ROWS + RUN_HEADER_ROWS,
+            })
+        );
+        // A free run of the same class still serves the request: reuse needs no arena row.
+        store.release(run, 5).expect("release");
+        assert_eq!(store.allocate(5).expect("reuse"), run);
+    }
+
+    #[test]
+    fn growing_a_tail_run_past_the_arena_limit_reports_exhaustion() {
+        let store = tiny_arena_store();
+        let run = store.allocate(5).expect("run");
+        // Growing to class 16 would need 17 rows, but only 9 are addressable.
+        assert_eq!(
+            store.grow_in_place(run, 5, 9),
+            Err(SpillRunError::ArenaExhausted {
+                arena_rows: MIN_ROWS + RUN_HEADER_ROWS,
+                requested_rows: MIN_ROWS,
+                arena_row_limit: MIN_ROWS + RUN_HEADER_ROWS,
+            })
+        );
+        // The run is unchanged: exhaustion is not a partial grow.
+        assert_eq!(store.read_used_len(run), 5);
+        assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
+    }
+
+    #[test]
+    fn a_memory_growth_failure_is_not_arena_exhaustion() {
+        // A genuine growth failure must stay distinguishable, because the caller reports it
+        // instead of promoting the bucket to tree mode.
+        let memory = crate::test_support::FailpointMemory::new();
+        let store = SpillRunStore::new(memory.clone(), 4, ARENA_ROWS_LIMIT).expect("store");
+        // Fill the first backing page so the next allocation must grow the memory.
+        loop {
+            let next_end =
+                HEADER_SIZE + u64::from(store.arena_rows() + MAX_ROWS + RUN_HEADER_ROWS) * 4;
+            if next_end > memory.byte_len() as u64 {
+                break;
+            }
+            store.allocate(MAX_ROWS).expect("fill");
+        }
+        memory.fail_at_grow(memory.grow_count() + 1);
+        let err = store.allocate(MAX_ROWS).expect_err("growth must fail");
+        assert!(
+            matches!(err, SpillRunError::Grow(_)),
+            "a growth failure must not be reported as arena exhaustion: {err:?}"
+        );
     }
 
     #[test]
@@ -418,12 +565,12 @@ mod tests {
     fn reopening_the_same_memory_keeps_the_arena_and_free_lists() {
         let memory = crate::test_support::vector_memory();
         let run = {
-            let store = SpillRunStore::new(memory.clone(), 4).expect("store");
+            let store = SpillRunStore::new(memory.clone(), 4, ARENA_ROWS_LIMIT).expect("store");
             let run = store.allocate(5).expect("allocate");
             store.release(run, 5).expect("release");
             run
         };
-        let store = SpillRunStore::new(memory, 4).expect("reopen");
+        let store = SpillRunStore::new(memory, 4, ARENA_ROWS_LIMIT).expect("reopen");
         assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
         assert_eq!(store.allocate(8).expect("allocate"), run);
         assert_eq!(store.read_used_len(run), 8);
