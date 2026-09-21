@@ -307,8 +307,6 @@ impl From<LabeledVertexFieldError> for LaraOperationError {
             LabeledVertexFieldError::SlotIndexOverflow
             | LabeledVertexFieldError::MetadataReservedBitSet
             | LabeledVertexFieldError::BypassOverflowLogHeadOutOfRange
-            | LabeledVertexFieldError::SpillRunSentinel
-            | LabeledVertexFieldError::SpillRunOnNormalRow
             | LabeledVertexFieldError::ValueAllocatedBytesOverflow => {
                 Self::CollectAllocationOverflow
             }
@@ -329,7 +327,6 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
                 Self::CollectAllocationOverflow
             }
             crate::labeled::record::LabelBucketFieldError::ReservedBitsSet
-            | crate::labeled::record::LabelBucketFieldError::OverflowLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesOffsetOverflow
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
@@ -338,9 +335,6 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::TinyTreeModeConflict
             | crate::labeled::record::LabelBucketFieldError::TinyDegreeOutOfRange
             | crate::labeled::record::LabelBucketFieldError::TinyUsedWidthOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::TinyLogHeadPresent
-            | crate::labeled::record::LabelBucketFieldError::SpillRunSentinel
-            | crate::labeled::record::LabelBucketFieldError::SpillRunOnNonSlabBucket
             | crate::labeled::record::LabelBucketFieldError::TinyValueStatePresent => {
                 Self::CollectAllocationOverflow
             }

@@ -8,55 +8,44 @@ pub use crate::slab_index::*;
 use crate::labeled::bucket_label_key::BucketLabelKey;
 
 const BUCKET_LABEL_SHIFT: u32 = 36;
-const BUCKET_LOG_SHIFT: u32 = 52;
-const BUCKET_RESERVED_BITS_SHIFT: u32 = 60;
 const BUCKET_LABEL_MASK: u64 = 0xFFFF << BUCKET_LABEL_SHIFT;
-const BUCKET_LOG_MASK: u64 = 0xFF << BUCKET_LOG_SHIFT;
-/// Reserved bits 61-62 of the bucket word (must be zero on the wire).
-///
-/// Bit 63 is intentionally excluded: it carries the tree-mode flag bit defined
-/// by [`super::record::LabelBucket::is_tree_mode`] / [`super::record::LabelBucket::with_tree_mode`].
-/// Existing slab-mode buckets (pre-Plan 0318) all have bit 63 = 0 and reopen
-/// without change. See Plan 0318 §Step 1.
-/// Bit 60 is intentionally excluded: it carries the tiny-mode flag bit defined
-/// by [`super::record::LabelBucket::is_tiny_mode`] (ADR 0096 §1). Buckets
-/// written before tiny existed all have bit 60 = 0 and reopen without change.
-const BUCKET_RESERVED_BITS_MASK: u64 = 0x3 << (BUCKET_RESERVED_BITS_SHIFT + 1);
-/// Bit 63 of the bucket word: tree-mode flag (1 = tree mode / LTB-backed,
-/// 0 = slab mode). See Plan 0318 §Step 1 and ADR 0088 §1.
-pub const BUCKET_TREE_MODE_BIT: u64 = 1u64 << 63;
-/// Bit 60 of the bucket word: tiny-mode flag (1 = descriptor-resident inline
+/// Bit 52 of the bucket word: tiny-mode flag (1 = descriptor-resident inline
 /// targets, 0 = slab/tree interpretation). ADR 0096 §1. Tiny∧tree is invalid
-/// (rejected by validation); pre-tiny buckets all have bit 60 = 0.
-pub const BUCKET_TINY_MODE_BIT: u64 = 1u64 << 60;
+/// (rejected by validation).
+///
+/// Moved from bit 60 by ADR 0097 §3, which retired the 8-bit edge overflow-log
+/// head: the edge side has no log from the moment the spill store occupies its
+/// region, so there is nothing to preserve.
+pub const BUCKET_TINY_MODE_BIT: u64 = 1u64 << 52;
+/// Bit 53 of the bucket word: tree-mode flag (1 = tree mode / LTB-backed,
+/// 0 = slab mode). See Plan 0318 §Step 1 and ADR 0088 §1. Moved from bit 63 by
+/// ADR 0097 §3.
+pub const BUCKET_TREE_MODE_BIT: u64 = 1u64 << 53;
+/// Word bits 54..64: **reserve for the edge spill run id's low 10 bits**, which
+/// ADR 0097 §3 adds in the next slice. Named rather than left as unexplained
+/// slack, and it cannot raise the edge arena's bound: that bound is set by the
+/// unlabeled `Vertex` tail28, which shares the arena (`design/storage/lara.md`).
+pub const BUCKET_WORD_RESERVE_BITS: u32 = 10;
+/// Shift of [`BUCKET_WORD_RESERVE_BITS`] in the packed word.
+pub const BUCKET_WORD_RESERVE_SHIFT: u32 = 54;
+/// Mask of [`BUCKET_WORD_RESERVE_BITS`] in the packed word.
+pub const BUCKET_WORD_RESERVE_MASK: u64 =
+    ((1u64 << BUCKET_WORD_RESERVE_BITS) - 1) << BUCKET_WORD_RESERVE_SHIFT;
 
 /// Packs a [`super::record::LabelBucket`] wire word.
 #[inline]
-pub fn encode_bucket_word(
-    edge_start: u64,
-    bucket_label_key: BucketLabelKey,
-    overflow_log_head: i32,
-) -> u64 {
-    try_encode_bucket_word(edge_start, bucket_label_key, overflow_log_head)
+pub fn encode_bucket_word(edge_start: u64, bucket_label_key: BucketLabelKey) -> u64 {
+    try_encode_bucket_word(edge_start, bucket_label_key)
         .expect("label bucket packed word out of range")
 }
 
 /// Fallible [`encode_bucket_word`].
 #[inline]
-pub fn try_encode_bucket_word(
-    edge_start: u64,
-    bucket_label_key: BucketLabelKey,
-    overflow_log_head: i32,
-) -> Option<u64> {
+pub fn try_encode_bucket_word(edge_start: u64, bucket_label_key: BucketLabelKey) -> Option<u64> {
     if !slot_index_fits(edge_start) {
         return None;
     }
-    let head = try_encode_overflow_log_byte(overflow_log_head)?;
-    Some(
-        edge_start
-            | (u64::from(bucket_label_key.raw()) << BUCKET_LABEL_SHIFT)
-            | (u64::from(head) << BUCKET_LOG_SHIFT),
-    )
+    Some(edge_start | (u64::from(bucket_label_key.raw()) << BUCKET_LABEL_SHIFT))
 }
 
 /// Replaces only the label-key field in a packed bucket word.
@@ -65,34 +54,10 @@ pub fn replace_bucket_label_key(word: u64, bucket_label_key: BucketLabelKey) -> 
     (word & !BUCKET_LABEL_MASK) | (u64::from(bucket_label_key.raw()) << BUCKET_LABEL_SHIFT)
 }
 
-/// Replaces only the overflow-log head byte in a packed bucket word.
-#[inline]
-pub fn replace_bucket_overflow_log_head(word: u64, overflow_log_head: i32) -> Option<u64> {
-    let head = try_encode_overflow_log_byte(overflow_log_head)?;
-    Some((word & !BUCKET_LOG_MASK) | (u64::from(head) << BUCKET_LOG_SHIFT))
-}
-
 /// Label key field from a packed bucket word.
 #[inline]
 pub fn decode_bucket_label_key(word: u64) -> BucketLabelKey {
     BucketLabelKey::from_raw(((word >> BUCKET_LABEL_SHIFT) & 0xFFFF) as u16)
-}
-
-/// Overflow log head from a packed bucket word.
-#[inline]
-pub fn decode_bucket_overflow_log_head(word: u64) -> i32 {
-    decode_overflow_log_byte(((word >> BUCKET_LOG_SHIFT) & 0xFF) as u8)
-}
-
-/// Returns `true` when the bucket word's reserved bits 61–62 are zero.
-///
-/// Bit 63 is the tree-mode flag (see [`BUCKET_TREE_MODE_BIT`]) and bit 60 is
-/// the tiny-mode flag (see [`BUCKET_TINY_MODE_BIT`]); both are excluded from
-/// this check. Pre-Plan 0318 callers (slab-mode) always have bits 60 and 63 = 0
-/// and reopen without change.
-#[inline]
-pub fn bucket_word_has_zero_reserved_bits(word: u64) -> bool {
-    word & BUCKET_RESERVED_BITS_MASK == 0
 }
 
 #[cfg(test)]
@@ -101,49 +66,34 @@ mod tests {
 
     #[test]
     fn bucket_word_round_trips_fields() {
-        let word = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5), 169);
+        let word = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5));
         assert_eq!(decode_slot_index(word), 0x0F_FFFF_FFFF);
         assert_eq!(decode_bucket_label_key(word).raw(), 0xA5A5);
-        assert_eq!(decode_bucket_overflow_log_head(word), 169);
-        assert!(bucket_word_has_zero_reserved_bits(word));
     }
 
     #[test]
-    fn bucket_word_reserved_bits_cover_61_to_62_only() {
-        // Plan 0318 §Step 1: bit 63 is the tree-mode flag and is NOT reserved.
-        // ADR 0096 §1: bit 60 is the tiny-mode flag and is NOT reserved.
-        // Only bits 61-62 are still reserved (must be zero on the wire).
-        let word = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5), 169);
-        for bit in [61u32, 62] {
-            assert!(
-                !bucket_word_has_zero_reserved_bits(word | (1 << bit)),
-                "reserved bit {bit} must not read as zero"
-            );
-        }
-        // Bit 63 (tree-mode flag) must NOT be flagged as a reserved-bit error.
-        assert!(
-            bucket_word_has_zero_reserved_bits(word | BUCKET_TREE_MODE_BIT),
-            "tree-mode bit 63 must not trigger ReservedBitsSet"
-        );
-        // Bit 60 (tiny-mode flag) must NOT be flagged as a reserved-bit error.
-        assert!(
-            bucket_word_has_zero_reserved_bits(word | BUCKET_TINY_MODE_BIT),
-            "tiny-mode bit 60 must not trigger ReservedBitsSet"
-        );
-        assert!(!bucket_word_has_zero_reserved_bits(
-            word | BUCKET_RESERVED_BITS_MASK
-        ));
+    fn the_word_tail_is_the_mode_flags_and_the_named_reserve() {
+        // ADR 0097 §3 retired the 8-bit edge log head: bits 52..64 are now the tiny flag (52), the
+        // tree flag (53) and the named reserve (54..64), which the next slice turns into the edge
+        // spill run id's low 10 bits. Nothing else lives there, and the flags must not overlap it.
+        let base = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5));
+        let word = base | BUCKET_TINY_MODE_BIT | BUCKET_TREE_MODE_BIT;
+        assert_ne!(word & BUCKET_TINY_MODE_BIT, 0);
+        assert_ne!(word & BUCKET_TREE_MODE_BIT, 0);
+        assert_eq!(word & BUCKET_WORD_RESERVE_MASK, 0);
+        assert_eq!(decode_slot_index(word), 0x0F_FFFF_FFFF);
+        assert_eq!(decode_bucket_label_key(word).raw(), 0xA5A5);
+        // The reserve is the top 10 bits, and the flags sit immediately below it.
+        assert_eq!(BUCKET_WORD_RESERVE_SHIFT, 54);
+        assert_eq!(BUCKET_TINY_MODE_BIT, 1 << 52);
+        assert_eq!(BUCKET_TREE_MODE_BIT, 1 << 53);
     }
 
     #[test]
-    fn replace_bucket_fields_preserves_other_bits() {
-        let word = encode_bucket_word(100, BucketLabelKey::from_raw(1), 9);
+    fn replace_bucket_label_key_preserves_other_bits() {
+        let word = encode_bucket_word(100, BucketLabelKey::from_raw(1));
         let relabeled = replace_bucket_label_key(word, BucketLabelKey::from_raw(0xBEEF));
         assert_eq!(decode_bucket_label_key(relabeled).raw(), 0xBEEF);
         assert_eq!(decode_slot_index(relabeled), 100);
-        assert_eq!(decode_bucket_overflow_log_head(relabeled), 9);
-        let relogged = replace_bucket_overflow_log_head(relabeled, 42).unwrap();
-        assert_eq!(decode_bucket_overflow_log_head(relogged), 42);
-        assert_eq!(decode_bucket_label_key(relogged).raw(), 0xBEEF);
     }
 }
