@@ -2015,7 +2015,7 @@ mod tests {
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
         assert_eq!(
-            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, 0, -1, 0,),
+            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 0u16, 0, 0, -1, 0,),
             Err(LabelBucketFieldError::OverflowLogHeadOutOfRange)
         );
         assert_eq!(
@@ -2053,7 +2053,7 @@ mod tests {
         // Plan 0318 §Step 1: byte 7 mask 0x80 is bit 63, the tree-mode flag,
         // and is no longer a rejected reserved bit. Use 0x40 (bit 62) instead
         // so this test stays focused on the still-reserved bits 60-62.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[7] |= 0x40;
@@ -2066,7 +2066,7 @@ mod tests {
         // ADR 0096 §1: bit 60 is the tiny-mode flag, not reserved. Bits 61-62
         // remain reserved.
         for (byte_mask, word_bit) in [(0x20, 61), (0x40, 62)] {
-            let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+            let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
             let mut bytes = [0u8; LabelBucket::BYTES];
             bucket.write_to(&mut bytes);
             bytes[7] |= byte_mask;
@@ -2086,7 +2086,7 @@ mod tests {
         // reserved-bits rule) judge the row. Byte 28 carries the K=4 used width,
         // which a fresh slab descriptor leaves at 0 — valid for an empty bucket;
         // an out-of-range used width must fail with the precise tiny error.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[7] |= 0x10; // bit 60
@@ -2102,7 +2102,7 @@ mod tests {
     fn label_bucket_tree_mode_bit_round_trips() {
         // Plan 0318 §Step 1: bit 63 round-trips through encode/decode.
         let bucket =
-            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1).with_tree_mode(true);
+            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0).with_tree_mode(true);
         assert!(bucket.is_tree_mode());
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2129,7 +2129,7 @@ mod tests {
         // Plan 0318 §Step 1: bit 63 is NOT a ReservedBitsSet trigger. Building
         // a bucket with bit 63 set and round-tripping through encode/decode
         // must succeed and `is_tree_mode()` must return true.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[7] |= 0x80; // set bit 63 = tree-mode flag
@@ -2209,11 +2209,10 @@ mod tests {
             BucketLabelKey::UNLABELED_UNDIRECTED
         );
         assert!(decoded.is_tombstone());
-        assert_eq!(decoded.bypass_overflow_log_head(), -1);
-        let with_log = decoded.with_bypass_overflow_log_head(42);
-        assert_eq!(with_log.bypass_overflow_log_head(), 42);
-        let log_cleared = with_log.with_bypass_overflow_log_head(-1);
-        assert_eq!(log_cleared.bypass_overflow_log_head(), -1);
+        assert_eq!(decoded.bypass_spill_run(), NO_SPILL_RUN);
+        let with_run = decoded.with_bypass_spill_run(42);
+        assert_eq!(with_run.bypass_spill_run(), 42);
+        assert_eq!(decoded.bypass_spill_run(), NO_SPILL_RUN);
         let normal = decoded
             .with_default_edge_labeled(false)
             .with_degree(2)
@@ -2293,16 +2292,8 @@ mod tests {
     }
 
     #[test]
-    fn bypass_overflow_log_head_respects_max_log_entries() {
-        let vertex =
-            LabeledVertex::default().with_homogeneous_bypass_label(BucketLabelKey::from_raw(1));
-        let at_max = vertex.with_bypass_overflow_log_head(169);
-        assert_eq!(at_max.bypass_overflow_log_head(), 169);
-    }
-
-    #[test]
     fn label_bucket_tombstone_delete_keeps_physical_width() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 5, -1)
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 5)
             .after_slab_tombstone_delete();
         assert_eq!(bucket.degree, 1);
         assert_eq!(bucket.stored_slots(), 5);
@@ -2312,7 +2303,7 @@ mod tests {
     // these tests pin the wire contract the R2b arms will rely on.
 
     fn tiny_bucket_degree2() -> LabelBucket {
-        LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 2, 2, -1)
+        LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 2, 2)
             .try_enable_tiny_mode()
             .expect("fresh degree-2 bucket enables tiny")
             .with_tiny_target(0, 7)
@@ -2355,7 +2346,7 @@ mod tests {
     /// tombstone hole, instead of the live 2).
     #[test]
     fn stored_slots_accessor_is_mode_aware() {
-        let live = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, 3, 3, -1)
+        let live = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, 3, 3)
             .try_enable_tiny_mode()
             .expect("enable tiny");
         assert_eq!(
@@ -2376,7 +2367,7 @@ mod tests {
         );
 
         // Slab and tree buckets keep the raw width in both accessors.
-        let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 10, 2, 7, -1);
+        let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 10, 2, 7);
         assert_eq!(slab.stored_slots_raw(), 7);
         assert_eq!(slab.stored_slots(), 7);
         let tree = slab.with_tree_mode(true);
@@ -2388,7 +2379,7 @@ mod tests {
     fn tiny_roundtrip_degrees_0_to_4() {
         for degree in 0..=4u32 {
             let mut bucket =
-                LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, degree, degree, -1)
+                LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, degree, degree)
                     .try_enable_tiny_mode()
                     .expect("fresh bucket enables tiny");
             for i in 0..degree {
@@ -2408,7 +2399,7 @@ mod tests {
     #[test]
     fn tiny_target_t2_splits_across_three_fields() {
         // T2 = offset-hi byte | width LE | log byte — byte-exact composition.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 3, 3, -1)
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 3, 3)
             .try_enable_tiny_mode()
             .expect("enable")
             .with_tiny_target(2, 0xAABBCCDD);
@@ -2432,19 +2423,18 @@ mod tests {
     #[test]
     fn try_enable_tiny_mode_rejects_each_rule() {
         // Tree bit set.
-        let tree =
-            LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, -1).with_tree_mode(true);
+        let tree = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1).with_tree_mode(true);
         assert_eq!(
             tree.try_enable_tiny_mode(),
             Err(LabelBucketFieldError::TinyTreeModeConflict)
         );
         // Degree 4 is the K=4 cap: accepted.
-        let cap = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 4, -1)
+        let cap = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 4)
             .try_enable_tiny_mode()
             .expect("degree 4 enables tiny");
         assert_eq!(cap.tiny_used_width(), 4);
         // Degree above the K=4 cap.
-        let wide = LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 5, -1);
+        let wide = LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 5);
         assert_eq!(
             wide.try_enable_tiny_mode(),
             Err(LabelBucketFieldError::TinyDegreeOutOfRange)
@@ -2474,7 +2464,7 @@ mod tests {
         );
         // Used width below degree (memory + wire sides): a live slot outside the
         // used range is an incoherent row.
-        let incoherent = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, -1)
+        let incoherent = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1)
             .try_enable_tiny_mode()
             .expect("enable")
             .with_degree_field(2);
@@ -2494,7 +2484,7 @@ mod tests {
     fn try_read_from_rejects_each_tiny_rule() {
         // Valid tiny degree-1 bytes; corrupt one rule at a time.
         fn valid_tiny_bytes() -> [u8; LabelBucket::BYTES] {
-            let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 1, 1, -1)
+            let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 1, 1)
                 .try_enable_tiny_mode()
                 .expect("enable")
                 .with_tiny_target(0, 11)
