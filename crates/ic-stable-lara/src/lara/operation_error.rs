@@ -30,6 +30,11 @@ pub enum LaraOperationError {
     VertexDeleted,
     /// Overflow-log folding ended before enough edges were read.
     LogChainShort,
+    /// A spill row index is at or beyond the run's used length (fail-closed read/write).
+    SpillRowOutOfRange,
+    /// The spill arena cannot serve this bucket any more (class cap or arena limit): the caller
+    /// promotes the bucket to tree mode (ADR 0097 §6).
+    SpillNeedsPromotion,
     /// A complete read would examine more physical slots than the caller permits.
     ReadLimitExceeded,
     /// A complete value read exceeds the caller's admitted body-byte allowance.
@@ -78,6 +83,12 @@ impl fmt::Display for LaraOperationError {
             Self::VertexAccess(e) => write!(f, "{e}"),
             Self::VertexDeleted => write!(f, "vertex deleted"),
             Self::LogChainShort => write!(f, "log chain short"),
+            Self::SpillRowOutOfRange => {
+                write!(f, "spill row index is beyond the run's used length")
+            }
+            Self::SpillNeedsPromotion => {
+                write!(f, "spill arena exhausted: promote the bucket to tree mode")
+            }
             Self::ReadLimitExceeded => write!(f, "physical edge read limit exceeded"),
             Self::ReadByteLimitExceeded => write!(f, "property body read byte limit exceeded"),
             Self::CollectAllocationOverflow => write!(f, "collect overflow"),

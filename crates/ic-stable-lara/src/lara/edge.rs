@@ -120,15 +120,6 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
-    /// Used length of a bucket's spill run, or `0` when the id is the sentinel or out of the
-    /// shared arena's range (ADR 0097 §3).
-    pub(crate) fn spill_used_len(&self, run: u32) -> u32 {
-        match SpillRunId::mint(run, ArenaRows::EDGE) {
-            Ok(id) => self.spill.read_used_len(id),
-            Err(_) => 0,
-        }
-    }
-
     /// Returns edge-slab allocator statistics (free span accounting).
     pub fn allocator_stats(&self) -> crate::lara::edge::free_span::FreeSpanAllocatorStats {
         self.free_spans.allocator_stats()

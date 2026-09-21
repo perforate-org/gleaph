@@ -1,390 +1,196 @@
-//! EdgeStore `log_mut` implementation.
+//! EdgeStore spill API: the typed run wrappers and the run-based readers of a bucket's spill run.
+//!
+//! ADR 0097 §3 replaced the shared per-leaf overflow log with per-bucket spill runs, so this module
+//! no longer has a head, a chain walk or any segment vocabulary: a bucket's rows beyond its slab
+//! prefix are rows `0..used_len` of its own run, addressed by [`SpillRunId`].
+//!
+//! # Wrapper contracts
+//!
+//! * [`EdgeStore::spill_read_row`] rejects `index >= used_len` (fail closed): unused capacity is
+//!   never exposed as if it were a row.
+//! * [`EdgeStore::spill_append`] writes only within the run's capacity and returns the class-full
+//!   signal; the caller grows or promotes, it never writes past capacity.
+//! * [`EdgeStore::spill_grow`] reports **one** promotion outcome for both class-cap exhaustion and
+//!   arena-limit exhaustion, and keeps the write/publish order allocate -> copy -> return ->
+//!   publish, so a descriptor is never pointed at a freed run.
+//! * [`EdgeStore::spill_release`] derives the run's class from the run's own header.
 
+use crate::labeled::spill_run_store::{ArenaRows, SpillRunError, SpillRunId};
 use crate::lara::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
-    SegmentId, VertexId,
-    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
+    VertexId,
+    traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
 
-use super::iter::leaf_segment;
-use super::log::HeaderV1 as LogHeaderV1;
-use super::{DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES};
+use super::{DeleteTarget, EdgeLayout, EdgeStore};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
-    /// Read only linked entries, head-first, including tombstones. Never prefetch the leaf table.
-    /// An unfinished chain is an error, not a successful prefix. Capacity and reads are bounded
-    /// by `max_entries`, independently of the leaf's allocation cursor or unrelated rows.
-    pub(crate) fn read_overflow_log_bounded(
+    // ---------------------------------------------------------------- typed wrappers
+
+    /// Used length of a run: the number of rows `0..used_len` that exist.
+    #[inline]
+    pub(crate) fn spill_used_len(&self, run: SpillRunId) -> u32 {
+        self.spill.read_used_len(run)
+    }
+
+    /// Reads row `index` of `run` into `out`. Rejects `index >= used_len` fail-closed: unused
+    /// capacity is never exposed as if it were a row.
+    pub(crate) fn spill_read_row(
         &self,
-        leaf: u32,
-        head: i32,
-        max_entries: u32,
-    ) -> Result<Vec<E>, LaraOperationError> {
-        if head == -1 {
-            return Ok(Vec::new());
+        run: SpillRunId,
+        index: u32,
+        out: &mut [u8],
+    ) -> Result<(), LaraOperationError> {
+        if index >= self.spill_used_len(run) {
+            return Err(LaraOperationError::SpillRowOutOfRange);
         }
-        if max_entries == 0 {
-            return Err(LaraOperationError::ReadLimitExceeded);
-        }
-        let h = self.log.header();
-        let allocated = self.log.read_idx_with_header(&h, leaf);
-        if allocated < 0 || allocated as u32 > h.max_log_entries {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        let capacity = max_entries.min(allocated as u32) as usize;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(capacity)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        let mut current = head;
-        while current != -1 {
-            if entries.len() >= max_entries as usize {
-                return Err(LaraOperationError::ReadLimitExceeded);
-            }
-            if current < 0 || current >= allocated || entries.len() >= capacity {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(&h, leaf, current as u32, None);
-            entries.push(edge);
-            current = prev;
-        }
-        Ok(entries)
-    }
-
-    pub(crate) fn overflow_log_chain_len(&self, leaf: u32, head: i32) -> u32 {
-        if head < 0 {
-            return 0;
-        }
-        let h = self.log.header();
-        let max_entries = h.max_log_entries;
-        let scratch_len = E::BYTES.max(1);
-        let mut cur = head;
-        let mut len = 0u32;
-        while cur >= 0 {
-            // Defensive budget guard: a valid per-segment overflow chain has at most
-            // `max_log_entries` entries. A longer walk means a corrupt `prev` pointer
-            // (cycle or dangling link); stop instead of looping unbounded.
-            if len >= max_entries {
-                break;
-            }
-            len = len.saturating_add(1);
-            if E::BYTES <= INLINE_EDGE_BYTES {
-                let mut scratch = [0u8; INLINE_EDGE_BYTES];
-                let prev = self.log.read_entry_with_header(
-                    &h,
-                    leaf,
-                    cur as u32,
-                    &mut scratch[..scratch_len],
-                );
-                cur = prev;
-            } else {
-                let mut scratch = vec![0u8; E::BYTES];
-                let prev = self
-                    .log
-                    .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
-                cur = prev;
-            }
-        }
-        len
-    }
-
-    pub(crate) fn overflow_log_chain_asc_indices(&self, leaf: u32, head: i32) -> Vec<u32> {
-        if head < 0 {
-            return Vec::new();
-        }
-        let mut chain = Vec::new();
-        let mut cur = head;
-        let h = self.log.header();
-        let max_entries = h.max_log_entries as usize;
-        let scratch_len = E::BYTES.max(1);
-        while cur >= 0 {
-            // Defensive budget guard (mirrors the prefetch_* walks): a valid per-segment
-            // overflow chain visits each of the segment's `<= max_log_entries` entries at
-            // most once. A longer walk means a corrupt `prev` pointer (cycle or dangling
-            // link); stop instead of looping unbounded and growing `chain` without limit.
-            if chain.len() >= max_entries {
-                break;
-            }
-            chain.push(cur as u32);
-            if E::BYTES <= INLINE_EDGE_BYTES {
-                let mut scratch = [0u8; INLINE_EDGE_BYTES];
-                let prev = self.log.read_entry_with_header(
-                    &h,
-                    leaf,
-                    cur as u32,
-                    &mut scratch[..scratch_len],
-                );
-                cur = prev;
-            } else {
-                let mut scratch = vec![0u8; E::BYTES];
-                let prev = self
-                    .log
-                    .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
-                cur = prev;
-            }
-        }
-        chain.reverse();
-        chain
-    }
-
-    pub(crate) fn decode_overflow_log_edge_at(&self, leaf: u32, entry_idx: u32) -> E {
-        let h = self.log.header();
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut payload = [0u8; INLINE_EDGE_BYTES];
-            self.log
-                .read_entry_with_header(&h, leaf, entry_idx, &mut payload[..E::BYTES]);
-            E::read_from(&payload[..E::BYTES]).with_slot_index(entry_idx)
-        } else {
-            let mut payload = vec![0u8; E::BYTES];
-            self.log
-                .read_entry_with_header(&h, leaf, entry_idx, &mut payload);
-            E::read_from(&payload).with_slot_index(entry_idx)
-        }
-    }
-
-    pub(crate) fn read_overflow_log_entry(&self, leaf: u32, entry_idx: u32) -> (i32, E) {
-        let h = self.log.header();
-        self.read_log_edge_from_table_or_store(&h, leaf, entry_idx, None)
-    }
-
-    pub(super) fn prefetch_log_entries_head_first(
-        &self,
-        log_h: &LogHeaderV1,
-        leaf: u32,
-        log_head: i32,
-    ) -> Result<(Vec<Option<E>>, Vec<u32>), LaraOperationError> {
-        let mut log_table_buf = Vec::new();
-        self.log
-            .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
-        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
-
-        let deleted_slab_offsets: Vec<u32> = Vec::new();
-        let mut log_entries: Vec<Option<E>> = Vec::new();
-        let mut log_i = log_head;
-        let mut budget = log_h.max_log_entries;
-        while budget > 0 {
-            budget -= 1;
-            if log_i < 0 {
-                return Ok((log_entries, deleted_slab_offsets));
-            }
-            let log_idx = log_i as u32;
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
-            log_i = prev;
-            if edge.is_deleted_slot() {
-                log_entries.push(None);
-                continue;
-            }
-            log_entries.push(Some(edge));
-        }
-        if log_i >= 0 {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        Ok((log_entries, deleted_slab_offsets))
-    }
-
-    pub(super) fn read_log_edge_from_table_or_store(
-        &self,
-        log_h: &LogHeaderV1,
-        leaf: u32,
-        log_idx: u32,
-        table: Option<&[u8]>,
-    ) -> (i32, E) {
-        if let Some(buf) = table {
-            let stride = log_h.stride as usize;
-            if stride > 0 {
-                let off = log_idx as usize * stride;
-                if off + stride <= buf.len() && off + 4 + E::BYTES <= buf.len() {
-                    let prev = i32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-                    let edge = E::read_from(&buf[off + 4..off + 4 + E::BYTES]);
-                    return (prev, edge);
-                }
-            }
-        }
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut buf = [0u8; INLINE_EDGE_BYTES];
-            let prev = self
-                .log
-                .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
-            (prev, E::read_from(&buf[..E::BYTES]))
-        } else {
-            let mut buf = vec![0u8; E::BYTES];
-            let prev = self
-                .log
-                .read_entry_with_header(log_h, leaf, log_idx, &mut buf);
-            (prev, E::read_from(&buf))
-        }
-    }
-
-    /// Overflow-log replay for descending scan (`None` = dead placeholder slot).
-    pub(super) fn prefetch_descending_log_replay_tags(
-        &self,
-        log_h: &LogHeaderV1,
-        leaf: u32,
-        log_head: i32,
-    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
-        let mut log_table_buf = Vec::new();
-        self.log
-            .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
-        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
-
-        let deleted_slab_offsets: Vec<u32> = Vec::new();
-        let mut replay_entries: Vec<Option<u32>> = Vec::new();
-        let mut log_i = log_head;
-        let mut budget = log_h.max_log_entries;
-        while budget > 0 {
-            budget -= 1;
-            if log_i < 0 {
-                return Ok((replay_entries, deleted_slab_offsets, log_table_buf));
-            }
-            let log_idx = log_i as u32;
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
-            log_i = prev;
-            if edge.is_deleted_slot() {
-                replay_entries.push(None);
-                continue;
-            }
-            replay_entries.push(Some(log_idx));
-        }
-        if log_i >= 0 {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        Ok((replay_entries, deleted_slab_offsets, log_table_buf))
-    }
-
-    /// Overflow-log inserted-edge replay for ascending scan (`None` consumes a slot).
-    pub(super) fn prefetch_ascending_log_inserted_tags(
-        &self,
-        log_h: &LogHeaderV1,
-        leaf: u32,
-        log_head: i32,
-    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
-        let mut log_table_buf = Vec::new();
-        self.log
-            .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
-        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
-
-        let mut entries = Vec::new();
-        let mut log_i = log_head;
-        let mut steps = 0u32;
-        while log_i >= 0 {
-            if steps >= log_h.max_log_entries {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, edge));
-            log_i = prev;
-            steps = steps
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        }
-        entries.reverse();
-
-        let deleted_slab_offsets: Vec<u32> = Vec::new();
-        let inserted: Vec<Option<u32>> = entries
-            .into_iter()
-            .map(|(log_idx, edge)| {
-                if edge.is_deleted_slot() {
-                    None
-                } else {
-                    Some(log_idx)
-                }
-            })
-            .collect();
-
-        Ok((inserted, deleted_slab_offsets, log_table_buf))
-    }
-
-    pub(crate) fn decode_overflow_log_edge_from_table(
-        &self,
-        leaf: u32,
-        log_idx: u32,
-        log_table: Option<&[u8]>,
-    ) -> E {
-        let h = self.log.header();
-        let (_, edge) = self.read_log_edge_from_table_or_store(&h, leaf, log_idx, log_table);
-        edge
-    }
-
-    pub(crate) fn rewrite_overflow_log_entry_tombstone(
-        &self,
-        leaf: u32,
-        entry_idx: u32,
-    ) -> Result<(), LaraOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let log_h = self.log.header();
-        let (prev, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
-        let tombstone = E::tombstone_edge();
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut payload = [0u8; INLINE_EDGE_BYTES];
-            tombstone.write_to(&mut payload[..E::BYTES]);
-            self.log
-                .write_entry_with_header(&log_h, leaf, entry_idx, prev, &payload[..E::BYTES])
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        } else {
-            let mut payload = vec![0u8; E::BYTES];
-            tombstone.write_to(&mut payload);
-            self.log
-                .write_entry_with_header(&log_h, leaf, entry_idx, prev, &payload)
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        }
+        self.spill.read_row(run, index, out);
         Ok(())
     }
 
-    /// Unlinks one entry from a singly linked overflow chain without changing traversal order.
-    ///
-    /// Removing the head only changes the returned head. Removing an interior entry rewrites the
-    /// one newer entry whose `prev` points to the target. Physical entry order is irrelevant; the
-    /// `prev` chain remains the source of truth for newest-to-oldest scan order.
-    pub(crate) fn unlink_overflow_log_entry(
+    /// Writes row `index` of `run`, which must already exist (`index < used_len`): overwriting a
+    /// tombstone hole or a slot the caller claimed. The used length does not change.
+    pub(crate) fn spill_write_row(
         &self,
-        leaf: u32,
-        head: i32,
-        entry_idx: u32,
-        newer_entry_idx: Option<u32>,
-    ) -> Result<i32, LaraOperationError> {
-        if head < 0 {
-            return Err(LaraOperationError::LogChainShort);
+        run: SpillRunId,
+        index: u32,
+        row: &[u8],
+    ) -> Result<(), LaraOperationError> {
+        if index >= self.spill_used_len(run) {
+            return Err(LaraOperationError::SpillRowOutOfRange);
         }
-        let log_h = self.log.header();
-        let (target_prev, _) =
-            self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
-        if newer_entry_idx.is_none() {
-            if head as u32 != entry_idx {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            return Ok(target_prev);
-        }
-
-        let newer_idx = newer_entry_idx.expect("checked above");
-        let (newer_prev, newer_edge) =
-            self.read_log_edge_from_table_or_store(&log_h, leaf, newer_idx, None);
-        if newer_prev != entry_idx as i32 {
-            return Err(LaraOperationError::LogChainShort);
-        }
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut payload = [0u8; INLINE_EDGE_BYTES];
-            newer_edge.write_to(&mut payload[..E::BYTES]);
-            self.log
-                .write_entry_with_header(&log_h, leaf, newer_idx, target_prev, &payload[..E::BYTES])
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        } else {
-            let mut payload = vec![0u8; E::BYTES];
-            newer_edge.write_to(&mut payload);
-            self.log
-                .write_entry_with_header(&log_h, leaf, newer_idx, target_prev, &payload)
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        }
-        Ok(head)
+        self.spill
+            .write_row(run, index, row)
+            .map_err(LaraOperationError::from)
     }
 
-    pub(super) fn tombstone_overflow_log_delete_target<V, A>(
+    /// Appends `row` at the run's used end. `Ok(false)` means the run's class is full: the caller
+    /// grows ([`Self::spill_grow`]) or promotes, and never writes past capacity.
+    pub(crate) fn spill_append(
+        &self,
+        run: SpillRunId,
+        row: &[u8],
+    ) -> Result<bool, LaraOperationError> {
+        self.spill
+            .try_append_row(run, row)
+            .map_err(LaraOperationError::from)
+    }
+
+    /// Grows `run` to hold `to_len` rows and returns the id the caller must publish.
+    ///
+    /// One outcome for both ways the arena can refuse - a class cap above `MAX_ROWS` and an arena
+    /// limit - so the caller has a single promotion path; and the order is allocate -> copy ->
+    /// return -> publish, so the descriptor is never pointed at a freed run.
+    pub(crate) fn spill_grow(
+        &self,
+        run: SpillRunId,
+        from_len: u32,
+        to_len: u32,
+    ) -> Result<SpillRunId, LaraOperationError> {
+        self.spill
+            .grow_to(run, from_len, to_len)
+            .map_err(LaraOperationError::from)
+    }
+
+    /// Releases `run` to its class's free list. The class comes from the run's own header.
+    pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
+        self.spill.release(run).map_err(LaraOperationError::from)
+    }
+
+    /// Mints a run id for `run` against the shared arena's capacity, for callers that hold a raw
+    /// offset from a descriptor field. Every other entry point takes a [`SpillRunId`].
+    pub(crate) fn spill_mint(&self, run: u32) -> Result<SpillRunId, LaraOperationError> {
+        SpillRunId::mint(run, ArenaRows::EDGE).map_err(LaraOperationError::from)
+    }
+
+    // ---------------------------------------------------------------- run-based readers
+
+    /// Edge at row `index` of `run`.
+    pub(crate) fn spill_edge_at(
+        &self,
+        run: SpillRunId,
+        index: u32,
+    ) -> Result<E, LaraOperationError> {
+        if E::BYTES <= super::INLINE_EDGE_BYTES {
+            let mut buf = [0u8; super::INLINE_EDGE_BYTES];
+            self.spill_read_row(run, index, &mut buf[..E::BYTES])?;
+            Ok(E::read_from(&buf[..E::BYTES]))
+        } else {
+            let mut buf = vec![0u8; E::BYTES];
+            self.spill_read_row(run, index, &mut buf)?;
+            Ok(E::read_from(&buf))
+        }
+    }
+
+    /// Every row of `run`, in ordinal order, up to `max` rows. Bounded so a corrupt length cannot
+    /// allocate unboundedly.
+    pub(crate) fn spill_edges(
+        &self,
+        run: SpillRunId,
+        max: u32,
+    ) -> Result<Vec<E>, LaraOperationError> {
+        let used = self.spill_used_len(run);
+        if used > max {
+            return Err(LaraOperationError::ReadLimitExceeded);
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(used as usize)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        for index in 0..used {
+            out.push(self.spill_edge_at(run, index)?);
+        }
+        Ok(out)
+    }
+
+    /// The run's row indices in ordinal order (`0..used_len`).
+    pub(crate) fn spill_asc_indices(&self, run: SpillRunId) -> Vec<u32> {
+        (0..self.spill_used_len(run)).collect()
+    }
+
+    /// Writes a tombstone in place at row `index`, keeping the run's length unchanged.
+    pub(crate) fn spill_tombstone_row(
+        &self,
+        run: SpillRunId,
+        index: u32,
+    ) -> Result<(), LaraOperationError>
+    where
+        E: crate::traits::CsrEdgeTombstone,
+    {
+        let tombstone = E::tombstone_edge();
+        if E::BYTES <= super::INLINE_EDGE_BYTES {
+            let mut payload = [0u8; super::INLINE_EDGE_BYTES];
+            tombstone.write_to(&mut payload[..E::BYTES]);
+            self.spill_write_row(run, index, &payload[..E::BYTES])
+        } else {
+            let mut payload = vec![0u8; E::BYTES];
+            tombstone.write_to(&mut payload);
+            self.spill_write_row(run, index, &payload)
+        }
+    }
+
+    /// The run's rows as replay entries (`None` = a tombstoned row), in ordinal order.
+    pub(crate) fn spill_replay_entries(
+        &self,
+        run: SpillRunId,
+    ) -> Result<Vec<Option<E>>, LaraOperationError> {
+        let used = self.spill_used_len(run);
+        let mut out = Vec::new();
+        out.try_reserve_exact(used as usize)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        for index in 0..used {
+            let edge = self.spill_edge_at(run, index)?;
+            if edge.is_deleted_slot() {
+                out.push(None);
+            } else {
+                out.push(Some(edge));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Deletes the spill row a delete target names, or the slab slot it names.
+    pub(super) fn tombstone_spill_delete_target<V, A>(
         &self,
         edge_layout: &EdgeLayout,
         vertices: &A,
@@ -395,8 +201,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     where
         V: CsrVertex,
         A: VertexAccess<V>,
-        E: CsrEdgeTombstone,
+        E: crate::traits::CsrEdgeTombstone,
     {
+        let _ = edge_layout;
         match target {
             DeleteTarget::Slab(offset) => {
                 let rm_slot = v
@@ -406,322 +213,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 self.write_slot(rm_slot, E::tombstone_edge())
                     .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             }
-            DeleteTarget::Log(entry_idx) => {
-                let leaf = leaf_segment(vertices.log_leaf_vertex(vid), edge_layout.segment_size);
-                self.rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
+            DeleteTarget::Spill { run, index } => {
+                self.spill_tombstone_row(run, index)?;
             }
         }
         vertices.set(vid, &v.after_slab_tombstone_delete());
         Ok(())
     }
-
-    pub(super) fn insert_into_log_with_layout<V, A>(
-        &self,
-        edge_layout: &EdgeLayout,
-        vertices: &A,
-        vid: VertexId,
-        log_owner: VertexId,
-        v: V,
-        next_degree: u32,
-        edge: E,
-    ) -> Result<u32, LaraOperationError>
-    where
-        V: CsrVertex,
-        A: VertexAccess<V>,
-    {
-        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let log_h = self.log.header();
-        let idx = self.log.read_idx_with_header(&log_h, leaf);
-        if idx < 0 || idx >= log_h.max_log_entries as i32 {
-            return Err(LaraOperationError::SegmentLogFull);
-        }
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut payload = [0u8; INLINE_EDGE_BYTES];
-            edge.write_to(&mut payload[..E::BYTES]);
-            self.log
-                .write_entry_with_header(
-                    &log_h,
-                    leaf,
-                    idx as u32,
-                    v.log_head(),
-                    &payload[..E::BYTES],
-                )
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        } else {
-            let mut payload = vec![0u8; E::BYTES];
-            edge.write_to(&mut payload);
-            self.log
-                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), &payload)
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        }
-        self.log.write_idx_with_header(&log_h, leaf, idx + 1);
-        let _ = next_degree;
-        let grown = v
-            .with_log_head(idx)
-            .try_grow_packed_slab_by_one()
-            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
-        vertices.set(vid, &grown);
-        Ok(idx as u32)
-    }
-
-    pub(crate) fn log_is_full_with_segment_size(&self, vid: VertexId, segment_size: u32) -> bool {
-        let log_h = self.log.header();
-        let leaf = leaf_segment(vid, segment_size);
-        self.log.read_idx_with_header(&log_h, leaf) >= log_h.max_log_entries as i32
-    }
-
-    pub(crate) fn log_fill_ratio(&self, segment: SegmentId) -> f64 {
-        let log_h = self.log.header();
-        let idx = self
-            .log
-            .read_idx_with_header(&log_h, u32::from(segment))
-            .max(0) as f64;
-        let capacity = log_h.max_log_entries.max(1) as f64;
-        idx / capacity
-    }
-
-    pub(crate) fn read_overflow_log_idx(&self, leaf: u32) -> i32 {
-        let log_h = self.log.header();
-        self.log.read_idx_with_header(&log_h, leaf)
-    }
-
-    pub(crate) fn read_overflow_log_state(&self, leaf: u32) -> (i32, u32) {
-        let log_h = self.log.header();
-        (
-            self.log.read_idx_with_header(&log_h, leaf),
-            log_h.max_log_entries,
-        )
-    }
-
-    pub(crate) fn write_overflow_log_entries(
-        &self,
-        leaf: u32,
-        start_idx: u32,
-        entries: &[(i32, E)],
-    ) -> Result<(), LaraOperationError> {
-        let log_h = self.log.header();
-        for (offset, (prev, edge)) in entries.iter().enumerate() {
-            let entry_idx = start_idx + offset as u32;
-            if E::BYTES <= INLINE_EDGE_BYTES {
-                let mut payload = [0u8; INLINE_EDGE_BYTES];
-                edge.write_to(&mut payload[..E::BYTES]);
-                self.log
-                    .write_entry_with_header(&log_h, leaf, entry_idx, *prev, &payload[..E::BYTES])
-                    .map_err(LaraOperationError::WriteLogFailed)?;
-            } else {
-                let mut payload = vec![0u8; E::BYTES];
-                edge.write_to(&mut payload);
-                self.log
-                    .write_entry_with_header(&log_h, leaf, entry_idx, *prev, &payload)
-                    .map_err(LaraOperationError::WriteLogFailed)?;
-            }
-        }
-        let next_idx = (start_idx as i32).saturating_add(entries.len() as i32);
-        self.log.write_idx_with_header(&log_h, leaf, next_idx);
-        Ok(())
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::*;
-    use crate::test_support::{TestEdge, vector_memory};
-    use crate::traits::{CsrEdge, CsrEdgeTombstone};
-    use crate::{LaraOperationError, VertexCount};
-
-    fn fresh_edges() -> EdgeStore<TestEdge, crate::VectorMemory> {
-        let edges = EdgeStore::new(
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            8,
-            1,
-            0,
-        )
-        .unwrap();
-        edges
-            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
-            .unwrap();
-        edges
-    }
-
-    fn edge_inline_property(value: u32) -> Vec<u8> {
-        let mut buf = vec![0u8; TestEdge::BYTES];
-        TestEdge(value).write_to(&mut buf);
-        buf
-    }
-
-    #[test]
-    fn bounded_overflow_skips_unrelated_leaf_entries() {
-        #[derive(Clone, Default)]
-        struct ReadMemory {
-            inner: crate::VectorMemory,
-            bytes: std::rc::Rc<std::cell::Cell<usize>>,
+impl From<SpillRunError> for LaraOperationError {
+    fn from(err: SpillRunError) -> Self {
+        match err {
+            SpillRunError::ArenaExhausted { .. } | SpillRunError::RunIdOutOfRange { .. } => {
+                // One outcome for every way the arena refuses: the caller promotes the bucket.
+                LaraOperationError::SpillNeedsPromotion
+            }
+            SpillRunError::Grow(err) => LaraOperationError::WriteLogFailed(err),
         }
-        impl ic_stable_structures::Memory for ReadMemory {
-            fn size(&self) -> u64 {
-                self.inner.size()
-            }
-            fn grow(&self, pages: u64) -> i64 {
-                self.inner.grow(pages)
-            }
-            fn read(&self, offset: u64, dst: &mut [u8]) {
-                self.bytes.set(self.bytes.get() + dst.len());
-                self.inner.read(offset, dst);
-            }
-            fn write(&self, offset: u64, src: &[u8]) {
-                self.inner.write(offset, src);
-            }
-        }
-        let log = ReadMemory::default();
-        let edges = EdgeStore::new(
-            ReadMemory::default(),
-            ReadMemory::default(),
-            log.clone(),
-            ReadMemory::default(),
-            ReadMemory::default(),
-            ReadMemory::default(),
-            8,
-            1,
-            0,
-        )
-        .unwrap();
-        let entries = (0..64).map(|i| (-1, TestEdge(i))).collect::<Vec<_>>();
-        edges.write_overflow_log_entries(0, 0, &entries).unwrap();
-        log.bytes.set(0);
-        let selected = edges.read_overflow_log_bounded(0, 63, 1).unwrap();
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].0, 63);
-        assert_eq!(
-            log.bytes.get(),
-            12,
-            "allocation cursor, one prev pointer and one topology record, no leaf table"
-        );
-        log.bytes.set(0);
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 63, 0),
-            Err(LaraOperationError::ReadLimitExceeded)
-        ));
-        assert_eq!(log.bytes.get(), 0);
-        // Positive control: the ordinary prefetch path really reads all 64 allocated entries.
-        edges
-            .prefetch_log_entries_head_first(&edges.log.header(), 0, 63)
-            .unwrap();
-        assert!(log.bytes.get() >= 64 * 8);
-    }
-
-    #[test]
-    fn bounded_overflow_requires_termination_and_counts_tombstones() {
-        let edges = fresh_edges();
-        let tombstone = TestEdge::tombstone_edge();
-        edges
-            .write_overflow_log_entries(
-                0,
-                0,
-                &[(-1, TestEdge(7)), (0, tombstone), (1, TestEdge(7))],
-            )
-            .unwrap();
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 2, 2),
-            Err(LaraOperationError::ReadLimitExceeded)
-        ));
-        let all = edges.read_overflow_log_bounded(0, 2, 3).unwrap();
-        assert_eq!(all.len(), 3);
-        assert_eq!(all[0].0, 7);
-        assert!(all[1].is_deleted_slot());
-        assert_eq!(all[2].0, 7);
-        assert!(
-            edges
-                .read_overflow_log_bounded(0, -1, 0)
-                .unwrap()
-                .is_empty()
-        );
-        // After two permitted reads the next pointer is invalid. The limit must win;
-        // with another slot available the malformed chain must fail, not look complete.
-        edges
-            .write_overflow_log_entries(0, 1, &[(i32::MAX, tombstone), (1, TestEdge(7))])
-            .unwrap();
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 2, 2),
-            Err(LaraOperationError::ReadLimitExceeded)
-        ));
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 2, 3),
-            Err(LaraOperationError::LogChainShort)
-        ));
-        edges
-            .write_overflow_log_entries(0, 0, &[(1, TestEdge(7)), (0, tombstone)])
-            .unwrap();
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 1, 1),
-            Err(LaraOperationError::ReadLimitExceeded)
-        ));
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, 1, 4),
-            Err(LaraOperationError::LogChainShort)
-        ));
-        assert!(matches!(
-            edges.read_overflow_log_bounded(0, -2, 3),
-            Err(LaraOperationError::LogChainShort)
-        ));
-    }
-
-    #[test]
-    fn chain_walks_terminate_and_bound_on_corrupt_prev_cycle() {
-        // A corrupt `prev` link forms a 3-entry cycle: head 2 -> 1 -> 0 -> 2 -> ...
-        // Without the budget guard both walks would loop forever / grow unbounded.
-        let edges = fresh_edges();
-        let leaf = 0u32;
-        let h = edges.log.header();
-        let inline_property_bytes = edge_inline_property(7);
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 0, 2, &inline_property_bytes)
-            .unwrap();
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 1, 0, &inline_property_bytes)
-            .unwrap();
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 2, 1, &inline_property_bytes)
-            .unwrap();
-        edges.log.write_idx_with_header(&h, leaf, 3);
-
-        let chain = edges.overflow_log_chain_asc_indices(leaf, 2);
-        assert_eq!(chain.len(), h.max_log_entries as usize);
-        assert_eq!(
-            edges.overflow_log_chain_len(leaf, 2),
-            h.max_log_entries,
-            "length walk is capped at the per-segment budget"
-        );
-    }
-
-    #[test]
-    fn chain_walks_return_full_valid_chain() {
-        // Acyclic chain head 2 -> 1 -> 0 -> -1 must not be truncated by the guard.
-        let edges = fresh_edges();
-        let leaf = 0u32;
-        let h = edges.log.header();
-        let inline_property_bytes = edge_inline_property(7);
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 0, -1, &inline_property_bytes)
-            .unwrap();
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 1, 0, &inline_property_bytes)
-            .unwrap();
-        edges
-            .log
-            .write_entry_with_header(&h, leaf, 2, 1, &inline_property_bytes)
-            .unwrap();
-        edges.log.write_idx_with_header(&h, leaf, 3);
-
-        assert_eq!(edges.overflow_log_chain_asc_indices(leaf, 2), vec![0, 1, 2]);
-        assert_eq!(edges.overflow_log_chain_len(leaf, 2), 3);
     }
 }

@@ -6,7 +6,12 @@ use super::edges::HeaderV1 as EdgeHeaderV1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeleteTarget {
     Slab(u32),
-    Log(u32),
+    Spill {
+        /// The bucket's spill run.
+        run: crate::labeled::spill_run_store::SpillRunId,
+        /// The row index inside the run.
+        index: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
