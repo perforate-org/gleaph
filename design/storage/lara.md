@@ -199,6 +199,12 @@ Changing substrate (e.g. host-side persistent mmap) should preserve the four con
 
 Inline property bytes slab ([labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md)) follows the same bucket-local logical edge association as edge bytes. `ORDER BY INSERTION` compaction preserves that live order; `Unordered` tombstone reuse and swap-compaction may change physical order but must move the corresponding inline property bytes with the edge. Physical alignment with leaf rope is part of the labeled migration.
 
+Hybrid value-batch traversal owns dense admission, ordered slot/value pairing, callback termination
+and phase-one scratch/replay lifecycle; the implemented reader contract is in
+[ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
+Its nonzero-property and selected-topology witnesses are distinct from width-zero topology scans
+and bounded inline edge-range visitors. [Evidence and remaining gates](../evidence/adr0097-current-survey-hybrid-batches.md).
+
 **Homogeneous bypass insertion is tail-only (GAP-2026-07-11-004).** A default-label bypass row may extend its contiguous slab region only while it is the tail vertex; extending a non-tail region forces every later row's origin to be rescanned and rewritten, which measured linearly (~1.08M instructions per insert at 4,096 successors). The labeled insert dispatcher therefore promotes a non-tail bypass row to bucket mode — via the existing preflighted `promote_bypass_to_bucket_mode` transition — before its next same-label insert, so per-insert cost is bounded by the owning PMA leaf/segment rather than vertex count: 343K / 363K / 382K instructions for 16 inserts at 256 / 1,024 / 4,096 successors (`bench_labeled_non_tail_bypass_insert_*`). While the row remains the tail, same-label inserts keep the direct slab fast path unchanged.
 
 **Bypass-origin geometry contract (Plan 0341, GAP-2026-09-07-001 bypass side).** A default-label

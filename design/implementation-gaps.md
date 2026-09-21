@@ -219,8 +219,10 @@ Its aggregate read counts neither identified span work nor established an unavoi
 Main's prefix also contains tombstones; the earlier claim that main only visits live rows was wrong.
 
 The guard removal in `0b6673a0d` affected the hybrid-values helper, which is not the path of
-these scan benchmarks. It remains in source but is not credited as a fix or independently
-validated by this diagnosis. This entry replaces both contradictory GAP-009 entries.
+these scan benchmarks. That diagnosis did not validate it. The later actual-consumer witnesses
+below reproduce contract failures and `8a6bafd1b` restores checked admission while unifying the
+ordered emitter. It is not credited as a width-zero scan fix. This entry replaces both
+contradictory GAP-009 entries.
 
 #### Actual paths and fixture parity
 
@@ -327,7 +329,7 @@ on rejection). Scalar reads share that invariant. `EdgeStore::spill_edges_iter` 
 buffer sizing and the existing slab chunk count, decodes lazily, and serves replay plus both
 labeled and bypass matching. Writes remain class-capacity checked and unchanged. Point
 lookups, compaction's direct reads, batch-write point access, values-store callers, and the
-separately unproven hybrid-values change are deliberately not batched.
+then-unvalidated hybrid-values change were deliberately outside that batching slice.
 
 Owning witnesses: `bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes`,
 `spill_replay_reads_chunks_not_scalar_rows`, `spill_replay_reads_chunks_for_ten_byte_rows`,
@@ -556,6 +558,36 @@ are branch measurements, not a new main comparison or an instruction cost assign
 No full benchmark artifacts were persisted. Wide/arena/other-caller and broader atomicity gates,
 remaining regressions, space/PocketIC and final all-name validation remain open.
 [Exact witnesses, CSVs, diagnostics and limitations](evidence/adr0097-normal-relocation-header-reads.md).
+
+#### Pinned full survey and actual hybrid-value consumers
+
+The unfiltered, non-persisted survey at `5ad7f5a61` completes **189 totals / 554 scopes** in
+189.5 seconds, exit 0. It finds **25 totals >5% versus rounded main**, and nine >5% versus exact
+`3ea7dc739`. Aliases, nineteen absent/one new historical scope and operation/fixture mismatches
+are recorded name-by-name. The **16K delete/compact increase 43,376,650 → 15,498,702,117** remains
+unexplained; being near main's rounded 15.54 B is not acceptance or proof of equivalent work.
+
+`e596eadae` retains complete descriptor-row validation but serializes only the changed suffix
+for in-place insertion. Pressure-stat setup at 256 labels falls **303,322,427 → 276,081,039**;
+the actual pressure scope stays **36,157**. Native bucket write bytes fall **4,580,248 → 199,008**
+with unchanged reads, write calls and growth. This is not a changed pressure policy.
+
+Actual nonzero-property witnesses reject `0b6673a0d`: tombstones invalidate slot-as-value-ordinal
+mapping, callbacks lose `Break`, descending values misalign, reversed replay loses target identity,
+and reused scratch leaks another label's values. `8a6bafd1b` restores checked dense admission,
+unifies ordered emission, propagates termination and retains canonical replay order. Widths 8/33,
+retained independent runs, prefix/run holes, scratch reuse and selected targets are covered.
+Incoming hybrid instructions are **126,123 → 111,370**, property-first/selected-topology
+**280,180 → 266,211**, repeated nonzero batches **1,275,736 → 1,118,925**. The matching property-first
+native probe preserves exact output and memory traffic; no per-read instruction price is inferred.
+
+Final library **658/0**, strict library clippy and scoped formatting pass. Mixed-hub traversal
+remains **790,432 / 557,118**, with unchanged exact rows and native role/read-length histograms.
+Neither broader nonzero-property recovery nor mixed-hub attribution is complete. All canonical
+full artifacts still describe `3ea7dc739`; only the new survey describes `5ad7f5a61`, and only named
+focused controls describe later code. The shared ten-minute observation budget was exceeded
+(approximately 726 seconds reconstructed); further validation was stopped. Main remains unmerged.
+[Complete evidence, exact CSVs, negative diagnostics, commands and remaining gates](evidence/adr0097-current-survey-hybrid-batches.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 

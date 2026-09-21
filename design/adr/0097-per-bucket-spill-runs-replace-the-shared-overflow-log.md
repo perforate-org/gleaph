@@ -263,6 +263,15 @@ bucket.
    Full replay reads bounded contiguous chunks; a streaming matcher may stop decoding early.
    Chunk sizing and allocation are checked, without changing layout, capacity or write semantics.
 
+   **Hybrid value batches (implemented in `8a6bafd1b`).** Checked prefix-plus-used-run extent
+   must equal live degree before edge slots may stand in for value ordinals. Replay length
+   includes tombstones; hole-bearing buckets use the existing sparse rank mapping. One ordered
+   emitter pairs slots and values in both directions, retaining physical-plane batch boundaries
+   and propagating callback `Break`. A new phase one clears both batch buffers and old replay.
+   Only completed hybrid traversal publishes replay, indexed by canonical run ordinal rather
+   than visit order. The existing cache and storage layout are unchanged.
+   [Actual nonzero-property witnesses and measurements](../evidence/adr0097-current-survey-hybrid-batches.md).
+
 8. **Invariants.** One owner per row at a time; every published width *and every spill length* is a claim that must
    be backed; ordinals of existing rows never change; resident content is `prefix + spill`, one definition shared by
    sizing, placement and publish.

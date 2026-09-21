@@ -774,16 +774,16 @@ bench_t_off_l1k_e8k_0_d,total,9254,10833,-1579,-14.575833,,,bench_t_off_l1k_e8k_
 bench_t_off_l1k_e8k_960_a,total,133049,134628,-1579,-1.172862,,,bench_t_off_l1k_e8k_960_a,134.51 K,134510,-1.086165,,
 bench_t_v_at_replay,total,4021,5600,-1579,-28.196429,,,bench_t_v_at_replay,4989,4989,-19.402686,,
 bench_t_v_bypass,total,12250,12250,0,0.000000,,,bench_t_v_bypass,12.31 K,12310,-0.487409,,
-bench_t_v_dense_a,total,75841,18393,57448,312.336215,,,bench_t_v_dense_a,18.31 K,18310,314.205352,,
-bench_t_v_dense_d,total,71821,18137,53684,295.991619,,,bench_t_v_dense_d,18.06 K,18060,297.679956,,
-bench_t_v_ebreak,total,30417,9422,20995,222.829548,,,bench_t_v_ebreak,9339,9339,225.698683,,
+bench_t_v_dense_a,total,75841,18393,57448,312.336215,,,bench_t_v_dense_a,18.31 K,18310,314.205352,,slab-only fixture assumption not asserted; physical-state parity unverified
+bench_t_v_dense_d,total,71821,18137,53684,295.991619,,,bench_t_v_dense_d,18.06 K,18060,297.679956,,slab-only fixture assumption not asserted; physical-state parity unverified
+bench_t_v_ebreak,total,30417,9422,20995,222.829548,,,bench_t_v_ebreak,9339,9339,225.698683,,slab-only fixture assumption not asserted; physical-state parity unverified
 bench_t_v_hyb,total,73674,75253,-1579,-2.098255,,,bench_t_v_hyb,81.01 K,81010,-9.055672,,
 bench_t_v_in_dense,total,88367,89946,-1579,-1.755498,,,bench_t_v_in_dense,88.13 K,88130,0.268921,,
 bench_t_v_in_hyb_ip,total,126123,127702,-1579,-1.236472,,,bench_t_v_in_hyb_ip,74.47 K,74470,69.360816,,
 bench_t_v_pf_then_sel,total,280180,283338,-3158,-1.114570,,,bench_t_v_pf_then_sel,152.75 K,152750,83.423895,,
 bench_t_v_sparse,total,53220,55236,-2016,-3.649794,,,bench_t_v_sparse,55.11 K,55110,-3.429505,,
 bench_t_v_w_ip,total,154677,154194,483,0.313242,,,bench_t_v_w_ip,155.53 K,155530,-0.548447,,
-bench_t_v_window,total,48008,9893,38115,385.272415,,,bench_t_v_window,9819,9819,388.929626,,
+bench_t_v_window,total,48008,9893,38115,385.272415,,,bench_t_v_window,9819,9819,388.929626,,slab-only fixture assumption not asserted; physical-state parity unverified
 bench_t_vip,total,28588,31740,-3152,-9.930687,,,bench_t_vip,28.06 K,28060,1.881682,,
 bench_t_vip_descending,total,28593,31745,-3152,-9.929123,,,bench_t_vip_descending,27.01 K,27010,5.860792,,
 bench_t_vip_descending_tail,total,6157,7736,-1579,-20.411065,,,bench_t_vip_descending_tail,180.85 K,180850,-96.595521,,
