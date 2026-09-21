@@ -125,7 +125,6 @@ impl SpillRunId {
         self.0 == u32::MAX
     }
 }
-/// Sentinel for "no free run" / "no link".
 
 /// Offsets inside the 64-byte store header.
 const OFFSET_MAGIC: u64 = 0;

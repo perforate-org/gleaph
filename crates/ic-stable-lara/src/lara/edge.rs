@@ -67,7 +67,7 @@ mod log;
 pub mod scan_guard;
 pub mod span_meta;
 
-use crate::labeled::spill_run_store::{ArenaRows, SpillRunId, SpillRunStore};
+use crate::labeled::spill_run_store::SpillRunStore;
 use crate::traits::CsrEdge;
 use counts::SegmentEdgeCountsStore;
 pub(crate) use edges::EdgeSlabStore;

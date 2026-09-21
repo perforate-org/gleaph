@@ -730,6 +730,17 @@ pub enum OneOrientationBatchError {
         /// Storage label of the tiny-mode bucket.
         label_id: BucketLabelKey,
     },
+    /// ADR 0097 §7: a run whose rows would land in the bucket's own spill run
+    /// stays on the scalar path, which appends to the run, grows it by class and
+    /// promotes the bucket when the run reaches its largest class. Rejected
+    /// before any reservation, so the batch writes nothing and the caller's
+    /// scalar fallback is exact.
+    SpillRunDeferred {
+        /// Vertex that owns the bucket.
+        owner_vertex_id: VertexId,
+        /// Storage label of the bucket.
+        label_id: BucketLabelKey,
+    },
     /// Plan 0321 Step 2 (minimal first slice): the tree-mode
     /// run exceeds the current tail-block room and would cross
     /// a block boundary. The widening (follow-up) admits this
@@ -873,13 +884,6 @@ enum RunDestination {
         inline_property_bytes_offset: Option<u64>,
         /// Number of inline property bytes reserved.
         inline_property_bytes_byte_count: u64,
-    },
-    /// Append to the bucket's edge overflow log and, when applicable, inline property bytes overflow log.
-    OverflowLog {
-        /// Index of the first reserved edge log entry.
-        edge_log_start_idx: u32,
-        /// Index of the first reserved inline property bytes log entry, if inline-property-bearing.
-        inline_property_bytes_log_start_idx: Option<u32>,
     },
     /// Expand the pinned PMA leaf block in place and write the run into the new slab
     /// space after folding any existing overflow log entries.
@@ -1164,28 +1168,18 @@ where
         E: CsrEdgeTombstone,
     {
         // Phase 2: mutation-free preflight of every run.
-        // Overflow-log runs share per-leaf segment capacity.  We maintain virtual
-        // cursors so that multiple runs targeting the same leaf reserve disjoint
-        // log ranges and the aggregate capacity check sees the whole batch.
-        // Expanded-slab runs similarly share per-leaf physical block growth.
+        // Expanded-slab runs share per-leaf physical block growth, so their
+        // reservations are tracked per leaf and the aggregate check sees the whole
+        // batch. Runs that would land in a bucket's own spill run are deferred to
+        // the scalar path (ADR 0097 §7) before any reservation.
         let mut preflight = Vec::with_capacity(plan.runs.len());
         let mut max_edge_end_slot: u64 = 0;
-        let mut edge_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
-            std::collections::BTreeMap::new();
-        let mut inline_property_bytes_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
-            std::collections::BTreeMap::new();
         let mut leaf_expansion_cursors: std::collections::BTreeMap<u32, LeafExpansionState> =
             std::collections::BTreeMap::new();
         let mut leaf_relocations: std::collections::BTreeMap<u32, LabeledLeafRelocationTarget> =
             std::collections::BTreeMap::new();
         for run in &plan.runs {
-            let p = self.preflight_run(
-                run,
-                &mut edge_log_leaf_cursors,
-                &mut inline_property_bytes_log_leaf_cursors,
-                &mut leaf_expansion_cursors,
-                &existing_buckets,
-            )?;
+            let p = self.preflight_run(run, &mut leaf_expansion_cursors, &existing_buckets)?;
             match &p.destination {
                 RunDestination::Slab {
                     edge_start_slot, ..
@@ -1507,11 +1501,6 @@ where
                         allocated_inline_property_bytes_offsets.push(None);
                     }
                 }
-                RunDestination::OverflowLog { .. } => {
-                    // Overflow-log runs do not allocate inline property bytes slab bytes; inline property bytes
-                    // are written directly into the inline property bytes overflow log at commit time.
-                    allocated_inline_property_bytes_offsets.push(None);
-                }
                 RunDestination::ExpandedSlab { .. } | RunDestination::RelocatedSlab { .. } => {
                     // Expanded-slab runs allocate any required inline property bytes slab bytes at
                     // reserve time, just like clean-slab runs, so rollback can retire
@@ -1727,13 +1716,6 @@ where
                             inline_property_bytes_byte_count,
                         }
                     }
-                    RunDestination::OverflowLog {
-                        edge_log_start_idx,
-                        inline_property_bytes_log_start_idx,
-                    } => RunDestination::OverflowLog {
-                        edge_log_start_idx,
-                        inline_property_bytes_log_start_idx,
-                    },
                     RunDestination::ExpandedSlab {
                         leaf,
                         old_leaf_len,
@@ -2055,8 +2037,6 @@ where
     fn preflight_run(
         &self,
         run: &OneOrientationBucketRun<E>,
-        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
-        inline_property_bytes_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
         leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
         existing_buckets: &std::collections::BTreeMap<
             (VertexId, BucketLabelKey),
@@ -2245,8 +2225,6 @@ where
                         run,
                         bucket_slot,
                         bucket,
-                        edge_log_leaf_cursors,
-                        inline_property_bytes_log_leaf_cursors,
                         leaf_expansion_cursors,
                     );
                 }
@@ -2322,8 +2300,6 @@ where
                         run,
                         bucket_slot,
                         bucket,
-                        edge_log_leaf_cursors,
-                        inline_property_bytes_log_leaf_cursors,
                         leaf_expansion_cursors,
                     );
                 }
@@ -2352,100 +2328,22 @@ where
         }
     }
 
+    /// ADR 0097 §7: a run whose rows would land in the bucket's own spill run is
+    /// deferred to the scalar path. The batch has no run-growth reservation yet
+    /// (a growth copies up to 2x the live rows, and a run at its largest class
+    /// promotes the bucket), so the run is rejected *before* anything is
+    /// reserved: no canonical write happens, and the caller's scalar fallback
+    /// appends to the run, grows it by class and promotes when it must.
     fn preflight_overflow_log_run(
         &self,
         run: &OneOrientationBucketRun<E>,
-        bucket_slot: u64,
-        bucket: super::LabelBucket,
-        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
-        inline_property_bytes_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
-        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
+        _bucket_slot: u64,
+        _bucket: super::LabelBucket,
+        _leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
-        self.ensure_vertex(run.owner_vertex_id)
-            .map_err(OneOrientationBatchError::from)?;
-        let edge_slot_count = u32::try_from(run.edges.len())
-            .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
-
-        // Edge overflow log capacity check against the virtual leaf cursor.
-        let header = self.edges.header();
-        let leaf = Self::leaf_index_for_vid(run.owner_vertex_id, header.segment_size);
-        let _needed_i32 = i32::try_from(edge_slot_count)
-            .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
-        let (raw_edge_idx, edge_log_capacity) = self.edges.read_overflow_log_state(leaf);
-        let base_edge_idx = raw_edge_idx.max(0) as u32;
-        let edge_log_start_idx = *edge_log_leaf_cursors.entry(leaf).or_insert(base_edge_idx);
-        let edge_log_end_idx = edge_log_start_idx
-            .checked_add(edge_slot_count)
-            .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
-
-        // Verify every inline-property-bearing edge matches the declared width and check
-        // inline property bytes overflow log capacity.
-        let mut inline_property_bytes_byte_count: u64 = 0;
-        let mut inline_property_bytes_log_start_idx = None;
-        if run.inline_property_width > 0 {
-            let width = usize::from(run.inline_property_width);
-            for e in &run.edges {
-                let actual = e.edge.edge_inline_property_bytes().len();
-                if actual != width {
-                    return Err(
-                        OneOrientationBatchError::InlinePropertyBytesLengthMismatch {
-                            logical_ordinal: e.logical_ordinal,
-                            expected_width: run.inline_property_width,
-                            actual_length: actual,
-                        },
-                    );
-                }
-            }
-            inline_property_bytes_byte_count = u64::from(edge_slot_count)
-                .checked_mul(u64::from(run.inline_property_width))
-                .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
-
-            let inline_property_bytes_log_leaf =
-                self.inline_property_bytes_log_leaf(run.owner_vertex_id);
-            let (raw_inline_property_bytes_idx, inline_property_bytes_log_capacity) = self
-                .values
-                .read_inline_property_bytes_log_state(inline_property_bytes_log_leaf);
-            let base_inline_property_bytes_idx = raw_inline_property_bytes_idx.max(0) as u32;
-            let inline_property_bytes_log_start_idx_virtual =
-                *inline_property_bytes_log_leaf_cursors
-                    .entry(inline_property_bytes_log_leaf)
-                    .or_insert(base_inline_property_bytes_idx);
-            let inline_property_bytes_log_end_idx = inline_property_bytes_log_start_idx_virtual
-                .checked_add(edge_slot_count)
-                .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
-            if inline_property_bytes_log_end_idx > inline_property_bytes_log_capacity {
-                return self.preflight_expanded_run(
-                    run,
-                    bucket_slot,
-                    bucket,
-                    leaf_expansion_cursors,
-                );
-            }
-            inline_property_bytes_log_leaf_cursors.insert(
-                inline_property_bytes_log_leaf,
-                inline_property_bytes_log_end_idx,
-            );
-            inline_property_bytes_log_start_idx = Some(inline_property_bytes_log_start_idx_virtual);
-        }
-
-        if edge_log_end_idx > edge_log_capacity {
-            return self.preflight_expanded_run(run, bucket_slot, bucket, leaf_expansion_cursors);
-        }
-        edge_log_leaf_cursors.insert(leaf, edge_log_end_idx);
-
-        Ok(PreflightRun {
+        Err(OneOrientationBatchError::SpillRunDeferred {
             owner_vertex_id: run.owner_vertex_id,
             label_id: run.label_id,
-            bucket_slot,
-            bucket,
-            edge_slot_count,
-            inline_property_width: run.inline_property_width,
-            inline_property_bytes_byte_count,
-            inline_property_bytes_allocation: None,
-            destination: RunDestination::OverflowLog {
-                edge_log_start_idx,
-                inline_property_bytes_log_start_idx,
-            },
         })
     }
 
@@ -2471,11 +2369,10 @@ where
             };
         let edge_slot_count = u32::try_from(run.edges.len())
             .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_log_len = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-            self.edges
-                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-        } else {
-            0
+        let edge_log_len = match self.edges.spill_mint(bucket.edge_spill_run()) {
+            Ok(run) => self.edges.spill_used_len(run),
+            // Unset (NO_SPILL_RUN) or outside the arena: no rows beyond the prefix.
+            Err(_) => 0,
         };
 
         // Validate inline-property-bearing edges and project the inline property bytes slab space that
@@ -2821,7 +2718,6 @@ where
                             .expect("reserve guaranteed inline property bytes slab slot overflow safety");
                     }
                 }
-                RunDestination::OverflowLog { .. } => {}
                 RunDestination::ExpandedSlab { edge_log_len, .. } => {
                     let _updated_degree = bucket
                         .degree
@@ -2865,9 +2761,9 @@ where
 
         // First pass: write all edge and inline property bytes.
         let mut edge_slots_written: u64 = 0;
-        let mut edge_log_entries_written: u64 = 0;
+        let edge_log_entries_written: u64 = 0;
         let mut inline_property_bytes_slots_written: u64 = 0;
-        let mut inline_property_bytes_log_entries_written: u64 = 0;
+        let inline_property_bytes_log_entries_written: u64 = 0;
         let mut locations = location_mode
             .captures()
             .then(|| Vec::with_capacity(self.plan.runs.iter().map(|r| r.edges.len()).sum()));
@@ -2999,127 +2895,7 @@ where
                         .checked_add(inline_property_bytes_written)
                         .expect("reserve guaranteed hole-fill inline property bytes slot count");
                 }
-                RunDestination::OverflowLog {
-                    edge_log_start_idx,
-                    inline_property_bytes_log_start_idx,
-                } => {
-                    let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(
-                        res.bucket_fingerprint.owner_vertex_id,
-                        graph.edges.header().segment_size,
-                    );
-                    let (bucket_slot, bucket) = match graph
-                        .find_bucket(
-                            res.bucket_fingerprint.owner_vertex_id,
-                            &graph.vertices.get(res.bucket_fingerprint.owner_vertex_id),
-                            res.bucket_fingerprint.label_id,
-                        )
-                        .expect("reserve found this bucket")
-                    {
-                        BucketSearch::Found { slot, bucket } => (slot, bucket),
-                        BucketSearch::Missing { .. } => {
-                            panic!("bucket disappeared between reserve and commit");
-                        }
-                    };
-                    let _ = bucket_slot;
-
-                    let prev_head = bucket.overflow_log_head();
-                    let existing_edge_log_len = if prev_head >= 0 {
-                        graph.edges.overflow_log_chain_len(leaf, prev_head)
-                    } else {
-                        0
-                    };
-                    let logical_slot_base = bucket
-                        .stored_slots()
-                        .checked_add(existing_edge_log_len)
-                        .expect("reserve guaranteed logical slot");
-                    let entries: Vec<(i32, E)> = run
-                        .edges
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, e)| {
-                            let prev = if offset == 0 {
-                                prev_head
-                            } else {
-                                (edge_log_start_idx + offset as u32 - 1) as i32
-                            };
-                            (prev, e.edge.clone())
-                        })
-                        .collect();
-                    graph
-                        .edges
-                        .write_overflow_log_entries(leaf, *edge_log_start_idx, &entries)
-                        .expect("reserve guaranteed edge log capacity");
-                    let inline_property_bytes_start = if res.inline_property_width > 0 {
-                        Some(inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed a inline property bytes log start index for inline-property-bearing run",
-                        ))
-                    } else {
-                        None
-                    };
-                    if let Some(locations) = locations.as_mut() {
-                        locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
-                            OneOrientationBatchLocation {
-                                logical_ordinal: edge.logical_ordinal,
-                                owner_vertex_id: edge.owner_vertex_id,
-                                logical_slot: logical_slot_base
-                                    .checked_add(offset as u32)
-                                    .expect("reserve guaranteed logical slot"),
-                                location: OneOrientationPhysicalLocation::OverflowLog {
-                                    leaf,
-                                    edge_entry_idx: edge_log_start_idx
-                                        .checked_add(offset as u32)
-                                        .expect("reserve guaranteed edge log location"),
-                                    inline_property_bytes_entry_idx: inline_property_bytes_start
-                                        .map(|start| {
-                                            start.checked_add(offset as u32).expect(
-                                            "reserve guaranteed inline property bytes log location",
-                                        )
-                                        }),
-                                },
-                            }
-                        }));
-                    }
-                    edge_log_entries_written = edge_log_entries_written
-                        .checked_add(u64::from(res.edge_slot_count))
-                        .expect("reserve guaranteed edge log slot count");
-                    edge_slots_written = edge_slots_written
-                        .checked_add(u64::from(res.edge_slot_count))
-                        .expect("reserve guaranteed edge slot count");
-
-                    if res.inline_property_width > 0 {
-                        let inline_property_bytes_log_leaf = graph
-                            .inline_property_bytes_log_leaf(res.bucket_fingerprint.owner_vertex_id);
-                        let prev_inline_property_bytes_log_head =
-                            bucket.inline_property_bytes_log_head();
-                        let inline_property_bytes = run
-                            .edges
-                            .iter()
-                            .flat_map(|e| e.edge.edge_inline_property_bytes().iter().copied())
-                            .collect::<Vec<u8>>();
-                        let inline_property_bytes_start = inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed a inline property bytes log start index for inline-property-bearing run",
-                        );
-                        graph
-                            .values
-                            .write_inline_property_bytes_log_entries(
-                                inline_property_bytes_log_leaf,
-                                inline_property_bytes_start,
-                                prev_inline_property_bytes_log_head,
-                                res.inline_property_width,
-                                &inline_property_bytes,
-                            )
-                            .expect("reserve guaranteed inline property bytes log capacity");
-                        inline_property_bytes_log_entries_written =
-                            inline_property_bytes_log_entries_written
-                                .checked_add(u64::from(res.edge_slot_count))
-                                .expect("reserve guaranteed inline property bytes log slot count");
-                        inline_property_bytes_slots_written = inline_property_bytes_slots_written
-                            .checked_add(u64::from(res.edge_slot_count))
-                            .expect("reserve guaranteed inline property bytes slot count");
-                    }
-                }
                 RunDestination::ExpandedSlab {
-                    leaf,
                     old_leaf_len,
                     new_leaf_len,
                     existing_bucket_slots,
@@ -3135,7 +2911,6 @@ where
                             graph,
                             run,
                             res,
-                            *leaf,
                             *old_leaf_len,
                             *new_leaf_len,
                             *existing_bucket_slots,
@@ -3372,35 +3147,6 @@ where
                                 .expect("reserve guaranteed inline property bytes slab slot overflow safety"),
                         )
                         .with_inline_property_bytes_offset(new_offset);
-                    }
-                }
-                RunDestination::OverflowLog {
-                    edge_log_start_idx,
-                    inline_property_bytes_log_start_idx,
-                } => {
-                    let last_edge_idx = edge_log_start_idx + res.edge_slot_count - 1;
-                    updated_bucket = updated_bucket.with_overflow_log_head(last_edge_idx as i32);
-                    if res.inline_property_width > 0 {
-                        let inline_property_bytes_start = inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed inline property bytes log start index for inline-property-bearing run",
-                        );
-                        let last_inline_property_bytes_idx =
-                            inline_property_bytes_start + res.edge_slot_count - 1;
-                        let next_inline_property_bytes_len = u32::from(
-                            bucket.inline_property_bytes_log_len(),
-                        )
-                        .checked_add(res.edge_slot_count)
-                        .expect("reserve guaranteed inline property bytes log len overflow safety");
-                        let next_inline_property_bytes_len_u8 = u8::try_from(
-                            next_inline_property_bytes_len,
-                        )
-                        .expect("reserve guaranteed inline property bytes log len fits in u8");
-                        updated_bucket = updated_bucket
-                            .try_with_inline_property_bytes_log(
-                                last_inline_property_bytes_idx as i32,
-                                next_inline_property_bytes_len_u8,
-                            )
-                            .expect("reserve guaranteed inline property bytes log state");
                     }
                 }
                 RunDestination::ExpandedSlab { .. } => unreachable!(),
@@ -3925,7 +3671,6 @@ where
         graph: &LabeledLaraGraph<E, M>,
         run: &OneOrientationBucketRun<E>,
         res: &BatchReservationRun,
-        leaf: u32,
         old_leaf_len: u64,
         new_leaf_len: u64,
         existing_bucket_slots: u32,
@@ -3959,13 +3704,20 @@ where
         };
         let edge_start = new_bucket.edge_start();
 
-        // Fold existing edge overflow-log entries into the slab after the existing prefix.
-        if edge_log_len > 0 {
-            let chain = graph
+        // Fold the bucket's spill rows into the new slab space after the existing prefix
+        // (ADR 0097 §7: the rows fit the expanded prefix, so they are copied in and the run is
+        // released once the descriptor no longer references it). Every resident row moves -
+        // the run's length is unchanged by deletes, so tombstones are resident too.
+        let folded_run = if edge_log_len > 0 {
+            let run = graph
                 .edges
-                .overflow_log_chain_asc_indices(leaf, new_bucket.overflow_log_head());
-            for (offset, log_idx) in chain.into_iter().enumerate() {
-                let (_, edge) = graph.edges.read_overflow_log_entry(leaf, log_idx);
+                .spill_mint(new_bucket.edge_spill_run())
+                .expect("reserve counted this bucket's run rows");
+            for (offset, index) in graph.edges.spill_asc_indices(run).into_iter().enumerate() {
+                let edge = graph
+                    .edges
+                    .spill_edge_at(run, index)
+                    .expect("reserve counted this bucket's run rows");
                 let out_slot = checked_add_slot_index(
                     edge_start,
                     u64::from(existing_bucket_slots)
@@ -3978,7 +3730,10 @@ where
                     .write_slot(out_slot, edge)
                     .expect("reserve guaranteed slab capacity");
             }
-        }
+            Some(run)
+        } else {
+            None
+        };
 
         // Write pending batch edges into the slab after the folded log.
         let pending_start = checked_add_slot_index(
@@ -4181,6 +3936,11 @@ where
             .buckets
             .write_label_bucket_slot(new_bucket_slot, updated_bucket)
             .expect("reserve guaranteed bucket writability");
+        // The run's rows now live in the expanded prefix: release it (best-effort, like every
+        // other span release on this path - a failed release leaks a class, never a row).
+        if let Some(run) = folded_run {
+            let _ = graph.edges.spill_release(run);
+        }
 
         // Publish the leaf block growth in the segment counts.
         let d_total = i64::try_from(new_leaf_len)
@@ -4367,6 +4127,13 @@ impl std::fmt::Display for OneOrientationBatchError {
                 f,
                 "tiny-mode bucket run unsupported: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
             ),
+            Self::SpillRunDeferred {
+                owner_vertex_id,
+                label_id,
+            } => write!(
+                f,
+                "spill-run bucket run deferred: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
+            ),
             Self::TreeRunExceedsTailBlock {
                 owner_vertex_id,
                 label_id,
@@ -4396,6 +4163,7 @@ impl OneOrientationBatchError {
             // promote naturally). Scalar cost on small buckets is bounded; the
             // rejection happens pre-write with nothing reserved.
             | Self::TinyBucketRunUnsupported { .. }
+            | Self::SpillRunDeferred { .. }
         )
     }
 }
