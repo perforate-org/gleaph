@@ -812,6 +812,11 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
         g.ensure_label_bucket_inline_property_byte_width(owner, label, width)
             .unwrap();
         for i in 0..96 {
+            if i == 8 {
+                // Setup only: explicitly materialize a nonempty prefix before
+                // creating the retained run and holes exercised by relocation.
+                compact_run_into_prefix_with_growth_retry(&g, owner, 0, bucket(&g, label)).unwrap();
+            }
             if i == 32 {
                 let other = BucketLabelKey::from_raw(3);
                 g.ensure_label_bucket_inline_property_byte_width(owner, other, width)
@@ -870,6 +875,14 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
         }
         g.enable_default_edge_bypass(peer).unwrap();
         let source = bucket(&g, label);
+        assert!(
+            source.stored_slots() > 3,
+            "holes must cover both prefix and run"
+        );
+        assert!(
+            source.stored_slots() <= 31,
+            "slot 31 must belong to the retained run"
+        );
         assert_ne!(source.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_ne!(
@@ -896,6 +909,12 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
             let peer_before = g.vertices().get(peer);
             let peer_prefix = g.edges().initialized_slab_slots(&peer_before).unwrap();
             let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+            let last = if streaming { 96 } else { 97 };
+            let expected: Vec<_> = (0..=last)
+                .filter(|slot| ![0, 3, 31, 63].contains(slot))
+                .map(|slot| (slot, slot, distinct_sidecar(slot, width)))
+                .collect();
+            assert_eq!(before, expected, "exact source ordinals and sidecars");
             let count = g.edges().header().num_edges;
             let neighbors: Vec<_> = [3, 4]
                 .into_iter()
@@ -910,6 +929,13 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
                     )
                 })
                 .collect();
+            for (neighbor, expected) in &neighbors {
+                let target = if neighbor.raw() == 3 { 9000 } else { 9001 };
+                assert_eq!(
+                    *expected,
+                    vec![(0, target, distinct_sidecar(target, width))]
+                );
+            }
             let old = g.labeled_leaf_physical_range(owner).unwrap();
             if streaming {
                 g.relocate_labeled_leaf_physical_block(owner).unwrap();
