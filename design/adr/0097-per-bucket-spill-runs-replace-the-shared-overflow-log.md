@@ -129,6 +129,20 @@ bucket.
    the new id — the descriptor is never pointed at a run the store has already freed.
 
 
+   **The promotion entry becomes mode-generic, and it loses its fold.** `promote_bypass_to_tree_mode` is not in fact
+   bypass-specific: it takes `(vid, label)`, locates the bucket, returns early when the bucket is already tree mode (an
+   already-tree bucket does not promote — it deepens), and then enforces the `T_PROMOTE` precondition. The producer's
+   promotion outcome therefore calls that one entry for slab and bypass alike, and it is renamed
+   `promote_bucket_to_tree_mode` so the name matches the contract. Because per-bucket runs replace the shared log, the
+   step that folded a non-empty overflow log into the slab before promoting becomes meaningless and is deleted with the
+   log's last consumers — the same deletion removes the "refuse to release a log with undrained rows" guard, which only
+   existed to protect that fold. The `T_PROMOTE` precondition check stays.
+
+   **Backing covers the run's whole byte range.** The store's growth request covers every byte of the rows a run can
+   address (not merely the first byte of its last row), so a run whose `row_bytes` does not divide the page size has no
+   incompletely backed tail. A test writes and reads back the final bytes of the last row of such a run.
+
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
