@@ -604,19 +604,12 @@ impl PressureCounter {
     }
 }
 
-/// Per-leaf overflow-log table capacity (`DEFAULT_MAX_LOG_ENTRIES`): every
-/// mutation consumes one log table slot on its first reinsert, and the table
-/// counter never reverts without a log fold. The loop mutation volumes below
-/// stay under this cap so the workload exercises the pre-fold regime
-/// uniformly across all churn points (see the plan report for the measured
-/// fold-path behavior at saturation).
-const LOG_TABLE_CAPACITY: u32 = 170;
-
 /// Mutation schedule shared by the D and C loops: per-step mutation flags.
 /// Churn-light: one mutation after every `INTERLEAVE_PHASE` query steps.
 /// Bursty: two `BURST`-sized mutation bursts after query phases. Uniform:
-/// one mutation every `UNIFORM_PERIOD` steps. Total mutations per loop are
-/// capped below the per-leaf overflow-log table capacity.
+/// one mutation every `UNIFORM_PERIOD` steps. The volumes are a workload shape:
+/// ADR 0097 §3 retired the per-leaf overflow log whose table capacity used to
+/// bound them, so nothing here is capped by a log anymore.
 fn mutation_schedule(churn: Churn) -> Vec<bool> {
     let mut schedule = vec![false; WORKLOAD_STEPS as usize];
     match churn {

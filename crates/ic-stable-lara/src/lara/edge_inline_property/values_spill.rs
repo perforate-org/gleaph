@@ -3,9 +3,9 @@
 //! ADR 0097 §5 gives the values plane the same tier the edge plane got in §3: a **run per bucket**,
 //! allocated lazily, with `ArenaRows::VALUES` as the bound, a run id that is the arena row index of
 //! the run's header row, and rows addressed by ordinal. The retired per-leaf
-//! `InlinePropertyBytesLogStore` reserved `DEFAULT_MAX_LOG_ENTRIES` entries for every leaf whether
-//! or not a single row spilled; a run is minted on the first row that does not fit the prefix and
-//! grows in power-of-two classes after that.
+//! The per-leaf log this replaces reserved a fixed table of entries for every leaf whether or not a
+//! single row spilled; a run is minted on the first row that does not fit the prefix and grows in
+//! power-of-two classes after that.
 //!
 //! This module is the store itself: it owns the arena and the 8-byte cell encoding, and it is the
 //! only place that knows how a value row maps onto a run. Two details are values-specific rather

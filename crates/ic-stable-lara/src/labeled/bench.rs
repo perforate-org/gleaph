@@ -1395,10 +1395,10 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
     })
 }
 
-/// Plan 0342: drive a default-label bypass row into the overflow-log regime.
+/// Plan 0342: drive a default-label bypass row into its spill regime.
 ///
 /// Inserts distinct edges on a tail vertex until `bypass_spill_run() != crate::traits::NO_SPILL_RUN`
-/// (checked every `DEFAULT_MAX_LOG_ENTRIES`-scale stride). Returns
+/// (checked every burst-sized stride). Returns
 /// `(vid, dsts, burst_inserts)`. No maintenance runs during the burst, so the
 /// lara-level fold cannot drain the log before the probe observes it.
 fn burst_slab_bypass_row(
@@ -1430,8 +1430,8 @@ fn burst_slab_bypass_row(
 
 /// Plan 0342: bypass-row overflow-regime probe (Plan 0341 v1-boundary verdict).
 ///
-/// Attempts to drive a default-label bypass row into the overflow-log regime with a
-/// 2048-append burst (12x `DEFAULT_MAX_LOG_ENTRIES = 170`), then applies delete-heavy
+/// Attempts to drive a default-label bypass row into its spill regime with a
+/// 2048-append burst, then applies delete-heavy
 /// churn — alternating remove/insert rounds plus a delete-only tail, each remove side
 /// followed by a full maintenance drain — recording per-round `(stored, degree,
 /// log_head)` via `eprintln!` for the trajectory table.
@@ -1442,7 +1442,7 @@ fn burst_slab_bypass_row(
 /// state as a tripwire and measures the churn trajectory there instead of on a
 /// log-backed row.
 #[bench(raw)]
-fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
+fn bench_remove_churn_bypass_spill_regime_probe() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
         const BURST: usize = 2048;
@@ -1456,7 +1456,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
         );
         assert!(
             v0.bypass_spill_run() == crate::traits::NO_SPILL_RUN,
-            "0342 tripwire: burst entered the log-backed regime (head >= 0); \
+            "0342 tripwire: the burst entered the spill-backed regime (a run id); \
              the DONE verdict below no longer holds — re-cut the probe slice",
         );
         assert_eq!(
@@ -1553,7 +1553,7 @@ fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
 
 /// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
 #[bench(raw)]
-fn bench_l_ip_log_8b_of() -> canbench_rs::BenchResult {
+fn bench_l_ip_spill_8b_of() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
     let (vid, label) = seed_overflow_inline_property_hub(
         &graph,
@@ -1848,7 +1848,7 @@ fn bench_l_df_ip_frag_mnt_6() -> canbench_rs::BenchResult {
 
 /// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
-fn bench_l_du_log_del_scn() -> canbench_rs::BenchResult {
+fn bench_l_du_spill_del_scn() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
     let (vid, label) = seed_overflow_inline_property_hub(&graph, OVERFLOW_LOG_HUB_EDGES, 2);
     for target in (1..=OVERFLOW_LOG_HUB_EDGES).step_by(2) {
@@ -1879,7 +1879,7 @@ fn bench_l_du_log_del_scn() -> canbench_rs::BenchResult {
 
 /// ADR 0016: foreground direct log unlink plus incremental span compaction on an overflow edge hub.
 #[bench(raw)]
-fn bench_l_du_log_fold_mnt() -> canbench_rs::BenchResult {
+fn bench_l_du_span_compact_mnt() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(1 << 20);
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
