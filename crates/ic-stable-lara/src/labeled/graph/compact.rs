@@ -1832,7 +1832,7 @@ where
         Ok(moves)
     }
 
-    fn compact_label_bucket_overflow_to_slab(
+    pub(super) fn compact_label_bucket_overflow_to_slab(
         &self,
         src: VertexId,
         bucket_index: u32,

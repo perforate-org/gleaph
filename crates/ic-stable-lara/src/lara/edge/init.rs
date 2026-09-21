@@ -486,44 +486,6 @@ mod tests {
     }
 
     #[test]
-    fn grow_segment_tree_failure_atomic_at_log_reservation() {
-        let (store, (counts, _edges, log, span_meta, _free_spans, _free_span_by_start)) =
-            failpoint_edge_store(64, 1);
-        seed_distinguishable_edge_store(
-            &store,
-            EdgeStoreSeed {
-                actual_edges: vec![(0, 1), (1, 2), (2, 3)],
-                total_by_leaf: vec![2, 4, 6, 8],
-                span_starts: vec![0, 10, 20, 30],
-            },
-        );
-        let before = EdgeStoreSnapshot::capture(&store);
-
-        counts.fail_at_grow(usize::MAX);
-        span_meta.fail_at_grow(usize::MAX);
-        log.fail_at_grow(log.grow_count() + 1);
-        let result = store.grow_segment_tree_to(8192);
-        assert!(result.is_err(), "expected log reservation to fail");
-
-        let after = EdgeStoreSnapshot::capture(&store);
-        assert_eq!(after, before);
-
-        let reopened = EdgeStore::<TestEdge, _>::init(
-            counts,
-            _edges,
-            log,
-            span_meta,
-            _free_spans,
-            _free_span_by_start,
-            64,
-            1,
-            0,
-        );
-        let reopened = reopened.expect("reopen after rejected log reservation");
-        assert_eq!(EdgeStoreSnapshot::capture(&reopened), before);
-    }
-
-    #[test]
     fn grow_segment_tree_success_after_rejected_counts_reservation() {
         grow_segment_tree_retry_after_failure_at(|_counts, span_meta, log| {
             _counts.fail_at_grow(_counts.grow_count() + 1);
@@ -538,15 +500,6 @@ mod tests {
             _counts.fail_at_grow(usize::MAX);
             span_meta.fail_at_grow(span_meta.grow_count() + 1);
             log.fail_at_grow(usize::MAX);
-        });
-    }
-
-    #[test]
-    fn grow_segment_tree_success_after_rejected_log_reservation() {
-        grow_segment_tree_retry_after_failure_at(|_counts, span_meta, log| {
-            _counts.fail_at_grow(usize::MAX);
-            span_meta.fail_at_grow(usize::MAX);
-            log.fail_at_grow(log.grow_count() + 1);
         });
     }
 
@@ -761,10 +714,12 @@ mod tests {
 
     #[test]
     fn grow_segment_tree_reopens_after_every_rejected_growth() {
-        let (store, (counts, _edges, log, span_meta, _free_spans, _free_span_by_start)) =
+        let (store, (counts, _edges, _log, span_meta, _free_spans, _free_span_by_start)) =
             failpoint_edge_store(64, 1);
         let target = 8192;
-        for mem in [&counts, &span_meta, &log] {
+        // Only the regions the segment-tree growth actually reserves are injected: the third
+        // memory holds the spill arena now, which the growth does not touch (ADR 0097 §3).
+        for mem in [&counts, &span_meta] {
             mem.fail_at_grow(mem.grow_count() + 1);
             assert!(
                 store.grow_segment_tree_to(target).is_err(),

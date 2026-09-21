@@ -820,7 +820,11 @@ impl LabelBucket {
         bytes[27] = inline_property_bytes_log_byte;
         bytes[28] = inline_property_bytes_log_len;
         // The added region: edge high 17 | values 32 | reserve 7 (56 bits).
-        let packed = u64::from(edge_spill_run >> BUCKET_EDGE_RUN_LOW_BITS)
+        // The edge run's high bits must be masked to their field width before they share the
+        // packed word with the values id: the sentinel (`u32::MAX`) shifts down to more bits than
+        // the field holds, and without the mask those extra bits corrupt the values run id.
+        let packed = (u64::from(edge_spill_run >> BUCKET_EDGE_RUN_LOW_BITS)
+            & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1))
             | (u64::from(values_spill_run) << Self::EDGE_RUN_HIGH_BITS);
         bytes[29..36].copy_from_slice(&packed.to_le_bytes()[..7]);
     }
@@ -1000,8 +1004,6 @@ impl LabelBucket {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelBucketFieldError {
     /// Bits 61–62 of the packed word are reserved and must be zero (bit 60 is
-    /// the tiny-mode flag, bit 63 the tree-mode flag).
-    ReservedBitsSet,
     /// `edge_start` does not fit in the 36-bit slot index.
     SlotIndexOverflow,
     /// `inline_property_bytes_offset` does not fit in the 40-bit byte-offset space.
@@ -1035,7 +1037,6 @@ pub enum LabelBucketFieldError {
 impl core::fmt::Display for LabelBucketFieldError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::ReservedBitsSet => write!(f, "label bucket reserved bits 61-62 must be zero"),
             Self::SlotIndexOverflow => {
                 write!(f, "label bucket edge_start exceeds 36-bit slot index")
             }
@@ -1870,8 +1871,10 @@ mod tests {
 
     #[test]
     fn wire_rows_match_documented_layout() {
-        assert_eq!(LabeledVertex::BYTES, 21);
-        assert_eq!(LabelBucket::BYTES, 29);
+        // ADR 0097 §3: LabeledVertex 21 -> 25 (the bypass run id), LabelBucket 29 -> 36
+        // (interim; the final 34-byte layout waits for the values twin, slice 5).
+        assert_eq!(LabeledVertex::BYTES, 25);
+        assert_eq!(LabelBucket::BYTES, 36);
         assert!(mem::size_of::<LabeledVertex>() >= LabeledVertex::BYTES);
         assert!(mem::size_of::<LabelBucket>() >= LabelBucket::BYTES);
     }
@@ -1885,6 +1888,9 @@ mod tests {
         expected[0..8].copy_from_slice(&42u64.to_le_bytes());
         expected[8..12].copy_from_slice(&3u32.to_le_bytes());
         expected[12..16].copy_from_slice(&9u32.to_le_bytes());
+        // ADR 0097 §3: the row widened by four bytes for the bypass run id, which a normal-mode
+        // row must carry as the sentinel.
+        expected[21..25].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(bytes, expected);
     }
 
@@ -2042,8 +2048,13 @@ mod tests {
             LabeledVertex::try_from_parts(SLOT_INDEX_MASK + 1, 0, 0, 0, 0),
             Err(LabeledVertexFieldError::SlotIndexOverflow)
         );
+        // ADR 0097 §3: the retired bypass edge log head left metadata28 bits 3..28 as a named
+        // reserve that must be zero on a bypass row (a normal row owns those bits as bucket slack,
+        // so `try_from_parts` accepts them there and `ensure_valid_normal_row` is the validator).
         assert_eq!(
-            LabeledVertex::try_from_parts(0, 0, 0, 0, BYPASS_METADATA_RESERVE_MASK),
+            LabeledVertex::try_from_parts(0, 0, 0, 0, DEFAULT_EDGE_LABELED_BIT | (1 << 3))
+                .expect("bypass row with reserve bits builds")
+                .ensure_valid_normal_row(),
             Err(LabeledVertexFieldError::MetadataReservedBitsSet)
         );
     }
@@ -2069,47 +2080,15 @@ mod tests {
     }
 
     #[test]
-    fn label_bucket_rejects_nonzero_reserved_bits() {
-        // Plan 0318 §Step 1: byte 7 mask 0x80 is bit 63, the tree-mode flag,
-        // and is no longer a rejected reserved bit. Use 0x40 (bit 62) instead
-        // so this test stays focused on the still-reserved bits 60-62.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
-        let mut bytes = [0u8; LabelBucket::BYTES];
-        bucket.write_to(&mut bytes);
-        bytes[7] |= 0x40;
-        let err = LabelBucket::try_read_from(&bytes).expect_err("reserved bits set");
-        assert_eq!(err, LabelBucketFieldError::ReservedBitsSet);
-    }
-
-    #[test]
-    fn label_bucket_rejects_each_set_reserved_bit() {
-        // ADR 0096 §1: bit 60 is the tiny-mode flag, not reserved. Bits 61-62
-        // remain reserved.
-        for (byte_mask, word_bit) in [(0x20, 61), (0x40, 62)] {
-            let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
-            let mut bytes = [0u8; LabelBucket::BYTES];
-            bucket.write_to(&mut bytes);
-            bytes[7] |= byte_mask;
-            let err =
-                LabelBucket::try_read_from(&bytes).expect_err("reserved bit set on bucket word");
-            assert_eq!(
-                err,
-                LabelBucketFieldError::ReservedBitsSet,
-                "word bit {word_bit} must be rejected"
-            );
-        }
-    }
-
-    #[test]
     fn label_bucket_tiny_bit_takes_tiny_validation_not_reserved() {
-        // ADR 0096 §1: bit 60 selects tiny mode, so the tiny rules (not the
-        // reserved-bits rule) judge the row. Byte 28 carries the K=4 used width,
+        // ADR 0096 §1: the tiny flag (word bit 52 since ADR 0097 §3) selects tiny mode, so the
+        // tiny rules judge the row. Byte 28 carries the K=4 used width,
         // which a fresh slab descriptor leaves at 0 — valid for an empty bucket;
         // an out-of-range used width must fail with the precise tiny error.
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[7] |= 0x10; // bit 60
+        bytes[6] |= 0x10; // word bit 52 (ADR 0097 §3 moved the tiny flag)
         assert!(LabelBucket::try_read_from(&bytes).is_ok());
         bytes[28] = 9; // used width above TINY_MAX_DEGREE
         assert_eq!(
@@ -2146,15 +2125,14 @@ mod tests {
 
     #[test]
     fn label_bucket_tree_mode_bit_accepted_by_validator() {
-        // Plan 0318 §Step 1: bit 63 is NOT a ReservedBitsSet trigger. Building
-        // a bucket with bit 63 set and round-tripping through encode/decode
-        // must succeed and `is_tree_mode()` must return true.
+        // The tree flag (word bit 53 since ADR 0097 §3) is not a reserved-bit trigger: a row
+        // built with it set must round-trip through encode/decode and report tree mode.
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[7] |= 0x80; // set bit 63 = tree-mode flag
-        let decoded = LabelBucket::try_read_from(&bytes)
-            .expect("bit 63 (tree-mode flag) must not trigger ReservedBitsSet");
+        bytes[6] |= 0x20; // set word bit 53 = tree-mode flag (ADR 0097 §3 moved it)
+        let decoded =
+            LabelBucket::try_read_from(&bytes).expect("the tree-mode flag must be accepted");
         assert!(decoded.is_tree_mode());
     }
 
@@ -2341,9 +2319,11 @@ mod tests {
         let word = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         assert_eq!(word & 0xFFFF_FFFF, 100); // anchor preserved
         assert_eq!(((word >> 36) & 0xFFFF) as u16, 5); // label intact
-        assert_eq!(((word >> 52) & 0xFF) as u8, 0xFF); // log-head NONE
-        assert_ne!(word & (1u64 << 60), 0); // tiny bit
-        assert_eq!(word & (1u64 << 63), 0); // tree bit clear
+        // ADR 0097 §3 layout: bit 52 tiny, bit 53 tree, bits 54..64 the edge run id's low bits
+        // (all ones = the "no run" sentinel).
+        assert_ne!(word & (1u64 << 52), 0); // tiny bit
+        assert_eq!(word & (1u64 << 53), 0); // tree bit clear
+        assert_eq!((word >> 54) & 0x3FF, 0x3FF); // run low bits = NO_SPILL_RUN
         assert_eq!(bytes[8..12], 2u32.to_le_bytes());
         assert_eq!(bytes[12..16], 0u32.to_le_bytes()); // T3 zeroed at enable
         assert_eq!(bytes[16..20], 7u32.to_le_bytes()); // T0
@@ -2503,9 +2483,9 @@ mod tests {
             bucket.write_to(&mut bytes);
             bytes
         }
-        // Tiny ∧ tree.
+        // Tiny ∧ tree (word bits 52 and 53, byte 6).
         let mut bad = valid_tiny_bytes();
-        bad[7] |= 0x80;
+        bad[6] |= 0x20;
         assert_eq!(
             LabelBucket::try_read_from(&bad),
             Err(LabelBucketFieldError::TinyTreeModeConflict)

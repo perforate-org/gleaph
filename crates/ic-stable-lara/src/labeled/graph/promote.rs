@@ -104,7 +104,7 @@ where
     // Phase 0: locate the bucket (read-only; no canonical writes).
     let vertex = graph.vertices().get(vid);
     let search = graph.find_bucket(vid, &vertex, label)?;
-    let (bucket_slot, bucket) = match search {
+    let (mut bucket_slot, mut bucket) = match search {
         BucketSearch::Found { slot, bucket } => (slot, bucket),
         BucketSearch::Missing { .. } => {
             // No such bucket. The promotion can only proceed once the
@@ -125,10 +125,68 @@ where
         return Ok(());
     }
 
-    // Phase 0a (GAP-2026-09-20-001, retired by ADR 0097 §3): the pre-promotion fold of a non-empty
-    // overflow log into the slab prefix is deleted with the log. A slab bucket's rows are its slab
-    // prefix plus its own spill run, and transcription reads that pair directly, so there is no
-    // shared area to drain first - and the I2 drain guard protected only that fold.
+    // Phase 0a (GAP-2026-09-20-001): the transcription below reads the slab prefix, so a bucket
+    // whose rows are not all in its prefix is compacted first - the run's live rows are copied into
+    // the prefix and the run released (ADR 0097 §7), and the value log is folded into the value
+    // slab. This is the retired log fold's job expressed with the mechanisms that replace it, and
+    // it is why the promotion of a run-owning bucket cannot orphan rows: the prefix covers every
+    // resident row before transcription starts. (The ADR's alternative - transcribing `prefix +
+    // run` directly - is not reachable while the values plane still keeps its own log: the value
+    // rows for spill edges live in that log, so both planes must be compacted before the tree
+    // transcription reads a single prefix.)
+    if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+        let bucket_index =
+            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let spill_rows = match graph.edges().spill_mint(bucket.edge_spill_run()) {
+            Ok(run) => graph.edges().spill_used_len(run),
+            Err(_) => 0,
+        };
+        match graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, bucket) {
+            Ok(_) => {}
+            Err(LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)) => {
+                // The prefix has no room for the run's rows yet: grow the vertex span and retry -
+                // the same recovery the retired fold used before its copy.
+                graph.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
+                let grown_vertex = graph.vertices().get(vid);
+                let grown_slot = LabeledLaraGraph::<E, M>::labeled_vertex_bucket_slot(
+                    &grown_vertex,
+                    bucket_index,
+                )?;
+                let grown = graph
+                    .buckets()
+                    .read_label_bucket_slot(grown_slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, grown)?;
+            }
+            Err(error) => return Err(error),
+        }
+        let vertex = graph.vertices().get(vid);
+        (bucket_slot, bucket) = match graph.find_bucket(vid, &vertex, label)? {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => {
+                return Err(LabeledOperationError::BucketNotFound { vid, label });
+            }
+        };
+        debug_assert!(
+            bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+            "compaction must release the run before tree transcription"
+        );
+    }
+    if bucket.inline_property_bytes_log_head() >= 0 {
+        let bucket_index =
+            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let folded = graph.fold_label_bucket_inline_property_bytes_log_to_slab(
+            vid,
+            &vertex,
+            bucket_index,
+            bucket_slot,
+            bucket,
+        )?;
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, folded)?;
+        bucket = folded;
+    }
 
     // Precondition 2: the bucket's resident width must have reached T_PROMOTE.
     //

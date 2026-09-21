@@ -1400,13 +1400,20 @@ where
             // ADR 0097 §3: a bypass row carries its own spill run id, so the bucket's run is
             // handed over instead of folded into the slab - no row moves, and the bypass reader's
             // prefix derivation (`stored_degree - run rows`) reproduces the bucket's prefix width.
+            // A bypass row's `stored_slots` is its **total** backing width (the bypass reader
+            // derives the slab prefix as `stored_degree - run rows`), so the bucket's prefix plus
+            // the run's rows carry over - not the prefix alone.
+            let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
+                Ok(run) => self.edges.spill_used_len(run),
+                Err(_) => 0,
+            };
             let mut updated = vertex
                 .with_default_edge_labeled(true)
                 .with_bypass_undirected(bucket.bucket_label_key().is_undirected())
                 .with_base_slot_start(bucket.edge_start())
                 .with_degree(bucket.degree)
-                .with_stored_slots(bucket.stored_slots());
-            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+                .with_stored_slots(bucket.stored_slots().saturating_add(spill_rows));
+            if spill_rows > 0 {
                 updated = updated.with_bypass_spill_run(bucket.edge_spill_run());
             }
             self.clear_vertex_label_buckets_for_segment(src)?;

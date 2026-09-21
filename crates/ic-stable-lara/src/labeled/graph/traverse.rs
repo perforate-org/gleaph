@@ -6825,6 +6825,16 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        eprintln!(
+            "DEBUG bucket: tiny={} tree={} degree={} stored={} stored_raw={} run={} edge_start={}",
+            bucket.is_tiny_mode(),
+            bucket.is_tree_mode(),
+            bucket.degree(),
+            bucket.stored_slots(),
+            bucket.stored_slots_raw(),
+            bucket.edge_spill_run(),
+            bucket.edge_start()
+        );
         assert!(bucket.stored_slots() > 0);
         assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert_eq!(

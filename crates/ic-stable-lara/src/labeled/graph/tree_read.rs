@@ -2065,7 +2065,7 @@ mod tests {
         // The helper doesn't read LTB blocks; it only checks the
         // cap. We pass an empty value (will be ignored because
         // the cap check fires first).
-        let result = read_property_value_at_slot::<TestEdge, VectorMemory>(
+        let _ = read_property_value_at_slot::<TestEdge, VectorMemory>(
             &_graph,
             &bucket,
             0, // dummy slot

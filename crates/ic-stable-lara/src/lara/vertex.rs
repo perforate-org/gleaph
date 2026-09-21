@@ -632,7 +632,7 @@ mod tests {
         slab_index::{
             SLOT_INDEX_MASK, VERTEX_TAIL_RUN_MASK, encode_locator_word, pack_vertex_tail28,
         },
-        traits::{CsrVertex, CsrVertexTombstone},
+        traits::CsrVertexTombstone,
     };
     use ic_stable_structures::{Memory, Storable};
     use std::borrow::Cow;
