@@ -1,6 +1,7 @@
 //! EdgeStore `init` implementation.
 
-use crate::{GrowFailed, SegmentId, VertexCount, traits::CsrEdge};
+use crate::labeled::spill_run_store::SpillRunStore;
+use crate::{GrowFailed, VertexCount, traits::CsrEdge};
 use ic_stable_structures::Memory;
 use std::cell::Cell;
 
@@ -11,16 +12,17 @@ pub(crate) use super::edges::EdgeSlabStore;
 use super::edges::tree_height_for_segment_count;
 use super::edges::{HeaderV1 as EdgeHeaderV1, segment_tree_leaf_count};
 use super::free_span::FreeSpanStore;
-use super::log::HeaderV1 as LogHeaderV1;
-use super::log::LogStore;
 use super::span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// Creates a new edge store over empty stable memories.
+    ///
+    /// `spill` is the region the shared per-leaf overflow log used to occupy; it now holds the
+    /// per-bucket spill arena (ADR 0097), so the memory count is unchanged.
     pub fn new(
         counts: M,
         edges: M,
-        log: M,
+        spill: M,
         span_meta: M,
         free_spans: M,
         free_span_by_start: M,
@@ -44,13 +46,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 total: 0,
             })?;
         }
-        let log_header = LogHeaderV1::new(header.segment_count, header.stride);
         let span_meta = SegmentSpanMetaStore::new(span_meta)?;
         for _ in 0..u64::from(header.segment_count) {
             span_meta.push(SegmentSpanMeta::default())?;
         }
         let edges = EdgeSlabStore::new(edges, header)?;
-        let log = LogStore::new(log, log_header)?;
+        let spill = SpillRunStore::new(spill, E::BYTES as u32)?;
         let free_spans =
             FreeSpanStore::new(free_spans, free_span_by_start).map_err(|_| GrowFailed {
                 current_size: 0,
@@ -60,7 +61,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             counts,
             edges,
             header: Cell::new(header),
-            log,
+            spill,
             span_meta,
             free_spans,
         })
@@ -70,7 +71,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub fn init(
         counts: M,
         edges: M,
-        log: M,
+        spill: M,
         span_meta: M,
         free_spans: M,
         free_span_by_start: M,
@@ -81,7 +82,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         match crate::classify_composite_init([
             counts.size(),
             edges.size(),
-            log.size(),
+            spill.size(),
             span_meta.size(),
             free_spans.size(),
             free_span_by_start.size(),
@@ -90,7 +91,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Self::new(
                     counts,
                     edges,
-                    log,
+                    spill,
                     span_meta,
                     free_spans,
                     free_span_by_start,
@@ -109,14 +110,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
         let header = edges.header().map_err(InitError::Edges)?;
         let _ = elem_capacity;
-        let log = LogStore::init(log).map_err(InitError::Log)?;
+        // The spill store validates its own header and width and fails closed.
+        let spill =
+            SpillRunStore::new(spill, E::BYTES as u32).map_err(|_| InitError::OutOfMemory)?;
         let span_meta = SegmentSpanMetaStore::init(span_meta).map_err(InitError::SpanMeta)?;
         let free_spans = FreeSpanStore::init(free_spans, free_span_by_start)
             .map_err(|_| InitError::SpanMetaLayoutMismatch)?;
-        let log_header = log.header();
-        if log_header.segment_count != header.segment_count {
-            return Err(InitError::LogLayoutMismatch);
-        }
         if span_meta.len() != u64::from(header.segment_count) {
             return Err(InitError::SpanMetaLayoutMismatch);
         }
@@ -127,7 +126,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             counts,
             edges,
             header: Cell::new(header),
-            log,
+            spill,
             span_meta,
             free_spans,
         })
@@ -154,7 +153,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let counts_target_len = u64::from(new_segment_count).saturating_mul(2);
         self.counts.reserve_to(counts_target_len)?;
         self.span_meta.reserve_to(u64::from(new_segment_count))?;
-        self.log.reserve_segment_count_to(new_segment_count)?;
 
         // COMMIT: logical layout publication. Every call below was preflighted
         // above, so no recoverable error remains after the first write.
@@ -164,9 +162,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .push(SegmentSpanMeta::default())
                 .expect("commit: span_meta push must succeed after reserve");
         }
-        self.log
-            .grow_segment_count_to(new_segment_count)
-            .expect("commit: log grow must succeed after reserve");
         let mut nh = h;
         nh.segment_count = new_segment_count;
         nh.tree_height = tree_height_for_segment_count(new_segment_count);
@@ -274,22 +269,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         (
             self.counts.into_memory(),
             self.edges.into_memory(),
-            self.log.into_memory(),
+            self.spill.into_memory(),
             self.span_meta.into_memory(),
             free_spans,
             free_span_by_start,
         )
-    }
-
-    /// Clears and releases the overflow-log segment for `leaf_segment`.
-    pub fn release_log_segment(&self, leaf_segment: SegmentId) -> Result<(), GrowFailed> {
-        self.log.release_segment(u32::from(leaf_segment))
-    }
-
-    /// Returns the high-water entry index for `leaf_segment` (`0` when unused).
-    pub(crate) fn overflow_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
-        let h = self.log.header();
-        self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
     }
 
     pub(crate) fn set_num_edges(&self, n: u64) {

@@ -67,13 +67,13 @@ mod log;
 pub mod scan_guard;
 pub mod span_meta;
 
+use crate::labeled::spill_run_store::SpillRunStore;
 use crate::traits::CsrEdge;
 use counts::SegmentEdgeCountsStore;
 pub(crate) use edges::EdgeSlabStore;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::FreeSpanStore;
 use ic_stable_structures::Memory;
-use log::LogStore;
 pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};
 use span_meta::SegmentSpanMetaStore;
 use std::cell::Cell;
@@ -112,7 +112,9 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
     counts: SegmentEdgeCountsStore<E, M>,
     edges: EdgeSlabStore<E, M>,
     header: Cell<EdgeHeaderV1>,
-    log: LogStore<E, M>,
+    /// Per-bucket spill runs for rows that do not fit their slab prefix (ADR 0097). This region
+    /// used to hold the shared per-leaf overflow log; the region slot is unchanged.
+    spill: SpillRunStore<M>,
     span_meta: SegmentSpanMetaStore<M>,
     free_spans: FreeSpanStore<M>,
 }

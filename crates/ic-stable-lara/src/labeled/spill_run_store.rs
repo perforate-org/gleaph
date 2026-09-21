@@ -103,6 +103,11 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(Self { memory, row_bytes })
     }
 
+    /// Consumes the store and returns its backing memory.
+    pub(crate) fn into_memory(self) -> M {
+        self.memory
+    }
+
     /// Capacity class for a run that must hold `len` data rows: the smallest power of two in
     /// `[MIN_ROWS, MAX_ROWS]`.
     pub(crate) fn class_rows(len: u32) -> u32 {
