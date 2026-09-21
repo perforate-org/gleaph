@@ -42,9 +42,20 @@ bucket.
 2. **Shape.** A run is a contiguous block of fixed-width rows (`E::BYTES` each). A bucket's logical row `i` is the
    prefix slot for `i < prefix_len`, otherwise spill row `i - prefix_len` — the same ordinal scheme the log used, so
    **existing ordinals do not move** when the spill grows (the spill is append-only).
-3. **Descriptor.** The 29-byte row is unchanged. `overflow_log_head: i32` becomes the **spill run id** in slab mode
-   (a row offset in the spill arena, so its top bit may later mean "level 2"). Tiny keeps its payload meaning and
-   tree keeps its own root/run reference; only slab's meaning changes.
+3. **Descriptor.** The row stays 29 bytes wide, but its *packing* changes, because the field this design first
+   assumed it could reuse is only **8 bits**: `decode_bucket_overflow_log_head` reads
+   `(word >> BUCKET_LOG_SHIFT) & 0xFF` and the encoder caps the value at 170 entries, i.e. an encoded entry index
+   inside one shared segment — it cannot address a spill arena. Since tiny and slab are mutually exclusive modes and
+   the wire is already mode-dependent (ADR 0096 §1 reuses the former stored-width bytes), slab mode takes the bytes
+   tiny uses for its payload to carry the **spill run id**, and the old log-head bits are retired. Tiny keeps its
+   payload meaning and tree keeps its own root/run reference; only slab's packing changes. Pre-production, no reader
+   for the old packing, so this is a layout break with fresh state.
+   **The used length does not live in the descriptor.** Each run carries a header row inside the arena: while the run
+   is live the header holds its used length, and the same word holds the free-list link while the run is free. The
+   capacity class follows from that length (a spill's length is monotone), so no capacity field is needed and the
+   descriptor holds only the run id. The store change (a header row per run, classes counting data rows) is part of
+   the first slice.
+
 4. **Lazy allocation.** A bucket with nothing to spill owns nothing. The first row that does not fit the prefix
    allocates a run; no policy may pre-allocate a run "for growth" (the analogue of "slack is a hint").
 5. **Allocator.** Power-of-two capacity classes from `MIN_ROWS = 8` to `MAX_ROWS = 1024` rows, a free list per class
@@ -52,9 +63,14 @@ bucket.
    coalescing. Because a run's used length is **monotone** (deletes tombstone in place; rows leave the spill only
    when compaction copies them back into the prefix, and the run is released with exactly the length it has),
    `ceil_pow2(length)` always equals the allocated class — so the descriptor needs **no capacity field**.
-6. **Growth.** Appending past the current class allocates the next class, copies at most 2× the live rows and
-   releases the old run (amortized O(1), waste <2×). Past `MAX_ROWS` the spill continues in **LTB blocks** (level 2,
-   the store tree mode already uses); the run header carries the one-level block list.
+6. **Growth.** Appending past the current class allocates the next class, copies at most 2x the live rows and
+   releases the old run (amortized O(1), waste <2x), and grows in place when the run is the arena tail (see the slot
+   rules). **The spill tops out at `MAX_ROWS` (1024 rows); beyond that the bucket promotes to tree mode** — the
+   existing, already-validated chunked path with its own thresholds — instead of inventing a second level in this
+   change. That removes the level-2 block-list question entirely: there is no block list to format, and a bucket
+   larger than the largest class is simply a tree bucket. (Generalising tree mode into the spill is the separate
+   follow-up question already recorded, not part of this swap.)
+
 7. **Operations.** Insert: prefix slot if free (tombstone reuse or the Insertion headroom), else append to the run,
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
@@ -151,6 +167,11 @@ promoting), the log half of GAP-2026-09-20-005, and GAP-006 (eager per-segment c
 the reference's cap sweep justifies lazy ownership over capacity tuning.
 
 ## Slot reuse and ordering in the spill (rules the insert path must follow)
+
+* **The region is the log's.** The spill store takes the memory region the log store occupied, so the graph's
+  region count and every `LabeledLaraGraph::new` call site stay unchanged. (An earlier note suggested sharing the
+  LTB region; that is superseded — the LTB allocator has no capacity ceiling, so a reservation at its end would be
+  overwritten as the tree store grows.)
 
 * **No row ever shifts.** A bucket's ordinal space is sparse by construction (`stored + offset` with tombstones),
   so "insert at a position" is expressed as delete-then-insert, exactly as today (ADR 0052). Splitting rows across
