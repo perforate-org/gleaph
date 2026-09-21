@@ -71,7 +71,8 @@ bucket.
    the same applies to `ipb_width`. The unlabeled core path already has a 27-bit head at tail28 and needs no
    packing change, so the labeled ids should follow that precedent where the numbers allow. The derivation must
    state the arena size each id can address and the first workload scale at which that would fail.
-   **Layout decision (2026-09-20, from the implementer's derivation).** The 29-byte row cannot carry useful ids:
+   **Layout decision (2026-09-20, from the implementer's derivation; the final width is 34, below).** The
+   29-byte row cannot carry useful ids:
    retiring the log head (8 bits), the two reserved bits and `ipb_log_len` (8) and repurposing `ipb_log_byte` (8)
    yields 26 bits for two ids — 13 each, i.e. 8 192 arena rows and about 4 096 spilled rows. So the row **widens to
    35 bytes**, carrying **two `u32` run ids** (edge and values) with 10 spare bits. The rationale is not bit
@@ -79,7 +80,10 @@ bucket.
    store has, while `u32` makes the wire and the store agree (SSOT) and leaves the only real limit where it belongs —
    the arena's `u32` row count (2^32 rows = 16 GiB of edge rows, ≈290 billion edges at the measured spill fraction).
    The alternatives considered and rejected: 32 bytes (25-bit ids, below the unlabeled core's 27-bit precedent),
-   33 bytes (29-bit ids, the artificial bound above), 34 bytes (two u32 with 2 spare bits). `u32::MAX` stays the
+   33 bytes (29-bit ids, the artificial bound above). **34 bytes (two u32 with 2 spare bits) was rejected here and
+   then adopted**: the byte budget below shows it is reachable once the two bytes the values log owned (27-28)
+   are recycled, and slice 5 implements exactly that - the row is **34 bytes**, and the 35-byte reading above is
+   superseded. `u32::MAX` stays the
    sentinel for "no run", so a live id is at most `u32::MAX - 1`; the packing must reject the sentinel.
    The narrowing this ADR had asked for is **impossible and does not happen**: `stored_slots` has no
    `<= T_PROMOTE` bound (the repository tests the opposite — `batch_run_past_t_promote_then_scalar_promotes_correctly`
@@ -88,15 +92,20 @@ bucket.
    for as a precondition and it disproved the assumption it was testing; the widening is therefore forced, not chosen.
 
 
-   **Interim width, and why the final wire is still 35 bytes.** The values twin is log-based until slice 5 and reads
-   bytes 27–28 as `inline_property_bytes_log_head()/_len()` from 79 sites in `labeled/graph/values.rs`, so those two
-   bytes cannot be the values run id's low half while that path still compiles. The swap therefore uses a **37-byte
-   row for the interim slices**, with both ids in the new bytes (29..37) and bytes 27–28 left to the values twin; every
-   slice keeps compiling and the packing tests are verified directly rather than behind a shim. **Slice 5 deletes the
-   values log, and with it that last reader of bytes 27–28: the values id then moves down into the freed bits (27..35)
-   and the row returns to the 35-byte final layout above.** The 2-byte difference is the price of verifiable
-   intermediate states — ~50 KB across the audit's 25 000 descriptors against the ~696 KB the swap removes — and it
-   disappears at the end.
+   **Final width: 34 bytes. The interim width was 36, and it is history.** The values twin was log-based until
+   slice 5 and read bytes 27–28 as `inline_property_bytes_log_head()/_len()`, so those two bytes could not be the
+   values run id's low half while that path still compiled. The swap therefore used a **36-byte row for the interim
+   slices**, with both ids in the added bytes (29..36) and bytes 27–28 left to the values twin; every slice kept
+   compiling and the packing tests were verified directly rather than behind a shim. **Slice 5 deleted the values
+   log and with it that last reader: the values id moved down into the freed bits and the row is now the 34-byte
+   layout above.** The 2-byte difference was the price of verifiable intermediate states — ~50 KB across the audit's
+   25 000 descriptors against the ~696 KB the swap removed — and it is gone.
+
+   **The 34-byte region is mode-dependent, and that is what makes it possible.** Bytes 27–28 were not the values
+   log's alone: they were already tiny mode's fourth target byte and used width and tree mode's packed depth marker,
+   and neither of those modes can own a run. So in slab mode bytes 27..34 hold `edge-high 17 | values 32 | reserve 7`,
+   while in tiny/tree mode they keep their payload/depth meaning and the ids decode as the sentinel; the setters
+   reject a run on a tiny or tree bucket, so the wire cannot disagree with the decoded state.
 
    **The bypass row widens too.** `LabeledVertex` (21 bytes) carries its run id in `metadata28` bits 4–11 (eight bits)
    with `bucket_slack_slots` in bits 12–27 and bit 3 reserved, so bypass mode has 25 free bits, not 32 — it cannot
@@ -162,7 +171,7 @@ bucket.
    one unanswered fact: `SpillRunStore` is a single instance owned by `EdgeStore` today, and whether the slab
    buckets' spill joins that same arena or gets its own store determines whether the mintable id range is capped by
    the unlabeled `Vertex` tail28's 27-bit field or can use 32 bits. **Preferred (own store): 32-bit ids, row
-   29 → 34 bytes final (+5 B; 26 recycled + 40 new = 66 ≥ 64 bits, 2 spare), 36 bytes interim. Fallback (shared
+   29 → 34 bytes final (+5 B; 26 recycled + 40 new = 66 ≥ 64 bits, 2 spare); the interim wire was 36 bytes. Fallback (shared
    arena): 27-bit ids, 33 bytes final, 35 bytes interim.** The interim width is the final width plus the two bytes
    the values twin still owns. The choice costs 25 KB across the audit's 25 000 descriptor rows and buys an 8×
    larger arena (2 GiB → 16 GiB of 4-byte edge rows), against the 696 KB of declared log capacity the swap removes.
@@ -178,7 +187,7 @@ bucket.
    wider than any row can store and must come down to the encodable bound. The **values** plane is a separate store
    (`EdgeInlinePropertyBytesStore` owns its own log instance today), referenced only by `LabelBucket`'s fields, so
    its id may use the full 32 bits. **Resulting row: 29 → 34 bytes final** (edge 27 bits + values 32 bits = 59 ≤ 26
-   recycled + 40 new = 66), **36 bytes interim**. `LabeledVertex` addresses the edge arena through
+   recycled + 40 new = 66). The interim wire was **36 bytes**; the row is **34 bytes** now. `LabeledVertex` addresses the edge arena through
    `bypass_spill_run`, so its id is 27 bits too: 25 free metadata bits plus one new byte holds it, and it widens by
    one byte (bit-scattered) or four (clean). Widen triggers: the edge arena needs a wider vertex locator word (an
    ADR-level layout change); the values arena needs a subnet memory limit above 2^32 × row_bytes.

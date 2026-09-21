@@ -87,7 +87,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 | Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | One `release_span` per leaf relocate |
 | Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Sub-ranges inside pinned leaf block |
 
-Inline properties are a separate physical domain: bucket-local live order associates values with edges, while inline property bytes slab slots, inline property bytes log entries, capacity, and maintenance timing remain independent from the edge leaf block.
+Inline properties are a separate physical domain: bucket-local live order associates values with edges, while inline property bytes slab slots, the bucket's values spill run (ADR 0097 §5 replaced the per-leaf inline property bytes log with it), capacity, and maintenance timing remain independent from the edge leaf block.
 
 ---
 
@@ -110,7 +110,7 @@ Inline properties are a separate physical domain: bucket-local live order associ
 Normal labeled vertices:
 
 - `LabeledVertex.degree` — live `LabelBucket` count (not edge count).
-- `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `edge_spill_run`.
+- `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `edge_spill_run`, `values_spill_run` (the row is the final 34 bytes of ADR 0097 §3; the two run ids share bytes 27..34 with the tiny/tree modes' own payload, which cannot own a run).
   Degree ≤ 4 buckets with 4-byte edges are born tiny (ADR 0096): targets live
   in the descriptor (T0..T3; `edge_start` is an empty-span anchor, byte 28 holds
   the used prefix width 0..=4, log NONE), holding zero slab slots until
