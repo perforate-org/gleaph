@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn vertex_default_has_no_spill_run() {
-        assert_eq!(Vertex::default().log_head(), -1);
+        assert_eq!(Vertex::default().spill_run(), crate::traits::NO_SPILL_RUN);
     }
 
     #[test]
@@ -699,10 +699,10 @@ mod tests {
     fn tombstone_bit_preserves_spill_run() {
         let v = Vertex::from_parts(1, 2, 2, 42, false).with_tombstone(true);
         assert!(v.is_tombstone());
-        assert_eq!(v.log_head(), 42);
+        assert_eq!(v.spill_run(), 42);
         let back = Vertex::from_bytes(v.to_bytes());
         assert!(back.deleted());
-        assert_eq!(back.log_head(), 42);
+        assert_eq!(back.spill_run(), 42);
     }
 
     #[test]
@@ -728,10 +728,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "vertex spill run id is invalid for packed LARA row")]
-    fn oversized_spill_run_panics() {
+    fn oversized_spill_run_is_rejected() {
+        // Re-derived with the typed setter: the retired `with_log_head` panicked on an
+        // unrepresentable id, and the spill API's `try_with_spill_run` returns `Err` instead -
+        // a typed rejection rather than a panic (ADR 0097 §3).
         let v = Vertex::default();
-        let _ = v.with_log_head(VERTEX_TAIL_RUN_MASK as i32);
+        assert!(v.try_with_spill_run(VERTEX_TAIL_RUN_MASK as u32).is_err());
     }
 
     #[test]
@@ -747,13 +749,13 @@ mod tests {
         // A 27-bit field cannot hold an out-of-range id, so the wire check that remains is the
         // round trip: the retired 170-entry log cap no longer rejects a wire row, and the largest
         // encodable run id (`mask - 1`, because the tail stores `run + 1`) survives encode/decode.
-        for run in [170i32, VERTEX_TAIL_RUN_MASK as i32 - 1] {
-            let tail = pack_vertex_tail28(run, false);
+        for run in [170u32, VERTEX_TAIL_RUN_MASK as u32 - 1] {
+            let tail = pack_vertex_tail28(run as i32, false);
             let locator = encode_locator_word(0, tail);
             let mut bytes = [0u8; Vertex::BYTES];
             bytes[0..8].copy_from_slice(&locator.to_le_bytes());
             assert_eq!(
-                Vertex::try_read_from(&bytes).expect("wire row").log_head(),
+                Vertex::try_read_from(&bytes).expect("wire row").spill_run(),
                 run
             );
         }

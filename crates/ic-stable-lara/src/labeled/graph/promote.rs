@@ -755,7 +755,6 @@ pub mod tests {
                     0,
                     stored_slots,
                     stored_slots,
-                    -1,
                     0,
                     0,
                     0,
@@ -795,7 +794,6 @@ pub mod tests {
             existing.edge_start(),
             existing.degree,
             stored_slots,
-            -1,
             0,
             0,
             0,
@@ -1283,7 +1281,7 @@ pub mod tests {
         let graph = wide_edge_graph();
         let vid: VertexId = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(1);
-        let bucket = LabelBucket::try_from_parts(label, 0, 4096, 4096, -1, 0, 0, 0, -1, 0)
+        let bucket = LabelBucket::try_from_parts(label, 0, 4096, 4096, 0, 0, 0, -1, 0)
             .expect("try_from_parts")
             .with_tree_mode(false);
         graph

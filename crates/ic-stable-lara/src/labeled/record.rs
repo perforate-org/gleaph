@@ -128,6 +128,10 @@ impl LabelBucket {
     /// Named reserve in the added bytes (bits 49..56): reserve for the next bound widening, not
     /// padding, and it cannot raise the edge arena's bound (the shared tail28 sets it).
     pub const SPILL_ID_RESERVE_BITS: u32 = 7;
+    /// The edge run field's all-ones pattern: not a legal id (`ArenaRows::EDGE.ids()` is
+    /// `2^27 - 1`, so ids are `0..=2^27 - 2`), which is why it is the wire spelling of
+    /// `NO_SPILL_RUN` and decodes back to it.
+    pub const EDGE_RUN_ALL_ONES: u32 = (1 << Self::EDGE_RUN_BITS) - 1;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -897,9 +901,18 @@ impl LabelBucket {
         let mut added = [0u8; 8];
         added[..7].copy_from_slice(&chunk[29..36]);
         let added = u64::from_le_bytes(added);
-        let edge_spill_run = decode_bucket_word_edge_run_low(word)
+        let edge_run_bits = decode_bucket_word_edge_run_low(word)
             | (((added & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1)) as u32)
                 << BUCKET_EDGE_RUN_LOW_BITS);
+        // ADR 0097 §3: the all-ones pattern is not a legal id, so it is the sentinel's wire
+        // spelling and must decode back to it. Without this mapping a row written with
+        // `NO_SPILL_RUN` would read back as a live-looking id (2^27 - 1) and every reader that
+        // asks "does this row own a run?" would answer yes.
+        let edge_spill_run = if edge_run_bits == Self::EDGE_RUN_ALL_ONES {
+            NO_SPILL_RUN
+        } else {
+            edge_run_bits
+        };
         let values_spill_run =
             ((added >> Self::EDGE_RUN_HIGH_BITS) & ((1u64 << Self::VALUES_RUN_BITS) - 1)) as u32;
         // ADR 0096 §1: tiny buckets carry targets (not value/log state) in the
@@ -2014,26 +2027,21 @@ mod tests {
                 SLOT_INDEX_MASK + 1,
                 0,
                 0,
-                -1,
                 0u16,
                 0,
                 0,
                 -1,
-                0,
+                0
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
-        );
-        assert_eq!(
-            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 0u16, 0, 0, -1, 0,),
-            Err(LabelBucketFieldError::OverflowLogHeadOutOfRange)
         );
         assert_eq!(
             LabeledVertex::try_from_parts(SLOT_INDEX_MASK + 1, 0, 0, 0, 0),
             Err(LabeledVertexFieldError::SlotIndexOverflow)
         );
         assert_eq!(
-            LabeledVertex::try_from_parts(0, 0, 0, 0, METADATA28_RESERVED_BIT),
-            Err(LabeledVertexFieldError::MetadataReservedBitSet)
+            LabeledVertex::try_from_parts(0, 0, 0, 0, BYPASS_METADATA_RESERVE_MASK),
+            Err(LabeledVertexFieldError::MetadataReservedBitsSet)
         );
     }
 
@@ -2157,7 +2165,6 @@ mod tests {
             0x1234_5678,
             7,
             11,
-            5,
             32,
             0x0000_1234_5678, // u40 range: < 2^40 = 0x100_0000_0000
             9,
@@ -2186,7 +2193,6 @@ mod tests {
             0,
             0,
             0,
-            -1,
             64u16,
             0,
             0,
@@ -2241,7 +2247,6 @@ mod tests {
             10,
             2,
             2,
-            -1,
             2u16,
             4,
             2,
@@ -2448,19 +2453,12 @@ mod tests {
             wide.try_enable_tiny_mode(),
             Err(LabelBucketFieldError::TinyDegreeOutOfRange)
         );
-        // Live log head.
-        let logged = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1, 3);
-        assert_eq!(
-            logged.try_enable_tiny_mode(),
-            Err(LabelBucketFieldError::TinyLogHeadPresent)
-        );
         // Live value state (width).
         let valued = LabelBucket::from_parts_with_inline_property(
             BucketLabelKey::default(),
             0,
             1,
             1,
-            -1,
             4,
             0,
             0,
@@ -2527,14 +2525,6 @@ mod tests {
         assert_eq!(
             LabelBucket::try_read_from(&bad),
             Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
-        );
-        // Live word log head (byte 6 high nibble + byte 7 low nibble).
-        let mut bad = valid_tiny_bytes();
-        bad[6] = (bad[6] & 0x0F) | 0x70;
-        bad[7] = (bad[7] & 0xF0) | 0x07;
-        assert_eq!(
-            LabelBucket::try_read_from(&bad),
-            Err(LabelBucketFieldError::TinyLogHeadPresent)
         );
         // T1 is free payload now (K=4): a nonzero value past degree is accepted.
         let mut ok = valid_tiny_bytes();

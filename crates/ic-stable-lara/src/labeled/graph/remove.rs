@@ -1771,59 +1771,6 @@ mod tests {
     }
 
     #[test]
-    fn direct_unlink_preserves_legacy_tombstone_head_compatibility() {
-        let graph = inline_property_test_graph();
-        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let road = BucketLabelKey::from_raw(2);
-        // ADR 0096 §4/§3b: tiny birth holds the first four edges inline (no
-        // log). Seed past promotion into log spill (6th edge) so the bucket
-        // owns a real overflow-log head for the direct-unlink step below.
-        for target in [10, 11, 12, 13, 14, 15] {
-            graph
-                .insert_edge(
-                    src,
-                    road,
-                    InlinePropertyTestEdge::with_bytes(target, &[]),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-        }
-        let vertex = graph.vertices().get(src);
-        let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        let leaf = graph.inline_property_bytes_log_leaf(src);
-        graph
-            .edges()
-            .rewrite_overflow_log_entry_tombstone(leaf, bucket.overflow_log_head() as u32)
-            .unwrap();
-        graph
-            .buckets()
-            .write_label_bucket_degree(bucket_slot, 5)
-            .unwrap();
-
-        let removal = graph
-            .remove_edge_matching_with_move(src, road, |edge| edge.target == 10)
-            .unwrap()
-            .unwrap();
-        assert_eq!(removal.removed.target, 10);
-        // ADR 0096 §4: post-promotion the removed edge is slab-resident, so
-        // the delete tombstones in place (no log-ordinal renumbering moves).
-        // The legacy-compat intent (direct log-head unlink + consistent
-        // follow-up remove) holds: moves are empty and adjacency is exact.
-        assert_eq!(removal.moves, vec![]);
-        assert_eq!(
-            graph
-                .iter_edges_for_label(src, road)
-                .unwrap()
-                .into_iter()
-                .map(|edge| (edge.slot_index, edge.target))
-                .collect::<Vec<_>>(),
-            vec![(4, 14), (3, 13), (2, 12), (1, 11)]
-        );
-    }
-
-    #[test]
     fn remove_edge_from_one_label_keeps_next_label_isolated() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);

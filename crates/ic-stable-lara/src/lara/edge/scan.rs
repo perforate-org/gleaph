@@ -350,7 +350,7 @@ mod tests {
             vec![TestEdge(11), TestEdge(10)]
         );
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
-        assert!(vertices.get(VertexId::from(0)).log_head() >= 0);
+        assert!(vertices.get(VertexId::from(0)).spill_run() != crate::traits::NO_SPILL_RUN);
     }
 
     #[test]
@@ -392,7 +392,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
-        assert_eq!(vertices.get(VertexId::from(0)).log_head(), -1);
+        assert_eq!(
+            vertices.get(VertexId::from(0)).spill_run(),
+            crate::traits::NO_SPILL_RUN
+        );
         assert_eq!(
             edges
                 .collect_out_edges_slot_order(&vertices, VertexId::from(0))

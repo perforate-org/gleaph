@@ -2986,7 +2986,7 @@ mod tests {
         }
 
         let vertex = graph.vertices().get(hub);
-        assert_eq!(vertex.bypass_spill_run(), -1);
+        assert_eq!(vertex.bypass_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(vertex.degree(), 8);
         assert_eq!(graph.iter_edges_for_label(hub, default).unwrap().len(), 8);
     }
@@ -3044,7 +3044,6 @@ mod tests {
                     crate::labeled::slot_index::SLOT_INDEX_MASK,
                     1,
                     1,
-                    -1,
                 ),
             )
             .unwrap();
@@ -3072,13 +3071,7 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(
-                    label,
-                    crate::labeled::slot_index::SLOT_INDEX_MASK,
-                    0,
-                    0,
-                    -1,
-                ),
+                LabelBucket::from_parts(label, crate::labeled::slot_index::SLOT_INDEX_MASK, 0, 0),
             )
             .unwrap();
         graph
@@ -3110,7 +3103,6 @@ mod tests {
             crate::labeled::slot_index::SLOT_INDEX_MASK,
             0,
             0,
-            -1,
         )];
 
         assert_eq!(
@@ -3133,7 +3125,7 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(label, 0, u32::MAX, u32::MAX, -1),
+                LabelBucket::from_parts(label, 0, u32::MAX, u32::MAX),
             )
             .unwrap();
 
@@ -3167,7 +3159,7 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(BucketLabelKey::from_raw(10), 0, u32::MAX, u32::MAX, -1),
+                LabelBucket::from_parts(BucketLabelKey::from_raw(10), 0, u32::MAX, u32::MAX),
             )
             .unwrap();
         graph
@@ -3175,7 +3167,7 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(BucketLabelKey::from_raw(20), 0, 1, 1, -1),
+                LabelBucket::from_parts(BucketLabelKey::from_raw(20), 0, 1, 1),
             )
             .unwrap();
 
@@ -4745,7 +4737,7 @@ mod tests {
             .unwrap();
 
         let after = read_bucket();
-        assert_eq!(after.overflow_log_head(), -1);
+        assert_eq!(after.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(
             (
                 after.inline_property_bytes_offset(),
@@ -5142,8 +5134,7 @@ mod tests {
             BucketLabelKey::directed_from_index(1),
             0,
             100, // degree
-            200, // stored_slots
-            -1,
+            200,
             0,
             0,
             0,
@@ -5159,12 +5150,11 @@ mod tests {
             256, // edge_start (root region at slot 256)
             4096,
             4096,
-            -1,
             0,
             0,
             0,
             -1,
-            0, // inline_property_bytes_log_len = 0 → physical depth 1
+            0,
         )
         .unwrap()
         .with_tree_mode(true)
@@ -5194,7 +5184,6 @@ mod tests {
             512, // anchor (not storage)
             3,
             3,
-            -1,
             0,
             0,
             0,

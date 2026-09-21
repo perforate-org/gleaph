@@ -6933,9 +6933,9 @@ mod tests {
         };
         assert!(forward.is_tree_mode(), "5000 edges must promote");
         assert_eq!(
-            forward.overflow_log_head(),
-            -1,
-            "a tree bucket has no overflow log"
+            forward.edge_spill_run(),
+            crate::traits::NO_SPILL_RUN,
+            "a tree bucket has no spill run"
         );
         assert_eq!(
             forward.stored_slots(),
@@ -7700,7 +7700,7 @@ mod tests {
         // tree-mode exclusion. No store access required.
         use crate::labeled::record::LabelBucket;
         let label = BucketLabelKey::directed_from_index(3);
-        let slab = |degree, stored| LabelBucket::from_parts(label, 0, degree, stored, -1);
+        let slab = |degree, stored| LabelBucket::from_parts(label, 0, degree, stored);
         let fire = |bucket: &LabelBucket, policy| {
             DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::remove_side_compaction_should_fire(
                 bucket,

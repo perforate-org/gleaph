@@ -3441,20 +3441,10 @@ mod tests {
             graph
                 .push_vertex(crate::labeled::record::LabeledVertex::default())
                 .expect("push_vertex");
-            let bucket = LabelBucket::try_from_parts(
-                label,
-                0,
-                stored_slots,
-                stored_slots,
-                -1,
-                0,
-                0,
-                0,
-                -1,
-                0,
-            )
-            .expect("try_from_parts")
-            .with_tree_mode(false);
+            let bucket =
+                LabelBucket::try_from_parts(label, 0, stored_slots, stored_slots, 0, 0, 0, -1, 0)
+                    .expect("try_from_parts")
+                    .with_tree_mode(false);
             graph
                 .buckets()
                 .write_label_bucket_slot(0, bucket)
@@ -4407,13 +4397,12 @@ mod tests {
             label,
             edge_start,
             stored_slots, // degree = stored (every leaf is a real edge in this synthetic bucket)
-            stored_slots,
-            -1, // overflow_log_head (unused in tree mode; -1 = empty)
-            0,  // inline_property_byte_width
-            0,  // inline_property_bytes_offset
-            0,  // inline_property_bytes_slab_slots
-            -1, // inline_property_bytes_log_head (unused: -1 = empty)
-            0,  // inline_property_bytes_log_len
+            stored_slots, // overflow_log_head (unused in tree mode; -1 = empty)
+            0,            // inline_property_byte_width
+            0,            // inline_property_bytes_offset
+            0,            // inline_property_bytes_slab_slots
+            -1,           // inline_property_bytes_log_head (unused: -1 = empty)
+            0,
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4447,7 +4436,6 @@ mod tests {
             0, // edge_start (unused: typed error returned before any LEG read)
             stored_slots,
             stored_slots,
-            -1,
             0,
             0,
             0,
@@ -4532,7 +4520,7 @@ mod tests {
         // 5. Build the depth-2 descriptor.
         let new_bucket = crate::labeled::record::LabelBucket::try_from_parts(
             label, edge_start, 1_048_577, // degree = stored
-            1_048_577, -1, 0, 0, 0, -1, 0,
+            1_048_577, 0, 0, 0, -1, 0,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -4604,7 +4592,6 @@ mod tests {
             edge_start,
             stored_slots,
             stored_slots,
-            -1,
             0,
             0,
             0,
@@ -4795,7 +4782,6 @@ mod tests {
             edge_start,
             1u32 << 30,
             1u32 << 30,
-            -1,
             0,
             0,
             0,
@@ -4864,7 +4850,6 @@ mod tests {
             edge_start,
             1u32 << 30,
             1u32 << 30,
-            -1,
             0,
             0,
             0,
@@ -5049,7 +5034,7 @@ mod tests {
         // 1025th leaf).
         let pre_stored: u32 = (1u32 << 20) + 1;
         let pre_bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, pre_stored, pre_stored, -1, 0, 0, 0, -1, 0,
+            label, edge_start, pre_stored, pre_stored, 0, 0, 0, -1, 0,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5155,7 +5140,7 @@ mod tests {
         let _ = pre_stored; // suppress unused; we redefine below
         let pre_stored: u32 = 1u32 << 21;
         let pre_bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, pre_stored, pre_stored, -1, 0, 0, 0, -1, 0,
+            label, edge_start, pre_stored, pre_stored, 0, 0, 0, -1, 0,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5282,7 +5267,7 @@ mod tests {
             .expect("write root");
         let stored: u32 = 1_048_577;
         let bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, stored, stored, -1, 0, 0, 0, -1, 0,
+            label, edge_start, stored, stored, 0, 0, 0, -1, 0,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5404,7 +5389,7 @@ mod tests {
         assert_eq!(b2.stored_slots(), 2048);
         assert_eq!(b2.tree_mode_physical_depth(), 0); // slab mode => 0
         assert_eq!(b2.inline_property_byte_width(), 0);
-        assert_eq!(b2.overflow_log_head(), -1);
+        assert_eq!(b2.edge_spill_run(), crate::traits::NO_SPILL_RUN);
 
         // Read back all live edges via the slab path. The post-demote
         // bucket is slab-mode, so we use `edges.read_slot` directly to
@@ -5897,7 +5882,6 @@ mod tests {
             edge_start,
             stored_slots,
             stored_slots,
-            -1,
             w,
             0,
             0,
@@ -6265,11 +6249,10 @@ mod tests {
             .edges()
             .write_slots_contiguous_bytes(edge_start, &bytes)
             .expect("write combined");
-        let pre =
-            LabelBucket::try_from_parts(label, edge_start, stored, stored, -1, w, 0, 0, -1, 0)
-                .expect("try_from_parts")
-                .with_tree_mode(true)
-                .with_tree_mode_physical_depth(2);
+        let pre = LabelBucket::try_from_parts(label, edge_start, stored, stored, w, 0, 0, -1, 0)
+            .expect("try_from_parts")
+            .with_tree_mode(true)
+            .with_tree_mode_physical_depth(2);
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, pre)
@@ -6378,21 +6361,11 @@ mod tests {
             .edges()
             .write_slots_contiguous_bytes(edge_start_b, &bytes_b)
             .expect("write combined b");
-        let pre_b = LabelBucket::try_from_parts(
-            label,
-            edge_start_b,
-            stored_b,
-            stored_b,
-            -1,
-            w,
-            0,
-            0,
-            -1,
-            0,
-        )
-        .expect("try_from_parts b")
-        .with_tree_mode(true)
-        .with_tree_mode_physical_depth(2);
+        let pre_b =
+            LabelBucket::try_from_parts(label, edge_start_b, stored_b, stored_b, w, 0, 0, -1, 0)
+                .expect("try_from_parts b")
+                .with_tree_mode(true)
+                .with_tree_mode_physical_depth(2);
         graph_b
             .buckets()
             .write_label_bucket_slot(0, pre_b)

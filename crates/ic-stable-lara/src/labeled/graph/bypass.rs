@@ -1293,7 +1293,7 @@ mod tests {
         // log head (the compact step only inspects the head value).
         let vertex = graph.vertices().get(VertexId::from(0));
         graph
-            .set_labeled_vertex(VertexId::from(0), vertex.with_bypass_overflow_log_head(42))
+            .set_labeled_vertex(VertexId::from(0), vertex.with_bypass_spill_run(42))
             .unwrap();
         let before = graph.vertices().get(VertexId::from(0));
         let outcome = graph.compact_default_bypass_row(VertexId::from(0)).unwrap();

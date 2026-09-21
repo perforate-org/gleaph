@@ -619,7 +619,6 @@ mod tests {
         counts: Vec<SegmentEdgeCounts>,
         span_meta: Vec<SegmentSpanMeta>,
         edges: Vec<TestEdge>,
-        log_high_waters: Vec<u32>,
     }
 
     impl EdgeStoreSnapshot {
@@ -635,15 +634,11 @@ mod tests {
             let edges: Vec<_> = (0..header.num_edges)
                 .map(|slot| store.read_slot(slot))
                 .collect();
-            let log_high_waters: Vec<_> = (0..segment_count)
-                .map(|leaf| store.overflow_log_segment_high_water(leaf))
-                .collect();
             Self {
                 segment_count,
                 counts,
                 span_meta,
                 edges,
-                log_high_waters,
             }
         }
     }
@@ -680,14 +675,11 @@ mod tests {
         let counts = expected_counts_tree(&old_leaves, target);
         let mut span_meta = before.span_meta.clone();
         span_meta.resize(target as usize, SegmentSpanMeta::default());
-        let mut log_high_waters = before.log_high_waters.clone();
-        log_high_waters.resize(target as usize, 0);
         EdgeStoreSnapshot {
             segment_count: target,
             counts,
             span_meta,
             edges: before.edges.clone(),
-            log_high_waters,
         }
     }
 

@@ -858,7 +858,6 @@ mod tests {
             0,
             1,
             1,
-            -1,
             4,
             0,
             1,
@@ -1019,7 +1018,6 @@ mod tests {
                         bucket.edge_start(),
                         stored,
                         stored,
-                        -1,
                         width,
                         offset,
                         stored,
@@ -1620,7 +1618,6 @@ mod tests {
                 bucket.edge_start(),
                 bucket.degree,
                 stored,
-                bucket.overflow_log_head(),
                 w,
                 0, // inline_property_bytes_offset = 0
                 0, // inline_property_bytes_slab_slots = 0
@@ -1824,7 +1821,6 @@ mod tests {
             bucket.edge_start(),
             stored, // degree = stored for fresh slab
             stored,
-            bucket.overflow_log_head(),
             w,
             prop_offset,
             stored,
@@ -1959,7 +1955,6 @@ mod tests {
             bucket.edge_start(),
             stored,
             stored,
-            -1,
             w,
             prop_offset,
             stored,
@@ -2060,7 +2055,7 @@ mod tests {
         let w: u16 = 4;
         let stored: u32 = 1024u32 * 1024u32;
         let bucket = LabelBucket::try_from_parts(
-            label, 0, stored, stored, -1, w, 0, // offset = 0 in tree mode
+            label, 0, stored, stored, w, 0, // offset = 0 in tree mode
             0, // slab_slots = 0 in tree mode
             -1, 0,
         )
@@ -2172,7 +2167,6 @@ mod tests {
             bucket.edge_start(),
             stored,
             stored,
-            -1,
             w,
             prop_offset,
             stored,
