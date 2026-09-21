@@ -179,11 +179,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             });
         }
 
-        let edge_layout = self.edge_layout();
-        let v_ord = u32::from(vid);
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let stored = v.stored_degree();
-        let slab_count = on_slab.min(stored);
+        let slab_count = self.initialized_slab_slots(&v)?;
         let nbytes_slab = (slab_count as usize)
             .checked_mul(E::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -250,10 +246,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             ));
         }
 
-        let edge_layout = self.edge_layout();
-        let v_ord = u32::from(vid);
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let slab_count = on_slab.min(v.stored_degree());
+        let slab_count = self.initialized_slab_slots(&v)?;
 
         // The iterator's replay contract is newest-first (it walks the list backwards and pairs
         // each entry with the next logical slot), so the run's ordinal order is reversed here; the

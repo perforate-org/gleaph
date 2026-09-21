@@ -42,6 +42,13 @@ pub trait CsrVertex: Storable + Copy {
         self.degree()
     }
 
+    /// Initialized prefix extent, excluding spill rows and including prefix tombstones.
+    /// Core rows store total backing width; bucket adapters that store the prefix directly
+    /// override this projection. Capacity windows are allocation bounds, not initialized rows.
+    fn initialized_slab_slots(&self, spill_rows: u32) -> Option<u32> {
+        self.stored_degree().checked_sub(spill_rows)
+    }
+
     /// Returns a copy with a new slab base slot.
     fn with_base_slot_start(self, start: u64) -> Self;
     /// Returns a copy after updating the **stored** neighborhood width used for layout.

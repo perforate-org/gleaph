@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     VertexId,
-    traits::{CsrEdge, CsrEdgeTombstone},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use std::ops::ControlFlow;
 
@@ -29,7 +29,7 @@ impl<const N: usize> CsrEdgeTombstone for Row<N> {
     }
 }
 fn exercise<const N: usize>(bypass: bool) {
-    for target in [0, 33, 65, 999] {
+    for match_case in 0..5 {
         let m = crate::test_support::vector_memory;
         let graph = LabeledLaraGraph::<Row<N>, _>::new(
             m(),
@@ -53,13 +53,65 @@ fn exercise<const N: usize>(bypass: bool) {
         )
         .unwrap();
         let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let label = BucketLabelKey::from_raw(if bypass { 1 } else { 2 });
+        let label = BucketLabelKey::from_raw(2);
         for i in 0..67 {
             graph
                 .insert_edge_skip_leaf_cascade(vid, label, Row(i), EdgePlacementPolicy::Insertion)
                 .unwrap();
         }
-        assert_eq!(graph.vertices().get(vid).is_default_edge_labeled(), bypass);
+        // Produce a run as a labeled bucket, then use the canonical conversion that
+        // transfers its run and prefix without moving rows.
+        let label = if bypass {
+            graph.enable_default_edge_bypass(vid).unwrap();
+            graph.default_label()
+        } else {
+            label
+        };
+        let vertex = graph.vertices().get(vid);
+        assert_eq!(vertex.is_default_edge_labeled(), bypass);
+        let (raw_run, prefix) = if bypass {
+            (vertex.bypass_spill_run(), 0)
+        } else {
+            let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+            let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+            (bucket.edge_spill_run(), bucket.stored_slots_raw())
+        };
+        assert_ne!(
+            raw_run,
+            crate::traits::NO_SPILL_RUN,
+            "fixture must own a spill run"
+        );
+        let run = graph.edges().spill_mint(raw_run).unwrap();
+        let used = graph.edges().spill_used_len(run);
+        assert!(used > 32, "fixture must cross a spill chunk");
+        let prefix = if bypass {
+            vertex.stored_degree() - used
+        } else {
+            prefix
+        };
+        assert!(prefix < 31);
+        let target = [0, prefix, 33, 65, 999][match_case];
+        if bypass {
+            let invalid = vertex.with_stored_slots(used - 1);
+            assert!(matches!(
+                graph.edges().initialized_slab_slots(&invalid),
+                Err(crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow)
+            ));
+        }
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            let mut seen = Vec::new();
+            let _ = graph
+                .visit_edges(vid, label, order, |slot, edge| {
+                    seen.push((slot.raw(), edge.0));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut expected: Vec<_> = (0..67).map(|i| (i, i)).collect();
+            if order == OutEdgeOrder::Descending {
+                expected.reverse();
+            }
+            assert_eq!(seen, expected);
+        }
         for dead in [31, 32, 66] {
             assert_eq!(
                 graph
@@ -83,7 +135,10 @@ fn exercise<const N: usize>(bypass: bool) {
             if order == OutEdgeOrder::Descending {
                 expected.reverse();
             }
-            assert_eq!(seen, expected);
+            assert_eq!(
+                seen, expected,
+                "width={N} bypass={bypass} target={target} order={order:?}"
+            );
         }
         let mut visited = Vec::new();
         let result = graph
@@ -141,6 +196,13 @@ fn spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors() 
             )
             .unwrap();
     }
+    let vertex = graph.vertices().get(vid);
+    let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+    let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+    assert_ne!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+    let run = graph.edges().spill_mint(bucket.edge_spill_run()).unwrap();
+    assert!(graph.edges().spill_used_len(run) > 32);
+    assert!(bucket.stored_slots_raw() <= 33, "match must reach spill");
     let mut before = Vec::new();
     graph
         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {

@@ -235,9 +235,10 @@ fn bypass_conversion_carries_the_run_and_the_total_width() {
     let graph = spilling_graph();
     graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
-    insert_many(&graph, VertexId::from(0), label, 0..5);
+    insert_many(&graph, VertexId::from(0), label, 0..9);
     let bucket = bucket_of(&graph, VertexId::from(0), label);
     let rows = run_rows(&graph, &bucket);
+    assert!(rows > 0, "conversion witness must transfer a nonempty run");
 
     graph
         .enable_default_edge_bypass(VertexId::from(0))
@@ -257,7 +258,7 @@ fn bypass_conversion_carries_the_run_and_the_total_width() {
             .iter()
             .map(|edge| edge.target)
             .collect::<Vec<_>>(),
-        vec![0, 1, 2, 3, 4]
+        (0..9).collect::<Vec<_>>()
     );
 }
 

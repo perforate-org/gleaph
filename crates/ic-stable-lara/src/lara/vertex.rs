@@ -153,8 +153,8 @@ impl std::error::Error for VertexFieldError {}
 /// Default fixed-width LARA vertex row (16 bytes on wire).
 ///
 /// `live_edges` is the logical out-degree (clean scans, rebalance packing).
-/// `slab_slots` is the physical slab prefix width; it may be larger while tombstoned cells from
-/// logical deletes await compaction on leaf rebalance. The locator's tail28 carries the bucket's
+/// `slab_slots` is the stored backing width (prefix plus used spill rows). Tombstones retain
+/// their slots until compaction; `CsrVertex::initialized_slab_slots` projects the prefix. The locator's tail28 carries the bucket's
 /// spill run id (ADR 0097 §3), or `-1` when nothing has spilled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,7 +162,7 @@ pub struct Vertex {
     locator: u64,
     /// Live edges counted by graph APIs ([`CsrVertex::degree`]).
     pub live_edges: u32,
-    /// Physical slab cells reserved for this row ([`CsrVertex::stored_degree`]).
+    /// Stored backing width, including used spill rows ([`CsrVertex::stored_degree`]).
     pub slab_slots: u32,
 }
 

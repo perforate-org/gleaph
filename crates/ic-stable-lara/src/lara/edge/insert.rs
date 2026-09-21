@@ -8,7 +8,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::iter::OutEdgeSlabIter;
-use super::{DeleteTarget, EdgeLayout, EdgeStore, InsertLocation};
+use super::{DeleteTarget, EdgeStore, InsertLocation};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn collect_out_edge_refs_slot_order<V, A>(
@@ -21,7 +21,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        let v_ord = u32::from(vid);
 
         // Tombstone rows may still hold slab/spill material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
@@ -63,9 +62,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(out);
         }
 
-        let edge_layout = self.edge_layout();
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let slab_count = on_slab.min(v.stored_degree()) as usize;
+        let slab_count = self.initialized_slab_slots(&v)? as usize;
         let mut out = Vec::with_capacity(v.degree() as usize);
         for i in 0..slab_count {
             let slot = v
@@ -130,11 +127,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
-        let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
-        let v_ord = u32::from(vid);
-        let logical_log_slot =
-            self.logical_slot_before_insert(&edge_layout, vertices, v_ord, &v)?;
+        let logical_log_slot = self.logical_slot_before_insert(&v)?;
         self.insert_edge_inner(vertices, vid, edge, Some(logical_log_slot))
     }
 
@@ -216,20 +210,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(location)
     }
 
-    fn logical_slot_before_insert<V, A>(
-        &self,
-        edge_layout: &EdgeLayout,
-        vertices: &A,
-        v_ord: u32,
-        v: &V,
-    ) -> Result<u32, LaraOperationError>
-    where
-        V: CsrVertex,
-        A: VertexAccess<V>,
-    {
-        let slab_count = self
-            .on_slab_edges_with_layout(edge_layout, vertices, v_ord, v)?
-            .min(v.stored_degree());
+    fn logical_slot_before_insert<V: CsrVertex>(&self, v: &V) -> Result<u32, LaraOperationError> {
+        let slab_count = self.initialized_slab_slots(v)?;
         let spill_rows = match self.spill_mint(v.spill_run()) {
             Ok(run) => self.spill_used_len(run),
             // Unset (`NO_SPILL_RUN`) or outside the arena: no rows beyond the prefix.

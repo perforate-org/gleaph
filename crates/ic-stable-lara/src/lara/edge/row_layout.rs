@@ -158,45 +158,28 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.header().into()
     }
 
-    pub(crate) fn on_slab_degree_for_vertex_access<V, A>(
+    /// Initialized rows, independent of the surrounding allocation window. The row type owns
+    /// whether its stored width includes spill; the store owns reading and validating the run.
+    pub(crate) fn initialized_slab_slots<V: CsrVertex>(
         &self,
-        vertices: &A,
-        v_ord: u32,
         v: &V,
-    ) -> Result<u32, LaraOperationError>
-    where
-        V: CsrVertex,
-        A: VertexAccess<V>,
-    {
-        self.on_slab_edges_with_layout(&self.edge_layout(), vertices, v_ord, v)
-    }
-
-    pub(super) fn on_slab_edges_with_layout<V, A>(
-        &self,
-        edge_layout: &EdgeLayout,
-        vertices: &A,
-        v_ord: u32,
-        v: &V,
-    ) -> Result<u32, LaraOperationError>
-    where
-        V: CsrVertex,
-        A: VertexAccess<V>,
-    {
-        if v.spill_run() == crate::traits::NO_SPILL_RUN {
-            return Ok(v.stored_degree());
-        }
-        let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
-        let span_slots = next_exclusive
-            .checked_sub(v.base_slot_start())
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
-        // Once the spill run is active, the slab prefix is at most the CSR window width;
-        // additional live edges live in the row's own run (ADR 0097 §3).
-        Ok(if v.stored_degree() > span_u32 {
-            span_u32
+    ) -> Result<u32, LaraOperationError> {
+        let spill_rows = if v.spill_run() == crate::traits::NO_SPILL_RUN {
+            0
         } else {
-            v.stored_degree()
-        })
+            let used = self.spill_used_len(self.spill_mint(v.spill_run())?);
+            if used > crate::labeled::spill_run_store::MAX_ROWS {
+                return Err(LaraOperationError::SpillRowOutOfRange);
+            }
+            used
+        };
+        let prefix = v
+            .initialized_slab_slots(spill_rows)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        prefix
+            .checked_add(spill_rows)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(prefix)
     }
 
     pub(super) fn have_space_on_slab<V, A>(

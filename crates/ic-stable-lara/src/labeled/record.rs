@@ -1161,6 +1161,11 @@ impl CsrVertex for LabelBucket {
         self.stored_slots()
     }
 
+    fn initialized_slab_slots(&self, _: u32) -> Option<u32> {
+        // Unlike core/bypass rows, bucket descriptors already store the prefix alone.
+        Some(self.stored_slots())
+    }
+
     fn with_base_slot_start(self, start: u64) -> Self {
         self.try_with_edge_range(start, self.stored_slots())
             .expect("LabelBucket::with_base_slot_start: slot index overflow")
