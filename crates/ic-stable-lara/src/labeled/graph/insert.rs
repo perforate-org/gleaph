@@ -2368,7 +2368,12 @@ mod g6_zero_read_tests {
         // No edge-slab/log/ipb/span bytes can hide in 149R/44W: a single slab
         // span read of the 2-edge prefix alone would cost 8B+ and the control
         // below shows the slab path's floor.
-        assert_eq!((r, w), (149, 44), "tiny insert byte shape changed");
+        // MEASURED at the spill swap (ADR 0097 §3), and reported as a disagreement with the
+        // derived table: the derivation predicted 149R/44W, the measurement is 150R/44W. The extra
+        // read is the wider descriptor row (36 B) straddling a page boundary, which the derivation
+        // did not account for. The contract this test keeps is unchanged: the tiny path reads no
+        // edge-slab/log/value/span bytes, and the slab control below still moves strictly more.
+        assert_eq!((r, w), (150, 44), "tiny insert byte shape changed");
         // Differential control: promote to slab (5th edge), then measure a slab
         // append (6th edge) — it must read its slab span, strictly more than tiny.
         graph
@@ -2411,9 +2416,12 @@ mod g6_zero_read_tests {
             .unwrap();
         let sr = reads.get();
         let sw = writes.get();
-        // Derived at the current head: 372 + 5 descriptor reads x 7 + 1 vertex read x 4 = 411 reads,
-        // 65 + 1 descriptor write x 7 = 72 writes.
-        assert_eq!((sr, sw), (411, 72), "slab control byte shape changed");
+        // MEASURED at the spill swap, and reported as a disagreement with the derived table: the
+        // derivation predicted 411R/72W from the pre-widening row (`372 + 5 x 7 + 4`, `65 + 7`),
+        // the measurement is 425R/73W. The wider 36 B descriptor row and vertex row straddle page
+        // boundaries, which adds page reads the derivation did not model. The control's contract
+        // (a slab append moves strictly more than the tiny append above) still holds.
+        assert_eq!((sr, sw), (425, 73), "slab control byte shape changed");
         assert!(
             sr > r && sw > w,
             "slab append must move strictly more bytes than tiny: tiny ({r},{w}) vs slab ({sr},{sw})"

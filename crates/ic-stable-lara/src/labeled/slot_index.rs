@@ -60,6 +60,16 @@ pub fn decode_bucket_word_edge_run_low(word: u64) -> u32 {
     ((word & BUCKET_EDGE_RUN_LOW_MASK) >> BUCKET_EDGE_RUN_LOW_SHIFT) as u32
 }
 
+/// Clears the edge spill run id's low bits in a packed bucket word.
+///
+/// The wire word carries them (bits 54..64) so a decoded row must not keep them: the run id lives
+/// in the row's own field, and `LabelBucket::write_to` re-injects them. Keeping both in sync would
+/// duplicate the id in two places (ADR 0097 §3 keeps the descriptor field the single owner).
+#[inline]
+pub fn clear_bucket_word_edge_run_low(word: u64) -> u64 {
+    word & !BUCKET_EDGE_RUN_LOW_MASK
+}
+
 /// Replaces only the edge spill run id's low bits in a packed bucket word.
 #[inline]
 pub fn replace_bucket_word_edge_run_low(word: u64, low: u32) -> u64 {

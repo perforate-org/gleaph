@@ -4,8 +4,8 @@ use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
     BUCKET_EDGE_RUN_LOW_BITS, BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, checked_add_slot_index,
-    decode_bucket_label_key, decode_bucket_word_edge_run_low, decode_meta28,
-    decode_overflow_log_byte, decode_slot_index, encode_locator_word, read_u40,
+    clear_bucket_word_edge_run_low, decode_bucket_label_key, decode_bucket_word_edge_run_low,
+    decode_meta28, decode_overflow_log_byte, decode_slot_index, encode_locator_word, read_u40,
     replace_bucket_label_key, replace_bucket_word_edge_run_low, slot_index_fits,
     try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
     try_replace_slot_index, write_u40,
@@ -904,6 +904,9 @@ impl LabelBucket {
         let edge_run_bits = decode_bucket_word_edge_run_low(word)
             | (((added & ((1u64 << Self::EDGE_RUN_HIGH_BITS) - 1)) as u32)
                 << BUCKET_EDGE_RUN_LOW_BITS);
+        // The wire word carries the run id's low bits; the decoded row keeps the id in its own
+        // field only, so the word's copy is cleared (`write_to` re-injects it).
+        let word = clear_bucket_word_edge_run_low(word);
         // ADR 0097 §3: the all-ones pattern is not a legal id, so it is the sentinel's wire
         // spelling and must decode back to it. Without this mapping a row written with
         // `NO_SPILL_RUN` would read back as a live-looking id (2^27 - 1) and every reader that

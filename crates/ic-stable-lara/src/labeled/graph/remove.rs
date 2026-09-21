@@ -2296,7 +2296,10 @@ mod g6_zero_read_tests {
         // insert's publish writes (44) — delete is scan + publish, nothing more.
         // The pre-redesign promote-then-tombstone path would move ~thousands
         // (span reserve + transcribe + release); no room for it here.
-        assert_eq!((r, w), (105, 44), "tiny delete byte shape changed");
+        // MEASURED at the spill swap, and reported as a disagreement with the derived table
+        // (predicted 105R/44W, measured 109R/44W: the wider descriptor row straddles page
+        // boundaries on the find + publish + vertex reads).
+        assert_eq!((r, w), (109, 44), "tiny delete byte shape changed");
         // Sanity: hole tombstoned inline, still tiny.
         let vertex = graph.vertices().get(vid);
         let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {

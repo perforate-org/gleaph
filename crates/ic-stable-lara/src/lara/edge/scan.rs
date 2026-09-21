@@ -198,7 +198,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
 
         let run = self.spill_mint(v.spill_run())?;
-        let spill_replay = self.spill_replay_entries(run)?;
+        // The iterator's replay contract is newest-first (it pairs the first entry with the
+        // highest logical slot), so the run's ordinal order is reversed here. This is the same
+        // contract the retired chain replay satisfied by construction.
+        let mut spill_replay = self.spill_replay_entries(run)?;
+        spill_replay.reverse();
         let mut deleted_slab_offsets: Vec<u32> = Vec::new();
         deleted_slab_offsets.sort_unstable();
         let reserved_log_slots =
@@ -251,10 +255,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
         let slab_count = on_slab.min(v.stored_degree());
 
-        // The run's rows in ordinal order; the ascending iterator walks them so the yielded
-        // order is the materialization order (oldest→newest).
+        // The iterator's replay contract is newest-first (it walks the list backwards and pairs
+        // each entry with the next logical slot), so the run's ordinal order is reversed here; the
+        // yielded order stays the materialization order (oldest→newest).
         let run = self.spill_mint(v.spill_run())?;
-        let inserted = self.spill_replay_entries(run)?;
+        let mut inserted = self.spill_replay_entries(run)?;
+        inserted.reverse();
         let deleted_slab_offsets: Vec<u32> = Vec::new();
 
         Ok(OutEdgesIter::with_reserved_log_replay(

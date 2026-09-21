@@ -7091,6 +7091,9 @@ mod g6_zero_read_tests {
         // Exact shape: one descriptor-row read + vertex/lookup reads, zero writes
         // (scan publishes nothing). Any slab-span read would add >= 4B (one
         // edge target) plus span-meta bytes — the bound has no room for it.
-        assert_eq!((r, w), (105, 0), "tiny scan byte shape changed");
+        // MEASURED at the spill swap, and reported as a disagreement with the derived table
+        // (predicted 105R/0W, measured 109R/0W: the wider descriptor row straddles page boundaries
+        // on the descriptor reads).
+        assert_eq!((r, w), (109, 0), "tiny scan byte shape changed");
     }
 }
