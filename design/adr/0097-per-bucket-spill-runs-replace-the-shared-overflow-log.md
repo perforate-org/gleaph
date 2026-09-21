@@ -86,6 +86,13 @@ bucket.
    larger than the largest class is simply a tree bucket. (Generalising tree mode into the spill is the separate
    follow-up question already recorded, not part of this swap.)
 
+   **Arena exhaustion is fail-closed, never a panic.** When a bucket's run cannot be allocated because the arena
+   has no addressable row left (an exhaustion the 29-bit ids make reachable, and which the store currently turns
+   into `expect("spill arena overflow")`), the allocation returns an error and the caller **promotes that bucket to
+   tree mode** — the same path as the class limit above. No insert loses data, no abort is reachable from a workload,
+   and the arena bound becomes a stated limit of the spill tier rather than a panic. The store must return an error
+   where it now expects (the `expect` sites go with this rule), and the insert path must treat that error as the
+   promotion trigger, distinct from a genuine memory-growth failure (which stays an error the caller reports).
 7. **Operations.** Insert: prefix slot if free (tombstone reuse or the Insertion headroom), else append to the run,
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
