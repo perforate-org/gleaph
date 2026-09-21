@@ -130,7 +130,9 @@ where
         let edge_start = vertex.base_slot_start();
         let stored_slots = vertex.stored_slots;
         let logical_degree = vertex.degree;
-        if logical_degree == 0 {
+        let prefix = self.edges.initialized_slab_slots(&vertex)?;
+        let run = vertex.bypass_spill_run();
+        if logical_degree == 0 && run == crate::traits::NO_SPILL_RUN {
             // Clearing default-label bypass must also reset locator fields so the row is a
             // coherent empty *normal* bucket row (`base_slot_start` is LabelBucket slab space).
             let cleared = vertex
@@ -143,10 +145,14 @@ where
 
         // Plan the segment-bucket rewrite without allocating or mutating anything.
         let new_alloc = self.edges.header().segment_size.max(1).max(stored_slots);
+        let mut bucket = LabelBucket::from_parts(bypass_label, edge_start, logical_degree, prefix);
+        if run != crate::traits::NO_SPILL_RUN {
+            bucket = bucket.with_edge_spill_run(run);
+        }
         let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
-            LabelBucket::from_parts(bypass_label, edge_start, logical_degree, stored_slots),
+            bucket,
             new_alloc,
         )?;
 

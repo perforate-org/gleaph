@@ -6,11 +6,11 @@ use crate::{
 use std::ops::ControlFlow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Row<const N: usize>(u32);
+struct Row<const N: usize>(u32, u16);
 impl<const N: usize> CsrEdge for Row<N> {
     const BYTES: usize = N;
     fn read_from(bytes: &[u8]) -> Self {
-        Self(u32::from_le_bytes(bytes[..4].try_into().unwrap()))
+        Self(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0)
     }
     fn write_to(&self, bytes: &mut [u8]) {
         bytes.fill(0);
@@ -20,14 +20,58 @@ impl<const N: usize> CsrEdge for Row<N> {
         VertexId::from(self.0)
     }
     fn with_neighbor_vid(&self, vid: VertexId) -> Self {
-        Self(u32::from(vid))
+        Self(u32::from(vid), self.1)
+    }
+    fn with_label_id(self, label_id: u16) -> Self {
+        Self(self.0, label_id)
     }
 }
 impl<const N: usize> CsrEdgeTombstone for Row<N> {
     fn tombstone_edge() -> Self {
-        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
+        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL), 0)
     }
 }
+fn assert_all_label_rows<const N: usize>(
+    graph: &LabeledLaraGraph<Row<N>, crate::VectorMemory>,
+    vid: VertexId,
+    live: &[u32],
+) {
+    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+        let mut expected: Vec<_> = live
+            .iter()
+            .map(|target| (*target, graph.default_label().raw()))
+            .collect();
+        if order == OutEdgeOrder::Descending {
+            expected.reverse();
+        }
+        let mut seen = Vec::new();
+        let flow = graph
+            .visit_all_labels_with_inline_property(vid, order, |edge| {
+                seen.push((edge.0, edge.1));
+                ControlFlow::<u32>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(seen, expected, "all-label width={N} order={order:?}");
+        if expected.is_empty() {
+            continue;
+        }
+        seen.clear();
+        let flow = graph
+            .visit_all_labels_with_inline_property(vid, order, |edge| {
+                seen.push((edge.0, edge.1));
+                if seen.len() == 3 {
+                    ControlFlow::Break(0xfeed_u32)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Break(0xfeed));
+        assert_eq!(seen, expected[..3], "no suffix callbacks");
+    }
+}
+
 fn exercise<const N: usize>(bypass: bool) {
     for match_case in 0..5 {
         let m = crate::test_support::vector_memory;
@@ -56,7 +100,12 @@ fn exercise<const N: usize>(bypass: bool) {
         let label = BucketLabelKey::from_raw(2);
         for i in 0..67 {
             graph
-                .insert_edge_skip_leaf_cascade(vid, label, Row(i), EdgePlacementPolicy::Insertion)
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    Row(i, 0),
+                    EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         // Produce a run as a labeled bucket, then use the canonical conversion that
@@ -92,6 +141,10 @@ fn exercise<const N: usize>(bypass: bool) {
         assert!(prefix < 31);
         let target = [0, prefix, 33, 65, 999][match_case];
         if bypass {
+            assert!(prefix > 0);
+            assert_all_label_rows(&graph, vid, &(0..67).collect::<Vec<_>>());
+        }
+        if bypass {
             let invalid = vertex.with_stored_slots(used - 1);
             assert!(matches!(
                 graph.edges().initialized_slab_slots(&invalid),
@@ -123,6 +176,9 @@ fn exercise<const N: usize>(bypass: bool) {
             );
         }
         let live: Vec<u32> = (0..67).filter(|i| ![31, 32, 66].contains(i)).collect();
+        if bypass {
+            assert_all_label_rows(&graph, vid, &live);
+        }
         for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
             let mut seen = Vec::new();
             graph
@@ -190,6 +246,50 @@ fn exercise<const N: usize>(bypass: bool) {
                 .map(|i| (i, i))
                 .collect::<Vec<_>>()
         );
+        if bypass {
+            if match_case == 4 {
+                for (slot, target) in &survivors {
+                    assert_eq!(
+                        graph
+                            .remove_edge_at_slot(vid, label, *slot)
+                            .unwrap()
+                            .unwrap()
+                            .0,
+                        *target
+                    );
+                }
+                survivors.clear();
+                assert_eq!(graph.vertices().get(vid).degree(), 0);
+                assert_eq!(graph.edges().spill_used_len(run), used);
+            }
+            let edge_count = graph.edges().header().num_edges;
+            graph.promote_bypass_to_bucket_mode(vid).unwrap();
+            assert_eq!(graph.edges().header().num_edges, edge_count);
+            assert_eq!(graph.edges().spill_used_len(run), used);
+            let vertex = graph.vertices().get(vid);
+            assert!(!vertex.is_default_edge_labeled());
+            assert_eq!(vertex.spill_run(), crate::traits::NO_SPILL_RUN);
+            let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+            let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+            assert_eq!(bucket.edge_spill_run(), raw_run);
+            assert_eq!(bucket.stored_slots_raw(), prefix);
+            let mut after = Vec::new();
+            graph
+                .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                    after.push((slot.raw(), edge.0));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(after, survivors);
+            assert_all_label_rows(
+                &graph,
+                vid,
+                &survivors
+                    .iter()
+                    .map(|(_, target)| *target)
+                    .collect::<Vec<_>>(),
+            );
+        }
     }
 }
 #[test]
@@ -284,7 +384,7 @@ fn append_lifecycle<const N: usize>() {
     let label = BucketLabelKey::from_raw(2);
     for i in 0..67 {
         graph
-            .insert_edge_skip_leaf_cascade(vid, label, Row(i), EdgePlacementPolicy::Insertion)
+            .insert_edge_skip_leaf_cascade(vid, label, Row(i, 0), EdgePlacementPolicy::Insertion)
             .unwrap();
     }
     graph.enable_default_edge_bypass(vid).unwrap();
@@ -311,7 +411,7 @@ fn append_lifecycle<const N: usize>() {
             }
         }
         graph
-            .insert_edge(vid, label, Row(target), EdgePlacementPolicy::Insertion)
+            .insert_edge(vid, label, Row(target, 0), EdgePlacementPolicy::Insertion)
             .unwrap();
         let vertex = graph.vertices().get(vid);
         assert!(vertex.is_default_edge_labeled());
@@ -353,13 +453,13 @@ fn append_lifecycle<const N: usize>() {
     let end = prefix + crate::labeled::spill_run_store::MAX_ROWS;
     for target in prefix + initial_class + 3..end {
         graph
-            .insert_edge(vid, label, Row(target), EdgePlacementPolicy::Insertion)
+            .insert_edge(vid, label, Row(target, 0), EdgePlacementPolicy::Insertion)
             .unwrap();
     }
     let before = graph.vertices().get(vid);
     let before_count = graph.edges().header().num_edges;
     let error = graph
-        .insert_edge(vid, label, Row(end), EdgePlacementPolicy::Insertion)
+        .insert_edge(vid, label, Row(end, 0), EdgePlacementPolicy::Insertion)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -408,6 +508,12 @@ fn retained_run_append_preserves_prefix_and_ordinals_ten_bytes() {
 fn spill_matching_preserves_ordinals_and_stops_predicates_at_match() {
     exercise::<4>(false);
     exercise::<10>(false);
+}
+#[test]
+fn retained_run_all_label_four_bytes() {
     exercise::<4>(true);
+}
+#[test]
+fn retained_run_all_label_ten_bytes() {
     exercise::<10>(true);
 }

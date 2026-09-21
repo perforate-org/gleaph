@@ -952,7 +952,8 @@ impl<M: Memory> LabelBucketStore<M> {
             let slack = Self::slack_for_physical_span(live, physical)
                 .expect("commit: slack should fit after plan");
             let updated = if v_ord == plan.source_v_ord {
-                v.with_default_edge_labeled(false)
+                v.without_bypass_spill_run()
+                    .with_default_edge_labeled(false)
                     .try_with_bucket_row_and_slack(row_base, live, slack)
                     .expect("commit: source row fields should fit after plan")
                     .with_stored_slots(plan.new_alloc)

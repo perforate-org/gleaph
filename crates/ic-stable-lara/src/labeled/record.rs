@@ -1615,6 +1615,15 @@ impl LabeledVertex {
             .expect("LabeledVertex::with_bypass_spill_run: run id out of range")
     }
 
+    /// Clears the row's run reference after ownership has transferred to a bucket.
+    #[inline]
+    pub(crate) fn without_bypass_spill_run(self) -> Self {
+        Self {
+            bypass_spill_run: NO_SPILL_RUN,
+            ..self
+        }
+    }
+
     /// Validates normal-mode label-bucket row count and descriptor span.
     #[inline]
     pub fn ensure_valid_normal_row(self) -> Result<Self, LabeledVertexFieldError> {
