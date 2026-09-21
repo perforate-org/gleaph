@@ -95,6 +95,8 @@ mod row_layout;
 mod scan;
 mod slab;
 mod span;
+#[cfg(test)]
+mod spill_read_test;
 mod targets;
 #[cfg(test)]
 mod test_support;

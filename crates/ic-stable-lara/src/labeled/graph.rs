@@ -244,6 +244,8 @@ pub(crate) mod leaf_pin;
 mod promote;
 mod remove;
 #[cfg(test)]
+mod spill_read_test;
+#[cfg(test)]
 mod spill_swap_test;
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -496,7 +496,25 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(())
     }
 
-    /// Reads data row `index` of `run` into `row`.
+    /// Reads whole used rows, leaving `rows` untouched on rejection. Empty ranges are valid
+    /// at or before the used end. A single header snapshot owns both bounds checks; corrupt
+    /// lengths above the largest class are never allowed to expose adjacent allocations.
+    pub(crate) fn read_rows(&self, run: SpillRunId, index: u32, rows: &mut [u8]) -> bool {
+        let width = self.row_bytes as usize;
+        if !rows.len().is_multiple_of(width) {
+            return false;
+        }
+        let used = self.read_used_len(run);
+        if used > MAX_ROWS || index > used || rows.len() / width > (used - index) as usize {
+            return false;
+        }
+        if !rows.is_empty() {
+            self.memory.read(self.data_address(run.get(), index), rows);
+        }
+        true
+    }
+
+    /// Reads one used data row, sharing the bounded reader's range invariant.
     pub(crate) fn read_row(&self, run: SpillRunId, index: u32, row: &mut [u8]) {
         assert_eq!(
             row.len(),
@@ -504,10 +522,9 @@ impl<M: Memory> SpillRunStore<M> {
             "spill row width mismatch"
         );
         assert!(
-            index < self.capacity(run),
-            "spill read outside the run's class"
+            self.read_rows(run, index, row),
+            "spill read outside used rows"
         );
-        self.memory.read(self.data_address(run.get(), index), row);
     }
 
     /// Writes `row` as data row `index` of `run`, overwriting in place (a tombstone hole or a slot
@@ -554,6 +571,43 @@ mod tests {
             ArenaRows::min_of(&[ArenaRows::from_ids(MIN_ROWS + RUN_HEADER_ROWS)]),
         )
         .expect("store")
+    }
+
+    #[test]
+    fn bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes() {
+        for width in [4, 10] {
+            let store =
+                SpillRunStore::new(crate::test_support::vector_memory(), width, ArenaRows::EDGE)
+                    .unwrap();
+            let run = store.allocate(3).unwrap();
+            for i in 0..3 {
+                store
+                    .write_row(run, i, &vec![i as u8; width as usize])
+                    .unwrap();
+            }
+            let mut rows = vec![99; width as usize * 2];
+            assert!(store.read_rows(run, 1, &mut rows));
+            assert_eq!(
+                rows,
+                [vec![1; width as usize], vec![2; width as usize]].concat()
+            );
+            for start in [2, 3, u32::MAX] {
+                rows.fill(99);
+                assert!(!store.read_rows(run, start, &mut rows));
+                assert_eq!(rows, vec![99; width as usize * 2]);
+            }
+            assert!(store.read_rows(run, 3, &mut []));
+            assert!(!store.read_rows(run, 4, &mut []));
+            let mut misaligned = vec![99; width as usize + 1];
+            assert!(!store.read_rows(run, 0, &mut misaligned));
+            assert_eq!(misaligned, vec![99; width as usize + 1]);
+            for invalid in [MAX_ROWS + 1, u32::MAX] {
+                store.set_used_len(run.get(), invalid).unwrap();
+                assert!(!store.read_rows(run, 0, &mut rows));
+                assert!(!store.read_rows(run, 0, &mut []));
+                assert_eq!(rows, vec![99; width as usize * 2]);
+            }
+        }
     }
 
     #[test]

@@ -208,7 +208,9 @@ descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-**Status: diagnosed, not implemented.** Source revision `c5015581d4f709902ce9240a704dbbfe08cbeced`.
+**Status: implementation added; production benchmark validation incomplete.** Diagnostic source
+revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
+reviewed experiment, not the subsequent production implementation.
 The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
 lazy allocation, used bounds and stable ordinals do not require scalar reads. The previous
 4-byte/segment16/uniform256 probe scanned after deletes and did not reproduce these benchmarks.
@@ -315,9 +317,31 @@ sizing across edge widths. The diagnostic patch is not a production-ready API pr
 Experimental library suite: **625 passed / 0 failed** (623 existing tests plus two diagnostic
 tests). The bounds witness rejects class slack, crossing the used end and `u32::MAX`, leaving
 the output untouched on rejection. Probe/test patches are retained outside production source.
-No production change was committed; experimental source was removed after measurement.
-Fmt/clippy and unfiltered final canbench were not run for this diagnostic, and no results
-were persisted. This is not final landing validation.
+Experimental source was removed after measurement. Those measurements are not final landing
+validation and were not persisted.
+
+The production implementation adds `SpillRunStore::read_rows` (one header snapshot,
+`MAX_ROWS` and used-range validation, empty ranges valid at/before used end, no output changes
+on rejection). Scalar reads share that invariant. `EdgeStore::spill_edges_iter` uses checked
+buffer sizing and the existing slab chunk count, decodes lazily, and serves replay plus both
+labeled and bypass matching. Writes remain class-capacity checked and unchanged. Point
+lookups, compaction's direct reads, batch-write point access, values-store callers, and the
+separately unproven hybrid-values change are deliberately not batched.
+
+Owning witnesses: `bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes`,
+`spill_replay_reads_chunks_not_scalar_rows`, `spill_replay_reads_chunks_for_ten_byte_rows`,
+`spill_matching_preserves_ordinals_and_stops_predicates_at_match`, and
+`spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors`. The replay
+read-count witness failed on the old scalar implementation (202 reads versus 7 for 67 rows)
+and passes on the production implementation. Coverage includes 4/10-byte rows, chunk boundaries,
+partial tails, tombstone ordinals, both scan directions, labeled/bypass matching and sidecars.
+
+Production validation: library suite **628 passed / 0 failed**; library clippy with `-D warnings`
+and formatting checks scoped to touched files passed. The focused command
+`timeout 90 canbench bench_l_s2_h_pt_d_1024 --csv` reached its timeout during Wasm compilation;
+no production instruction count was obtained. Remaining focused and unfiltered final runs are
+not run; persisted YAML and benchmark source remain unchanged. Logs and the red/green evidence
+are in `/tmp/spill-production/`. No final artifact or broader landing acceptance is claimed.
 
 Historical headline (not rerun here): measured main 390.60 K / 391.09 K / 391.09 K versus
 current persisted 365,548 / 365,548 / 365,497 for `bench_l_nt_bp_ins_256/1024/4096`.

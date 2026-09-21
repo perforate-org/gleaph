@@ -227,8 +227,9 @@ where
         let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
             return Ok(None);
         };
-        for ordinal in 0..self.edges.spill_used_len(run) {
-            let edge = self.edges.spill_edge_at(run, ordinal)?;
+        for (ordinal, edge) in self.edges.spill_edges_iter(run)?.enumerate() {
+            let ordinal = ordinal as u32; // bounded by MAX_ROWS in the iterator
+            let edge = edge?;
             if edge.is_tombstone_edge() {
                 continue;
             }
@@ -1345,8 +1346,9 @@ where
                         let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
                             return Ok(None);
                         };
-                        for ordinal in 0..self.edges.spill_used_len(run) {
-                            let edge = self.edges.spill_edge_at(run, ordinal)?;
+                        for (ordinal, edge) in self.edges.spill_edges_iter(run)?.enumerate() {
+                            let ordinal = ordinal as u32; // bounded by MAX_ROWS in the iterator
+                            let edge = edge?;
                             if edge.is_tombstone_edge() {
                                 continue;
                             }
