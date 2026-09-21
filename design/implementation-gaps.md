@@ -117,6 +117,69 @@ defect from being rediscovered without its prior reasoning.
   `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
   0 after).
 
+### Landing evidence — every bench worse than main by >5% before 5i
+
+Read from `crates/ic-stable-lara/canbench_results.yml`: `main (measured)` is the unfiltered run
+on `9a64049f4`, `pre-5i` is the persisted file at the commit before 5i, `post-5i` is the
+persisted file now. 5i (the compaction step carrying the caller's span policy) moves exactly
+one of these rows, `bench_l_s2_h_del_1024`, by -27.4%; the rest are unchanged, and two rows
+that are not in this table regressed (`bench_l_s2_det_hub_st_1024` +26.2%,
+`bench_l_s2_det_sat_1024` +101.6%).
+
+| bench | main (measured) | pre-5i | post-5i |
+| --- | --- | --- | --- |
+| `offset_workload_candidate_bursty` | 1 | 1,465,455,879 | 491,406,745 |
+| `offset_workload_candidate_uniform` | 1 | 1,433,556,965 | 471,147,924 |
+| `offset_workload_candidate_churn_light` | 1 | 1,252,356,452 | 401,477,074 |
+| `tcsr_65536_insert_grow` | 1 | 1,118,273,942 | 1,118,273,942 |
+| `tree_churn_bursty_reuse` | 1 | 1,041,741,982 | 1,041,741,982 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384` | 15 | 15,542,810,613 | 43,911,532 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536` | 247 | 247,370,242,366 | 247,370,340,681 |
+| `bench_t_vip_descending` | 27,010 | 197,860 | 197,860 |
+| `bench_t_vip` | 28,060 | 197,851 | 197,851 |
+| `bounded_inline_promote_full` | 216,850 | 1,132,525 | 1,132,525 |
+| `bench_l_mix_hub_scn_33x50` | 350,320 | 1,710,929 | 1,710,929 |
+| `bench_l_mix_hub_asc_33x50` | 452,960 | 2,011,687 | 2,011,687 |
+| `bounded_inline_64_full` | 18,970 | 80,251 | 80,251 |
+| `bench_t_v_in_hyb_ip` | 74,470 | 292,185 | 292,185 |
+| `bench_t_v_pf_then_sel` | 152,750 | 512,905 | 512,905 |
+| `bench_t_v_hyb` | 81,010 | 241,373 | 241,373 |
+| `bench_r_ed_st_d_oi_lb_128` | 27,090 | 80,452 | 80,452 |
+| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
+| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
+| `bench_t_v_in_dense` | 88,130 | 254,474 | 254,474 |
+| `bench_r_ed_st_oi_lb_128` | 35,380 | 88,746 | 88,746 |
+| `bench_l_s2_h_del_1024` | 127,160,000 | 266,537,637 | 193,429,761 |
+| `bench_t_vip_filtered_reference` | 154,220 | 318,265 | 318,265 |
+| `bench_t_v_w_ip` | 155,530 | 320,305 | 320,305 |
+| `bounded_topology_64_full` | 32,950 | 63,238 | 63,238 |
+| `bench_t_lvp_same` | 363,100 | 528,866 | 528,866 |
+| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
+| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
+| `bench_t_v_at_replay` | 4,989 | 6,107 | 6,107 |
+| `bench_l_ins_fresh_256` | 33,150,000 | 39,224,402 | 39,224,402 |
+| `bench_l_ip_frag_comp` | 38,220,000 | 43,470,216 | 43,470,216 |
+| `bench_l_ip_frag_s4_ctl` | 38,210,000 | 43,458,762 | 43,458,762 |
+| `bench_l_df_ip_frag_enq_6` | 76,550,000 | 87,051,135 | 87,051,135 |
+| `bench_l_ip_frag_s6` | 38,280,000 | 43,527,769 | 43,527,769 |
+| `bench_l_df_ip_frag_mnt_6` | 76,660,000 | 87,162,578 | 87,162,578 |
+| `bench_l_ip_pstats_16` | 41,160,000 | 46,569,383 | 46,569,383 |
+| `bench_l_ip_pstats_64` | 59,400,000 | 67,018,574 | 67,018,574 |
+| `bench_l_ins_ap_hub_1024` | 10,320 | 11,536 | 11,536 |
+| `bench_l_ip_exg_256` | 44,740,000 | 49,900,227 | 49,900,227 |
+| `bench_l_ip_pstats_256` | 285,060,000 | 312,686,647 | 312,686,647 |
+| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,908,039 | 77,909,616 |
+| `bench_r_ed_st_ls_128` | 346,750 | 369,658 | 369,658 |
+| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
+
+Headline (better than main, unchanged by 5i): the three rows above.
+
+Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
+cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
+descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
 - **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
