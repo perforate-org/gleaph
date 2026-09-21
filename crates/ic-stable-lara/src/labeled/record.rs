@@ -11,7 +11,7 @@ use crate::labeled::slot_index::{
     try_replace_slot_index, write_u40,
 };
 use crate::slab_index::byte_offset_fits;
-use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
+use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone, NO_SPILL_RUN};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 
@@ -77,12 +77,6 @@ pub struct LabelBucket {
     /// them and the id moves down.
     values_spill_run: u32,
 }
-
-/// "No spill run" sentinel for [`LabelBucket`]'s two run-id fields.
-///
-/// The store mints `u32` run ids, so `u32::MAX` is the sentinel and a live id is at most
-/// `u32::MAX - 1`; the setters reject the sentinel (ADR 0097 §3).
-pub(crate) const NO_SPILL_RUN: u32 = u32::MAX;
 
 impl LabelBucket {
     /// Mode-aware stored width (ADR 0096 §3b Phase 1 / plan 0361 R4).

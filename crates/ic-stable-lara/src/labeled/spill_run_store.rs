@@ -34,6 +34,7 @@
     reason = "ADR 0097 slices 1-2: the store is measured and tested in isolation; the graph wires\n              its consumers in the following slices (descriptor reinterpretation, insert producer)."
 )]
 
+use crate::traits::NO_SPILL_RUN;
 use crate::types::Address;
 use crate::{GrowFailed, Memory, read_u32, safe_write};
 
@@ -62,7 +63,7 @@ pub(crate) const CLASS_COUNT: usize = 8;
 /// bucket to tree mode (ADR 0097 §6) rather than abort.
 pub(crate) const ARENA_ROWS_LIMIT: u32 = 1 << 29;
 /// Sentinel for "no free run" / "no link".
-const NONE: u32 = u32::MAX;
+
 /// Offsets inside the 64-byte store header.
 const OFFSET_MAGIC: u64 = 0;
 const OFFSET_VERSION: u64 = 3;
@@ -128,7 +129,7 @@ impl<M: Memory> SpillRunStore<M> {
                 .copy_from_slice(&row_bytes.to_le_bytes());
             for i in 0..CLASS_COUNT {
                 let at = OFFSET_FREE_HEADS as usize + i * 4;
-                header[at..at + 4].copy_from_slice(&NONE.to_le_bytes());
+                header[at..at + 4].copy_from_slice(&NO_SPILL_RUN.to_le_bytes());
             }
             safe_write(&memory, 0, &header)?;
             return Ok(Self {
@@ -223,7 +224,7 @@ impl<M: Memory> SpillRunStore<M> {
         let capacity = Self::class_rows(len);
         let class = Self::class_index(capacity);
         let head = self.free_head(class);
-        let run = if head != NONE {
+        let run = if head != NO_SPILL_RUN {
             // A free run's header word is its free-list link, not a length.
             let next = read_u32(&self.memory, Address::from(self.header_address(head)));
             self.set_free_head(class, next)?;
@@ -286,7 +287,7 @@ impl<M: Memory> SpillRunStore<M> {
         from_len: u32,
         to_len: u32,
     ) -> Result<Option<RunId>, SpillRunError> {
-        assert!(run != NONE, "cannot grow the sentinel run");
+        assert!(run != NO_SPILL_RUN, "cannot grow the sentinel run");
         let current = Self::class_rows(from_len.max(1));
         let target = Self::class_rows(to_len.max(1));
         if target <= current || target > MAX_ROWS {
@@ -367,7 +368,7 @@ impl<M: Memory> SpillRunStore<M> {
     /// which happens before any mutation - a failed release leaves the run live rather than
     /// freed-and-reported. The second write is infallible by construction.
     pub(crate) fn release(&self, run: RunId) -> Result<(), SpillRunError> {
-        assert!(run != NONE, "cannot release the sentinel run");
+        assert!(run != NO_SPILL_RUN, "cannot release the sentinel run");
         let class = Self::class_index(Self::class_rows(self.read_used_len(run).max(1)));
         let head = self.free_head(class);
         safe_write(&self.memory, self.header_address(run), &head.to_le_bytes())?;
@@ -689,7 +690,7 @@ mod tests {
         store.release(run).expect("release");
         // A released run's header is the free-list terminator, not a length.
         assert_eq!(store.free_head(0), run);
-        assert_eq!(store.read_used_len(run), NONE);
+        assert_eq!(store.read_used_len(run), NO_SPILL_RUN);
         // Reuse rewrites it as the new run's used length.
         let again = store.allocate(3).expect("reuse");
         assert_eq!(again, run);

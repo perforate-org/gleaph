@@ -7,6 +7,14 @@ use ic_stable_structures::Storable;
 
 use crate::VertexId;
 
+/// "No spill run" sentinel for a row's spill run id (ADR 0097 §3).
+///
+/// The spill arena mints `u32` row offsets, so `u32::MAX` is the sentinel and a live run id is at
+/// most `u32::MAX - 1`; the descriptor setters reject the sentinel. Defined here, next to
+/// [`CsrVertex`], so the store, the labeled records and the unlabeled vertex share one definition
+/// without `lara` depending on `labeled`.
+pub const NO_SPILL_RUN: u32 = u32::MAX;
+
 /// One vertex row in the CSR vertex column (`M_v`).
 ///
 /// `log_head` is the LARA per-segment log array index of the head of this vertex's overflow chain,
