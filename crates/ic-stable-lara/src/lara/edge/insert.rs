@@ -274,7 +274,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
         let log_owner = vertices.log_leaf_vertex(vid);
-        if v.log_head() >= 0 {
+        if v.spill_run() != crate::traits::NO_SPILL_RUN {
             let removed = self
                 .collect_out_edge_refs_slot_order(vertices, vid)?
                 .into_iter()
@@ -283,7 +283,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Ok(None);
             };
             let removed_for_return = removed.clone();
-            self.tombstone_overflow_log_delete_target(&edge_layout, vertices, vid, v, target)?;
+            self.tombstone_spill_delete_target(&edge_layout, vertices, vid, v, target)?;
             let next_global = edge_layout
                 .num_edges
                 .checked_sub(1)
