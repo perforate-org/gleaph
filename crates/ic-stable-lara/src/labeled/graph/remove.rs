@@ -85,7 +85,11 @@ where
     /// Resident spill rows of a bypass bucket: the run's used length (ADR 0097 §3). Replaces the
     /// retired per-leaf log chain walk.
     fn default_bypass_edge_log_slots(&self, _src: VertexId, vertex: &LabeledVertex) -> u32 {
-        self.edges.spill_used_len(vertex.bypass_spill_run())
+        match self.edges.spill_mint(vertex.bypass_spill_run()) {
+            Ok(run) => self.edges.spill_used_len(run),
+            // Unset (NO_SPILL_RUN) or out of the arena's range: no spill rows to count.
+            Err(_) => 0,
+        }
     }
 
     fn default_bypass_slab_prefix_slots(&self, src: VertexId, vertex: &LabeledVertex) -> u32 {
