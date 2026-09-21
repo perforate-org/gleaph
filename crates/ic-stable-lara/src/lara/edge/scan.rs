@@ -198,10 +198,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             None
         };
 
-        let log_header = self.log.header();
-        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let (spill_replay, mut deleted_slab_offsets) =
-            self.prefetch_log_entries_head_first(&log_header, leaf, v.log_head())?;
+        let run = self.spill_mint(v.spill_run())?;
+        let spill_replay = self.spill_replay_entries(run)?;
+        let mut deleted_slab_offsets: Vec<u32> = Vec::new();
         deleted_slab_offsets.sort_unstable();
         let reserved_log_slots =
             u32::try_from(spill_replay.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
@@ -256,10 +255,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
-        // Head-first (newest→oldest) chain replay; the ascending iterator walks the list
-        // backward so the yielded order is the materialization order (oldest→newest).
-        let (inserted, deleted_slab_offsets) =
-            self.prefetch_log_entries_head_first(&log_h, leaf, v.log_head())?;
+        // The run's rows in ordinal order; the ascending iterator walks them so the yielded
+        // order is the materialization order (oldest→newest).
+        let run = self.spill_mint(v.spill_run())?;
+        let inserted = self.spill_replay_entries(run)?;
+        let deleted_slab_offsets: Vec<u32> = Vec::new();
 
         Ok(OutEdgesIter::with_reserved_log_replay(
             self,
