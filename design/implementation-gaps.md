@@ -206,6 +206,31 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
+### Landing evidence — the run-backed remove/scan cost, probed natively
+
+A native probe (deleted after the measurement, as the audit probe was) replicated both
+fixtures - a 1024-edge single-label hub, then 512 matching removes, then 8 full descending
+scans - over `Memory` wrappers that count every read the stores make. Same probe file, same
+fixture, run on `main` 9a64049f4 and on the branch:
+
+| phase | main 9a64049f4 | branch |
+| --- | --- | --- |
+| seeded shape | `prefix=976, log_used=48, degree=1024` | `prefix=5, run_rows=1019, degree=1024` |
+| 512 matching removes | **276,704 reads** (540/remove) | **794,627 reads** (1,552/remove) |
+| 8 ordered scans (4096 edges) | **360 reads** (45/scan) | **24,592 reads** (3,074/scan) |
+| after the removes | `prefix=976, degree=512, log_used=48` | `prefix=5, degree=512, run_rows=1019` |
+
+**Verdict: (b) - a legitimate cost of the new representation, the price of not reserving
+capacity.** Main's rows stayed in a dense, packed span prefix (`prefix=976`), which the scan
+reads in bulk - 45 memory reads for a whole 1024-row scan - and its per-leaf log *removed*
+entries, so it only ever walked live rows. The branch's rows live in the bucket's own run
+(`prefix=5`, 1019 run rows for 512 live after the removes, because a run tombstones in place),
+and the scan reads that run row by row: ~3 memory reads per row, tombstones included. Nothing
+in the probe shows span work - the cost is the row-by-row arena read a contiguous run implies,
+against the bulk dense-prefix read a reserved span allows. A bulk run read would shrink the
+per-row part, but the representation choice is the ADR's, so the trade-off belongs to the
+owner rather than to another patch.
+
 ### GAP-2026-09-20-009 — FIXED: the ordered scan no longer falls back to sparse for a run-backed bucket
 
 The `reserved != bucket.degree()` guard in both ordered batch scans is gone. `reserved`
