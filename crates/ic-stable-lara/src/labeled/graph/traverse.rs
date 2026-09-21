@@ -6825,17 +6825,10 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        eprintln!(
-            "DEBUG bucket: tiny={} tree={} degree={} stored={} stored_raw={} run={} edge_start={}",
-            bucket.is_tiny_mode(),
-            bucket.is_tree_mode(),
-            bucket.degree(),
-            bucket.stored_slots(),
-            bucket.stored_slots_raw(),
-            bucket.edge_spill_run(),
-            bucket.edge_start()
-        );
-        assert!(bucket.stored_slots() > 0);
+        // The prefix width is no longer a fixture premise: with the ADR's "no span growth, the
+        // spill absorbs it", a bucket's prefix stays at its initial width and every further row
+        // lands in the run, so a small-quota graph legitimately has a zero-width prefix here.
+        // The subject is the replay reuse below, which needs the run, not the prefix.
         assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert_eq!(
             graph.bucket_reserved_edge_slots(src, &bucket),
@@ -6871,7 +6864,7 @@ mod tests {
     /// fallback performs. Validates the `overflow_chain_rebuilds` instrumentation (used by the
     /// executor incoming/outgoing replay-reuse tests) distinguishes the two phase-2 paths.
     #[test]
-    fn phase2_replay_reuse_avoids_overflow_chain_rebuild() {
+    fn phase2_replay_reuse_yields_the_same_edges_as_the_canonical_read() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         let src = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -6930,26 +6923,12 @@ mod tests {
             targets
         };
 
-        let (with_replay, rebuilds_with_replay) = {
-            let _guard = ScanPathGuard::enter();
-            let targets = read(Some(&scratch.hybrid_overflow_replay));
-            (targets, ScanPathGuard::overflow_chain_rebuilds())
-        };
-        let (without_replay, rebuilds_without_replay) = {
-            let _guard = ScanPathGuard::enter();
-            let targets = read(None);
-            (targets, ScanPathGuard::overflow_chain_rebuilds())
-        };
-
+        // The replay's contract is the outcome: a reused phase-1 replay yields exactly what the
+        // canonical read yields. The chain-rebuild counter that used to witness the reuse is gone
+        // with the chain itself (ADR 0097 §3), so the comparison is the whole assertion.
+        let with_replay = read(Some(&scratch.hybrid_overflow_replay));
+        let without_replay = read(None);
         assert_eq!(with_replay, without_replay);
-        assert_eq!(
-            rebuilds_with_replay, 0,
-            "a reused replay must not rebuild the overflow-log chain"
-        );
-        assert!(
-            rebuilds_without_replay >= 1,
-            "the sparse fallback rebuilds the overflow-log chain"
-        );
     }
 
     /// `phase 1 → delete an overflow edge → phase 2` must fall back to sparse. Removing a spill
@@ -7048,20 +7027,14 @@ mod tests {
         assert_eq!(expected.len(), 47);
         assert!(!expected.contains(&deleted_target));
 
-        // The stale replay must be rejected (snapshot mismatch) and fall back to sparse: it must not
-        // resurrect the deleted edge from its cached log table.
-        let (with_stale, rebuilds) = {
-            let _guard = ScanPathGuard::enter();
-            let targets = read(Some(&stale_replay));
-            (targets, ScanPathGuard::overflow_chain_rebuilds())
-        };
+        // The stale replay must be rejected (snapshot mismatch) and fall back to the canonical
+        // read: it must not resurrect the deleted edge from its cached row list. The outcome is the
+        // contract - the retired chain-rebuild counter that used to witness the fallback no longer
+        // exists, because there is no chain to rebuild.
+        let with_stale = read(Some(&stale_replay));
         assert_eq!(
             with_stale, expected,
-            "a replay captured before an overflow delete must not return the deleted edge"
-        );
-        assert!(
-            rebuilds >= 1,
-            "snapshot mismatch must take the sparse fallback"
+            "a replay captured before a spill-row delete must not return the deleted edge"
         );
     }
 }

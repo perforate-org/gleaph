@@ -6841,6 +6841,10 @@ mod tests {
                         && !bucket.is_tree_mode()
                         && bucket.degree() > 0
                         && bucket.stored_slots_raw() > 0
+                        // Mirror the emptied rule too (ADR 0097 §7): a bucket that still owns a
+                        // spill run is not released by the delete - compaction reclaims it - so it
+                        // contributes no flushed range.
+                        && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     {
                         freed.push((bucket.edge_start(), u64::from(bucket.stored_slots_raw())));
                     }
@@ -6849,8 +6853,11 @@ mod tests {
         }
         let mut freed: Vec<(u64, u64)> = freed_forward.clone();
         freed.extend(freed_reverse.iter().copied());
+        // One span per neighbour is the fixture's floor now: the hub's own buckets own spill runs
+        // (ADR 0097 §7), so they contribute no flushed range and the strict `> NEIGHBOURS` form
+        // would demand a span the fixture no longer has.
         assert!(
-            freed.len() > usize::try_from(NEIGHBOURS).unwrap(),
+            freed.len() >= usize::try_from(NEIGHBOURS).unwrap(),
             "fixture must have per-neighbour slab spans to empty, got {}",
             freed.len()
         );

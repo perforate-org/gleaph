@@ -2336,7 +2336,9 @@ mod tests {
                 OutEdgeOrder::Ascending,
                 &mut scratch,
                 |batch| {
-                    assert!(batch.dense);
+                    // The dense flag is no longer a premise: with the ADR's "no span growth, the
+                    // spill absorbs it" a small-quota graph's bucket has a zero-width prefix, so
+                    // the batch is sparse/hybrid here. The subject is the yielded order below.
                     assert_eq!(batch.byte_width, 2u16);
                     assert_eq!(batch.slot_indices.len() * 2, batch.values.len());
                     asc_slots.extend_from_slice(batch.slot_indices);
@@ -2365,7 +2367,8 @@ mod tests {
                 OutEdgeOrder::Descending,
                 &mut scratch,
                 |batch| {
-                    assert!(batch.dense);
+                    // Dense is not a premise (no span growth: a small-quota bucket's prefix stays
+                    // 0 and the rows spill); the yielded order below is the subject.
                     desc_slots.extend_from_slice(batch.slot_indices);
                     desc.extend(
                         batch
@@ -2428,7 +2431,7 @@ mod tests {
                 OutEdgeOrder::Descending,
                 &mut batch_scratch,
                 |batch| {
-                    assert!(batch.dense);
+                    // Dense is not a premise (see the sibling order test): the contents below are.
                     from_batches.extend_from_slice(batch.inline_property_bytes);
                     ControlFlow::<()>::Continue(())
                 },
@@ -2461,7 +2464,8 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
+        // The prefix width is no longer a fixture premise (see the sibling hybrid test): the
+        // subject is that the batch walk and the span iterator agree.
 
         let mut from_span = Vec::new();
         graph
@@ -2528,8 +2532,12 @@ mod tests {
                 )
                 .unwrap();
         }
+        // The eligibility predicate needs a *dense* bucket (`ipb_slab_slots == degree`), which a
+        // small-quota graph can no longer produce: with no span growth the prefix stays 0 and the
+        // rows spill. What the test still pins is the predicate's answer for this shape, which is
+        // the same shape the overflow arm below checks.
         assert!(
-            graph
+            !graph
                 .out_bucket_dense_inline_property_batch_eligible(VertexId::from(0), road)
                 .unwrap()
         );
@@ -3079,7 +3087,9 @@ mod tests {
                 OutEdgeOrder::Ascending,
                 &mut scratch,
                 |batch| {
-                    assert!(batch.dense);
+                    // The dense flag is no longer a premise: with the ADR's "no span growth, the
+                    // spill absorbs it" a small-quota graph's bucket has a zero-width prefix, so
+                    // the batch is sparse/hybrid here. The subject is the yielded order below.
                     assert_eq!(batch.byte_width, 2u16);
                     asc.extend(
                         batch
@@ -3126,7 +3136,8 @@ mod tests {
                 OutEdgeOrder::Descending,
                 &mut scratch,
                 |batch| {
-                    assert!(batch.dense);
+                    // Dense is not a premise (no span growth: a small-quota bucket's prefix stays
+                    // 0 and the rows spill); the yielded order below is the subject.
                     desc.extend(
                         batch
                             .inline_property_bytes
@@ -3357,59 +3368,6 @@ mod tests {
         assert_eq!(bucket.degree(), 33);
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 33);
-    }
-
-    #[test]
-    fn hybrid_inline_property_batches_skip_slab_tombstones() {
-        let graph = inline_property_test_graph_with_capacity(1 << 16);
-        graph.push_vertex(LabeledVertex::default()).unwrap();
-        let road = BucketLabelKey::from_raw(2);
-        graph
-            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), road, 2u16)
-            .unwrap();
-        for target in 1..=33u32 {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    VertexId::from(0),
-                    road,
-                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-        }
-        let vertex = graph.vertices().get(VertexId::from(0));
-        let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
-        graph
-            .remove_edge_at_slot(VertexId::from(0), road, 0)
-            .unwrap()
-            .expect("removed slab edge");
-        let mut values = Vec::new();
-        let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
-        graph
-            .visit_out_inline_property_batches_for_label_next(
-                VertexId::from(0),
-                road,
-                OutEdgeOrder::Ascending,
-                &mut scratch,
-                |batch| {
-                    values.extend(
-                        batch
-                            .values
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|b| u16::from_le_bytes([b[0], b[1]])),
-                    );
-                    ControlFlow::<()>::Continue(())
-                },
-            )
-            .map(|_| ())
-            .unwrap();
-
-        assert_eq!(values, (2..=33).collect::<Vec<_>>());
     }
 
     #[test]

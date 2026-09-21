@@ -619,6 +619,33 @@ where
                             }));
                         }
                         Err(LaraOperationError::SpillNeedsPromotion) => {
+                            if E::BYTES != super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES {
+                                // Wide-edge carve-out (ADR 0097 §6, mirroring the slab-growth
+                                // trigger's): tree mode stores one 4-byte target per LTB slot, so a
+                                // wider edge type can never be promoted. Such a bucket stays slab
+                                // and keeps growing its prefix - the pre-swap behavior for a
+                                // wide-edge bucket that ran out of overflow room - so grow the
+                                // vertex span and retry instead of promoting.
+                                let spill_rows =
+                                    match self.edges.spill_mint(bucket.edge_spill_run()) {
+                                        Ok(run) => self.edges.spill_used_len(run),
+                                        Err(_) => 0,
+                                    };
+                                self.rebalance_vertex_edge_span(
+                                    src,
+                                    Some(bucket_index),
+                                    spill_rows,
+                                    true,
+                                )?;
+                                let vertex = self.vertices.get(src);
+                                let bucket_slot =
+                                    Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                                bucket = self
+                                    .buckets
+                                    .read_label_bucket_slot(bucket_slot)
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                continue;
+                            }
                             // The bucket's run cannot serve another row (ADR 0097 §6): its class is
                             // full at MAX_ROWS, or the arena cannot address the growth. Tree mode is
                             // the chunked path with no fixed row ceiling, so promote and re-dispatch
