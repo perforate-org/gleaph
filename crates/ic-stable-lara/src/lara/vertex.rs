@@ -222,11 +222,13 @@ impl Vertex {
 
     /// This bucket's spill run id (ADR 0097 §3), or `-1` when nothing has spilled.
     ///
-    /// Named `log_head` until the labeled packing slice renames the shared accessor once for both
-    /// modes; the value is already a spill run id on this (unlabeled) row.
+    /// This row's spill run id (ADR 0097 §3), or [`crate::traits::NO_SPILL_RUN`].
     #[inline]
-    pub fn log_head(self) -> i32 {
-        unpack_vertex_tail28(decode_meta28(self.locator)).0
+    pub fn spill_run(self) -> u32 {
+        match unpack_vertex_tail28(decode_meta28(self.locator)).0 {
+            run if run < 0 => crate::traits::NO_SPILL_RUN,
+            run => run as u32,
+        }
     }
 
     /// Logical deletion marker (tombstone bit in the locator tail).
@@ -257,8 +259,17 @@ impl Vertex {
 
     /// Returns a copy with a new spill run id (rejects ids that do not fit the 27-bit tail).
     #[inline]
-    pub fn try_with_log_head(self, idx: i32) -> Result<Self, VertexFieldError> {
-        let tail = try_pack_vertex_tail28(idx, self.deleted())
+    pub fn try_with_spill_run(self, run: u32) -> Result<Self, VertexFieldError> {
+        let encoded = if run == crate::traits::NO_SPILL_RUN {
+            -1
+        } else {
+            let run = i32::try_from(run).map_err(|_| VertexFieldError::SpillRunOverflow)?;
+            if run > (1 << 27) - 2 {
+                return Err(VertexFieldError::SpillRunOverflow);
+            }
+            run
+        };
+        let tail = try_pack_vertex_tail28(encoded, self.deleted())
             .ok_or(VertexFieldError::SpillRunOverflow)?;
         Ok(self.with_tail28(tail))
     }
@@ -342,13 +353,12 @@ impl CsrVertex for Vertex {
         self
     }
 
-    fn log_head(self) -> i32 {
-        unpack_vertex_tail28(decode_meta28(self.locator)).0
+    fn spill_run(self) -> u32 {
+        Vertex::spill_run(self)
     }
 
-    fn with_log_head(self, idx: i32) -> Self {
-        self.try_with_log_head(idx)
-            .expect("vertex spill run id is invalid for packed LARA row")
+    fn try_with_spill_run(self, run: u32) -> Result<Self, ()> {
+        Vertex::try_with_spill_run(self, run).map_err(|_| ())
     }
 }
 

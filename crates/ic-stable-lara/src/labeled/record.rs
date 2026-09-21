@@ -1097,19 +1097,13 @@ impl CsrVertex for LabelBucket {
         self
     }
 
-    /// A labeled bucket has no edge overflow log (ADR 0097 §3): the per-bucket spill run replaces
-    /// the shared per-leaf log, whose region the spill store already occupies.
-    fn log_head(self) -> i32 {
-        -1
+    /// This bucket's edge-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`].
+    fn spill_run(self) -> u32 {
+        self.edge_spill_run
     }
 
-    /// Interim: the trait method still exists for the unlabeled row, and turn 2 deletes it. A log
-    /// write to a labeled bucket would lose its head silently, so this fails closed instead.
-    fn with_log_head(self, _idx: i32) -> Self {
-        panic!(
-            "LabelBucket has no edge overflow log head (ADR 0097 §3); the spill run replaces it, \
-             and this interim trait method is deleted when the log API is converted"
-        )
+    fn try_with_spill_run(self, run: u32) -> Result<Self, ()> {
+        self.try_with_edge_spill_run(run).map_err(|_| ())
     }
 
     fn trusts_neighbor_boundary(self) -> bool {
@@ -1712,19 +1706,13 @@ impl CsrVertex for LabeledVertex {
         self
     }
 
-    /// A bypass bucket's edges live in the core EdgeStore, whose per-leaf log dies with the
-    /// conversion (ADR 0097 §3): the per-bucket spill run replaces it, so there is no log head.
-    fn log_head(self) -> i32 {
-        -1
+    /// This row's bypass spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`].
+    fn spill_run(self) -> u32 {
+        self.bypass_spill_run
     }
 
-    /// Interim: turn 2 deletes the trait method. A log write would lose its head silently, so this
-    /// fails closed instead.
-    fn with_log_head(self, _idx: i32) -> Self {
-        panic!(
-            "LabeledVertex has no edge overflow log head (ADR 0097 §3); the spill run replaces it, \
-             and this interim trait method is deleted when the log API is converted"
-        )
+    fn try_with_spill_run(self, run: u32) -> Result<Self, ()> {
+        self.try_with_bypass_spill_run(run).map_err(|_| ())
     }
 
     fn slab_append_exclusive_end(self, base: u64) -> Option<u64> {

@@ -17,8 +17,8 @@ pub const NO_SPILL_RUN: u32 = u32::MAX;
 
 /// One vertex row in the CSR vertex column (`M_v`).
 ///
-/// `log_head` is the LARA per-segment log array index of the head of this vertex's overflow chain,
-/// or `-1` if all neighbors live on the CSR slab.
+/// `spill_run` is the row's spill run id in the shared arena, or [`NO_SPILL_RUN`] when all
+/// neighbors live on the CSR slab (ADR 0097 §3: the per-segment overflow log is gone).
 ///
 /// [`Self::degree`] is the **logical** neighborhood width (what callers should treat as
 /// out-degree). [`Self::stored_degree`] is the backing width used for slab / overflow layout
@@ -72,9 +72,11 @@ pub trait CsrVertex: Storable + Copy {
     }
 
     /// Head index of this vertex's overflow log chain, or `-1` when absent.
-    fn log_head(self) -> i32;
-    /// Returns a copy with a new overflow log head.
-    fn with_log_head(self, idx: i32) -> Self;
+    /// This row's spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
+    fn spill_run(self) -> u32;
+    /// Returns a copy carrying `run`, or `Err` when this row cannot address it: the unlabeled
+    /// tail28 holds `run + 1` in 27 bits, a labeled bucket and a bypass row hold the full `u32`.
+    fn try_with_spill_run(self, run: u32) -> Result<Self, ()>;
 
     /// When true, the CSR slab-window end for this row is governed solely by
     /// the next neighbor's `base_slot_start()`; placement metadata (span_meta)
