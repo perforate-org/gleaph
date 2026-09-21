@@ -1,0 +1,17 @@
+revision,variant,benchmark,instructions
+c5015581d,current,bench_l_s2_h_del_1024,193655245
+c5015581d,current,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,189731407
+c5015581d,current,bench_l_s2_h_pt_d_1024,51985176
+c5015581d,current,bench_l_s2_h_scn_d_1024,51932493
+c5015581d,h1,bench_l_s2_h_del_1024,129582001
+c5015581d,h1,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,126155342
+c5015581d,h1,bench_l_s2_h_pt_d_1024,39359361
+c5015581d,h1,bench_l_s2_h_scn_d_1024,39306678
+c5015581d,h2-scan,bench_l_s2_h_del_1024,129582001
+c5015581d,h2-scan,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,126155342
+c5015581d,h2-scan,bench_l_s2_h_pt_d_1024,17079705
+c5015581d,h2-scan,bench_l_s2_h_scn_d_1024,17027022
+c5015581d,h2-both,bench_l_s2_h_del_1024,21378000
+c5015581d,h2-both,bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf,17951339
+c5015581d,h2-both,bench_l_s2_h_pt_d_1024,17079705
+c5015581d,h2-both,bench_l_s2_h_scn_d_1024,17027022

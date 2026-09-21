@@ -117,24 +117,24 @@ defect from being rediscovered without its prior reasoning.
   `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
   0 after).
 
-### Landing evidence — every bench worse than main by >5% before 5i
+### Historical landing evidence — selected pre/post-5i rows
 
-Read from `crates/ic-stable-lara/canbench_results.yml`: `main (measured)` is the unfiltered run
-on `9a64049f4`, `pre-5i` is the persisted file at the commit before 5i, `post-5i` is the
-persisted file now. 5i (the compaction step carrying the caller's span policy) moves exactly
-one of these rows, `bench_l_s2_h_del_1024`, by -27.4%; the rest are unchanged, and two rows
-that are not in this table regressed (`bench_l_s2_det_hub_st_1024` +26.2%,
-`bench_l_s2_det_sat_1024` +101.6%).
+Main values below are rounded console totals from `/tmp/bench-main-full.log`, not exact
+persisted measurements. The earlier parser dropped the B suffix; those entries are corrected
+below using the recovered 189-name comparison. Pre/post columns describe 5i, not current HEAD.
+The earlier claims that this was a complete >5% list and that exactly one row changed were
+incorrect: candidate workloads also changed substantially. The recovered current comparison
+has 38 differences above +5% against rounded main; see GAP-009 for the scoped diagnosis.
 
 | bench | main (measured) | pre-5i | post-5i |
 | --- | --- | --- | --- |
-| `offset_workload_candidate_bursty` | 1 | 1,465,455,879 | 491,406,745 |
-| `offset_workload_candidate_uniform` | 1 | 1,433,556,965 | 471,147,924 |
-| `offset_workload_candidate_churn_light` | 1 | 1,252,356,452 | 401,477,074 |
-| `tcsr_65536_insert_grow` | 1 | 1,118,273,942 | 1,118,273,942 |
-| `tree_churn_bursty_reuse` | 1 | 1,041,741,982 | 1,041,741,982 |
-| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384` | 15 | 15,542,810,613 | 43,911,532 |
-| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536` | 247 | 247,370,242,366 | 247,370,340,681 |
+| `offset_workload_candidate_bursty` | 1,390,000,000 | 1,465,455,879 | 491,406,745 |
+| `offset_workload_candidate_uniform` | 1,400,000,000 | 1,433,556,965 | 471,147,924 |
+| `offset_workload_candidate_churn_light` | 1,250,000,000 | 1,252,356,452 | 401,477,074 |
+| `tcsr_65536_insert_grow` | 1,120,000,000 | 1,118,273,942 | 1,118,273,942 |
+| `tree_churn_bursty_reuse` | 1,040,000,000 | 1,041,741,982 | 1,041,741,982 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384` | 15,540,000,000 | 15,542,810,613 | 43,911,532 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536` | 247,360,000,000 | 247,370,242,366 | 247,370,340,681 |
 | `bench_t_vip_descending` | 27,010 | 197,860 | 197,860 |
 | `bench_t_vip` | 28,060 | 197,851 | 197,851 |
 | `bounded_inline_promote_full` | 216,850 | 1,132,525 | 1,132,525 |
@@ -206,80 +206,130 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
-### Landing evidence — the run-backed remove/scan cost, probed natively
+### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
-A native probe (deleted after the measurement, as the audit probe was) replicated both
-fixtures - a 1024-edge single-label hub, then 512 matching removes, then 8 full descending
-scans - over `Memory` wrappers that count every read the stores make. Same probe file, same
-fixture, run on `main` 9a64049f4 and on the branch:
+**Status: diagnosed, not implemented.** Source revision `c5015581d4f709902ce9240a704dbbfe08cbeced`.
+The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
+lazy allocation, used bounds and stable ordinals do not require scalar reads. The previous
+4-byte/segment16/uniform256 probe scanned after deletes and did not reproduce these benchmarks.
+Its aggregate read counts neither identified span work nor established an unavoidable cost.
+Main's prefix also contains tombstones; the earlier claim that main only visits live rows was wrong.
 
-| phase | main 9a64049f4 | branch |
-| --- | --- | --- |
-| seeded shape | `prefix=976, log_used=48, degree=1024` | `prefix=5, run_rows=1019, degree=1024` |
-| 512 matching removes | **276,704 reads** (540/remove) | **794,627 reads** (1,552/remove) |
-| 8 ordered scans (4096 edges) | **360 reads** (45/scan) | **24,592 reads** (3,074/scan) |
-| after the removes | `prefix=976, degree=512, log_used=48` | `prefix=5, degree=512, run_rows=1019` |
+The guard removal in `0b6673a0d` affected the hybrid-values helper, which is not the path of
+these scan benchmarks. It remains in source but is not credited as a fix or independently
+validated by this diagnosis. This entry replaces both contradictory GAP-009 entries.
 
-**Verdict: (b) - a legitimate cost of the new representation, the price of not reserving
-capacity.** Main's rows stayed in a dense, packed span prefix (`prefix=976`), which the scan
-reads in bulk - 45 memory reads for a whole 1024-row scan - and its per-leaf log *removed*
-entries, so it only ever walked live rows. The branch's rows live in the bucket's own run
-(`prefix=5`, 1019 run rows for 512 live after the removes, because a run tombstones in place),
-and the scan reads that run row by row: ~3 memory reads per row, tombstones included. Nothing
-in the probe shows span work - the cost is the row-by-row arena read a contiguous run implies,
-against the bulk dense-prefix read a reserved span allows. A bulk run read would shrink the
-per-row part, but the representation choice is the ADR's, so the trade-off belongs to the
-owner rather than to another patch.
+#### Actual paths and fixture parity
 
-### GAP-2026-09-20-009 — FIXED: the ordered scan no longer falls back to sparse for a run-backed bucket
+`bench_l_s2_h_pt_d_1024` and `bench_l_s2_h_scn_d_1024` each seed 1024 live rows, then perform
+51 full descending callback scans, with no preceding deletes. They call
+`for_each_edges_for_label_ordered -> single_bucket_span_iter -> desc_out_edges_iter ->
+spill_replay_entries -> spill_edge_at`. Replay retains decoded edges, not tags requiring a
+second payload read. Matching removal scans the prefix then calls `spill_edge_at` in an
+ordinal loop restarted for each target `0,2,...1022`.
 
-The `reserved != bucket.degree()` guard in both ordered batch scans is gone. `reserved`
-counted the prefix's *width* (tombstones included), so one dead prefix slot sent the whole
-scan to `visit_sparse_out_inline_property_batches_for_bucket_next`; the run's live tags are
-already what the replay emits and the prefix pass skips its own dead slots, so the guard was
-a run-backed bucket's span tax (ADR 0097 §7 at the scan level). The now-unused `label`
-parameter went with it.
+The source's `BenchEdge::BYTES` is **10**, not 4; it encodes the target in four bytes and pads
+six bytes. The native probe copies that edge implementation and uses `LabeledLaraGraph::new`,
+`InitialCapacities::uniform(1 << 20)`, label 2/default label 1 and the actual insertion policy.
+The resulting shape is **1 prefix row + 1023 spill rows**. Point and full-scan workloads use
+separate fresh graphs. Delete measurement separates matching removal, the existing
+`SlackMayBeDropped` compaction loop, and the survivor scan.
 
-| bench | main (measured) | pre | post | Δ vs main |
-| --- | --- | --- | --- | --- |
-| `bench_l_s2_h_del_1024` | 127,160,000 | 193,655,245 | 193,655,245 | +52.29% |
-| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 | +192.54% |
-| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 | +193.07% |
-| `bench_l_s2_det_hub_st_1024` | 45,845,565 | 45,848,699 | 45,848,699 | +0.01% |
-| `bench_l_s2_det_sat_1024` | 465,196 | 465,286 | 465,286 | +0.02% |
-| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 | -6.41% |
-| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 | -6.53% |
-| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 | -6.54% |
+Benchmark source and persisted YAML SHA256 remained unchanged throughout A/B:
 
-Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
-cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
-descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
+- `src/labeled/bench.rs`: `bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7`
+- `canbench_results.yml`: `eccea4b7f18e650d053499cf20bbaaa0021aebeb7d5d134c4083011de76cafc1`
 
-### GAP-2026-09-20-009 — A run-backed bucket's ordered scan falls back to the sparse iterator
+Main-vs-branch scan fixtures are unchanged. Delete **totals are not strictly same-operation**:
+`7037b1680` changed the compaction policy. Compare the same matching-remove loop separately;
+current-vs-experimental totals use identical benchmark source and maintenance semantics.
 
-- **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is both remaining
-  items: `bench_l_s2_h_scn_d_1024` 51,932,493 vs main 17,720,000 (+193%) and
-  `bench_l_s2_h_pt_d_1024` 51,985,176 vs 17,770,000 (+192%) - which measure a *scan* of a
-  1024-edge hub, not a delete - and `labeled_remove_edge_skip_leaf` at 189.7M of the delete
-  bench's 266M (its match scan goes through the same path).
-- **Side of the fix: the code, not the fixture.** Those two benches seed their hub outside
-  the measured region and then scan it; they measure the scan path, which the swap changed
-  (the hub's rows now live in its edge run instead of the per-leaf log), so the fixture is
-  measuring what it intends.
-- **Mechanism (code path).** The ordered batch scan for a run-backed bucket
-  (`visit_ordered_out_inline_property_batches_for_bucket_next`, traverse.rs ~2930/2990)
-  prefetches the run's live-row tags and computes
-  `reserved = bucket.stored_slots() + prefetched.len()`. `stored_slots()` is the *prefix*
-  width, so as soon as the prefix carries a tombstone the sum exceeds `degree` and the scan
-  falls back to `visit_sparse_out_inline_property_batches_for_bucket_next` - the sparse
-  iterator, which is the expensive path. The delete benches reach that state immediately
-  (their first remove tombstones a prefix slot), which is why their match scan is ~3x main's.
-- **Fix (next slice):** the replay must emit the run's live rows *and* skip the prefix's
-  dead slots, rather than treating a tombstoned prefix as a reason to abandon the replay -
-  the same rule as GAP-007, the values fold, the compaction policy and the finalize guard: a
-  bucket whose rows live in its own run pays no extra span work. Not attempted here: it needs
-  its own measurement, and the last unmeasured change to this path (the compaction policy)
-  cost +3716% on `bench_l_uo_swap_h_del_1024` before it was parameterised.
+#### Controlled experiments and exact instruction counts
+
+H1 adds a checked read inside `SpillRunStore`, validating used bounds once, and switches the
+scalar wrapper to it. Payload reads remain scalar. H2-scan changes only replay payload reads
+to chunks of at most 32 rows. H2-both additionally batches matching-removal reads into at most
+32 rows, decoding lazily in the original ordinal loop. No descriptor, policy, ordinal,
+tombstone or persistent layout changes; no public unchecked read API. Class slack is rejected.
+
+| Benchmark / scope | main rounded console | current exact | H1 exact | H2-scan exact | H2-both exact |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `bench_l_s2_h_pt_d_1024` | 17.77 M | 51,985,176 | 39,359,361 | 17,079,705 | 17,079,705 |
+| `bench_l_s2_h_scn_d_1024` | 17.72 M | 51,932,493 | 39,306,678 | 17,027,022 | 17,027,022 |
+| `bench_l_s2_h_del_1024` | 127.16 M | 193,655,245 | 129,582,001 | 129,582,001 | 21,378,000 |
+| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 60.57 M | 189,731,407 | 126,155,342 | 126,155,342 | 17,951,339 |
+
+The exact committed main artifact at `9a64049f4` instead contains totals 17,768,910 /
+17,716,329 / 127,044,563. These are not the later fresh console measurements. Fresh main
+exact CSV is unavailable; do not manufacture precision from K/M/B output.
+
+#### Native counters: Memory reads, not IC syscalls
+
+The wrapper classifies the seeded run's four-byte used header by address, spill payload by
+its used address interval, prefix memory separately, and all other memories by role. Counters
+are reset between phases. Counts below are `read calls / bytes`. The raw logs retain all roles.
+
+| Phase / read kind | current | H1 | H2-both |
+| --- | ---: | ---: | ---: |
+| Point **or** full scan, spill header | 104,397 / 417,588 | 52,224 / 208,896 | 1,683 / 6,732 |
+| Point **or** full scan, spill payload | 52,173 / 521,730 | 52,173 / 521,730 | 1,632 / 521,730 |
+| Point **or** full scan, prefix | 51 / 510 | 51 / 510 | 51 / 510 |
+| Matching remove, spill header | 524,797 / 2,099,188 | 263,165 / 1,052,660 | 9,949 / 39,796 |
+| Matching remove, spill payload | 261,632 / 2,616,320 | 261,632 / 2,616,320 | 8,416 / 2,692,970 |
+| Matching remove, prefix | 512 / 5,120 | 512 / 5,120 | 512 / 5,120 |
+
+Both scan workloads decode 52,224 live / 0 dead rows and invoke 52,224 callbacks in every
+variant. Matching removal decodes 131,328 live / 130,816 dead rows and invokes the predicate
+131,328 times in every variant. The prefix contributes 512 decoded rows (one live, 511 dead);
+subtracting these from total decodes gives spill 131,327 live / 130,305 dead. Batching may
+fetch a suffix beyond the match, but does not decode it or invoke extra predicates. It reads
+76,650 additional payload bytes across 512 deletes while eliminating most scalar calls.
+
+The H1 reduction is exactly one header read per visited spill row: 52,173 per scan workload
+and 261,632 during matching removal. Baseline scanning spends two header reads per spill row
+plus one per replay; baseline remove also has loop/write bookkeeping. The earlier static
+519,180 model used the different five-prefix-row fixture and must not be compared directly
+to this one-prefix-row, 10-byte fixture.
+
+Compaction is recorded separately: current header 4,099 / 16,396 and spill payload
+2,046 / 20,460; H1 and both H2 variants header 2,053 / 8,212 with payload unchanged.
+The survivor scan has no spill reads, one prefix read / 5,120 bytes, and 512 live decodes
+in every variant. Replay batching alone leaves delete instructions unchanged, confirming
+that the expensive matching path is separate from replay.
+
+**Ranking:** H2 read batching delivers the largest measured reduction; H1 duplicate-header
+removal independently delivers a substantial reduction. H3 repeated traversal/tombstone
+visits exist but remain identical across all experiments while performance recovers; they
+are not a necessary change for this slice. No H3 traversal-policy change was tested or is
+recommended. The experiment rejects the capacity-waiver premise, not the existence of all
+other regressions.
+
+#### Recommendation and validation limits
+
+Smallest fix recommendation: one checked bounded-read operation owned by `SpillRunStore`,
+used by edge replay and matching removal to read contiguous chunks without changing callback
+order or used bounds. Keep write/class-capacity APIs distinct. Production implementation
+needs focused bounds, partial-chunk, early-match and tombstone/order tests; review buffer
+sizing across edge widths. The diagnostic patch is not a production-ready API proposal.
+
+Experimental library suite: **625 passed / 0 failed** (623 existing tests plus two diagnostic
+tests). The bounds witness rejects class slack, crossing the used end and `u32::MAX`, leaving
+the output untouched on rejection. Probe/test patches are retained outside production source.
+No production change was committed; experimental source was removed after measurement.
+Fmt/clippy and unfiltered final canbench were not run for this diagnostic, and no results
+were persisted. This is not final landing validation.
+
+Historical headline (not rerun here): measured main 390.60 K / 391.09 K / 391.09 K versus
+current persisted 365,548 / 365,548 / 365,497 for `bench_l_nt_bp_ins_256/1024/4096`.
+Historical capacity audit (not rerun here): **66 -> 41 pages**; no experimental layout change.
+The recovered 189-name comparison reports **38 differences above +5%** against rounded main;
+this is not the last landing gate.
+
+Durable instruction evidence: [ADR 0097 read-granularity CSV](evidence/adr0097-read-granularity.csv)
+records exact current/H1/H2 totals and matching scopes at the diagnostic source revision.
+Reproduction artifacts: `/tmp/remove-scan-diagnostic/` contains the installer, native probe,
+bounds test, H1/H2 patches, raw native logs and exact canbench CSVs, original rounded-main log,
+reviewer comparison, checksums and `README.md` with commands. `main` was not edited or rerun.
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
