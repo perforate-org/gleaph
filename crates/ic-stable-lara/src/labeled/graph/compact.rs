@@ -1688,14 +1688,14 @@ where
         Ok(moves)
     }
 
-    /// Finds the first out-of-position live edge in a bucket and returns the left-pack
-    /// move that fills the earliest hole. `resume_slot_index` is the compaction cursor:
+    /// Finds the first out-of-position live edge in an admitted slab bucket and returns
+    /// the left-pack move filling the earliest hole. `resume_slot_index` is the compaction cursor:
     /// slots `[0, resume_slot_index)` are already front-packed (GAP-2026-07-14-001), so
     /// the scan starts there with `next_live` seeded from it instead of rescanning the
     /// packed prefix after every move. The step re-scans from zero when the cursor-based
     /// scan finds nothing, because an interleaved delete can break the packed-prefix
     /// invariant between steps.
-    pub(super) fn first_edge_slot_move_in_bucket(
+    fn first_edge_slot_move_in_bucket(
         bucket: &LabelBucket,
         edges: &EdgeStore<E, M>,
         resume_slot_index: u32,
@@ -1709,7 +1709,7 @@ where
         let mut next_live = resume_slot_index;
         let mut bytes = [0u8; crate::lara::edge::INLINE_EDGE_BYTES];
         // Only slab descriptors expose a prefix width here. Tree stored_slots is
-        // logical extent, not root-array width; keep non-slab reads on the old path.
+        // logical extent, not root-array width; batching requires that physical bound.
         let prefetch = !bucket.is_tiny_mode()
             && !bucket.is_tree_mode()
             && E::BYTES > 0
@@ -1753,16 +1753,10 @@ where
         Ok(None)
     }
 
-    /// `true` when this bucket may use unordered swap-compaction: edge-slab-only
-    /// and either width 0 or value-slab-only with the dense degree-sized value span.
-    /// Any bucket with an inline-property-bytes log or a non-dense value span falls
-    /// back to the order-preserving left-pack step for that bucket (ADR 0052 §9).
-    pub(super) fn bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
-        // ADR 0096 §5: tiny buckets have no slab span to swap within (dense
-        // inline prefix needs no compaction of any kind).
-        if bucket.is_tiny_mode() {
-            return false;
-        }
+    /// After slab-mode admission, permit swap-compaction only for prefix-only
+    /// edges with width 0 or a dense, degree-sized value prefix. Other value
+    /// layouts retain the order-preserving left-pack step (ADR 0052 §9).
+    fn slab_bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
         bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
             && (bucket.inline_property_byte_width() == 0
                 || (bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
@@ -1780,7 +1774,7 @@ where
     /// position (the trailing last-live search still scans the unpacked suffix). The
     /// step re-scans from zero when this finds nothing, guarding against an interleaved
     /// delete that broke the prefix.
-    pub(super) fn first_edge_slot_swap_move_in_bucket(
+    fn first_edge_slot_swap_move_in_bucket(
         bucket: &LabelBucket,
         edges: &EdgeStore<E, M>,
         resume_slot_index: u32,
@@ -1892,7 +1886,7 @@ where
         Ok(())
     }
 
-    pub(super) fn apply_edge_slot_move_in_bucket(
+    fn apply_edge_slot_move_in_bucket(
         &self,
         bucket: &LabelBucket,
         moved: EdgeSlotMove,
@@ -1914,13 +1908,7 @@ where
         Ok(())
     }
 
-    pub(super) fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
-        // ADR 0096 delete redesign: tiny buckets carry tombstone holes, so
-        // `stored == degree` no longer holds — finalizing would corrupt the
-        // wire state. Tiny needs no slab finalization (no span); return as-is.
-        if bucket.is_tiny_mode() {
-            return bucket;
-        }
+    fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
         // ADR 0097 §5: a run-backed bucket's rows are addressed as `prefix_len + i`, so shrinking
         // the prefix to `degree` (and clearing the run) would shift every one of them onto the
         // wrong ordinal. Only a bucket whose rows are all in its prefix may be finalized.
@@ -2040,17 +2028,29 @@ where
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // Whole-span work can reach any sibling, regardless of the triggering label.
+        // Admit slab logical compaction once, before selection, fallback and finalization:
+        // tiny rows are descriptor-resident; tree stored_slots is logical LTB extent,
+        // while only root ids occupy the edge slab. Both retain their native ordinals.
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny | BucketMode::Tree => {
+                return Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(
+                    bucket_index.saturating_add(1),
+                ));
+            }
+            BucketMode::Slab => {}
+        }
         let policy = policy_for_label(bucket.bucket_label_key());
-        let unordered_swap =
-            policy == EdgePlacementPolicy::Unordered && Self::bucket_allows_unordered_swap(&bucket);
+        let unordered_swap = policy == EdgePlacementPolicy::Unordered
+            && Self::slab_bucket_allows_unordered_swap(&bucket);
         let mut moved =
-            self.first_compaction_move_in_bucket(&bucket, unordered_swap, resume_slot_index)?;
+            self.first_slab_compaction_move_in_bucket(&bucket, unordered_swap, resume_slot_index)?;
         if moved.is_none() && resume_slot_index != 0 {
             // The cursor-based scan found no out-of-position live edge, but an interleaved
             // delete may have tombstoned a slot inside the already-packed prefix. Re-scan
             // from slot zero before finalizing the bucket so a stranded live edge is never
             // truncated by `stored_slots = degree`.
-            moved = self.first_compaction_move_in_bucket(&bucket, unordered_swap, 0)?;
+            moved = self.first_slab_compaction_move_in_bucket(&bucket, unordered_swap, 0)?;
         }
         if let Some(moved) = moved {
             return Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved));
@@ -2064,10 +2064,9 @@ where
         ))
     }
 
-    /// Finds and applies one compaction move inside a bucket: the unordered swap when
-    /// `unordered_swap` permits reordering, else the order-preserving left-pack. The scan
-    /// starts at `resume_slot_index` (the compaction cursor).
-    fn first_compaction_move_in_bucket(
+    /// Finds and applies one move inside an admitted slab bucket: unordered swap when
+    /// permitted, otherwise order-preserving left-pack, starting at the compaction cursor.
+    fn first_slab_compaction_move_in_bucket(
         &self,
         bucket: &LabelBucket,
         unordered_swap: bool,
@@ -2076,10 +2075,6 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        // Tiny prefixes may retain holes but have no slab region to compact.
-        if bucket.is_tiny_mode() {
-            return Ok(None);
-        }
         if unordered_swap {
             if let Some(swap) =
                 Self::first_edge_slot_swap_move_in_bucket(bucket, &self.edges, resume_slot_index)?
@@ -5291,7 +5286,7 @@ mod tests {
             .with_degree_field(2)
             .with_stored_slots(4);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &value_log
             ),
             "a bucket with log-backed inline property bytes must fall back to left-pack (ADR §9)"
@@ -5302,7 +5297,7 @@ mod tests {
             .with_degree_field(3)
             .with_stored_slots(4);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &non_dense
             ),
             "a non-dense value span must fall back to left-pack"
@@ -5312,7 +5307,7 @@ mod tests {
             .with_degree_field(2)
             .with_stored_slots(4);
         assert!(
-            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &width_zero
             ),
             "width-0 buckets may swap regardless of a value log head"

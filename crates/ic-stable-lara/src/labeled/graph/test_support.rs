@@ -567,6 +567,106 @@ pub(crate) fn retained_compaction_fixture(
     graph
 }
 
+/// A promoted tree sibling after a dense slab label. Promotion transcribes the
+/// source holes at their high-water ordinals into real LTB-backed tree rows.
+pub(crate) fn tree_compaction_fixture(
+    width: u16,
+) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
+    use super::{EdgePlacementPolicy, bucket_physical_resident_slots};
+    let graph = inline_property_test_graph();
+    let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let slab = BucketLabelKey::from_raw(2);
+    let tree = BucketLabelKey::from_raw(3);
+    let value = |target| {
+        if width == 0 {
+            Vec::new()
+        } else {
+            retained_compaction_value(target, width)
+        }
+    };
+    for (label, targets) in [
+        (slab, 20_000..20_016),
+        (tree, 1000..1000 + super::T_PROMOTE),
+    ] {
+        if width > 0 {
+            graph
+                .ensure_label_bucket_inline_property_byte_width(vid, label, width)
+                .unwrap();
+        }
+        for target in targets {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &value(target)),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        if label == slab {
+            // Establish the slab prefix before introducing any tree descriptor.
+            graph.compact_vertex_edge_span(vid, 0).unwrap();
+        }
+    }
+    for slot in [0, 3, 511, super::T_PROMOTE - 1] {
+        assert_eq!(
+            graph
+                .remove_edge_at_slot(vid, tree, slot)
+                .unwrap()
+                .unwrap()
+                .target,
+            1000 + slot
+        );
+    }
+    super::promote::promote_bucket_to_tree_mode(&graph, vid, tree).unwrap();
+    let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+    if width > 0 {
+        graph
+            .ensure_label_bucket_inline_property_byte_width(peer, slab, width)
+            .unwrap();
+    }
+    graph
+        .insert_edge_skip_leaf_cascade(
+            peer,
+            slab,
+            InlinePropertyTestEdge::with_bytes(30_000, &value(30_000)),
+            EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    let buckets = graph
+        .read_vertex_label_buckets(&graph.vertices().get(vid))
+        .unwrap();
+    let base = buckets[0].edge_start();
+    let physical = buckets.iter().map(bucket_physical_resident_slots).sum();
+    // No fabricated descriptor: reuse the non-folding publisher and its backing checks.
+    graph
+        .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))
+        .unwrap();
+    let buckets = graph
+        .read_vertex_label_buckets(&graph.vertices().get(vid))
+        .unwrap();
+    assert_eq!(buckets.len(), 2);
+    assert!(!buckets[0].is_tree_mode() && !buckets[0].is_tiny_mode());
+    assert_eq!((buckets[0].degree(), buckets[0].stored_slots()), (16, 16));
+    assert_eq!(buckets[0].edge_spill_run(), crate::traits::NO_SPILL_RUN);
+    assert!(buckets[1].is_tree_mode());
+    assert_eq!(
+        (buckets[1].degree(), buckets[1].stored_slots()),
+        (super::T_PROMOTE - 4, super::T_PROMOTE)
+    );
+    assert_eq!(buckets[1].edge_start(), buckets[0].edge_start() + 16);
+    assert_eq!(
+        graph.edges().header().num_edges,
+        u64::from(super::T_PROMOTE + 13)
+    );
+    crate::labeled::invariants::assert_labeled_layout_invariants(
+        graph.vertices(),
+        graph.buckets(),
+        graph.edges(),
+    );
+    graph
+}
+
 /// Dense multi-label hub fixture shared by span-release and hub regressions.
 pub fn build_mixed_label_hub(
     labels: u16,

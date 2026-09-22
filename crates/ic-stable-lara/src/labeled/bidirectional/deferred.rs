@@ -5362,6 +5362,361 @@ mod tests {
         }
     }
 
+    fn check_tree_sibling_compaction(tree_policy: EdgePlacementPolicy, width: u16) {
+        use crate::labeled::{
+            graph::{
+                T_PROMOTE, bucket_physical_resident_slots,
+                test_support::{
+                    inline_property_test_graph, retained_compaction_rows,
+                    retained_compaction_value, tree_compaction_fixture,
+                },
+            },
+            ltb_raw_block_store::BlockKind,
+        };
+        use std::collections::BTreeMap;
+        let graph = DeferredBidirectionalLabeledLaraGraph {
+            forward: tree_compaction_fixture(width),
+            reverse: inline_property_test_graph(),
+            maintenance: BidirectionalMaintenanceQueue::new(vector_memory()),
+            config: DeferredConfig::default(),
+        };
+        let vid = VertexId::from(0);
+        let slab = BucketLabelKey::from_raw(2);
+        let tree = BucketLabelKey::from_raw(3);
+        let peer = VertexId::from(1);
+        let bucket = |owner, label| match graph
+            .forward()
+            .find_bucket(owner, &graph.forward().vertices().get(owner), label)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("missing fixture bucket"),
+        };
+        let value = |target| {
+            if width == 0 {
+                Vec::new()
+            } else {
+                retained_compaction_value(target, width)
+            }
+        };
+        let tree_before = bucket(vid, tree);
+        let expected_tree: Vec<_> = (0..T_PROMOTE)
+            .map(|slot| {
+                if [0, 3, 511, T_PROMOTE - 1].contains(&slot) {
+                    (slot, u32::MAX, vec![0; usize::from(width)])
+                } else {
+                    (slot, 1000 + slot, value(1000 + slot))
+                }
+            })
+            .collect();
+        assert_eq!(
+            retained_compaction_rows(graph.forward(), vid, tree, OutEdgeOrder::Ascending),
+            expected_tree
+        );
+        let roots = |b: LabelBucket| {
+            let mut bytes = vec![0; bucket_physical_resident_slots(&b) as usize * 4];
+            graph
+                .forward()
+                .edges()
+                .read_slots_contiguous_bytes(b.edge_start(), &mut bytes);
+            bytes
+        };
+        let root_before = roots(tree_before);
+        assert!(u32::try_from(root_before.len() / 4).unwrap() < tree_before.stored_slots());
+        assert_eq!(tree_before.tree_mode_physical_depth(), 1);
+        let ids: std::collections::BTreeSet<_> = root_before
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            ids.len(),
+            root_before.len() / 4,
+            "each root owns a distinct minted block"
+        );
+        for (i, bytes) in root_before.chunks_exact(4).enumerate() {
+            let id = u32::from_le_bytes(bytes.try_into().unwrap());
+            let header = graph.forward().ltb().read_block_header(id);
+            assert_eq!(header.owner_or_next_free, 0);
+            // The current promoter leaves informational label/ordinal metadata zero;
+            // root references own reachability. Snapshot all header fields below.
+            assert_eq!(header.bucket_label_key_wire, 0);
+            assert_eq!(header.level, 0);
+            assert_eq!(
+                header.kind,
+                if i == 0 {
+                    BlockKind::Edge
+                } else {
+                    BlockKind::InlineProperty
+                }
+            );
+            assert_eq!(header.ordinal, 0);
+            assert_eq!(header.tombstone_count, if i == 0 { 4 } else { 0 });
+        }
+        if width > 0 {
+            assert!(
+                root_before.len() > 8,
+                "multiple independent property leaves"
+            );
+        }
+        let blocks = || {
+            let ltb = graph.forward().ltb();
+            let payloads: Vec<_> = (0..ltb.tail_next())
+                .map(|id| {
+                    let mut payload = [0; 4096];
+                    ltb.read_payload(id, &mut payload).unwrap();
+                    (ltb.read_block_header(id), payload)
+                })
+                .collect();
+            (
+                (
+                    ltb.tail_next(),
+                    ltb.free_head(),
+                    ltb.free_count(),
+                    ltb.block_capacity(),
+                ),
+                payloads,
+            )
+        };
+        let blocks_before = blocks();
+        let peer_before = (graph.forward().vertices().get(peer), bucket(peer, slab));
+        let policy = |label| {
+            if label == tree {
+                tree_policy
+            } else {
+                EdgePlacementPolicy::Insertion
+            }
+        };
+        // A tree cannot trigger remove-side admission, but a slab sibling can.
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, vid, tree, &policy)
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 0);
+        for slot in 0..9 {
+            assert_eq!(
+                graph
+                    .remove_forward_edge_at_slot(vid, slab, slot)
+                    .unwrap()
+                    .unwrap()
+                    .target,
+                20_000 + slot
+            );
+            graph
+                .maybe_enqueue_remove_side_compaction(Orientation::Forward, vid, slab, &policy)
+                .unwrap();
+            assert_eq!(graph.maintenance_queue_len(), u64::from(slot == 8));
+        }
+        assert_eq!(
+            (bucket(vid, slab).degree(), bucket(vid, slab).stored_slots()),
+            (7, 16)
+        );
+        let counts_index = graph
+            .forward()
+            .edges()
+            .vertex_segment_counts_index(vid)
+            .unwrap();
+        let actual_before = graph
+            .forward()
+            .edges()
+            .counts_store()
+            .get(counts_index)
+            .actual;
+        let total_live = u64::from(T_PROMOTE + 4);
+        assert_eq!(graph.forward().edges().header().num_edges, total_live);
+        struct Sidecars {
+            rows: BTreeMap<(u32, u16, u32), (u32, u64)>,
+            moves: Vec<EdgeSlotMove>,
+        }
+        impl EdgeSlotMoveObserver for Sidecars {
+            fn edge_slot_moved(
+                &mut self,
+                orientation: Orientation,
+                vid: VertexId,
+                moved: EdgeSlotMove,
+            ) {
+                assert_eq!(orientation, Orientation::Forward);
+                assert_eq!(vid, VertexId::from(0));
+                assert_eq!(
+                    moved.label_id,
+                    BucketLabelKey::from_raw(2),
+                    "tree root bytes are not edge rows: {moved:?}"
+                );
+                let old = (u32::from(vid), moved.label_id.raw(), moved.old_slot_index);
+                let new = (u32::from(vid), moved.label_id.raw(), moved.new_slot_index);
+                let identity = self.rows.remove(&old).expect("external identity at source");
+                assert!(
+                    self.rows.insert(new, identity).is_none(),
+                    "no neighbor identity overwritten"
+                );
+                self.moves.push(moved);
+            }
+        }
+        let mut observer = Sidecars {
+            rows: BTreeMap::new(),
+            moves: Vec::new(),
+        };
+        for (owner, raw, slot, target) in (9..16)
+            .map(|slot| (0, 2, slot, 20_000 + slot))
+            .chain(
+                (0..T_PROMOTE)
+                    .filter(|s| ![0, 3, 511, T_PROMOTE - 1].contains(s))
+                    .map(|slot| (0, 3, slot, 1000 + slot)),
+            )
+            .chain([(1, 2, 0, 30_000)])
+        {
+            observer.rows.insert(
+                (owner, raw, slot),
+                (target, u64::from(target) + 0x5678_0000_0000),
+            );
+        }
+        let one = MaintenanceBudget {
+            max_work_items: Some(1),
+            ..unbounded_budget()
+        };
+        let mut completed = false;
+        for tick in 0..16 {
+            let prior_moves = observer.moves.len();
+            let report = graph
+                .maintenance_with_edge_slot_move_observer(one, &mut observer)
+                .unwrap();
+            assert!(observer.moves.len() - prior_moves <= 1);
+            let now = bucket(vid, tree);
+            assert_eq!(
+                now.with_base_slot_start(tree_before.edge_start()),
+                tree_before,
+                "tree descriptor except physical origin, tick={tick}, policy={tree_policy:?}"
+            );
+            assert_eq!(roots(now), root_before);
+            assert_eq!(
+                blocks(),
+                blocks_before,
+                "LTB ownership, payloads and free-list metadata"
+            );
+            assert_eq!(
+                (graph.forward().vertices().get(peer), bucket(peer, slab)),
+                peer_before
+            );
+            for (owner, label) in [(vid, slab), (vid, tree), (peer, slab)] {
+                let rows = retained_compaction_rows(
+                    graph.forward(),
+                    owner,
+                    label,
+                    OutEdgeOrder::Ascending,
+                );
+                assert_eq!(
+                    retained_compaction_rows(
+                        graph.forward(),
+                        owner,
+                        label,
+                        OutEdgeOrder::Descending
+                    ),
+                    rows.iter().cloned().rev().collect::<Vec<_>>()
+                );
+                if owner == vid && label == tree {
+                    assert_eq!(
+                        rows, expected_tree,
+                        "native traversal includes all tombstones"
+                    );
+                }
+                let mut live = 0;
+                for (slot, target, bytes) in rows {
+                    if target == u32::MAX {
+                        continue;
+                    } // Only external identities exclude dead native rows.
+                    live += 1;
+                    assert_eq!(bytes, value(target));
+                    assert_eq!(
+                        observer.rows.get(&(u32::from(owner), label.raw(), slot)),
+                        Some(&(target, u64::from(target) + 0x5678_0000_0000)),
+                        "canonical coordinate must resolve its original identity, including Finished"
+                    );
+                }
+                assert_eq!(live, bucket(owner, label).degree());
+                let b = bucket(owner, label);
+                let len = u64::from(bucket_physical_resident_slots(&b));
+                for free in graph.forward().edges().free_span_store().spans() {
+                    assert!(
+                        len == 0
+                            || b.edge_start() + len <= free.start_slot
+                            || free.start_slot + free.len <= b.edge_start(),
+                        "active root/prefix must not be free"
+                    );
+                }
+            }
+            assert_eq!(observer.rows.len() as u64, total_live);
+            assert_eq!(graph.forward().edges().header().num_edges, total_live);
+            assert_eq!(
+                graph
+                    .forward()
+                    .edges()
+                    .counts_store()
+                    .get(counts_index)
+                    .actual,
+                actual_before
+            );
+            if graph.maintenance_queue_len() == 0 {
+                assert_eq!(report.work.rebalanced_segments, 1);
+                completed = true;
+                break;
+            }
+            assert_eq!(
+                report.work.rebalanced_segments, 0,
+                "still queued, not silently completed"
+            );
+        }
+        assert!(
+            completed,
+            "maintenance must finish, not stall/retry indefinitely"
+        );
+        assert_eq!(
+            observer.moves,
+            (9..16)
+                .map(|old_slot_index| EdgeSlotMove {
+                    label_id: slab,
+                    old_slot_index,
+                    new_slot_index: old_slot_index - 9,
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(bucket(vid, slab).stored_slots(), 7);
+        assert_eq!(
+            bucket(vid, tree).edge_start(),
+            tree_before.edge_start() - 9,
+            "root relocation reclaims slab holes without remapping tree ordinals"
+        );
+        // The Required wrapper shares admission, including a nonzero cursor.
+        assert_eq!(
+            graph
+                .forward()
+                .compact_vertex_edge_span_one_step(vid, 1, 2, &policy)
+                .unwrap(),
+            VertexEdgeSpanCompactOneStep::AdvanceBucket(2)
+        );
+        assert_eq!(
+            bucket(vid, tree).with_base_slot_start(tree_before.edge_start()),
+            tree_before
+        );
+        assert_eq!(blocks(), blocks_before);
+        assert_eq!(
+            graph
+                .maintenance_with_edge_slot_move_observer(one, &mut observer)
+                .unwrap()
+                .work
+                .processed_work_items,
+            0
+        );
+        assert_eq!(observer.moves.len(), 7);
+    }
+
+    #[test]
+    fn tree_sibling_compaction_insertion_preserves_native_tree_and_properties() {
+        check_tree_sibling_compaction(EdgePlacementPolicy::Insertion, 33);
+    }
+
+    #[test]
+    fn tree_sibling_compaction_unordered_preserves_native_tree() {
+        check_tree_sibling_compaction(EdgePlacementPolicy::Unordered, 0);
+    }
+
     #[test]
     fn failed_compaction_step_is_requeued_not_silently_completed() {
         // A compaction step can fail after partially mutating the slab (e.g. a transient
