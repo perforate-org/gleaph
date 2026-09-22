@@ -131,8 +131,13 @@ those as-used bytes. The foreign brief/CSV, canonical YAML, both benchmark sourc
 canbench config and main pin were preserved. `git diff --check` passed.
 
 Raw artifacts are under `/tmp/spill-read-af063-obmxdo77/`, with a SHA256 manifest. Plan
-`0334-compaction-bounded-read.md` remains **pending**: draft structural validation passes, while
-final validation exits 1 for unfinished work. That is intentional status, not final approval.
+`0334-compaction-bounded-read.md` remains **partially complete, not approved**. Both saved
+validation logs fail: [draft](sources/adr0097-bounded-read-plan-draft.txt) reports
+`ERROR: Completion Criteria item 6 must be unchecked in draft phase`; [final](sources/adr0097-bounded-read-plan-final.txt)
+rejects the pending TODOs and unchecked criteria. The earlier draft-pass statement was false
+for this revision and is withdrawn. The completed comment criterion remains checked; pending
+performance work remains pending. Neither log is a structural pass, and no preserved earlier
+passing log is used to qualify these failures.
 
 The next evidence needed is a completed current-baseline measurement and runnable small
 first-move/bounds fixtures before prototyping the single read-granularity change. An algorithmic

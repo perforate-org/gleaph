@@ -1,0 +1,1 @@
+ERROR: Completion Criteria item 6 must be unchecked in draft phase
