@@ -1,9 +1,9 @@
 //! Tree-mode read dispatch for label buckets (Plan 0318 §Step 5).
 //!
-//! Implements the read side of the tree-mode bucket backing. The single
-//! dispatch point is [`super::traverse::LabeledLaraGraph::visit_edges_for_label_impl`],
-//! which routes a tree-mode bucket (`LabelBucket::is_tree_mode() == true`)
-//! to [`visit_tree_mode_label_bucket_edges`] instead of the slab path.
+//! Implements native tree reads. Bulk traversal dispatch lives in
+//! [`super::traverse::LabeledLaraGraph::visit_edges_for_label_impl`]; point-state
+//! dispatch lives in [`super::LabeledLaraGraph::read_edge_state`]. Both use the
+//! existing root resolver rather than interpreting root IDs as edge targets.
 //! No branch lives in rope / PMA / placement / leaf-pin code.
 //!
 //! Storage architecture (per `f6c426d1c` amend and Step 4 commit `44c82d3b2`):
@@ -22,24 +22,19 @@
 //!
 //! Production read API:
 //! - [`super::traverse::LabeledLaraGraph::visit_edges_for_label_impl`]
-//!   is the single dispatch point. A tree-mode bucket is walked via
-//!   [`visit_tree_mode_label_bucket_edges`]; a slab-mode bucket keeps
-//!   its existing path (no mode branch leaks elsewhere).
-//! - [`tree_mode_random_ordinal_access`] is the production-side
-//!   `random_ordinal_access` (used by `CounterpartScan` and similar
-//!   pair-ordinal lookups). Reads exactly 4 bytes via
-//!   `LtbRawBlockStore::read_payload_partial`.
+//!   dispatches traversal to [`visit_tree_mode_label_bucket_edges`].
+//! - [`tree_mode_random_ordinal_access`] supplies the native target to the
+//!   canonical point-state owner, including counterpart rank/select callers.
+//!   It reads exactly 4 payload bytes via `LtbRawBlockStore::read_payload_partial`.
 //!
-//! Prerequisite: `E::BYTES == 4` is asserted at every tree-mode read
-//! entry. A typed guard (returning a `LabeledOperationError` instead of
-//! panicking in debug) is deferred to Plan 0318 §Step 6 alongside the
-//! other tree-mode invariants.
+//! Point reads are admitted by the canonical state reader in `traverse` and
+//! reject unsupported edge widths before resolving roots. Raw visitors remain
+//! tombstone-inclusive; property bytes do not change topology addressing.
 
 use ic_stable_structures::Memory;
 use std::ops::ControlFlow;
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
-use crate::VertexId;
 use crate::labeled::graph::error::LabeledOperationError;
 use crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES;
 use crate::labeled::record::LabelBucket;
@@ -49,42 +44,30 @@ use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
 /// Read the 4-byte target at logical slot `slot` of a tree-mode bucket.
 ///
-/// Returns `Ok(Some(target))` for `slot < stored_slots`, `Ok(None)` for
-/// `slot >= stored_slots`, and an error for invariants violated (e.g.
-/// `inline_property_byte_width != 0` is currently rejected). This is the
-/// production-side `random_ordinal_access` (Plan 0318 §Step 5).
-pub(crate) fn tree_mode_random_ordinal_access<E, M>(
+/// The private mode dispatcher supplies the resolved tree descriptor. Native
+/// positions include tombstones; properties live in a separate stream. Bounds,
+/// edge width and LTB access errors are checked before returning target bytes.
+pub(super) fn tree_mode_random_ordinal_access<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    vid: VertexId,
-    label_id: u16,
+    bucket: &LabelBucket,
     slot: u32,
 ) -> Result<Option<u32>, LabeledOperationError>
 where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(
-        E::BYTES,
-        4,
-        "tree_mode_random_ordinal_access requires E::BYTES == 4"
-    );
-    let vertex = graph.vertices().get(vid);
-    let bucket = match graph.find_bucket(vid, &vertex, super::BucketLabelKey::from_raw(label_id))? {
-        super::BucketSearch::Found { bucket, .. } => bucket,
-        super::BucketSearch::Missing { .. } => return Ok(None),
-    };
+    if E::BYTES != 4 {
+        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
+            actual: E::BYTES,
+            expected: 4,
+        });
+    }
     debug_assert!(
         bucket.is_tree_mode(),
         "tree_mode_random_ordinal_access: bucket is not in tree mode (caller must dispatch)"
     );
     if slot >= bucket.stored_slots() {
         return Ok(None);
-    }
-    if bucket.inline_property_byte_width() != 0 {
-        return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-            bucket_width: bucket.inline_property_byte_width(),
-            edge_inline_property_width: 0,
-        });
     }
     // 1. Compute (block_root_index, in_block_offset) from slot.
     let block_root_index = slot / (BLOCK_B as u32);
@@ -104,7 +87,7 @@ where
     //    For depth 1 this is a single-hop LEG read; for depth 2+ it
     //    descends the interior hop chain.
     let block_id =
-        super::tree_write::resolve_leaf_block_id::<E, M>(graph, &bucket, block_root_index)?;
+        super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_root_index)?;
     // 3. Read 4 bytes from the LTB block at `in_block_offset`.
     let mut target_bytes = [0u8; 4];
     graph
@@ -800,6 +783,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::TestEdge;
     use ic_stable_structures::VectorMemory;
@@ -1105,9 +1089,15 @@ mod tests {
         let stored: u32 = 4096;
         promote_bucket(&graph, vid, stored);
         // Read 0, 1, 1023, 1024, 4095 (block-boundary crossing).
-        let label_raw = BucketLabelKey::directed_from_index(1).raw();
+        let label = BucketLabelKey::directed_from_index(1);
+        let super::super::BucketSearch::Found { bucket, .. } = graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .unwrap()
+        else {
+            panic!("missing tree bucket")
+        };
         for &slot in &[0u32, 1, 1023, 1024, 4095] {
-            let v = tree_mode_random_ordinal_access(&graph, vid, label_raw, slot)
+            let v = tree_mode_random_ordinal_access(&graph, &bucket, slot)
                 .expect("random_ordinal_access")
                 .expect("slot in range");
             assert_eq!(v, slot + 100, "slot {slot} mismatch");
@@ -1121,8 +1111,14 @@ mod tests {
         let vid = VertexId::from(0);
         let stored: u32 = 4096;
         promote_bucket(&graph, vid, stored);
-        let label_raw = BucketLabelKey::directed_from_index(1).raw();
-        let v = tree_mode_random_ordinal_access(&graph, vid, label_raw, stored).expect("err");
+        let label = BucketLabelKey::directed_from_index(1);
+        let super::super::BucketSearch::Found { bucket, .. } = graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .unwrap()
+        else {
+            panic!("missing tree bucket")
+        };
+        let v = tree_mode_random_ordinal_access(&graph, &bucket, stored).expect("err");
         assert!(v.is_none());
     }
 

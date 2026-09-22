@@ -6,11 +6,11 @@ use crate::{
 use std::ops::ControlFlow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Row<const N: usize>(u32, u16);
+struct Row<const N: usize>(u32, u16, u32);
 impl<const N: usize> CsrEdge for Row<N> {
     const BYTES: usize = N;
     fn read_from(bytes: &[u8]) -> Self {
-        Self(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0)
+        Self(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0, 0)
     }
     fn write_to(&self, bytes: &mut [u8]) {
         bytes.fill(0);
@@ -20,15 +20,21 @@ impl<const N: usize> CsrEdge for Row<N> {
         VertexId::from(self.0)
     }
     fn with_neighbor_vid(&self, vid: VertexId) -> Self {
-        Self(u32::from(vid), self.1)
+        Self(u32::from(vid), self.1, self.2)
     }
     fn with_label_id(self, label_id: u16) -> Self {
-        Self(self.0, label_id)
+        Self(self.0, label_id, self.2)
+    }
+    fn with_slot_index(self, slot: u32) -> Self {
+        Self(self.0, self.1, slot)
+    }
+    fn edge_slot_index_raw(&self) -> u32 {
+        self.2
     }
 }
 impl<const N: usize> CsrEdgeTombstone for Row<N> {
     fn tombstone_edge() -> Self {
-        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL), 0)
+        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL), 0, 0)
     }
 }
 fn assert_all_label_rows<const N: usize>(
@@ -103,7 +109,7 @@ fn exercise<const N: usize>(bypass: bool) {
                 .insert_edge_skip_leaf_cascade(
                     vid,
                     label,
-                    Row(i, 0),
+                    Row(i, 0, 0),
                     EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
@@ -385,7 +391,7 @@ fn append_lifecycle<const N: usize>() {
     let label = BucketLabelKey::from_raw(2);
     for i in 0..67 {
         graph
-            .insert_edge_skip_leaf_cascade(vid, label, Row(i, 0), EdgePlacementPolicy::Insertion)
+            .insert_edge_skip_leaf_cascade(vid, label, Row(i, 0, 0), EdgePlacementPolicy::Insertion)
             .unwrap();
     }
     graph.enable_default_edge_bypass(vid).unwrap();
@@ -412,7 +418,12 @@ fn append_lifecycle<const N: usize>() {
             }
         }
         graph
-            .insert_edge(vid, label, Row(target, 0), EdgePlacementPolicy::Insertion)
+            .insert_edge(
+                vid,
+                label,
+                Row(target, 0, 0),
+                EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let vertex = graph.vertices().get(vid);
         assert!(vertex.is_default_edge_labeled());
@@ -454,7 +465,12 @@ fn append_lifecycle<const N: usize>() {
     let end = prefix + crate::labeled::spill_run_store::MAX_ROWS;
     for target in prefix + initial_class + 3..end {
         graph
-            .insert_edge(vid, label, Row(target, 0), EdgePlacementPolicy::Insertion)
+            .insert_edge(
+                vid,
+                label,
+                Row(target, 0, 0),
+                EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
     }
     let before = graph.vertices().get(vid);
@@ -463,7 +479,7 @@ fn append_lifecycle<const N: usize>() {
     // consumes this signal through a separately tested prepared tree transition.
     let error = graph
         .edges()
-        .insert_edge(graph.vertices(), vid, Row(end, 0))
+        .insert_edge(graph.vertices(), vid, Row(end, 0, 0))
         .unwrap_err();
     assert!(matches!(
         error,
@@ -518,4 +534,432 @@ fn retained_run_all_label_four_bytes() {
 #[test]
 fn retained_run_all_label_ten_bytes() {
     exercise::<10>(true);
+}
+
+fn point_state_graph() -> (
+    LabeledLaraGraph<Row<4>, crate::VectorMemory>,
+    [crate::VectorMemory; 16],
+) {
+    let m = test_support::labeled_memories();
+    let graph = LabeledLaraGraph::new(
+        m[0].clone(),
+        m[1].clone(),
+        m[2].clone(),
+        m[3].clone(),
+        m[4].clone(),
+        m[5].clone(),
+        m[6].clone(),
+        m[7].clone(),
+        m[8].clone(),
+        m[9].clone(),
+        m[10].clone(),
+        m[11].clone(),
+        m[12].clone(),
+        m[13].clone(),
+        m[14].clone(),
+        m[15].clone(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::from_raw(1),
+    )
+    .unwrap();
+    (graph, m)
+}
+
+fn assert_point_states(
+    graph: &LabeledLaraGraph<Row<4>, crate::VectorMemory>,
+    owner: VertexId,
+    label: BucketLabelKey,
+    expected: &[Option<u32>],
+) {
+    for (slot, target) in expected.iter().copied().enumerate() {
+        let slot = slot as u32;
+        let state = graph
+            .read_edge_state(owner, label, BucketEntryPosition::new(slot))
+            .unwrap();
+        match (state, target) {
+            (EdgeSlotState::Live(edge), Some(target)) => {
+                assert_eq!(edge, Row(target, label.raw(), slot))
+            }
+            (EdgeSlotState::Tombstone, None) => (),
+            (actual, expected) => panic!("slot={slot}: {actual:?} != {expected:?}"),
+        }
+        assert_eq!(
+            graph.edge_exists_at_slot(owner, label, slot).unwrap(),
+            target.is_some()
+        );
+    }
+    for slot in [expected.len() as u32, u32::MAX] {
+        assert!(matches!(
+            graph
+                .read_edge_state(owner, label, BucketEntryPosition::new(slot))
+                .unwrap(),
+            EdgeSlotState::Missing
+        ));
+        assert!(!graph.edge_exists_at_slot(owner, label, slot).unwrap());
+    }
+    assert!(matches!(
+        graph
+            .read_edge_state(
+                owner,
+                BucketLabelKey::from_raw(99),
+                BucketEntryPosition::new(0)
+            )
+            .unwrap(),
+        EdgeSlotState::Missing
+    ));
+    assert!(
+        !graph
+            .edge_exists_at_slot(owner, BucketLabelKey::from_raw(99), 0)
+            .unwrap()
+    );
+    // Selected reads call the private bucket reader directly; both orders must retain
+    // physical positions, not dense live ordinals. Missing slots emit nothing.
+    let mut selected: Vec<_> = (0..expected.len() as u32)
+        .map(BucketEntryPosition::new)
+        .collect();
+    selected.push(BucketEntryPosition::new(u32::MAX));
+    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+        let mut actual = Vec::new();
+        let flow = graph
+            .visit_edges_at(owner, label, &selected, order, |slot, edge| {
+                actual.push((slot.raw(), edge));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        let mut live: Vec<_> = expected
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, target)| {
+                target.map(|target| (slot as u32, Row(target, label.raw(), slot as u32)))
+            })
+            .collect();
+        if order == OutEdgeOrder::Descending {
+            live.reverse();
+        }
+        assert_eq!(actual, live);
+    }
+}
+
+#[test]
+fn point_state_tiny_preserves_all_memories() {
+    let (graph, memories) = point_state_graph();
+    let snapshot = || {
+        memories
+            .iter()
+            .map(|m| m.borrow().clone())
+            .collect::<Vec<_>>()
+    };
+    let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    let mut expected = Vec::new();
+    for slot in 0..3 {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                Row(1000 + slot, 0, 0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        expected.push(Some(1000 + slot));
+    }
+    graph.remove_edge_at_slot(owner, label, 1).unwrap().unwrap();
+    expected[1] = None;
+    let bucket_slot = graph
+        .find_bucket_slot(&graph.vertices().get(owner), label)
+        .unwrap()
+        .unwrap();
+    assert!(
+        graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .unwrap()
+            .is_tiny_mode()
+    );
+    let before = snapshot();
+    assert_point_states(&graph, owner, label, &expected);
+    assert_eq!(snapshot(), before);
+}
+
+#[test]
+fn point_state_slab_and_retained_bypass_preserve_all_memories() {
+    // Seed without tiny holes: promotion out of tiny may pack its inline slots.
+    let (graph, memories) = point_state_graph();
+    let snapshot = || {
+        memories
+            .iter()
+            .map(|m| m.borrow().clone())
+            .collect::<Vec<_>>()
+    };
+    let label = BucketLabelKey::from_raw(2);
+    let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let mut expected = Vec::new();
+    for slot in 0..67 {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                Row(2000 + slot, 0, 0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        expected.push(Some(2000 + slot));
+    }
+    let bucket_slot = graph
+        .find_bucket_slot(&graph.vertices().get(owner), label)
+        .unwrap()
+        .unwrap();
+    let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+    assert!(!bucket.is_tree_mode() && !bucket.is_tiny_mode());
+    let run = graph.edges().spill_mint(bucket.edge_spill_run()).unwrap();
+    let prefix = graph.edges().initialized_slab_slots(&bucket).unwrap();
+    let used = graph.edges().spill_used_len(run);
+    assert!(prefix > 0 && used > 32);
+    assert_eq!(prefix + used, 67);
+    for slot in [0, prefix, 66] {
+        assert_eq!(
+            graph
+                .remove_edge_at_slot(owner, label, slot)
+                .unwrap()
+                .unwrap()
+                .0,
+            2000 + slot
+        );
+        expected[slot as usize] = None;
+    }
+    let before = snapshot();
+    assert_point_states(&graph, owner, label, &expected);
+    assert_eq!(snapshot(), before);
+
+    graph.enable_default_edge_bypass(owner).unwrap();
+    let label = graph.default_label();
+    let vertex = graph.vertices().get(owner);
+    assert!(vertex.is_default_edge_labeled());
+    assert_eq!(vertex.bypass_spill_run(), run.get());
+    assert_eq!(
+        graph.edges().initialized_slab_slots(&vertex).unwrap(),
+        prefix
+    );
+    assert_eq!(graph.edges().spill_used_len(run), used);
+    let before = snapshot();
+    let spill_slot = prefix + 1;
+    let state = graph
+        .read_edge_state(owner, label, BucketEntryPosition::new(spill_slot))
+        .unwrap();
+    assert!(
+        matches!(state, EdgeSlotState::Live(edge) if edge == Row(2000 + spill_slot, label.raw(), spill_slot)),
+        "retained bypass run slot={spill_slot}: {state:?}"
+    );
+    assert_point_states(&graph, owner, label, &expected);
+    assert_eq!(
+        graph
+            .count_preceding_live_edges_with_neighbor(
+                owner,
+                label,
+                BucketEntryPosition::new(66),
+                VertexId::from(2065)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(snapshot(), before);
+
+    // Malformed total extent is not an absent row. Keep the run real and intact.
+    graph
+        .vertices()
+        .set(owner, &vertex.with_stored_slots(used - 1));
+    let corrupt = snapshot();
+    assert!(matches!(
+        graph.read_edge_state(owner, label, BucketEntryPosition::new(0)),
+        Err(LabeledOperationError::Store(
+            crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow
+        ))
+    ));
+    assert!(matches!(
+        graph.edge_exists_at_slot(owner, label, 0),
+        Err(LabeledOperationError::Store(
+            crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow
+        ))
+    ));
+    assert_eq!(snapshot(), corrupt);
+    graph.vertices().set(owner, &vertex);
+    assert_eq!(snapshot(), before);
+}
+
+#[test]
+fn point_state_tree_native_boundaries_and_errors_preserve_all_memories() {
+    let (graph, memories) = point_state_graph();
+    let snapshot = || {
+        memories
+            .iter()
+            .map(|m| m.borrow().clone())
+            .collect::<Vec<_>>()
+    };
+    let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    let mut expected = Vec::new();
+    for slot in 0..T_PROMOTE {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                Row(1000 + slot, 0, 0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        expected.push(Some(1000 + slot));
+    }
+    for slot in [0, 3, 511, T_PROMOTE - 1] {
+        graph
+            .remove_edge_at_slot(owner, label, slot)
+            .unwrap()
+            .unwrap();
+        expected[slot as usize] = None;
+    }
+    promote::promote_bucket_to_tree_mode(&graph, owner, label).unwrap();
+    graph
+        .insert_edge(
+            owner,
+            label,
+            Row(1000 + T_PROMOTE, 0, 0),
+            EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    expected.push(Some(1000 + T_PROMOTE));
+    let bucket_slot = graph
+        .find_bucket_slot(&graph.vertices().get(owner), label)
+        .unwrap()
+        .unwrap();
+    let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+    assert!(bucket.is_tree_mode());
+    assert_eq!(bucket.stored_slots(), T_PROMOTE + 1);
+    assert_eq!(bucket.degree(), T_PROMOTE - 3);
+    let before = snapshot();
+    assert_point_states(&graph, owner, label, &expected);
+    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+        let mut native = Vec::new();
+        let flow = graph
+            .visit_edges(owner, label, order, |slot, edge| {
+                native.push((slot.raw(), edge.0));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        let mut want: Vec<_> = expected
+            .iter()
+            .enumerate()
+            .map(|(slot, target)| (slot as u32, target.unwrap_or(u32::MAX)))
+            .collect();
+        if order == OutEdgeOrder::Descending {
+            want.reverse();
+        }
+        assert_eq!(native, want, "native visitors remain tombstone-inclusive");
+    }
+    assert_eq!(snapshot(), before);
+    // A minted-envelope error must not become Missing or a root id masquerading as a target.
+    let mut root = [0; 4];
+    graph
+        .edges()
+        .read_slot_bytes(bucket.edge_start(), &mut root);
+    let unminted = graph.ltb().tail_next();
+    graph
+        .edges()
+        .write_slot_bytes(bucket.edge_start(), &unminted.to_le_bytes())
+        .unwrap();
+    let corrupt = snapshot();
+    assert!(
+        matches!(graph.read_edge_state(owner, label, BucketEntryPosition::new(0)), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)
+    );
+    assert!(
+        matches!(graph.edge_exists_at_slot(owner, label, 0), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)
+    );
+    assert_eq!(snapshot(), corrupt);
+    graph
+        .edges()
+        .write_slot_bytes(bucket.edge_start(), &root)
+        .unwrap();
+    assert_eq!(snapshot(), before);
+}
+
+#[test]
+fn point_state_counterpart_parallel_occurrences_use_live_native_ranks() {
+    use crate::labeled::bidirectional::{
+        Orientation,
+        counterpart::{
+            CanonicalEdgeOccurrence, CounterpartLookupError, counterpart_of,
+            counterpart_of_verified,
+        },
+    };
+    let (forward, fm) = point_state_graph();
+    let (reverse, rm) = point_state_graph();
+    let label = BucketLabelKey::directed_from_index(2);
+    for (graph, owner, target, hole) in [(&forward, 0, 1, 3), (&reverse, 1, 0, 7)] {
+        for _ in 0..2 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        for _ in 0..T_PROMOTE {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(owner),
+                    label,
+                    Row(target, 0, 0),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(VertexId::from(owner), label, hole)
+            .unwrap()
+            .unwrap();
+        promote::promote_bucket_to_tree_mode(graph, VertexId::from(owner), label).unwrap();
+    }
+    let snapshot = || {
+        fm.iter()
+            .chain(rm.iter())
+            .map(|m| m.borrow().clone())
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot();
+    for lookup in [counterpart_of, counterpart_of_verified] {
+        for (forward_slot, reverse_slot) in [(2, 2), (4, 3), (7, 6), (8, 8), (1023, 1023)] {
+            let source = CanonicalEdgeOccurrence {
+                orientation: Orientation::Forward,
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                slot_index: BucketEntryPosition::new(forward_slot),
+            };
+            let mate = CanonicalEdgeOccurrence {
+                orientation: Orientation::Reverse,
+                owner_vertex_id: VertexId::from(1),
+                label_id: label,
+                slot_index: BucketEntryPosition::new(reverse_slot),
+            };
+            assert_eq!(lookup(&forward, &reverse, source).unwrap(), mate);
+            assert_eq!(lookup(&forward, &reverse, mate).unwrap(), source);
+        }
+        for (orientation, owner, dead) in
+            [(Orientation::Forward, 0, 3), (Orientation::Reverse, 1, 7)]
+        {
+            let source = CanonicalEdgeOccurrence {
+                orientation,
+                owner_vertex_id: VertexId::from(owner),
+                label_id: label,
+                slot_index: BucketEntryPosition::new(dead),
+            };
+            assert_eq!(
+                lookup(&forward, &reverse, source),
+                Err(CounterpartLookupError::SourceNotLive(source))
+            );
+            let missing = CanonicalEdgeOccurrence {
+                slot_index: BucketEntryPosition::new(T_PROMOTE),
+                ..source
+            };
+            assert_eq!(
+                lookup(&forward, &reverse, missing),
+                Err(CounterpartLookupError::SourceNotFound(missing))
+            );
+        }
+    }
+    assert_eq!(snapshot(), before);
 }

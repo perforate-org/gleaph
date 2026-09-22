@@ -5362,6 +5362,205 @@ mod tests {
         }
     }
 
+    #[test]
+    fn point_state_property_tree_reads_are_native_and_read_only() {
+        use crate::labeled::graph::{
+            EdgeSlotState, T_PROMOTE,
+            test_support::{
+                retained_compaction_rows, retained_compaction_value, tree_compaction_fixture,
+            },
+        };
+        let graph = tree_compaction_fixture(33);
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(3);
+        let expected: Vec<_> = (0..T_PROMOTE)
+            .map(|slot| {
+                if [0, 3, 511, T_PROMOTE - 1].contains(&slot) {
+                    (slot, u32::MAX, vec![0; 33])
+                } else {
+                    (
+                        slot,
+                        1000 + slot,
+                        retained_compaction_value(1000 + slot, 33),
+                    )
+                }
+            })
+            .collect();
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            let rows = retained_compaction_rows(&graph, vid, label, order);
+            let want: Vec<_> = if order == OutEdgeOrder::Ascending {
+                expected.clone()
+            } else {
+                expected.iter().rev().cloned().collect()
+            };
+            assert_eq!(rows, want);
+            for (slot, target, _) in &want {
+                let state = graph
+                    .read_edge_state(vid, label, BucketEntryPosition::new(*slot))
+                    .unwrap();
+                if *target == u32::MAX {
+                    assert!(
+                        matches!(state, EdgeSlotState::Tombstone),
+                        "slot={slot}: {state:?}"
+                    );
+                } else {
+                    let EdgeSlotState::Live(edge) = state else {
+                        panic!("slot={slot}: {state:?}")
+                    };
+                    assert_eq!((edge.target, edge.edge_slot_index_raw()), (*target, *slot));
+                }
+            }
+            assert_eq!(retained_compaction_rows(&graph, vid, label, order), rows);
+        }
+        for slot in [T_PROMOTE, u32::MAX] {
+            assert!(matches!(
+                graph
+                    .read_edge_state(vid, label, BucketEntryPosition::new(slot))
+                    .unwrap(),
+                EdgeSlotState::Missing
+            ));
+        }
+    }
+
+    #[test]
+    fn point_state_public_tree_noops_preserve_both_populated_orientations() {
+        use crate::labeled::graph::{
+            T_PROMOTE, bucket_physical_resident_slots,
+            test_support::{
+                InlinePropertyTestEdge, retained_compaction_rows, tree_compaction_fixture,
+            },
+        };
+        let queue_memory = vector_memory();
+        let graph = DeferredBidirectionalLabeledLaraGraph {
+            forward: tree_compaction_fixture(33),
+            reverse: tree_compaction_fixture(33),
+            maintenance: BidirectionalMaintenanceQueue::new(queue_memory.clone()),
+            config: DeferredConfig::default(),
+        };
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(3);
+        let snapshot = || {
+            [graph.forward(), graph.reverse()]
+                .into_iter()
+                .map(|g| {
+                    let rows: Vec<_> = [(0, 2), (0, 3), (1, 2)]
+                        .into_iter()
+                        .map(|(owner, label)| {
+                            let owner = VertexId::from(owner);
+                            let label = BucketLabelKey::from_raw(label);
+                            let v = g.vertices().get(owner);
+                            let BucketSearch::Found { bucket, .. } =
+                                g.find_bucket(owner, &v, label).unwrap()
+                            else {
+                                panic!("missing fixture bucket")
+                            };
+                            let mut bytes =
+                                vec![0; bucket_physical_resident_slots(&bucket) as usize * 4];
+                            g.edges()
+                                .read_slots_contiguous_bytes(bucket.edge_start(), &mut bytes);
+                            (
+                                v,
+                                bucket,
+                                bytes,
+                                retained_compaction_rows(g, owner, label, OutEdgeOrder::Ascending),
+                            )
+                        })
+                        .collect();
+                    let ltb = g.ltb();
+                    let blocks: Vec<_> = (0..ltb.tail_next())
+                        .map(|id| {
+                            let mut payload =
+                                [0; crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES];
+                            ltb.read_payload(id, &mut payload).unwrap();
+                            (ltb.read_block_header(id), payload)
+                        })
+                        .collect();
+                    let counts = g
+                        .edges()
+                        .counts_store()
+                        .get(g.edges().vertex_segment_counts_index(vid).unwrap());
+                    assert_eq!(counts.actual, 17);
+                    assert_eq!(g.edges().header().num_edges, u64::from(T_PROMOTE - 4 + 17));
+                    format!(
+                        "{:?}",
+                        (
+                            rows,
+                            blocks,
+                            g.edges().header(),
+                            counts,
+                            (
+                                ltb.tail_next(),
+                                ltb.free_head(),
+                                ltb.free_count(),
+                                ltb.block_capacity()
+                            ),
+                            g.edges().free_span_store().spans()
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot();
+        let queue_before = queue_memory.borrow().clone();
+        for (label, slot) in [0, 3, 511, T_PROMOTE - 1, T_PROMOTE, u32::MAX]
+            .map(|slot| (label, slot))
+            .into_iter()
+            .chain([(BucketLabelKey::from_raw(99), 1)])
+        {
+            assert!(
+                graph
+                    .remove_forward_edge_at_slot(vid, label, slot)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                graph
+                    .remove_forward_edge_at_slot_with_move(vid, label, slot)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                graph
+                    .remove_reverse_edge_at_slot(vid, label, slot)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                graph
+                    .remove_reverse_edge_at_slot_with_move(vid, label, slot)
+                    .unwrap()
+                    .is_none()
+            );
+            let replacement = InlinePropertyTestEdge::with_bytes(90000, &[0x5a; 33]);
+            assert!(
+                !graph
+                    .update_forward_edge_inline_property_at_slot(
+                        vid,
+                        label,
+                        slot,
+                        replacement.clone()
+                    )
+                    .unwrap()
+            );
+            assert!(
+                !graph
+                    .update_reverse_edge_inline_property_at_slot(vid, label, slot, replacement)
+                    .unwrap()
+            );
+            assert_eq!(
+                snapshot(),
+                before,
+                "no canonical, mate, neighbor or count mutation"
+            );
+            assert_eq!(
+                *queue_memory.borrow(),
+                queue_before,
+                "no derived maintenance admission"
+            );
+            assert_eq!(graph.maintenance_queue_len(), 0);
+        }
+    }
+
     fn check_tree_sibling_compaction(tree_policy: EdgePlacementPolicy, width: u16) {
         use crate::labeled::{
             graph::{

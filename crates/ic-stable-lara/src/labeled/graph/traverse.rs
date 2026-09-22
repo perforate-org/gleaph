@@ -284,7 +284,9 @@ where
         })
     }
 
-    /// Reads one logical slot and distinguishes missing, tombstoned, and live rows.
+    /// Canonical topology point read: distinguishes missing, tombstoned and live
+    /// rows in every storage mode. Live rows carry the requested logical position
+    /// and storage label; inline-property hydration is a separate value-plane read.
     pub(crate) fn read_edge_state(
         &self,
         owner: VertexId,
@@ -297,7 +299,6 @@ where
         self.read_edge_state_internal(owner, label, slot)
     }
 
-    #[allow(clippy::needless_return)]
     /// Visits live edges in ascending logical slot order, stopping when the visitor breaks.
     ///
     /// This is a local helper for rank/select primitives over the logical slot extent; it does
@@ -314,59 +315,25 @@ where
     {
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
+        // Rank/select callers handle bypass rows with their existing spill-aware iterator.
         if vertex.is_default_edge_labeled() {
             return Ok(ControlFlow::Continue(()));
         }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(owner, &vertex, label)? else {
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
             return Ok(ControlFlow::Continue(()));
         };
-        if bucket.degree() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        // ADR 0096 §5 + §7: match-first — tiny slots iterate inline
-        // (ordinals are slots; holes skipped via the layout predicate). The slab path below would
-        // misread the anchor via `read_edge_state_at_slot`.
-        match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                for slot_index in 0..logical_slots.min(bucket.tiny_used_width()) {
-                    if E::read_from(&bucket.tiny_target(slot_index).to_le_bytes()).is_deleted_slot()
-                    {
-                        continue;
-                    }
-                    let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
-                        .with_slot_index(slot_index)
-                        .with_label_id(label.raw());
+        for slot_index in 0..logical_slots {
+            match self.read_edge_state_at_slot(&bucket, slot_index)? {
+                EdgeSlotState::Missing => break,
+                EdgeSlotState::Tombstone => (),
+                EdgeSlotState::Live(edge) => {
                     if let ControlFlow::Break(value) = visit(slot_index, edge) {
                         return Ok(ControlFlow::Break(value));
                     }
                 }
-                return Ok(ControlFlow::Continue(()));
-            }
-            BucketMode::Tree | BucketMode::Slab => {
-                // Direct slot-read path below: tiny never reaches here (force-canonical
-                // above routes all tiny selections through the canonical visitor whose
-                // funnel arm serves them inline). No arm needed — documented, not assumed.
-                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                for slot_index in 0..logical_slots {
-                    if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
-                        owner,
-                        &vertex,
-                        bucket_index,
-                        &bucket,
-                        slot_index,
-                        label,
-                    )? && let ControlFlow::Break(value) = visit(slot_index, edge)
-                    {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                }
-                Ok(ControlFlow::Continue(()))
             }
         }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Counts live edges with `neighbor` that precede `before_slot` in ascending
@@ -3440,9 +3407,8 @@ where
             }
         };
         let canonical_candidate = bucket.is_tiny_mode()
-            // ADR 0096 §5: tiny selections route through the canonical visitor
-            // (whose funnel arm serves them inline); the direct slot-read path
-            // below would misread the anchor span.
+            // Prefer the bulk value visitor for compact selections; sparse point
+            // topology reads below share the mode-aware state owner.
             || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN || bucket.values_spill_run() != crate::traits::NO_SPILL_RUN;
         if canonical_candidate && canonical_scan_len <= (selected.len() as u32).saturating_mul(2) {
             enum SelectedVisitOutcome<B> {
@@ -3496,14 +3462,7 @@ where
             self.bucket_inline_property_bytes_log_chain_opt(&bucket);
         let mut selected_edges = Vec::with_capacity(selected.len());
         for slot_index in selected {
-            let Some(edge) = (match self.read_edge_state_at_slot(
-                owner,
-                &vertex,
-                bucket_index,
-                &bucket,
-                slot_index,
-                label,
-            )? {
+            let Some(edge) = (match self.read_edge_state_at_slot(&bucket, slot_index)? {
                 EdgeSlotState::Live(edge) => Some(edge),
                 EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
             }) else {
@@ -3666,7 +3625,6 @@ where
     // Internal helpers
     // ------------------------------------------------------------------
 
-    #[allow(clippy::needless_return)]
     fn read_edge_state_internal(
         &self,
         owner: VertexId,
@@ -3678,153 +3636,78 @@ where
     {
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
-        if vertex.is_default_edge_labeled() {
+        let bucket = if vertex.is_default_edge_labeled() {
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(EdgeSlotState::Missing);
             }
-            let slot_index = slot.raw();
-            if slot_index >= vertex.stored_degree() {
+            self.bypass_bucket_view(&vertex)?
+        } else {
+            let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)?
+            else {
                 return Ok(EdgeSlotState::Missing);
-            }
-            let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
-                vertex.base_slot_start(),
-                u64::from(slot_index),
-            )
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-            let edge = self.edges.read_slot(edge_slot).with_label_id(label.raw());
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(EdgeSlotState::Tombstone);
-            }
-            return Ok(EdgeSlotState::Live(edge));
-        }
-        let BucketSearch::Found {
-            slot: _bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, &vertex, label)?
-        else {
-            return Ok(EdgeSlotState::Missing);
+            };
+            bucket
         };
-        // ADR 0096 §5 + §7: match-first — tiny slots read inline (ordinals
-        // are slots; holes skipped via the layout predicate). Reserved-slots math below would still
-        // pass for tiny (stored==degree) but the slab read would misread the
-        // anchor, so tiny diverges structurally here.
-        match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                let slot_index = slot.raw();
-                if slot_index >= bucket.tiny_used_width() {
-                    return Ok(EdgeSlotState::Missing);
-                }
-                // Layout-native liveness (same predicate as slab/tree read paths).
-                let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes());
-                if edge.is_deleted_slot() {
-                    return Ok(EdgeSlotState::Tombstone);
-                }
-                let edge = edge.with_slot_index(slot_index).with_label_id(label.raw());
-                return Ok(EdgeSlotState::Live(edge));
-            }
-            BucketMode::Tree | BucketMode::Slab => {
-                let slot_index = slot.raw();
-                if slot_index >= self.bucket_reserved_edge_slots(owner, &bucket) {
-                    return Ok(EdgeSlotState::Missing);
-                }
-                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, _bucket_slot)?;
-                self.read_edge_state_at_slot(
-                    owner,
-                    &vertex,
-                    bucket_index,
-                    &bucket,
-                    slot_index,
-                    label,
-                )
-            }
-        }
+        self.read_edge_state_at_slot(&bucket, slot.raw())
     }
 
-    /// Reads the state of one logical slot in a label bucket, including slab and overflow-log rows.
+    /// Shared point-state owner for a resolved descriptor (including a read-only
+    /// bypass projection). Mode selects addressing before interpreting any row.
     fn read_edge_state_at_slot(
         &self,
-        owner: VertexId,
-        _vertex: &LabeledVertex,
-        _bucket_index: u32,
         bucket: &LabelBucket,
         slot_index: u32,
-        label: BucketLabelKey,
     ) -> Result<EdgeSlotState<E>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        if slot_index >= self.bucket_reserved_edge_slots(owner, bucket) {
-            return Ok(EdgeSlotState::Missing);
-        }
-        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
-            if slot_index >= bucket.stored_slots() {
-                return Ok(EdgeSlotState::Missing);
+        let edge = match BucketMode::from_bucket(bucket) {
+            BucketMode::Tiny => {
+                debug_assert_eq!(E::BYTES, 4, "tiny buckets require 4-byte edges");
+                if slot_index >= bucket.tiny_used_width() {
+                    return Ok(EdgeSlotState::Missing);
+                }
+                E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
             }
-            let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
-                bucket.edge_start(),
-                u64::from(slot_index),
-            )
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-            let edge = self
-                .edges
-                .read_slot(edge_slot)
-                .with_slot_index(slot_index)
-                .with_label_id(label.raw());
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(EdgeSlotState::Tombstone);
+            BucketMode::Tree => {
+                let Some(target) =
+                    super::tree_read::tree_mode_random_ordinal_access(self, bucket, slot_index)?
+                else {
+                    return Ok(EdgeSlotState::Missing);
+                };
+                E::read_from(&target.to_le_bytes())
             }
-            return Ok(EdgeSlotState::Live(edge));
-        }
-
-        let slab_prefix = self.bucket_slab_prefix_slots(owner, bucket);
-        if slot_index < slab_prefix {
-            let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
-                bucket.edge_start(),
-                u64::from(slot_index),
-            )
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-            let edge = self
-                .edges
-                .read_slot(edge_slot)
-                .with_slot_index(slot_index)
-                .with_label_id(label.raw());
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(EdgeSlotState::Tombstone);
+            BucketMode::Slab => {
+                let prefix = self.edges.initialized_slab_slots(bucket)?;
+                if slot_index < prefix {
+                    let physical = crate::labeled::slot_index::checked_add_slot_index(
+                        bucket.edge_start(),
+                        u64::from(slot_index),
+                    )
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    self.edges.read_slot(physical)
+                } else {
+                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+                        return Ok(EdgeSlotState::Missing);
+                    }
+                    let run = self.edges.spill_mint(bucket.edge_spill_run())?;
+                    let row = slot_index - prefix;
+                    if row >= self.edges.spill_used_len(run) {
+                        return Ok(EdgeSlotState::Missing);
+                    }
+                    self.edges.spill_edge_at(run, row)?
+                }
             }
-            return Ok(EdgeSlotState::Live(edge));
-        }
-
-        // A run is contiguous, so the logical slot maps straight to a row index (ADR 0097 §3):
-        // there is no chain to walk and no precomputed chain to pass in.
-        let row_index = slot_index
-            .checked_sub(slab_prefix)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-        let run = self.edges.spill_mint(bucket.edge_spill_run())?;
-        if row_index >= self.edges.spill_used_len(run) {
-            return Ok(EdgeSlotState::Missing);
-        }
-        let edge = self.edges.spill_edge_at(run, row_index)?;
+        };
         if edge.is_deleted_slot() || edge.is_tombstone_edge() {
             return Ok(EdgeSlotState::Tombstone);
         }
         Ok(EdgeSlotState::Live(
-            edge.with_slot_index(slot_index).with_label_id(label.raw()),
+            edge.with_slot_index(slot_index)
+                .with_label_id(bucket.bucket_label_key().raw()),
         ))
     }
 
-    #[allow(clippy::needless_return)]
     /// Reads a selected set of raw logical slots, optionally reusing a phase-1 hybrid overflow replay.
     fn read_selected_edge_slots_with_optional_replay(
         &self,
@@ -3842,83 +3725,40 @@ where
         if raw_slots.is_empty() {
             return Ok(());
         }
-        let BucketSearch::Found {
-            slot: _bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, vertex, label)?
-        else {
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, vertex, label)? else {
             return Ok(());
         };
         if bucket.degree() == 0 {
             return Ok(());
         }
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read. Tiny slots read inline (ordinals are slots,
-        // holes skipped via the layout predicate); tree/slab share the replay
-        // + slot-read path.
-        match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny per-slot select reads inline targets.
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                for slot_index in order_slot_indices(raw_slots, order) {
-                    if slot_index >= bucket.tiny_used_width() {
-                        continue;
-                    }
-                    // Layout-native liveness (same predicate as slab/tree read paths).
-                    if E::read_from(&bucket.tiny_target(slot_index).to_le_bytes()).is_deleted_slot()
-                    {
-                        continue;
-                    }
-                    let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
-                        .with_slot_index(slot_index)
-                        .with_label_id(label.raw());
-                    visit(slot_index, edge);
-                }
-                return Ok(());
-            }
-            BucketMode::Tree | BucketMode::Slab => {
-                let bucket_index = Self::labeled_bucket_descriptor_index(vertex, _bucket_slot)?;
-                let visit_order = order_slot_indices(raw_slots, order);
-
-                // Reuse a matching phase-1 replay when available and consistent.
-                if let Some(replay) = replay
-                    && replay.is_active()
-                    && bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                    && replay.src == owner
-                    && replay.label_id == label
-                    && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
-                    && replay.degree == bucket.degree()
-                    && replay.stored_slots == bucket.stored_slots_raw()
-                    && replay.spill_run == self.edges.spill_mint(bucket.edge_spill_run()).ok()
-                    && replay.edge_start == bucket.edge_start()
-                {
-                    return self.read_selected_slots_with_hybrid_replay(
-                        &bucket,
-                        label,
-                        &visit_order,
-                        replay,
-                        &mut visit,
-                    );
-                }
-
-                for slot_index in visit_order {
-                    if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(
-                        owner,
-                        vertex,
-                        bucket_index,
-                        &bucket,
-                        slot_index,
-                        label,
-                    )? {
-                        visit(slot_index, edge);
-                    }
-                }
-                Ok(())
+        let visit_order = order_slot_indices(raw_slots, order);
+        // A retained run belongs only to slab mode; tiny/tree cannot carry one.
+        // Preserve the validated phase-1 replay fast path without a second mode decoder.
+        if let Some(replay) = replay
+            && replay.is_active()
+            && bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
+            && replay.src == owner
+            && replay.label_id == label
+            && replay.slab_slots == self.bucket_slab_prefix_slots(owner, &bucket)
+            && replay.degree == bucket.degree()
+            && replay.stored_slots == bucket.stored_slots_raw()
+            && replay.spill_run == self.edges.spill_mint(bucket.edge_spill_run()).ok()
+            && replay.edge_start == bucket.edge_start()
+        {
+            return self.read_selected_slots_with_hybrid_replay(
+                &bucket,
+                label,
+                &visit_order,
+                replay,
+                &mut visit,
+            );
+        }
+        for slot_index in visit_order {
+            if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(&bucket, slot_index)? {
+                visit(slot_index, edge);
             }
         }
+        Ok(())
     }
 
     fn read_selected_slots_with_hybrid_replay(

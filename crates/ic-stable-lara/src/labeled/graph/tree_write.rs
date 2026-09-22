@@ -3522,7 +3522,7 @@ mod tests {
         assert_eq!(collected.len(), 4096);
         // Slot 100 is now the tombstone sentinel.
         let slot_value =
-            super::super::tree_read::tree_mode_random_ordinal_access(&graph, vid, label.raw(), 100)
+            super::super::tree_read::tree_mode_random_ordinal_access(&graph, &bucket_after, 100)
                 .expect("random_ordinal_access")
                 .expect("slot in range");
         // The tombstone target is EDGE_TOMBSTONE_SENTINEL.

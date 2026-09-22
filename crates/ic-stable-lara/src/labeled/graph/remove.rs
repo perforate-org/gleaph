@@ -19,7 +19,8 @@ use std::ops::ControlFlow;
 
 use super::error::LabeledOperationError;
 use super::{
-    BucketMode, BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder, T_DEMOTE,
+    BucketMode, BucketSearch, EdgeRemoval, EdgeSlotMove, EdgeSlotState, LabeledLaraGraph,
+    OutEdgeOrder, T_DEMOTE,
 };
 
 enum BucketEdgeDeleteLocation {
@@ -55,9 +56,8 @@ where
             .map_err(LabeledOperationError::from)
     }
 
-    /// Read-only existence check for a label-row slot.  Mutation callers use this
-    /// before invalidating a published mate leaf so a missing edge remains a true
-    /// no-op.
+    /// Read-only mutation admission through the canonical point-state owner.
+    /// Missing and tombstoned rows are no-ops; storage errors remain errors.
     pub(crate) fn edge_exists_at_slot(
         &self,
         src: VertexId,
@@ -67,40 +67,14 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if label_id != self.bypass_storage_label_for(&vertex)
-                || slot_index >= vertex.stored_degree()
-            {
-                return Ok(false);
-            }
-            let prefix = self.edges.initialized_slab_slots(&vertex)?;
-            if slot_index < prefix {
-                let physical =
-                    checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let edge = self.edges.read_slot(physical);
-                return Ok(!edge.is_deleted_slot() && !edge.is_tombstone_edge());
-            }
-            let ordinal = slot_index
-                .checked_sub(prefix)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
-                return Ok(false);
-            };
-            if ordinal >= self.edges.spill_used_len(run) {
-                return Ok(false);
-            }
-            let edge = self.edges.spill_edge_at(run, ordinal)?;
-            return Ok(!edge.is_tombstone_edge());
-        }
-        let BucketSearch::Found { bucket, .. } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(false);
-        };
-        Ok(self
-            .locate_bucket_edge_for_delete(src, &bucket, slot_index)?
-            .is_some())
+        Ok(matches!(
+            self.read_edge_state(
+                src,
+                label_id,
+                crate::labeled::BucketEntryPosition::new(slot_index)
+            )?,
+            EdgeSlotState::Live(_)
+        ))
     }
 
     fn remove_default_bypass_edge_at_slot(
