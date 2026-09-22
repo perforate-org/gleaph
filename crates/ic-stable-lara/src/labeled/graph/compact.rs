@@ -1708,11 +1708,17 @@ where
         }
         let mut next_live = resume_slot_index;
         let mut bytes = [0u8; crate::lara::edge::INLINE_EDGE_BYTES];
+        // Only slab descriptors expose a prefix width here. Tree stored_slots is
+        // logical extent, not root-array width; keep non-slab reads on the old path.
+        let prefetch = !bucket.is_tiny_mode()
+            && !bucket.is_tree_mode()
+            && E::BYTES > 0
+            && E::BYTES <= bytes.len();
         let (mut byte_cursor, mut buffered_bytes) = (0, 0);
         for old_slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let edge = if E::BYTES > 0 && E::BYTES <= bytes.len() {
+            let edge = if prefetch {
                 if byte_cursor == buffered_bytes {
                     // Prefetch only initialized slots, also stopping at the address limit.
                     // Keep per-slot admission above: an earlier selected move must not be
