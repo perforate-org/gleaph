@@ -77,7 +77,7 @@ use ic_stable_structures::Memory;
 use span_meta::SegmentSpanMetaStore;
 use std::cell::Cell;
 
-pub(super) const INLINE_EDGE_BYTES: usize = 64;
+pub(crate) const INLINE_EDGE_BYTES: usize = 64;
 
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] and [`OutEdgeSlabIter`]
 /// read the slab in fixed-size **descending** slot chunks instead of one stable read per edge.

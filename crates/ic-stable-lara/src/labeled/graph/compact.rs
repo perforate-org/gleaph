@@ -1707,10 +1707,30 @@ where
             return Ok(None);
         }
         let mut next_live = resume_slot_index;
+        let mut bytes = [0u8; crate::lara::edge::INLINE_EDGE_BYTES];
+        let (mut byte_cursor, mut buffered_bytes) = (0, 0);
         for old_slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if edges.read_slot(edge_slot).is_tombstone_edge() {
+            let edge = if E::BYTES > 0 && E::BYTES <= bytes.len() {
+                if byte_cursor == buffered_bytes {
+                    // Prefetch only initialized slots, also stopping at the address limit.
+                    // Keep per-slot admission above: an earlier selected move must not be
+                    // rejected merely because a later slot would overflow.
+                    let count = u64::from(bucket.stored_slots() - old_slot_index)
+                        .min((bytes.len() / E::BYTES) as u64)
+                        .min(crate::slab_index::MAX_SLOT_EXCLUSIVE_END - edge_slot);
+                    buffered_bytes = count as usize * E::BYTES; // bounded by bytes.len()
+                    edges.read_slots_contiguous(edge_slot, &mut bytes[..buffered_bytes]);
+                    byte_cursor = 0;
+                }
+                let edge = E::read_from(&bytes[byte_cursor..byte_cursor + E::BYTES]);
+                byte_cursor += E::BYTES;
+                edge
+            } else {
+                edges.read_slot(edge_slot)
+            };
+            if edge.is_tombstone_edge() {
                 continue;
             }
             if old_slot_index != next_live {
