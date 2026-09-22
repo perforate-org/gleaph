@@ -1,3 +1,5 @@
+// Corrected diagnostic: reported moves remain authoritative at Finished.
+// The superseded reset oracle is preserved in adr0097-crossover-16k-finished-reset-probe.rs.
 use super::*;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
 use ic_stable_structures::Memory;
@@ -174,14 +176,22 @@ fn apply_moves(expected: &mut [Option<u32>], moves: &[EdgeSlotMove]) {
 }
 
 #[test]
-fn diagnostic_crossover_16k_parity() {
+fn diagnostic_crossover_16k_event_parity() {
+    let original = exercise(false, None);
+    exercise(true, Some(&original));
+}
+
+fn exercise(forward_cursor: bool, original: Option<&[Vec<u8>]>) -> Vec<Vec<u8>> {
     let expected_manifest = std::env::var("SPILL_PROBE_EXPECTED_MANIFEST").unwrap();
     assert_eq!(
         std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap(),
         std::fs::canonicalize(expected_manifest).unwrap(),
         "stale shared-target binary"
     );
-    eprintln!("CROSSOVER compiled_manifest={}", env!("CARGO_MANIFEST_DIR"));
+    eprintln!(
+        "CROSSOVER compiled_manifest={} forward_cursor={forward_cursor}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let counts = Rc::new(RefCell::new([[0; 6]; 16]));
     let m: Vec<_> = (0..16)
         .map(|id| CountMemory {
@@ -255,39 +265,71 @@ fn diagnostic_crossover_16k_parity() {
     );
     eprintln!("CROSSOVER precompact identities verified={}", odd.len());
 
-    let out = std::path::PathBuf::from(std::env::var_os("SPILL_PROBE_OUTPUT").unwrap());
+    // Assert physical byte parity before comparing cursor work, not merely matching names.
+    let seeded: Vec<_> = m
+        .iter()
+        .map(|memory| memory.inner.borrow().clone())
+        .collect();
+    if let Some(original) = original {
+        assert_eq!(seeded.len(), original.len());
+        for (role, (before, after)) in original.iter().zip(&seeded).enumerate() {
+            assert!(
+                before == after,
+                "precompaction backing differs at role {role}"
+            );
+        }
+        eprintln!(
+            "CROSSOVER precompaction_backing_byte_equal roles={}",
+            seeded.len()
+        );
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("SPILL_PROBE_OUTPUT").unwrap()).join(
+        if forward_cursor {
+            "forwarded-cursor"
+        } else {
+            "zero-cursor"
+        },
+    );
+    std::fs::create_dir_all(&out).unwrap();
     let mut steps = std::fs::File::create(out.join("steps.tsv")).unwrap();
     let mut movements = std::fs::File::create(out.join("movements.tsv")).unwrap();
-    writeln!(steps, "step\tresume_bucket\toutcome\tmoves").unwrap();
+    writeln!(steps, "step\tresume_bucket\tresume_slot\toutcome\tmoves").unwrap();
     writeln!(movements, "step\told_slot\tnew_slot").unwrap();
     let mut expected: Vec<_> = (0..N).map(|i| (i % 2 == 1).then_some(i)).collect();
     let mut resume = 0;
+    let mut cursor = 0;
     let mut stats = [0u32; 4]; // EdgeMoved, AdvanceBucket, OverflowRewrite, Finished
     let mut finished = false;
     let mut stopping_error = None;
     let t = begin(&m[0]);
     for step in 0..(2 * N + 16) {
         let before = resume;
+        let before_cursor = cursor;
         let result = graph.compact_vertex_edge_span_one_step_with_span_policy(
             src,
             resume,
-            0,
+            cursor,
             &|_| EdgePlacementPolicy::Insertion,
             SpanResolutionPolicy::SlackMayBeDropped,
         );
         let (outcome, moves) = match result {
             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(m)) => {
                 stats[0] += 1;
+                if forward_cursor {
+                    cursor = m.new_slot_index.checked_add(1).unwrap();
+                }
                 ("EdgeMoved", vec![m])
             }
             Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
                 stats[1] += 1;
                 resume = next;
+                cursor = 0;
                 ("AdvanceBucket", Vec::new())
             }
             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves)) => {
                 stats[2] += 1;
                 resume = 0;
+                cursor = 0;
                 ("OverflowRewrite", moves)
             }
             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
@@ -300,7 +342,12 @@ fn diagnostic_crossover_16k_parity() {
                 ("Error", Vec::new())
             }
         };
-        writeln!(steps, "{step}\t{before}\t{outcome}\t{}", moves.len()).unwrap();
+        writeln!(
+            steps,
+            "{step}\t{before}\t{before_cursor}\t{outcome}\t{}",
+            moves.len()
+        )
+        .unwrap();
         for m in &moves {
             writeln!(
                 movements,
@@ -334,24 +381,9 @@ fn diagnostic_crossover_16k_parity() {
         (1..N).step_by(2).collect::<Vec<_>>(),
         "insertion-order movement contract"
     );
-    // Finished can bulk-rewrite the vertex span, without individual move events.
-    // An error is not that completion boundary: retain the reported-move oracle.
-    let exact: Vec<_> = if finished {
-        let vertex = graph.vertices().get(src);
-        let bucket = match graph.find_bucket(src, &vertex, label).unwrap() {
-            BucketSearch::Found { bucket, .. } => bucket,
-            _ => panic!("missing completed bucket"),
-        };
-        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
-        assert_eq!(bucket.stored_slots_raw(), N / 2);
-        (0..N / 2).map(|slot| (slot, 2 * slot + 1)).collect()
-    } else {
-        reported.clone()
-    };
-    eprintln!(
-        "CROSSOVER completion_bulk_remapped={}",
-        exact.iter().zip(&reported).filter(|(a, b)| a != b).count()
-    );
+    // Completion cannot excuse an unreported move. Neither Finished nor an error
+    // replaces this event-replayed oracle with a packed/canonical view.
+    let exact = reported;
     for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
         let t = begin(&m[0]);
         let rows = collect(&graph, order);
@@ -375,6 +407,10 @@ fn diagnostic_crossover_16k_parity() {
             for (slot, target) in &rows {
                 writeln!(final_rows, "{slot}\t{target}").unwrap();
             }
+            eprintln!(
+                "CROSSOVER unreported_slot_changes={}",
+                rows.iter().zip(&truth).filter(|(a, b)| a != b).count()
+            );
         }
         assert_rows(rows, &truth);
     }
@@ -382,4 +418,9 @@ fn diagnostic_crossover_16k_parity() {
         "CROSSOVER final identities verified={} completed={finished} stopping_error={stopping_error:?}",
         exact.len()
     );
+    assert!(
+        finished && stopping_error.is_none(),
+        "pending/error is not successful completion"
+    );
+    seeded
 }

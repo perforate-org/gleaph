@@ -1,6 +1,11 @@
 {
   "baseline_head": "7735a59875e573cb3d45ee0a3e4ec786ba275a9d",
   "descriptor_fix": "bc5c7d37f",
+  "probe_history": {
+    "original_path": "adr0097-crossover-16k-probe.rs",
+    "preserved_as_used_path": "adr0097-crossover-16k-finished-reset-probe.rs",
+    "classification": "The passing historical reset oracle proves canonical targets/order, not notification parity. The historical trace contains 8192 unreported moves at Finished. The corrected probe now occupies the original path; these measurements were not rerun."
+  },
   "references": {
     "3ea7dc739": {
       "path": "/tmp/spill-p2-16k-7735.fmxSXg/source-3ea7dc739-jiyk3tb8",
@@ -71,7 +76,7 @@
   "reserved_final_seconds": 120,
   "observed_seconds": 259.9830754987197,
   "artifact_sha256": {
-    "adr0097-crossover-16k-probe.rs": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c",
+    "adr0097-crossover-16k-finished-reset-probe.rs": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c",
     "adr0097-crossover-16k-3ea-native.txt": "bb1cef6a73d7c262cb8f5df252b20cd741bb9883477c792c99d91f4ed0e79ea5",
     "adr0097-crossover-16k-3ea-steps.tsv": "a0ae73541c390697b15924f8395198b0368b818e0c6f8d4539bde2534adc89a1",
     "adr0097-crossover-16k-3ea-movements.tsv": "01037dfb3371c05aa93070e3259141c06614a20f33cf4625048d1d57470bc7a2",

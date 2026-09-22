@@ -1,0 +1,86 @@
+{
+  "baseline": "d4c59ff8b27f7b24c80510a7319cc1f48b6c1fc5",
+  "implementation": "15ceaabf16883ff09de65246a97e3f4d4ed0b7a7",
+  "native_provenance": {
+    "code_commit": "15ceaabf16883ff09de65246a97e3f4d4ed0b7a7",
+    "probe_sha256": "be28e6196fd3cc8a42f0720177821174d69f55f841c2b00d029de2bddb30e602",
+    "production_compact_sha256": "609eaa8947dc44bc3d99ad33a7480febd235eee5bcdd6802d2d417e0d5655fee",
+    "fixture_bench_sha256": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7"
+  },
+  "historical_trace_review": {
+    "3ea": {
+      "recorded_moves": 0,
+      "canonical_survivors": 8192,
+      "unreported_ordinal_changes": 8192,
+      "movement_contract_pass": false
+    },
+    "5ad": {
+      "recorded_moves": 8192,
+      "canonical_survivors": 8192,
+      "unreported_ordinal_changes": 0,
+      "movement_contract_pass": true
+    }
+  },
+  "red_green_identical_test_body_sha256": {
+    "retained_compaction_finished_matches_every_reported_move": "0925103cd4aa4d699d20e779b6a9c0ad0f453bbbfa675325c1747f5d3826b4be",
+    "retained_compaction_observer_keeps_external_identities_through_retry_and_finish": "27d448a4751dc3d59d43e94e37a20e6a3e6bd84386b0c7725b4ef373c0437782"
+  },
+  "fixture_difference": "The shared fixture drops the removed compact=false argument. After the initial red/green, 4912fa786 strengthens the values preconditions to prefix 13/run used 1; original red had unequal prefixes and a retained values-run id, not these exact value extents. Named test bodies remain identical.",
+  "cursor_trace_sha256": {
+    "zero-cursor": {
+      "steps.tsv": "a423e3c6f533617ec759f1823cb633e4c583c4b969916fd07c78ffcce77b7a6b",
+      "movements.tsv": "57f2dfe151795dc56f5ea14fdd4b2d38e0e127534a1119229b5e74b0f0fe95ae",
+      "final-ordinals.tsv": "c5dae1b9e6885ebbd122fc2e6c5cfd87b1e9f12e53f0c738f99e8e3472bd95a3"
+    },
+    "forwarded-cursor": {
+      "steps.tsv": "4d5d4582e5f07f1803d00c7ba413552fea638b478773b1bead5119308394ee0b",
+      "movements.tsv": "57f2dfe151795dc56f5ea14fdd4b2d38e0e127534a1119229b5e74b0f0fe95ae",
+      "final-ordinals.tsv": "c5dae1b9e6885ebbd122fc2e6c5cfd87b1e9f12e53f0c738f99e8e3472bd95a3"
+    }
+  },
+  "cursor_movement_and_final_trace_equivalence": "Both newly executed movement/final files byte-match preserved 5ad movement/final evidence; full raw files and distinct step traces retained in temporary root.",
+  "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+  "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "lock_reconstruction": "Existing adr0097-crossover-as-used-lock.patch; git apply --unidiff-zero.",
+  "preserved": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7"
+  },
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "elapsed_seconds": 89.11628525156993,
+  "remaining_seconds": 510.88371474843007,
+  "raw_root": "/tmp/spill-moves-d4c-aivo_i73",
+  "artifact_sha256": {
+    "sources/adr0097-compaction-final-format.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sources/adr0097-compaction-lizard.md": "be321c767acfca39abd91afbee2acfe8585f27a9c04ff93b27e2c39013e82dac",
+    "sources/adr0097-compaction-movement-green.txt": "a301eb291eb9edbaf1503ff1caebac4f02354f2383876778016196dec9e3f255",
+    "sources/adr0097-compaction-contracts.txt": "c21cc381d43b6b50b755adfcaa7cfe272576f9e3e57cb9ff392640db3e2f04a8",
+    "sources/adr0097-compaction-cursor-native.txt": "7871bd8b14356fd2d9dd61a371b2f935bc2aa3a62d91c1ec1cbb9e7e9b8d45f8",
+    "sources/adr0097-compaction-rewrite-contracts.txt": "eeb2c3237670efd70e00c959107f09598ac225b8003651b9578b8bb25858360c",
+    "sources/adr0097-compaction-final-clippy.txt": "7db07f173510d3064c8d5605aaeaf00f2fe2932e33b97dbb5ff0f1d98e67382f",
+    "sources/adr0097-compaction-versions.txt": "4842a8f5a9b63e50ea54379f8d348ce173b00c8e6a7959a84fa3c9c094bc5b17",
+    "sources/adr0097-compaction-movement-ledger.json": "272e55a037592644ba886c15e40fe83c2314dcda4dea11c16ff6d76adef84acd",
+    "sources/adr0097-compaction-relocation-contracts.txt": "60d9f1877cc3a882607a8afa1fd8bafb1d09b80560223ac69fe51379bb252083",
+    "sources/adr0097-compaction-final-contracts.txt": "6db1162e148d391d6cef8581c9c05d76f5fefcff672d04270264a89819dd9066",
+    "sources/adr0097-compaction-movement-red.txt": "dd26150f9c4b5e58d60b874f19c3a00852f35fe82135020503d5c15c3dca033f",
+    "sources/adr0097-compaction-final-value-format.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sources/adr0097-compaction-movement-run.py": "d50fbbd739333ed9b8a4593e0367a81b254919081b9143771cbfad8f91ab4ecc",
+    "adr0097-compaction-cursor-phases.csv": "181d3bf304f28df561c9c109e25898ef4165d4736375b8b7d11a9a33f28c4bdf",
+    "sources/adr0097-crossover-16k-probe.rs": "be28e6196fd3cc8a42f0720177821174d69f55f841c2b00d029de2bddb30e602",
+    "sources/adr0097-crossover-16k-initial-event-probe.rs": "05a3270296bc08d517a8fed68b83cec448e1b9293d0902ad80d2c71af22e3c01",
+    "sources/adr0097-crossover-16k-initial-event-red.txt": "ad6757ea87c2bb35f6142a627750bacbeddeea97636e3e1735d5d3b206faa63c",
+    "sources/adr0097-crossover-16k-finished-reset-probe.rs": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c"
+  },
+  "limits": [
+    "No canbench, full library sweep, persistence, independent review, PocketIC or merge in this slice.",
+    "Historical reset-oracle exits remain runtime facts, not notification acceptance.",
+    "Native counts are not IC syscall counts or instruction prices.",
+    "An evidence-copy reporting lookup used a nonexistent spent_seconds key after copies and lock restoration; corrected by summing recorded runs, without validation rerun."
+  ]
+}

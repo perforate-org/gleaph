@@ -1,0 +1,358 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2279:9
+     |
+2279 | /         graph
+2280 | |             .visit_edges(
+2281 | |                 vid,
+2282 | |                 label,
+...    |
+2289 | |             .unwrap();
+     | |_____________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2279 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2338:9
+     |
+2338 | /         graph
+2339 | |             .visit_edges(
+2340 | |                 vid,
+2341 | |                 label,
+...    |
+2348 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2338 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2061:9
+     |
+2061 | /         graph
+2062 | |             .visit_edges(
+2063 | |                 vid,
+2064 | |                 label,
+...    |
+2071 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2061 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2141:9
+     |
+2141 | /         graph
+2142 | |             .visit_edges(
+2143 | |                 VertexId::from(0),
+2144 | |                 label,
+...    |
+2151 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2141 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:184:13
+    |
+184 | /             graph
+185 | |                 .visit_edges(vid, label, order, |slot, edge| {
+186 | |                     seen.push((slot.raw(), edge.0));
+187 | |                     ControlFlow::<()>::Continue(())
+188 | |                 })
+189 | |                 .unwrap();
+    | |_________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+184 |             let _ = graph
+    |             +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:236:9
+    |
+236 | /         graph
+237 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+238 | |                 survivors.push((slot.raw(), edge.0));
+239 | |                 ControlFlow::<()>::Continue(())
+240 | |             })
+241 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+236 |         let _ = graph
+    |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:323:5
+    |
+323 | /     graph
+324 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+325 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+326 | |             before.push((slot.raw(), item.edge.target));
+327 | |             ControlFlow::<()>::Continue(())
+328 | |         })
+329 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+323 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:344:5
+    |
+344 | /     graph
+345 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
+346 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+347 | |             after.push((slot.raw(), item.edge.target));
+348 | |             ControlFlow::<()>::Continue(())
+349 | |         })
+350 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+344 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:130:5
+    |
+130 | /     graph
+131 | |         .visit_edges(
+132 | |             VertexId::from(0),
+133 | |             label,
+...   |
+140 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+130 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:281:5
+    |
+281 | /     graph
+282 | |         .visit_edges(
+283 | |             VertexId::from(0),
+284 | |             label,
+...   |
+291 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+281 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:6922:9
+     |
+6922 | /         graph
+6923 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+6924 | |                 seen.push(u32::from(edge.neighbor_vid()));
+6925 | |                 ControlFlow::<()>::Continue(())
+6926 | |             })
+6927 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+6922 |         let _ = graph
+     |         +++++++
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/ic-stable-lara/src/labeled/graph/tree_write.rs:6270:9
+     |
+6270 |         drop(post);
+     |         ^^^^^----^
+     |              |
+     |              argument has type `record::LabelBucket`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+6270 -         drop(post);
+6270 +         let _ = post;
+     |
+
+warning: `ic-stable-lara` (lib test) generated 15 warnings (run `cargo fix --lib -p ic-stable-lara --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.62s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae)
+
+running 1 test
+CROSSOVER compiled_manifest=/Users/yota/dev/gleaph-spill/crates/ic-stable-lara forward_cursor=false
+CROSSOVER phase=constructor seconds=0.124330 rwg=[[0, 0, 5, 64, 1, 1], [0, 0, 12, 65, 1, 549], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 8, 80, 1, 1], [0, 0, 12, 65, 1, 165], [0, 0, 1, 64, 1, 1], [0, 0, 7, 48, 1, 1], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 7, 65, 1, 17], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 1, 64, 1, 1], [0, 0, 3, 92, 1, 1], [0, 0, 9, 64, 1, 1]] decodes=[0, 0]
+CROSSOVER phase=seed seconds=0.052530 rwg=[[65695, 1642375, 31, 754, 0, 0], [65831, 2699120, 16436, 558178, 0, 0], [124, 992, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [16468, 263488, 16394, 262304, 0, 0], [25, 1133796, 32794, 1428429, 1, 6], [64818, 369864, 18594, 129456, 1, 1], [58, 464, 8, 64, 0, 0], [695, 5140, 52, 809, 0, 0], [576, 3984, 131, 896, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[18432, 0]
+CROSSOVER shape=seeded mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=16384 global=16384 leaf=SegmentEdgeCounts { actual: 16384, total: 17536 }
+CROSSOVER seeded identities verified=16384
+CROSSOVER phase=remove_even seconds=0.013520 rwg=[[8192, 204800, 0, 0, 0, 0], [24576, 1064960, 8192, 32768, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [8192, 131072, 8192, 131072, 0, 0], [8192, 81920, 16384, 147456, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER shape=removed mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER precompact identities verified=8192
+CROSSOVER compaction progress step=0 stats=[1, 0, 0, 0]
+CROSSOVER compaction progress step=1024 stats=[1025, 0, 0, 0]
+CROSSOVER compaction progress step=2048 stats=[2049, 0, 0, 0]
+CROSSOVER compaction progress step=3072 stats=[3073, 0, 0, 0]
+CROSSOVER compaction progress step=4096 stats=[4097, 0, 0, 0]
+CROSSOVER compaction progress step=5120 stats=[5121, 0, 0, 0]
+CROSSOVER compaction progress step=6144 stats=[6145, 0, 0, 0]
+CROSSOVER compaction progress step=7168 stats=[7169, 0, 0, 0]
+CROSSOVER compaction progress step=8192 stats=[8192, 1, 0, 0]
+CROSSOVER phase=compact seconds=7.082678 rwg=[[8197, 204925, 2, 50, 0, 0], [32780, 1343980, 2, 68, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [2, 32, 0, 0, 0, 0], [67141633, 671498240, 16385, 245760, 0, 0], [0, 0, 0, 0, 0, 0], [2, 16, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[33574912, 33566720]
+CROSSOVER outcome finished=true error=None stats=[8192, 1, 0, 1]
+CROSSOVER shape=after_compact mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 8192, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=8192 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER phase=final_asc seconds=0.000706 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER unreported_slot_changes=0
+CROSSOVER phase=final_desc seconds=0.000432 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER final identities verified=8192 completed=true stopping_error=None
+CROSSOVER compiled_manifest=/Users/yota/dev/gleaph-spill/crates/ic-stable-lara forward_cursor=true
+CROSSOVER phase=constructor seconds=0.122429 rwg=[[0, 0, 5, 64, 1, 1], [0, 0, 12, 65, 1, 549], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 8, 80, 1, 1], [0, 0, 12, 65, 1, 165], [0, 0, 1, 64, 1, 1], [0, 0, 7, 48, 1, 1], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 7, 65, 1, 17], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 1, 64, 1, 1], [0, 0, 3, 92, 1, 1], [0, 0, 9, 64, 1, 1]] decodes=[0, 0]
+CROSSOVER phase=seed seconds=0.053054 rwg=[[65695, 1642375, 31, 754, 0, 0], [65831, 2699120, 16436, 558178, 0, 0], [124, 992, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [16468, 263488, 16394, 262304, 0, 0], [25, 1133796, 32794, 1428429, 1, 6], [64818, 369864, 18594, 129456, 1, 1], [58, 464, 8, 64, 0, 0], [695, 5140, 52, 809, 0, 0], [576, 3984, 131, 896, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[18432, 0]
+CROSSOVER shape=seeded mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=16384 global=16384 leaf=SegmentEdgeCounts { actual: 16384, total: 17536 }
+CROSSOVER seeded identities verified=16384
+CROSSOVER phase=remove_even seconds=0.013657 rwg=[[8192, 204800, 0, 0, 0, 0], [24576, 1064960, 8192, 32768, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [8192, 131072, 8192, 131072, 0, 0], [8192, 81920, 16384, 147456, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER shape=removed mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER precompact identities verified=8192
+CROSSOVER precompaction_backing_byte_equal roles=16
+CROSSOVER compaction progress step=0 stats=[1, 0, 0, 0]
+CROSSOVER compaction progress step=1024 stats=[1025, 0, 0, 0]
+CROSSOVER compaction progress step=2048 stats=[2049, 0, 0, 0]
+CROSSOVER compaction progress step=3072 stats=[3073, 0, 0, 0]
+CROSSOVER compaction progress step=4096 stats=[4097, 0, 0, 0]
+CROSSOVER compaction progress step=5120 stats=[5121, 0, 0, 0]
+CROSSOVER compaction progress step=6144 stats=[6145, 0, 0, 0]
+CROSSOVER compaction progress step=7168 stats=[7169, 0, 0, 0]
+CROSSOVER compaction progress step=8192 stats=[8192, 1, 0, 0]
+CROSSOVER phase=compact seconds=3.622044 rwg=[[8197, 204925, 2, 50, 0, 0], [32780, 1343980, 2, 68, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [2, 32, 0, 0, 0, 0], [33599489, 336076800, 16385, 245760, 0, 0], [0, 0, 0, 0, 0, 0], [2, 16, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[24576, 33574912]
+CROSSOVER outcome finished=true error=None stats=[8192, 1, 0, 1]
+CROSSOVER shape=after_compact mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 8192, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=8192 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER phase=final_asc seconds=0.000526 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER unreported_slot_changes=0
+CROSSOVER phase=final_desc seconds=0.000405 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER final identities verified=8192 completed=true stopping_error=None
+test labeled::graph::diagnostic_crossover::diagnostic_crossover_16k_event_parity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 661 filtered out; finished in 11.28s
