@@ -789,7 +789,6 @@ where
         src: VertexId,
         vertex: &LabeledVertex,
         preferred_extra: u32,
-        compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
         policy: SpanResolutionPolicy,
@@ -817,15 +816,9 @@ where
             if bucket.is_tiny_mode() {
                 continue;
             }
-            // Compaction materializes live rows; relocation copies only existing
-            // physical regions, leaving run rows and ordinals unchanged.
-            let resident = if compact {
-                bucket.degree()
-            } else {
-                // Leaf reservation retains its logical resident/headroom policy;
-                // that reservation width is not the physical copy width here.
-                bucket_physical_resident_slots(bucket)
-            };
+            // Physical publication preserves initialized regions and run ordinals.
+            // Logical reservation/headroom policy remains separate.
+            let resident = bucket_physical_resident_slots(bucket);
             total_live = total_live
                 .checked_add(resident)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
@@ -846,9 +839,7 @@ where
             let moved = old_alloc != new_alloc || old_base != new_base;
             return Ok((buckets, old_alloc, old_base, new_alloc, moved, new_base));
         }
-        let new_alloc = if compact {
-            total_live
-        } else if total_live == 0 && preferred_extra == 0 {
+        let new_alloc = if total_live == 0 && preferred_extra == 0 {
             // A spanless vertex (all buckets tiny, no room requested) owns zero slab slots by
             // ADR 0096 §5, so it must not request slack: the request would be a real span
             // (`next_vertex_edge_span_allocation` returns at least `segment_size`), and when
@@ -870,7 +861,7 @@ where
         let requested_alloc = new_alloc;
         let (new_base, new_alloc) = if new_alloc == 0 {
             (0, 0)
-        } else if !compact && old_alloc > 0 && old_alloc >= min_required && new_alloc > old_alloc {
+        } else if old_alloc > 0 && old_alloc >= min_required && new_alloc > old_alloc {
             // Content already fits and the only reason to widen is spare capacity. One
             // placement attempt in the current window *is* the answer when it succeeds (no
             // second attempt through the resolver), and when it fails the span stays as it is:
@@ -880,14 +871,14 @@ where
                 Some(base) => (base, new_alloc),
                 None => (old_base, old_alloc),
             }
-        } else if old_alloc == 0 || new_alloc > old_alloc || compact {
+        } else if old_alloc == 0 || new_alloc > old_alloc {
             self.resolve_labeled_edge_base_for_policy(src, requested_alloc, policy)?
         } else {
             (old_base, new_alloc)
         };
         // I1: the plan reports the width the resolution obtained, so the commit never
         // publishes a cover wider than the span that backs it.
-        let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
+        let moved = old_alloc == 0 || new_alloc > old_alloc;
 
         // Positions are the shared commit's decision: it recomputes them from the
         // materialized runs and the caller's placement preference, so the plan only
@@ -906,7 +897,6 @@ where
         src: VertexId,
         preferred_bucket: Option<u32>,
         preferred_extra: u32,
-        compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
     ) -> Result<(), LabeledOperationError>
@@ -917,7 +907,6 @@ where
             src,
             preferred_bucket,
             preferred_extra,
-            compact,
             force_slack_grow,
             in_window_layout,
             SpanResolutionPolicy::Required,
@@ -930,7 +919,6 @@ where
         src: VertexId,
         preferred_bucket: Option<u32>,
         preferred_extra: u32,
-        compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
         policy: SpanResolutionPolicy,
@@ -966,7 +954,6 @@ where
                 src,
                 &planned_vertex,
                 preferred_extra,
-                compact,
                 force_slack_grow,
                 in_window_layout,
                 policy,
@@ -991,42 +978,28 @@ where
                 src,
                 preferred_bucket,
                 preferred_extra,
-                compact,
                 false,
                 in_window_layout,
                 policy,
             );
         }
 
-        // One content path for every bucket: materialize each bucket's resident
-        // content (tiny nothing; tree its LEG root array; slab the packed live run
-        // when compacting, else its raw prefix plus log rows) and publish it through
-        // `commit_vertex_edge_span_layout`, which owns the tiling, the descriptor
-        // rows and the vertex row. The three per-branch fast paths that used to do
-        // this inline reproduced the same logic and drifted apart
-        // (GAP-2026-09-20-005).
-        // ADR 0097 §7: a compacting rewrite folds a bucket's run into its prefix; a
-        // relocation keeps the run and materializes the slab prefix alone, so the
-        // prefix width - and with it every spill ordinal - survives the move.
-        let (per_bucket_edges, per_bucket_raw) =
-            self.materialize_labeled_vertex_edge_plan(&buckets, compact, compact)?;
-        let mut edge_buf: Vec<u8> = Vec::new();
+        // Physical publication has no movement-result channel. Capture prefixes/root
+        // arrays only; logical compaction belongs to the notification-bearing steps.
+        let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
         let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
         self.commit_vertex_edge_span_layout(
             src,
             &vertex,
             &buckets,
-            &per_bucket_edges,
             &per_bucket_raw,
-            &mut edge_buf,
             &mut bucket_row_bytes_buf,
             new_base,
             new_alloc,
             preferred_bucket.map(|index| index as usize),
             preferred_extra,
-            false,   // not a leaf-relocation commit
-            compact, // a compacting rewrite folds runs into the published rows; a relocation keeps them
-            true,    // the finalize block below owns the vertex-footprint release
+            false, // not a leaf-relocation commit
+            true,  // the finalize block below owns the vertex-footprint release
         )?;
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1382,25 +1355,20 @@ where
         if disjoint_source.is_some() {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_stream_disjoint_relocation");
-            let mut edge_buf = Vec::new();
             let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(&buckets, false, false)?;
+                let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
                     &buckets,
-                    &per_bucket_edges,
                     &per_bucket_raw,
-                    &mut edge_buf,
                     &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
                     None,
                     0,
                     leaf_relocate_commit,
-                    false,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1409,37 +1377,22 @@ where
             let _scope = bench_scope("labeled_leaf_materialize_plans");
             let mut plans = Vec::with_capacity(positioned.len());
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let (per_bucket_edges, per_bucket_raw) =
-                    self.materialize_labeled_vertex_edge_plan(&buckets, false, false)?;
-                plans.push((
-                    vid,
-                    vertex,
-                    buckets,
-                    v_start,
-                    span_slots,
-                    per_bucket_edges,
-                    per_bucket_raw,
-                ));
+                let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
+                plans.push((vid, vertex, buckets, v_start, span_slots, per_bucket_raw));
             }
-            let mut edge_buf = Vec::new();
             let mut bucket_row_bytes_buf = Vec::new();
-            for (vid, vertex, buckets, v_start, span_slots, per_bucket_edges, per_bucket_raw) in
-                plans
-            {
+            for (vid, vertex, buckets, v_start, span_slots, per_bucket_raw) in plans {
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
                     &buckets,
-                    &per_bucket_edges,
                     &per_bucket_raw,
-                    &mut edge_buf,
                     &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
                     None,
                     0,
                     leaf_relocate_commit,
-                    false,
                     suppress_vertex_footprint_release,
                 )?;
             }
@@ -1447,120 +1400,26 @@ where
         Ok(())
     }
 
-    /// `fold_logs` selects which owner keeps a bucket's spill rows (ADR 0097 §7):
-    /// `true` materializes prefix + run and lets the commit publish them as one
-    /// prefix, clearing and releasing the run - only a *compacting* rewrite does that,
-    /// and it owns the slot-move notification those shifted ordinals require
-    /// (`vertex_edge_span_slot_moves`); `false` materializes the slab prefix alone and
-    /// leaves the run where it is, which is the contract for every relocation: it
-    /// re-anchors the prefix, preserves the prefix width and with it every spill
-    /// ordinal, and needs no move notification.
+    /// Capture only physical regions: tiny descriptors have none, trees have root
+    /// arrays, and slab buckets have initialized prefixes. Publication changes origins,
+    /// never logical ordinals or run ownership, so it requires no move notifications.
     fn materialize_labeled_vertex_edge_plan(
         &self,
         buckets: &[LabelBucket],
-        fold_logs: bool,
-        compact: bool,
-    ) -> Result<(Vec<Option<Vec<E>>>, Vec<Option<Vec<u8>>>), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let mut per_bucket_edges = Vec::with_capacity(buckets.len());
-        let mut per_bucket_raw = Vec::with_capacity(buckets.len());
-        for bucket in buckets {
-            // ADR 0096 §5: tiny buckets move zero bytes; the commit path below
-            // stamps their anchor from the running boundary. Push empty runs so
-            // per-bucket indices stay aligned with the resident rebuild.
-            if bucket.is_tiny_mode() {
-                per_bucket_edges.push(None);
-                per_bucket_raw.push(Some(Vec::new()));
-                continue;
-            }
-            // GAP-2026-09-17-001: tree buckets hold only their root region in
-            // LEG (`combined_span_region_len`); the logical `stored_slots` edge
-            // count is NOT a readable span. Reading `stored_slots` slots from
-            // `edge_start` walks past the root into live ranges (in the M1
-            // shape: the promotion-recycled slab prefix still referenced by
-            // the free store) and the relocate then republishes those bytes as
-            // the bucket's new span — corruption. Read the physical region.
-            let physical_slots = bucket_physical_resident_slots(bucket);
-            if !fold_logs {
-                let run = Self::edge_bytes_for_len(physical_slots as usize)?;
-                let mut raw = vec![0u8; run];
-                if run > 0 {
+    ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
+        buckets
+            .iter()
+            .map(|bucket| {
+                let bytes =
+                    Self::edge_bytes_for_len(bucket_physical_resident_slots(bucket) as usize)?;
+                let mut raw = vec![0u8; bytes];
+                if !raw.is_empty() {
                     self.edges
                         .read_slots_contiguous(bucket.edge_start(), &mut raw);
                 }
-                per_bucket_edges.push(None);
-                per_bucket_raw.push(Some(raw));
-                continue;
-            }
-            let resident_slots = self.bucket_resident_rows(bucket)?;
-            if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
-                let run = Self::edge_bytes_for_len(physical_slots as usize)?;
-                let mut raw = vec![0u8; run];
-                if run > 0 {
-                    self.edges
-                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
-                }
-                // A compacting rewrite publishes live rows only, so the run must
-                // match the plan's packed budget (`degree`) rather than the
-                // tombstone-inclusive prefix.
-                let raw = if compact {
-                    Self::pack_live_edge_slots::<E>(&raw)
-                } else {
-                    raw
-                };
-                per_bucket_edges.push(None);
-                per_bucket_raw.push(Some(raw));
-            } else {
-                let mut resident = Vec::with_capacity(resident_slots as usize);
-                if physical_slots > 0 {
-                    let run = Self::edge_bytes_for_len(physical_slots as usize)?;
-                    let mut raw = vec![0u8; run];
-                    self.edges
-                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
-                    for bytes in raw.chunks_exact(E::BYTES) {
-                        let edge = E::read_from(bytes);
-                        // Compaction folds the log into live rows: a superseded
-                        // prefix slot must not survive next to the log entry that
-                        // replaced it.
-                        if compact && (edge.is_tombstone_edge() || edge.is_deleted_slot()) {
-                            continue;
-                        }
-                        resident.push(edge);
-                    }
-                }
-                // The bucket's rows beyond its prefix are rows `0..used_len` of its own run,
-                // in ordinal order (ADR 0097 §3). The same dead-row rule as the slab prefix
-                // above applies: a compacting rewrite drops tombstones, a relocation keeps
-                // every resident slot (the run's length is unchanged by deletes, so tombstones
-                // are resident).
-                if let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) {
-                    for (spill_offset, index) in
-                        self.edges.spill_asc_indices(run).into_iter().enumerate()
-                    {
-                        let spill_offset = u32::try_from(spill_offset)
-                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                        let slot_index = bucket
-                            .stored_slots_raw()
-                            .checked_add(spill_offset)
-                            .ok_or(LaraOperationError::RowDegreeOverflow)?;
-                        let edge = self.edges.spill_edge_at(run, index)?;
-                        if compact && (edge.is_tombstone_edge() || edge.is_deleted_slot()) {
-                            continue;
-                        }
-                        resident.push(edge.with_slot_index(slot_index));
-                    }
-                }
-                debug_assert!(
-                    compact || resident.len() == resident_slots as usize,
-                    "non-compacting materialization must cover every resident slot"
-                );
-                per_bucket_edges.push(Some(resident));
-                per_bucket_raw.push(None);
-            }
-        }
-        Ok((per_bucket_edges, per_bucket_raw))
+                Ok(raw)
+            })
+            .collect()
     }
 
     /// Reservation width: physical region plus used spill rows. For slab buckets
@@ -1581,36 +1440,18 @@ where
             .map_err(LabeledOperationError::from)
     }
 
-    /// Pack the live slots of a tombstone-inclusive slab prefix, keeping order and
-    /// encoded slot indices (the inline paths this replaced republished the raw
-    /// prefix with a narrower `stored` width the same way).
-    fn pack_live_edge_slots<T: CsrEdgeTombstone>(raw: &[u8]) -> Vec<u8> {
-        let mut packed = Vec::with_capacity(raw.len());
-        for bytes in raw.chunks_exact(T::BYTES) {
-            let edge = T::read_from(bytes);
-            if edge.is_tombstone_edge() || edge.is_deleted_slot() {
-                continue;
-            }
-            packed.extend_from_slice(bytes);
-        }
-        packed
-    }
-
     fn commit_vertex_edge_span_layout(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
         buckets: &[LabelBucket],
-        per_bucket_edges: &[Option<Vec<E>>],
-        per_bucket_raw: &[Option<Vec<u8>>],
-        edge_buf: &mut Vec<u8>,
+        per_bucket_raw: &[Vec<u8>],
         bucket_row_bytes_buf: &mut Vec<u8>,
         new_base: u64,
         new_alloc: u32,
         preferred_bucket: Option<usize>,
         preferred_extra: u32,
         leaf_relocate_commit: bool,
-        fold_logs: bool,
         suppress_vertex_footprint_release: bool,
     ) -> Result<(), LabeledOperationError>
     where
@@ -1619,10 +1460,7 @@ where
         if vertex.is_default_edge_labeled() {
             // Leaf relocation owns the physical cover. Move only the captured prefix,
             // then publish its new origin; the vertex's run and logical width stay owned.
-            assert!(!fold_logs);
-            let raw = per_bucket_raw[0]
-                .as_ref()
-                .expect("bypass prefix must be captured before leaf writes");
+            let raw = &per_bucket_raw[0];
             self.edges.write_slots_contiguous(new_base, raw)?;
             self.set_labeled_vertex(src, vertex.with_base_slot_start(new_base))?;
             return Ok(());
@@ -1663,23 +1501,9 @@ where
                     resident_buckets.push(bucket.without_edge_spill_run());
                     continue;
                 }
-                let resident_slots = per_bucket_raw[index]
-                    .as_ref()
-                    .map(|raw| raw.len() / E::BYTES)
-                    .or_else(|| per_bucket_edges[index].as_ref().map(Vec::len))
-                    .unwrap_or(0);
-                let resident_slots = u32::try_from(resident_slots)
+                let resident_slots = u32::try_from(per_bucket_raw[index].len() / E::BYTES)
                     .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-                // The resident scratch is what the tiling and the published row are built
-                // from, so it has to keep whatever owner holds the bucket's rows: a folding
-                // rewrite moved them into the prefix (`fold_logs`), a relocation left them in
-                // the run, which the published descriptor must keep pointing at (ADR 0097 §7).
-                let resident = bucket.with_stored_slots(resident_slots);
-                resident_buckets.push(if fold_logs {
-                    resident.without_edge_spill_run()
-                } else {
-                    resident
-                });
+                resident_buckets.push(bucket.with_stored_slots(resident_slots));
             }
             resident_buckets
         };
@@ -1694,28 +1518,7 @@ where
                 preferred_extra,
             )?
         };
-        let max_run = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_prepare_edge_buffer");
-            per_bucket_edges
-                .iter()
-                .zip(per_bucket_raw.iter())
-                .try_fold(0usize, |max_run, (edges, raw)| {
-                    let run = if let Some(raw) = raw {
-                        raw.len()
-                    } else if let Some(edges) = edges {
-                        Self::edge_bytes_for_len(edges.len())?
-                    } else {
-                        0
-                    };
-                    Ok::<usize, LabeledOperationError>(max_run.max(run))
-                })?
-        };
-        if edge_buf.len() < max_run {
-            edge_buf.resize(max_run, 0);
-        }
         let mut row_buckets = Vec::with_capacity(buckets.len());
-        let mut folded_spill_runs: Vec<crate::labeled::spill_run_store::SpillRunId> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_vertex_write_edge_runs");
@@ -1732,51 +1535,13 @@ where
                     );
                     continue;
                 }
-                let edges = &per_bucket_edges[index];
                 let raw = &per_bucket_raw[index];
-                let run = if let Some(raw) = raw {
-                    raw.len()
-                } else if let Some(edges) = edges {
-                    Self::edge_bytes_for_len(edges.len())?
-                } else {
-                    0
-                };
-                if run > 0 {
-                    if let Some(raw) = raw {
-                        // Slab-only bytes were captured for every plan before any
-                        // destination writes, so they can be written directly without
-                        // copying through the reusable encode buffer.
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_vertex_write_edge_run");
-                        self.edges.write_slots_contiguous(row_start, raw)?;
-                    } else if let Some(edges) = edges {
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_vertex_encode_edge_run");
-                        let mut offset = 0usize;
-                        for edge in edges {
-                            edge.write_to(&mut edge_buf[offset..offset + E::BYTES]);
-                            offset += E::BYTES;
-                        }
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_vertex_write_edge_run");
-                        self.edges
-                            .write_slots_contiguous(row_start, &edge_buf[..run])?;
-                    }
+                if !raw.is_empty() {
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _scope = bench_scope("labeled_vertex_write_edge_run");
+                    self.edges.write_slots_contiguous(row_start, raw)?;
                 }
-                let published = bucket.with_edge_range(row_start, bucket.stored_slots_raw());
-                // `fold_logs` publishes the bucket's spill rows inside its new slab prefix, so
-                // the run is cleared and released (ADR 0097 §7: compaction is the only place a
-                // run is freed besides bucket death). The release runs after the descriptor row
-                // is written, so no published descriptor ever points at a freed run.
-                let published = if fold_logs {
-                    if let Ok(run) = self.edges.spill_mint(buckets[index].edge_spill_run()) {
-                        folded_spill_runs.push(run);
-                    }
-                    published.without_edge_spill_run()
-                } else {
-                    published
-                };
-                row_buckets.push(published);
+                row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots_raw()));
             }
         }
         {
@@ -1792,9 +1557,6 @@ where
                 self.buckets
                     .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
-        }
-        for run in folded_spill_runs {
-            let _ = self.edges.spill_release(run);
         }
         // Vertex-level release of the old footprint (cover-contiguous spans;
         // see R2b triage).
@@ -1819,47 +1581,33 @@ where
         Ok(())
     }
 
-    pub(super) fn vertex_edge_span_slot_moves(
+    /// Remove physical inter-bucket slack without changing any logical ordinal.
+    /// Used by completion and peer cascades, neither of which can report row moves.
+    pub(super) fn pack_vertex_edge_span_layout(
         &self,
-        buckets: &[LabelBucket],
-    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        let mut moves = Vec::new();
-        for bucket in buckets {
-            if bucket.degree() == 0 {
-                continue;
-            }
-            // ADR 0096 §5: dense tiny prefixes have no tombstones and no moves.
-            if bucket.is_tiny_mode() {
-                continue;
-            }
-            if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
-                continue;
-            }
-            let mut next_live = 0u32;
-            for old_slot_index in 0..bucket.stored_slots_raw() {
-                let edge_slot =
-                    checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if self.edges.read_slot(edge_slot).is_tombstone_edge() {
-                    continue;
-                }
-                if old_slot_index != next_live {
-                    moves.push(EdgeSlotMove {
-                        label_id: bucket.bucket_label_key(),
-                        old_slot_index,
-                        new_slot_index: next_live,
-                    });
-                }
-                next_live = next_live
-                    .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            }
-            debug_assert_eq!(next_live, bucket.degree());
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
         }
-        Ok(moves)
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let physical = buckets.iter().try_fold(0u32, |sum, bucket| {
+            sum.checked_add(bucket_physical_resident_slots(bucket))
+                .ok_or(LaraOperationError::RowDegreeOverflow)
+        })?;
+        if vertex.stored_slots > physical {
+            let base = buckets
+                .iter()
+                .find(|bucket| !bucket.is_tiny_mode())
+                .map(|bucket| bucket.edge_start())
+                .unwrap_or(0);
+            self.rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))?;
+        }
+        Ok(())
     }
 
     pub(super) fn compact_label_bucket_overflow_to_slab(
@@ -2185,8 +1933,8 @@ where
     ///
     /// `Required` may force room for a run-backed bucket's rows (a real relocation): that is what a
     /// compaction asked to make the span compact needs. `SlackMayBeDropped` never forces it - the
-    /// rows already live in the bucket's own run, so a delete-driven compaction packs the prefix
-    /// alone and leaves the run where it is. Forcing it under the maintenance policy was a spin:
+    /// rows already live in the bucket's own run, so a declined fold retains both the prefix
+    /// width and run ordinals, including at Finished. Forcing it under maintenance was a spin:
     /// the policy keeps the old span, the fold fails again, and the retry repeated (~56 leaf
     /// rewrites per delete; scope calls 1 -> 56 for `labeled_leaf_try_expand_in_place`).
     pub(crate) fn compact_vertex_edge_span_one_step_with_span_policy(
@@ -2210,17 +1958,15 @@ where
             return Ok(VertexEdgeSpanCompactOneStep::Finished);
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
-        let mut total_live = 0u32;
-        for bucket in &buckets {
-            // ADR 0096 §5: tiny edges need no slab space; the stepped trigger
-            // below compares slab bytes against slab content.
-            if bucket.is_tiny_mode() {
-                continue;
-            }
-            total_live = total_live
-                .checked_add(bucket.degree())
-                .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        }
+        // Preserve logical-count admission before any movement, even when this pass
+        // may retain a run instead of materializing the complete packed span.
+        buckets
+            .iter()
+            .filter(|bucket| !bucket.is_tiny_mode())
+            .try_fold(0u32, |sum, bucket| {
+                sum.checked_add(bucket.degree())
+                    .ok_or(LaraOperationError::RowDegreeOverflow)
+            })?;
         if resume_bucket_index == 0
             && let Some((bucket_index, bucket)) = buckets
                 .iter()
@@ -2254,32 +2000,16 @@ where
                             span_policy,
                         );
                     }
-                    // Non-forcing caller: fall through to the per-bucket path, which packs the
-                    // prefix - safe without folding because `finalize_bucket_slab_metadata` leaves
-                    // a run-backed bucket's width and run alone.
+                    // Run-backed buckets are skipped by the move finder and retain their
+                    // prefix/run ordinals. Completion may pack physical regions, not rows.
                 }
                 Err(error) => return Err(error),
             }
         }
         if resume_bucket_index >= vertex.degree() {
-            // Per-bucket steps may already pack each label row (`stored_slots == degree`) while
-            // the vertex-wide VertexEdgeSpan width (`vertex.stored_slots`) stays oversized.
-            // Tiny buckets are excluded from the packed check (holes make
-            // `stored != degree` legitimate inline state, not slab slack).
-            // The span is published by the compacting rewrite whatever the caller's policy: it
-            // sizes the new span for the rows the materializer produces (a bucket's prefix plus
-            // the run it folds), so it fits by construction and cannot need a relocation - and a
-            // bucket whose rows live in its run still holds nothing in the *span* beyond its
-            // prefix, which is exactly what this step shrinks. Leaving it unshrunk was the
-            // deterministic-delete benches' regression (ADR 0097 §7 at this level).
-            if vertex.stored_slots > total_live
-                || buckets.iter().any(|b| {
-                    b.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                        || (!b.is_tiny_mode() && b.stored_slots_raw() != b.degree())
-                })
-            {
-                self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
-            }
+            // All logical moves must already have been returned by the bounded steps.
+            // Finished has no movement channel, even when a non-forcing fold declined.
+            self.pack_vertex_edge_span_layout(vid)?;
             return Ok(VertexEdgeSpanCompactOneStep::Finished);
         }
         let bucket_index = resume_bucket_index;
@@ -2579,8 +2309,8 @@ where
         // own snapshot, position, publish and vertex-cover code — the last duplicate of the
         // layout mechanics (GAP-2026-09-20-005).
         //
-        // Its own policy stays explicit: the span is never compacted (`compact = false`, so
-        // tombstoned prefixes and their logs survive), the caller's release decision is
+        // Its own policy stays explicit: physical publication preserves tombstones and
+        // run ownership, the caller's release decision is
         // preserved (the rewrite's finalize block runs the same code this function had) and
         // base resolution accepts the maintenance policy (keep the current span when the
         // requested one cannot be placed).
@@ -2589,7 +2319,6 @@ where
             src,
             preferred_bucket,
             preferred_extra,
-            false,
             force_slack_grow,
             None,
             SpanResolutionPolicy::SlackMayBeDropped,
@@ -2685,7 +2414,7 @@ where
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
         if vertex.stored_slots > total_live.saturating_add(1) {
-            self.rewrite_vertex_edge_span(vid, None, 0, false, true, None)?;
+            self.rewrite_vertex_edge_span(vid, None, 0, true, None)?;
         }
         Ok(())
     }
@@ -3546,6 +3275,141 @@ mod tests {
     }
 
     #[test]
+    fn retained_compaction_finished_matches_every_reported_move() {
+        use super::super::test_support::{retained_compaction_fixture, retained_compaction_rows};
+        use std::collections::BTreeMap;
+        for width in [8, 33] {
+            let graph = retained_compaction_fixture(width);
+            let vid = VertexId::from(0);
+            let source = graph
+                .read_vertex_label_buckets(&graph.vertices().get(vid))
+                .unwrap()[0];
+            let mut expected = BTreeMap::new();
+            for raw in [2, 3] {
+                for (slot, target, value) in retained_compaction_rows(
+                    &graph,
+                    vid,
+                    BucketLabelKey::from_raw(raw),
+                    OutEdgeOrder::Ascending,
+                ) {
+                    expected.insert((raw, slot), (target, value));
+                }
+            }
+            let peer = retained_compaction_rows(
+                &graph,
+                VertexId::from(1),
+                BucketLabelKey::from_raw(2),
+                OutEdgeOrder::Ascending,
+            );
+            let (mut resume, mut cursor, mut finished, mut moves_seen) = (0, 0, false, 0);
+            for _ in 0..32 {
+                let outcome = graph
+                    .compact_vertex_edge_span_one_step_with_span_policy(
+                        vid,
+                        resume,
+                        cursor,
+                        &|_| EdgePlacementPolicy::Insertion,
+                        SpanResolutionPolicy::SlackMayBeDropped,
+                    )
+                    .unwrap();
+                let moves = match outcome {
+                    VertexEdgeSpanCompactOneStep::EdgeMoved(moved) => {
+                        cursor = moved.new_slot_index + 1;
+                        vec![moved]
+                    }
+                    VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => {
+                        resume = next;
+                        cursor = 0;
+                        Vec::new()
+                    }
+                    VertexEdgeSpanCompactOneStep::OverflowRewrite(moves) => {
+                        assert!(
+                            moves.len() <= 9,
+                            "only the bounded source run may move in a batch"
+                        );
+                        assert!(
+                            moves
+                                .iter()
+                                .all(|m| m.old_slot_index >= source.stored_slots())
+                        );
+                        resume = 0;
+                        cursor = 0;
+                        moves
+                    }
+                    VertexEdgeSpanCompactOneStep::Finished => {
+                        finished = true;
+                        Vec::new()
+                    }
+                };
+                moves_seen += moves.len();
+                for moved in moves {
+                    let value = expected
+                        .remove(&(moved.label_id.raw(), moved.old_slot_index))
+                        .unwrap();
+                    assert!(
+                        expected
+                            .insert((moved.label_id.raw(), moved.new_slot_index), value)
+                            .is_none()
+                    );
+                }
+                for raw in [2, 3] {
+                    let exact: Vec<_> = expected
+                        .iter()
+                        .filter(|((label, _), _)| *label == raw)
+                        .map(|((_, slot), (target, value))| (*slot, *target, value.clone()))
+                        .collect();
+                    assert_eq!(
+                        retained_compaction_rows(
+                            &graph,
+                            vid,
+                            BucketLabelKey::from_raw(raw),
+                            OutEdgeOrder::Ascending
+                        ),
+                        exact,
+                        "event replay, including Finished; width={width}, finished={finished}"
+                    );
+                    assert_eq!(
+                        retained_compaction_rows(
+                            &graph,
+                            vid,
+                            BucketLabelKey::from_raw(raw),
+                            OutEdgeOrder::Descending
+                        ),
+                        exact.into_iter().rev().collect::<Vec<_>>()
+                    );
+                }
+                assert_eq!(
+                    retained_compaction_rows(
+                        &graph,
+                        VertexId::from(1),
+                        BucketLabelKey::from_raw(2),
+                        OutEdgeOrder::Ascending
+                    ),
+                    peer
+                );
+                if finished {
+                    break;
+                }
+            }
+            assert!(
+                finished,
+                "a bounded pass must complete, not silently remain pending"
+            );
+            assert_eq!(
+                moves_seen, 3,
+                "slab-only neighboring label still uses single-edge moves"
+            );
+            let after = graph
+                .read_vertex_label_buckets(&graph.vertices().get(vid))
+                .unwrap()[0];
+            assert_eq!(after.edge_spill_run(), source.edge_spill_run());
+            assert_eq!(after.stored_slots(), source.stored_slots());
+            assert_eq!(after.values_spill_run(), source.values_spill_run());
+            assert_eq!(graph.edges().header().num_edges, 18);
+        }
+    }
+
+    #[test]
     fn incremental_vertex_edge_span_compact_clears_many_tombstones() {
         use super::VertexEdgeSpanCompactOneStep;
 
@@ -4177,7 +4041,7 @@ mod tests {
             .expect("removed");
         let vertex_releases_before = labeled_vertex_footprint_release_calls();
         graph
-            .rewrite_vertex_edge_span(src, None, 1, false, true, None)
+            .rewrite_vertex_edge_span(src, None, 1, true, None)
             .unwrap();
         graph.compact_vertex_edge_span(src, 0).unwrap();
         assert_eq!(

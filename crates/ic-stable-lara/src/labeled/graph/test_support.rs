@@ -399,6 +399,171 @@ pub fn inline_property_test_graph_segment16()
     graph
 }
 
+/// Injective payload independent of the physical edge ordinal.
+pub(crate) fn retained_compaction_value(target: u32, width: u16) -> Vec<u8> {
+    let mut bytes = vec![0xa5; usize::from(width)];
+    bytes[..8].copy_from_slice(&(u64::from(target) + 1).to_le_bytes());
+    bytes
+}
+
+pub(crate) fn retained_compaction_rows(
+    graph: &LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    order: OutEdgeOrder,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut rows = Vec::new();
+    assert_eq!(
+        graph
+            .visit_edges_with_inline_property(vid, label, order, |slot, item| {
+                rows.push((
+                    slot.raw(),
+                    item.edge.target,
+                    item.inline_property.bytes().to_vec(),
+                ));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap(),
+        ControlFlow::Continue(())
+    );
+    rows
+}
+
+/// A valid, tightly backed prefix/run pair whose non-forcing fold must decline.
+/// Label 3 also needs bounded slab moves; vertex 1 is an untouched neighboring owner.
+pub(crate) fn retained_compaction_fixture(
+    width: u16,
+) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
+    use super::{EdgePlacementPolicy, compact::bucket_physical_resident_slots};
+    let graph = inline_property_test_graph();
+    let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
+    for (raw, targets) in [(2, 0..8), (3, 9000..9004)] {
+        let label = BucketLabelKey::from_raw(raw);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, width)
+            .unwrap();
+        for target in targets {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &retained_compaction_value(target, width),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+    }
+    // Establish dense prefixes before constructing holes or external identity keys.
+    graph.compact_vertex_edge_span(vid, 0).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    for target in 8..16 {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                InlinePropertyTestEdge::with_bytes(
+                    target,
+                    &retained_compaction_value(target, width),
+                ),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+    graph
+        .ensure_label_bucket_inline_property_byte_width(peer, label, width)
+        .unwrap();
+    graph
+        .insert_edge_skip_leaf_cascade(
+            peer,
+            label,
+            InlinePropertyTestEdge::with_bytes(19000, &retained_compaction_value(19000, width)),
+            EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    for slot in [0, 3, 9] {
+        assert_eq!(
+            graph
+                .remove_edge_at_slot(vid, label, slot)
+                .unwrap()
+                .unwrap()
+                .target,
+            slot
+        );
+    }
+    assert_eq!(
+        graph
+            .remove_edge_at_slot(vid, BucketLabelKey::from_raw(3), 0)
+            .unwrap()
+            .unwrap()
+            .target,
+        9000
+    );
+    graph
+        .insert_edge_skip_leaf_cascade(
+            vid,
+            label,
+            InlinePropertyTestEdge::with_bytes(16, &retained_compaction_value(16, width)),
+            EdgePlacementPolicy::Insertion,
+        )
+        .unwrap();
+    let vertex = graph.vertices().get(vid);
+    let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
+    let base = buckets[0].edge_start();
+    let physical: u32 = buckets.iter().map(bucket_physical_resident_slots).sum();
+    // Existing non-folding physical publisher; never a fictitious allocation/extent.
+    graph
+        .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))
+        .unwrap();
+    let buckets = graph
+        .read_vertex_label_buckets(&graph.vertices().get(vid))
+        .unwrap();
+    let source = buckets[0];
+    assert_eq!(source.stored_slots(), 8);
+    assert_ne!(source.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+    assert_eq!(
+        graph
+            .edges()
+            .spill_used_len(graph.edges().spill_mint(source.edge_spill_run()).unwrap()),
+        9
+    );
+    assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
+    assert_ne!(
+        source.inline_property_bytes_slab_slots(),
+        source.stored_slots()
+    );
+    assert_eq!(buckets[1].edge_spill_run(), crate::traits::NO_SPILL_RUN);
+    assert!(matches!(
+        graph.compact_label_bucket_overflow_to_slab(vid, 0, source),
+        Err(LabeledOperationError::Store(
+            LaraOperationError::CollectAllocationOverflow
+        ))
+    ));
+    assert_eq!(
+        graph
+            .read_vertex_label_buckets(&graph.vertices().get(vid))
+            .unwrap(),
+        buckets
+    );
+    assert_eq!(
+        retained_compaction_rows(&graph, vid, label, OutEdgeOrder::Ascending),
+        (0..17)
+            .filter(|i| ![0, 3, 9].contains(i))
+            .map(|i| (i, i, retained_compaction_value(i, width)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(graph.edges().header().num_edges, 18);
+    crate::labeled::invariants::assert_labeled_layout_invariants(
+        graph.vertices(),
+        graph.buckets(),
+        graph.edges(),
+    );
+    graph
+}
+
 /// Dense multi-label hub fixture shared by span-release and hub regressions.
 pub fn build_mixed_label_hub(
     labels: u16,

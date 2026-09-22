@@ -349,11 +349,13 @@ pub struct LabeledInlinePropertyBytesCompactionResult {
 pub enum VertexEdgeSpanCompactOneStep {
     /// One live edge was relocated inside its label bucket; sidecars should follow `move`.
     EdgeMoved(EdgeSlotMove),
-    /// The current label bucket is packed; continue from the next bucket index.
+    /// No further admissible step in this bucket; continue from the next bucket index.
+    /// A non-forcing pass may have retained a run and its original ordinals.
     AdvanceBucket(u32),
-    /// One overflow suffix was folded; `moves` lists legacy-tombstone slot rewrites. Resume at bucket 0.
+    /// One bounded spill run was folded; `moves` lists its slot rewrites. Resume at bucket 0.
     OverflowRewrite(Vec<EdgeSlotMove>),
-    /// The vertex span is fully compacted.
+    /// The pass is complete; no unreported logical slot moves occur at this boundary.
+    /// A non-forcing pass may retain a run and its prefix holes when folding needs room.
     Finished,
 }
 

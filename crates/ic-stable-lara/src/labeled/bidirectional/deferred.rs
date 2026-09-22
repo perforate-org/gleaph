@@ -5214,6 +5214,155 @@ mod tests {
     }
 
     #[test]
+    fn retained_compaction_observer_keeps_external_identities_through_retry_and_finish() {
+        use crate::labeled::graph::test_support::{
+            inline_property_test_graph, retained_compaction_fixture, retained_compaction_rows,
+            retained_compaction_value,
+        };
+        use std::collections::BTreeMap;
+        struct Sidecars {
+            rows: BTreeMap<(u32, u16, u32), (u32, u64)>,
+            events: usize,
+        }
+        impl EdgeSlotMoveObserver for Sidecars {
+            fn edge_slot_moved(
+                &mut self,
+                orientation: Orientation,
+                vid: VertexId,
+                moved: EdgeSlotMove,
+            ) {
+                assert_eq!(orientation, Orientation::Forward);
+                let value = self
+                    .rows
+                    .remove(&(u32::from(vid), moved.label_id.raw(), moved.old_slot_index))
+                    .expect("live external identity at source");
+                assert!(
+                    self.rows
+                        .insert(
+                            (u32::from(vid), moved.label_id.raw(), moved.new_slot_index),
+                            value
+                        )
+                        .is_none(),
+                    "no neighbor sidecar overwritten"
+                );
+                self.events += 1;
+            }
+        }
+        for width in [8, 33] {
+            let graph = DeferredBidirectionalLabeledLaraGraph {
+                forward: retained_compaction_fixture(width),
+                reverse: inline_property_test_graph(),
+                maintenance: BidirectionalMaintenanceQueue::new(vector_memory()),
+                config: DeferredConfig::default(),
+            };
+            let mut observer = Sidecars {
+                rows: BTreeMap::new(),
+                events: 0,
+            };
+            let owners = [(0, 2), (0, 3), (1, 2)];
+            let mut targets = Vec::new();
+            for (vid, raw) in owners {
+                let rows = retained_compaction_rows(
+                    graph.forward(),
+                    VertexId::from(vid),
+                    BucketLabelKey::from_raw(raw),
+                    OutEdgeOrder::Ascending,
+                );
+                targets.push(rows.iter().map(|r| r.1).collect::<Vec<_>>());
+                for (slot, target, _) in rows {
+                    observer.rows.insert(
+                        (vid, raw, slot),
+                        (target, u64::from(target) + 0x1234_0000_0000),
+                    );
+                }
+            }
+            let before = observer.rows.clone();
+            graph
+                .mark_compact_vertex_edge_span(Orientation::Forward, VertexId::from(0), 0, &|_| {
+                    EdgePlacementPolicy::Insertion
+                })
+                .unwrap();
+            let one = MaintenanceBudget {
+                max_work_items: Some(1),
+                ..unbounded_budget()
+            };
+            crate::labeled::graph::force_next_compact_vertex_edge_span_step_error();
+            let failed = graph
+                .maintenance_with_edge_slot_move_observer(one, &mut observer)
+                .unwrap();
+            assert_eq!(failed.work.rebalanced_segments, 0);
+            assert_eq!(
+                graph.maintenance_queue_len(),
+                1,
+                "failure remains pending for retry"
+            );
+            assert_eq!(observer.rows, before);
+            assert_eq!(observer.events, 0);
+            let mut completed = false;
+            for _ in 0..32 {
+                let prior_events = observer.events;
+                let report = graph
+                    .maintenance_with_edge_slot_move_observer(one, &mut observer)
+                    .unwrap();
+                assert!(
+                    observer.events - prior_events <= 1,
+                    "slab maintenance must stay one move per step"
+                );
+                for (index, (vid, raw)) in owners.into_iter().enumerate() {
+                    let rows = retained_compaction_rows(
+                        graph.forward(),
+                        VertexId::from(vid),
+                        BucketLabelKey::from_raw(raw),
+                        OutEdgeOrder::Ascending,
+                    );
+                    assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), targets[index]);
+                    for (slot, target, value) in &rows {
+                        assert_eq!(value, &retained_compaction_value(*target, width));
+                        assert_eq!(
+                            observer.rows.get(&(vid, raw, *slot)),
+                            Some(&(*target, u64::from(*target) + 0x1234_0000_0000)),
+                            "canonical row must resolve its own external identity, including at Finished"
+                        );
+                    }
+                    assert_eq!(
+                        retained_compaction_rows(
+                            graph.forward(),
+                            VertexId::from(vid),
+                            BucketLabelKey::from_raw(raw),
+                            OutEdgeOrder::Descending
+                        ),
+                        rows.into_iter().rev().collect::<Vec<_>>()
+                    );
+                }
+                assert_eq!(observer.rows.len(), 18);
+                if graph.maintenance_queue_len() == 0 {
+                    assert_eq!(
+                        report.work.rebalanced_segments, 1,
+                        "completed without error, not a stalled retry"
+                    );
+                    completed = true;
+                    break;
+                }
+                assert_eq!(report.work.rebalanced_segments, 0);
+            }
+            assert!(completed);
+            assert_eq!(observer.events, 3);
+            assert_eq!(
+                graph
+                    .maintenance_with_edge_slot_move_observer(one, &mut observer)
+                    .unwrap()
+                    .work
+                    .processed_work_items,
+                0
+            );
+            assert_eq!(
+                observer.events, 3,
+                "completed work must not replay moves on the next tick"
+            );
+        }
+    }
+
+    #[test]
     fn failed_compaction_step_is_requeued_not_silently_completed() {
         // A compaction step can fail after partially mutating the slab (e.g. a transient
         // grow failure). The maintenance loop must keep the work item queued for retry
