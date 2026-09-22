@@ -1,0 +1,6 @@
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3820:    /// [`Self::read_inline_property_bytes_for_ordinal`].
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3821:    fn resolve_label_bucket_and_inline_property_bytes_chains(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3841:    fn read_inline_property_bytes_for_slot(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3853:            self.resolve_label_bucket_and_inline_property_bytes_chains(owner, label, &vertex)?;
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3872:        self.read_inline_property_bytes_for_ordinal(label, &bucket, ordinal, log_chains.as_ref())
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3876:    fn read_inline_property_bytes_for_ordinal(

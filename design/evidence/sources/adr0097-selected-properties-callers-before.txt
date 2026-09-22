@@ -1,0 +1,24 @@
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/remove.rs:599:        let Some(inline_property_bytes_ordinal) = self.bucket_live_ordinal_at_edge_slot(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:2113:            self.visit_edges_at_with_inline_property(owner, label, &slots, order, |slot, item| {
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3346:    pub(crate) fn visit_edges_at_with_inline_property<B>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3471:            let Some(ordinal) = self.bucket_live_ordinal_at_edge_slot(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3860:            self.bucket_live_ordinal_at_edge_slot(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3984:    fn visit_edges_at_with_inline_property<B>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:3990:        LabeledLaraGraph::visit_edges_at_with_inline_property(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:5245:            .visit_edges_at_with_inline_property::<()>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:5514:            .visit_edges_at_with_inline_property::<()>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse.rs:5608:            .visit_edges_at_with_inline_property::<()>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs:1140:            .visit_edges_at_with_inline_property::<()>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:389:pub(crate) fn read_property_value_at_slot<E, M>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1582:    /// value back via `read_property_value_at_slot` and verify the
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1850:            read_property_value_at_slot::<TestEdge, VectorMemory>(&graph, &bucket, i, &mut got)
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1851:                .expect("read_property_value_at_slot");
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1994:            read_property_value_at_slot::<TestEdge, VectorMemory>(&graph, &bucket, i, &mut got)
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:2064:        let _ = read_property_value_at_slot::<TestEdge, VectorMemory>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_read.rs:2230:            read_property_value_at_slot::<TestEdge, VectorMemory>(&graph, &bucket, i, &mut got)
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_write.rs:1077:            if let Err(e) = super::tree_read::read_property_value_at_slot::<E, M>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5898:        super::super::tree_read::read_property_value_at_slot::<InlinePropertyTestEdge, VectorMemory>(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5901:        .expect("read_property_value_at_slot");
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/values.rs:966:    pub(super) fn bucket_live_ordinal_at_edge_slot(
+a80d2e1ac:crates/ic-stable-lara/src/labeled/graph/values.rs:1476:            self.bucket_live_ordinal_at_edge_slot(
+a80d2e1ac:crates/ic-stable-lara/src/traverse.rs:312:    fn visit_edges_at_with_inline_property<B>(

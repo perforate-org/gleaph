@@ -1,0 +1,214 @@
+{
+  "mode": "working-tree",
+  "baseline": "a80d2e1acad7f282790218ba63f80674807d56e5",
+  "version": "1.24.0",
+  "options": [
+    "--csv",
+    "-i",
+    "-1"
+  ],
+  "paths": [
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs"
+  ],
+  "results": {
+    "base": {
+      "touched": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "visit_edges_at_with_inline_property",
+          "nloc": 215,
+          "ccn": 45,
+          "tokens": 1315,
+          "params": 7,
+          "length": 229,
+          "start": 3346,
+          "end": 3574,
+          "body_sha256": "84cbcb9a0e8f90d96edba37ad10e71aecbf604215ee5468939dc740439a8cf8f"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "resolve_label_bucket_and_inline_property_bytes_chains",
+          "nloc": 18,
+          "ccn": 5,
+          "tokens": 147,
+          "params": 4,
+          "length": 18,
+          "start": 3821,
+          "end": 3838,
+          "body_sha256": "60d7c04e9a2df0b0800d75a5c9c725e05ca5248600357f21c19e8177f3d9d20a"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "read_inline_property_bytes_for_slot",
+          "nloc": 33,
+          "ccn": 9,
+          "tokens": 179,
+          "params": 4,
+          "length": 33,
+          "start": 3841,
+          "end": 3873,
+          "body_sha256": "41f0f288d132a26c3bb64377060f47b9e0943558c0cf36d37905436181c68fe5"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "read_inline_property_bytes_for_ordinal",
+          "nloc": 20,
+          "ccn": 4,
+          "tokens": 141,
+          "params": 5,
+          "length": 20,
+          "start": 3876,
+          "end": 3895,
+          "body_sha256": "bdc5ba6a33c72b35948d624c8ab30c398e8830791a64d92a73203ee306fb5de1"
+        }
+      ],
+      "unchanged_hunk_boundary_overlaps": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "visit_edges_at_with_inline_property",
+          "nloc": 15,
+          "ccn": 2,
+          "tokens": 89,
+          "params": 5,
+          "length": 15,
+          "start": 3984,
+          "end": 3998,
+          "body_sha256": "562b109df10918cf25b550c9f6178d70ab9b3c7587bb18e5eb692b8706d7ceba"
+        }
+      ],
+      "aggregate_ccn": 63,
+      "max_ccn": 45
+    },
+    "current": {
+      "touched": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "visit_edges_at_with_inline_property",
+          "nloc": 241,
+          "ccn": 51,
+          "tokens": 1467,
+          "params": 7,
+          "length": 258,
+          "start": 3348,
+          "end": 3605,
+          "body_sha256": "d4c3c3456be43904ff27d8d40a68e44969f6c7e58fef7a87120b43a9763d4a35"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_value",
+          "nloc": 7,
+          "ccn": 2,
+          "tokens": 38,
+          "params": 2,
+          "length": 7,
+          "start": 5080,
+          "end": 5086,
+          "body_sha256": "e287ee37c7b76f050d08080d64f0d670169a6597a8d7f4db4b6a194764bb4cc4"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_tree_fixture",
+          "nloc": 91,
+          "ccn": 7,
+          "tokens": 527,
+          "params": 1,
+          "length": 92,
+          "start": 5089,
+          "end": 5180,
+          "body_sha256": "f044da60b7f063c49680e6fc2d60938fce1ff047a99a98a0ec6642b2222fed3c"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "check_selected_tree_property",
+          "nloc": 250,
+          "ccn": 10,
+          "tokens": 1550,
+          "params": 1,
+          "length": 256,
+          "start": 5182,
+          "end": 5437,
+          "body_sha256": "e6752c75d5eb71c941a33444630b75fb77dcf962a7fc8cc7427b0008e4f1f39e"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_tree_eight_byte_boundaries",
+          "nloc": 3,
+          "ccn": 1,
+          "tokens": 11,
+          "params": 0,
+          "length": 3,
+          "start": 5440,
+          "end": 5442,
+          "body_sha256": "6ea76fe2e0041e0dfda7d04a692d5ea3c93d8760abe36c6224a1d799104788d0"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_tree_thirty_three_byte_boundaries",
+          "nloc": 3,
+          "ccn": 1,
+          "tokens": 11,
+          "params": 0,
+          "length": 3,
+          "start": 5445,
+          "end": 5447,
+          "body_sha256": "1376e45f1aa6a84f0488835505565836ea3407f3e1a87d6ebfc5d4bcb78b706b"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_tree_zero_width",
+          "nloc": 3,
+          "ccn": 1,
+          "tokens": 11,
+          "params": 0,
+          "length": 3,
+          "start": 5450,
+          "end": 5452,
+          "body_sha256": "9bac40a2152a912dd26a5372d83abaf74cb6a90bb5553e46508a90714fa6de32"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_tree_corrupt_roots_propagate",
+          "nloc": 84,
+          "ccn": 5,
+          "tokens": 549,
+          "params": 0,
+          "length": 87,
+          "start": 5455,
+          "end": 5541,
+          "body_sha256": "cc138aa35d1527e9b65e21cf49fe1945e7542285adc965e55e563cf258b5345e"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "selected_property_retained_independent_planes",
+          "nloc": 57,
+          "ccn": 4,
+          "tokens": 404,
+          "params": 0,
+          "length": 58,
+          "start": 5544,
+          "end": 5601,
+          "body_sha256": "61afbd38308bd2570d545c59135b4763a8c90e14d819b254fd44b134a4e8af36"
+        }
+      ],
+      "unchanged_hunk_boundary_overlaps": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/traverse.rs",
+          "name": "visit_edges_at_with_inline_property",
+          "nloc": 15,
+          "ccn": 2,
+          "tokens": 89,
+          "params": 5,
+          "length": 15,
+          "start": 3936,
+          "end": 3950,
+          "body_sha256": "562b109df10918cf25b550c9f6178d70ab9b3c7587bb18e5eb692b8706d7ceba"
+        }
+      ],
+      "aggregate_ccn": 82,
+      "max_ccn": 51
+    }
+  },
+  "source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "c98b2068019f2bf60c9fae862b54d8678e3e0e396bba77f64d2bb2ede7e9ab05"
+  }
+}

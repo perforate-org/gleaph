@@ -1,0 +1,150 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+error[E0425]: cannot find function `labeled_memories` in module `crate::test_support`
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:5143:45
+     |
+5143 |         let memories = crate::test_support::labeled_memories();
+     |                                             ^^^^^^^^^^^^^^^^ not found in `crate::test_support`
+     |
+note: similarly named function `labeled_lara_memories` defined here
+    --> crates/ic-stable-lara/src/test_support.rs:227:1
+     |
+ 227 | / pub(crate) fn labeled_lara_memories() -> (
+ 228 | |     VectorMemory,
+ 229 | |     VectorMemory,
+ 230 | |     VectorMemory,
+...    |
+ 263 | | }
+     | |_^
+note: function `crate::labeled::graph::init::tests::labeled_memories` exists but is inaccessible
+    --> crates/ic-stable-lara/src/labeled/graph/init.rs:426:5
+     |
+ 426 | /     fn labeled_memories() -> (
+ 427 | |         crate::VectorMemory,
+ 428 | |         crate::VectorMemory,
+ 429 | |         crate::VectorMemory,
+...    |
+ 462 | |     }
+     | |_____^ not accessible
+help: a function with a similar name exists
+     |
+5143 |         let memories = crate::test_support::labeled_lara_memories();
+     |                                                     +++++
+help: consider importing this function
+     |
+4621 +     use crate::labeled::graph::test_support::labeled_memories;
+     |
+help: if you import `labeled_memories`, refer to it directly
+     |
+5143 -         let memories = crate::test_support::labeled_memories();
+5143 +         let memories = labeled_memories();
+     |
+
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `ic-stable-lara` (lib test) generated 3 warnings
+error: could not compile `ic-stable-lara` (lib test) due to 1 previous error; 3 warnings emitted

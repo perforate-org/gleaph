@@ -1,0 +1,419 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2279:9
+     |
+2279 | /         graph
+2280 | |             .visit_edges(
+2281 | |                 vid,
+2282 | |                 label,
+...    |
+2289 | |             .unwrap();
+     | |_____________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2279 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2338:9
+     |
+2338 | /         graph
+2339 | |             .visit_edges(
+2340 | |                 vid,
+2341 | |                 label,
+...    |
+2348 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2338 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2035:9
+     |
+2035 | /         graph
+2036 | |             .visit_edges(
+2037 | |                 vid,
+2038 | |                 label,
+...    |
+2045 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2035 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2115:9
+     |
+2115 | /         graph
+2116 | |             .visit_edges(
+2117 | |                 VertexId::from(0),
+2118 | |                 label,
+...    |
+2125 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2115 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:190:13
+    |
+190 | /             graph
+191 | |                 .visit_edges(vid, label, order, |slot, edge| {
+192 | |                     seen.push((slot.raw(), edge.0));
+193 | |                     ControlFlow::<()>::Continue(())
+194 | |                 })
+195 | |                 .unwrap();
+    | |_________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+190 |             let _ = graph
+    |             +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:242:9
+    |
+242 | /         graph
+243 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+244 | |                 survivors.push((slot.raw(), edge.0));
+245 | |                 ControlFlow::<()>::Continue(())
+246 | |             })
+247 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+242 |         let _ = graph
+    |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:329:5
+    |
+329 | /     graph
+330 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+331 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+332 | |             before.push((slot.raw(), item.edge.target));
+333 | |             ControlFlow::<()>::Continue(())
+334 | |         })
+335 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+329 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:350:5
+    |
+350 | /     graph
+351 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
+352 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+353 | |             after.push((slot.raw(), item.edge.target));
+354 | |             ControlFlow::<()>::Continue(())
+355 | |         })
+356 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+350 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:130:5
+    |
+130 | /     graph
+131 | |         .visit_edges(
+132 | |             VertexId::from(0),
+133 | |             label,
+...   |
+140 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+130 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:281:5
+    |
+281 | /     graph
+282 | |         .visit_edges(
+283 | |             VertexId::from(0),
+284 | |             label,
+...   |
+291 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+281 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:7237:9
+     |
+7237 | /         graph
+7238 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+7239 | |                 seen.push(u32::from(edge.neighbor_vid()));
+7240 | |                 ControlFlow::<()>::Continue(())
+7241 | |             })
+7242 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+7237 |         let _ = graph
+     |         +++++++
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/ic-stable-lara/src/labeled/graph/tree_write.rs:6270:9
+     |
+6270 |         drop(post);
+     |         ^^^^^----^
+     |              |
+     |              argument has type `record::LabelBucket`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+6270 -         drop(post);
+6270 +         let _ = post;
+     |
+
+warning: `ic-stable-lara` (lib test) generated 15 warnings (run `cargo fix --lib -p ic-stable-lara --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.60s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae)
+
+running 102 tests
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_tree_mode_promoted_bucket_not_rejected ... ok
+test labeled::graph::cap_enforcement_tests::compute_bucket_allocation_returns_stored_slots_for_tree_mode ... ok
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_tree_mode_rejects_beyond_structural_coverage ... ok
+test labeled::graph::batch_write_test::tests::batch_run_rejects_tree_mode_bucket_fail_closed ... ok
+test labeled::graph::batch_write_test::tests::batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run ... ok
+test labeled::graph::insert::tests::push_vertex_grows_pma_segment_tree_before_high_leaf_edge_insert ... ok
+test labeled::graph::batch_write_test::tests::batch_run_admits_tree_mode_bucket_tail_fit ... ok
+test labeled::graph::insert::tests::single_label_tree_promotion_preserves_edge_only_tail_headroom ... ok
+SELECTED_PROPERTY width=0 order=Ascending result=Ok(Continue(())) rows=10
+test labeled::bidirectional::deferred::tests::point_state_property_tree_reads_are_native_and_read_only ... ok
+test labeled::bidirectional::deferred::tests::tree_sibling_compaction_unordered_preserves_native_tree ... ok
+SELECTED_PROPERTY width=8 order=Ascending result=Ok(Continue(())) rows=10
+SELECTED_PROPERTY width=0 order=Descending result=Ok(Continue(())) rows=10
+SELECTED_PROPERTY width=8 order=Descending result=Ok(Continue(())) rows=10
+test labeled::graph::traverse::tests::selected_property_tree_zero_width ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_property_leaf_fanout_matches_documented_table ... ok
+test labeled::graph::traverse::tests::selected_property_tree_eight_byte_boundaries ... ok
+test labeled::graph::spill_read_test::point_state_tree_native_boundaries_and_errors_preserve_all_memories ... ok
+SELECTED_PROPERTY width=33 order=Ascending result=Ok(Continue(())) rows=10
+test labeled::graph::traverse::tests::selected_property_tree_corrupt_roots_propagate ... ok
+SELECTED_PROPERTY width=33 order=Descending result=Ok(Continue(())) rows=10
+test labeled::graph::traverse::tests::selected_property_tree_thirty_three_byte_boundaries ... ok
+test labeled::graph::traverse::tests::visit_edges_window_tree_and_slab_agree_on_tombstone_inclusive_positions ... ok
+test labeled::bidirectional::deferred::tests::tree_sibling_compaction_insertion_preserves_native_tree_and_properties ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_read_round_trip_at_w_4_stored_4096 ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_f2_cap_guard ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_demote_round_trip_at_w_4_stored_4096 ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_combined_span_round_trip ... ok
+test labeled::graph::tree_read::tests::tree_property_slot_bound_rejects_block_zero_alias ... ok
+test labeled::graph::tree_read::tests::tombstoned_tree_bucket_visit_preserves_logical_positions ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_f6_deepen_property_root_relocates ... ok
+test labeled::graph::tree_read::tests::tree_read_after_promote_preserves_bucket_count_and_degree ... ok
+test labeled::graph::tree_read::tests::tree_read_random_slot_access_matches ... ok
+test labeled::graph::tree_read::tests::tree_read_collect_matches_promoted_data ... ok
+test labeled::graph::tree_read::tests::tree_read_out_of_range_returns_none ... ok
+test labeled::graph::tree_read::tests::tree_read_tail_block_trimmed_at_stored_slots ... ok
+test labeled::graph::tree_read::tests::tree_visit_edges_descending_order ... ok
+test labeled::graph::tree_read::tests::tree_window_skip_fails_closed_on_count_mismatch ... ok
+test labeled::graph::tree_read::tests::visit_edges_window_tree_matches_slab_tombstone_positions ... ok
+test labeled::graph::tree_read::tests::tree_visit_edges_via_public_api_works_on_dense_tree_bucket ... ok
+test labeled::graph::tree_write::tests::deepen_fail_closed_at_max_depth ... ok
+test labeled::graph::tree_write::tests::deepen_restructures_root_region ... ok
+test labeled::graph::tree_read::tests::tree_visit_break_stops_property_reads ... ok
+test labeled::graph::tree_write::tests::demote_atomic_on_failure ... ok
+test labeled::graph::tree_read::tests::tree_property_scan_reads_each_payload_block_once ... ok
+test labeled::graph::tree_write::tests::demote_hysteresis_trigger_via_remove_path ... ok
+test labeled::graph::tree_write::tests::demote_hysteresis_no_oscillation ... ok
+test labeled::bidirectional::deferred::tests::point_state_public_tree_noops_preserve_both_populated_orientations ... ok
+test labeled::graph::tree_write::tests::demote_round_trip_preserves_live_edge_set ... ok
+test labeled::graph::tree_write::tests::demote_degree_zero_reclaims_all_blocks ... ok
+test labeled::graph::tree_write::tests::insert_after_promote_appends_into_tree_tail ... ok
+test labeled::graph::tree_write::tests::insert_crosses_root_growth_boundary ... ok
+test labeled::graph::tree_read::tests::tree_visit_break_stops_topology_reads ... ok
+test labeled::graph::tree_write::tests::pre_promotion_span_inside_pinned_leaf_helper ... ok
+test labeled::graph::tree_write::tests::promote_skip_release_inside_pinned_leaf ... ok
+test labeled::graph::tree_write::tests::flatten_inverts_deepen ... ok
+test labeled::graph::tree_write::tests::interior_row_append_keeps_root_constant ... ok
+test labeled::graph::tree_write::tests::promote_wires_into_insert_path ... ok
+test labeled::graph::tree_write::tests::property_root_entry_count_and_depth_boundary_math ... ok
+test labeled::graph::tree_write::tests::production_insert_path_fails_closed_at_2_30_cap ... ok
+test labeled::graph::tree_write::tests::new_interior_mint_grows_root ... ok
+test labeled::graph::tree_write::tests::resolve_leaf_block_id_walks_synthetic_depth2_layout ... ok
+test labeled::graph::tree_write::tests::property_deepen_random_slot_read_write_model ... ok
+test labeled::graph::tree_write::tests::tree_insert_rejects_inline_property_edge ... ok
+test labeled::graph::tree_write::tests::tree_remove_idempotent_does_not_double_count ... ok
+test labeled::graph::tree_write::tests::edge_deepen_with_property_deepen_anticipation ... ok
+test labeled::graph::tree_write::tests::tree_insert_fails_closed_at_2_30_cap ... ok
+test labeled::graph::tree_write::tests::tree_remove_increments_block_header_tombstone_count ... ok
+test labeled::graph::tree_write::tests::tree_remove_then_insert_appends_to_tail ... ok
+test labeled::graph::tree_write::tests::tree_remove_writes_tombstone_and_updates_accounting ... ok
+test labeled::graph::tree_write::tests::tree_reuse_insertion_policy_never_reuses ... ok
+test labeled::graph::tree_write::tests::tree_reuse_decrements_block_header_count ... ok
+test labeled::graph::tree_write::tests::tree_reuse_never_mints_deepens_or_promotes ... ok
+test labeled::graph::tree_write::tests::tree_reuse_preserves_bucket_entry_position_identity ... ok
+test labeled::graph::tree_write::tests::tree_reuse_then_demote_rebuilds_clean ... ok
+test labeled::graph::tree_write::tests::tree_reuse_remove_reuse_remove_keeps_counts_exact ... ok
+test labeled::graph::tree_write::tests::property_deepen_at_k_boundary_preserves_all_values ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_accepted_by_validator ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_cleared_default ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_round_trips ... ok
+test labeled::record::tests::label_bucket_with_tree_mode_toggles_and_preserves_other_fields ... ok
+test labeled::tree_csr::tests::counterpart_pair_walks_logical_positions_in_insertion_order ... ok
+test labeled::graph::tree_write::tests::tree_reuse_writes_target_and_property_at_reused_position ... ok
+
+thread 'labeled::tree_csr::tests::deepening_at_max_depth_boundary_is_fail_closed' (20023404) panicked at crates/ic-stable-lara/src/labeled/tree_csr.rs:847:43:
+boundary fits in u64 sample: TryFromIntError(PosOverflow)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test labeled::tree_csr::tests::deepen_and_flatten_probes_report_current_depth ... ok
+test labeled::graph::tree_write::tests::tree_reuse_window_bound_ignores_out_of_window_tombstones ... ok
+test labeled::graph::tree_write::tests::public_read_accessors_over_depth_2 ... ok
+test labeled::tree_csr::tests::empty_bucket_has_depth_one_and_zero_root ... ok
+test labeled::tree_csr::tests::derived_depth_one_for_4k_64k_1m ... ok
+test labeled::tree_csr::tests::deepening_at_max_depth_boundary_is_fail_closed ... ok
+test labeled::graph::compact::tests::gap_tree_full_path_growth_past_5728_releases_only_owned_regions ... ok
+test labeled::tree_csr::tests::derived_depth_matches_adr_formula ... ok
+test labeled::tree_csr::tests::left_packing_invariant_holds_at_depth_one_boundary ... ok
+test labeled::tree_csr::tests::for_each_chunk_walks_blocks_in_order_with_tail_trim ... ok
+test labeled::graph::tree_write::tests::vertex_bucket_count_cap_rejects_1025th_bucket ... ok
+test labeled::tree_csr::tests::random_ordinal_access_visits_only_in_range_slots ... ok
+test labeled::tree_csr::tests::remove_at_out_of_range_returns_none ... ok
+test labeled::tree_csr::tests::published_state_invariant_holds_after_insert ... ok
+test labeled::tree_csr::tests::remove_at_shifts_left_and_preserves_order ... ok
+test labeled::tree_csr::tests::range_target_reads_only_4_bytes_at_slot ... ok
+test lara::edge::init::tests::grow_segment_tree_reopens_after_every_rejected_growth ... ok
+test lara::edge::init::tests::grow_segment_tree_failure_atomic_at_counts_reservation ... ok
+test lara::edge::init::tests::grow_segment_tree_failure_atomic_at_span_meta_reservation ... ok
+test labeled::graph::tree_write::tests::depth_ge2_property_append_at_k_boundary ... ok
+test lara::edge::init::tests::grow_segment_tree_success_after_rejected_counts_reservation ... ok
+test lara::edge::init::tests::grow_segment_tree_success_after_rejected_span_meta_reservation ... ok
+test labeled::graph::tree_write::tests::demote_physical_depth_2_releases_interiors ... ok
+test labeled::graph::tree_write::tests::tree_mode_leaf_actual_counts_slab_edges_only ... ok
+test labeled::graph::tree_write::tests::cascade_at_2_20_plus_1_deepens ... ok
+
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 575 filtered out; finished in 0.47s

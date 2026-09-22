@@ -1,0 +1,281 @@
+{
+  "base": "a80d2e1acad7f282790218ba63f80674807d56e5",
+  "implementation": "036649e67f811fc5ae071c961ac84ff798a2278b",
+  "anchor": "2026-09-22 10:15:06 UTC +0000",
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "raw_root": "/private/tmp/spill-selected-a80-va1dsp1i",
+  "scope": "GAP006 selected topology/value read only; independent approval pending",
+  "final_source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "c98b2068019f2bf60c9fae862b54d8678e3e0e396bba77f64d2bb2ede7e9ab05"
+  },
+  "executed_red_source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "d1eb5c9cf3c53167f139426a7f0b4cb0081e0e06cbd2359d1308bd1bea50052a"
+  },
+  "bench_pair": {
+    "scalar-before": {
+      "exit": 0,
+      "source_sha256": {
+        "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "6801248bb998b55b9476b17cc7918edbf747baaf9f198559517bc05bd866a5aa"
+      }
+    },
+    "scalar-after": {
+      "exit": 0,
+      "source_sha256": {
+        "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "a342249ec9710b23a156228e8c65adebd34cdb94575d04731d3570d0cb3f1c71"
+      }
+    }
+  },
+  "protected": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "cdb1a3e277ad1060b961b606fbcc9cd45a1d41902e9ede316423469d23863237",
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "4ab0e39c1a0b62dd6b5d74a7218ad823f441bc3f7e2eb156807e5a22692bd0cb",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "b49ea5d44cd06e1c8a8ab7c5179591b2742cffb5301ebb913f4b90af641e6a67",
+    "crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs": "9b0ad4927cf91585388acde1d8bf47d95813178ba4c2b0b7b19e3a4916f5fc0e"
+  },
+  "lock": {
+    "restored_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "as_used_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+    "reused_patch": "design/evidence/sources/adr0097-crossover-as-used-lock.patch"
+  },
+  "fixtures": {
+    "tests": 5,
+    "native_graphs_per_filter": 6,
+    "native_graphs_executing_new_tests_all_commands": 30,
+    "pocketic_constructors": 0,
+    "installs": 0
+  },
+  "source_notes": [
+    "The executed red follows a compile-only namespace error; tree failures occur inside selected slab-rank collection, not setup.",
+    "Final test changes add a1038 census assertion and intact sparse selection beside poisoned roots; fixture construction and other witness bodies unchanged.",
+    "Benchmark production matches final; later changes are test strengthening only.",
+    "Initial Lizard hunk-only analysis missed the before insertion-only owner; final paired body analysis includes it.",
+    "An initial non-Rust verification included an obsolete blank separator; it stopped before staging. Corrected exact-body verification trims that separator only.",
+    "Native bulk, canonical topology/replay, slab/run value/rank helpers, writer/removal/deferred/accepted fixture sources are unchanged.",
+    "Directedness GAP007 is source-audited only; no execution or repair is included.",
+    "Initial staged whitespace check rejected a terminal blank in the generated directedness excerpt. Audit text now shares the existing log normalization; raw excerpt unchanged.",
+    "One administrative35s shell timeout occurred during verification before restaging/commits. Progress-instrumented checks completed in1.095s; cause unknown. Conservative50s charge recorded after the23 measured commands, not a Rust retry or measured startup cost."
+  ],
+  "files": [
+    {
+      "raw": "plan-draft.log",
+      "raw_sha256": "8108ab0609302e529b2beb39ef4542a3b619a0f3489a5a293e0d4760b93724f9",
+      "durable": "design/evidence/sources/adr0097-selected-properties-plan-draft.txt",
+      "durable_sha256": "8108ab0609302e529b2beb39ef4542a3b619a0f3489a5a293e0d4760b93724f9",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "selected-before.log",
+      "raw_sha256": "ae358f7c4366e5876269fd0841c9cbde4e0c2d68c910b5823f57c1f4b1d6cb95",
+      "durable": "design/evidence/sources/adr0097-selected-properties-compile.txt",
+      "durable_sha256": "ae358f7c4366e5876269fd0841c9cbde4e0c2d68c910b5823f57c1f4b1d6cb95",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "selected-runtime-before.log",
+      "raw_sha256": "5aedb3764d3057a5f87961ce4d0148e15ecc654dbff43b55c5661d3c9c5266e2",
+      "durable": "design/evidence/sources/adr0097-selected-properties-before.txt",
+      "durable_sha256": "5aedb3764d3057a5f87961ce4d0148e15ecc654dbff43b55c5661d3c9c5266e2",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "selected-red-trace.log",
+      "raw_sha256": "b378fad6bb8511fd2ef058bfd6a9a84ea1341f386078d6c4d46f50513dfdecbe",
+      "durable": "design/evidence/sources/adr0097-selected-properties-red-trace.txt",
+      "durable_sha256": "b378fad6bb8511fd2ef058bfd6a9a84ea1341f386078d6c4d46f50513dfdecbe",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "selected-after.log",
+      "raw_sha256": "074260ce6b5f7cfb7ea4e73ed2564da819a4d82a1a9923995dbf214c7206317a",
+      "durable": "design/evidence/sources/adr0097-selected-properties-after.txt",
+      "durable_sha256": "9b09609f8c8cb990714abb4139e996b54000c257003404da9ccaa97c045dea5c",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "position-mutation.log",
+      "raw_sha256": "5ea36734290df2a6e3504ba53c667ad90bf416726433ab92f4175691626d9201",
+      "durable": "design/evidence/sources/adr0097-selected-properties-position-mutation.txt",
+      "durable_sha256": "5ea36734290df2a6e3504ba53c667ad90bf416726433ab92f4175691626d9201",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "scalar-before.log",
+      "raw_sha256": "cccd433007e2b97b99d6fff96fd3f139fa157c36ab76657c3547acf390d6573e",
+      "durable": "design/evidence/sources/adr0097-selected-properties-scalar-before.txt",
+      "durable_sha256": "cccd433007e2b97b99d6fff96fd3f139fa157c36ab76657c3547acf390d6573e",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "scalar-after.log",
+      "raw_sha256": "6526a1ea50ed1a66dd967aff2046b7336854e479e791367e642d4f84396e0bb3",
+      "durable": "design/evidence/sources/adr0097-selected-properties-scalar-after.txt",
+      "durable_sha256": "6526a1ea50ed1a66dd967aff2046b7336854e479e791367e642d4f84396e0bb3",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-format.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-format.txt",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-clippy.log",
+      "raw_sha256": "3315a0e8d6bd37e696d9160202fe964d7958232eadefdfc925eb9980359b9ccc",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-clippy.txt",
+      "durable_sha256": "3315a0e8d6bd37e696d9160202fe964d7958232eadefdfc925eb9980359b9ccc",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-selected.log",
+      "raw_sha256": "8698e47bf083d1f6104f335e0e5bf768e8e9dc49088d1d61d0399ffab892b247",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-selected.txt",
+      "durable_sha256": "53c84ecaab5926f4e185a0eca7bfe62813105e2dd717498efe52050ece38883f",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-traverse.log",
+      "raw_sha256": "dea6cec175f3da858608409d49900baebbbecda83ad7416357c6121e3cdd7f6a",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-traverse.txt",
+      "durable_sha256": "9520777fcd2bf4b426ada256495c4903d4bd4367c58260f9c6eeee266aaea413",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-tree.log",
+      "raw_sha256": "d55776a5136e94668cffefc6220b383140144eb3e64854745bef9778deba5194",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-tree.txt",
+      "durable_sha256": "35484997566c50dd4cd2ff77cb69507a3a3d1e21afc02059454749cf3036a059",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-point.log",
+      "raw_sha256": "bc906081a417639e63e490aec64528c5145d297119e93bfb362d7ab2dbe4fcf6",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-point.txt",
+      "durable_sha256": "7f07215e5952f2bcadeb892899e1b76899b5de0335c486ce63e515aad257f80b",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-hybrid.log",
+      "raw_sha256": "f9e6de7e962ed6b3f07c795105f0b7874f6b2802cd3d4945ced3cb7fe404b1b5",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-hybrid.txt",
+      "durable_sha256": "12780f311c1910e6e06075c8291812a3f186ffda345769cefe3659d4025ec36d",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "final-retained.log",
+      "raw_sha256": "25057f22dc229c31a12be53ff420ca09c04c75d0646b8b1b61bf6f8cedbabce2",
+      "durable": "design/evidence/sources/adr0097-selected-properties-final-retained.txt",
+      "durable_sha256": "e050346a9135ca06aa93bc8cbbedeeb63dd6d600cfdd3cbc329bb255b0eee85e",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "versions.log",
+      "raw_sha256": "9e0b36ac0ca3f1d54130704e52520481a09db6318d94c16be2e267f6f8ce7779",
+      "durable": "design/evidence/sources/adr0097-selected-properties-versions.txt",
+      "durable_sha256": "9e0b36ac0ca3f1d54130704e52520481a09db6318d94c16be2e267f6f8ce7779",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "plan-final.log",
+      "raw_sha256": "d27453e38a18ce754c5971e4551697f16c9b07e6ef76ed9cd87057f6f90958e8",
+      "durable": "design/evidence/sources/adr0097-selected-properties-plan-final.txt",
+      "durable_sha256": "d27453e38a18ce754c5971e4551697f16c9b07e6ef76ed9cd87057f6f90958e8",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "witness-u0.patch",
+      "raw_sha256": "c043f94d82a3046f9ec3ace4b42512f94aff8530b1998f54d7f077337a84e23d",
+      "durable": "design/evidence/sources/adr0097-selected-properties-witness.patch",
+      "durable_sha256": "c043f94d82a3046f9ec3ace4b42512f94aff8530b1998f54d7f077337a84e23d",
+      "normalization": "none"
+    },
+    {
+      "raw": "scalar-before.csv",
+      "raw_sha256": "71ca0c5c7bba791f36c6d6625f5f92c03e9d3e096959bc7b123ac62bb5b11d1f",
+      "durable": "design/evidence/sources/adr0097-selected-properties-scalar-before.csv",
+      "durable_sha256": "71ca0c5c7bba791f36c6d6625f5f92c03e9d3e096959bc7b123ac62bb5b11d1f",
+      "normalization": "none"
+    },
+    {
+      "raw": "scalar-after.csv",
+      "raw_sha256": "92ee533a8a5ccd12517dabff32716c6ac2af48a40021edf30c1ceff8ac4e971b",
+      "durable": "design/evidence/sources/adr0097-selected-properties-scalar-after.csv",
+      "durable_sha256": "92ee533a8a5ccd12517dabff32716c6ac2af48a40021edf30c1ceff8ac4e971b",
+      "normalization": "none"
+    },
+    {
+      "raw": "ledger.json",
+      "raw_sha256": "c8c34005716b3b5842f2ea066f6a05a1af5abca6e01e9cdbd9c81e8378075338",
+      "durable": "design/evidence/sources/adr0097-selected-properties-ledger.json",
+      "durable_sha256": "c8c34005716b3b5842f2ea066f6a05a1af5abca6e01e9cdbd9c81e8378075338",
+      "normalization": "none"
+    },
+    {
+      "raw": "run.py",
+      "raw_sha256": "a58c66981430a07256ddd86f5116097771f3586fc50646a3a7bdf11b73c21cc4",
+      "durable": "design/evidence/sources/adr0097-selected-properties-runner.py",
+      "durable_sha256": "a58c66981430a07256ddd86f5116097771f3586fc50646a3a7bdf11b73c21cc4",
+      "normalization": "none"
+    },
+    {
+      "raw": "bench_pair.py",
+      "raw_sha256": "8ecee2e909250b65113e131cf3866fe71c0bfb2439ab37f73b0dfac541a7598d",
+      "durable": "design/evidence/sources/adr0097-selected-properties-bench-pair.py",
+      "durable_sha256": "8ecee2e909250b65113e131cf3866fe71c0bfb2439ab37f73b0dfac541a7598d",
+      "normalization": "none"
+    },
+    {
+      "raw": "lizard.json",
+      "raw_sha256": "5f1be152ee9debbaccfb2f918b47c7d0bba94f05ba5c9e1f9ed2894bdf7ebaab",
+      "durable": "design/evidence/sources/adr0097-selected-properties-lizard.json",
+      "durable_sha256": "5f1be152ee9debbaccfb2f918b47c7d0bba94f05ba5c9e1f9ed2894bdf7ebaab",
+      "normalization": "none"
+    },
+    {
+      "raw": "callers-before.txt",
+      "raw_sha256": "6ede22b09e1b137be33cf67371fbd6e0b67545fbabb822bd06132fcd73386ba1",
+      "durable": "design/evidence/sources/adr0097-selected-properties-callers-before.txt",
+      "durable_sha256": "6ede22b09e1b137be33cf67371fbd6e0b67545fbabb822bd06132fcd73386ba1",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "callers-final.txt",
+      "raw_sha256": "ba1cf8d36a665e2d0dd78eefc624ed5f75d0dc9a2d98ed3a81ce4fcf89b0cb05",
+      "durable": "design/evidence/sources/adr0097-selected-properties-callers-final.txt",
+      "durable_sha256": "ba1cf8d36a665e2d0dd78eefc624ed5f75d0dc9a2d98ed3a81ce4fcf89b0cb05",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "obsolete-private-readers.txt",
+      "raw_sha256": "70cf707c7ffee766a524e8c682a30e23d899bd6d1260c7037a292f1b4ad30852",
+      "durable": "design/evidence/sources/adr0097-selected-properties-obsolete.txt",
+      "durable_sha256": "70cf707c7ffee766a524e8c682a30e23d899bd6d1260c7037a292f1b4ad30852",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    },
+    {
+      "raw": "directedness.txt",
+      "raw_sha256": "80c0bd83110c4400c68aa9c56503321bb3b25e3deda78eb68753b2f61e219b65",
+      "durable": "design/evidence/sources/adr0097-selected-properties-directedness.txt",
+      "durable_sha256": "af6fa4aa4869bd0780e818f6710e62beea9198cbc8b8024e61c331f3dadfbdd0",
+      "normalization": "trailing whitespace/terminal blank lines only"
+    }
+  ],
+  "commands": 23,
+  "measured_seconds": 269.50622937385924,
+  "administrative_charge_seconds": 50.0,
+  "charged_seconds": 319.50622937385924,
+  "setup_charge_seconds": 0,
+  "runner_as_executed": {
+    "raw": "runner-as-executed.py",
+    "sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+    "note": "The final runner additionally includes administrative charges in future admission; prior command records are unchanged."
+  }
+}
