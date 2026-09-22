@@ -928,7 +928,7 @@ where
     {
         #[cfg(test)]
         record_rewrite_vertex_edge_span();
-        // Rebuild the VertexEdgeSpan from LabelEdgeSpan live prefixes.
+        // Rebuild the VertexEdgeSpan from initialized slab prefixes and tree roots.
         //
         // The bucket layer is exact-fit, so a new label can appear anywhere in
         // BucketLabelKey order without reserving space in the bucket descriptor. Edge
@@ -938,12 +938,9 @@ where
         // preferred bucket receives `preferred_extra` before proportional gap
         // placement because the caller is about to insert there.
         //
-        // Copy strategy: when relocating to a fresh slab span (`moved` with a prior
-        // allocation), source and destination are disjoint. If every bucket is
-        // slab-only (`overflow_log_head < 0`) and each label's live edges sit in a
-        // contiguous slab prefix, use cheap `read_slots_contiguous` / `write_slots_contiguous`.
-        // Otherwise collect through `EdgeStore` (slab + overflow log) before writing.
-        // In-place layout changes can overlap; the same fast vs full split applies.
+        // Capture each physical region before publishing any destination: in-place
+        // layouts may overlap. Slab prefixes include holes; spill runs keep their
+        // owners and ordinals and are not decoded or folded by this publisher.
         let planned_vertex = self.vertices.get(src);
         if planned_vertex.is_default_edge_labeled() || planned_vertex.degree() == 0 {
             return Ok(());
@@ -959,9 +956,9 @@ where
                 policy,
             )?;
 
-        // Edge-span planning (especially resolving a growth base) may relocate the leaf,
-        // fold overflow logs, and update bucket metadata. Re-read the edge buckets rather than
-        // publishing positions from the stale snapshot taken before planning/relocate.
+        // Resolving a growth base may relocate the leaf and update bucket origins.
+        // Re-read the edge buckets rather than publishing positions from a stale
+        // pre-relocation snapshot.
         let vertex = self.vertices.get(src);
         let current_buckets = self.read_vertex_label_buckets(&vertex)?;
         if vertex != planned_vertex || current_buckets != buckets {
@@ -969,7 +966,7 @@ where
             // vertex spans and bucket starts, invalidating this vertex's pre-relocation
             // plan. Restart from the published layout instead of committing stale
             // positions over the relocation result.
-            // Escalation guard: planning just made room (relocate/fold), so the
+            // Escalation guard: planning just made room by relocation, so the
             // restart must fit into it, not re-grow from the fresh (tile-inflated)
             // span. Re-growing would demand a larger quantum than the relocate
             // sized for, exhaust its retry loop, and fail a healthy span —
@@ -1524,9 +1521,8 @@ where
             let _scope = bench_scope("labeled_vertex_write_edge_runs");
             for (index, bucket) in resident_buckets.iter().enumerate() {
                 let row_start = positions[index];
-                // ADR 0096 §5: tiny descriptors keep stored == degree; only the
-                // anchor advances to the running boundary. Publish from the
-                // original (the resident scratch copy zeroed the width).
+                // Tiny rows retain their inline prefix width, including holes;
+                // only the anchor advances to the running boundary.
                 if buckets[index].is_tiny_mode() {
                     row_buckets.push(
                         buckets[index]
@@ -2054,7 +2050,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        // ADR 0096 §5: dense tiny prefixes have no tombstones and no moves.
+        // Tiny prefixes may retain holes but have no slab region to compact.
         if bucket.is_tiny_mode() {
             return Ok(None);
         }
