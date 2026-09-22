@@ -1,0 +1,164 @@
+{
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "runs": [
+    {
+      "name": "canbench-before",
+      "command": [
+        "canbench",
+        "bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 600,
+      "timeout_seconds": 150.0,
+      "final": false,
+      "start_monotonic": 538564.807252416,
+      "end_monotonic": 538715.078843625,
+      "elapsed_seconds": 150.2715912089916,
+      "exit_code": 124,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "97d84b53ff0fbf1c2c173ee6ab25ae4097f3238b4fb70545726f9472fa0c8a84"
+    },
+    {
+      "name": "native-before",
+      "command": [
+        "env",
+        "SPILL_PROBE_EXPECTED_MANIFEST=/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+        "SPILL_PROBE_OUTPUT=/tmp/spill-read-af063-obmxdo77/native-before",
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "diagnostic_crossover_16k_event_parity",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 449.7284087910084,
+      "timeout_seconds": 80.0,
+      "final": false,
+      "start_monotonic": 538813.000573708,
+      "end_monotonic": 538893.038049833,
+      "elapsed_seconds": 80.03747612505686,
+      "exit_code": 124,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "4ea69190a7156d5056abdaeb616821d0f8a6b94c7640386158a6551b001865c3"
+    },
+    {
+      "name": "versions",
+      "command": [
+        "sh",
+        "-c",
+        "rustc --version --verbose; cargo --version; canbench --version"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 369.69093266595155,
+      "timeout_seconds": 10.0,
+      "final": false,
+      "start_monotonic": 538954.032702375,
+      "end_monotonic": 538954.679216708,
+      "elapsed_seconds": 0.6465143330860883,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "4842a8f5a9b63e50ea54379f8d348ce173b00c8e6a7959a84fa3c9c094bc5b17"
+    },
+    {
+      "name": "format-tests",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-lara/src/labeled/graph/compact.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 369.04441833286546,
+      "timeout_seconds": 10.0,
+      "final": false,
+      "start_monotonic": 539141.801878666,
+      "end_monotonic": 539142.571999875,
+      "elapsed_seconds": 0.7701212089741603,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "small-before",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "left_pack_bounded",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 368.2742971238913,
+      "timeout_seconds": 100.0,
+      "final": false,
+      "start_monotonic": 539142.70898725,
+      "end_monotonic": 539242.855318958,
+      "elapsed_seconds": 100.14633170806337,
+      "exit_code": 124,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "a8f219ebf4fb8e235da7fbdcd7128309471929d37ddd6fd82d54aed0cad0b992"
+    },
+    {
+      "name": "final-format",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "crates/ic-stable-lara/src/labeled/graph/compact.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 268.12796541582793,
+      "timeout_seconds": 10.0,
+      "final": true,
+      "start_monotonic": 539381.55795075,
+      "end_monotonic": 539382.297627875,
+      "elapsed_seconds": 0.7396771250059828,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "final-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 267.38828829082195,
+      "timeout_seconds": 90.0,
+      "final": true,
+      "start_monotonic": 539382.605150333,
+      "end_monotonic": 539397.591588333,
+      "elapsed_seconds": 14.986437999992631,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "73eb5db445047c312350019b7ead68bd5329487611018538e48e64827783a48b"
+    }
+  ]
+}

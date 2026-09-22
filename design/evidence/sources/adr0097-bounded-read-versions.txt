@@ -1,0 +1,10 @@
+rustc 1.100.0-nightly (574ff7d98 2026-09-14)
+binary: rustc
+commit-hash: 574ff7d98bd6d037e5236a8453029173b32631fd
+commit-date: 2026-09-14
+host: aarch64-apple-darwin
+release: 1.100.0-nightly
+LLVM version: 23.1.1
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+cargo 1.100.0-nightly (7941be6fb 2026-09-11)
+canbench 0.7.0

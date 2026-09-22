@@ -1,0 +1,74 @@
+{
+  "version": "1.24.0",
+  "mode": "working tree",
+  "baseline": "af063ea427415c88c622d6e0124192ad028a9ecf",
+  "scope": [
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs"
+  ],
+  "args": [
+    "--csv",
+    "-i",
+    "-1"
+  ],
+  "fields": [
+    "NLOC",
+    "CCN",
+    "tokens",
+    "parameters",
+    "length"
+  ],
+  "touched": [
+    {
+      "name": "rewrite_vertex_edge_span_with_policy",
+      "before": [
+        "71",
+        "17",
+        "367",
+        "7",
+        "106"
+      ],
+      "after": [
+        "71",
+        "17",
+        "367",
+        "7",
+        "103"
+      ]
+    },
+    {
+      "name": "commit_vertex_edge_span_layout",
+      "before": [
+        "117",
+        "25",
+        "681",
+        "12",
+        "140"
+      ],
+      "after": [
+        "117",
+        "25",
+        "681",
+        "12",
+        "139"
+      ]
+    },
+    {
+      "name": "first_compaction_move_in_bucket",
+      "before": [
+        "33",
+        "10",
+        "170",
+        "4",
+        "34"
+      ],
+      "after": [
+        "33",
+        "10",
+        "170",
+        "4",
+        "34"
+      ]
+    }
+  ],
+  "assessment": "comments only: no token or control-flow change; not performance evidence"
+}

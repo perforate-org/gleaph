@@ -1,0 +1,314 @@
+diff --git 1/private/tmp/spill-read-af063-obmxdo77/baseline-compact.rs 2/private/tmp/spill-read-af063-obmxdo77/unvalidated-small-fixture-compact.rs
+index bf384fca8..0a5e0d09c 100644
+--- 1/private/tmp/spill-read-af063-obmxdo77/baseline-compact.rs
++++ 2/private/tmp/spill-read-af063-obmxdo77/unvalidated-small-fixture-compact.rs
+@@ -931 +931 @@ where
+-        // Rebuild the VertexEdgeSpan from LabelEdgeSpan live prefixes.
++        // Rebuild the VertexEdgeSpan from initialized slab prefixes and tree roots.
+@@ -941,6 +941,3 @@ where
+-        // Copy strategy: when relocating to a fresh slab span (`moved` with a prior
+-        // allocation), source and destination are disjoint. If every bucket is
+-        // slab-only (`overflow_log_head < 0`) and each label's live edges sit in a
+-        // contiguous slab prefix, use cheap `read_slots_contiguous` / `write_slots_contiguous`.
+-        // Otherwise collect through `EdgeStore` (slab + overflow log) before writing.
+-        // In-place layout changes can overlap; the same fast vs full split applies.
++        // Capture each physical region before publishing any destination: in-place
++        // layouts may overlap. Slab prefixes include holes; spill runs keep their
++        // owners and ordinals and are not decoded or folded by this publisher.
+@@ -962,3 +959,3 @@ where
+-        // Edge-span planning (especially resolving a growth base) may relocate the leaf,
+-        // fold overflow logs, and update bucket metadata. Re-read the edge buckets rather than
+-        // publishing positions from the stale snapshot taken before planning/relocate.
++        // Resolving a growth base may relocate the leaf and update bucket origins.
++        // Re-read the edge buckets rather than publishing positions from a stale
++        // pre-relocation snapshot.
+@@ -972 +969 @@ where
+-            // Escalation guard: planning just made room (relocate/fold), so the
++            // Escalation guard: planning just made room by relocation, so the
+@@ -1527,3 +1524,2 @@ where
+-                // ADR 0096 §5: tiny descriptors keep stored == degree; only the
+-                // anchor advances to the running boundary. Publish from the
+-                // original (the resident scratch copy zeroed the width).
++                // Tiny rows retain their inline prefix width, including holes;
++                // only the anchor advances to the running boundary.
+@@ -2057 +2053 @@ where
+-        // ADR 0096 §5: dense tiny prefixes have no tombstones and no moves.
++        // Tiny prefixes may retain holes but have no slab region to compact.
+@@ -2613,0 +2610,277 @@ mod tests {
++    thread_local! {
++        static LEFT_PACK_DECODED: std::cell::RefCell<Vec<u32>> = const {
++            std::cell::RefCell::new(Vec::new())
++        };
++    }
++
++    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
++    struct LeftPackEdge<const N: usize>(u32);
++
++    impl<const N: usize> crate::traits::CsrEdge for LeftPackEdge<N> {
++        const BYTES: usize = N;
++        fn read_from(bytes: &[u8]) -> Self {
++            let target = u32::from_le_bytes(bytes[..4].try_into().unwrap());
++            LEFT_PACK_DECODED.with(|decoded| decoded.borrow_mut().push(target));
++            Self(target)
++        }
++        fn write_to(&self, bytes: &mut [u8]) {
++            bytes.fill(0xa5);
++            bytes[..4].copy_from_slice(&self.0.to_le_bytes());
++        }
++        fn neighbor_vid(&self) -> VertexId {
++            VertexId::from(self.0)
++        }
++        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
++            Self(u32::from(vid))
++        }
++    }
++
++    impl<const N: usize> crate::traits::CsrEdgeTombstone for LeftPackEdge<N> {
++        fn tombstone_edge() -> Self {
++            Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
++        }
++    }
++
++    #[derive(Clone, Default)]
++    struct LeftPackMemory {
++        inner: crate::VectorMemory,
++        reads: std::rc::Rc<std::cell::RefCell<Vec<(u64, usize)>>>,
++        allowed: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<u64>>>>,
++    }
++
++    impl ic_stable_structures::Memory for LeftPackMemory {
++        fn size(&self) -> u64 {
++            self.inner.size()
++        }
++        fn grow(&self, pages: u64) -> i64 {
++            self.inner.grow(pages)
++        }
++        fn read(&self, offset: u64, bytes: &mut [u8]) {
++            if let Some(allowed) = self.allowed.borrow().as_ref() {
++                assert!(offset >= allowed.start);
++                assert!(
++                    offset + bytes.len() as u64 <= allowed.end,
++                    "read past initialized prefix"
++                );
++            }
++            self.reads.borrow_mut().push((offset, bytes.len()));
++            self.inner.read(offset, bytes);
++        }
++        fn write(&self, offset: u64, bytes: &[u8]) {
++            self.inner.write(offset, bytes);
++        }
++    }
++
++    fn left_pack_bounded_contract<const N: usize>() {
++        use crate::traits::{CsrEdge, CsrEdgeTombstone};
++        type Graph<const N: usize> = LabeledLaraGraph<LeftPackEdge<N>, LeftPackMemory>;
++        let memories: Vec<_> = (0..16).map(|_| LeftPackMemory::default()).collect();
++        let graph = Graph::<N>::new(
++            memories[0].clone(),
++            memories[1].clone(),
++            memories[2].clone(),
++            memories[3].clone(),
++            memories[4].clone(),
++            memories[5].clone(),
++            memories[6].clone(),
++            memories[7].clone(),
++            memories[8].clone(),
++            memories[9].clone(),
++            memories[10].clone(),
++            memories[11].clone(),
++            memories[12].clone(),
++            memories[13].clone(),
++            memories[14].clone(),
++            memories[15].clone(),
++            crate::labeled::InitialCapacities::uniform(256),
++            BucketLabelKey::from_raw(1),
++        )
++        .unwrap();
++        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
++        let label = BucketLabelKey::from_raw(2);
++        let neighbor_label = BucketLabelKey::from_raw(3);
++        const LEN: u32 = 35;
++        for target in 0..LEN {
++            graph
++                .insert_edge_skip_leaf_cascade(
++                    src,
++                    label,
++                    LeftPackEdge::<N>(target),
++                    EdgePlacementPolicy::Insertion,
++                )
++                .unwrap();
++        }
++        for target in 9000..9005 {
++            graph
++                .insert_edge_skip_leaf_cascade(
++                    src,
++                    neighbor_label,
++                    LeftPackEdge::<N>(target),
++                    EdgePlacementPolicy::Insertion,
++                )
++                .unwrap();
++        }
++        graph.compact_vertex_edge_span(src, 0).unwrap();
++        let vertex = graph.vertices().get(src);
++        let bucket = graph
++            .buckets()
++            .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
++            .unwrap();
++        assert_eq!(bucket.stored_slots(), LEN);
++        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
++        let neighbor = graph
++            .buckets()
++            .read_label_bucket_slot(
++                graph
++                    .find_bucket_slot(&vertex, neighbor_label)
++                    .unwrap()
++                    .unwrap(),
++            )
++            .unwrap();
++        assert!(neighbor.edge_start() >= bucket.edge_start() + u64::from(LEN));
++        let slab = &memories[5];
++        slab.reads.borrow_mut().clear();
++        let mut raw = vec![0; N];
++        graph.edges().read_slot_bytes(bucket.edge_start(), &mut raw);
++        let base_byte = slab.reads.borrow()[0].0;
++        let mut neighbor_bytes = vec![0; neighbor.stored_slots() as usize * N];
++        graph
++            .edges()
++            .read_slots_contiguous_bytes(neighbor.edge_start(), &mut neighbor_bytes);
++        let cases = [
++            (vec![0, 1, 32], 0, Some((2, 0)), 3),
++            (vec![32], 0, Some((33, 32)), 34),
++            (vec![31, 32, 33], 0, Some((34, 31)), 35),
++            ((5..=32).collect(), 5, Some((33, 5)), 29),
++            (vec![0], 33, None, 2),
++            (vec![32, 33, 34], 0, None, 35),
++            (vec![0], 35, None, 0),
++            (vec![0], 36, None, 0),
++        ];
++        for (holes, cursor, movement, decoded_len) in cases {
++            let rows: Vec<_> = (0..LEN)
++                .map(|slot| {
++                    if holes.contains(&slot) {
++                        LeftPackEdge::<N>::tombstone_edge()
++                    } else {
++                        LeftPackEdge::<N>(slot)
++                    }
++                })
++                .collect();
++            for (slot, edge) in rows.iter().enumerate() {
++                graph
++                    .edges()
++                    .write_slot(bucket.edge_start() + slot as u64, *edge)
++                    .unwrap();
++            }
++            let snapshot = slab.inner.borrow().clone();
++            let local = bucket.with_degree_field(LEN - holes.len() as u32);
++            *slab.allowed.borrow_mut() = Some(
++                base_byte + u64::from(cursor.min(LEN)) * N as u64
++                    ..base_byte + u64::from(LEN) * N as u64,
++            );
++            slab.reads.borrow_mut().clear();
++            LEFT_PACK_DECODED.with(|decoded| decoded.borrow_mut().clear());
++            let found =
++                Graph::<N>::first_edge_slot_move_in_bucket(&local, graph.edges(), cursor).unwrap();
++            assert_eq!(
++                found,
++                movement.map(|(old_slot_index, new_slot_index)| EdgeSlotMove {
++                    label_id: label,
++                    old_slot_index,
++                    new_slot_index
++                })
++            );
++            let expected: Vec<_> = rows
++                .iter()
++                .skip(cursor as usize)
++                .take(decoded_len)
++                .map(|edge| edge.0)
++                .collect();
++            LEFT_PACK_DECODED.with(|decoded| {
++                assert_eq!(
++                    *decoded.borrow(),
++                    expected,
++                    "decode stop N={N} cursor={cursor}"
++                )
++            });
++            for &(_, bytes) in slab.reads.borrow().iter() {
++                assert_eq!(bytes % N, 0);
++                assert!(bytes <= 32 * N, "read must remain bounded");
++            }
++            if decoded_len == 0 {
++                assert!(slab.reads.borrow().is_empty());
++            }
++            assert_eq!(*slab.inner.borrow(), snapshot, "finder is read-only");
++            *slab.allowed.borrow_mut() = None;
++        }
++        // An invalid first address must retain the exact error and issue no read.
++        slab.reads.borrow_mut().clear();
++        let invalid = bucket.with_edge_range(crate::slab_index::SLOT_INDEX_MASK, LEN);
++        assert!(matches!(
++            Graph::<N>::first_edge_slot_move_in_bucket(&invalid, graph.edges(), 1),
++            Err(LabeledOperationError::Store(
++                LaraOperationError::CollectAllocationOverflow
++            ))
++        ));
++        assert!(slab.reads.borrow().is_empty());
++        // Restore canonical rows before exercising the real caller's zero-cursor fallback.
++        for target in 0..LEN {
++            graph
++                .edges()
++                .write_slot(
++                    bucket.edge_start() + u64::from(target),
++                    LeftPackEdge::<N>(target),
++                )
++                .unwrap();
++        }
++        assert_eq!(
++            graph.remove_edge_at_slot(src, label, 0).unwrap(),
++            Some(LeftPackEdge::<N>(0))
++        );
++        LEFT_PACK_DECODED.with(|decoded| decoded.borrow_mut().clear());
++        *slab.allowed.borrow_mut() = Some(base_byte..base_byte + u64::from(LEN) * N as u64);
++        assert_eq!(
++            graph
++                .compact_vertex_edge_span_one_step(src, 0, 33, &|_| EdgePlacementPolicy::Insertion)
++                .unwrap(),
++            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
++                label_id: label,
++                old_slot_index: 1,
++                new_slot_index: 0
++            })
++        );
++        LEFT_PACK_DECODED.with(|decoded| {
++            assert_eq!(
++                *decoded.borrow(),
++                [33, 34, u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL), 1, 1]
++            )
++        });
++        *slab.allowed.borrow_mut() = None;
++        let mut after = vec![0; neighbor_bytes.len()];
++        graph
++            .edges()
++            .read_slots_contiguous_bytes(neighbor.edge_start(), &mut after);
++        assert_eq!(after, neighbor_bytes);
++        assert_eq!(
++            graph.edges().read_slot(bucket.edge_start()).neighbor_vid(),
++            VertexId::from(1)
++        );
++        assert!(
++            graph
++                .edges()
++                .read_slot(bucket.edge_start() + 1)
++                .is_tombstone_edge()
++        );
++    }
++
++    #[test]
++    fn left_pack_bounded_four_byte_contract() {
++        left_pack_bounded_contract::<4>();
++    }
++
++    #[test]
++    fn left_pack_bounded_ten_byte_contract() {
++        left_pack_bounded_contract::<10>();
++    }
++

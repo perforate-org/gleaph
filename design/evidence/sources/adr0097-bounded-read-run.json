@@ -1,0 +1,106 @@
+{
+  "status": "incomplete baseline attempt; no performance candidate implemented or retained",
+  "baseline": "af063ea427415c88c622d6e0124192ad028a9ecf",
+  "retained_comment_commit": "d292014eb",
+  "raw_root": "/private/tmp/spill-read-af063-obmxdo77",
+  "probe_source": "design/evidence/sources/adr0097-crossover-16k-probe.rs",
+  "probe_sha256": "be28e6196fd3cc8a42f0720177821174d69f55f841c2b00d029de2bddb30e602",
+  "probe_registration_patch": "probe-registration.patch",
+  "source_hashes": {
+    "baseline-compact.rs": "609eaa8947dc44bc3d99ad33a7480febd235eee5bcdd6802d2d417e0d5655fee",
+    "unvalidated-small-fixture-compact.rs": "40cb2f24ad0e5865ff23ce8eed8b158cd66574a133aa3b107bef61721dfc1fce",
+    "final-compact.rs": "2bde0d7285fa03dbf07d21e1238336d1a128cb4c80ecef90585ada1be53b1a0f",
+    "baseline-graph.rs": "13863f6af7eb0ddc403ac1e60718dcc0935e49b60dce3501b458e5db074c6266",
+    "baseline-edge.rs": "bc20976677e7b11aeabc23a43801aa1764df7bebbe2bef41c7629d213b1be7f4"
+  },
+  "locks": {
+    "restored_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "as_used_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+    "reconstruction": "adr0097-crossover-as-used-lock.patch"
+  },
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "spent_seconds": 347.5981497091707,
+  "remaining_seconds": 252.40185029082932,
+  "artifacts": {
+    "design/evidence/sources/adr0097-bounded-read-baseline-canbench.txt": {
+      "raw": "canbench-before.log",
+      "raw_sha256": "97d84b53ff0fbf1c2c173ee6ab25ae4097f3238b4fb70545726f9472fa0c8a84",
+      "sha256": "cf51f1e97346f84aa220e53f69ce8082cf702ad985743047e83008d4244990f2",
+      "transformation": "trim terminal blank lines only"
+    },
+    "design/evidence/sources/adr0097-bounded-read-baseline-native.txt": {
+      "raw": "native-before.log",
+      "raw_sha256": "4ea69190a7156d5056abdaeb616821d0f8a6b94c7640386158a6551b001865c3",
+      "sha256": "4ea69190a7156d5056abdaeb616821d0f8a6b94c7640386158a6551b001865c3",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-draft-fixture-check.txt": {
+      "raw": "small-before.log",
+      "raw_sha256": "a8f219ebf4fb8e235da7fbdcd7128309471929d37ddd6fd82d54aed0cad0b992",
+      "sha256": "e4c3b2d39520a059f0dcac2cfec0805fd5384b2786ce04fd9dd4240afbe9767d",
+      "transformation": "trim terminal blank lines only"
+    },
+    "design/evidence/sources/adr0097-bounded-read-final-clippy.txt": {
+      "raw": "final-clippy.log",
+      "raw_sha256": "73eb5db445047c312350019b7ead68bd5329487611018538e48e64827783a48b",
+      "sha256": "73eb5db445047c312350019b7ead68bd5329487611018538e48e64827783a48b",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-final-format.txt": {
+      "raw": "final-format.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-versions.txt": {
+      "raw": "versions.log",
+      "raw_sha256": "4842a8f5a9b63e50ea54379f8d348ce173b00c8e6a7959a84fa3c9c094bc5b17",
+      "sha256": "4842a8f5a9b63e50ea54379f8d348ce173b00c8e6a7959a84fa3c9c094bc5b17",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-ledger.json": {
+      "raw": "ledger.json",
+      "raw_sha256": "ee7ae45632cd26e38272ebcf0588f2e5769d376443e194cfb9f03637e71b8c26",
+      "sha256": "ee7ae45632cd26e38272ebcf0588f2e5769d376443e194cfb9f03637e71b8c26",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-run.py": {
+      "raw": "run.py",
+      "raw_sha256": "d50fbbd739333ed9b8a4593e0367a81b254919081b9143771cbfad8f91ab4ecc",
+      "sha256": "d50fbbd739333ed9b8a4593e0367a81b254919081b9143771cbfad8f91ab4ecc",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-lizard.json": {
+      "raw": "lizard-review.json",
+      "raw_sha256": "38157f25c350ed5cb034a9e3bfa91602de01f5d37dfb56a734a3852db22d08b7",
+      "sha256": "38157f25c350ed5cb034a9e3bfa91602de01f5d37dfb56a734a3852db22d08b7",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-bounded-read-draft-fixture.patch": {
+      "raw": "draft-fixture-zero-context.patch",
+      "sha256": "5b1a81c24288384791f64d8edc7a2c2b9ee650773c78f456108872b62c5c3ae0"
+    }
+  },
+  "partial_traces": {
+    "native-before/zero-cursor/movements.tsv": {
+      "lines": 7664,
+      "last": "7662\t15325\t7662",
+      "sha256": "e1d41263b486bfd3346672e6926079aff56d646bd8afbd6ca719441dab165e43"
+    },
+    "native-before/zero-cursor/steps.tsv": {
+      "lines": 7664,
+      "last": "7662\t0\t0\tEdgeMoved\t1",
+      "sha256": "751ce0f656135bbc9ac0ef1d2e0f9dbce4e498d8d2a13105f2f8f289c0d74780"
+    }
+  },
+  "measurement_exclusions": [
+    "No fresh baseline canbench rows/scopes: copied CSV is the protected foreign CSV, not a measurement.",
+    "Pre-existing wasm hash is not a completed baseline build or executed artifact.",
+    "Native zero-cursor trace stops after 7663 moves, without Finished/final replay; forwarded cursor did not start.",
+    "Draft first-move tests timed out during compilation, before any selected test ran; neither red nor green.",
+    "No after canbench/native run, no IC cost comparison, no performance candidate or negative-performance conclusion.",
+    "Earlier complete paired cursor evidence remains separate and does not fill this missing af063 baseline."
+  ],
+  "final_check_scope": "comment-only source: non-comment lines equal baseline; no new runtime pass"
+}
