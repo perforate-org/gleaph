@@ -3341,8 +3341,10 @@ where
 
     /// Visits selected logical slots with borrowed inline-property bytes.
     ///
-    /// Reads only the requested logical slots. Edge storage and inline-property storage are
-    /// resolved independently, while the property read buffer is reused between callbacks.
+    /// Sorts and deduplicates the requested logical slots, emitting only live rows. Tree values
+    /// use the original logical position; slab/run values use their independent live sequence.
+    /// Property buffers may be prepared before callbacks and are borrowed only for each call.
+    /// A callback's `Break` stops delivery and is returned unchanged.
     pub(crate) fn visit_edges_at_with_inline_property<B>(
         &self,
         owner: VertexId,
@@ -3394,6 +3396,35 @@ where
             return Ok(ControlFlow::Continue(()));
         };
         if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        if bucket.is_tree_mode() {
+            // Native values retain the original edge positions, including holes. Slab live-rank
+            // mapping and the independent slab/run value sequence do not apply to either tree.
+            let width = bucket.inline_property_byte_width();
+            let mut bytes = vec![0; usize::from(width)];
+            for slot_index in selected {
+                let EdgeSlotState::Live(edge) =
+                    self.read_edge_state_at_slot(&bucket, slot_index)?
+                else {
+                    continue;
+                };
+                if width > 0 {
+                    super::tree_read::read_property_value_at_slot(
+                        self, &bucket, slot_index, &mut bytes,
+                    )?;
+                }
+                if let ControlFlow::Break(value) = visit(
+                    BucketEntryPosition::new(slot_index),
+                    EdgeWithInlinePropertyRef {
+                        edge,
+                        inline_property: InlinePropertyBytesRef::from_parts(width, &bytes),
+                    },
+                ) {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
             return Ok(ControlFlow::Continue(()));
         }
 
@@ -3813,85 +3844,6 @@ where
             visit(slot_index, edge);
         }
         Ok(())
-    }
-
-    /// Resolves the label bucket and, when the bucket stores inline property bytes in a
-    /// suffix log, builds the ordered log chain used by
-    /// [`Self::read_inline_property_bytes_for_ordinal`].
-    fn resolve_label_bucket_and_inline_property_bytes_chains(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        vertex: &LabeledVertex,
-    ) -> Result<(LabelBucket, u32, Option<Vec<u32>>), LabeledOperationError> {
-        if vertex.is_default_edge_labeled() {
-            return Ok((LabelBucket::default(), 0, None));
-        }
-        match self.find_bucket(owner, vertex, label)? {
-            BucketSearch::Found { slot, bucket } => {
-                let bucket_index = Self::labeled_bucket_descriptor_index(vertex, slot)?;
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
-                Ok((bucket, bucket_index, log_chains))
-            }
-            BucketSearch::Missing { .. } => Ok((LabelBucket::default(), 0, None)),
-        }
-    }
-
-    /// Reads the exact inline-property bytes for the live row at `slot`.
-    fn read_inline_property_bytes_for_slot(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        slot: BucketEntryPosition,
-    ) -> Result<InlinePropertyBytes, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.ensure_vertex(owner)?;
-        let vertex = self.vertices.get(owner);
-        let (bucket, bucket_index, log_chains) =
-            self.resolve_label_bucket_and_inline_property_bytes_chains(owner, label, &vertex)?;
-        if bucket.inline_property_byte_width() == 0 {
-            return Ok(InlinePropertyBytes::empty());
-        }
-        let ordinal = if vertex.is_default_edge_labeled() {
-            slot.raw()
-        } else {
-            self.bucket_live_ordinal_at_edge_slot(
-                owner,
-                &vertex,
-                bucket_index,
-                Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?,
-                &bucket,
-                slot.raw(),
-            )?
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?
-        };
-        self.read_inline_property_bytes_for_ordinal(label, &bucket, ordinal, log_chains.as_ref())
-    }
-
-    /// Reads the exact inline-property bytes at a known live ordinal.
-    fn read_inline_property_bytes_for_ordinal(
-        &self,
-        _label: BucketLabelKey,
-        bucket: &LabelBucket,
-        ordinal: u32,
-        log_chains: Option<&Vec<u32>>,
-    ) -> Result<InlinePropertyBytes, LabeledOperationError> {
-        let width = bucket.inline_property_byte_width();
-        if width == 0 {
-            return Ok(InlinePropertyBytes::empty());
-        }
-        let bytes = self.read_bucket_inline_property_bytes_for_slot(bucket, ordinal, log_chains)?;
-        if bytes.len() != usize::from(width) {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: width,
-                edge_inline_property_width: u16::try_from(bytes.len()).unwrap_or(u16::MAX),
-            });
-        }
-        Ok(InlinePropertyBytes::from_bytes(width, &bytes))
     }
 }
 
@@ -5123,6 +5075,529 @@ mod tests {
             .unwrap();
         assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(out, vec![(4, 14), (1, 11)]);
+    }
+
+    fn selected_property_value(target: u32, width: u16) -> Vec<u8> {
+        if width == 0 {
+            Vec::new()
+        } else {
+            retained_compaction_value(target, width)
+        }
+    }
+
+    // Existing edge/memory specialization, with retained handles for a complete read-only oracle.
+    fn selected_property_tree_fixture(
+        width: u16,
+    ) -> (
+        LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+        [crate::VectorMemory; 16],
+    ) {
+        let memories = labeled_memories();
+        let graph = LabeledLaraGraph::new(
+            memories[0].clone(),
+            memories[1].clone(),
+            memories[2].clone(),
+            memories[3].clone(),
+            memories[4].clone(),
+            memories[5].clone(),
+            memories[6].clone(),
+            memories[7].clone(),
+            memories[8].clone(),
+            memories[9].clone(),
+            memories[10].clone(),
+            memories[11].clone(),
+            memories[12].clone(),
+            memories[13].clone(),
+            memories[14].clone(),
+            memories[15].clone(),
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let tree = BucketLabelKey::from_raw(3);
+        for (label, targets) in [
+            (BucketLabelKey::from_raw(2), 20_000..20_016),
+            (tree, 1000..2024),
+        ] {
+            if width > 0 {
+                graph
+                    .ensure_label_bucket_inline_property_byte_width(owner, label, width)
+                    .unwrap();
+            }
+            for target in targets {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        owner,
+                        label,
+                        InlinePropertyTestEdge::with_bytes(
+                            target,
+                            &selected_property_value(target, width),
+                        ),
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+            if label != tree {
+                graph.compact_vertex_edge_span(owner, 0).unwrap();
+            }
+        }
+        // Real slab/run removals, never the stale live-property tree writer.
+        for slot in [0, 3, 511, 1023] {
+            assert_eq!(
+                graph
+                    .remove_edge_at_slot(owner, tree, slot)
+                    .unwrap()
+                    .unwrap()
+                    .target,
+                1000 + slot
+            );
+        }
+        super::super::promote::promote_bucket_to_tree_mode(&graph, owner, tree).unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                tree,
+                InlinePropertyTestEdge::with_bytes(2024, &selected_property_value(2024, width)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        if width > 0 {
+            graph
+                .ensure_label_bucket_inline_property_byte_width(peer, tree, width)
+                .unwrap();
+        }
+        graph
+            .insert_edge_skip_leaf_cascade(
+                peer,
+                tree,
+                InlinePropertyTestEdge::with_bytes(30_000, &selected_property_value(30_000, width)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        (graph, memories)
+    }
+
+    fn check_selected_tree_property(width: u16) {
+        let (graph, memories) = selected_property_tree_fixture(width);
+        let snapshot = || {
+            memories
+                .iter()
+                .map(|m| m.borrow().clone())
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot();
+        let owner = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(3);
+        let BucketSearch::Found { bucket, .. } = graph
+            .find_bucket(owner, &graph.vertices.get(owner), label)
+            .unwrap()
+        else {
+            panic!("tree missing");
+        };
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.bucket_label_key(), label);
+        assert_eq!((bucket.degree(), bucket.stored_slots()), (1021, 1025));
+        assert_eq!(graph.edges().header().num_edges, 1038);
+        assert_eq!(super::super::compact::bucket_span_region_len(&bucket), 2);
+        // Both runs are absent: the compact-range bulk fallback cannot mask the direct path.
+        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_eq!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_eq!(bucket.inline_property_byte_width(), width);
+        let slots: Vec<_> = [
+            1024,
+            3,
+            512,
+            1,
+            124,
+            1025,
+            123,
+            0,
+            511,
+            1023,
+            2,
+            125,
+            510,
+            513,
+            1022,
+            u32::MAX,
+            124,
+        ]
+        .into_iter()
+        .map(BucketEntryPosition::new)
+        .collect();
+        for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+            // Independently constructed raw oracle includes all four transcribed holes.
+            let mut raw_expected: Vec<_> = (0..1025)
+                .map(|slot| {
+                    if [0, 3, 511, 1023].contains(&slot) {
+                        (slot, u32::MAX, vec![0; usize::from(width)])
+                    } else {
+                        (
+                            slot,
+                            1000 + slot,
+                            selected_property_value(1000 + slot, width),
+                        )
+                    }
+                })
+                .collect();
+            if order == OutEdgeOrder::Descending {
+                raw_expected.reverse();
+            }
+            let mut raw = Vec::new();
+            let flow = if width == 0 {
+                super::super::tree_read::visit_tree_mode_label_bucket_edges(
+                    &graph,
+                    label.raw(),
+                    &bucket,
+                    bucket.degree(),
+                    order,
+                    |slot, edge| {
+                        raw.push((slot, edge.target, Vec::new()));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+            } else {
+                super::super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
+                    &graph,
+                    label.raw(),
+                    &bucket,
+                    bucket.degree(),
+                    order,
+                    |slot, edge, bytes| {
+                        raw.push((slot, edge.target, bytes.to_vec()));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+            }
+            .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
+            assert_eq!(raw, raw_expected);
+
+            let mut expected: Vec<_> = [1, 2, 123, 124, 125, 510, 512, 513, 1022, 1024]
+                .into_iter()
+                .map(|slot| {
+                    (
+                        slot,
+                        1000 + slot,
+                        selected_property_value(1000 + slot, width),
+                    )
+                })
+                .collect();
+            if order == OutEdgeOrder::Descending {
+                expected.reverse();
+            }
+            let request = LabeledTraversalRequest {
+                owner,
+                label,
+                order,
+            };
+            let mut seen = Vec::new();
+            let result = Traversal::visit_edges_at_with_inline_property(
+                &graph,
+                &request,
+                &slots,
+                |slot, item| {
+                    assert_eq!(item.edge.edge_slot_index_raw(), slot.raw());
+                    assert_eq!(item.inline_property.width(), width);
+                    seen.push((
+                        slot.raw(),
+                        item.edge.target,
+                        item.inline_property.bytes().to_vec(),
+                    ));
+                    ControlFlow::<()>::Continue(())
+                },
+            );
+            eprintln!(
+                "SELECTED_PROPERTY width={width} order={order:?} result={result:?} rows={}",
+                seen.len()
+            );
+            assert_eq!(
+                snapshot(),
+                before,
+                "selected reads must not change any of the 16 memories"
+            );
+            assert_eq!(result.unwrap(), ControlFlow::Continue(()));
+            assert_eq!(seen, expected);
+
+            let mut stopped = Vec::new();
+            assert_eq!(
+                graph
+                    .visit_edges_at_with_inline_property(
+                        owner,
+                        label,
+                        &slots,
+                        order,
+                        |slot, item| {
+                            stopped.push((
+                                slot.raw(),
+                                item.edge.target,
+                                item.inline_property.bytes().to_vec(),
+                            ));
+                            ControlFlow::Break(String::from("selected stop"))
+                        }
+                    )
+                    .unwrap(),
+                ControlFlow::Break(String::from("selected stop"))
+            );
+            assert_eq!(stopped, expected[..1]);
+
+            for (start, limit, end, exhausted, live) in [
+                (510, 4, 514, false, vec![510, 512, 513]),
+                (1022, 4, 1025, true, vec![1022, 1024]),
+                (1025, 1, 1025, true, vec![]),
+            ] {
+                let mut window = Vec::new();
+                assert_eq!(
+                    graph
+                        .visit_edges_from_slot_with_inline_property(
+                            owner,
+                            label,
+                            order,
+                            start,
+                            limit,
+                            |slot, edge| {
+                                assert_eq!(edge.edge_slot_index_raw(), slot.raw());
+                                assert_eq!(edge.edge_inline_property_byte_width(), width);
+                                window.push((
+                                    slot.raw(),
+                                    edge.target,
+                                    edge.edge_inline_property_bytes().to_vec(),
+                                ));
+                            }
+                        )
+                        .unwrap(),
+                    (end, exhausted)
+                );
+                let mut expected: Vec<_> = live
+                    .into_iter()
+                    .map(|slot| {
+                        (
+                            slot,
+                            1000 + slot,
+                            selected_property_value(1000 + slot, width),
+                        )
+                    })
+                    .collect();
+                if order == OutEdgeOrder::Descending {
+                    expected.reverse();
+                }
+                assert_eq!(window, expected);
+            }
+            assert_eq!(snapshot(), before);
+        }
+        // Request labels/owners select distinct canonical rows, never the tree's adjacent slab or peer.
+        for (owner, label, selected, expected) in [
+            (
+                VertexId::from(0),
+                label,
+                vec![0, 3, 511, 1023, 1025, u32::MAX],
+                vec![],
+            ),
+            (
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+                vec![1],
+                vec![],
+            ),
+            (
+                VertexId::from(0),
+                BucketLabelKey::from_raw(2),
+                vec![1, 15, 16],
+                vec![(1, 20_001), (15, 20_015)],
+            ),
+            (VertexId::from(1), label, vec![0, 1], vec![(0, 30_000)]),
+            (VertexId::from(0), label, vec![], vec![]),
+        ] {
+            let mut seen = Vec::new();
+            let slots: Vec<_> = selected.into_iter().map(BucketEntryPosition::new).collect();
+            assert_eq!(
+                graph
+                    .visit_edges_at_with_inline_property(
+                        owner,
+                        label,
+                        &slots,
+                        OutEdgeOrder::Ascending,
+                        |slot, item| {
+                            assert_eq!(
+                                item.inline_property.bytes(),
+                                selected_property_value(item.edge.target, width)
+                            );
+                            seen.push((slot.raw(), item.edge.target));
+                            ControlFlow::<()>::Continue(())
+                        }
+                    )
+                    .unwrap(),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(seen, expected);
+        }
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn selected_property_tree_eight_byte_boundaries() {
+        check_selected_tree_property(8);
+    }
+
+    #[test]
+    fn selected_property_tree_thirty_three_byte_boundaries() {
+        check_selected_tree_property(33);
+    }
+
+    #[test]
+    fn selected_property_tree_zero_width() {
+        check_selected_tree_property(0);
+    }
+
+    #[test]
+    fn selected_property_tree_corrupt_roots_propagate() {
+        use crate::labeled::ltb_raw_block_store::BlockError;
+        let (graph, memories) = selected_property_tree_fixture(33);
+        let snapshot = || {
+            memories
+                .iter()
+                .map(|m| m.borrow().clone())
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot();
+        let owner = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(3);
+        let BucketSearch::Found { bucket, .. } = graph
+            .find_bucket(owner, &graph.vertices.get(owner), label)
+            .unwrap()
+        else {
+            panic!("tree missing");
+        };
+        let property_root =
+            bucket.edge_start() + u64::from(super::super::compact::bucket_span_region_len(&bucket));
+        let bad_id = graph.ltb().tail_next();
+        // Bad property root in the second 124-value leaf, then the partial second edge leaf.
+        for (root, selected_slot, other_slot) in [
+            (property_root + 1, 124, 1024),
+            (bucket.edge_start() + 1, 1024, 124),
+        ] {
+            let mut saved = [0u8; 4];
+            graph.edges().read_slot_bytes(root, &mut saved);
+            graph
+                .edges()
+                .write_slots_contiguous(root, &bad_id.to_le_bytes())
+                .unwrap();
+            let corrupt = snapshot();
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                let mut calls = 0;
+                let result = graph.visit_edges_at_with_inline_property(
+                    owner,
+                    label,
+                    &[BucketEntryPosition::new(selected_slot)],
+                    order,
+                    |_, _| {
+                        calls += 1;
+                        ControlFlow::<()>::Continue(())
+                    },
+                );
+                assert_eq!(calls, 0);
+                assert_eq!(snapshot(), corrupt);
+                assert!(
+                    matches!(result, Err(LabeledOperationError::LtbBlock(BlockError::NotMinted { id })) if id == bad_id),
+                    "{result:?}"
+                );
+                // A sparse selection in another leaf must not walk the poisoned unselected root.
+                // This has no callback Break and adds no error-after-Break/prefetch guarantee.
+                let mut seen = Vec::new();
+                assert_eq!(
+                    graph
+                        .visit_edges_at_with_inline_property(
+                            owner,
+                            label,
+                            &[BucketEntryPosition::new(other_slot)],
+                            order,
+                            |slot, item| {
+                                seen.push((
+                                    slot.raw(),
+                                    item.edge.target,
+                                    item.inline_property.bytes().to_vec(),
+                                ));
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )
+                        .unwrap(),
+                    ControlFlow::Continue(())
+                );
+                assert_eq!(
+                    seen,
+                    vec![(
+                        other_slot,
+                        1000 + other_slot,
+                        selected_property_value(1000 + other_slot, 33)
+                    )]
+                );
+                assert_eq!(snapshot(), corrupt);
+            }
+            graph.edges().write_slots_contiguous(root, &saved).unwrap();
+            assert_eq!(snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn selected_property_retained_independent_planes() {
+        for width in [8, 33] {
+            let graph = retained_compaction_fixture(width);
+            let owner = VertexId::from(0);
+            let label = BucketLabelKey::from_raw(2);
+            let before = graph
+                .read_vertex_label_buckets(&graph.vertices.get(owner))
+                .unwrap();
+            // The shared fixture asserts prefix8/run9 versus value-prefix13/run1 and real holes.
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                let mut expected: Vec<_> = [1, 7, 8, 15, 16]
+                    .into_iter()
+                    .map(|slot| (slot, slot, retained_compaction_value(slot, width)))
+                    .collect();
+                if order == OutEdgeOrder::Descending {
+                    expected.reverse();
+                }
+                let mut seen = Vec::new();
+                let slots: Vec<_> = [16, 9, 8, 0, 1, 7, 15, 3, 17, u32::MAX, 16]
+                    .into_iter()
+                    .map(BucketEntryPosition::new)
+                    .collect();
+                assert_eq!(
+                    graph
+                        .visit_edges_at_with_inline_property(
+                            owner,
+                            label,
+                            &slots,
+                            order,
+                            |slot, item| {
+                                assert_eq!(item.edge.edge_slot_index_raw(), slot.raw());
+                                assert_eq!(item.inline_property.width(), width);
+                                seen.push((
+                                    slot.raw(),
+                                    item.edge.target,
+                                    item.inline_property.bytes().to_vec(),
+                                ));
+                                ControlFlow::<()>::Continue(())
+                            }
+                        )
+                        .unwrap(),
+                    ControlFlow::Continue(())
+                );
+                assert_eq!(seen, expected);
+                assert_eq!(
+                    graph
+                        .read_vertex_label_buckets(&graph.vertices.get(owner))
+                        .unwrap(),
+                    before
+                );
+                assert_eq!(
+                    retained_compaction_rows(&graph, VertexId::from(1), label, order),
+                    vec![(0, 19_000, retained_compaction_value(19_000, width))]
+                );
+            }
+            assert_eq!(graph.edges().header().num_edges, 18);
+        }
     }
 
     #[test]
