@@ -8,6 +8,12 @@ physical publication is restricted to retaining logical ordinals. This is a corr
 not a performance optimization or landing approval. Descriptor P2 remains accepted only at its
 own tested boundary. Main remains untouched and unmerged.
 
+Bounded implementation review approved `15ceaabf1` + `4912fa786` for movement publication
+only, after inspecting the complete diff, contracts and preserved evidence. The reviewer did
+not run Rust validation. This does not approve overall ADR 0097, performance or landing.
+The subsequent [bounded-read baseline attempt](adr0097-compaction-bounded-read.md) is incomplete
+and retains no executable change or new performance acceptance.
+
 The invariant is: **replaying returned movement events must reproduce canonical edge locations,
 including at `Finished`.** Canonical target/order agreement alone cannot establish this: external
 sidecars and postings are keyed by owner, label and slot. The deferred driver forwards

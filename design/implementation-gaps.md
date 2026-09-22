@@ -640,6 +640,12 @@ intervening tombstones; this is neither a new production optimization nor IC ins
 All historical performance increases and wider atomicity/lifecycle/landing gates remain open.
 [Commands, cumulative budget, original/corrected diagnostics and provenance](evidence/adr0097-compaction-movement-publication.md).
 
+Bounded review approved `15ceaabf1` + `4912fa786` for movement publication only; the reviewer
+did not run Rust validation. The subsequent [bounded-read baseline attempt](evidence/adr0097-compaction-bounded-read.md)
+on `af063ea42` timed out before a complete canbench/native baseline or small-fixture runtime
+result. Only local stale comments were corrected; no finder optimization or executable test
+change was retained. It provides no new IC total, paired work equivalence or performance acceptance.
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
 **Historical diagnosis below:** it describes earlier single-policy experiments. The current step
