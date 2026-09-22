@@ -646,6 +646,17 @@ on `af063ea42` timed out before a complete canbench/native baseline or small-fix
 result. Only local stale comments were corrected; no finder optimization or executable test
 change was retained. It provides no new IC total, paired work equivalence or performance acceptance.
 
+The [owner-layer follow-up](evidence/adr0097-left-pack-bounded-reads.md) adds three small witnesses
+(`761b2a808`) and retains bounded, slab-only prefetch (`aab46e51f` + `ea12e7c12`). The unchanged
+16K IC fixture improves **15,498,138,427 → 7,185,627,417 instructions (−53.6355%)**, with identical
+movement traces through Finished. Final compaction-filter tests pass **84/0**; no full suite or
+persisted survey was run. The new read path excludes tree descriptors because their stored width
+is logical extent, not initialized root-array width. Existing scalar tree-mode selection/caller
+reachability remains a separate review gate, not repaired by this read optimization. Decode work
+and both cursor strategies remain quadratic; broad performance, atomicity, space, PocketIC and
+landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
+are preserved, not relabeled.
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
 **Historical diagnosis below:** it describes earlier single-policy experiments. The current step
@@ -4610,10 +4621,11 @@ typed-schema endpoint gate remains unchanged and fail-closed.
 
 ### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
 
-- **Status:** Resolved by Plan 0201 (ADR 0052 Slice 6; commit in the same patch)
+- **Status:** Packed-prefix rereads addressed in cursor-forwarding drivers by Plan 0201
+  (ADR 0052 Slice 6); quadratic tombstone-gap rescanning remains open.
 - **Severity:** P2 maintenance-performance risk
 - **Owner:** `ic-stable-lara` labeled edge-slab compaction and deferred-maintenance cursor state
-- **Observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
+- **Historical observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
   most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
   after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
   resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
@@ -4628,8 +4640,12 @@ typed-schema endpoint gate remains unchanged and fail-closed.
   from it (packed-prefix invariant), `EdgeMoved` re-enqueues carry the advanced cursor,
   `AdvanceBucket` resets it, and a cursor-scan miss triggers a full re-scan from slot zero before
   `stored_slots = degree`, so an interleaved delete inside the already-packed prefix can never
-  truncate a live edge. `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` moves off
-  the quadratic shape.
+  truncate a live edge. This does not establish linear work: forwarding avoids rereading the
+  packed live prefix but still scans an expanding tombstone gap. The earlier claim that this
+  moves compaction off the quadratic shape is withdrawn. The unchanged 16K benchmark itself
+  supplies zero; the separate completed zero/forwarded diagnostics and subsequent bounded-read
+  improvement are source-tagged in the [follow-up evidence](evidence/adr0097-left-pack-bounded-reads.md).
+  Batching reads reduces a constant factor, not repeated decoding.
 - **Evidence:** `crates/ic-stable-lara/src/labeled/graph/compact.rs::first_edge_slot_move_in_bucket`
   (cursor parameter), `compact_vertex_edge_span_one_step`; regression tests
   `compaction_cursor_packs_alternating_tombstones_across_steps` and

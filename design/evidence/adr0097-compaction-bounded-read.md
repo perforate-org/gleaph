@@ -1,6 +1,10 @@
 # ADR 0097: bounded-read baseline attempt
 
-**Status: Experimental — incomplete measurements; no executable change retained.**
+**Status: Experimental — incomplete measurements; no executable change retained in this attempt.**
+
+This report describes the stopped `af063ea42` → `7e9465c45` attempt and its later evidence
+correction. The [owner-layer follow-up](adr0097-left-pack-bounded-reads.md) has separate completed
+measurements and implementation; it does not change the failures or exclusions recorded here.
 
 ## Outcome
 
@@ -130,17 +134,18 @@ The existing [zero-context lock patch](sources/adr0097-crossover-as-used-lock.pa
 those as-used bytes. The foreign brief/CSV, canonical YAML, both benchmark source files,
 canbench config and main pin were preserved. `git diff --check` passed.
 
-Raw artifacts are under `/tmp/spill-read-af063-obmxdo77/`, with a SHA256 manifest. Plan
-`0334-compaction-bounded-read.md` remains **partially complete, not approved**. Both saved
-validation logs fail: [draft](sources/adr0097-bounded-read-plan-draft.txt) reports
+Raw artifacts are under `/tmp/spill-read-af063-obmxdo77/`, with a SHA256 manifest. At this
+checkpoint, plan `0334-compaction-bounded-read.md` was **partially complete, not approved**.
+Both saved validation logs fail: [draft](sources/adr0097-bounded-read-plan-draft.txt) reports
 `ERROR: Completion Criteria item 6 must be unchecked in draft phase`; [final](sources/adr0097-bounded-read-plan-final.txt)
 rejects the pending TODOs and unchecked criteria. The earlier draft-pass statement was false
-for this revision and is withdrawn. The completed comment criterion remains checked; pending
-performance work remains pending. Neither log is a structural pass, and no preserved earlier
-passing log is used to qualify these failures.
+for this revision and is withdrawn. The evidence correction preserved the completed comment
+criterion and the then-pending performance work. Neither log is a structural pass, and no
+preserved earlier passing log is used to qualify these failures. Later plan revisions/results
+are described only in the linked follow-up.
 
-The next evidence needed is a completed current-baseline measurement and runnable small
-first-move/bounds fixtures before prototyping the single read-granularity change. An algorithmic
+At the stop, the next evidence needed was a completed current-baseline measurement and runnable
+small first-move/bounds fixtures before prototyping the single read-granularity change. An algorithmic
 progress change would require an explicit owner/invalidation contract and a separate scope.
 All remaining performance, space, PocketIC, arena/caller, unpinned-accounting, canonical-write
 atomicity and landing gates remain open. The earlier bounded P1 approval does not waive them.
