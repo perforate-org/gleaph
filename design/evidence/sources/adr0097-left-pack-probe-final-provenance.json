@@ -1,0 +1,8 @@
+{
+  "base": "aab46e51f",
+  "candidate_compact_sha256": "c51dd244f6fc19d7cc2d7861bfc6821e57f74ad08238698285509ef3c8bfbc04",
+  "probe_sha256": "be28e6196fd3cc8a42f0720177821174d69f55f841c2b00d029de2bddb30e602",
+  "change_since_first_probe": "Slab-only prefetch admission; non-slab retains existing scalar behavior.",
+  "historical_baseline_not_rerun": true,
+  "output": "native-final"
+}

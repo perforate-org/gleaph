@@ -1,0 +1,66 @@
+{
+  "version": "1.24.0",
+  "baseline_source": "761b2a808",
+  "candidate_source_sha256": "5553c09c05d506168719b101f67fdfdc07361b971b400bc2c73bac06554cbcf5",
+  "fields": [
+    "NLOC",
+    "CCN",
+    "tokens",
+    "parameters",
+    "length"
+  ],
+  "finder": {
+    "base": [
+      "31",
+      "9",
+      "181",
+      "3",
+      "31"
+    ],
+    "owner": [
+      "31",
+      "9",
+      "181",
+      "3",
+      "31"
+    ],
+    "candidate": [
+      "48",
+      "12",
+      "346",
+      "3",
+      "51"
+    ],
+    "final": [
+      "52",
+      "14",
+      "365",
+      "3",
+      "57"
+    ]
+  },
+  "new_owner_test_functions": [
+    "read_from",
+    "write_to",
+    "neighbor_vid",
+    "with_neighbor_vid",
+    "tombstone_edge",
+    "size",
+    "grow",
+    "read",
+    "write",
+    "left_pack_bounded_selector",
+    "left_pack_bounded_four_byte_selector",
+    "left_pack_bounded_ten_byte_selector",
+    "left_pack_bounded_caller_falls_back_and_preserves_neighbor"
+  ],
+  "interpretation": "Single read-granularity change, no signature or persisted-state changes. Metrics are not performance/independent acceptance.",
+  "final_source_sha256": "c51dd244f6fc19d7cc2d7861bfc6821e57f74ad08238698285509ef3c8bfbc04",
+  "admission_refinement": "Slab-only prefetch; non-slab descriptors keep the existing scalar path. No mode dispatch/selection repair claimed.",
+  "sources": {
+    "base": "a4f62e096",
+    "owner": "761b2a808",
+    "candidate": "aab46e51f",
+    "final": "ea12e7c12"
+  }
+}

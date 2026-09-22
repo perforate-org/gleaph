@@ -1,0 +1,16 @@
+{
+  "head": "761b2a8083e6dc3ffb6bcfdb7ff9c390b71711ff",
+  "source": {
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "2e70fadb74070ebfdabebf1ed6694ce400c17f7f099221ba9d6f831ec3a8524e",
+    "crates/ic-stable-lara/src/lara/edge.rs": "bc20976677e7b11aeabc23a43801aa1764df7bebbe2bef41c7629d213b1be7f4",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b"
+  },
+  "diff": "",
+  "persisted": false,
+  "exit": 0,
+  "wasm_sha256": "7542ef88399e575f8fc435b7bdac9230d004bd1a2c4f202d2dd6282f5b1c2da7",
+  "csv_sha256": "116616ab6111037546d9536cf94937d58dba64ceddc7388a46a93a9b139f3424"
+}

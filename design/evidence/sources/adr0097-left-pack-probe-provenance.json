@@ -1,0 +1,7 @@
+{
+  "base": "761b2a808",
+  "candidate_compact_sha256": "5553c09c05d506168719b101f67fdfdc07361b971b400bc2c73bac06554cbcf5",
+  "probe_sha256": "be28e6196fd3cc8a42f0720177821174d69f55f841c2b00d029de2bddb30e602",
+  "historical_baseline_not_rerun": true,
+  "output": "native-candidate"
+}

@@ -1,0 +1,10 @@
+name,before_source,after_source,before_instructions,after_instructions,delta,delta_percent,before_scope_calls,after_scope_calls,before_heap_pages,after_heap_pages,before_stable_pages,after_stable_pages
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,761b2a808,ea12e7c12,15498138427,7185627417,-8312511010,-53.63554499886517,,,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_finalize,761b2a808,ea12e7c12,1446,1446,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_read_and_plan,761b2a808,ea12e7c12,1858,1858,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_build_resident_buckets,761b2a808,ea12e7c12,620,620,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_calculate_bucket_positions,761b2a808,ea12e7c12,1007,1007,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_update_accounting,761b2a808,ea12e7c12,1368,1368,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_bucket_row,761b2a808,ea12e7c12,784,784,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_run,761b2a808,ea12e7c12,82500,82500,0,0.0,1,1,0,0,0,0
+bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_runs,761b2a808,ea12e7c12,84888,84888,0,0.0,1,1,0,0,0,0

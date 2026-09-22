@@ -1,0 +1,141 @@
+{
+  "disk": {
+    "command": [
+      "df",
+      "-h",
+      "."
+    ],
+    "exit": 0,
+    "stdout": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s5   926Gi   828Gi    23Gi    98%    9.1M  243M    4%   /System/Volumes/Data\n",
+    "stderr": ""
+  },
+  "memory": {
+    "command": [
+      "sysctl",
+      "hw.memsize",
+      "vm.swapusage"
+    ],
+    "exit": 0,
+    "stdout": "hw.memsize: 17179869184\nvm.swapusage: total = 17408.00M  used = 16513.06M  free = 894.94M  (encrypted)\n",
+    "stderr": ""
+  },
+  "pressure": {
+    "command": [
+      "memory_pressure",
+      "-Q"
+    ],
+    "exit": 0,
+    "stdout": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 28%\n",
+    "stderr": ""
+  },
+  "sample_seconds": 2.0552174580516294,
+  "vm_counter_deltas": {
+    "Pageins": 1429,
+    "Pageouts": 135,
+    "Swapins": 217,
+    "Swapouts": 0,
+    "Compressions": 33005,
+    "Decompressions": 37257
+  },
+  "vm_counter_rates_per_second": {
+    "Pageins": 695.3035526248931,
+    "Pageouts": 65.68647977911866,
+    "Swapins": 105.58493416347221,
+    "Swapouts": 0.0,
+    "Compressions": 16059.127889702306,
+    "Decompressions": 18128.0087194861
+  },
+  "counter_units": "16KiB host pages where vm_stat reports page counts, not IC64KiB pages",
+  "cause_established": false,
+  "fingerprints": {
+    "target/debug/build/ic-stable-lara/27185a6290679c69/fingerprint/lib-ic_stable_lara.json": {
+      "size": 1052,
+      "mtime_ns": 1790004828561962395,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"canbench\\\", \\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,14571957724382475862],[1943358628765859898,\"ic_stable_roaring\",false,5116838537871697076],[4706357380117707555,\"canbench_rs\",false,12461769751043527632],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,5328338049539953355],[12164227699905805745,\"ic_cdk\",false,15055340768752843541],[12234874504510627347,\"candid\",false,13176790775020999310],[12426913070080590577,\"ic_stable_structures\",false,10632560513984716345],[13277865535035358933,\"gleaph_instruction_budget\",false,4877510485668227064]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/27185a6290679c69/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/97645590d3dc120b/fingerprint/lib-ic_stable_lara.json": {
+      "size": 915,
+      "mtime_ns": 1789995924758497263,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,2619739852774248279],[1943358628765859898,\"ic_stable_roaring\",false,8088746810237937417],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,10069112911123212325],[12164227699905805745,\"ic_cdk\",false,11790506552877477612],[12426913070080590577,\"ic_stable_structures\",false,7669896746716590565],[13277865535035358933,\"gleaph_instruction_budget\",false,3634075119375381920]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/97645590d3dc120b/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/2468fae3fea9af18/fingerprint/lib-ic_stable_lara.json": {
+      "size": 915,
+      "mtime_ns": 1789997297431115828,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":3787370201366782835,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,8004727391285289176],[1739580901437616557,\"ic_stable_vec_deque\",false,6641900030792130221],[1943358628765859898,\"ic_stable_roaring\",false,10503069810450004689],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,8204908484737166461],[12164227699905805745,\"ic_cdk\",false,5303738109749402790],[12426913070080590577,\"ic_stable_structures\",false,16522744390831540632],[13277865535035358933,\"gleaph_instruction_budget\",false,11305210805223932645]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/2468fae3fea9af18/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/3ffab9744dbd4af1/fingerprint/lib-ic_stable_lara.json": {
+      "size": 916,
+      "mtime_ns": 1790047039731269127,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,2002012002488628794],[1943358628765859898,\"ic_stable_roaring\",false,5116838537871697076],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,16843310280345732629],[12164227699905805745,\"ic_cdk\",false,15055340768752843541],[12426913070080590577,\"ic_stable_structures\",false,10632560513984716345],[13277865535035358933,\"gleaph_instruction_budget\",false,5782040933647194187]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/3ffab9744dbd4af1/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/473e4ef496624cf4/fingerprint/lib-ic_stable_lara.json": {
+      "size": 916,
+      "mtime_ns": 1790004864591214069,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,14571957724382475862],[1943358628765859898,\"ic_stable_roaring\",false,5116838537871697076],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,5328338049539953355],[12164227699905805745,\"ic_cdk\",false,15055340768752843541],[12426913070080590577,\"ic_stable_structures\",false,10632560513984716345],[13277865535035358933,\"gleaph_instruction_budget\",false,4877510485668227064]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/473e4ef496624cf4/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/0d3be204b9a689f2/fingerprint/lib-ic_stable_lara.json": {
+      "size": 1052,
+      "mtime_ns": 1789972927225017775,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"canbench\\\", \\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,2002012002488628794],[1943358628765859898,\"ic_stable_roaring\",false,5116838537871697076],[4706357380117707555,\"canbench_rs\",false,12461769751043527632],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,16843310280345732629],[12164227699905805745,\"ic_cdk\",false,15055340768752843541],[12234874504510627347,\"candid\",false,13176790775020999310],[12426913070080590577,\"ic_stable_structures\",false,10632560513984716345],[13277865535035358933,\"gleaph_instruction_budget\",false,5782040933647194187]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/0d3be204b9a689f2/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/9cb46f26d88d5b09/fingerprint/lib-ic_stable_lara.json": {
+      "size": 916,
+      "mtime_ns": 1790016634012367162,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":5849293428594500161,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,7706038379822330182],[1943358628765859898,\"ic_stable_roaring\",false,8088746810237937417],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,17447482454465983221],[12164227699905805745,\"ic_cdk\",false,11790506552877477612],[12426913070080590577,\"ic_stable_structures\",false,7669896746716590565],[13277865535035358933,\"gleaph_instruction_budget\",false,11500430298866028831]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/9cb46f26d88d5b09/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/fac74afe6ffbffae/fingerprint/test-lib-ic_stable_lara.json": {
+      "size": 925,
+      "mtime_ns": 1790046517221282205,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":10314007121212847333,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,10432669681565978646],[1739580901437616557,\"ic_stable_vec_deque\",false,17375501111379491538],[1943358628765859898,\"ic_stable_roaring\",false,12897565125223569122],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,14309798261970640911],[12164227699905805745,\"ic_cdk\",false,13630509994459032567],[12426913070080590577,\"ic_stable_structures\",false,14927048220477056837],[13277865535035358933,\"gleaph_instruction_budget\",false,11221392683479745106]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/fac74afe6ffbffae/fingerprint/dep-test-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae": {
+      "size": 38577920,
+      "mtime_ns": 1790046516999598146
+    },
+    "target/debug/build/ic-stable-lara/d97f6102ba0f0b97/fingerprint/lib-ic_stable_lara.json": {
+      "size": 918,
+      "mtime_ns": 1790016627232956119,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":3787370201366782835,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,10432669681565978646],[1739580901437616557,\"ic_stable_vec_deque\",false,15835407228092662849],[1943358628765859898,\"ic_stable_roaring\",false,14924604226518077518],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,9688221135155360289],[12164227699905805745,\"ic_cdk\",false,10172769784648726416],[12426913070080590577,\"ic_stable_structures\",false,14000843468595268232],[13277865535035358933,\"gleaph_instruction_budget\",false,13726888086302177136]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/d97f6102ba0f0b97/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/debug/build/ic-stable-lara/7f6765793efab6ed/fingerprint/test-lib-ic_stable_lara.json": {
+      "size": 922,
+      "mtime_ns": 1790001762628644341,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":16053831829370287556,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,17023978601037490295],[1739580901437616557,\"ic_stable_vec_deque\",false,14571957724382475862],[1943358628765859898,\"ic_stable_roaring\",false,5116838537871697076],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,5328338049539953355],[12164227699905805745,\"ic_cdk\",false,15055340768752843541],[12426913070080590577,\"ic_stable_structures\",false,10632560513984716345],[13277865535035358933,\"gleaph_instruction_budget\",false,4877510485668227064]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"debug/build/ic-stable-lara/7f6765793efab6ed/fingerprint/dep-test-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[],\"config\":8362119626465528914,\"compile_kind\":0}"
+    },
+    "target/canbench/wasm32-unknown-unknown/release/build/ic-stable-lara/5323f61afec6bd1b/fingerprint/lib-ic_stable_lara.json": {
+      "size": 1123,
+      "mtime_ns": 1790035986044998208,
+      "text": "{\"rustc\":10164768304735155615,\"features\":\"[\\\"canbench\\\", \\\"default\\\"]\",\"declared_features\":\"[\\\"canbench\\\", \\\"canbench-scopes\\\", \\\"default\\\"]\",\"target\":15755587525397338439,\"profile\":7808602820728495077,\"path\":6455643480392155270,\"deps\":[[595566797399950287,\"derive_more\",false,14350808487123898866],[1739580901437616557,\"ic_stable_vec_deque\",false,15011572086366436573],[1943358628765859898,\"ic_stable_roaring\",false,9136245904577872842],[4706357380117707555,\"canbench_rs\",false,7030330014070846981],[7446865621998892019,\"ic_stable_paged_ordered_map\",false,2646067644611834015],[12164227699905805745,\"ic_cdk\",false,11709738749488507181],[12234874504510627347,\"candid\",false,4389314281652322531],[12426913070080590577,\"ic_stable_structures\",false,4207688310060379730],[13277865535035358933,\"gleaph_instruction_budget\",false,9623306113138455316]],\"local\":[{\"CheckDepInfo\":{\"dep_info\":\"wasm32-unknown-unknown/release/build/ic-stable-lara/5323f61afec6bd1b/fingerprint/dep-lib-ic_stable_lara\",\"fingerprint\":\"mtime\"}}],\"rustflags\":[\"-C\",\"target-feature=+simd128\"],\"config\":8362119626465528914,\"compile_kind\":14682669768258224367}"
+    }
+  },
+  "configuration": {
+    "/Users/yota/dev/gleaph-spill/.cargo/config.toml": {
+      "sha256": "e5aab3aba2c680e4d3fdd0c91635a31ae97a5a4e9c220b3e46ab55d63a841b88",
+      "size": 937,
+      "text": "# Canister artifacts are wasm32 (production target; matches the canbench benchmark builds and the\n# PocketIC E2E suite). SIMD (simd128) is enabled for every wasm32 build. Scoping rustflags to the\n# wasm32 target keeps host-side builds (cargo test/clippy) untouched and applies uniformly to\n# pocket-ic E2E, dfx/icp, and manual builds.\n[target.wasm32-unknown-unknown]\nrustflags = [\"-C\", \"target-feature=+simd128\"]\n\n# Kept for a possible future re-switch to wasm64 (not the current production target). Stable\n# memory survives width-change upgrades in both directions, so re-switching never strands data.\n# wasm64 has no prebuilt std: such a build would additionally need nightly\n# `-Z build-std=core,alloc,std,panic_abort` on top of these SIMD rustflags.\n[target.wasm64-unknown-unknown]\nrustflags = [\"-C\", \"target-feature=+simd128\"]\n\n[unstable]\nmin-publish-age = true\nembed-metadata = false\n\n[registry]\nglobal-min-publish-age = \"14 days\"\n"
+    },
+    "/Users/yota/dev/gleaph-spill/Cargo.toml": {
+      "sha256": "9176056102bb88d3481a340d79e94ff1a571e6e40491c75430c52643ef61f0e5",
+      "size": 6536
+    },
+    "/Users/yota/dev/gleaph-spill/rust-toolchain.toml": {
+      "sha256": "2ce1c1fe5e79a52424c9d88d99f5a2c95dcf5b4f4a82431bb9e5710cfb39e184",
+      "size": 32
+    },
+    "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara/Cargo.toml": {
+      "sha256": "7e6af36a178ffcbf8a7d6931f019e60479729f91896c8f382f6cf099ffb44315",
+      "size": 1296
+    },
+    "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara/canbench.yml": {
+      "sha256": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+      "size": 392
+    }
+  },
+  "environment": {},
+  "source_equivalence": {
+    "af063_compact_sha256": "609eaa8947dc44bc3d99ad33a7480febd235eee5bcdd6802d2d417e0d5655fee",
+    "current_compact_sha256": "2bde0d7285fa03dbf07d21e1238336d1a128cb4c80ecef90585ada1be53b1a0f",
+    "non_comment_lines_equal": true
+  },
+  "scope_decision": "Replace two new full-graph monomorphizations with two EdgeStore owner fixtures and one existing graph caller fixture; no16K diagnostic registration. Test filter still compiles the crate test target. No flags/profile/target changes."
+}

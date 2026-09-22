@@ -1,0 +1,16 @@
+{
+  "head": "aab46e51ffdbe7c0a1072a0ad9d08d8feb836955",
+  "source": {
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "c51dd244f6fc19d7cc2d7861bfc6821e57f74ad08238698285509ef3c8bfbc04",
+    "crates/ic-stable-lara/src/lara/edge.rs": "43bf3b757e8c832a9ae8544b4b6615fe7be0558ee96a03448e5ae5d5c67774ba",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b"
+  },
+  "diff": "diff --git i/crates/ic-stable-lara/src/labeled/graph/compact.rs w/crates/ic-stable-lara/src/labeled/graph/compact.rs\nindex 350a95b58..f0f6bc1b2 100644\n--- i/crates/ic-stable-lara/src/labeled/graph/compact.rs\n+++ w/crates/ic-stable-lara/src/labeled/graph/compact.rs\n@@ -1708,11 +1708,17 @@ where\n         }\n         let mut next_live = resume_slot_index;\n         let mut bytes = [0u8; crate::lara::edge::INLINE_EDGE_BYTES];\n+        // Only slab descriptors expose a prefix width here. Tree stored_slots is\n+        // logical extent, not root-array width; keep non-slab reads on the old path.\n+        let prefetch = !bucket.is_tiny_mode()\n+            && !bucket.is_tree_mode()\n+            && E::BYTES > 0\n+            && E::BYTES <= bytes.len();\n         let (mut byte_cursor, mut buffered_bytes) = (0, 0);\n         for old_slot_index in resume_slot_index..bucket.stored_slots() {\n             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))\n                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;\n-            let edge = if E::BYTES > 0 && E::BYTES <= bytes.len() {\n+            let edge = if prefetch {\n                 if byte_cursor == buffered_bytes {\n                     // Prefetch only initialized slots, also stopping at the address limit.\n                     // Keep per-slot admission above: an earlier selected move must not be\n",
+  "persisted": false,
+  "exit": 0,
+  "wasm_sha256": "ee9e1789ea7e7ce158a6223eb4318919b85b8cde842a7ad44323aefc584bf5e5",
+  "csv_sha256": "1312d86cd9b1230f0d45231beb71a2aa0b07178480cdc376e31221ad4adf84b8"
+}
