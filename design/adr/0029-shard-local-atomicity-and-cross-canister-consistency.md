@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-08-20
-Anchor timestamp: 2026-08-20 21:45:47 UTC +0000
+Last revised: 2026-09-22
+Anchor timestamp: 2026-09-22 18:20:36 UTC +0000
 
 ## Context
 
@@ -243,6 +243,50 @@ install/reset; no migration decoder is retained for the never-deployed prior `sh
 `terminal_at_ns: Option<u64>` additions remain Candid `opt`, so any still-existing pre-Phase-4
 records decode as `None` with no migration.
 
+#### Scalar count capture and actual sends
+
+**Implemented prerequisite, not complete scalar lifetime repair.**
+`RouterStore::record_scalar_shard_progress` owns scalar per-shard count capture and projection
+markers. It requires the expected mutation ID and PlanExecution family. An equal repeated count
+is a no-op; a conflicting retained count is refused without changing the record. Capture cannot
+rewind projection, projection requires canonical completion, and aggregate completion uses checked
+addition before the stable write. After compaction, a same-ID late callback is only a no-op: it
+cannot replace the aggregate, but discarded per-shard receipts are not authenticated.
+
+`dispatch_plan_group` checks `scalar_dispatch_gate` immediately before each individual or
+size-bounded Graph send, without an intervening suspension. Every later chunk rechecks after the
+previous response await. A captured target reconciles without canonical redispatch, a completed
+mutation replays its aggregate, and missing, failed, stale-ID or mismatched-target state refuses
+the send. Other pending shards may still progress. The existing bulk loop retains its
+Open/SettleOnly admission rule; the later send check also requires the typed child to remain
+pending using the existing replay-retention predicate. AbortPending alone is not cancellation of
+already-admitted unresolved work. No authority is derived by parsing client keys.
+
+A native paused-preparation contract checks a newly published envelope against the same mutation/shard
+ID but a different candidate canister, for both individual and two-operation batch sends. It requires
+an exact target conflict, zero transport calls and unchanged record bytes, with matching-target
+controls. It is transport-owner coverage, not a real delayed-IC scheduling or retirement proof.
+
+The permission check currently reads and Candid-decodes the entire retained mutation record. Measured
+cost is approximately 4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB
+(one pending shard). This is material per-check cost, not a compact-header read or a production
+capacity approval. Preserve the fresh check; evaluate data placement/decoding under the existing
+record owner before expanding retained results, without duplicating authority in a shadow header.
+These samples do not establish latency, allocation or retained-state bounds.
+
+Inline success, inline error recovery, explicit retry reconciliation and background recovery use
+`capture_scalar_mutation_outcome`: validate the Graph journal ID/family, write the canonical count,
+then advance label-stats projection. A non-trapping projection failure leaves capture available
+for retry. Native stable writes alone are not an IC commit proof: a later trap in the same message
+segment still rolls them back. Existing caller-specific maintenance ordering remains; autonomous
+recovery never sends canonical DML.
+
+This uses existing records and codecs, not a new journal or permanent identity tombstone. Scalar
+Graph Active/Retired state, exact receipt retention, acknowledged release and admission/cost bounds
+remain open under [ADR 0027](0027-graph-mutation-journal-retention.md). Earlier preparation writers
+for the envelope, zero-shard completion and routing release are still client-key-only, not bound
+to an expected mutation ID; their delayed-callback/key-reuse boundary remains a follow-up obligation.
+
 ### 5. Make read consistency explicit
 
 The API distinguishes (`gleaph_graph_kernel::plan_exec::ReadMode`):
@@ -424,7 +468,7 @@ remain in place as defense-in-depth.
 | The canonical mutation segment carries no inter-canister call/commit point, including after graph-shard splitting | Graph | Segment constructed without a cross-canister client handle today; `CanonicalSegmentGuard` RAII (ADR 0091) at segment start + `assert_no_canonical_segment(...)` at every inter-canister chokepoint |
 | A committed canonical mutation has durable replay/repair metadata before cross-canister work can be lost | Graph | Mutation journal and projection-intent write boundary |
 | One client key and fingerprint reuse one mutation identity | Router | Client mutation reservation |
-| One mutation id is not applied twice on a graph shard | Graph | Graph mutation journal lookup before execution |
+| One mutation id is not applied twice on a graph shard | Graph | Journal-first replay; the scalar age-GC lifetime gap in ADR 0027 remains a violation of this target invariant |
 | Router saga progress is monotonic and replayable | Router | Per-shard mutation record transitions |
 | Derived consumers apply an ordered prefix idempotently | Router or graph-index | Projection apply plus durable cursor/watermark |
 | `Completed` at the Router means all contract-required canonical, projection, and replay-retirement work completed | Router | Final mutation transition |

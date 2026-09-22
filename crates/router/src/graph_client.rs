@@ -14,6 +14,56 @@ use gleaph_graph_kernel::plan_exec::{
     OrderedVertexMutationRetirementArgs, ShardEventSeq,
 };
 
+#[cfg(all(test, not(target_family = "wasm")))]
+#[derive(Default)]
+struct PlanCallProbe {
+    calls: Vec<(Principal, Vec<gleaph_graph_kernel::federation::ShardId>)>,
+    pause_next_response: bool,
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+thread_local! {
+    static PLAN_CALL_PROBE: std::cell::RefCell<Option<PlanCallProbe>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn start_plan_call_probe(pause_next_response: bool) {
+    PLAN_CALL_PROBE.with_borrow_mut(|probe| {
+        *probe = Some(PlanCallProbe {
+            pause_next_response,
+            ..Default::default()
+        })
+    });
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn take_plan_calls() -> Vec<(Principal, Vec<gleaph_graph_kernel::federation::ShardId>)> {
+    PLAN_CALL_PROBE.with_borrow_mut(|probe| probe.take().expect("plan call probe enabled").calls)
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+async fn observe_plan_call(
+    graph: Principal,
+    shards: Vec<gleaph_graph_kernel::federation::ShardId>,
+) {
+    let mut pause = PLAN_CALL_PROBE.with_borrow_mut(|probe| {
+        let Some(probe) = probe else { return false };
+        // Record the send first. Pending represents waiting for its response, not a pause
+        // between the Router gate and send. No real IC transport is simulated here.
+        probe.calls.push((graph, shards));
+        std::mem::take(&mut probe.pause_next_response)
+    });
+    std::future::poll_fn(|cx| {
+        if std::mem::take(&mut pause) {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+}
+
 #[cfg(target_family = "wasm")]
 async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::DeserializeOwned>(
     graph: Principal,
@@ -101,6 +151,8 @@ pub async fn execute_plan_on_graph(
     graph: Principal,
     args: ExecutePlanArgs,
 ) -> Result<ExecutePlanResult, String> {
+    #[cfg(all(test, not(target_family = "wasm")))]
+    observe_plan_call(graph, vec![args.target_shard_id]).await;
     let method = match args.mode {
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query => "execute_plan_query",
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update => "execute_plan_update",
@@ -115,6 +167,15 @@ pub async fn execute_plan_batch_on_graph(
     if args.operations.is_empty() {
         return Err("graph batch requires at least one operation".to_string());
     }
+    #[cfg(all(test, not(target_family = "wasm")))]
+    observe_plan_call(
+        graph,
+        args.operations
+            .iter()
+            .map(|op| op.target_shard_id)
+            .collect(),
+    )
+    .await;
     call_graph_result(graph, "execute_plan_update_batch", args).await
 }
 

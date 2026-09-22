@@ -45,8 +45,8 @@ after the seven-day terminal window, physical deletion may produce the ordinary 
 Once a mutation is fully done — every shard `completed` **and** `projection_advanced`, or
 a zero-shard completion — the resolved label/property tables and the `Vec<RouterMutationShard>`
 fan-out are never read again: replay short-circuits on `completed_row_count`
-(`run_gql_dml` returns at the `router_mutation_completed_row_count` check before touching
-the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
+(`prepare_mutation_for_batch` returns at the `router_mutation_completed_row_count` check before touching
+the heavy fields). At that point `record_scalar_shard_progress(ProjectionAdvanced)` checks and pins
 the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
 shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; compacted ordered
 edge, vertex, and mixed terminal records retain only their bounded family receipt, projection

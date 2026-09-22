@@ -11,6 +11,7 @@ mod backfill;
 pub(crate) mod bulk_load;
 mod catalogs;
 mod idempotency;
+pub(crate) use idempotency::{ScalarDispatchGate, ScalarShardProgress};
 mod label_stats_projection;
 pub(crate) mod provisioning;
 mod registry;

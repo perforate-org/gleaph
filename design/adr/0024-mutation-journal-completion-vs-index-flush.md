@@ -43,7 +43,7 @@ Concrete sequence (single-statement DML, real index client):
 3. The `Err` propagates via `?`, skipping `commit_record_completed_mutation_journal`.
    Returning `Err` (rather than trapping) **commits** IC state, so the store mutation,
    the `Incomplete` journal entry, and the emitted deltas all persist.
-4. The router calls `recover_mutation_outcome`, which only resolves `Completed` entries;
+4. Router's journal-recovery path (now `capture_scalar_mutation_outcome`) only resolves `Completed` entries;
    for `Incomplete` it returns `None`, so the router returns the error and **does not
    advance the label-stats projection** (`crates/router/src/gql.rs`).
 5. Every retry with the same `MutationId` hits the early guard in `run_wire_plans_inner`

@@ -5930,19 +5930,40 @@ fn router_mutation_journal_tracks_shard_completion() {
     );
     assert_eq!(store.router_mutation_completed_row_count(&key), None);
 
+    let id = record.as_v1().mutation_id;
     store
-        .record_router_mutation_shard_completed(&key, ShardId::new(0), 2)
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(0),
+            ScalarShardProgress::CanonicalCompleted(2),
+        )
         .expect("complete shard 0");
     store
-        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(0))
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(0),
+            ScalarShardProgress::ProjectionAdvanced,
+        )
         .expect("advance projection shard 0");
     assert_eq!(store.router_mutation_completed_row_count(&key), None);
 
     store
-        .record_router_mutation_shard_completed(&key, ShardId::new(1), 3)
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(1),
+            ScalarShardProgress::CanonicalCompleted(3),
+        )
         .expect("complete shard 1");
     store
-        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(1))
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(1),
+            ScalarShardProgress::ProjectionAdvanced,
+        )
         .expect("advance projection shard 1");
     assert_eq!(store.router_mutation_completed_row_count(&key), Some(5));
 
@@ -5993,8 +6014,18 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
         .expect("record initial envelope");
 
     // Simulate the first shard completing before the saga retried.
+    let id = store
+        .router_mutation_record(&key)
+        .unwrap()
+        .as_v1()
+        .mutation_id;
     store
-        .record_router_mutation_shard_completed(&key, ShardId::new(0), 2)
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(0),
+            ScalarShardProgress::CanonicalCompleted(2),
+        )
         .expect("complete shard 0");
 
     // A retry rebuilds the same envelope from the durable record. The writer must
@@ -6014,6 +6045,391 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     assert!(stored_shards[0].completed());
     assert_eq!(stored_shards[0].row_count(), 2);
     assert!(!stored_shards[1].completed());
+}
+
+#[test]
+fn scalar_shard_progress_is_monotonic() {
+    use ic_stable_structures::Storable;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(42);
+    for count in [0, 2] {
+        let name = format!("monotonic-{count}");
+        let key = test_mutation_key(caller, tenant_main_graph_id(), &name);
+        let id = store
+            .reserve_mutation_id_for_client_key(caller, tenant_main_graph_id(), &name, vec![1])
+            .unwrap()
+            .mutation_id;
+        store
+            .record_router_mutation_shards(
+                &key,
+                Default::default(),
+                Default::default(),
+                vec![
+                    RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), None),
+                    RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
+                ],
+            )
+            .unwrap();
+        use ScalarShardProgress::{CanonicalCompleted, ProjectionAdvanced};
+        store
+            .record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(count))
+            .unwrap();
+        store
+            .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+            .unwrap();
+        let saved = store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .into_owned();
+        for progress in [CanonicalCompleted(count), ProjectionAdvanced] {
+            store
+                .record_scalar_shard_progress(&key, id, ShardId::new(0), progress)
+                .unwrap();
+            assert_eq!(
+                store
+                    .router_mutation_record(&key)
+                    .unwrap()
+                    .to_bytes()
+                    .as_ref(),
+                saved,
+                "duplicate capture must not rewind projection"
+            );
+            assert_eq!(
+                store.record_scalar_shard_progress(&key, id + 1, ShardId::new(0), progress),
+                Err(RouterError::Conflict(
+                    "scalar mutation identity changed".into()
+                ))
+            );
+        }
+        assert_eq!(
+            store.record_scalar_shard_progress(
+                &key,
+                id,
+                ShardId::new(0),
+                CanonicalCompleted(count + 1)
+            ),
+            Err(RouterError::Conflict(
+                "scalar canonical count conflicts with captured outcome".into()
+            )),
+        );
+        assert_eq!(
+            store
+                .router_mutation_record(&key)
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            saved
+        );
+        assert_eq!(
+            store.record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced),
+            Err(RouterError::Conflict(
+                "scalar projection requires canonical completion".into()
+            )),
+        );
+        assert_eq!(
+            store.record_scalar_shard_progress(
+                &key,
+                id,
+                ShardId::new(99),
+                CanonicalCompleted(count)
+            ),
+            Err(RouterError::ShardNotRegistered)
+        );
+        assert_eq!(
+            store
+                .router_mutation_record(&key)
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            saved
+        );
+    }
+}
+
+#[test]
+fn scalar_dispatch_gate_checks_identity_target_and_terminal_state() {
+    use ScalarShardProgress::{CanonicalCompleted, ProjectionAdvanced};
+    use ic_stable_structures::Storable;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let key = ClientMutationKey::new(graph_principal(42), GraphId::from_raw(8), "gate".into());
+    let id = store
+        .reserve_mutation_id_for_client_key(key.caller, key.graph_id, &key.client_key, vec![1])
+        .unwrap()
+        .mutation_id;
+    let gate = |id, shard, graph| {
+        store.scalar_dispatch_gate(&key, id, ShardId::new(shard), graph_principal(graph))
+    };
+    assert_eq!(
+        gate(id, 0, 1),
+        Err(RouterError::Conflict(
+            "scalar dispatch requires a durable shard envelope".into()
+        ))
+    );
+    store
+        .record_router_mutation_shards(
+            &key,
+            Default::default(),
+            Default::default(),
+            vec![
+                RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), None),
+                RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
+            ],
+        )
+        .unwrap();
+    let pending = store.router_mutation_record(&key).unwrap();
+    let bytes = pending.to_bytes().into_owned();
+    assert_eq!(gate(id, 0, 1), Ok(ScalarDispatchGate::Dispatch));
+    assert_eq!(
+        gate(id + 1, 0, 1),
+        Err(RouterError::Conflict(
+            "scalar mutation identity changed".into()
+        ))
+    );
+    assert_eq!(gate(id, 99, 1), Err(RouterError::ShardNotRegistered));
+    assert_eq!(
+        gate(id, 0, 2),
+        Err(RouterError::Conflict(
+            "scalar dispatch target differs from the durable envelope".into()
+        ))
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        bytes
+    );
+
+    let mut failed = pending.clone();
+    failed.as_v1_mut().terminal_failure = Some("refused before dispatch".into());
+    let foreign = RouterMutationRecord::new_bulk_load(
+        id,
+        0,
+        BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+        }),
+    )
+    .unwrap();
+    for (record, error) in [
+        (failed, "refused before dispatch"),
+        (
+            foreign,
+            "client_mutation_key belongs to a different mutation family",
+        ),
+    ] {
+        ROUTER_MUTATION_BY_CLIENT_KEY
+            .with_borrow_mut(|map| map.insert(key.clone(), record.clone()));
+        assert_eq!(gate(id, 0, 1), Err(RouterError::Conflict(error.into())));
+        for action in [CanonicalCompleted(1), ProjectionAdvanced] {
+            assert_eq!(
+                store.record_scalar_shard_progress(&key, id, ShardId::new(0), action),
+                Err(RouterError::Conflict(error.into()))
+            );
+        }
+        assert_eq!(
+            store.router_mutation_record(&key).unwrap().to_bytes(),
+            record.to_bytes()
+        );
+    }
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.remove(&key));
+    assert_eq!(
+        gate(id, 0, 1),
+        Err(RouterError::Conflict(
+            "scalar mutation record is unavailable".into()
+        ))
+    );
+    assert_eq!(
+        store.record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(1)),
+        Err(RouterError::Conflict(
+            "scalar mutation record is unavailable".into()
+        ))
+    );
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), pending));
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(0))
+        .unwrap();
+    assert_eq!(gate(id, 0, 1), Ok(ScalarDispatchGate::Reconcile));
+    assert_eq!(gate(id, 1, 2), Ok(ScalarDispatchGate::Dispatch));
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(1), CanonicalCompleted(7))
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced)
+        .unwrap();
+    assert_eq!(gate(id, 0, 1), Ok(ScalarDispatchGate::Completed(7)));
+    let complete = store
+        .router_mutation_record(&key)
+        .unwrap()
+        .to_bytes()
+        .into_owned();
+    // Compaction no longer retains per-shard counts: late same-ID callbacks are no-ops,
+    // not verification of the supplied count. They cannot replace the aggregate.
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(99))
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced)
+        .unwrap();
+    assert_eq!(
+        gate(id + 1, 0, 1),
+        Err(RouterError::Conflict(
+            "scalar mutation identity changed".into()
+        ))
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        complete
+    );
+}
+
+#[test]
+fn scalar_projection_aggregate_overflow_is_write_free() {
+    use ScalarShardProgress::{CanonicalCompleted, ProjectionAdvanced};
+    use ic_stable_structures::Storable;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let key = ClientMutationKey::new(graph_principal(42), GraphId::from_raw(8), "overflow".into());
+    let id = store
+        .reserve_mutation_id_for_client_key(key.caller, key.graph_id, &key.client_key, vec![1])
+        .unwrap()
+        .mutation_id;
+    store
+        .record_router_mutation_shards(
+            &key,
+            Default::default(),
+            Default::default(),
+            vec![
+                RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), None),
+                RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
+            ],
+        )
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(u64::MAX))
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(1), CanonicalCompleted(1))
+        .unwrap();
+    let saved = store
+        .router_mutation_record(&key)
+        .unwrap()
+        .to_bytes()
+        .into_owned();
+    assert_eq!(
+        store.record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced),
+        Err(RouterError::Conflict(
+            "scalar mutation row count overflow".into()
+        ))
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        saved
+    );
+    assert_eq!(store.router_mutation_completed_row_count(&key), None);
+}
+
+#[test]
+fn scalar_dispatch_gate_follows_typed_bulk_child_closure() {
+    use super::bulk_load::BulkLoadStartAdmission;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let caller = graph_principal(42);
+    let graph = GraphId::from_raw(8);
+    let shard = ShardId::new(0);
+    let target = graph_principal(1);
+    let BulkLoadStartAdmission::Created {
+        mutation_id: parent,
+    } = store
+        .start_bulk_load_job(
+            caller,
+            graph,
+            "parent",
+            BulkLoadTargetV1 {
+                shard_id: shard,
+                graph_canister: target,
+            },
+            1,
+        )
+        .unwrap()
+    else {
+        panic!("new parent")
+    };
+    store
+        .admit_bulk_load_update_child(
+            caller,
+            graph,
+            "parent",
+            parent,
+            0,
+            [1; 32],
+            Some(vec![vec![1; 8]]),
+        )
+        .unwrap();
+    let key = ClientMutationKey::new(caller, graph, "opaque-row-key".into());
+    let id = store
+        .reserve_bulk_load_update_row(
+            caller,
+            graph,
+            &key.client_key,
+            vec![2],
+            BulkLoadChunkReceiptKey {
+                job_mutation_id: parent,
+                chunk_index: 0,
+            },
+        )
+        .unwrap()
+        .mutation_id;
+    store
+        .record_router_mutation_shards(
+            &key,
+            Default::default(),
+            Default::default(),
+            vec![RouterMutationShardV1::new(shard, target, None)],
+        )
+        .unwrap();
+    let gate = || store.scalar_dispatch_gate(&key, id, shard, target);
+    assert_eq!(gate(), Ok(ScalarDispatchGate::Dispatch));
+    store
+        .begin_bulk_load_abort(caller, graph, "parent", 4)
+        .unwrap();
+    assert_eq!(
+        gate(),
+        Ok(ScalarDispatchGate::Dispatch),
+        "AbortPending is not cancellation of an admitted unresolved row"
+    );
+    // Another settlement may prove zero from Graph without having captured the scalar row.
+    store
+        .complete_bulk_load_update_child(caller, graph, "parent", parent, 0, [1; 32], 0, 5)
+        .unwrap();
+    assert_eq!(
+        gate(),
+        Err(RouterError::Conflict(
+            "bulk-load update row no longer permits dispatch".into()
+        ))
+    );
+    assert!(!store.router_mutation_record(&key).unwrap().shards()[0].completed());
 }
 
 #[test]
@@ -6080,11 +6496,22 @@ fn router_mutation_journal_records_zero_shard_completion() {
     assert_eq!(record.as_v1().completed_row_count, Some(0));
     assert!(record.shards().is_empty());
     assert_eq!(store.router_mutation_completed_row_count(&key), Some(0));
+    let id = record.as_v1().mutation_id;
     store
-        .record_router_mutation_shard_completed(&key, ShardId::new(0), 0)
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(0),
+            ScalarShardProgress::CanonicalCompleted(0),
+        )
         .expect("terminal replay completion is idempotent");
     store
-        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(0))
+        .record_scalar_shard_progress(
+            &key,
+            id,
+            ShardId::new(0),
+            ScalarShardProgress::ProjectionAdvanced,
+        )
         .expect("terminal replay projection is idempotent");
 }
 

@@ -425,7 +425,14 @@ fn cartesian_product(items: &[String], n: usize) -> Vec<Vec<String>> {
     out
 }
 
-pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
+#[derive(Debug)]
+enum PlanDispatchOutcome {
+    Reply(Result<ExecutePlanResult, String>),
+    Captured,
+    Completed(u64),
+}
+
+type BatchDispatchResult = (ShardDispatch, PlanDispatchOutcome);
 
 pub(crate) const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
 
@@ -5152,7 +5159,117 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     )))
 }
 
-/// Execute a single prepared mutation (the Graph dispatch and post-processing phases).
+/// Dispatch one nonempty Graph group from a prepared mutation.
+/// Actual send owner: no suspension between a durable gate and polling its transport call.
+/// Every later chunk rechecks the owner after the preceding response await.
+async fn dispatch_plan_group(
+    store: &RouterStore,
+    mutation_key: Option<&ClientMutationKey>,
+    mode: GqlExecutionMode,
+    group: Vec<ShardDispatch>,
+    build_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
+) -> Result<Vec<BatchDispatchResult>, RouterError> {
+    use crate::facade::store::ScalarDispatchGate;
+    let gate = |dispatch: &ShardDispatch,
+                args: &gleaph_graph_kernel::plan_exec::ExecutePlanArgs|
+     -> Result<Option<ScalarDispatchGate>, RouterError> {
+        let Some(id) = args
+            .mutation_id
+            .filter(|_| mode == GqlExecutionMode::Update)
+        else {
+            return Ok(None);
+        };
+        let key = mutation_key
+            .ok_or_else(|| RouterError::Conflict("scalar dispatch has no mutation owner".into()))?;
+        Ok(Some(store.scalar_dispatch_gate(
+            key,
+            id,
+            dispatch.shard_id,
+            dispatch.graph_canister,
+        )?))
+    };
+    let mut results = Vec::new();
+    let group_graph = group[0].graph_canister;
+    let single = mode == GqlExecutionMode::Query || group.len() == 1;
+    let mut remaining = group;
+    let mut size_hint = None;
+    while !remaining.is_empty() {
+        if !single && !graph_batch_chunk_within_update_budget(crate::current_instruction_counter())
+        {
+            let err = format!(
+                "router update instruction budget guard stopped chunk dispatch: {} operation(s) deferred; resubmit to complete",
+                remaining.len()
+            );
+            results.extend(
+                remaining
+                    .drain(..)
+                    .map(|d| (d, PlanDispatchOutcome::Reply(Err(err.clone())))),
+            );
+            break;
+        }
+        let chunk_len = if single {
+            1
+        } else {
+            let (len, next_hint) =
+                graph_batch_chunk_len_for_dispatches(&remaining, build_args, size_hint)?;
+            size_hint = Some(next_hint);
+            len
+        };
+        let mut chunk = Vec::new();
+        let mut operations = Vec::new();
+        for dispatch in remaining.drain(..chunk_len) {
+            let args = build_args(&dispatch);
+            match gate(&dispatch, &args)? {
+                Some(ScalarDispatchGate::Completed(count)) => {
+                    results.push((dispatch, PlanDispatchOutcome::Completed(count)))
+                }
+                Some(ScalarDispatchGate::Reconcile) => {
+                    results.push((dispatch, PlanDispatchOutcome::Captured))
+                }
+                Some(ScalarDispatchGate::Dispatch) | None => {
+                    chunk.push(dispatch);
+                    operations.push(args);
+                }
+            }
+        }
+        if chunk.is_empty() {
+            continue;
+        }
+        if single {
+            let result = execute_plan_on_graph(group_graph, operations.pop().unwrap()).await;
+            results.push((chunk.pop().unwrap(), PlanDispatchOutcome::Reply(result)));
+        } else {
+            let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+                operations,
+                mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+            };
+            match execute_plan_batch_on_graph(group_graph, args).await {
+                Ok(batch) if batch.results.len() == chunk.len() => results.extend(
+                    chunk
+                        .into_iter()
+                        .zip(batch.results.into_iter().map(PlanDispatchOutcome::Reply)),
+                ),
+                result => {
+                    let error = match result {
+                        Ok(batch) => format!(
+                            "graph batch returned {} results for {} operations",
+                            batch.results.len(),
+                            chunk.len()
+                        ),
+                        Err(error) => error,
+                    };
+                    results.extend(
+                        chunk
+                            .into_iter()
+                            .map(|d| (d, PlanDispatchOutcome::Reply(Err(error.clone())))),
+                    );
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
 async fn execute_prepared_mutation(
     prepared: crate::batch_wave::PreparedMutation,
     store: &RouterStore,
@@ -5200,78 +5317,19 @@ async fn execute_prepared_mutation(
     let dispatch_groups = group_dispatches_by_graph(prepared.dispatches);
     let mut dispatch_results: Vec<BatchDispatchResult> = Vec::new();
 
-    // Dispatch groups in parallel across target Graph canisters. Within a single
-    // canister we issue sequential dynamic chunks so the message size and Graph
-    // instruction budget stay safe.
-    let mut group_futures: Vec<
-        futures::future::BoxFuture<Result<Vec<BatchDispatchResult>, RouterError>>,
-    > = Vec::new();
-    for group in dispatch_groups {
-        group_futures.push(Box::pin(async {
-            let mut results = Vec::new();
-            let group_graph = group[0].graph_canister;
-            if mode == GqlExecutionMode::Query || group.len() == 1 {
-                for dispatch in group {
-                    let args = build_execute_args(&dispatch);
-                    results.push((
-                        dispatch.clone(),
-                        Some(execute_plan_on_graph(group_graph, args).await),
-                    ));
-                }
-            } else {
-                let mut remaining = group;
-                let mut size_hint = None;
-                while !remaining.is_empty() {
-                    // Between-chunk budget guard (ADR 0042 between-wave check): the whole
-                    // update message shares one call-context instruction ceiling, so before
-                    // starting another chunk the Router must be able to fit one more chunk
-                    // round plus its finalization reserve under the 40B cap. Deferred
-                    // operations surface as per-operation errors and are completed by
-                    // resubmitting the mutation (journal reconciliation is idempotent).
-                    if !graph_batch_chunk_within_update_budget(
-                        crate::current_instruction_counter(),
-                    ) {
-                        let err = format!(
-                            "router update instruction budget guard stopped chunk dispatch: {} operation(s) deferred; resubmit to complete",
-                            remaining.len()
-                        );
-                        results
-                            .extend(remaining.drain(..).map(|d| (d, Some(Err(err.clone())))));
-                        break;
-                    }
-                    let (chunk_len, next_hint) = graph_batch_chunk_len_for_dispatches(
-                        &remaining,
-                        &build_execute_args,
-                        size_hint,
-                    )?;
-                    size_hint = Some(next_hint);
-                    let chunk: Vec<ShardDispatch> = remaining.drain(..chunk_len).collect();
-                    let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-                        operations: chunk.iter().map(&build_execute_args).collect(),
-                        mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-                    };
-                    match execute_plan_batch_on_graph(group_graph, args).await {
-                        Ok(batch) if batch.results.len() == chunk.len() => {
-                            results
-                                .extend(chunk.into_iter().zip(batch.results.into_iter().map(Some)));
-                        }
-                        Ok(batch) => {
-                            let err = format!(
-                                "graph batch returned {} results for {} operations",
-                                batch.results.len(),
-                                chunk.len()
-                            );
-                            results.extend(chunk.into_iter().map(|d| (d, Some(Err(err.clone())))));
-                        }
-                        Err(err) => {
-                            results.extend(chunk.into_iter().map(|d| (d, Some(Err(err.clone())))));
-                        }
-                    }
-                }
-            }
-            Ok(results)
-        }));
-    }
+    // Independent Graph groups run in parallel; the owner gates each actual chunk send.
+    let group_futures: Vec<_> = dispatch_groups
+        .into_iter()
+        .map(|group| {
+            dispatch_plan_group(
+                store,
+                mutation_key.as_ref(),
+                mode,
+                group,
+                &build_execute_args,
+            )
+        })
+        .collect();
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
@@ -5284,6 +5342,21 @@ async fn execute_prepared_mutation(
 
     for group_result in futures::future::join_all(group_futures).await {
         dispatch_results.extend(group_result?);
+    }
+    if let Some(count) = dispatch_results
+        .iter()
+        .find_map(|(_, outcome)| match outcome {
+            PlanDispatchOutcome::Completed(count) => Some(*count),
+            _ => None,
+        })
+    {
+        return Ok(attach_mutation_phase(
+            GqlQueryResult::row_count_only(count),
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+        ));
     }
 
     #[cfg(feature = "batch-instr-log")]
@@ -5330,61 +5403,45 @@ async fn execute_prepared_mutation(
     #[cfg(feature = "batch-instr-log")]
     let result_regroup_merge_start = crate::current_instruction_counter();
 
-    for (dispatch, result) in dispatch_results {
-        let result =
-            result.ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))?;
-        let result = match result {
-            Ok(result) => result,
-            Err(err) => {
-                if let Some(mutation_id) = mutation_id
-                    && let Some(entry) = recover_mutation_outcome(
-                        store,
-                        graph_id,
-                        dispatch.graph_canister,
-                        dispatch.shard_id,
-                        mutation_id,
-                        preflight,
-                    )
-                    .await?
-                    && matches!(entry.state(), MutationJournalState::Completed)
+    for (dispatch, outcome) in dispatch_results {
+        let entry = if let (Some(id), Some(key)) = (mutation_id, mutation_key.as_ref()) {
+            capture_scalar_mutation_outcome(
+                store,
+                key,
+                dispatch.graph_canister,
+                dispatch.shard_id,
+                id,
+                preflight,
+            )
+            .await?
+        } else {
+            None
+        };
+        let result = match outcome {
+            PlanDispatchOutcome::Reply(Ok(result)) => {
+                if mutation_id.is_some()
+                    && entry
+                        .as_ref()
+                        .is_none_or(|entry| entry.row_count() != result.row_count)
                 {
-                    if has_dml {
-                        crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
-                            dispatch.graph_canister,
-                            dispatch.shard_id,
-                            &plans,
-                            &entry.hot_forward_vertices().to_vec(),
-                        )
-                        .await?;
-                    }
-                    merge_execute_plan_result(
-                        &mut merged,
-                        gleaph_graph_kernel::plan_exec::ExecutePlanResult {
-                            row_count: entry.row_count(),
-                            rows_blob: None,
-                            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
-                            search_chain_receipt: None,
-                        },
-                        merge_mode.clone(),
-                    )
-                    .map_err(RouterError::InvalidArgument)?;
-                    if let Some(key) = mutation_key.as_ref() {
-                        store.record_router_mutation_shard_completed(
-                            key,
-                            dispatch.shard_id,
-                            entry.row_count(),
-                        )?;
-                        store.record_router_mutation_shard_projection_advanced(
-                            key,
-                            dispatch.shard_id,
-                        )?;
-                    }
-                    token_shards.push(MutationTokenShard {
-                        shard_id: dispatch.shard_id,
-                        label_stats_seq: entry.emitted_delta_last_seq(),
-                    });
-                    continue;
+                    return Err(RouterError::Conflict(
+                        "scalar reply does not match a completed Graph journal".into(),
+                    ));
                 }
+                result
+            }
+            PlanDispatchOutcome::Captured | PlanDispatchOutcome::Reply(Err(_))
+                if entry.is_some() =>
+            {
+                let entry = entry.as_ref().unwrap();
+                ExecutePlanResult {
+                    row_count: entry.row_count(),
+                    rows_blob: None,
+                    hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                    search_chain_receipt: None,
+                }
+            }
+            PlanDispatchOutcome::Reply(Err(err)) => {
                 if let Some(detail) = err
                     .strip_prefix(gleaph_graph_kernel::federation::UNIQUENESS_VIOLATION_WIRE_PREFIX)
                 {
@@ -5392,17 +5449,14 @@ async fn execute_prepared_mutation(
                 }
                 return Err(RouterError::InvalidArgument(err));
             }
+            PlanDispatchOutcome::Captured => {
+                return Err(RouterError::Conflict(
+                    "captured scalar outcome has no completed Graph journal".into(),
+                ));
+            }
+            PlanDispatchOutcome::Completed(_) => unreachable!(),
         };
-        if let Some(mutation_id) = mutation_id {
-            let entry = advance_mutation_label_stats_projection(
-                store,
-                graph_id,
-                dispatch.graph_canister,
-                dispatch.shard_id,
-                mutation_id,
-                preflight,
-            )
-            .await?;
+        if let Some(entry) = &entry {
             token_shards.push(MutationTokenShard {
                 shard_id: dispatch.shard_id,
                 label_stats_seq: entry.emitted_delta_last_seq(),
@@ -5417,13 +5471,13 @@ async fn execute_prepared_mutation(
             )
             .await?;
         }
-        if let Some(key) = mutation_key.as_ref() {
-            store.record_router_mutation_shard_completed(
+        if let (Some(key), Some(id)) = (mutation_key.as_ref(), mutation_id) {
+            store.record_scalar_shard_progress(
                 key,
+                id,
                 dispatch.shard_id,
-                result.row_count,
+                crate::facade::store::ScalarShardProgress::ProjectionAdvanced,
             )?;
-            store.record_router_mutation_shard_projection_advanced(key, dispatch.shard_id)?;
         }
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
@@ -5962,9 +6016,9 @@ async fn reconcile_router_mutation_projection(
         .iter()
         .filter(|shard| shard.completed() && !shard.projection_advanced())
     {
-        let Some(entry) = recover_mutation_outcome(
+        let Some(entry) = capture_scalar_mutation_outcome(
             store,
-            key.graph_id,
+            key,
             shard.graph_canister(),
             shard.shard_id(),
             record.as_v1().mutation_id,
@@ -5985,7 +6039,12 @@ async fn reconcile_router_mutation_projection(
                 shard.shard_id()
             )));
         }
-        store.record_router_mutation_shard_projection_advanced(key, shard.shard_id())?;
+        store.record_scalar_shard_progress(
+            key,
+            record.as_v1().mutation_id,
+            shard.shard_id(),
+            crate::facade::store::ScalarShardProgress::ProjectionAdvanced,
+        )?;
     }
     Ok(())
 }
@@ -6013,39 +6072,11 @@ async fn fetch_journal_entry(
     }
 }
 
-async fn advance_mutation_label_stats_projection(
+/// Capture the canonical count before projection can suspend/fail. Callers retain their
+/// maintenance ordering and publish the projection marker only after their post-capture work.
+async fn capture_scalar_mutation_outcome(
     store: &RouterStore,
-    graph_id: GraphId,
-    graph_canister: Principal,
-    shard_id: ShardId,
-    mutation_id: MutationId,
-    preflight: Option<&PreflightContext>,
-) -> Result<GraphMutationJournalEntryWire, RouterError> {
-    let entry = fetch_journal_entry(preflight, graph_canister, mutation_id, shard_id).await?;
-    let Some(entry) = entry else {
-        return Err(RouterError::InvalidArgument(format!(
-            "graph shard {shard_id} did not persist mutation journal entry for mutation {mutation_id}"
-        )));
-    };
-    if !matches!(entry.state(), MutationJournalState::Completed) {
-        return Err(RouterError::InvalidArgument(format!(
-            "graph shard {shard_id} mutation {mutation_id} did not complete"
-        )));
-    }
-    advance_label_stats_projection_through(
-        store,
-        graph_id,
-        graph_canister,
-        shard_id,
-        entry.emitted_delta_last_seq(),
-    )
-    .await?;
-    Ok(entry)
-}
-
-async fn recover_mutation_outcome(
-    store: &RouterStore,
-    graph_id: GraphId,
+    key: &ClientMutationKey,
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
@@ -6055,12 +6086,28 @@ async fn recover_mutation_outcome(
     else {
         return Ok(None);
     };
+    entry
+        .validate()
+        .map_err(|error| RouterError::Conflict(error.into()))?;
+    if entry.mutation_id() != mutation_id
+        || entry.request_identity() != &GraphMutationRequestIdentityV1::PlanExecution
+    {
+        return Err(RouterError::Conflict(
+            "scalar Graph journal identity differs from the request".into(),
+        ));
+    }
     if !matches!(entry.state(), MutationJournalState::Completed) {
         return Ok(None);
     }
+    store.record_scalar_shard_progress(
+        key,
+        mutation_id,
+        shard_id,
+        crate::facade::store::ScalarShardProgress::CanonicalCompleted(entry.row_count()),
+    )?;
     advance_label_stats_projection_through(
         store,
-        graph_id,
+        key.graph_id,
         graph_canister,
         shard_id,
         entry.emitted_delta_last_seq(),
@@ -6508,9 +6555,9 @@ pub(crate) async fn recover_mutation_record(
         if shard.completed() && shard.projection_advanced() {
             continue;
         }
-        match recover_mutation_outcome(
+        match capture_scalar_mutation_outcome(
             store,
-            key.graph_id,
+            key,
             shard.graph_canister(),
             shard.shard_id(),
             mutation_id,
@@ -6518,15 +6565,13 @@ pub(crate) async fn recover_mutation_record(
         )
         .await?
         {
-            Some(entry) => {
-                if !shard.completed() {
-                    store.record_router_mutation_shard_completed(
-                        key,
-                        shard.shard_id(),
-                        entry.row_count(),
-                    )?;
-                }
-                store.record_router_mutation_shard_projection_advanced(key, shard.shard_id())?;
+            Some(_) => {
+                store.record_scalar_shard_progress(
+                    key,
+                    mutation_id,
+                    shard.shard_id(),
+                    crate::facade::store::ScalarShardProgress::ProjectionAdvanced,
+                )?;
             }
             None => {
                 store.record_router_mutation_last_error(
@@ -7068,6 +7113,525 @@ mod tests {
 
     fn store_with_one_shard() -> RouterStore {
         store_with_shards_spec(&[(ShardId::new(0), 1u8)])
+    }
+
+    fn scalar_dispatch_fixture() -> (
+        RouterStore,
+        super::ClientMutationKey,
+        u64,
+        Vec<super::ShardDispatch>,
+    ) {
+        let store = store_with_shards();
+        let key = mutation_key_for(ordered_test_caller(), tenant_main_graph_id(), "scalar-send");
+        let id = store
+            .reserve_mutation_id_for_client_key(key.caller, key.graph_id, &key.client_key, vec![1])
+            .unwrap()
+            .mutation_id;
+        let dispatches: Vec<_> = [(0, 1), (1, 4)]
+            .into_iter()
+            .map(|(shard, graph)| super::ShardDispatch {
+                shard_id: ShardId::new(shard),
+                graph_canister: graph_principal(graph),
+                seed_bindings_blob: None,
+                resolved_search_blob: None,
+            })
+            .collect();
+        store
+            .record_router_mutation_shards(
+                &key,
+                Default::default(),
+                Default::default(),
+                dispatches
+                    .iter()
+                    .map(|d| {
+                        crate::facade::stable::label_stats::RouterMutationShardV1::new(
+                            d.shard_id,
+                            d.graph_canister,
+                            None,
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        (store, key, id, dispatches)
+    }
+
+    fn scalar_plan_args(
+        dispatch: &super::ShardDispatch,
+        id: Option<u64>,
+    ) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
+        gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
+            target_shard_id: dispatch.shard_id,
+            element_id_encoding_key: [0; 16],
+            mutation_id: id,
+            plan_blob: vec![1],
+            params_blob: vec![],
+            mode: GqlExecutionMode::Update,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: None,
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn scalar_actual_send_rechecks_after_preparation_pause() {
+        use super::{PlanDispatchOutcome, dispatch_plan_group, group_dispatches_by_graph};
+        use crate::facade::store::ScalarShardProgress::{CanonicalCompleted, ProjectionAdvanced};
+        use crate::graph_client::{start_plan_call_probe, take_plan_calls};
+        for count in [0, 1] {
+            for complete in [false, true] {
+                let (store, key, id, dispatches) = scalar_dispatch_fixture();
+                let build = |d: &super::ShardDispatch| scalar_plan_args(d, Some(id));
+                start_plan_call_probe(false);
+                let mut pause = true;
+                let execution = async {
+                    std::future::poll_fn(|cx| {
+                        if std::mem::take(&mut pause) {
+                            cx.waker().wake_by_ref();
+                            std::task::Poll::Pending
+                        } else {
+                            std::task::Poll::Ready(())
+                        }
+                    })
+                    .await;
+                    futures::future::join_all(
+                        group_dispatches_by_graph(dispatches)
+                            .into_iter()
+                            .map(|group| {
+                                dispatch_plan_group(
+                                    &store,
+                                    Some(&key),
+                                    GqlExecutionMode::Update,
+                                    group,
+                                    &build,
+                                )
+                            }),
+                    )
+                    .await
+                };
+                let mut execution = std::pin::pin!(execution);
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(execution.as_mut().poll(&mut cx).is_pending());
+                store
+                    .record_scalar_shard_progress(
+                        &key,
+                        id,
+                        ShardId::new(0),
+                        CanonicalCompleted(count),
+                    )
+                    .unwrap();
+                if complete {
+                    store
+                        .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+                        .unwrap();
+                    store
+                        .record_scalar_shard_progress(
+                            &key,
+                            id,
+                            ShardId::new(1),
+                            CanonicalCompleted(7),
+                        )
+                        .unwrap();
+                    store
+                        .record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced)
+                        .unwrap();
+                }
+                let outcomes: Vec<_> = futures::executor::block_on(execution)
+                    .into_iter()
+                    .flat_map(Result::unwrap)
+                    .collect();
+                let calls = take_plan_calls();
+                assert_eq!(outcomes.len(), 2);
+                if complete {
+                    assert!(
+                        calls.is_empty(),
+                        "compacted completion closes every actual send"
+                    );
+                    assert!(outcomes.iter().all(|(_, result)| matches!(result, PlanDispatchOutcome::Completed(n) if *n == count + 7)));
+                } else {
+                    assert_eq!(calls, vec![(graph_principal(4), vec![ShardId::new(1)])]);
+                    assert!(
+                        outcomes
+                            .iter()
+                            .any(|(d, result)| d.shard_id == ShardId::new(0)
+                                && matches!(result, PlanDispatchOutcome::Captured))
+                    );
+                    assert!(outcomes.iter().any(|(d, result)| d.shard_id == ShardId::new(1) && matches!(result, PlanDispatchOutcome::Reply(Err(error)) if error == "graph execute_plan_update unavailable in native builds")));
+                }
+            }
+        }
+        let (store, key, id, dispatches) = scalar_dispatch_fixture();
+        start_plan_call_probe(false);
+        let wrong_id = |d: &super::ShardDispatch| scalar_plan_args(d, Some(id + 1));
+        assert_eq!(
+            futures::executor::block_on(dispatch_plan_group(
+                &store,
+                Some(&key),
+                GqlExecutionMode::Update,
+                vec![dispatches[0].clone()],
+                &wrong_id
+            ))
+            .unwrap_err(),
+            RouterError::Conflict("scalar mutation identity changed".into())
+        );
+        assert!(take_plan_calls().is_empty());
+        start_plan_call_probe(false);
+        let query = |d: &super::ShardDispatch| {
+            let mut args = scalar_plan_args(d, None);
+            args.mode = GqlExecutionMode::Query;
+            args
+        };
+        let result = futures::executor::block_on(dispatch_plan_group(
+            &store,
+            None,
+            GqlExecutionMode::Query,
+            vec![dispatches[0].clone()],
+            &query,
+        ))
+        .unwrap();
+        assert!(
+            matches!(&result[0].1, PlanDispatchOutcome::Reply(Err(error)) if error == "graph execute_plan_query unavailable in native builds")
+        );
+        assert_eq!(
+            take_plan_calls(),
+            vec![(graph_principal(1), vec![ShardId::new(0)])]
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn scalar_actual_send_rejects_wrong_target_after_preparation_pause() {
+        use super::{PlanDispatchOutcome, ShardDispatch, dispatch_plan_group};
+        use crate::facade::stable::label_stats::RouterMutationShardV1;
+        use crate::graph_client::{start_plan_call_probe, take_plan_calls};
+        use ic_stable_structures::Storable;
+
+        for operations in [1, 2] {
+            for wrong_target in [false, true] {
+                let store = store_with_one_shard();
+                let key = mutation_key_for(
+                    ordered_test_caller(),
+                    tenant_main_graph_id(),
+                    "scalar-send-target",
+                );
+                let id = store
+                    .reserve_mutation_id_for_client_key(
+                        key.caller,
+                        key.graph_id,
+                        &key.client_key,
+                        vec![1],
+                    )
+                    .unwrap()
+                    .mutation_id;
+                let candidate = ShardDispatch {
+                    shard_id: ShardId::new(0),
+                    graph_canister: graph_principal(if wrong_target { 4 } else { 1 }),
+                    seed_bindings_blob: None,
+                    resolved_search_blob: None,
+                };
+                let build = |d: &ShardDispatch| scalar_plan_args(d, Some(id));
+                start_plan_call_probe(false);
+                let mut pause = true;
+                let execution = async {
+                    std::future::poll_fn(|cx| {
+                        if std::mem::take(&mut pause) {
+                            cx.waker().wake_by_ref();
+                            std::task::Poll::Pending
+                        } else {
+                            std::task::Poll::Ready(())
+                        }
+                    })
+                    .await;
+                    dispatch_plan_group(
+                        &store,
+                        Some(&key),
+                        GqlExecutionMode::Update,
+                        vec![candidate; operations],
+                        &build,
+                    )
+                    .await
+                };
+                let mut execution = std::pin::pin!(execution);
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(execution.as_mut().poll(&mut cx).is_pending());
+                assert!(take_plan_calls().is_empty());
+                start_plan_call_probe(false);
+                // A competing preparation publishes the winning envelope while this candidate
+                // is suspended. A stale canister must fail even when mutation/shard IDs match.
+                store
+                    .record_router_mutation_shards(
+                        &key,
+                        Default::default(),
+                        Default::default(),
+                        vec![RouterMutationShardV1::new(
+                            ShardId::new(0),
+                            graph_principal(1),
+                            None,
+                        )],
+                    )
+                    .unwrap();
+                let saved = store
+                    .router_mutation_record(&key)
+                    .unwrap()
+                    .to_bytes()
+                    .into_owned();
+                let result = futures::executor::block_on(execution);
+                let calls = take_plan_calls();
+                if wrong_target {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        RouterError::Conflict(
+                            "scalar dispatch target differs from the durable envelope".into()
+                        )
+                    );
+                    assert!(
+                        calls.is_empty(),
+                        "a mismatched target must never reach transport"
+                    );
+                } else {
+                    let results = result.unwrap();
+                    assert_eq!(results.len(), operations);
+                    assert_eq!(
+                        calls,
+                        vec![(graph_principal(1), vec![ShardId::new(0); operations])]
+                    );
+                    let expected = if operations == 1 {
+                        "graph execute_plan_update unavailable in native builds"
+                    } else {
+                        "graph execute_plan_update_batch unavailable in native builds"
+                    };
+                    assert!(results.iter().all(|(_, outcome)| matches!(
+                        outcome, PlanDispatchOutcome::Reply(Err(error)) if error == expected
+                    )));
+                }
+                assert_eq!(
+                    store
+                        .router_mutation_record(&key)
+                        .unwrap()
+                        .to_bytes()
+                        .as_ref(),
+                    saved
+                );
+            }
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn scalar_actual_send_rechecks_later_dynamic_chunks() {
+        use super::{PlanDispatchOutcome, dispatch_plan_group};
+        use crate::facade::store::ScalarShardProgress::CanonicalCompleted;
+        use crate::graph_client::{start_plan_call_probe, take_plan_calls};
+        for captured in [None, Some(0), Some(1)] {
+            let (store, key, id, dispatches) = scalar_dispatch_fixture();
+            let build = |d: &super::ShardDispatch| {
+                let mut args = scalar_plan_args(d, Some(id));
+                args.params_blob = vec![2; 600_000];
+                args
+            };
+            // Exercise the transport's chunk boundary with repeated operations on the same
+            // registered shard. This is not a claim about Graph execution of these opaque blobs.
+            start_plan_call_probe(true);
+            let mut execution = std::pin::pin!(dispatch_plan_group(
+                &store,
+                Some(&key),
+                GqlExecutionMode::Update,
+                vec![dispatches[0].clone(); 5],
+                &build
+            ));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                execution.as_mut().poll(&mut cx).is_pending(),
+                "first real client boundary must await its response"
+            );
+            if let Some(count) = captured {
+                store
+                    .record_scalar_shard_progress(
+                        &key,
+                        id,
+                        ShardId::new(0),
+                        CanonicalCompleted(count),
+                    )
+                    .unwrap();
+            }
+            let results = futures::executor::block_on(execution).unwrap();
+            let calls = take_plan_calls();
+            assert_eq!(results.len(), 5);
+            assert!(calls[0].1.len() < 5 && !calls[0].1.is_empty());
+            if captured.is_some() {
+                assert_eq!(
+                    calls.len(),
+                    1,
+                    "captured target must not be sent in a later chunk"
+                );
+                assert_eq!(
+                    results
+                        .iter()
+                        .filter(|(_, result)| matches!(result, PlanDispatchOutcome::Captured))
+                        .count(),
+                    5 - calls[0].1.len()
+                );
+            } else {
+                assert!(
+                    calls.len() > 1,
+                    "unchanged owner control must send later chunks"
+                );
+                assert_eq!(calls.iter().map(|(_, ids)| ids.len()).sum::<usize>(), 5);
+                assert!(results.iter().all(|(_, result)| matches!(result, PlanDispatchOutcome::Reply(Err(error)) if error == "graph execute_plan_update_batch unavailable in native builds")));
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_journal_capture_precedes_projection_failure_and_validates_identity() {
+        use crate::facade::store::ScalarDispatchGate;
+        use ic_stable_structures::Storable;
+        for count in [0, 1] {
+            let (store, key, id, dispatches) = scalar_dispatch_fixture();
+            let target = &dispatches[0];
+            let ctx = preflight_with_journal(target.graph_canister, id, None);
+            let pristine = store
+                .router_mutation_record(&key)
+                .unwrap()
+                .to_bytes()
+                .into_owned();
+            let entry = GraphMutationJournalEntryWire::new(
+                id,
+                MutationJournalState::Completed,
+                count,
+                None,
+                None,
+                vec![],
+            );
+            let wrong_id = GraphMutationJournalEntryWire::new(
+                id + 1,
+                MutationJournalState::Completed,
+                count,
+                None,
+                None,
+                vec![],
+            );
+            let mut wrong_family = entry.clone();
+            wrong_family.set_row_count(1);
+            wrong_family.set_request_identity(GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [8; 32],
+                logical_item_count: 1,
+            });
+            wrong_family.set_retirement(super::GraphMutationRetirementWireV1::Active);
+            for wrong in [wrong_id, wrong_family] {
+                wrong.validate().unwrap();
+                ctx.journal_entries
+                    .borrow_mut()
+                    .insert((target.graph_canister, id), Some(wrong));
+                assert_eq!(
+                    futures::executor::block_on(super::capture_scalar_mutation_outcome(
+                        &store,
+                        &key,
+                        target.graph_canister,
+                        target.shard_id,
+                        id,
+                        Some(&ctx)
+                    ))
+                    .unwrap_err(),
+                    RouterError::Conflict(
+                        "scalar Graph journal identity differs from the request".into()
+                    )
+                );
+                assert_eq!(
+                    store
+                        .router_mutation_record(&key)
+                        .unwrap()
+                        .to_bytes()
+                        .as_ref(),
+                    pristine
+                );
+            }
+            // This fixture reopens the projection owner; its stable cursor survives subcases.
+            let watermark = store.label_stats_projection_cursor(key.graph_id, target.shard_id) + 1;
+            let mut projecting = entry.clone();
+            projecting.set_emitted_delta_first_seq(Some(watermark));
+            projecting.set_emitted_delta_last_seq(Some(watermark));
+            ctx.journal_entries
+                .borrow_mut()
+                .insert((target.graph_canister, id), Some(projecting));
+            assert_eq!(
+                futures::executor::block_on(super::capture_scalar_mutation_outcome(
+                    &store,
+                    &key,
+                    target.graph_canister,
+                    target.shard_id,
+                    id,
+                    Some(&ctx)
+                ))
+                .unwrap_err(),
+                RouterError::Internal(
+                    "graph list_pending_label_stats_deltas unavailable in native builds".into()
+                )
+            );
+            let record = store.router_mutation_record(&key).unwrap();
+            assert!(record.shards()[0].completed());
+            assert!(!record.shards()[0].projection_advanced());
+            assert_eq!(record.shards()[0].row_count(), count);
+            assert_eq!(
+                store.scalar_dispatch_gate(&key, id, target.shard_id, target.graph_canister),
+                Ok(ScalarDispatchGate::Reconcile)
+            );
+            // Another projection attempt reaches the same immutable journal watermark.
+            // Do not replace the receipt with a zero-delta variant to make retry succeed.
+            let advanced = futures::executor::block_on(store.advance_label_stats_projection(
+                key.graph_id,
+                target.graph_canister,
+                target.shard_id,
+                1,
+                |graph, from, limit| async move {
+                    assert_eq!((graph, from, limit), (target.graph_canister, watermark, 1));
+                    Ok(vec![
+                        gleaph_graph_kernel::plan_exec::LabelStatsDeltaEventWire {
+                            mutation_id: id,
+                            shard_event_seq: watermark,
+                            label_stats_delta: Default::default(),
+                        },
+                    ])
+                },
+                |graph, seq| async move {
+                    assert_eq!((graph, seq), (target.graph_canister, watermark));
+                    Ok(())
+                },
+            ))
+            .unwrap();
+            assert_eq!(advanced.applied_through_seq, watermark);
+            futures::executor::block_on(super::reconcile_router_mutation_projection(
+                &store,
+                &key,
+                Some(&ctx),
+            ))
+            .unwrap();
+            let projected = store.router_mutation_record(&key).unwrap();
+            assert!(projected.shards()[0].projection_advanced());
+            futures::executor::block_on(super::capture_scalar_mutation_outcome(
+                &store,
+                &key,
+                target.graph_canister,
+                target.shard_id,
+                id,
+                Some(&ctx),
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                store.router_mutation_record(&key).unwrap().to_bytes(),
+                projected.to_bytes()
+            );
+        }
     }
 
     #[test]

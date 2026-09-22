@@ -345,6 +345,13 @@ journal is readable and its outcome can be settled. Convergence requires availab
 and a successful retry/recovery; it has no unconditional time bound. Authorization failures and
 other GQL admission checks retain their owning contracts.
 
+Scalar row dispatch also checks the retained mutation ID, pinned Graph target and typed pending
+bulk child at the actual Graph send, including later dynamic chunks. A captured count prevents
+canonical redispatch and is retained before projection can suspend; AbortPending alone does not
+cancel admitted unresolved work. [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
+owns this Router boundary. An outcome lost before Router capture can still age out on Graph;
+[ADR 0027](0027-graph-mutation-journal-retention.md) records the unresolved scalar lifetime gap.
+
 There is no whole-chunk rollback or compensating-write contract. A terminal receipt counts
 completed row statements, and an aborted chunk's unwritten suffix is abandoned, not re-driven.
 The authored payload cannot be changed under the same chunk fingerprint; corrected input belongs

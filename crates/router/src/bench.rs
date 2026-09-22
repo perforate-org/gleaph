@@ -1180,6 +1180,58 @@ fn seed_bulk_bench_parent(lifecycle: BulkLoadLifecycleV1, chunk_count: u32) {
     });
 }
 
+/// Cost of one fresh durable permission read. Request bytes are retained in the existing
+/// record, not a shadow header. Setup, byte-equality oracle and destruction are outside timing.
+fn scalar_dispatch_gate_cost(request_bytes: usize) -> canbench_rs::BenchResult {
+    use crate::facade::stable::label_stats::RouterMutationShardV1;
+    use crate::facade::store::{RouterStore, ScalarDispatchGate};
+    reset_bulk_bench_maps();
+    let store = RouterStore::new();
+    let key = bulk_bench_key();
+    let target = bulk_bench_target();
+    let mut record = RouterMutationRecord::new(1, 0, vec![7; request_bytes]);
+    record.as_v1_mut().routing_in_progress = false;
+    record
+        .shards_mut()
+        .unwrap()
+        .push(RouterMutationShardV1::new(
+            target.shard_id,
+            target.graph_canister,
+            None,
+        ));
+    let saved = record.to_bytes().into_owned();
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), record));
+    let mut outcome = None;
+    let measurement = canbench_rs::bench_fn(|| {
+        outcome = Some(black_box(store.scalar_dispatch_gate(
+            black_box(&key),
+            1,
+            target.shard_id,
+            target.graph_canister,
+        )));
+    });
+    assert_eq!(outcome, Some(Ok(ScalarDispatchGate::Dispatch)));
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        saved
+    );
+    measurement
+}
+
+#[bench(raw)]
+fn bench_scalar_dispatch_gate_1k_request() -> canbench_rs::BenchResult {
+    scalar_dispatch_gate_cost(1024)
+}
+
+#[bench(raw)]
+fn bench_scalar_dispatch_gate_1m_request() -> canbench_rs::BenchResult {
+    scalar_dispatch_gate_cost(1024 * 1024)
+}
+
 #[bench(raw)]
 fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
     reset_bulk_bench_maps();
