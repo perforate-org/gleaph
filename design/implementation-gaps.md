@@ -181,13 +181,14 @@ Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 t
 cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
 descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
-### Landing evidence — the finalize guard, fixed at the span level
+### Historical finalize experiment — notification acceptance withdrawn
 
-The non-forcing compaction had also gated the packed-span check, so a run-backed bucket's
-*vertex span* was never shrunk. A bucket whose rows live in its own run holds nothing in the
-span beyond its prefix, so the check runs again for every policy: the compacting rewrite
-sizes the new span for what the materializer produces (prefix plus the run it folds), so it
-fits by construction and cannot need a relocation.
+The measurements below belong to the earlier experiment, not a valid movement-publication
+contract. Its `Finished` rewrite folded and repacked rows without delivering their changed
+ordinals. The former “fits by construction” justification did not establish notification or
+relocation safety. `15ceaabf1` removes that path: completion packs only captured physical regions,
+retaining run/prefix ordinals when the non-forcing fold declines. [Corrected evidence and owner/observer witnesses](evidence/adr0097-compaction-movement-publication.md).
+The instruction/space figures below remain historical observations, not revalidated landing evidence.
 
 | bench | main (measured) | pre-fix | post-fix |
 | --- | --- | --- | --- |
@@ -599,13 +600,14 @@ witness fails on old code. Full old-row validation and successful insertion test
 Final library **659/0**, strict library clippy and scoped formatting pass; production Lizard CCN
 is unchanged. This is a store rejection boundary, not broader public-write atomicity acceptance.
 
-Fresh pinned probes verify all 16,384 seeded identities, every even-slot removal, all odd
-survivors, compaction completion and exact final rows in both directions. `3ea7dc739` seeds a
-15,632-row prefix plus 752-row run; `5ad7f5a61` seeds a 16,384-row prefix without a run. The former
-completes via two compactor calls and a bulk rewrite, the latter via 8,192 moves plus advance and
-finish. With the unchanged zero slot cursor, repeated prefix scans dominate the current explicit
-compaction phase. Both same-name canbench totals reproduce exactly. Logical output parity does
-not imply physical/work parity; no compactor, cursor, fixture or policy change is made.
+Fresh pinned probes record 16,384 seeded identities, every even-slot removal, all odd survivors
+and exact final canonical rows in both directions. `3ea7dc739` seeds prefix 15,632 plus run 752;
+`5ad7f5a61` seeds prefix 16,384 without a run. The former returns Finished after **8,192 unreported
+ordinal changes**; resetting the probe oracle to packed output concealed the observer-contract
+failure. The latter reports 8,192 moves. Canonical target/order agreement is not movement parity.
+The benchmark supplies zero on every step, ignoring `moved.new_slot_index`; production whole-span
+and deferred drivers already advance it. Both historical canbench totals remain exact, but the
+67M-read derivation belongs to that benchmark cursor/workload, not all production execution.
 
 The new cumulative ledger records **259.983 / 600 seconds**, including failed diagnostics and
 final validation. Stale shared-target output and a path-alias setup failure are excluded from
@@ -613,9 +615,39 @@ candidate evidence. The earlier approximately 726-second breach remains disclose
 historical increases, broader atomicity and lifecycle gates remain open; main remains unmerged.
 [Exact phases, movement traces, source provenance and remaining correction decision](evidence/adr0097-descriptor-rejection-crossover.md).
 
+#### Compaction movement publication correction
+
+`15ceaabf1` reproduces current-head retained-run + declined-fold completion with actual backing,
+not the present 16K seed. Two witnesses fail on `d4c59ff8b`: Finished silently remaps fourteen
+survivors, and deferred external identities cannot be resolved at the new keys. Both pass after
+the fix, across value widths 8/33, prefix/run holes and independent value extents. A second slab
+label still delivers three bounded single-edge moves; a neighboring vertex is unchanged.
+The retry witness distinguishes queued failure from successful completion and prevents replay
+on the next maintenance tick.
+
+The owner and peer-cascade call sites now share physical-only packing. The shared materializer/
+publisher no longer offers a logical-packing/folding mode; the unused move collector and whole-
+prefix encoding path are deleted. No new queue, cache, layout, threshold, growth or fold policy
+is introduced. Existing required folds, exact rejection, cursor fallback and interleaved-delete
+contracts are retained. Filtered `compact` **81/0**, `relocat` **11/0**, `rewrite` **10/0**, and final
+retained witnesses **2/0** pass (overlapping filters, not additive totals); strict library clippy
+and scoped formatting pass. No full library/benchmark sweep or persistence was run in this slice.
+
+On the same sixteen byte-identical pre-compaction memory images, a separate native paired
+cursor diagnostic passes event replay at Finished in both orders: zero cursor **67,182,614**
+reads, forwarded cursor **33,640,470**, with 8,192 moves each. Forwarding still repeatedly scans
+intervening tombstones; this is neither a new production optimization nor IC instruction pricing.
+All historical performance increases and wider atomicity/lifecycle/landing gates remain open.
+[Commands, cumulative budget, original/corrected diagnostics and provenance](evidence/adr0097-compaction-movement-publication.md).
+
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 
-- **Status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
+**Historical diagnosis below:** it describes earlier single-policy experiments. The current step
+has an explicit span policy; a non-forcing declined fold may retain ordinals and complete, but
+may not silently repack them at Finished. Required-growth/retry and broader failure-atomicity
+acceptance remain separate. See the movement-publication correction above.
+
+- **Historical status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
   family's regression (`bench_l_s2_h_del_1024` 127.2M -> 266.5M, `bench_l_s2_h_pt_d_1024`
   17.8M -> 52.0M, `bench_l_s2_h_scn_d_1024` 17.7M -> 51.9M, `offset_workload_baseline_*`
   +24.7% / +37.0%).

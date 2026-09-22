@@ -239,6 +239,19 @@ bucket.
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
    the only place a run is freed besides bucket death — and skipping compaction is always allowed.
+
+   **Movement publication (implemented in `15ceaabf1`).** Labeled canonical identity includes
+   `(owner, label, slot ordinal)`. Every ordinal changed by the incremental compactor must be
+   returned through `EdgeMoved` or the bounded run-fold `OverflowRewrite`, so observers can
+   re-key sidecars and postings. `Finished` is not a remapping event: replay of prior events must equal canonical
+   locations at that boundary. With `SlackMayBeDropped`, a fold that needs unavailable room
+   leaves the prefix width, run and ordinals unchanged; successful pass completion need not
+   mean a run-free, hole-free bucket. Required folding and single-edge slab progress remain
+   separate from physical span publication. Completion, peer cascades and leaf relocation use
+   the same non-folding publisher; physical packing only removes slack between captured regions
+   inside existing backing. It cannot decode/repack a whole prefix or silently retire a run.
+   [Current-head owner/observer witnesses and corrected historical classification](../evidence/adr0097-compaction-movement-publication.md).
+
    **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
    window offers additional slab space. Increasing the initialized prefix would shift existing
    spill ordinals. Existing tombstone reuse does not extend the prefix; explicit compaction or

@@ -84,7 +84,9 @@ All LARA code — core and labeled — must respect these boundaries.
 **Overflow:** the bucket's own spill run when the in-window slab is full (ADR 0097; the shared
 per-leaf log is gone, so nothing is provisioned before the first row that does not fit).
 
-**Slack:** tombstones and `stored_degree` vs live `degree` until rebalance packs the row.
+**Slack:** tombstones and initialized extent versus live degree. In labeled rows, logical
+compaction owns ordinal changes and their movement notifications; physical rebalance alone
+preserves prefix/run ordinals ([ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md)).
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
 
@@ -96,7 +98,10 @@ Same role as DGAP `do_insertion` + `have_space_onseg`.
 
 **In-window:** `rebalance_weighted` redistributes live edges and slack **inside** the leaf's current `[physical_start, physical_start + total)` without retiring physical ranges.
 
-**Out-of-window:** when the leaf must move or grow beyond its assignment, physical relocation runs as a committed multi-step update (rewrite vertex bases → update span meta → fold logs → **then** retire old physical range).
+**Out-of-window (labeled):** when the leaf must move or grow beyond its assignment, physical
+relocation copies captured prefix/root regions, republishes their origins and span metadata,
+and **then** retires the old physical range. Retained runs and logical ordinals do not move;
+run folding is a separate notification-bearing compaction operation.
 
 This is the **rope**: the leaf physical interval, not individual vertex rows.
 
@@ -193,7 +198,7 @@ Changing substrate (e.g. host-side persistent mmap) should preserve the four con
 | Layer                                      | Status                                                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | Scan (`LabelBucket`, `LabelEdgeSpan`)      | Aligned with DGAP vertex + per-label windows; degree ≤ 4 buckets scan descriptor-inline (tiny mode, ADR 0096 — zero slab slots, no log, byte-28 used width bounds the inline prefix) |
-| Overflow logs                              | Aligned (shared per-leaf log)                                                                                                   |
+| Overflow                                  | Bucket-owned spill runs ([ADR 0097](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md)); physical relocation retains their ordinals |
 | Segment physical (rope) for **edge bytes** | **Implemented** — PMA leaf block per [ADR 0001](../adr/0001-labeled-segment-slide.md); per-vertex sub-ranges inside pinned leaf |
 | Free-span usage for labeled edge bytes     | **Implemented** — segment footprint on leaf relocate; per-vertex peel only for unpinned legacy spans                            |
 
@@ -211,6 +216,13 @@ the changed suffix. At the `LabeledVertex`-owned count limit, `RowDegreeOverflow
 and backed descriptor memory unchanged, even with a spare physical slot. This store-level boundary
 does not establish general public-insertion atomicity.
 [Rejection witness and validation](../evidence/adr0097-descriptor-rejection-crossover.md).
+
+**Compaction completion preserves observer replay.** The movement contract and non-forcing
+completion semantics are defined in [ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
+`Finished` cannot silently remap canonical ordinals while external sidecars/postings retain old
+keys. The shared physical publisher used by completion, peer cascades and leaf relocation no
+longer has a logical-packing mode. [Bounded owner/observer evidence](../evidence/adr0097-compaction-movement-publication.md)
+is not general caller/failure-atomicity or performance acceptance.
 
 **Homogeneous bypass insertion is tail-only (GAP-2026-07-11-004).** A default-label bypass row may extend its contiguous slab region only while it is the tail vertex; extending a non-tail region forces every later row's origin to be rescanned and rewritten, which measured linearly (~1.08M instructions per insert at 4,096 successors). The labeled insert dispatcher therefore promotes a non-tail bypass row to bucket mode — via the existing preflighted `promote_bypass_to_bucket_mode` transition — before its next same-label insert, so per-insert cost is bounded by the owning PMA leaf/segment rather than vertex count: 343K / 363K / 382K instructions for 16 inserts at 256 / 1,024 / 4,096 successors (`bench_labeled_non_tail_bypass_insert_*`). While the row remains the tail, same-label inserts keep the direct slab fast path unchanged.
 

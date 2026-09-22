@@ -2,12 +2,18 @@
 
 ## Result and scope
 
-`bc5c7d37f` fixes the in-place descriptor rejection boundary. The separate pinned investigation
-reproduces **43,376,650 → 15,498,702,117 instructions** and establishes the 16K mechanism:
-identical logical input/output, different seeded representation, and consequently bulk versus
-repeated single-edge compaction. **No compactor optimization or benchmark change is applied.**
-Main remains untouched and unmerged. The nine historical increases and broader landing gates
-remain open; attributing this increase does not approve it or its proximity to rounded main.
+`bc5c7d37f` fixes the in-place descriptor rejection boundary, accepted only at that owner boundary.
+The pinned investigation reproduces **43,376,650 → 15,498,702,117 instructions** and establishes
+canonical target/order agreement, different seeded representations, and bulk versus repeated
+single-edge compaction. **It does not establish movement-contract parity:** the historical
+`Finished` silently remaps **8,192 survivors without notifications**. Resetting the oracle to
+packed rows concealed that defect; the earlier acceptance/classification is withdrawn.
+
+[The movement-publication correction](adr0097-compaction-movement-publication.md) independently
+reproduces retained-run completion on `d4c59ff8b` with valid backing and fixes it in `15ceaabf1`.
+That small fixture is not a claim that the present 16K slab-only seed reaches the same defect.
+No benchmark fixture/cursor or performance-recovery change is made. Main remains unmerged;
+all nine historical increases and the wider validation/landing gates remain open.
 
 ## Descriptor insertion rejection
 
@@ -53,7 +59,10 @@ Benchmark source and configuration remain byte-identical to their pins. The fixt
 The constructor and seeding are **outside `bench_fn`**. Their work is recorded to explain the
 physical state, not added to the measured delete/compact/traverse total.
 
-The same [native probe](sources/adr0097-crossover-16k-probe.rs) passes at both revisions:
+The [superseded reset-oracle probe](sources/adr0097-crossover-16k-finished-reset-probe.rs)
+returned a passing test exit at both revisions and recorded the following facts. Its historical
+pass is **not** movement-contract acceptance. In the tables below, “current” means the pinned
+`5ad7f5a61`, not the latest branch source:
 
 - all 16,384 seeded `(slot, target) = (i, i)` pairs, ascending and descending;
 - every even-slot removal returns exactly that slot's target;
@@ -63,11 +72,17 @@ The same [native probe](sources/adr0097-crossover-16k-probe.rs) passes at both r
   promotion, and no compaction-time growth;
 - final traversal in both directions equals the exact packed rows `(j, 2*j+1)`, for `j=0..8191`.
 
-A completed vertex-span rewrite can repack ordinals without individual `EdgeMoved` events.
-The probe therefore checks packed rows at `Finished`; it does not mistake an error for that
-boundary. An interrupted/error outcome would instead retain the reported-move oracle. The first
-historical diagnostic incorrectly expected original ordinals after the bulk `Finished` rewrite;
-its `(0,1)` versus `(1,1)` failure was an oracle error, not missing/wrong target evidence.
+`Finished` has no movement payload and the deferred observer does not remap sidecars on that
+outcome. Event replay must therefore equal canonical ordinals at completion as well as before it.
+The first historical `(0,1)` versus `(1,1)` failure was a valid signal of **unreported movement**,
+not missing-target evidence and not an oracle mistake to normalize away. The later reset to
+`(j, 2*j+1)` weakened that invariant. The traces prove canonical targets survived but external
+slot-keyed sidecars/postings could remain at stale keys.
+
+The [corrected probe](sources/adr0097-crossover-16k-probe.rs) keeps the event-replayed oracle
+at `Finished`, distinguishes errors/pending work from successful completion, and additionally
+compares zero and forwarded cursors on byte-identical backing. It was run on `15ceaabf1`, not
+rerun on the historical reference trees. Original probe bytes, logs and traces remain preserved.
 
 | State / work | `3ea7dc739` | `5ad7f5a61` |
 | --- | ---: | ---: |
@@ -122,20 +137,25 @@ need 16,008 slots, beyond the available 15,632. The internal fold attempt declin
 `CollectAllocationOverflow`. `SlackMayBeDropped` does not force relocation; the per-edge finder
 skips run-backed buckets. `AdvanceBucket` is followed by the existing `Finished` whole-span
 rewrite, which packs prefix plus run together. That internal declined fold is **not a stopping
-error returned by the outer step API**. Exact final targets pass; the fast result is not dismissed
-as skipped removals or missing survivors in this fixture.
+error returned by the outer step API**. Exact final targets pass, so this is not skipped removal
+or missing-survivor evidence; nevertheless the absent remaps violate the observer contract.
 
-At the current pin, setup has produced a slab-only bucket. The unchanged step finder starts at
-zero on each call. Before move `j`, it rescans the packed prefix and intervening tombstones up to
+At `5ad7f5a61`, setup has produced a slab-only bucket. **The benchmark loop supplies zero on
+each call and ignores `moved.new_slot_index`; the finder honors the cursor it receives.** Before
+move `j`, this benchmark therefore rescans the packed prefix and intervening tombstones up to
 old slot `2*j+1`. The 8,192 moves therefore require
 `2 * (1 + ... + 8192) = 67,117,056` scan reads. Add the final 16,384-slot scan, 8,192 source reads
 when applying moves, and one bulk read at finalization: **67,141,633 edge-slab read calls**,
 matching the native role-5 counter exactly. Other metadata reads account for the remainder.
 
-This establishes compaction, not removal or final traversal, as the large extra-work phase.
-Logical operation/output parity holds; physical representation and compaction work do not.
-The comparison does not isolate which earlier insertion/relocation change first produced the
-seed-shape divergence, and does not price each mechanism in instructions.
+This establishes compaction, not removal or final traversal, as the benchmark's extra-work phase.
+Canonical targets/order agree; notification semantics, physical representation and executed work
+do not. Production whole-span and deferred callers already advance the cursor to
+`moved.new_slot_index + 1`; the 67M-read derivation cannot be attributed to all production calls.
+A [paired native diagnostic](adr0097-compaction-movement-publication.md#cursor-attribution)
+separately measures forwarded-cursor work. It still scans tombstones repeatedly and does not
+establish linear behavior or IC instruction recovery. The earlier insertion/relocation change
+that first produced the seed-shape divergence remains unisolated.
 
 ### Same-name instruction reproduction
 
@@ -154,10 +174,11 @@ contain one total plus ten/nine observed scopes respectively. An absent scope is
 zero, and nested scopes are not additive. Raw delta columns refer to preserved YAML. CSV
 normalization changes only CRLF to LF, with parsed-record equivalence checked.
 
-**Decision:** retain only the descriptor correctness fix. No performance correction is claimed.
-Removing repeated prefix work must preserve the stepped compactor's progress/movement and
-interleaved-delete contracts. Changing the fixture's cursor, forcing an implicit fold, or routing
-slab-only state through bulk completion merely to recover the historical number would change
+**Decision at this checkpoint:** the descriptor correction is retained only at its tested owner
+boundary; the historical movement-parity claim is withdrawn. The later notification correction
+is linked above. No performance recovery is claimed. Removing repeated work must preserve the
+stepped compactor's progress/movement and interleaved-delete contracts. Changing the fixture's
+cursor, forcing an implicit fold, or routing slab-only state through bulk completion merely to recover the historical number would change
 the workload or step contract, not demonstrate a like-for-like recovery. No contract-preserving
 correction has been measured here; that remains the blocking implementation decision for a later
 slice. No cache, policy, threshold, layout or slack workaround was introduced.
@@ -170,7 +191,7 @@ slice. No cache, policy, threshold, layout or slack workaround was introduced.
 [toolchain versions](sources/adr0097-descriptor-crossover-versions.txt).
 
 - Rust `1.100.0-nightly (574ff7d98)`, Cargo `1.100.0-nightly (7941be6fb)`, canbench `0.7.0`.
-- Identical final native probe SHA256:
+- Historical reset-oracle probe SHA256 (preserved under `adr0097-crossover-16k-finished-reset-probe.rs`):
   `17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c`.
 - Both pins' benchmark SHA256:
   `bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7`.
@@ -188,7 +209,8 @@ is **invalid for the candidate** and excluded. New snapshot source timestamps we
 without changing bytes or cleaning/changing the normal target. The common probe checks its
 compiled manifest against the expected snapshot using canonical paths. An initial raw-string
 manifest check rejected macOS `/tmp` versus `/private/tmp` aliases; those setup failures are not
-production red evidence. Final source-verified runs each pass **1/0**. Canbench logs record
+production red evidence. Source-verified reset-oracle runs each exited **1/0**, but that does not
+validate the historical movement contract. Canbench logs record
 compilation from the intended snapshots; separate wasm hashes and exact CSVs are retained.
 
 All Rust/toolchain/canbench execution, including failed diagnostics, compilation and final checks,

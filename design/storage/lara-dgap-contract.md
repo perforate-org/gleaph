@@ -50,7 +50,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 ┌─────────────────────────────────────────────────────────────────┐
 │ Update contract — vertex-local (DGAP)                             │
 │   Insert in CSR window (successor base_slot_start / leaf total)   │
-│   Overflow → per-leaf segment log                                 │
+│   Overflow → row/bucket-owned spill run                           │
 │   Tombstones, degree/stored_degree, in-place packed moves       │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -80,7 +80,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 |------------------|------|-----------|------------------|-----------------|
 | Scan adjacency | `index`, `degree`, `offset` | `base_slot_start`, `degree`, `spill_run` | + `LabelBucket` rows | Implemented |
 | Insert slack in window | CSR successor boundary | Same (`row_layout`) | Per-label slack inside vertex span | Implemented |
-| Overflow | Per-leaf log | Per-leaf log | Per-leaf log (shared) | Implemented |
+| Overflow | Per-leaf log | Per-row spill run | Per-bucket spill run | Runs implemented; ADR 0097 §6 promotion coverage remains partial |
 | Density trigger | PMA `actual/total` | Same (`counts_store`) | Leaf cascade (partial) | Partial |
 | Physical slide | `rebalance_weighted` in `[from,to)` | `rebalance_weighted_with_layout` | Leaf weighted slide in pinned block | Implemented |
 | Physical growth | `resize_V1` | `elem_capacity` + segment relocate | Leaf resize / relocate | Leaf slide / relocate (no steady-state tail append) |
@@ -127,7 +127,7 @@ Default-label bypass uses core `Vertex` row semantics directly.
 
 - One **PMA leaf physical reservation** holds edge bytes for up to `segment_size` vertices.
 - Each vertex's labels occupy **sub-ranges** inside that leaf block (proportional slack by label degree), analogous to DGAP vertices sharing one segment `[from, to)`.
-- When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block; a bucket's spill run is compacted into its prefix when the live rows fit (ADR 0097 §7); old physical span → free list.
+- When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block while retaining prefix/run ordinals; old physical span → free list. Explicit run folding is separate and follows the movement-publication contract in [ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
 - **No per-vertex `release_span` on routine growth.**
 
 **Today (implemented — `labeled/graph/compact.rs`):**
@@ -136,6 +136,7 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - Growth uses in-leaf weighted slide and leaf-block relocate; one `release_span` per relocate.
 - `LabeledVertex.stored_slots` tracks the per-vertex sub-range width inside the leaf block; routine insert does not tail-append at `elem_capacity`.
 - `rebalance_vertex_edge_span` and `rewrite_vertex_edge_span` resolve bases via leaf relocate when pinned; tail append is limited to unpinned rows and relocate-internal escape hatches.
+- Physical publication has no logical-packing mode. Completion and peer cascades share the run-retaining publisher with leaf relocation; `Finished` cannot normalize missing movement notifications. A non-forcing pass may complete with retained holes/runs when folding cannot fit. [Owner/observer evidence](../evidence/adr0097-compaction-movement-publication.md).
 
 **Edge-row payload ceiling (blessed shard capacity bound).** Each labeled CSR
 adjacency row is a 4-byte `VertexRef` whose payload is 30 bits: at most ~1.07e9
