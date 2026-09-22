@@ -14,9 +14,9 @@ recorded as design-scope evidence, not as blockers.)
 Last revised: 2026-09-22
 
 Implementation status: **Partially Implemented**. Native property-tree traversal, bounded
-point-state/no-op admission and slab-compaction exclusion are implemented. They do not
-establish live property-tree deletion, matching mutation, selected property hydration or
-demotion safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
+point-state/no-op admission, selected tree-property hydration and slab-compaction exclusion are
+implemented. They do not establish live property-tree deletion, matching mutation or demotion
+safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
 
 Supersedes the deferred Stage 2 direction of
 [ADR 0022](0022-degree-driven-hub-edge-storage.md): the dedicated-span tier (2a)
@@ -1456,6 +1456,16 @@ buckets, without changing raw visitor semantics or the mutation assertion. Six r
 witnesses include both populated public orientations and a separate read-only directed
 parallel-edge counterpart test. [Evidence and limitations](../evidence/adr0097-point-state-reads.md).
 
-Matching mutation remains open under GAP-004; direct selected property hydration has a
-separate source-audited value-plane prerequisite (GAP-006). This read repair is not general
-counterpart/Graph integration, demotion, release/Wasm deletion or landing approval.
+Matching mutation remains open under GAP-004. The canonical topology/no-op slice is independently
+approved through `a80d2e1ac`; that approval does not cover general counterpart/Graph integration,
+demotion, release/Wasm deletion or landing.
+
+### Selected tree-property read prerequisite (2026-09-22)
+
+`036649e67` implements GAP-006's bounded selected hydration through the existing selected reader
+and native property-root resolver, using original logical positions rather than slab live ranks.
+The [selected-read contract](0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability)
+and [source-pinned evidence](../evidence/adr0097-selected-tree-properties.md) distinguish live-only
+selected output from tombstone-inclusive native bulk traversal. Read-only width8/33 boundaries,
+partial edge leaf, exact root errors and no-property/slab/run controls are covered. No header,
+threshold, layout, writer or demotion contract changed; independent review of this slice is pending.

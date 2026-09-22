@@ -1,14 +1,19 @@
 # ADR0097 — Canonical point-state/liveness reads
 
-**Status:** Bounded read prerequisite implemented in `70b080ca0`; independent approval pending.\
+**Status:** `70b080ca0`'s bounded topology/no-op admission slice independently approved through `a80d2e1ac` (base `e9211fcb5`).\
 **Anchor timestamp:** 2026-09-22 08:19:50 UTC +0000\
 **Base:** `e9211fcb52be8087040713dc8091f2948a917734`, branch `spill-swap`.\
 **Scope:** GAP-2026-09-22-004's topology point-state and dead/missing admission contract only.
 
-Live property-tree deletion, demotion, matching mutation, header validation, selected tree-property
-hydration, obsolete maintenance, broad ADR0097 acceptance and landing remain open. Main remains
+This approval does not cover live property-tree deletion, demotion, matching mutation, header
+validation, selected tree-property hydration, obsolete maintenance, broad ADR0097 acceptance or
+landing. Main remains
 `9a64049f47fc07542446d651d4b09421636b73c5`, unmerged. The earlier deletion investigation and its
 assertion-only failures are preserved, not reclassified as successful mutation.
+
+**Subsequent read-only follow-up:** GAP006 selected tree-property hydration is implemented
+separately in `036649e67`; [its evidence](adr0097-selected-tree-properties.md) does not expand this
+point-state approval. The remaining-boundary audit below describes the `70b080ca0` source state.
 
 ## Owner and implementation
 

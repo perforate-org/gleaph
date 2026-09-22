@@ -548,12 +548,23 @@ Replay/scratch reuse remains an optimized LARA capability. The replay object is 
 `(owner, label, bucket fingerprint)` before use, and falls back to canonical reads on mismatch. It
 must not become a second source of truth.
 
-The borrowed `visit_edges_at_with_inline_property` capability resolves selected logical slot sets
-through an adaptive range choice. It reuses one property buffer for overflow-log rows and
-bulk-reads the selected slab ordinal span when possible. When an overflow-backed bucket has a
-compact requested range, it uses the canonical bulk-friendly visitor and stops after the requested
-range; sparse or tail selections use direct slot reads to avoid unrelated logical slots. Property
-bytes remain borrowed only for the callback, and user `ControlFlow::Break` values are preserved.
+The borrowed `visit_edges_at_with_inline_property` capability owns selected topology/value
+hydration. It sorts and deduplicates requests and emits only canonical live positions. For tree
+buckets, it first consumes the canonical point-state decision, then reads the native property
+value at that same original logical position through `tree_read::read_property_value_at_slot`.
+Tree holes are not converted to slab live ranks. Width-zero trees borrow empty bytes without
+property-root access. Raw native bulk visitors retain their separate tombstone-inclusive contract.
+
+For slab/run buckets, the existing adaptive range choice is unchanged: one property buffer for
+spill rows, a bulk selected slab-ordinal span when possible, or the canonical bulk-friendly
+visitor for compact overflow-backed selections. Sparse or tail selections use direct slot reads.
+Property bytes remain borrowed only for the callback, and user `ControlFlow::Break` values are
+preserved. Implementations may prepare topology or value buffers before callbacks; this API does
+not promise an error-after-Break ordering across storage modes.
+
+The bounded tree-selected repair is implemented in `036649e67`; [valid-backed evidence and limits](../evidence/adr0097-selected-tree-properties.md)
+cover width8/33 boundaries, original holes, sparse selections, exact root errors and read-only
+preservation. It does not enable tree mutation or establish Graph transaction/atomicity safety.
 
 ### 7a. Future research: block-aware selected and window traversal
 

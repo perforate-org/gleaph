@@ -2,7 +2,7 @@
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
 **Last updated:** 2026-09-22\
-**Anchor timestamp:** 2026-09-22 08:19:50 UTC +0000\
+**Anchor timestamp:** 2026-09-22 10:15:06 UTC +0000\
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -87,7 +87,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 | Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | One `release_span` per leaf relocate |
 | Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Sub-ranges inside pinned leaf block |
 
-Inline properties are a separate physical domain: bucket-local live order associates values with edges, while inline property bytes slab slots, the bucket's values spill run (ADR 0097 §5 replaced the per-leaf inline property bytes log with it), capacity, and maintenance timing remain independent from the edge leaf block.
+Slab inline properties are a separate physical domain: bucket-local live order associates values with edges, while inline property bytes slab slots, the bucket's values spill run (ADR 0097 §5 replaced the per-leaf inline property bytes log with it), capacity, and maintenance timing remain independent from the edge leaf block. Native tree values instead retain the original logical positions; see the [selected-read owner](./lara.md#selected-inline-property-reads).
 
 ---
 
@@ -139,7 +139,8 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - Physical publication has no logical-packing mode. Completion and peer cascades share the run-retaining publisher with leaf relocation; `Finished` cannot normalize missing movement notifications. A non-forcing pass may complete with retained holes/runs when folding cannot fit. [Owner/observer evidence](../evidence/adr0097-compaction-movement-publication.md).
 - Whole-span logical compaction has one slab-mode admission boundary before ordered/swap selection and metadata finalization. Tree/tiny siblings advance unchanged even in a slab-triggered job; root-region relocation is physical copying, not tree ordinal compaction. [Caller and native-tree evidence](../evidence/adr0097-tree-compaction-admission.md).
 - The [canonical point-state read owner](./lara.md#canonical-point-reads) serves tiny, slab/run, retained bypass and native tree positions; all six public removal/property-update admissions share its live-only decision. [Bounded read/no-op evidence](../evidence/adr0097-point-state-reads.md), `70b080ca0`, does not enable live property-tree deletion.
-- Property-bearing tree mutation remains blocked by the unchanged assertion and demotion's unequal edge/value filtering (GAP-2026-09-22-001/003). Matching mutation (004), selected tree-property hydration (006), metadata (002) and obsolete combined maintenance's discarded moves (005) remain open. The [earlier assertion-only investigation](../evidence/adr0097-tree-deletion-prerequisites.md) is preserved, not relabeled as mutation acceptance.
+- Selected tree-property hydration uses the [existing selected read owner](./lara.md#selected-inline-property-reads), not slab live ranks; the separate bounded GAP006 implementation `036649e67` preserves slab/run and replay contracts. [Read-only evidence](../evidence/adr0097-selected-tree-properties.md); not native-tree pricing or mutation approval.
+- Property-bearing tree mutation remains blocked by the unchanged assertion and demotion's unequal edge/value filtering (GAP-2026-09-22-001/003). Matching mutation (004), metadata (002) and obsolete combined maintenance's discarded moves (005) remain open. The [earlier assertion-only investigation](../evidence/adr0097-tree-deletion-prerequisites.md) is preserved, not relabeled as mutation acceptance.
 
 **Edge-row payload ceiling (blessed shard capacity bound).** Each labeled CSR
 adjacency row is a 4-byte `VertexRef` whose payload is 30 bits: at most ~1.07e9

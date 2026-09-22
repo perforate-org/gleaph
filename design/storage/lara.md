@@ -94,9 +94,9 @@ must preserve its IDs, LTB metadata, logical ordinals and property identities.
 This is not acceptance of live tree deletion or demotion. The
 [property-deletion investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
 leaves the writer/demotion repair paused (GAP-2026-09-22-001/003). The bounded point-state
-read repair below establishes dead/missing admission only; matching mutation (004), selected
-property hydration (006), metadata (002) and obsolete combined-maintenance observer handling
-(005) remain open.
+read repair below establishes dead/missing admission only. Selected property hydration (006)
+is implemented separately at the read owner below; matching mutation (004), metadata (002) and
+obsolete combined-maintenance observer handling (005) remain open.
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
 
@@ -114,6 +114,16 @@ do not become contiguous LEG slots. `edge_exists_at_slot` is the live-only proje
 API, shared by all six forward/reverse removal/property-update admissions. Raw native tree
 visitors remain tombstone-inclusive. Point topology does not hydrate property bytes or make
 live mutation safe. [Bounded implementation and evidence](../evidence/adr0097-point-state-reads.md).
+
+### Selected inline-property reads
+
+`visit_edges_at_with_inline_property` owns the combined selected read, including its slot-window
+and `Traversal` callers. It dispatches native tree hydration before slab live-rank/value helpers,
+reusing canonical point state and `tree_read::read_property_value_at_slot`. No mapping, cache or
+mutation owner is added. Slab/run independent-plane and borrowed replay paths are unchanged.
+The [ADR0050 selected-read contract](../adr/0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability)
+defines ordering, liveness and borrowing; [bounded GAP006 evidence](../evidence/adr0097-selected-tree-properties.md)
+records `036649e67` and its tested limits. This is not deletion/demotion or landing approval.
 
 ### 3. Segment physical contract (rope)
 
