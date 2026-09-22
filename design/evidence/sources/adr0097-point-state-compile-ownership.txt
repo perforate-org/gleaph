@@ -1,0 +1,135 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0382]: use of moved value: `replacement`
+    --> crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:5542:84
+     |
+5534 |             let replacement = InlinePropertyTestEdge::with_bytes(90000, &[0x5a; 33]);
+     |                 ----------- move occurs because `replacement` has type `graph::test_support::InlinePropertyTestEdge`, which does not implement the `Copy` trait
+...
+5537 |                     .update_forward_edge_inline_property_at_slot(vid, label, slot, replacement)
+     |                                                                                    ----------- value moved here
+...
+5542 |                     .update_reverse_edge_inline_property_at_slot(vid, label, slot, replacement)
+     |                                                                                    ^^^^^^^^^^^ value used here after move
+     |
+note: consider changing this parameter type in method `update_forward_edge_inline_property_at_slot` to borrow instead if owning the value isn't necessary
+    --> crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3276:15
+     |
+3271 |     pub fn update_forward_edge_inline_property_at_slot(
+     |            ------------------------------------------- in this method
+...
+3276 |         edge: E,
+     |               ^ this parameter takes ownership of the value
+help: consider cloning the value if the performance cost is acceptable
+     |
+5537 |                     .update_forward_edge_inline_property_at_slot(vid, label, slot, replacement.clone())
+     |                                                                                               ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `ic-stable-lara` (lib test) generated 3 warnings
+error: could not compile `ic-stable-lara` (lib test) due to 1 previous error; 3 warnings emitted

@@ -1,0 +1,413 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2279:9
+     |
+2279 | /         graph
+2280 | |             .visit_edges(
+2281 | |                 vid,
+2282 | |                 label,
+...    |
+2289 | |             .unwrap();
+     | |_____________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2279 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2338:9
+     |
+2338 | /         graph
+2339 | |             .visit_edges(
+2340 | |                 vid,
+2341 | |                 label,
+...    |
+2348 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2338 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2035:9
+     |
+2035 | /         graph
+2036 | |             .visit_edges(
+2037 | |                 vid,
+2038 | |                 label,
+...    |
+2045 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2035 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2115:9
+     |
+2115 | /         graph
+2116 | |             .visit_edges(
+2117 | |                 VertexId::from(0),
+2118 | |                 label,
+...    |
+2125 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2115 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:190:13
+    |
+190 | /             graph
+191 | |                 .visit_edges(vid, label, order, |slot, edge| {
+192 | |                     seen.push((slot.raw(), edge.0));
+193 | |                     ControlFlow::<()>::Continue(())
+194 | |                 })
+195 | |                 .unwrap();
+    | |_________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+190 |             let _ = graph
+    |             +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:242:9
+    |
+242 | /         graph
+243 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+244 | |                 survivors.push((slot.raw(), edge.0));
+245 | |                 ControlFlow::<()>::Continue(())
+246 | |             })
+247 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+242 |         let _ = graph
+    |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:329:5
+    |
+329 | /     graph
+330 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+331 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+332 | |             before.push((slot.raw(), item.edge.target));
+333 | |             ControlFlow::<()>::Continue(())
+334 | |         })
+335 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+329 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:350:5
+    |
+350 | /     graph
+351 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
+352 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+353 | |             after.push((slot.raw(), item.edge.target));
+354 | |             ControlFlow::<()>::Continue(())
+355 | |         })
+356 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+350 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:130:5
+    |
+130 | /     graph
+131 | |         .visit_edges(
+132 | |             VertexId::from(0),
+133 | |             label,
+...   |
+140 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+130 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:281:5
+    |
+281 | /     graph
+282 | |         .visit_edges(
+283 | |             VertexId::from(0),
+284 | |             label,
+...   |
+291 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+281 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:6762:9
+     |
+6762 | /         graph
+6763 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+6764 | |                 seen.push(u32::from(edge.neighbor_vid()));
+6765 | |                 ControlFlow::<()>::Continue(())
+6766 | |             })
+6767 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+6762 |         let _ = graph
+     |         +++++++
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/ic-stable-lara/src/labeled/graph/tree_write.rs:6270:9
+     |
+6270 |         drop(post);
+     |         ^^^^^----^
+     |              |
+     |              argument has type `record::LabelBucket`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+6270 -         drop(post);
+6270 +         let _ = post;
+     |
+
+warning: `ic-stable-lara` (lib test) generated 15 warnings (run `cargo fix --lib -p ic-stable-lara --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae)
+
+running 86 tests
+test labeled::bidirectional::deferred::tests::delete_vertex_preempts_routine_compaction ... ok
+test labeled::bidirectional::deferred::tests::enqueued_unordered_capture_swap_compacts_without_ambient_table ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_below_threshold_no_fire ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_excludes_unordered ... ok
+test labeled::bidirectional::deferred::tests::bypass_compaction_below_hysteresis_no_fire ... ok
+test labeled::bidirectional::deferred::tests::compaction_cursor_packs_alternating_tombstones_across_steps ... ok
+test labeled::bidirectional::deferred::tests::compaction_cursor_survives_interleaved_delete_in_packed_prefix ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_gate_is_pure_descriptor_arithmetic ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_dedups_pending_span ... ok
+test labeled::bidirectional::deferred::tests::failed_compaction_step_is_requeued_not_silently_completed ... ok
+test labeled::bidirectional::deferred::tests::inline_property_bytes_compaction_work_item_round_trips_and_runs_once ... ok
+test labeled::bucket_store::tests::compact_segment_releases_old_span_for_reuse ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_deferred_for_overflow_log_backed_row ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_invariants_pass ... ok
+test labeled::graph::compact::tests::bucket_span_region_len_returns_correct_region_per_mode ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_descending_parity_after_compaction ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_left_packs_and_preserves_order ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_skips_missing_bucket ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_fires_at_hysteresis ... ok
+test labeled::bidirectional::deferred::tests::stalled_retry_preempts_routine_compaction ... ok
+test labeled::graph::compact::tests::catalog_label_parallel_inserts_use_single_bucket_row ... ok
+test labeled::graph::compact::tests::contiguous_tiled_out_edges_rejects_span_end_overflow ... ok
+test labeled::graph::compact::tests::bucket_vertex_prefix_end_rejects_slot_overflow ... ok
+test labeled::graph::compact::tests::base_resolution_never_reports_a_width_it_did_not_obtain ... ok
+test labeled::graph::compact::tests::compact_label_bucket_vertex_segment_preserves_rows ... ok
+test labeled::graph::compact::tests::compact_vertex_edge_span_uses_edge_tombstone_contract ... ok
+test labeled::graph::compact::tests::compact_vertex_edge_span_shrinks_vertex_edge_span ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_append_rejects_degree_overflow ... ok
+test labeled::graph::compact::tests::find_bucket_resolves_non_default_label_after_parallel_inserts ... ok
+test labeled::bidirectional::deferred::tests::retained_compaction_observer_keeps_external_identities_through_retry_and_finish ... ok
+test labeled::bidirectional::deferred::tests::tree_sibling_compaction_unordered_preserves_native_tree ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_appends_stay_slab_only_without_overflow_log ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_region_end_rejects_slot_overflow ... ok
+test labeled::graph::compact::tests::edge_overflow_compaction_does_not_fold_inline_property_bytes_log ... ok
+test labeled::graph::compact::tests::incremental_vertex_edge_span_compact_preserves_other_label_bucket ... ok
+test labeled::graph::compact::tests::label_bucket_store_vertex_segment_compacts_across_thirty_two_vertices ... ok
+test labeled::graph::compact::tests::incremental_vertex_edge_span_compact_clears_many_tombstones ... ok
+test labeled::graph::compact::tests::labeled_leaf_rebalance_does_not_release_span ... ok
+test labeled::graph::compact::tests::label_bucket_accumulates_many_slab_tombstones_before_compact ... ok
+test labeled::graph::compact::tests::insertion_bucket_compaction_keeps_left_pack_order ... ok
+test labeled::graph::compact::tests::labeled_leaf_weighted_slide_preserves_total_live_edges ... ok
+test labeled::bidirectional::deferred::tests::tree_sibling_compaction_insertion_preserves_native_tree_and_properties ... ok
+test labeled::graph::compact::tests::labeled_leaf_rebalance_rewrites_all_bucket_starts_in_leaf ... ok
+test labeled::graph::compact::tests::labeled_rewrite_within_pinned_leaf_does_not_release_vertex_footprint ... ok
+test labeled::graph::compact::tests::labeled_proportional_slack_by_label_degree_after_slide ... ok
+test labeled::graph::compact::tests::labeled_relocate_commit_order ... ok
+test labeled::graph::compact::tests::leaf_vertex_positions_use_resident_edge_slots_only ... ok
+test labeled::graph::compact::tests::labeled_relocation_preserves_all_leaf_vertices ... ok
+test labeled::graph::compact::tests::last_bucket_successor_rejects_span_end_overflow ... ok
+test labeled::graph::compact::tests::labeled_segment_slide_coalesces_adjacent_free ... ok
+LEFT_PACK width=4 case=0 reads=1 bytes=64 decodes=3 movement=Some((2, 0))
+LEFT_PACK width=4 case=1 reads=3 bytes=140 decodes=34 movement=Some((33, 32))
+LEFT_PACK width=4 case=2 reads=3 bytes=140 decodes=35 movement=Some((34, 31))
+LEFT_PACK width=10 case=0 reads=1 bytes=60 decodes=3 movement=Some((2, 0))
+LEFT_PACK width=4 case=3 reads=2 bytes=120 decodes=29 movement=Some((33, 5))
+LEFT_PACK width=10 case=1 reads=6 bytes=350 decodes=34 movement=Some((33, 32))
+LEFT_PACK width=4 case=4 reads=1 bytes=8 decodes=2 movement=None
+LEFT_PACK width=10 case=2 reads=6 bytes=350 decodes=35 movement=Some((34, 31))
+LEFT_PACK width=4 case=5 reads=3 bytes=140 decodes=35 movement=None
+LEFT_PACK width=10 case=3 reads=5 bytes=300 decodes=29 movement=Some((33, 5))
+LEFT_PACK width=4 case=6 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=10 case=4 reads=1 bytes=20 decodes=2 movement=None
+LEFT_PACK width=10 case=5 reads=6 bytes=350 decodes=35 movement=None
+test labeled::graph::compact::tests::left_pack_bounded_caller_falls_back_and_preserves_neighbor ... ok
+LEFT_PACK width=10 case=6 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=4 case=7 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=10 case=7 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=10 case=8 reads=0 bytes=0 decodes=0 movement=None
+test labeled::graph::compact::tests::labeled_segment_relocate_does_not_call_vertex_span_release ... ok
+LEFT_PACK width=4 case=8 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=4 case=9 reads=0 bytes=0 decodes=0 movement=None
+LEFT_PACK width=10 case=9 reads=0 bytes=0 decodes=0 movement=None
+test labeled::graph::compact::tests::left_pack_bounded_four_byte_selector ... ok
+test labeled::graph::compact::tests::left_pack_bounded_ten_byte_selector ... ok
+test labeled::graph::compact::tests::labeled_segment_relocate_releases_single_footprint ... ok
+test labeled::graph::compact::tests::labeled_segment_relocate_reuses_free_span ... ok
+test labeled::graph::compact::tests::normal_label_bucket_insert_rejects_edge_len_overflow ... ok
+test labeled::graph::compact::tests::overflow_direct_unlink_reports_bounded_moves_before_tombstone_free_fold ... ok
+test labeled::graph::compact::tests::overflow_log_bucket_past_leaf0_cap_reads_descending ... ok
+test labeled::graph::compact::tests::parallel_catalog_edges_on_high_index_vertex_stay_on_slab ... ok
+test labeled::graph::compact::tests::rewrite_copy_byte_len_rejects_usize_overflow ... ok
+test labeled::graph::compact::tests::push_vertex_rejects_normal_row_with_label_bucket_overflow ... ok
+test labeled::graph::compact::tests::spanless_tiny_vertex_does_not_request_slack ... ok
+test labeled::graph::compact::tests::retained_compaction_finished_matches_every_reported_move ... ok
+test labeled::graph::compact::tests::fold_growth_stays_mate_disjoint_across_span_growth ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_k_equals_m_skips_value_rotation ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_moves_last_live_into_first_interior_tombstone ... ok
+test labeled::graph::compact::tests::unordered_swap_gate_rejects_value_log_and_non_dense_spans ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_two_swaps_reorder_and_trim ... ok
+test labeled::graph::compact::tests::vertex_edge_span_retire_intervals_cover_interior_gaps_and_tail ... ok
+test labeled::graph::compact::tests::vertex_edge_span_rewrite_rejects_total_live_overflow ... ok
+test labeled::graph::compact::tests::unordered_swap_step_forced_error_returns_before_mutation ... ok
+test labeled::graph::spill_swap_test::deleting_every_row_keeps_the_run_until_compaction ... ok
+test labeled::graph::values::tests::deferred_inline_property_insert_skips_synchronous_compaction ... ok
+test labeled::graph::values::tests::edge_inline_propertys_preserved_after_tombstone_delete_and_compact ... ok
+test labeled::graph::values::tests::inline_property_bytes_compaction_moves_only_inline_property_bytes_spans ... ok
+test labeled::graph::values::tests::inline_property_bytes_compaction_needed_detects_contiguous_allocation_pressure ... ok
+test labeled::graph::compact::tests::gap_tree_full_path_growth_past_5728_releases_only_owned_regions ... ok
+test labeled::graph::compact::tests::labeled_hub_33_labels_bounded_insert_time ... ok
+test labeled::graph::compact::tests::mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log ... ok
+test labeled::graph::compact::tests::mixed_label_hub_33_labels_span_release_regression ... ok
+test labeled::graph::compact::tests::single_label_parallel_insert_survives_overflow_log_fold ... ok
+test labeled::graph::compact::tests::mixed_label_hub_20_labels_500_edges_each ... ok
+test labeled::graph::compact::tests::two_label_hub_500_then_173_parallel_edges ... ok
+test labeled::graph::compact::tests::vertex_edge_span_rewrite_weights_slack_by_label_degree ... ok
+test labeled::graph::compact::tests::mixed_label_hub_50_labels_1000_edges_each ... ok
+
+test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 586 filtered out; finished in 0.46s

@@ -1,0 +1,349 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2279:9
+     |
+2279 | /         graph
+2280 | |             .visit_edges(
+2281 | |                 vid,
+2282 | |                 label,
+...    |
+2289 | |             .unwrap();
+     | |_____________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2279 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2338:9
+     |
+2338 | /         graph
+2339 | |             .visit_edges(
+2340 | |                 vid,
+2341 | |                 label,
+...    |
+2348 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2338 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2061:9
+     |
+2061 | /         graph
+2062 | |             .visit_edges(
+2063 | |                 vid,
+2064 | |                 label,
+...    |
+2071 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2061 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2141:9
+     |
+2141 | /         graph
+2142 | |             .visit_edges(
+2143 | |                 VertexId::from(0),
+2144 | |                 label,
+...    |
+2151 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2141 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:190:13
+    |
+190 | /             graph
+191 | |                 .visit_edges(vid, label, order, |slot, edge| {
+192 | |                     seen.push((slot.raw(), edge.0));
+193 | |                     ControlFlow::<()>::Continue(())
+194 | |                 })
+195 | |                 .unwrap();
+    | |_________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+190 |             let _ = graph
+    |             +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:242:9
+    |
+242 | /         graph
+243 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+244 | |                 survivors.push((slot.raw(), edge.0));
+245 | |                 ControlFlow::<()>::Continue(())
+246 | |             })
+247 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+242 |         let _ = graph
+    |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:329:5
+    |
+329 | /     graph
+330 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+331 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+332 | |             before.push((slot.raw(), item.edge.target));
+333 | |             ControlFlow::<()>::Continue(())
+334 | |         })
+335 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+329 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:350:5
+    |
+350 | /     graph
+351 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
+352 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+353 | |             after.push((slot.raw(), item.edge.target));
+354 | |             ControlFlow::<()>::Continue(())
+355 | |         })
+356 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+350 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:130:5
+    |
+130 | /     graph
+131 | |         .visit_edges(
+132 | |             VertexId::from(0),
+133 | |             label,
+...   |
+140 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+130 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:281:5
+    |
+281 | /     graph
+282 | |         .visit_edges(
+283 | |             VertexId::from(0),
+284 | |             label,
+...   |
+291 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+281 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:6922:9
+     |
+6922 | /         graph
+6923 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+6924 | |                 seen.push(u32::from(edge.neighbor_vid()));
+6925 | |                 ControlFlow::<()>::Continue(())
+6926 | |             })
+6927 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+6922 |         let _ = graph
+     |         +++++++
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/ic-stable-lara/src/labeled/graph/tree_write.rs:6270:9
+     |
+6270 |         drop(post);
+     |         ^^^^^----^
+     |              |
+     |              argument has type `record::LabelBucket`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+6270 -         drop(post);
+6270 +         let _ = post;
+     |
+
+warning: `ic-stable-lara` (lib test) generated 15 warnings (run `cargo fix --lib -p ic-stable-lara --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.37s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae)
+
+running 6 tests
+
+thread 'labeled::graph::spill_read_test::point_state_tiny_preserves_all_memories' (19762393) panicked at crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:586:9:
+assertion `left == right` failed
+  left: true
+ right: false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test labeled::graph::spill_read_test::point_state_tiny_preserves_all_memories ... FAILED
+
+thread 'labeled::graph::spill_read_test::point_state_slab_and_retained_bypass_preserve_all_memories' (19762392) panicked at crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:750:5:
+retained bypass run slot=6: Live(Row(0, 1, 0))
+test labeled::graph::spill_read_test::point_state_slab_and_retained_bypass_preserve_all_memories ... FAILED
+
+thread 'labeled::graph::spill_read_test::point_state_tree_native_boundaries_and_errors_preserve_all_memories' (19762394) panicked at crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:584:35:
+slot=0: Live(Row(0, 2, 0)) != None
+test labeled::graph::spill_read_test::point_state_tree_native_boundaries_and_errors_preserve_all_memories ... FAILED
+
+thread 'labeled::bidirectional::deferred::tests::point_state_property_tree_reads_are_native_and_read_only' (19762389) panicked at crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:5402:21:
+slot=0: Live(InlinePropertyTestEdge { target: 8, slot_index: 0, value: [], inline_property_len: 0 })
+test labeled::bidirectional::deferred::tests::point_state_property_tree_reads_are_native_and_read_only ... FAILED
+
+thread 'labeled::graph::spill_read_test::point_state_counterpart_parallel_occurrences_use_live_native_ranks' (19762391) panicked at crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:938:59:
+called `Result::unwrap()` on an `Err` value: CounterpartNotFound(CanonicalEdgeOccurrence { orientation: Forward, owner_vertex_id: VertexId(0), label_id: BucketLabelKey(32770), slot_index: BucketEntryPosition(4294967295) })
+test labeled::graph::spill_read_test::point_state_counterpart_parallel_occurrences_use_live_native_ranks ... FAILED
+
+thread 'labeled::bidirectional::deferred::tests::point_state_public_tree_noops_preserve_both_populated_orientations' (19762390) panicked at crates/ic-stable-lara/src/labeled/graph/tree_write.rs:1921:5:
+assertion `left == right` failed: tree mode rejects inline-property buckets (promote is fail-closed)
+  left: 33
+ right: 0
+test labeled::bidirectional::deferred::tests::point_state_public_tree_noops_preserve_both_populated_orientations ... FAILED
+
+failures:
+
+failures:
+    labeled::bidirectional::deferred::tests::point_state_property_tree_reads_are_native_and_read_only
+    labeled::bidirectional::deferred::tests::point_state_public_tree_noops_preserve_both_populated_orientations
+    labeled::graph::spill_read_test::point_state_counterpart_parallel_occurrences_use_live_native_ranks
+    labeled::graph::spill_read_test::point_state_slab_and_retained_bypass_preserve_all_memories
+    labeled::graph::spill_read_test::point_state_tiny_preserves_all_memories
+    labeled::graph::spill_read_test::point_state_tree_native_boundaries_and_errors_preserve_all_memories
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 666 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p ic-stable-lara --lib`

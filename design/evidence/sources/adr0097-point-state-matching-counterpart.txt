@@ -1,0 +1,9 @@
+crates/ic-stable-lara/src/labeled/bidirectional/counterpart.rs:158:        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/counterpart.rs:189:        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/counterpart.rs:358:        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+crates/ic-stable-lara/src/labeled/graph/remove.rs:71:            self.read_edge_state(
+crates/ic-stable-lara/src/labeled/graph/remove.rs:530:            self.locate_bucket_edge_for_delete(src, &bucket, slot_index)?
+crates/ic-stable-lara/src/labeled/graph/remove.rs:542:    fn locate_bucket_edge_for_delete(
+crates/ic-stable-lara/src/labeled/graph/remove.rs:1189:        self.remove_edge_matching_skip_leaf_cascade_with_move(src, label_id, matches)
+crates/ic-stable-lara/src/labeled/graph/remove.rs:1203:            .remove_edge_matching_skip_leaf_cascade_with_move(src, label_id, matches)?
+crates/ic-stable-lara/src/labeled/graph/remove.rs:1208:    pub(crate) fn remove_edge_matching_skip_leaf_cascade_with_move<F>(

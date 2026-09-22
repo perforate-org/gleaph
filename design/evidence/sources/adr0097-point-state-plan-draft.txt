@@ -1,0 +1,1 @@
+Plan is structurally valid for phase=draft: plans/0337-canonical-point-state-reads.md

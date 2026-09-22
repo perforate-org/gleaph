@@ -1,0 +1,17 @@
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3222:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3252:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3283:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3307:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3330:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3360:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/graph/remove.rs:61:    pub(crate) fn edge_exists_at_slot(
+crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:587:            graph.edge_exists_at_slot(owner, label, slot).unwrap(),
+crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:598:        assert!(!graph.edge_exists_at_slot(owner, label, slot).unwrap());
+crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:612:            .edge_exists_at_slot(owner, BucketLabelKey::from_raw(99), 0)
+crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:780:        graph.edge_exists_at_slot(owner, label, 0),
+crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:875:        matches!(graph.edge_exists_at_slot(owner, label, 0), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)
+crates/ic-stable-lara/src/labeled/graph/traverse.rs:326:            match self.read_edge_state_at_slot(&bucket, slot_index)? {
+crates/ic-stable-lara/src/labeled/graph/traverse.rs:3465:            let Some(edge) = (match self.read_edge_state_at_slot(&bucket, slot_index)? {
+crates/ic-stable-lara/src/labeled/graph/traverse.rs:3651:        self.read_edge_state_at_slot(&bucket, slot.raw())
+crates/ic-stable-lara/src/labeled/graph/traverse.rs:3656:    fn read_edge_state_at_slot(
+crates/ic-stable-lara/src/labeled/graph/traverse.rs:3757:            if let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(&bucket, slot_index)? {

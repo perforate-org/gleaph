@@ -1,0 +1,306 @@
+{
+  "base": "e9211fcb52be8087040713dc8091f2948a917734",
+  "implementation_commit": "70b080ca07e91e5363d682ba91ce1a27189eb72b",
+  "anchor": "2026-09-22 08:19:50 UTC +0000",
+  "raw_root": "/private/tmp/spill-point-e921-fhkzogkf",
+  "main_unchanged": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "files": [
+    {
+      "raw": "plan-draft.log",
+      "durable": "design/evidence/sources/adr0097-point-state-plan-draft-failed.txt",
+      "raw_sha256": "0066c6920f256328a661067613c4205be4654f993ddbb34abbbb92d0ac1fb612",
+      "durable_sha256": "0066c6920f256328a661067613c4205be4654f993ddbb34abbbb92d0ac1fb612",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "plan-draft-corrected.log",
+      "durable": "design/evidence/sources/adr0097-point-state-plan-draft.txt",
+      "raw_sha256": "b54cfafb9a305776a7ca1813baf628b11a5f2007607cd9eb56742cab357d8e2a",
+      "durable_sha256": "b54cfafb9a305776a7ca1813baf628b11a5f2007607cd9eb56742cab357d8e2a",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "point-before.log",
+      "durable": "design/evidence/sources/adr0097-point-state-compile-type.txt",
+      "raw_sha256": "baba5638c071dcbe50a280dd65862d3528aa71ef23c4852b416283e53cb6b23f",
+      "durable_sha256": "baba5638c071dcbe50a280dd65862d3528aa71ef23c4852b416283e53cb6b23f",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "backed-point-before.log",
+      "durable": "design/evidence/sources/adr0097-point-state-compile-ownership.txt",
+      "raw_sha256": "5f70af94d74fc9b5a036ae7095ffb817c2cbbb3409b9e0de73aec24632918cce",
+      "durable_sha256": "5f70af94d74fc9b5a036ae7095ffb817c2cbbb3409b9e0de73aec24632918cce",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "runtime-point-before.log",
+      "durable": "design/evidence/sources/adr0097-point-state-five-test-before.txt",
+      "raw_sha256": "0a2ffca89ed33181717e0474b04de333327b6dfae9a074e1b671910a3e0125d3",
+      "durable_sha256": "0a2ffca89ed33181717e0474b04de333327b6dfae9a074e1b671910a3e0125d3",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "isolated-point-before.log",
+      "durable": "design/evidence/sources/adr0097-point-state-before.txt",
+      "raw_sha256": "063238cac834814171347540210edac5a381b6a196d1d7c7f3e495166b414f13",
+      "durable_sha256": "063238cac834814171347540210edac5a381b6a196d1d7c7f3e495166b414f13",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "point-after.log",
+      "durable": "design/evidence/sources/adr0097-point-state-after.txt",
+      "raw_sha256": "770ed624a00c15cf814c9cd9ab629067cdba94685e5fc5cfecafc86562dbea60",
+      "durable_sha256": "1631a59f7adbf2bbd3a754f3cb21f37c8c7519d639f02cb56bdde41a9c23cd2e",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "bypass-rank-mutation.log",
+      "durable": "design/evidence/sources/adr0097-point-state-bypass-rank-mutation.txt",
+      "raw_sha256": "ec87086b9cc259f0e957a6abe77bd2d318b59f96eb2fe90aa80abfa44c74f575",
+      "durable_sha256": "399fed1437e0f41b33942dc774be1e309d6dcc1aa9ecd67f5a355d98fa779433",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "point-bench-before.log",
+      "durable": "design/evidence/sources/adr0097-point-state-bench-before.txt",
+      "raw_sha256": "ef2b04e463f29bd883644a493e40cbc1d247f52cf33c66a59c40f57d8623f8c8",
+      "durable_sha256": "ef2b04e463f29bd883644a493e40cbc1d247f52cf33c66a59c40f57d8623f8c8",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "point-bench-after.log",
+      "durable": "design/evidence/sources/adr0097-point-state-bench-after.txt",
+      "raw_sha256": "00810a3a0b68b2aa065a18a66a03b8439d48abac34f337070ca1e02f8f1bc6fa",
+      "durable_sha256": "00810a3a0b68b2aa065a18a66a03b8439d48abac34f337070ca1e02f8f1bc6fa",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-format.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-format.txt",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-comment-format.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-comment-format.txt",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-clippy.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-clippy.txt",
+      "raw_sha256": "3c68e641bbeed9fc12d9206cdcc80768d29ba5cf7dc0d24eb011e3850c53c899",
+      "durable_sha256": "3c68e641bbeed9fc12d9206cdcc80768d29ba5cf7dc0d24eb011e3850c53c899",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-point.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-point.txt",
+      "raw_sha256": "3b53678a1690772667d1e1440c47f2e361363d9e6907704463474a14c5c324bb",
+      "durable_sha256": "c047132bee68ff7f233b4729cd510fe5f49f80918327600e82ea2f7c897efc17",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-traverse.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-traverse.txt",
+      "raw_sha256": "9e3393715a072f8b693e117ffbfd14529389807e38fa8b8779220ce0a95768fa",
+      "durable_sha256": "c00c914d98e531a9afaef13cc230ae77c1cf2b2a7ad7450c272b69fe4f5a69a8",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-tree.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-tree.txt",
+      "raw_sha256": "5d0eaf5856d58ebf5c5d1bc06fa049fcfa3948f780aa5d9612aeaaef78e46c50",
+      "durable_sha256": "cd8670124640eef75229cd545cd3c665b068d7d29c0d0e9345ac67ddd38a0564",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-spill.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-spill.txt",
+      "raw_sha256": "56cdbc418521d9393bc6f271e02cffeda1c4ec71318f654f6559392cfcb2a89d",
+      "durable_sha256": "a646111e7dc2ae11f0284d0d77f1ba8e392eb9be9606b8aca2f9738feb077d04",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-counterpart.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-counterpart.txt",
+      "raw_sha256": "4daaa20b6cbb9a7db494db05f62bfc57650b14ddd191dc1552bb9cda763fb9ea",
+      "durable_sha256": "f75f4a3102885470119ffeae3e6c30e64f4a2017268d421473712663873088ec",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "final-compact.log",
+      "durable": "design/evidence/sources/adr0097-point-state-final-compact.txt",
+      "raw_sha256": "6020059419f5284bbaa1a287957ef093aaf30b3fd402fd558762ba9b258095de",
+      "durable_sha256": "25887523ea347c76284d56c61359de396e6b90f4dc02898e03d51b8fb21e72b5",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "versions.log",
+      "durable": "design/evidence/sources/adr0097-point-state-versions.txt",
+      "raw_sha256": "ddb1f91523b3d9d358c4a96176da31a23018204dd4b62bf777cda84de9a739a1",
+      "durable_sha256": "ddb1f91523b3d9d358c4a96176da31a23018204dd4b62bf777cda84de9a739a1",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "plan-final.log",
+      "durable": "design/evidence/sources/adr0097-point-state-plan-final.txt",
+      "raw_sha256": "767bd1d94313223fb00a14524e7bdf0ec45406b59f342c28841cbaf1dd1969b3",
+      "durable_sha256": "767bd1d94313223fb00a14524e7bdf0ec45406b59f342c28841cbaf1dd1969b3",
+      "normalization": "rstrip line whitespace and terminal blank lines"
+    },
+    {
+      "raw": "witness-u0.patch",
+      "durable": "design/evidence/sources/adr0097-point-state-witness.patch",
+      "raw_sha256": "bc1659143447c906bbfb58b123d3aa07a59b3f57d1570a8c5a63715b777517be",
+      "durable_sha256": "bc1659143447c906bbfb58b123d3aa07a59b3f57d1570a8c5a63715b777517be",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "point-bench-before.csv",
+      "durable": "design/evidence/sources/adr0097-point-state-bench-before.csv",
+      "raw_sha256": "52711a174a207e3f842b3632c208f3c09893fe9457623d7ab38aeca7b92feff8",
+      "durable_sha256": "52711a174a207e3f842b3632c208f3c09893fe9457623d7ab38aeca7b92feff8",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "point-bench-after.csv",
+      "durable": "design/evidence/sources/adr0097-point-state-bench-after.csv",
+      "raw_sha256": "71ca0c5c7bba791f36c6d6625f5f92c03e9d3e096959bc7b123ac62bb5b11d1f",
+      "durable_sha256": "71ca0c5c7bba791f36c6d6625f5f92c03e9d3e096959bc7b123ac62bb5b11d1f",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "ledger.json",
+      "durable": "design/evidence/sources/adr0097-point-state-ledger.json",
+      "raw_sha256": "ba431b133e3a4f0e6876cfa2a13694c06c65f6c41f763fb71b8103631c1b8bae",
+      "durable_sha256": "ba431b133e3a4f0e6876cfa2a13694c06c65f6c41f763fb71b8103631c1b8bae",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "run.py",
+      "durable": "design/evidence/sources/adr0097-point-state-runner.py",
+      "raw_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "durable_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "bench_pair.py",
+      "durable": "design/evidence/sources/adr0097-point-state-bench-pair.py",
+      "raw_sha256": "be60b265981c079be1f8b40928797c512359a416531ef66fa41ed991791a1186",
+      "durable_sha256": "be60b265981c079be1f8b40928797c512359a416531ef66fa41ed991791a1186",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "point-callers.txt",
+      "durable": "design/evidence/sources/adr0097-point-state-callers.txt",
+      "raw_sha256": "dc0e45509946563012f493e7f6397b410248f26bcaf4c668dba0ad95890530ad",
+      "durable_sha256": "dc0e45509946563012f493e7f6397b410248f26bcaf4c668dba0ad95890530ad",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "matching-counterpart.txt",
+      "durable": "design/evidence/sources/adr0097-point-state-matching-counterpart.txt",
+      "raw_sha256": "8b241e76c25882ca98f78ccdefb341d201c8bcb5cc001f18945ebbe35fc87fc8",
+      "durable_sha256": "8b241e76c25882ca98f78ccdefb341d201c8bcb5cc001f18945ebbe35fc87fc8",
+      "normalization": "byte-identical"
+    },
+    {
+      "raw": "lizard.json",
+      "durable": "design/evidence/sources/adr0097-point-state-lizard.json",
+      "raw_sha256": "9564365f6b1238b26dbb60221d73f2568c6765be5edd81984d4ce1cae0024236",
+      "durable_sha256": "9564365f6b1238b26dbb60221d73f2568c6765be5edd81984d4ce1cae0024236",
+      "normalization": "byte-identical"
+    }
+  ],
+  "final_source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "6801248bb998b55b9476b17cc7918edbf747baaf9f198559517bc05bd866a5aa",
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "4ab0e39c1a0b62dd6b5d74a7218ad823f441bc3f7e2eb156807e5a22692bd0cb",
+    "crates/ic-stable-lara/src/labeled/graph/tree_read.rs": "654dbbb5e9c2620496a90f284f7ad6c035dfa5b2fd9dc454877f28e32eb6e47a",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "cdb1a3e277ad1060b961b606fbcc9cd45a1d41902e9ede316423469d23863237",
+    "crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs": "9b0ad4927cf91585388acde1d8bf47d95813178ba4c2b0b7b19e3a4916f5fc0e",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "b49ea5d44cd06e1c8a8ab7c5179591b2742cffb5301ebb913f4b90af641e6a67"
+  },
+  "before_source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "618ac4d9a6407994422ad5538c8641d6f089811500641aece725a84a982dc330",
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "6838c492e53a759c877570bf35772b4c54df1a9ca1e66a3cdb485c60a73b8302",
+    "crates/ic-stable-lara/src/labeled/graph/tree_read.rs": "2cad0e275f01618e4c0e0c2810069d7c0f00f078f472d51efe63104f4d25a9a7",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "6dbf7b02403e9c5879b7007c9279b52312352c296e52605028b4814df96f14f4",
+    "crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs": "6500ce8625e4f2cbbdda567513b9e1b4a947c1f6088fb8911a54186e1a78e4f9",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "b49ea5d44cd06e1c8a8ab7c5179591b2742cffb5301ebb913f4b90af641e6a67"
+  },
+  "final_vs_isolated_red_witness": "Only bypass rank assertion strengthened: before_slot 65/expected 0 -> 66/expected 1. All other added witness bodies and fixture construction are identical.",
+  "initial_green_difference": "Private bucket rank loop initially also projected bypass rows; callers actually handle bypass through their own iterator. That unused handling was removed. Final benchmark and runtime gates cover surviving source.",
+  "passing_mutation": "Temporary early return in that unreachable bypass arm passed; not sensitivity evidence. Full cumulative mutation and initial source patch retained raw.",
+  "post_runtime_comment_change": "tree_read.rs module documentation only; all non-comment lines match measured source. Additional format check completed.",
+  "protected": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822"
+  },
+  "lock": {
+    "restored_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "as_used_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+    "reused_patch": "design/evidence/sources/adr0097-crossover-as-used-lock.patch",
+    "patch_sha256": "15ad4f3b4a670a2c050b34c0fd0147c8fb88deeb9258b53d31fbae68291dcc1f"
+  },
+  "bench_pair": {
+    "point-bench-before": {
+      "exit": 0,
+      "source_sha256": {
+        "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "618ac4d9a6407994422ad5538c8641d6f089811500641aece725a84a982dc330",
+        "crates/ic-stable-lara/src/labeled/graph/remove.rs": "6838c492e53a759c877570bf35772b4c54df1a9ca1e66a3cdb485c60a73b8302",
+        "crates/ic-stable-lara/src/labeled/graph/tree_read.rs": "2cad0e275f01618e4c0e0c2810069d7c0f00f078f472d51efe63104f4d25a9a7",
+        "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "6dbf7b02403e9c5879b7007c9279b52312352c296e52605028b4814df96f14f4"
+      }
+    },
+    "point-bench-after": {
+      "exit": 0,
+      "source_sha256": {
+        "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "6801248bb998b55b9476b17cc7918edbf747baaf9f198559517bc05bd866a5aa",
+        "crates/ic-stable-lara/src/labeled/graph/remove.rs": "4ab0e39c1a0b62dd6b5d74a7218ad823f441bc3f7e2eb156807e5a22692bd0cb",
+        "crates/ic-stable-lara/src/labeled/graph/tree_read.rs": "e8d481ef9523a5bdb61b8d981bfade99c3b453e1a6fab4b7950681e492a79ecd",
+        "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "cdb1a3e277ad1060b961b606fbcc9cd45a1d41902e9ede316423469d23863237"
+      }
+    }
+  },
+  "benchmark_interpretation": {
+    "name": "bench_t_vip_tail",
+    "before": 6142,
+    "after": 6214,
+    "delta": 72,
+    "percent": 1.172256593943341,
+    "scope": "unchanged selected scalar-read fixture, not native-tree pricing",
+    "heap_and_stable_growth": 0,
+    "persist": false
+  },
+  "supporting_check_corrections": [
+    "Initial draft used unsupported in_progress; corrected to pending. Both logs retained.",
+    "First two Rust commands were compile failures (payload array type, owned Vec edge reuse), not runtime reds.",
+    "Pre-commit source-prefix check split at a nonexistent cfg(test) pattern and failed; shell proceeded to commit. Corrected exact mod-tests boundary proves unchanged tree-write production."
+  ],
+  "not_run": [
+    "unfiltered library/workspace",
+    "16K/native replay",
+    "full/persisted canbench",
+    "PocketIC",
+    "Graph sidecar/index transactions",
+    "live property-tree deletion/release/Wasm deletion",
+    "matching-removal mutation",
+    "selected tree-property hydration",
+    "new multidepth/fault-injection matrix"
+  ],
+  "command_count": 27,
+  "charged_seconds": 227.77897737396415,
+  "remaining_seconds": 372.22102262603585,
+  "startup_charge_seconds": 0
+}
