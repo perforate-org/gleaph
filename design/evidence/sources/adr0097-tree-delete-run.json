@@ -1,0 +1,182 @@
+{
+  "status": "blocked investigation; no implementation retained",
+  "base": "7ca767bf3580674b9cf8b18d425d17f0ef0512be",
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "anchor": "2026-09-22 07:29:43 UTC +0000",
+  "raw_root": "/private/tmp/spill-tree-delete-7ca-nrvy2ffs",
+  "startup_charge_seconds": 0,
+  "recorded_commands": 7,
+  "charged_seconds": 36.611981041845866,
+  "remaining_seconds": 563.3880189581541,
+  "runs": {
+    "public-before": {
+      "production": "base",
+      "witness": "witness-v1.rs",
+      "passed": 0,
+      "failed": 1,
+      "filtered": 668
+    },
+    "assertion-only-witnesses": {
+      "production": "assertion-only.patch applied to base",
+      "witness": "witness-v1.rs",
+      "passed": 1,
+      "failed": 2,
+      "filtered": 666
+    },
+    "public-noop-boundary": {
+      "production": "same assertion-only.patch",
+      "witness": "witness-v2.rs",
+      "passed": 0,
+      "failed": 1,
+      "filtered": 668
+    }
+  },
+  "production_hashes": {
+    "base_tree_write": "6dbf7b02403e9c5879b7007c9279b52312352c296e52605028b4814df96f14f4",
+    "assertion_only_tree_write": "5d6a9e36b69d59b02d6ee8c0d08b444c77118a06c3450eb45c6a0a0f9a3d87b6",
+    "registered_deferred": "e66ba559b79bca203c9ac0f2e93a4318dbe7301cfe12224ce3b0d0e35859ac59"
+  },
+  "audited_source_hashes": {
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "6838c492e53a759c877570bf35772b4c54df1a9ca1e66a3cdb485c60a73b8302",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "6dbf7b02403e9c5879b7007c9279b52312352c296e52605028b4814df96f14f4",
+    "crates/ic-stable-lara/src/labeled/graph/tree_read.rs": "2cad0e275f01618e4c0e0c2810069d7c0f00f078f472d51efe63104f4d25a9a7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "618ac4d9a6407994422ad5538c8641d6f089811500641aece725a84a982dc330",
+    "crates/ic-stable-lara/src/labeled/graph/insert.rs": "a02925043994db0c673ea327f8f15a6a66e0ccffc7d9a15834eb30926136ddea",
+    "crates/ic-stable-lara/src/labeled/graph/promote.rs": "4cfcd3e895b90f47f1129841d0527fd8b369fdb5f8d9733b61ca76da666b0c83",
+    "crates/ic-stable-lara/src/labeled/graph/values.rs": "8f4a8fbb5a169b0b025224535cbe8644a4fb7d3922e2a72db781334510f0aef8",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "8d317a1d7db5ad61d81ebe7004fc2901fb72164ad37d3e544bac0957083171b8",
+    "crates/ic-stable-lara/src/labeled/bidirectional/counterpart.rs": "65e30864269460f7ac4d5605f5f89a02e48c57c3e538b08c4b5ba52cb38b2172",
+    "crates/ic-stable-lara/src/labeled/bucket_store.rs": "27d51320d8f039c5bd5632b8f4a192a1a62f015715b656f1390026a1f330d557",
+    "crates/ic-stable-lara/src/labeled/ltb_raw_block_store.rs": "44cceb895096fbfdf5fed1b9f1faa4bd5bdec34d8e799c68eb6ab5f5e996b747",
+    "crates/graph/src/facade/store/adjacency.rs": "21673e469dbef7b5ece85d94a88b3b0abcf1666ef64741ff7cdbe5f59f434973",
+    "crates/graph/src/facade/store/helpers.rs": "af5f6570aa91b3a1a518d2129f57ed2a891bc7fb121b7e005fd571dd80ac6ab9",
+    "rust-toolchain.toml": "2ce1c1fe5e79a52424c9d88d99f5a2c95dcf5b4f4a82431bb9e5710cfb39e184",
+    ".cargo/config.toml": "e5aab3aba2c680e4d3fdd0c91635a31ae97a5a4e9c220b3e46ab55d63a841b88",
+    "crates/ic-stable-lara/Cargo.toml": "7e6af36a178ffcbf8a7d6931f019e60479729f91896c8f382f6cf099ffb44315"
+  },
+  "protected_start_hashes": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "8d317a1d7db5ad61d81ebe7004fc2901fb72164ad37d3e544bac0957083171b8"
+  },
+  "original_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+  "reused_lock_patch": {
+    "path": "design/evidence/sources/adr0097-crossover-as-used-lock.patch",
+    "sha256": "15ad4f3b4a670a2c050b34c0fd0147c8fb88deeb9258b53d31fbae68291dcc1f",
+    "raw_slice_patch": "as-used-lock.patch",
+    "raw_slice_patch_sha256": "c9657fe70989b4fe9bdfc24e5b061ab5be17562b654cf53dc73feda979e288f8",
+    "note": "Both patches independently reconstruct the identical as-used lock; existing durable artifact left unchanged."
+  },
+  "native_graph_constructions_by_command": {
+    "public-before": 2,
+    "assertion-only-witnesses": 8,
+    "public-noop-boundary": 2
+  },
+  "pocketic_constructors": 0,
+  "installs": 0,
+  "not_run": [
+    "canbench",
+    "full library/workspace tests",
+    "final restored-source clippy/tests",
+    "release/Wasm/PocketIC",
+    "Graph sidecar/counterpart integration",
+    "allocation fault injection",
+    "Lizard implementation comparison (no implementation change)"
+  ],
+  "files": [
+    {
+      "raw": "witness-v1.rs",
+      "durable": "design/evidence/sources/adr0097-tree-delete-witness-v1.rs",
+      "raw_sha256": "3849e87712237f983582a4dcca29e9dca9504812a05ef390cfeb85210c840ca0",
+      "durable_sha256": "3849e87712237f983582a4dcca29e9dca9504812a05ef390cfeb85210c840ca0",
+      "transform": "none"
+    },
+    {
+      "raw": "witness-v2.rs",
+      "durable": "design/evidence/sources/adr0097-tree-delete-witness-v2.rs",
+      "raw_sha256": "c96a71c4d2f030cf5a4e357f3621204662f90d6136f13c9f8be311f0cf68d232",
+      "durable_sha256": "c96a71c4d2f030cf5a4e357f3621204662f90d6136f13c9f8be311f0cf68d232",
+      "transform": "none"
+    },
+    {
+      "raw": "assertion-only-u0.patch",
+      "durable": "design/evidence/sources/adr0097-tree-delete-assertion-only.patch",
+      "raw_sha256": "d0052d5ef8f86fb57db82cb833ec3e0c765872094400efcc519fea06ee9d598c",
+      "durable_sha256": "d0052d5ef8f86fb57db82cb833ec3e0c765872094400efcc519fea06ee9d598c",
+      "transform": "none"
+    },
+    {
+      "raw": "registration-u0.patch",
+      "durable": "design/evidence/sources/adr0097-tree-delete-registration.patch",
+      "raw_sha256": "0d3283ac17375f55dd9d5c432a062b3fb2c1898487e234612157711cf87e4e96",
+      "durable_sha256": "0d3283ac17375f55dd9d5c432a062b3fb2c1898487e234612157711cf87e4e96",
+      "transform": "none"
+    },
+    {
+      "raw": "public-before.log",
+      "durable": "design/evidence/sources/adr0097-tree-delete-before.txt",
+      "raw_sha256": "00602d5b5880d1fda1aef8249ed0f20a7a7c34cca30ec1d88ed9d19984ff7f54",
+      "durable_sha256": "00602d5b5880d1fda1aef8249ed0f20a7a7c34cca30ec1d88ed9d19984ff7f54",
+      "transform": "rstrip each line; remove terminal blank lines; final LF if nonempty"
+    },
+    {
+      "raw": "assertion-only-witnesses.log",
+      "durable": "design/evidence/sources/adr0097-tree-delete-assertion-only.txt",
+      "raw_sha256": "aa42a37860de74f59ed8b1dd4495867d2ad7885999852647b9e9c6a6994d8abc",
+      "durable_sha256": "aa42a37860de74f59ed8b1dd4495867d2ad7885999852647b9e9c6a6994d8abc",
+      "transform": "rstrip each line; remove terminal blank lines; final LF if nonempty"
+    },
+    {
+      "raw": "public-noop-boundary.log",
+      "durable": "design/evidence/sources/adr0097-tree-delete-public-noops.txt",
+      "raw_sha256": "57e2f8aa844033fb32bd13d89c63592d6bbc7f16b5d79297fe45482089b7cff3",
+      "durable_sha256": "57e2f8aa844033fb32bd13d89c63592d6bbc7f16b5d79297fe45482089b7cff3",
+      "transform": "rstrip each line; remove terminal blank lines; final LF if nonempty"
+    },
+    {
+      "raw": "ledger.json",
+      "durable": "design/evidence/sources/adr0097-tree-delete-ledger.json",
+      "raw_sha256": "1cffab27a4a6cbf4ebdb61786807321683e900ae858eac2df9923fad7a37e52d",
+      "durable_sha256": "1cffab27a4a6cbf4ebdb61786807321683e900ae858eac2df9923fad7a37e52d",
+      "transform": "none"
+    },
+    {
+      "raw": "run.py",
+      "durable": "design/evidence/sources/adr0097-tree-delete-runner.py",
+      "raw_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "durable_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "transform": "none"
+    },
+    {
+      "raw": "callers.txt",
+      "durable": "design/evidence/sources/adr0097-tree-delete-callers.txt",
+      "raw_sha256": "fbf1b9fbe6b3440e0bb9ac5779bb5861224f93d80c3d5b87de5b24358f45a191",
+      "durable_sha256": "fbf1b9fbe6b3440e0bb9ac5779bb5861224f93d80c3d5b87de5b24358f45a191",
+      "transform": "none"
+    },
+    {
+      "raw": "obsolete-tag.txt",
+      "durable": "design/evidence/sources/adr0097-tree-delete-obsolete-tag.txt",
+      "raw_sha256": "b86fb8e5bf874d850d1f433b0dee686e4b06fec8aefa33924f8f27a9ea62aaa8",
+      "durable_sha256": "b86fb8e5bf874d850d1f433b0dee686e4b06fec8aefa33924f8f27a9ea62aaa8",
+      "transform": "none"
+    },
+    {
+      "raw": "plan-final.log",
+      "durable": "design/evidence/sources/adr0097-tree-delete-plan-final.txt",
+      "raw_sha256": "89d86ea8ecd6d6108e9eecd3a44f58f12f21c30e58ad2c29def4eb64ef8578eb",
+      "durable_sha256": "89d86ea8ecd6d6108e9eecd3a44f58f12f21c30e58ad2c29def4eb64ef8578eb",
+      "transform": "rstrip each line; remove terminal blank lines; final LF if nonempty"
+    }
+  ],
+  "final_plan_sha256": "3f7e07187a8a61f74cdc91e6e225f170d7fa6bb19125478875f40c630c954688"
+}

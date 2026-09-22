@@ -1,0 +1,8 @@
+--- a/crates/ic-stable-lara/src/labeled/graph/tree_write.rs
++++ b/crates/ic-stable-lara/src/labeled/graph/tree_write.rs
+@@ -1921,5 +1920,0 @@
+-    debug_assert_eq!(
+-        bucket.inline_property_byte_width(),
+-        0,
+-        "tree mode rejects inline-property buckets (promote is fail-closed)"
+-    );

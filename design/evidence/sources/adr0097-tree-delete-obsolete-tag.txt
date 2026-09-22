@@ -1,0 +1,10 @@
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:217:    CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:275:            Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:291:            | Self::CompactVertexEdgeAndValueSpanV1 { .. }
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:404:        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:497:            (4, 1) => Self::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:594:        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3772:                MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3794:                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3802:                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3810:                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {

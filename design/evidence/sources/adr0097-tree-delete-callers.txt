@@ -1,0 +1,69 @@
+crates/graph/src/facade/store/adjacency.rs:138:                graph.remove_forward_edge_at_slot_with_move(
+crates/graph/src/facade/store/adjacency.rs:171:                        graph.remove_forward_edge_at_slot_with_move(
+crates/graph/src/facade/store/adjacency.rs:197:                    graph.remove_reverse_edge_at_slot_with_move(
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3211:    pub fn remove_forward_edge_at_slot(
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3222:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3241:    pub fn remove_forward_edge_at_slot_with_move(
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3252:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3283:            .edge_exists_at_slot(src, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3307:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3319:    pub fn remove_reverse_edge_at_slot(
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3330:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3349:    pub fn remove_reverse_edge_at_slot_with_move(
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:3360:            .edge_exists_at_slot(dst, label_id, slot_index)
+crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs:5497:                    .remove_forward_edge_at_slot(vid, slab, slot)
+crates/ic-stable-lara/src/labeled/graph.rs:59:/// `tree_mode_demote_to_slab` to rebuild the bucket as a fresh slab
+crates/ic-stable-lara/src/labeled/graph/insert.rs:354:                if let Some(reused_slot) = super::tree_write::tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/insert.rs:438:                            super::tree_write::tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/remove.rs:61:    pub(crate) fn edge_exists_at_slot(
+crates/ic-stable-lara/src/labeled/graph/remove.rs:283:                let removed = super::tree_write::tree_mode_remove_edge_at_slot(
+crates/ic-stable-lara/src/labeled/graph/remove.rs:300:                        let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:910:                super::super::tree_write::tree_mode_remove_edge_at_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1354:        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 100)
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1450:        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 2)
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1519:        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 2)
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1527:        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, slot_idx, &bucket, 3)
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1779:        use crate::labeled::graph::tree_write::tree_mode_demote_to_slab;
+crates/ic-stable-lara/src/labeled/graph/tree_read.rs:1863:        tree_mode_demote_to_slab(&graph, vid, slot, label, &bucket).expect("demote");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:29://! insert dispatcher calls [`tree_mode_reuse_tombstone_slot`] before the
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:40://! degree (slab era → tree) and [`tree_mode_demote_to_slab`] re-adds it
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:70:/// the dispatcher's [`tree_mode_reuse_tombstone_slot`] call before this
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:974:pub(crate) fn tree_mode_reuse_tombstone_slot<E, M>(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:1904:pub(crate) fn tree_mode_remove_edge_at_slot<E, M>(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:2771:pub(crate) fn tree_mode_demote_to_slab<E, M>(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3086:/// `tree_mode_demote_to_slab` for the LPB-in-tree round-trip
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3088:pub(crate) fn tree_mode_demote_to_slab_pub<E, M>(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3099:    tree_mode_demote_to_slab(graph, src, bucket_slot, label, bucket)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3492:        let removed = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3561:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3655:            let removed = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, remove_slot)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3700:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3707:        let _ = tree_mode_remove_edge_at_slot(&graph, slot2, &bucket2, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3879:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3883:        let reused = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3917:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3920:        let reused = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:3968:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4011:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4046:    /// chain. Used by the w > 0 reuse test because `tree_mode_remove_edge_at_slot`
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4103:        let reused = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4157:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4162:        let reused = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4202:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4204:        let _ = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4217:        tree_mode_demote_to_slab(&graph, vid, slot, label, &bucket).expect("demote");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4239:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4241:        let _ = tree_mode_reuse_tombstone_slot(
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4254:        let _ = tree_mode_remove_edge_at_slot(&graph, slot, &bucket, 100).expect("remove");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:4868:    //  (4) demote from depth 2 (via `tree_mode_demote_to_slab`)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5322:            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bucket, slot)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5346:        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5437:        tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bucket, 0)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5461:            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &bcur, slot)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5479:        tree_mode_remove_edge_at_slot(&graph, bucket_slot, &b2, b2_slot_idx)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5492:        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b3).expect("demote");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5580:            tree_mode_remove_edge_at_slot(&graph, bucket_slot, &b, slot)
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5597:        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote 0");
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5681:        let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
+crates/ic-stable-lara/src/labeled/graph/tree_write.rs:5758:        tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_d2).expect("demote d2");
+crates/ic-stable-lara/src/labeled/invariants.rs:387:        // (`tree_mode_demote_to_slab`) re-adds it; tree inserts/removes never

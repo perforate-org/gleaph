@@ -1,0 +1,164 @@
+{
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "runs": [
+    {
+      "name": "plan-draft",
+      "command": [
+        "python3",
+        "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+        "plans/0336-property-tree-deletion-prerequisites.md",
+        "--phase",
+        "draft"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 600,
+      "timeout_seconds": 10.0,
+      "final": false,
+      "start_monotonic": 554611.44188225,
+      "end_monotonic": 554611.513809,
+      "elapsed_seconds": 0.07192675000987947,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "7ead88e760bb45623a96afa294f295a309d363e17f28533f937e78af62c3ac24"
+    },
+    {
+      "name": "format-witness",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-lara/src/labeled/bidirectional/tree_delete_test.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 599.9280732499901,
+      "timeout_seconds": 10.0,
+      "final": false,
+      "start_monotonic": 554895.3122105,
+      "end_monotonic": 554895.58006875,
+      "elapsed_seconds": 0.26785824995022267,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "public-before",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "property_tree_delete_public",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 599.6602150000399,
+      "timeout_seconds": 100.0,
+      "final": false,
+      "start_monotonic": 554895.650518791,
+      "end_monotonic": 554906.833401041,
+      "elapsed_seconds": 11.182882249937393,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "00602d5b5880d1fda1aef8249ed0f20a7a7c34cca30ec1d88ed9d19984ff7f54"
+    },
+    {
+      "name": "assertion-only-witnesses",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "property_tree_delete_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 588.4773327501025,
+      "timeout_seconds": 100.0,
+      "final": false,
+      "start_monotonic": 554982.517624083,
+      "end_monotonic": 554996.483235333,
+      "elapsed_seconds": 13.965611250023358,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "aa42a37860de74f59ed8b1dd4495867d2ad7885999852647b9e9c6a6994d8abc"
+    },
+    {
+      "name": "format-noops",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-lara/src/labeled/bidirectional/tree_delete_test.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 574.5117215000791,
+      "timeout_seconds": 10.0,
+      "final": false,
+      "start_monotonic": 555135.844642666,
+      "end_monotonic": 555139.195133583,
+      "elapsed_seconds": 3.3504909169860184,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "public-noop-boundary",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "property_tree_delete_public",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 571.1612305830931,
+      "timeout_seconds": 100.0,
+      "final": false,
+      "start_monotonic": 555139.317124458,
+      "end_monotonic": 555147.029359666,
+      "elapsed_seconds": 7.712235208018683,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "log_sha256": "57e2f8aa844033fb32bd13d89c63592d6bbc7f16b5d79297fe45482089b7cff3"
+    },
+    {
+      "name": "plan-final",
+      "command": [
+        "python3",
+        "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+        "plans/0336-property-tree-deletion-prerequisites.md",
+        "--phase",
+        "final"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "repo": "/Users/yota/dev/gleaph-spill",
+      "remaining_before": 563.4489953750744,
+      "timeout_seconds": 10.0,
+      "final": true,
+      "start_monotonic": 556258.797118708,
+      "end_monotonic": 556258.858095125,
+      "elapsed_seconds": 0.06097641692031175,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "89d86ea8ecd6d6108e9eecd3a44f58f12f21c30e58ad2c29def4eb64ef8578eb"
+    }
+  ]
+}

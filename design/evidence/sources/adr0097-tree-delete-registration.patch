@@ -1,0 +1,7 @@
+--- a/crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs
++++ b/crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs
+@@ -4864,0 +4865,4 @@
++#[path = "tree_delete_test.rs"]
++mod tree_delete_test;
++
++#[cfg(test)]
