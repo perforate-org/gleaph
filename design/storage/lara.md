@@ -205,6 +205,13 @@ and phase-one scratch/replay lifecycle; the implemented reader contract is in
 Its nonzero-property and selected-topology witnesses are distinct from width-zero topology scans
 and bounded inline edge-range visitors. [Evidence and remaining gates](../evidence/adr0097-current-survey-hybrid-batches.md).
 
+**In-place descriptor insertion validates before publication.** `LabelBucketStore::insert_label_bucket_at`
+validates the complete old descriptor row and prepares a valid updated normal vertex before writing
+the changed suffix. At the `LabeledVertex`-owned count limit, `RowDegreeOverflow` leaves the vertex
+and backed descriptor memory unchanged, even with a spare physical slot. This store-level boundary
+does not establish general public-insertion atomicity.
+[Rejection witness and validation](../evidence/adr0097-descriptor-rejection-crossover.md).
+
 **Homogeneous bypass insertion is tail-only (GAP-2026-07-11-004).** A default-label bypass row may extend its contiguous slab region only while it is the tail vertex; extending a non-tail region forces every later row's origin to be rescanned and rewritten, which measured linearly (~1.08M instructions per insert at 4,096 successors). The labeled insert dispatcher therefore promotes a non-tail bypass row to bucket mode — via the existing preflighted `promote_bypass_to_bucket_mode` transition — before its next same-label insert, so per-insert cost is bounded by the owning PMA leaf/segment rather than vertex count: 343K / 363K / 382K instructions for 16 inserts at 256 / 1,024 / 4,096 successors (`bench_labeled_non_tail_bypass_insert_*`). While the row remains the tail, same-label inserts keep the direct slab fast path unchanged.
 
 **Bypass-origin geometry contract (Plan 0341, GAP-2026-09-07-001 bypass side).** A default-label

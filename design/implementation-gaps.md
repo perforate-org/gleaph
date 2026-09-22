@@ -564,8 +564,9 @@ remaining regressions, space/PocketIC and final all-name validation remain open.
 The unfiltered, non-persisted survey at `5ad7f5a61` completes **189 totals / 554 scopes** in
 189.5 seconds, exit 0. It finds **25 totals >5% versus rounded main**, and nine >5% versus exact
 `3ea7dc739`. Aliases, nineteen absent/one new historical scope and operation/fixture mismatches
-are recorded name-by-name. The **16K delete/compact increase 43,376,650 → 15,498,702,117** remains
-unexplained; being near main's rounded 15.54 B is not acceptance or proof of equivalent work.
+are recorded name-by-name. The **16K delete/compact increase 43,376,650 → 15,498,702,117** was
+unexplained at that checkpoint; the pinned follow-up below attributes it without accepting or
+recovering the cost. Being near main's rounded 15.54 B is not proof of equivalent physical work.
 
 `e596eadae` retains complete descriptor-row validation but serializes only the changed suffix
 for in-place insertion. Pressure-stat setup at 256 labels falls **303,322,427 → 276,081,039**;
@@ -588,6 +589,29 @@ full artifacts still describe `3ea7dc739`; only the new survey describes `5ad7f5
 focused controls describe later code. The shared ten-minute observation budget was exceeded
 (approximately 726 seconds reconstructed); further validation was stopped. Main remains unmerged.
 [Complete evidence, exact CSVs, negative diagnostics, commands and remaining gates](evidence/adr0097-current-survey-hybrid-batches.md).
+
+#### Descriptor count rejection and pinned 16K compaction work
+
+`bc5c7d37f` moves existing updated-row preparation before the in-place descriptor suffix write.
+At the actual maximum count with backed slack, front/middle/tail insertion now returns exact
+`RowDegreeOverflow` with all backing memories and vertex bytes unchanged; the owner-level
+witness fails on old code. Full old-row validation and successful insertion tests remain.
+Final library **659/0**, strict library clippy and scoped formatting pass; production Lizard CCN
+is unchanged. This is a store rejection boundary, not broader public-write atomicity acceptance.
+
+Fresh pinned probes verify all 16,384 seeded identities, every even-slot removal, all odd
+survivors, compaction completion and exact final rows in both directions. `3ea7dc739` seeds a
+15,632-row prefix plus 752-row run; `5ad7f5a61` seeds a 16,384-row prefix without a run. The former
+completes via two compactor calls and a bulk rewrite, the latter via 8,192 moves plus advance and
+finish. With the unchanged zero slot cursor, repeated prefix scans dominate the current explicit
+compaction phase. Both same-name canbench totals reproduce exactly. Logical output parity does
+not imply physical/work parity; no compactor, cursor, fixture or policy change is made.
+
+The new cumulative ledger records **259.983 / 600 seconds**, including failed diagnostics and
+final validation. Stale shared-target output and a path-alias setup failure are excluded from
+candidate evidence. The earlier approximately 726-second breach remains disclosed. All nine
+historical increases, broader atomicity and lifecycle gates remain open; main remains unmerged.
+[Exact phases, movement traces, source provenance and remaining correction decision](evidence/adr0097-descriptor-rejection-crossover.md).
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
 

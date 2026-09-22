@@ -27,7 +27,7 @@ The pinned survey has **25 totals above +5% versus rounded main**, superseding t
 | `bench_t_v_ebreak` | 9,422 | 30,417 |
 | `bench_t_v_window` | 9,893 | 48,008 |
 
-The **16K delete/compact increase remains unexplained**. Its proximity to rounded main **15.54 B** does not dismiss the increase against exact historical branch evidence. The benchmark source files are identical between `3ea7dc739` and `5ad7f5a61`, but their physical states/executed work have not been independently shown equivalent. Do not attribute this to necessary retention, accept the old fast result as correct, or change the fixture to conceal it. A shape/phase witness is still needed. The measured closure requires each removal to return `Some`, but does not check the removed target and only black-boxes the final survivor count. A pinned probe must verify targets and exact surviving rows before treating either timing as validated work.
+The **16K increase was unexplained at this checkpoint**. The [pinned follow-up](adr0097-descriptor-rejection-crossover.md) now verifies every seeded identity, removal and survivor in both orders, records actual completion, and reproduces both totals exactly. Logical work/output agree, but physical state selects bulk versus repeated single-edge compaction; the unchanged zero cursor exposes quadratic prefix rescanning. The cost is attributed, not recovered or accepted. Proximity to rounded main **15.54 B** remains neither acceptance nor proof of equivalent physical work; no fixture or policy change conceals the difference.
 
 Likewise, `bench_t_v_dense_a`, `bench_t_v_dense_d`, `bench_t_v_window` and `bench_t_v_ebreak` are names, not proofs of slab-only state. Their ordinary insertion fixtures lack a no-run assertion. Physical-state comparison after retention corrections is still needed; no fixture change or silent fold was introduced here.
 
@@ -62,7 +62,7 @@ The setup-heavy `bench_l_ip_pstats_*` totals include construction and seeding. T
 
 The same native fixture separates constructor, seeding and pressure, then checks exact live slots/targets and nonzero-width values. At 256 labels, bucket seeding write bytes fall **4,580,248 → 199,008**. Read calls/bytes, write-call count, growth and other memory roles are unchanged. In the native tables, each role records `[read calls, read bytes, write calls, write bytes, grow calls, requested pages]`; pages are 64 KiB. These are `Memory` observations, not IC syscall counts or a per-call instruction price.
 
-Front/middle/tail insertion and malformed-unchanged-prefix witnesses pass before and after. The malformed wire row must retain the existing panic `invalid LabelBucket wire bytes: InlinePropertyBytesStateWithoutSchema`, with memory and vertex unchanged. The initial typed-error expectation was a test-oracle error, not production red evidence. Descriptor validation completed **655/0**, strict library clippy and scoped formatting.
+Front/middle/tail insertion and malformed-unchanged-prefix witnesses pass before and after. The malformed wire row must retain the existing panic `invalid LabelBucket wire bytes: InlinePropertyBytesStateWithoutSchema`, with memory and vertex unchanged. The initial typed-error expectation was a test-oracle error, not production red evidence. Descriptor validation completed **655/0**, strict library clippy and scoped formatting. The [subsequent owner-boundary correction](adr0097-descriptor-rejection-crossover.md) prepares the updated vertex before writing at the real maximum count; the suffix optimization alone did not prove failure atomicity there.
 
 ## Actual hybrid-value contract: `8a6bafd1b`
 
@@ -103,7 +103,7 @@ The matching property-first native probe uses the benchmark's four-byte edge, 25
 
 Both production changes leave mixed-hub traversal at **790,432 ascending / 557,118 descending**, versus rounded main **452.96 K / 350.32 K**. Exact order, 1,650 live decodes/callbacks, zero dead rows, prefix shape and all role/read-length histograms are unchanged in the paired native control. The insertion total falls **59,092,295 → 58,998,829** under the descriptor change. [Descriptor control](sources/adr0097-descriptor-mixed-control.csv), [hybrid control](sources/adr0097-hybrid-final-mixed-control.csv).
 
-Remaining descriptor/boundary lookahead, run read granularity and iterator execution costs still need one-factor attribution. Do not infer instruction costs from read counts or transfer the nonzero-property result to this width-zero path. The nine historical increases, including the 16K anomaly, other rounded-main regressions, wide/arena/other-caller atomicity, space/PocketIC and final-source unfiltered persistence/all-name review remain open.
+Remaining descriptor/boundary lookahead, run read granularity and iterator execution costs still need one-factor attribution. Do not infer instruction costs from read counts or transfer the nonzero-property result to this width-zero path. The nine historical increases, including the now-attributed but unrecovered 16K cost, other rounded-main regressions, wide/arena/other-caller atomicity, space/PocketIC and final-source unfiltered persistence/all-name review remain open.
 
 ## Execution evidence and budget exception
 
