@@ -2844,6 +2844,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
     store
         .record_router_mutation_shards(
             &key,
+            first,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![RouterMutationShardV1::new(
@@ -5833,6 +5834,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     store
         .record_router_mutation_shards(
             &key,
+            first.mutation_id,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![RouterMutationShardV1::new(
@@ -5876,7 +5878,7 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     assert!(first.routing_owner);
 
     store
-        .abandon_router_mutation_routing_reservation(&key)
+        .abandon_router_mutation_routing_reservation(&key, first.mutation_id)
         .expect("abandon reservation");
     let record = store.router_mutation_record(&key).expect("record");
     assert_eq!(record.as_v1().mutation_id, first.mutation_id);
@@ -5904,7 +5906,7 @@ fn router_mutation_journal_tracks_shard_completion() {
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
-    store
+    let reservation = store
         .reserve_mutation_id_for_client_key(
             caller,
             tenant_main_graph_id(),
@@ -5915,6 +5917,7 @@ fn router_mutation_journal_tracks_shard_completion() {
     store
         .record_router_mutation_shards(
             &key,
+            reservation.mutation_id,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![
@@ -5984,6 +5987,7 @@ fn router_mutation_journal_tracks_shard_completion() {
 
 #[test]
 fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
+    use ic_stable_structures::Storable;
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
@@ -5992,14 +5996,15 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     let caller = graph_principal(42);
     let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
 
-    store
+    let id = store
         .reserve_mutation_id_for_client_key(
             caller,
             tenant_main_graph_id(),
             "client-key-1",
             b"a".to_vec(),
         )
-        .expect("mutation id");
+        .expect("mutation id")
+        .mutation_id;
     let shards = vec![
         RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
         RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
@@ -6007,6 +6012,7 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     store
         .record_router_mutation_shards(
             &key,
+            id,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             shards.clone(),
@@ -6014,11 +6020,6 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
         .expect("record initial envelope");
 
     // Simulate the first shard completing before the saga retried.
-    let id = store
-        .router_mutation_record(&key)
-        .unwrap()
-        .as_v1()
-        .mutation_id;
     store
         .record_scalar_shard_progress(
             &key,
@@ -6028,11 +6029,17 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
         )
         .expect("complete shard 0");
 
+    let saved = store
+        .router_mutation_record(&key)
+        .unwrap()
+        .to_bytes()
+        .into_owned();
     // A retry rebuilds the same envelope from the durable record. The writer must
     // accept it as idempotent, not conflict because the stored shard is completed.
     store
         .record_router_mutation_shards(
             &key,
+            id,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             shards,
@@ -6045,6 +6052,259 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     assert!(stored_shards[0].completed());
     assert_eq!(stored_shards[0].row_count(), 2);
     assert!(!stored_shards[1].completed());
+    assert_eq!(record.to_bytes().as_ref(), saved);
+    // A conflicting target must not overwrite already captured progress.
+    assert_eq!(
+        store.record_router_mutation_shards(
+            &key,
+            id,
+            Default::default(),
+            Default::default(),
+            vec![
+                RouterMutationShardV1::new(ShardId::new(0), graph_principal(9), Some(vec![1])),
+                RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
+            ],
+        ),
+        Err(RouterError::Conflict(
+            "scalar shard writer requires a pristine Scalar payload".into()
+        ))
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        saved
+    );
+}
+
+#[test]
+fn scalar_preparation_writers_reject_invalid_owner_without_writes() {
+    use crate::facade::stable::label_stats::RouterMutationRequestIdentityV1;
+    use ic_stable_structures::Storable;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let key = ClientMutationKey::new(
+        graph_principal(42),
+        GraphId::from_raw(8),
+        "prepare-owner".into(),
+    );
+    let wrong_id = RouterMutationRecord::new(42, 17, vec![3]);
+    let mut failed = RouterMutationRecord::new(41, 17, vec![3]);
+    failed.as_v1_mut().terminal_failure = Some("preparation refused".into());
+    failed.mark_terminal_at_ns(29);
+    let foreign = RouterMutationRecord::new_bulk_load(
+        41,
+        17,
+        BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+        }),
+    )
+    .unwrap();
+    let mut inconsistent = RouterMutationRecord::new(41, 17, vec![3]);
+    inconsistent.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::BulkLoadJob;
+
+    for (record, detail) in [
+        (None, "scalar mutation record is unavailable"),
+        (Some(wrong_id), "scalar mutation identity changed"),
+        (Some(failed), "preparation refused"),
+        (
+            Some(foreign),
+            "client_mutation_key belongs to a different mutation family",
+        ),
+        (
+            Some(inconsistent),
+            "mutation record request identity and payload families disagree",
+        ),
+    ] {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| {
+            if let Some(record) = record.clone() {
+                map.insert(key.clone(), record);
+            } else {
+                map.remove(&key);
+            }
+        });
+        let before = record.map(|record| record.to_bytes().into_owned());
+        for operation in ["envelope", "completion", "release"] {
+            let result = match operation {
+                "envelope" => store.record_router_mutation_shards(
+                    &key,
+                    41,
+                    Default::default(),
+                    Default::default(),
+                    vec![RouterMutationShardV1::new(
+                        ShardId::new(0),
+                        graph_principal(1),
+                        Some(vec![9]),
+                    )],
+                ),
+                "completion" => store.record_router_mutation_completed_without_shards(
+                    &key,
+                    41,
+                    Default::default(),
+                    Default::default(),
+                    0,
+                ),
+                "release" => store.abandon_router_mutation_routing_reservation(&key, 41),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                result,
+                Err(RouterError::Conflict(detail.into())),
+                "{operation}"
+            );
+            assert_eq!(
+                store
+                    .router_mutation_record(&key)
+                    .map(|record| record.to_bytes().into_owned()),
+                before,
+                "{operation}: rejection must not change the current owner",
+            );
+        }
+    }
+}
+
+#[test]
+fn scalar_preparation_completion_and_release_are_idempotent() {
+    use gleaph_graph_kernel::plan_exec::ResolvedProperty;
+    use ic_stable_structures::Storable;
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    for count in [0, 7] {
+        let key = ClientMutationKey::new(
+            graph_principal(42),
+            GraphId::from_raw(8),
+            format!("prepare-{count}"),
+        );
+        let id = store
+            .reserve_mutation_id_for_client_key(key.caller, key.graph_id, &key.client_key, vec![3])
+            .unwrap()
+            .mutation_id;
+        let mut expected = store.router_mutation_record(&key).unwrap();
+        expected.as_v1_mut().routing_in_progress = false;
+        for _ in 0..2 {
+            store
+                .abandon_router_mutation_routing_reservation(&key, id)
+                .unwrap();
+            assert_eq!(
+                store.router_mutation_record(&key).unwrap().to_bytes(),
+                expected.to_bytes()
+            );
+        }
+        let properties = ResolvedPropertyTable {
+            properties: vec![ResolvedProperty {
+                name: "score".into(),
+                id: gleaph_graph_kernel::entry::PropertyId::from_raw(27),
+            }],
+        };
+        store
+            .record_router_mutation_completed_without_shards(
+                &key,
+                id,
+                Default::default(),
+                properties.clone(),
+                count,
+            )
+            .unwrap();
+        expected.as_v1_mut().resolved_labels = Some(Default::default());
+        expected.as_v1_mut().resolved_properties = Some(properties.clone());
+        expected.as_v1_mut().completed_row_count = Some(count);
+        expected.mark_terminal_at_ns(0);
+        assert_eq!(
+            store.router_mutation_record(&key).unwrap().to_bytes(),
+            expected.to_bytes()
+        );
+        // Retained terminal time must not be reset by a duplicate native callback.
+        expected.as_v1_mut().terminal_at_ns = Some(123);
+        ROUTER_MUTATION_BY_CLIENT_KEY
+            .with_borrow_mut(|map| map.insert(key.clone(), expected.clone()));
+        store
+            .record_router_mutation_completed_without_shards(
+                &key,
+                id,
+                Default::default(),
+                properties.clone(),
+                count,
+            )
+            .unwrap();
+        store
+            .abandon_router_mutation_routing_reservation(&key, id)
+            .unwrap();
+        assert_eq!(
+            store.router_mutation_record(&key).unwrap().to_bytes(),
+            expected.to_bytes()
+        );
+        for (id, properties, count, detail) in [
+            (
+                id + 1,
+                properties.clone(),
+                count,
+                "scalar mutation identity changed",
+            ),
+            (
+                id,
+                properties.clone(),
+                count + 1,
+                "scalar completion writer requires a pristine Scalar payload",
+            ),
+            (
+                id,
+                Default::default(),
+                count,
+                "scalar completion writer requires a pristine Scalar payload",
+            ),
+        ] {
+            assert_eq!(
+                store.record_router_mutation_completed_without_shards(
+                    &key,
+                    id,
+                    Default::default(),
+                    properties,
+                    count,
+                ),
+                Err(RouterError::Conflict(detail.into()))
+            );
+            assert_eq!(
+                store.router_mutation_record(&key).unwrap().to_bytes(),
+                expected.to_bytes()
+            );
+        }
+        for (callback_id, detail) in [
+            (id, "scalar shard writer requires a pristine Scalar payload"),
+            (id + 1, "scalar mutation identity changed"),
+        ] {
+            assert_eq!(
+                store.record_router_mutation_shards(
+                    &key,
+                    callback_id,
+                    Default::default(),
+                    properties.clone(),
+                    vec![RouterMutationShardV1::new(
+                        ShardId::new(0),
+                        graph_principal(1),
+                        None
+                    )],
+                ),
+                Err(RouterError::Conflict(detail.into()))
+            );
+            assert_eq!(
+                store.router_mutation_record(&key).unwrap().to_bytes(),
+                expected.to_bytes()
+            );
+        }
+        assert_eq!(
+            store.abandon_router_mutation_routing_reservation(&key, id + 1),
+            Err(RouterError::Conflict(
+                "scalar mutation identity changed".into()
+            ))
+        );
+        assert_eq!(
+            store.router_mutation_record(&key).unwrap().to_bytes(),
+            expected.to_bytes()
+        );
+    }
 }
 
 #[test]
@@ -6066,6 +6326,7 @@ fn scalar_shard_progress_is_monotonic() {
         store
             .record_router_mutation_shards(
                 &key,
+                id,
                 Default::default(),
                 Default::default(),
                 vec![
@@ -6174,6 +6435,7 @@ fn scalar_dispatch_gate_checks_identity_target_and_terminal_state() {
     store
         .record_router_mutation_shards(
             &key,
+            id,
             Default::default(),
             Default::default(),
             vec![
@@ -6311,6 +6573,7 @@ fn scalar_projection_aggregate_overflow_is_write_free() {
     store
         .record_router_mutation_shards(
             &key,
+            id,
             Default::default(),
             Default::default(),
             vec![
@@ -6404,6 +6667,7 @@ fn scalar_dispatch_gate_follows_typed_bulk_child_closure() {
     store
         .record_router_mutation_shards(
             &key,
+            id,
             Default::default(),
             Default::default(),
             vec![RouterMutationShardV1::new(shard, target, None)],
@@ -6475,7 +6739,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
-    store
+    let reservation = store
         .reserve_mutation_id_for_client_key(
             caller,
             tenant_main_graph_id(),
@@ -6486,6 +6750,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
     store
         .record_router_mutation_completed_without_shards(
             &key,
+            reservation.mutation_id,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             0,

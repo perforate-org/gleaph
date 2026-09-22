@@ -135,7 +135,9 @@ This is not an exact retained receipt: scalar compaction still discards targets,
 Router capture** can still age out on Graph and be re-executed by a fresh request.
 
 Router's native paused-target contracts and owner-cost fixtures accompany the send boundary.
-The earlier preparation-callback identity boundary remains open. A fresh gate costs about
+The three preparation writers also require the original reservation ID under
+[ADR 0029's preparation boundary](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity).
+That protects a newer same-key Router reservation, not Graph evidence. A fresh gate costs about
 4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB: it decodes the full
 retained record. The safety check remains necessary, but these measurements do not approve
 production cost/admission bounds. End-to-end retention repair remains open.

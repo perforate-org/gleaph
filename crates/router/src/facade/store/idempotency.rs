@@ -2025,112 +2025,102 @@ impl RouterStore {
     pub fn record_router_mutation_shards(
         &self,
         key: &ClientMutationKey,
+        mutation_id: MutationId,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShardV1>,
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
-            let existing = match &record.as_v1().payload {
-                RouterMutationPayloadV1::Scalar { shards }
-                    if record.as_v1().completed_row_count.is_none() =>
-                {
-                    shards
-                }
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "scalar shard writer requires a pristine Scalar payload".into(),
-                    ));
-                }
-            };
-            if existing.is_empty() {
-                // First persistence of the dispatch envelope.
-            } else if existing.len() == shards.len()
-                && existing.iter().zip(&shards).all(|(e, s)| {
-                    e.shard_id == s.shard_id
-                        && e.graph_canister == s.graph_canister
-                        && e.seed_bindings_blob == s.seed_bindings_blob
-                })
-                && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
-                && record.as_v1().resolved_properties.as_ref() == Some(&resolved_properties)
+        let mut record = self.scalar_mutation_record(key, mutation_id)?;
+        // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
+        let existing = match &record.as_v1().payload {
+            RouterMutationPayloadV1::Scalar { shards }
+                if record.as_v1().completed_row_count.is_none() =>
             {
-                // The durable envelope is already recorded. Leave the existing progress flags
-                // (completed / projection_advanced / row_count) untouched so a retry does not
-                // conflict with a partially-converged saga.
-                return Ok(());
-            } else {
+                shards
+            }
+            _ => {
                 return Err(RouterError::Conflict(
                     "scalar shard writer requires a pristine Scalar payload".into(),
                 ));
             }
-            record.as_v1_mut().resolved_labels = Some(resolved_labels);
-            record.as_v1_mut().resolved_properties = Some(resolved_properties);
-            record.as_v1_mut().routing_in_progress = false;
-            record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar { shards };
-            m.insert(key, record);
-            Ok(())
-        })
+        };
+        if existing.is_empty() {
+            // First persistence of the dispatch envelope.
+        } else if existing.len() == shards.len()
+            && existing.iter().zip(&shards).all(|(e, s)| {
+                e.shard_id == s.shard_id
+                    && e.graph_canister == s.graph_canister
+                    && e.seed_bindings_blob == s.seed_bindings_blob
+            })
+            && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
+            && record.as_v1().resolved_properties.as_ref() == Some(&resolved_properties)
+        {
+            // The durable envelope is already recorded. Leave the existing progress flags
+            // (completed / projection_advanced / row_count) untouched so a retry does not
+            // conflict with a partially-converged saga.
+            return Ok(());
+        } else {
+            return Err(RouterError::Conflict(
+                "scalar shard writer requires a pristine Scalar payload".into(),
+            ));
+        }
+        record.as_v1_mut().resolved_labels = Some(resolved_labels);
+        record.as_v1_mut().resolved_properties = Some(resolved_properties);
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar { shards };
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
+        Ok(())
     }
 
     pub fn record_router_mutation_completed_without_shards(
         &self,
         key: &ClientMutationKey,
+        mutation_id: MutationId,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            match &record.as_v1().payload {
-                RouterMutationPayloadV1::Scalar { shards }
-                    if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
-                RouterMutationPayloadV1::Scalar { shards }
-                    if shards.is_empty()
-                        && record.as_v1().completed_row_count == Some(row_count)
-                        && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
-                        && record.as_v1().resolved_properties.as_ref()
-                            == Some(&resolved_properties) =>
-                {
-                    return Ok(());
-                }
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "scalar completion writer requires a pristine Scalar payload".into(),
-                    ));
-                }
+        let mut record = self.scalar_mutation_record(key, mutation_id)?;
+        match &record.as_v1().payload {
+            RouterMutationPayloadV1::Scalar { shards }
+                if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
+            RouterMutationPayloadV1::Scalar { shards }
+                if shards.is_empty()
+                    && record.as_v1().completed_row_count == Some(row_count)
+                    && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
+                    && record.as_v1().resolved_properties.as_ref()
+                        == Some(&resolved_properties) =>
+            {
+                return Ok(());
             }
-            record.as_v1_mut().resolved_labels = Some(resolved_labels);
-            record.as_v1_mut().resolved_properties = Some(resolved_properties);
-            record.as_v1_mut().completed_row_count = Some(row_count);
-            record.mark_terminal_at_ns(ic_time_ns());
-            record.as_v1_mut().routing_in_progress = false;
-            m.insert(key, record);
-            Ok(())
-        })
+            _ => {
+                return Err(RouterError::Conflict(
+                    "scalar completion writer requires a pristine Scalar payload".into(),
+                ));
+            }
+        }
+        record.as_v1_mut().resolved_labels = Some(resolved_labels);
+        record.as_v1_mut().resolved_properties = Some(resolved_properties);
+        record.as_v1_mut().completed_row_count = Some(row_count);
+        record.mark_terminal_at_ns(ic_time_ns());
+        record.as_v1_mut().routing_in_progress = false;
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
+        Ok(())
     }
 
+    /// Release only this scalar reservation, including a failed pre-transition ordered insert.
     pub fn abandon_router_mutation_routing_reservation(
         &self,
         key: &ClientMutationKey,
+        mutation_id: MutationId,
     ) -> Result<(), RouterError> {
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            record.as_v1_mut().routing_in_progress = false;
-            m.insert(key, record);
-            Ok(())
-        })
+        let mut record = self.scalar_mutation_record(key, mutation_id)?;
+        if !record.as_v1().routing_in_progress {
+            return Ok(());
+        }
+        record.as_v1_mut().routing_in_progress = false;
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
+        Ok(())
     }
 
     fn scalar_mutation_record(

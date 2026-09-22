@@ -65,9 +65,13 @@ defect from being rediscovered without its prior reasoning.
 - **Evidence / contract:** [ADR 0027](adr/0027-graph-mutation-journal-retention.md) owns the retention
   limitation; [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
   specifies the implemented monotonic count capture and fresh individual/chunk send checks.
-- **Adjacent Router boundary:** envelope publication, no-shard completion and routing release
-  still accept a client key without its reserved ID. Delayed callbacks must be bound to their
-  original reservation before claiming preparation continuation safety.
+- **Preparation prerequisite:** envelope publication, no-shard completion and routing release
+  now require the original reserved ID. Native tests pause actual index resolution, expire the
+  old terminal record through Router GC, reuse the same key/fingerprint and resume positive,
+  empty and error callbacks; all preserve the newer record. Matching-ID controls still progress.
+  [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity)
+  owns this rule. Key-only completed-count/phase response reads and same-ID lease reclaim remain
+  separate audit obligations; no wrong-response runtime reproduction is claimed.
 - **Next decision:** retain exact receipts, close canonical sends permanently, complete required
   projections, and acknowledge scalar retirement before compaction/retirement-age GC. Delayed
   work, Abort, lost acknowledgement, upgrade and active-evidence admission remain validation

@@ -1789,11 +1789,11 @@ mod tests {
         // The owner's own routing release (ADR 0029 Phase 4) leaves an empty envelope and no
         // completed rows, which is the documented "no canonical write committed" state.
         let client_key = ClientMutationKey::new(caller, graph_id, key.to_owned());
-        store
+        let reservation = store
             .reserve_mutation_id_for_client_key(caller, graph_id, key, vec![7u8; 32])
             .expect("reserve");
         store
-            .abandon_router_mutation_routing_reservation(&client_key)
+            .abandon_router_mutation_routing_reservation(&client_key, reservation.mutation_id)
             .expect("release routing");
         assert_eq!(
             futures::executor::block_on(classify_update_row(&store, caller, graph_id, key))
@@ -1809,6 +1809,7 @@ mod tests {
         store
             .record_router_mutation_completed_without_shards(
                 &client_key,
+                reservation.mutation_id,
                 record.as_v1().resolved_labels.clone().unwrap_or_default(),
                 record
                     .as_v1()
@@ -1828,12 +1829,14 @@ mod tests {
         // Completed is not synonymous with an applied exact target: a durable zero-effect
         // result is write-free, including after the shard envelope has been compacted.
         let zero = ClientMutationKey::new(caller, graph_id, "row-zero".into());
-        store
+        let zero_id = store
             .reserve_mutation_id_for_client_key(caller, graph_id, "row-zero", vec![8u8; 32])
-            .unwrap();
+            .unwrap()
+            .mutation_id;
         store
             .record_router_mutation_completed_without_shards(
                 &zero,
+                zero_id,
                 Default::default(),
                 Default::default(),
                 0,
@@ -1864,12 +1867,13 @@ mod tests {
         // A dispatched row is keyed by its authored ordinal, so the classifier and the lane must
         // agree on the derived key.
         let pending_key = update_row_key("row-journal-pending", 0, 0);
-        store
+        let pending = store
             .reserve_mutation_id_for_client_key(caller, graph_id, &pending_key, vec![9u8; 32])
             .expect("reserve pending");
         store
             .record_router_mutation_shards(
                 &ClientMutationKey::new(caller, graph_id, pending_key.clone()),
+                pending.mutation_id,
                 gleaph_graph_kernel::plan_exec::ResolvedLabelTable::default(),
                 gleaph_graph_kernel::plan_exec::ResolvedPropertyTable::default(),
                 vec![

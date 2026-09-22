@@ -2451,7 +2451,7 @@ async fn execute_ordered_edge_batch_classified(
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key, mutation_id)?;
         return Err(error);
     }
 
@@ -2694,7 +2694,7 @@ async fn execute_ordered_vertex_batch_classified(
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key, mutation_id)?;
         return Err(error);
     }
 
@@ -2992,7 +2992,7 @@ async fn execute_ordered_mixed_batch_classified(
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key, mutation_id)?;
         return Err(error);
     }
     let graph_request = store
@@ -4815,9 +4815,10 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                     }
                 };
                 if hits.is_empty() {
-                    if let Some(key) = mutation_key.as_ref() {
+                    if let (Some(key), Some(id)) = (mutation_key.as_ref(), mutation_id) {
                         store.record_router_mutation_completed_without_shards(
                             key,
+                            id,
                             resolved_labels.clone(),
                             resolved_properties.clone(),
                             0,
@@ -4926,7 +4927,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     // placed on one shard; a complete-row seeded bundle whose anchors fan out to many shards is
     // dispatched per shard below as a roll-forward saga — each shard atomic shard-locally, cross-shard
     // convergence roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
-    if persist_dispatch_envelope && let (Some(key), Some(_)) = (mutation_key.as_ref(), mutation_id)
+    if persist_dispatch_envelope && let (Some(key), Some(id)) = (mutation_key.as_ref(), mutation_id)
     {
         // Persist the envelope whenever this path has a mutation record. The store method is
         // idempotent and only fills an empty, non-terminal record, so this must not be gated on
@@ -4944,6 +4945,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             .collect();
         store.record_router_mutation_shards(
             key,
+            id,
             resolved_labels.clone(),
             resolved_properties.clone(),
             envelope_shards,
@@ -5750,9 +5752,10 @@ fn release_routing_if_owner(
     if let (Some(key), Some(reservation)) = (client_mutation_key, mutation_reservation)
         && reservation.routing_owner
     {
-        store.abandon_router_mutation_routing_reservation(&mutation_key_for(
-            caller, graph_id, key,
-        ))?;
+        store.abandon_router_mutation_routing_reservation(
+            &mutation_key_for(caller, graph_id, key),
+            reservation.mutation_id,
+        )?;
     }
     Ok(())
 }
@@ -7139,6 +7142,7 @@ mod tests {
         store
             .record_router_mutation_shards(
                 &key,
+                id,
                 Default::default(),
                 Default::default(),
                 dispatches
@@ -7369,6 +7373,7 @@ mod tests {
                 store
                     .record_router_mutation_shards(
                         &key,
+                        id,
                         Default::default(),
                         Default::default(),
                         vec![RouterMutationShardV1::new(
@@ -9341,6 +9346,7 @@ mod tests {
     struct FakeIndex {
         calls: Rc<Cell<u32>>,
         results: Rc<RefCell<Vec<Result<Vec<PostingHit>, String>>>>,
+        pause_equal_lookup: Cell<bool>,
     }
 
     impl FakeIndex {
@@ -9348,6 +9354,7 @@ mod tests {
             Self {
                 calls: Rc::new(Cell::new(0)),
                 results: Rc::new(RefCell::new(results)),
+                pause_equal_lookup: Cell::new(false),
             }
         }
 
@@ -9365,7 +9372,19 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
             self.calls.set(self.calls.get() + 1);
             let result = self.results.borrow_mut().remove(0);
-            Box::pin(async move { result })
+            let mut pause = self.pause_equal_lookup.replace(false);
+            Box::pin(async move {
+                std::future::poll_fn(|cx| {
+                    if std::mem::take(&mut pause) {
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                result
+            })
         }
 
         fn lookup_range(
@@ -9986,6 +10005,197 @@ mod tests {
             None,
         )
         .await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn scalar_preparation_callbacks_reject_reused_key_after_index_pause() {
+        use super::{PrepareOutcome, prepare_mutation_for_batch};
+        use crate::facade::store::CLIENT_MUTATION_KEY_TTL_NS;
+        use crate::graph_client::{start_plan_call_probe, take_plan_calls};
+        use ic_stable_structures::Storable;
+
+        let store = store_with_shards_and_property();
+        let mut violations = Vec::new();
+        for reuse in [false, true] {
+            for (case, response) in [
+                (
+                    "envelope",
+                    Ok(vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: 17,
+                    }]),
+                ),
+                ("zero", Ok(Vec::new())),
+                ("release", Err("paused index failure".into())),
+            ] {
+                // Share catalogs, but isolate each completed schedule's mutation records.
+                crate::facade::stable::ROUTER_MUTATION_BY_CLIENT_KEY
+                    .with_borrow_mut(|map| map.clear_new());
+                let graph_id = tenant_main_graph_id();
+                let key = mutation_key_for(Principal::anonymous(), graph_id, "paused-preparation");
+                let plan = seeded_dml_plan();
+                let plan_blob = seeded_dml_bundle(&plan);
+                let pmap = BTreeMap::new();
+                let stats = tenant_main_stats();
+                let fake = FakeIndex::new(vec![response]);
+                fake.pause_equal_lookup.set(true);
+                let preparation = prepare_mutation_for_batch(
+                    graph_id,
+                    &plan_blob,
+                    std::slice::from_ref(&plan),
+                    &pmap,
+                    &[],
+                    GqlExecutionMode::Update,
+                    Some(&key.client_key),
+                    &store,
+                    store.list_live_shards_for_graph_id(graph_id).unwrap(),
+                    &fake,
+                    key.caller,
+                    &stats,
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                );
+                let mut preparation = std::pin::pin!(preparation);
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                start_plan_call_probe(false);
+                assert!(preparation.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(fake.calls(), 1, "must pause inside the index lookup");
+                assert!(take_plan_calls().is_empty());
+                start_plan_call_probe(false);
+                let original = store.router_mutation_record(&key).unwrap();
+                let old_id = original.as_v1().mutation_id;
+                assert!(original.as_v1().routing_in_progress);
+                assert!(original.shards().is_empty());
+
+                if reuse {
+                    // A same-ID retry finishes while this index callback is still pending.
+                    store
+                        .record_router_mutation_completed_without_shards(
+                            &key,
+                            old_id,
+                            Default::default(),
+                            Default::default(),
+                            0,
+                        )
+                        .unwrap();
+                    let now = CLIENT_MUTATION_KEY_TTL_NS + 1;
+                    let sweep = store
+                        .admin_sweep_expired_client_mutation_keys_at(
+                            Principal::from_slice(&[1; 29]),
+                            None,
+                            10,
+                            now,
+                        )
+                        .unwrap();
+                    assert_eq!(sweep.removed, 1);
+                    assert!(store.router_mutation_record(&key).is_none());
+                    let fresh = store
+                        .reserve_mutation_id_for_client_key_at(
+                            key.caller,
+                            graph_id,
+                            &key.client_key,
+                            original
+                                .as_v1()
+                                .request_identity
+                                .request_fingerprint()
+                                .to_vec(),
+                            now,
+                        )
+                        .unwrap();
+                    assert_ne!(fresh.mutation_id, old_id);
+                    assert!(fresh.routing_owner);
+                }
+                let before = store
+                    .router_mutation_record(&key)
+                    .unwrap()
+                    .to_bytes()
+                    .into_owned();
+                let outcome = futures::executor::block_on(preparation);
+                assert_eq!(fake.calls(), 1, "callback must not reselect");
+                assert!(
+                    take_plan_calls().is_empty(),
+                    "preparation must not send Graph work"
+                );
+                let after = store.router_mutation_record(&key).unwrap();
+                if reuse {
+                    if !matches!(outcome, Err(RouterError::Conflict(ref detail)) if detail == "scalar mutation identity changed")
+                    {
+                        violations
+                            .push(format!("{case}: stale callback did not reject its old ID"));
+                    }
+                    if after.to_bytes().as_ref() != before {
+                        violations.push(format!(
+                            "{case}: stale callback changed the new reservation"
+                        ));
+                    }
+                    continue;
+                }
+
+                assert_eq!(after.as_v1().mutation_id, old_id);
+                assert!(!after.as_v1().routing_in_progress);
+                match case {
+                    "envelope" => {
+                        let Ok(PrepareOutcome::Prepared(prepared)) = outcome else {
+                            panic!("matching envelope must produce a prepared mutation");
+                        };
+                        assert_eq!(prepared.mutation_id, Some(old_id));
+                        assert_eq!(prepared.dispatches.len(), 1);
+                        let dispatch = &prepared.dispatches[0];
+                        assert_eq!(dispatch.shard_id, ShardId::new(0));
+                        assert_eq!(dispatch.graph_canister, graph_principal(1));
+                        let seed = Decode!(
+                            dispatch.seed_bindings_blob.as_ref().unwrap(),
+                            SeedBindingsWire
+                        )
+                        .unwrap();
+                        assert_eq!(seed.entries[0].variable, "u");
+                        assert_eq!(seed.entries[0].local_vertex_ids, vec![17]);
+                        assert_eq!(after.shards().len(), 1);
+                        assert_eq!(
+                            after.shards()[0].seed_bindings_blob(),
+                            &dispatch.seed_bindings_blob
+                        );
+                        assert_eq!(after.as_v1().completed_row_count, None);
+                    }
+                    "zero" => {
+                        let Ok(PrepareOutcome::Early(result)) = outcome else {
+                            panic!("matching empty response must complete without a shard");
+                        };
+                        assert_eq!(result.row_count, 0);
+                        assert_eq!(after.as_v1().completed_row_count, Some(0));
+                        assert!(after.shards().is_empty());
+                        assert!(after.is_terminal());
+                    }
+                    "release" => {
+                        assert!(
+                            matches!(outcome, Err(RouterError::InvalidArgument(ref detail)) if detail == "paused index failure")
+                        );
+                        assert_eq!(after.as_v1().completed_row_count, None);
+                        assert!(after.shards().is_empty());
+                        let retry = store
+                            .reserve_mutation_id_for_client_key(
+                                key.caller,
+                                graph_id,
+                                &key.client_key,
+                                original
+                                    .as_v1()
+                                    .request_identity
+                                    .request_fingerprint()
+                                    .to_vec(),
+                            )
+                            .unwrap();
+                        assert_eq!(retry.mutation_id, old_id);
+                        assert!(retry.routing_owner);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     #[test]
@@ -10769,6 +10979,7 @@ mod tests {
         store
             .record_router_mutation_shards(
                 &mutation_key_for(caller, graph_id, key),
+                reservation.mutation_id,
                 resolved_labels,
                 resolved_properties,
                 vec![

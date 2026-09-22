@@ -1232,6 +1232,69 @@ fn bench_scalar_dispatch_gate_1m_request() -> canbench_rs::BenchResult {
     scalar_dispatch_gate_cost(1024 * 1024)
 }
 
+/// One envelope publication, including the existing full-record read and stable write.
+/// Input construction, successful control, reseeding and exact-record checks are not timed.
+fn scalar_preparation_envelope_cost(request_bytes: usize) -> canbench_rs::BenchResult {
+    use crate::facade::stable::label_stats::{RouterMutationPayloadV1, RouterMutationShardV1};
+    use crate::facade::store::RouterStore;
+    reset_bulk_bench_maps();
+    let store = RouterStore::new();
+    let key = bulk_bench_key();
+    let target = bulk_bench_target();
+    let record = RouterMutationRecord::new(1, 0, vec![7; request_bytes]);
+    let shards = vec![RouterMutationShardV1::new(
+        target.shard_id,
+        target.graph_canister,
+        None,
+    )];
+    let mut expected = record.clone();
+    expected.as_v1_mut().resolved_labels = Some(Default::default());
+    expected.as_v1_mut().resolved_properties = Some(Default::default());
+    expected.as_v1_mut().routing_in_progress = false;
+    expected.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
+        shards: shards.clone(),
+    };
+    let expected_bytes = expected.to_bytes().into_owned();
+    let publish = |shards| {
+        store.record_router_mutation_shards(&key, 1, Default::default(), Default::default(), shards)
+    };
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), record.clone()));
+    publish(shards.clone()).unwrap();
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        expected_bytes
+    );
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), record));
+    let mut outcome = None;
+    let measurement = canbench_rs::bench_fn(|| {
+        outcome = Some(black_box(publish(black_box(shards))));
+    });
+    assert_eq!(outcome, Some(Ok(())));
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        expected_bytes
+    );
+    measurement
+}
+
+#[bench(raw)]
+fn bench_scalar_preparation_envelope_1k_request() -> canbench_rs::BenchResult {
+    scalar_preparation_envelope_cost(1024)
+}
+
+#[bench(raw)]
+fn bench_scalar_preparation_envelope_1m_request() -> canbench_rs::BenchResult {
+    scalar_preparation_envelope_cost(1024 * 1024)
+}
+
 #[bench(raw)]
 fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
     reset_bulk_bench_maps();

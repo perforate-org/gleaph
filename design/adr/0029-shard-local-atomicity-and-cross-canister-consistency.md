@@ -283,9 +283,32 @@ recovery never sends canonical DML.
 
 This uses existing records and codecs, not a new journal or permanent identity tombstone. Scalar
 Graph Active/Retired state, exact receipt retention, acknowledged release and admission/cost bounds
-remain open under [ADR 0027](0027-graph-mutation-journal-retention.md). Earlier preparation writers
-for the envelope, zero-shard completion and routing release are still client-key-only, not bound
-to an expected mutation ID; their delayed-callback/key-reuse boundary remains a follow-up obligation.
+remain open under [ADR 0027](0027-graph-mutation-journal-retention.md).
+
+#### Scalar preparation callback identity
+
+`record_router_mutation_shards`, `record_router_mutation_completed_without_shards` and
+`abandon_router_mutation_routing_reservation` require the originally reserved mutation ID. Each
+uses the existing `scalar_mutation_record` owner to acquire one record and validate ID, both family
+authorities and terminal failure before any stable write. Callers retain the reservation ID across
+preparation awaits; they must not substitute an ID reread by client key after suspension. Ordered
+insert failure paths release only their pre-transition scalar reservation under this same rule.
+
+Envelope retries preserve existing progress; conflicting envelopes or no-shard outcomes cannot
+replace saved state. A matching release of an already released lease is a no-op. An old callback
+cannot publish or release a newer same-key reservation after terminal GC. This is mutation-identity
+binding, not an attempt-generation lock or cancellation of outstanding calls.
+
+Native tests pause the actual preparation future inside its index lookup, complete and expire the
+old record through Router's real owners, reserve the same key and fingerprint with a different ID,
+then resume positive, empty and error responses. Each rejects the old ID and preserves the entire
+new record; same-ID controls reach envelope publication, zero completion and release. This is not
+real delayed-IC scheduling, Graph GC or a complete audit of response/status identity lookups.
+Envelope-publication samples cost approximately 13.18 M instructions with a 1 KiB request
+fingerprint and 258.33 M with 1 MiB, for one warmed record and one shard. These measure the whole
+record read/write operation, not added identity-check overhead or a before/after regression.
+Zero heap/stable page growth does not bound allocation or peak memory. The other two writers
+were not measured. Production cost and Graph outcome retention remain unapproved/unrepaired.
 
 ### 5. Make read consistency explicit
 
