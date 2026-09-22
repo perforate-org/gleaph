@@ -1,0 +1,172 @@
+{
+  "base": "56d381b3fe32d345c8f040fd4de833baee5d3a6b",
+  "final_implementation": "90757825cc47cde1c97c4734a452a3be845f9294",
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "repo": "/Users/yota/dev/gleaph-spill",
+  "raw_root": "/private/tmp/spill-tree-56d-brf3un5q",
+  "anchor_utc": "2026-09-22 06:38:47 UTC +0000",
+  "sources": {
+    "baseline": {
+      "crates/ic-stable-lara/src/labeled/graph/compact.rs": "c51dd244f6fc19d7cc2d7861bfc6821e57f74ad08238698285509ef3c8bfbc04",
+      "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "079a7fa44be291836cb127c10f09b996f5d8661ca7491d5ece3b0f5e1e508c1d",
+      "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "71632ab604bd15060ad758b84b3eedbeed3972c8c647a0033809c0445bcaae01"
+    },
+    "initial_setup": {
+      "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "6cdba0860321d285ced34f0d00457f91f85bdb156bf6ca224c476e47263b8e3d",
+      "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "63351ef6bcd65ad89393ec8a16818aeef4797cf6bc507982110cfe247cbd47bd"
+    },
+    "before_valid_witness": {
+      "crates/ic-stable-lara/src/labeled/graph/compact.rs": "c51dd244f6fc19d7cc2d7861bfc6821e57f74ad08238698285509ef3c8bfbc04",
+      "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+      "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "8d317a1d7db5ad61d81ebe7004fc2901fb72164ad37d3e544bac0957083171b8"
+    },
+    "initial_admission": {
+      "crates/ic-stable-lara/src/labeled/graph/compact.rs": "6a9c4945c66af49b10d527dde9b9fd4ebac05939daf15dde0056dbcf06864a17"
+    },
+    "selection_only_mutation": {
+      "crates/ic-stable-lara/src/labeled/graph/compact.rs": "7f279f1a1e9961c371deb9e02c00698c1115ef3ead68b67b4a9daa2dcfb08f29"
+    },
+    "final": {
+      "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+      "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+      "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "8d317a1d7db5ad61d81ebe7004fc2901fb72164ad37d3e544bac0957083171b8"
+    }
+  },
+  "protected": {
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs": "97e5f92b002df197a85bdc20456576d372bd5964b9fe2d9d95e927b17757a3d7"
+  },
+  "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+  "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "budget": {
+    "limit_seconds": 600,
+    "final_reserve_seconds": 120,
+    "commands": 15,
+    "measured_seconds": 51.35271699994337,
+    "setup_charge_seconds": 0,
+    "remaining_seconds": 548.6472830000566,
+    "reserve_check_passed": true
+  },
+  "results": {
+    "initial_setup": "0 passed / 2 setup failures, not compaction-red evidence",
+    "before": "0 passed / 2 reachable compaction failures",
+    "after": "2 passed / 0 failed",
+    "selection_only_mutation": "0 passed / 2 extent-preservation failures",
+    "final": "86 passed / 0 failed; 580 filtered; no full library run",
+    "final_plan": "structural pass, not independent approval"
+  },
+  "test_files_identical_across_valid_red_green_mutation_final": true,
+  "reconstruction": "zero-context setup/witness/selection-only patches apply from base; selection-only patch is cumulative production diff, not stackable on final",
+  "not_run": [
+    "canbench including unchanged 16K pair",
+    "full library/workspace tests",
+    "test-target clippy",
+    "PocketIC",
+    "space/lifecycle gates",
+    "persistence",
+    "merge"
+  ],
+  "artifacts": {
+    "design/evidence/sources/adr0097-tree-compaction-setup-before.txt": {
+      "raw_file": "witness-before.log",
+      "raw_sha256": "111e33d4ae543f1823881d1b7e506ec12a0fc3f0c44040dda513b8009ffc652d",
+      "durable_sha256": "111e33d4ae543f1823881d1b7e506ec12a0fc3f0c44040dda513b8009ffc652d",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-before.txt": {
+      "raw_file": "backed-witness-before.log",
+      "raw_sha256": "10f43348bf8d6fbe8c72f32cb6ff0a14ffeaee4c4eb5cfaa064bae6915826842",
+      "durable_sha256": "10f43348bf8d6fbe8c72f32cb6ff0a14ffeaee4c4eb5cfaa064bae6915826842",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-after.txt": {
+      "raw_file": "witness-after.log",
+      "raw_sha256": "8c835fbb1dfd35ae1749914f5e1f30cb8865813323785b16fb206b986d920524",
+      "durable_sha256": "65519ffc9604f6ec9facfccfbc339942946cfd054f21f3b81918fec864141182",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-selection-only.txt": {
+      "raw_file": "selection-only-mutation.log",
+      "raw_sha256": "1b402c5970b8908142427c2d8c468a8483229b91e04bcc4fb8c7bd838f0ea12f",
+      "durable_sha256": "1b402c5970b8908142427c2d8c468a8483229b91e04bcc4fb8c7bd838f0ea12f",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-final-contracts.txt": {
+      "raw_file": "final-compact.log",
+      "raw_sha256": "a8e44b3b418f9afb471880218d79081849184f216f84ef2fb73f079bb5d3d9ce",
+      "durable_sha256": "1d964e08fcab916c58b89b97fc4cb752713d14beca923aa038b5f6ebcfe543cc",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-final-clippy.txt": {
+      "raw_file": "final-clippy.log",
+      "raw_sha256": "fe5ac80d70f9f9f0a69339747ac92870005f4ee6a96a98740b86562d1f9ad762",
+      "durable_sha256": "fe5ac80d70f9f9f0a69339747ac92870005f4ee6a96a98740b86562d1f9ad762",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-final-format.txt": {
+      "raw_file": "final-format.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-versions.txt": {
+      "raw_file": "versions.log",
+      "raw_sha256": "63f8a8ee7bd0717f5e2c4cddb8a84274de6eea77784b572a44395d4928326fce",
+      "durable_sha256": "63f8a8ee7bd0717f5e2c4cddb8a84274de6eea77784b572a44395d4928326fce",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-plan-final.txt": {
+      "raw_file": "plan-final.log",
+      "raw_sha256": "7c6bb9b73ed3f93cfa1c63cc94ec3758513ce42d67362e0fd661c62be6413773",
+      "durable_sha256": "7c6bb9b73ed3f93cfa1c63cc94ec3758513ce42d67362e0fd661c62be6413773",
+      "transformation": "trim trailing line whitespace and terminal blank lines; LF"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-ledger.json": {
+      "raw_file": "ledger.json",
+      "raw_sha256": "460fac6af790ac1104416fe7c0ebdec2226f59e04e9362acd2eed8dd2361180c",
+      "durable_sha256": "460fac6af790ac1104416fe7c0ebdec2226f59e04e9362acd2eed8dd2361180c",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-lizard.json": {
+      "raw_file": "lizard.json",
+      "raw_sha256": "f9e8c511d5657ad59f7a7f9a7270f47f9a7f21b67b4ce88f9be29059eab0fd2b",
+      "durable_sha256": "f9e8c511d5657ad59f7a7f9a7270f47f9a7f21b67b4ce88f9be29059eab0fd2b",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-runner.py": {
+      "raw_file": "run.py",
+      "raw_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "durable_sha256": "977fec1d79e7fe19830de6c327fcaf84e4afda93df73e7d0659c8703954c1dfc",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-setup-witness.patch": {
+      "raw_file": "setup-witness-u0.patch",
+      "raw_sha256": "b36da1c22d9598c4ccba38604368e3cecc35f330ea3827ac0c1d0bd9769fb681",
+      "durable_sha256": "b36da1c22d9598c4ccba38604368e3cecc35f330ea3827ac0c1d0bd9769fb681",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-witness.patch": {
+      "raw_file": "witness-u0.patch",
+      "raw_sha256": "b33e76f3e7fdae2422888ab2c76f79fa8f73b98545efdd5b97b98f66173c7b05",
+      "durable_sha256": "b33e76f3e7fdae2422888ab2c76f79fa8f73b98545efdd5b97b98f66173c7b05",
+      "transformation": "byte-identical"
+    },
+    "design/evidence/sources/adr0097-tree-compaction-selection-only.patch": {
+      "raw_file": "selection-only-u0.patch",
+      "raw_sha256": "169d7799bb2578a41acb3ecc75f19eedbf62b808db06a112087dc2ec77dbbeea",
+      "durable_sha256": "169d7799bb2578a41acb3ecc75f19eedbf62b808db06a112087dc2ec77dbbeea",
+      "transformation": "byte-identical"
+    }
+  },
+  "plan_sha256": "c613668463f4eea43a41947f51e51421254edb048d61cb2a23c1177c43578d37",
+  "administrative_notes": [
+    "First git diff --check rejected trailing Markdown hard-break spaces on two updated date lines; replaced with equivalent backslash hard breaks, no Rust change.",
+    "Initial Lizard hunk overlap included unchanged retained_compaction_fixture; exact function-body equality excludes it from final touched metrics.",
+    "Implementation commit hook rejected an advisory Why trailer format; implementation commit succeeded."
+  ]
+}

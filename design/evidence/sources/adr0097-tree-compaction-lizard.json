@@ -1,0 +1,301 @@
+{
+  "mode": "working-tree",
+  "baseline": "56d381b3fe32d345c8f040fd4de833baee5d3a6b",
+  "version": "1.24.0",
+  "options": [
+    "--csv",
+    "-i",
+    "-1"
+  ],
+  "paths": [
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs"
+  ],
+  "results": {
+    "base": {
+      "touched": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_edge_slot_move_in_bucket",
+          "nloc": 52,
+          "ccn": 14,
+          "tokens": 365,
+          "params": 3,
+          "length": 57,
+          "start": 1698,
+          "end": 1754,
+          "body_sha256": "fc2f17f64169f5976b90a6f6fbe4ae467afdb4da47b32252c2acf2cff65d5735"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "bucket_allows_unordered_swap",
+          "nloc": 9,
+          "ccn": 5,
+          "tokens": 70,
+          "params": 1,
+          "length": 11,
+          "start": 1760,
+          "end": 1770,
+          "body_sha256": "5b36151beaeb1fe96bb6e5480bd0b7bed8e6ea96e8fbf4437b3428e20bd189e7"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_edge_slot_swap_move_in_bucket",
+          "nloc": 37,
+          "ccn": 11,
+          "tokens": 236,
+          "params": 3,
+          "length": 40,
+          "start": 1783,
+          "end": 1822,
+          "body_sha256": "42dc78355dd59e7d824f8993c7a552b5749e2c5df494e298100a3325ea660dfa"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "apply_edge_slot_move_in_bucket",
+          "nloc": 21,
+          "ccn": 6,
+          "tokens": 148,
+          "params": 3,
+          "length": 21,
+          "start": 1895,
+          "end": 1915,
+          "body_sha256": "5053b6bed9249827749c47c2106d76ee01c207d51d94ce0b2163d7b121b00f19"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "finalize_bucket_slab_metadata",
+          "nloc": 11,
+          "ccn": 3,
+          "tokens": 53,
+          "params": 1,
+          "length": 17,
+          "start": 1917,
+          "end": 1933,
+          "body_sha256": "46bf966cb56c7613758f801ac93b607eccaeb1398cfda04db86af314a00e491f"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "compact_vertex_edge_span_one_step_with_span_policy",
+          "nloc": 90,
+          "ccn": 27,
+          "tokens": 584,
+          "params": 6,
+          "length": 104,
+          "start": 1962,
+          "end": 2065,
+          "body_sha256": "d93a5ae00e25a1aed057c2fe176171b82da0c38a3aff9156f3e3681a20dace01"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_compaction_move_in_bucket",
+          "nloc": 33,
+          "ccn": 10,
+          "tokens": 170,
+          "params": 4,
+          "length": 34,
+          "start": 2070,
+          "end": 2103,
+          "body_sha256": "4f39ab2da14659b3e0ef89d6b406c688f2bc167efe19edee50641513b6bb722e"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "unordered_swap_gate_rejects_value_log_and_non_dense_spans",
+          "nloc": 35,
+          "ccn": 1,
+          "tokens": 165,
+          "params": 0,
+          "length": 35,
+          "start": 5286,
+          "end": 5320,
+          "body_sha256": "0511850eb2d8579cd0742d18396171e92f64b779f9fded8db879a0c1cd55b51e"
+        }
+      ],
+      "unchanged_hunk_boundary_overlaps": [],
+      "aggregate_ccn": 77,
+      "max_ccn": 27
+    },
+    "current": {
+      "touched": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_edge_slot_move_in_bucket",
+          "nloc": 52,
+          "ccn": 14,
+          "tokens": 365,
+          "params": 3,
+          "length": 57,
+          "start": 1698,
+          "end": 1754,
+          "body_sha256": "70804468f7f83df8783fb8377b94080ce9ed18f9ccddc88fdc6bd4a471835a5e"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "slab_bucket_allows_unordered_swap",
+          "nloc": 6,
+          "ccn": 4,
+          "tokens": 59,
+          "params": 1,
+          "length": 6,
+          "start": 1759,
+          "end": 1764,
+          "body_sha256": "467b1d3cb2b9fc6a8946d8b9f9179fc1e4ba47f299d0504d13c0e112ecf85de0"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_edge_slot_swap_move_in_bucket",
+          "nloc": 37,
+          "ccn": 11,
+          "tokens": 236,
+          "params": 3,
+          "length": 40,
+          "start": 1777,
+          "end": 1816,
+          "body_sha256": "30079cd4f5462b9ae3c72fba72b6dabfdd689763b4436aba15c32a67ada6f8b6"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "apply_edge_slot_move_in_bucket",
+          "nloc": 21,
+          "ccn": 6,
+          "tokens": 148,
+          "params": 3,
+          "length": 21,
+          "start": 1889,
+          "end": 1909,
+          "body_sha256": "18540fe9e69490cb23537951b3e199b470e3bf01dbd45f23268ee3a3a9c5539e"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "finalize_bucket_slab_metadata",
+          "nloc": 8,
+          "ccn": 2,
+          "tokens": 42,
+          "params": 1,
+          "length": 11,
+          "start": 1911,
+          "end": 1921,
+          "body_sha256": "6f06a8ac27e39c0b12394333a42b0e0a2106e6f8d4e8b2d4ebf009434f79717c"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "compact_vertex_edge_span_one_step_with_span_policy",
+          "nloc": 98,
+          "ccn": 28,
+          "tokens": 627,
+          "params": 6,
+          "length": 116,
+          "start": 1950,
+          "end": 2065,
+          "body_sha256": "b971d1cd9b5e6c354ebf1f92e48e06eefa32e08b9bbe15775717075c8f2e2321"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "first_slab_compaction_move_in_bucket",
+          "nloc": 30,
+          "ccn": 9,
+          "tokens": 156,
+          "params": 4,
+          "length": 30,
+          "start": 2069,
+          "end": 2098,
+          "body_sha256": "1ae4e8ee48590f3e46f90b400dedecb88a0ed50fac09957dfacd0a2d8a55b6d9"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/compact.rs",
+          "name": "unordered_swap_gate_rejects_value_log_and_non_dense_spans",
+          "nloc": 35,
+          "ccn": 1,
+          "tokens": 165,
+          "params": 0,
+          "length": 35,
+          "start": 5281,
+          "end": 5315,
+          "body_sha256": "325af712a202e78654dede5e75fe43b5920678826db162441417b2a2a784d1c6"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/test_support.rs",
+          "name": "tree_compaction_fixture",
+          "nloc": 95,
+          "ccn": 9,
+          "tokens": 665,
+          "params": 1,
+          "length": 97,
+          "start": 572,
+          "end": 668,
+          "body_sha256": "175f37df89e24b0e447a7f4afe5704ce8693896bc5f20a87bd92b2fcd0c5f140"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs",
+          "name": "edge_slot_moved",
+          "nloc": 22,
+          "ccn": 1,
+          "tokens": 158,
+          "params": 4,
+          "length": 22,
+          "start": 5530,
+          "end": 5551,
+          "body_sha256": "3e9b93fc43e0021e3126fb32d447df6eccaa363b9fff214d4aab77fba9963987"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs",
+          "name": "check_tree_sibling_compaction",
+          "nloc": 319,
+          "ccn": 23,
+          "tokens": 2036,
+          "params": 2,
+          "length": 344,
+          "start": 5365,
+          "end": 5708,
+          "body_sha256": "2f50623a913ddc2357e320216a721b6d2c6abfd0e98e4820002d7f614428d102"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs",
+          "name": "tree_sibling_compaction_insertion_preserves_native_tree_and_properties",
+          "nloc": 3,
+          "ccn": 1,
+          "tokens": 15,
+          "params": 0,
+          "length": 3,
+          "start": 5711,
+          "end": 5713,
+          "body_sha256": "8aba56c9bbb5907311be3b39dbcdb2327ecfdd4846629c6e93dc09285ed55627"
+        },
+        {
+          "path": "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs",
+          "name": "tree_sibling_compaction_unordered_preserves_native_tree",
+          "nloc": 3,
+          "ccn": 1,
+          "tokens": 15,
+          "params": 0,
+          "length": 3,
+          "start": 5716,
+          "end": 5718,
+          "body_sha256": "c310d300c58ad83446791c48aa4dadc5934993f80f7cf7a5a738faeb23be8f17"
+        }
+      ],
+      "unchanged_hunk_boundary_overlaps": [
+        {
+          "path": "crates/ic-stable-lara/src/labeled/graph/test_support.rs",
+          "name": "retained_compaction_fixture",
+          "nloc": 133,
+          "ccn": 5,
+          "tokens": 823,
+          "params": 1,
+          "length": 135,
+          "start": 434,
+          "end": 568,
+          "body_sha256": "ea3108c4bb82cd41b15ea81f580cba17c6c7b7386222d12508b0ec29192106bd"
+        }
+      ],
+      "aggregate_ccn": 110,
+      "max_ccn": 28
+    }
+  },
+  "source_sha256": {
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "8d317a1d7db5ad61d81ebe7004fc2901fb72164ad37d3e544bac0957083171b8"
+  }
+}

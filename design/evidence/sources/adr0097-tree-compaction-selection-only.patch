@@ -1,0 +1,71 @@
+--- a/crates/ic-stable-lara/src/labeled/graph/compact.rs
++++ b/crates/ic-stable-lara/src/labeled/graph/compact.rs
+@@ -1756,10 +1756,4 @@
+-    /// `true` when this bucket may use unordered swap-compaction: edge-slab-only
+-    /// and either width 0 or value-slab-only with the dense degree-sized value span.
+-    /// Any bucket with an inline-property-bytes log or a non-dense value span falls
+-    /// back to the order-preserving left-pack step for that bucket (ADR 0052 §9).
+-    pub(super) fn bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+-        // ADR 0096 §5: tiny buckets have no slab span to swap within (dense
+-        // inline prefix needs no compaction of any kind).
+-        if bucket.is_tiny_mode() {
+-            return false;
+-        }
++    /// After slab-mode admission, permit swap-compaction only for prefix-only
++    /// edges with width 0 or a dense, degree-sized value prefix. Other value
++    /// layouts retain the order-preserving left-pack step (ADR 0052 §9).
++    fn slab_bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+@@ -1917,7 +1911 @@
+-    pub(super) fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
+-        // ADR 0096 delete redesign: tiny buckets carry tombstone holes, so
+-        // `stored == degree` no longer holds — finalizing would corrupt the
+-        // wire state. Tiny needs no slab finalization (no span); return as-is.
+-        if bucket.is_tiny_mode() {
+-            return bucket;
+-        }
++    fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
+@@ -2042,0 +2031,12 @@
++        // Whole-span work can reach any sibling, regardless of the triggering label.
++        // Admit slab logical compaction once, before selection, fallback and finalization:
++        // tiny rows are descriptor-resident; tree stored_slots is logical LTB extent,
++        // while only root ids occupy the edge slab. Both retain their native ordinals.
++        match BucketMode::from_bucket(&bucket) {
++            BucketMode::Tiny => {
++                return Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(
++                    bucket_index.saturating_add(1),
++                ));
++            }
++            BucketMode::Slab | BucketMode::Tree => {}
++        }
+@@ -2044,2 +2044,2 @@
+-        let unordered_swap =
+-            policy == EdgePlacementPolicy::Unordered && Self::bucket_allows_unordered_swap(&bucket);
++        let unordered_swap = policy == EdgePlacementPolicy::Unordered
++            && Self::slab_bucket_allows_unordered_swap(&bucket);
+@@ -2047 +2047 @@
+-            self.first_compaction_move_in_bucket(&bucket, unordered_swap, resume_slot_index)?;
++            self.first_slab_compaction_move_in_bucket(&bucket, unordered_swap, resume_slot_index)?;
+@@ -2053 +2053 @@
+-            moved = self.first_compaction_move_in_bucket(&bucket, unordered_swap, 0)?;
++            moved = self.first_slab_compaction_move_in_bucket(&bucket, unordered_swap, 0)?;
+@@ -2067,4 +2067,3 @@
+-    /// Finds and applies one compaction move inside a bucket: the unordered swap when
+-    /// `unordered_swap` permits reordering, else the order-preserving left-pack. The scan
+-    /// starts at `resume_slot_index` (the compaction cursor).
+-    fn first_compaction_move_in_bucket(
++    /// Finds and applies one move inside an admitted slab bucket: unordered swap when
++    /// permitted, otherwise order-preserving left-pack, starting at the compaction cursor.
++    fn first_slab_compaction_move_in_bucket(
+@@ -2079,2 +2078 @@
+-        // Tiny prefixes may retain holes but have no slab region to compact.
+-        if bucket.is_tiny_mode() {
++        if bucket.is_tree_mode() {
+@@ -5294 +5292 @@
+-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
++            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+@@ -5305 +5303 @@
+-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
++            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+@@ -5315 +5313 @@
+-            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
++            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(

@@ -1,0 +1,5 @@
+/opt/homebrew/bin/lizard
+1.24.0
+rustc 1.100.0-nightly (574ff7d98 2026-09-14)
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+cargo 1.100.0-nightly (7941be6fb 2026-09-11)

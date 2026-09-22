@@ -1,0 +1,1 @@
+Plan is structurally valid for phase=final: plans/0335-tree-compaction-admission.md
