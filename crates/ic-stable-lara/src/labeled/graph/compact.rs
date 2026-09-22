@@ -2607,6 +2607,289 @@ mod tests {
     use crate::VertexId;
     use std::ops::ControlFlow;
 
+    thread_local! {
+        static LEFT_PACK_DECODES: std::cell::RefCell<Vec<u32>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+    }
+
+    // Only EdgeStore and the static selector use these two widths, not a new graph fixture.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct LeftPackRow<const N: usize>(u32);
+
+    impl<const N: usize> crate::traits::CsrEdge for LeftPackRow<N> {
+        const BYTES: usize = N;
+        fn read_from(bytes: &[u8]) -> Self {
+            let target = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            LEFT_PACK_DECODES.with(|decoded| decoded.borrow_mut().push(target));
+            Self(target)
+        }
+        fn write_to(&self, bytes: &mut [u8]) {
+            bytes.fill(0xa5);
+            bytes[..4].copy_from_slice(&self.0.to_le_bytes());
+        }
+        fn neighbor_vid(&self) -> VertexId {
+            VertexId::from(self.0)
+        }
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+            Self(u32::from(vid))
+        }
+    }
+
+    impl<const N: usize> crate::traits::CsrEdgeTombstone for LeftPackRow<N> {
+        fn tombstone_edge() -> Self {
+            Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct LeftPackMemory {
+        inner: crate::VectorMemory,
+        reads: std::rc::Rc<std::cell::RefCell<Vec<(u64, usize)>>>,
+        allowed: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<u64>>>>,
+    }
+
+    impl ic_stable_structures::Memory for LeftPackMemory {
+        fn size(&self) -> u64 {
+            self.inner.size()
+        }
+        fn grow(&self, pages: u64) -> i64 {
+            self.inner.grow(pages)
+        }
+        fn read(&self, offset: u64, bytes: &mut [u8]) {
+            if let Some(range) = self.allowed.borrow().as_ref() {
+                assert!(offset >= range.start, "read before cursor");
+                assert!(
+                    offset + bytes.len() as u64 <= range.end,
+                    "read past initialized prefix"
+                );
+            }
+            self.reads.borrow_mut().push((offset, bytes.len()));
+            self.inner.read(offset, bytes);
+        }
+        fn write(&self, offset: u64, bytes: &[u8]) {
+            self.inner.write(offset, bytes);
+        }
+    }
+
+    fn left_pack_bounded_selector<const N: usize>() {
+        use crate::{lara::edge::EdgeStore, traits::CsrEdgeTombstone};
+        let memories: [LeftPackMemory; 6] = std::array::from_fn(|_| LeftPackMemory::default());
+        let store = EdgeStore::<LeftPackRow<N>, _>::new(
+            memories[0].clone(),
+            memories[1].clone(),
+            memories[2].clone(),
+            memories[3].clone(),
+            memories[4].clone(),
+            memories[5].clone(),
+            41,
+            1,
+            0,
+        )
+        .unwrap();
+        let slab = &memories[1];
+        let label = BucketLabelKey::from_raw(2);
+        const BASE: u64 = 3;
+        const LEN: u32 = 35;
+        // Real bytes immediately before/after the declared prefix belong to neighbors.
+        for slot in 0..41 {
+            store
+                .write_slot(slot, LeftPackRow::<N>(9000 + slot as u32))
+                .unwrap();
+        }
+        slab.reads.borrow_mut().clear();
+        store.read_slot_bytes(BASE, &mut vec![0; N]);
+        let base_byte = slab.reads.borrow()[0].0;
+        let cases = [
+            (LEN, vec![0, 1, 32], 0, Some((2, 0)), 3),
+            (LEN, vec![32], 0, Some((33, 32)), 34),
+            (LEN, vec![31, 32, 33], 0, Some((34, 31)), 35),
+            (LEN, (5..=32).collect(), 5, Some((33, 5)), 29),
+            (LEN, vec![0], 33, None, 2),
+            (LEN, vec![32, 33, 34], 0, None, 35),
+            (LEN, vec![0], 35, None, 0),
+            (LEN, vec![0], 36, None, 0),
+            (LEN, (0..LEN).collect(), 0, None, 0),
+            (0, vec![], 0, None, 0),
+        ];
+        for (case, (stored, holes, cursor, movement, decoded_len)) in cases.into_iter().enumerate()
+        {
+            let rows: Vec<_> = (0..stored)
+                .map(|slot| {
+                    if holes.contains(&slot) {
+                        LeftPackRow::<N>::tombstone_edge()
+                    } else {
+                        LeftPackRow::<N>(slot)
+                    }
+                })
+                .collect();
+            for (slot, row) in rows.iter().enumerate() {
+                store.write_slot(BASE + slot as u64, *row).unwrap();
+            }
+            let bucket = LabelBucket::from_parts(label, BASE, stored - holes.len() as u32, stored);
+            let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
+            let mut descriptor = [0; LabelBucket::BYTES];
+            bucket.write_to(&mut descriptor);
+            *slab.allowed.borrow_mut() = Some(
+                base_byte + u64::from(cursor.min(stored)) * N as u64
+                    ..base_byte + u64::from(stored) * N as u64,
+            );
+            for m in &memories {
+                m.reads.borrow_mut().clear();
+            }
+            LEFT_PACK_DECODES.with(|decoded| decoded.borrow_mut().clear());
+            let found = LabeledLaraGraph::<LeftPackRow<N>, _>::first_edge_slot_move_in_bucket(
+                &bucket, &store, cursor,
+            )
+            .unwrap();
+            assert_eq!(
+                found,
+                movement.map(|(old_slot_index, new_slot_index)| EdgeSlotMove {
+                    label_id: label,
+                    old_slot_index,
+                    new_slot_index
+                })
+            );
+            let expected: Vec<_> = rows
+                .iter()
+                .skip(cursor as usize)
+                .take(decoded_len)
+                .map(|row| row.0)
+                .collect();
+            LEFT_PACK_DECODES
+                .with(|decoded| assert_eq!(*decoded.borrow(), expected, "N={N} case={case}"));
+            let reads = slab.reads.borrow();
+            for &(_, bytes) in reads.iter() {
+                assert_eq!(bytes % N, 0);
+                assert!(bytes <= 32 * N, "read must remain bounded");
+            }
+            if decoded_len == 0 {
+                assert!(memories.iter().all(|m| m.reads.borrow().is_empty()));
+            }
+            eprintln!(
+                "LEFT_PACK width={N} case={case} reads={} bytes={} decodes={decoded_len} movement={movement:?}",
+                reads.len(),
+                reads.iter().map(|(_, len)| len).sum::<usize>()
+            );
+            let mut after = [0; LabelBucket::BYTES];
+            bucket.write_to(&mut after);
+            assert_eq!(descriptor, after);
+            for (m, expected) in memories.iter().zip(&before) {
+                assert_eq!(
+                    &*m.inner.borrow(),
+                    expected,
+                    "selector must be read-only, including neighbor bytes"
+                );
+            }
+            *slab.allowed.borrow_mut() = None;
+        }
+        // Invalid first address: preserve the exact error without reading any store.
+        for m in &memories {
+            m.reads.borrow_mut().clear();
+        }
+        let invalid = LabelBucket::from_parts(label, crate::slab_index::SLOT_INDEX_MASK, 1, 2);
+        let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
+        assert!(matches!(
+            LabeledLaraGraph::<LeftPackRow<N>, _>::first_edge_slot_move_in_bucket(
+                &invalid, &store, 1
+            ),
+            Err(LabeledOperationError::Store(
+                LaraOperationError::CollectAllocationOverflow
+            ))
+        ));
+        assert!(memories.iter().all(|m| m.reads.borrow().is_empty()));
+        for (m, expected) in memories.iter().zip(&before) {
+            assert_eq!(&*m.inner.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn left_pack_bounded_four_byte_selector() {
+        left_pack_bounded_selector::<4>();
+    }
+
+    #[test]
+    fn left_pack_bounded_ten_byte_selector() {
+        left_pack_bounded_selector::<10>();
+    }
+
+    #[test]
+    fn left_pack_bounded_caller_falls_back_and_preserves_neighbor() {
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        let neighbor = BucketLabelKey::from_raw(3);
+        for (key, targets) in [(label, 0..8), (neighbor, 9000..9005)] {
+            for target in targets {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        src,
+                        key,
+                        TestEdge { target },
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+        }
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        let vertex = graph.vertices().get(src);
+        let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.stored_slots(), 8);
+        assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        let neighbor_slot = graph.find_bucket_slot(&vertex, neighbor).unwrap().unwrap();
+        let neighbor_before = graph
+            .buckets()
+            .read_label_bucket_slot(neighbor_slot)
+            .unwrap();
+        let rows_before = graph.iter_edges_for_label(src, neighbor).unwrap();
+        assert_eq!(
+            graph.remove_edge_at_slot(src, label, 0).unwrap(),
+            Some(TestEdge { target: 0 })
+        );
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(
+            LabeledLaraGraph::first_edge_slot_move_in_bucket(&bucket, graph.edges(), 6).unwrap(),
+            None
+        );
+        assert_eq!(
+            graph
+                .compact_vertex_edge_span_one_step(src, 0, 6, &|_| EdgePlacementPolicy::Insertion)
+                .unwrap(),
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 1,
+                new_slot_index: 0
+            })
+        );
+        let mut rows = Vec::new();
+        assert_eq!(
+            graph
+                .visit_edges(src, label, OutEdgeOrder::Ascending, |slot, edge| {
+                    rows.push((slot.raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap(),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(
+            rows,
+            [(0, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7)]
+        );
+        assert_eq!(
+            graph
+                .buckets()
+                .read_label_bucket_slot(neighbor_slot)
+                .unwrap(),
+            neighbor_before
+        );
+        assert_eq!(
+            graph.iter_edges_for_label(src, neighbor).unwrap(),
+            rows_before
+        );
+        assert_eq!(graph.edges().header().num_edges as u64, 12);
+    }
+
     #[test]
     fn leaf_vertex_positions_use_resident_edge_slots_only() {
         // Label-bucket descriptors live in a separate store.  Leaf edge placement
