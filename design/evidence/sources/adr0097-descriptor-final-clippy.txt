@@ -1,0 +1,87 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+    Checking ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.49s

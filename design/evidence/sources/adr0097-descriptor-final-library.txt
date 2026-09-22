@@ -1,0 +1,967 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+warning: unused import: `OutEdgeOrder`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4189:47
+     |
+4189 |     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
+     |                                               ^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::traits::CsrEdge`
+    --> crates/ic-stable-lara/src/labeled/graph/batch_write.rs:4191:9
+     |
+4191 |     use crate::traits::CsrEdge;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OneOrientationBatchLocation` and `OneOrientationPhysicalLocation`
+  --> crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs:12:60
+   |
+12 |         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2279:9
+     |
+2279 | /         graph
+2280 | |             .visit_edges(
+2281 | |                 vid,
+2282 | |                 label,
+...    |
+2289 | |             .unwrap();
+     | |_____________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2279 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/insert.rs:2338:9
+     |
+2338 | /         graph
+2339 | |             .visit_edges(
+2340 | |                 vid,
+2341 | |                 label,
+...    |
+2348 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2338 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2061:9
+     |
+2061 | /         graph
+2062 | |             .visit_edges(
+2063 | |                 vid,
+2064 | |                 label,
+...    |
+2071 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2061 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/remove.rs:2141:9
+     |
+2141 | /         graph
+2142 | |             .visit_edges(
+2143 | |                 VertexId::from(0),
+2144 | |                 label,
+...    |
+2151 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+2141 |         let _ = graph
+     |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:184:13
+    |
+184 | /             graph
+185 | |                 .visit_edges(vid, label, order, |slot, edge| {
+186 | |                     seen.push((slot.raw(), edge.0));
+187 | |                     ControlFlow::<()>::Continue(())
+188 | |                 })
+189 | |                 .unwrap();
+    | |_________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+184 |             let _ = graph
+    |             +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:236:9
+    |
+236 | /         graph
+237 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+238 | |                 survivors.push((slot.raw(), edge.0));
+239 | |                 ControlFlow::<()>::Continue(())
+240 | |             })
+241 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+236 |         let _ = graph
+    |         +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:323:5
+    |
+323 | /     graph
+324 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+325 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+326 | |             before.push((slot.raw(), item.edge.target));
+327 | |             ControlFlow::<()>::Continue(())
+328 | |         })
+329 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+323 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_read_test.rs:344:5
+    |
+344 | /     graph
+345 | |         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
+346 | |             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
+347 | |             after.push((slot.raw(), item.edge.target));
+348 | |             ControlFlow::<()>::Continue(())
+349 | |         })
+350 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+344 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:130:5
+    |
+130 | /     graph
+131 | |         .visit_edges(
+132 | |             VertexId::from(0),
+133 | |             label,
+...   |
+140 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+130 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/spill_swap_test.rs:281:5
+    |
+281 | /     graph
+282 | |         .visit_edges(
+283 | |             VertexId::from(0),
+284 | |             label,
+...   |
+291 | |         .unwrap();
+    | |_________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+281 |     let _ = graph
+    |     +++++++
+
+warning: unused `std::ops::ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/graph/traverse.rs:6922:9
+     |
+6922 | /         graph
+6923 | |             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
+6924 | |                 seen.push(u32::from(edge.neighbor_vid()));
+6925 | |                 ControlFlow::<()>::Continue(())
+6926 | |             })
+6927 | |             .unwrap();
+     | |_____________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+6922 |         let _ = graph
+     |         +++++++
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/ic-stable-lara/src/labeled/graph/tree_write.rs:6270:9
+     |
+6270 |         drop(post);
+     |         ^^^^^----^
+     |              |
+     |              argument has type `record::LabelBucket`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+6270 -         drop(post);
+6270 +         let _ = post;
+     |
+
+warning: `ic-stable-lara` (lib test) generated 15 warnings (run `cargo fix --lib -p ic-stable-lara --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.30s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae)
+
+running 659 tests
+test labeled::bidirectional::counterpart::tests::interleaved_neighbors_do_not_change_pair_order ... ok
+test labeled::bidirectional::counterpart::tests::directed_edge_counterpart ... ok
+test labeled::bidirectional::counterpart::tests::relation_count_mismatch_is_not_silently_accepted ... ok
+test labeled::bidirectional::counterpart::tests::impossible_logical_slot_mapping_fails_closed ... ok
+test labeled::bidirectional::counterpart::tests::reverse_occurrence_reads_from_incoming_bucket_with_exact_slot ... ok
+test labeled::bidirectional::counterpart::tests::directed_self_loop_uses_the_reverse_projection ... ok
+test labeled::bidirectional::counterpart::tests::parallel_directed_edges_keep_pair_order ... ok
+test labeled::bidirectional::counterpart::tests::reverse_orientation_on_undirected_is_invalid ... ok
+test labeled::bidirectional::deferred::tests::bypass_row_work_item_round_trips ... ok
+test labeled::bidirectional::counterpart::tests::many_parallel_directed_edges_resolve_across_slab_overflow_boundary ... ok
+test labeled::bidirectional::counterpart::tests::source_not_found_returns_error ... ok
+test labeled::bidirectional::counterpart::tests::undirected_edge_counterpart ... ok
+test labeled::bidirectional::counterpart::tests::counterpart_of_is_involution_for_directed_and_undirected ... ok
+test labeled::bidirectional::counterpart::tests::tombstoned_source_is_not_reported_as_absent ... ok
+test labeled::bidirectional::counterpart::tests::undirected_self_loop_counterpart ... ok
+test labeled::bidirectional::deferred::tests::bidirectional_parallel_edge_inline_propertys_survive_diamond_insert ... ok
+test labeled::bidirectional::counterpart::tests::undirected_parallel_edges_keep_pair_order_and_canonical_owner ... ok
+test labeled::bidirectional::deferred::tests::delete_vertex_work_item_round_trips ... ok
+test labeled::bidirectional::deferred::tests::bypass_tombstones_are_left_packed_at_hysteresis ... ok
+test labeled::bidirectional::deferred::tests::bypass_compaction_below_hysteresis_no_fire ... ok
+test labeled::bidirectional::deferred::tests::compaction_cursor_survives_interleaved_delete_in_packed_prefix ... ok
+test labeled::bidirectional::deferred::tests::deferred_bidirectional_uses_one_shared_queue ... ok
+test labeled::bidirectional::deferred::tests::delete_vertex_preempts_routine_compaction ... ok
+test labeled::bidirectional::deferred::tests::compaction_cursor_packs_alternating_tombstones_across_steps ... ok
+test labeled::bidirectional::deferred::tests::delete_vertex_job_purges_incident_edges_phased ... ok
+test labeled::bidirectional::deferred::tests::delete_vertex_job_is_idempotent ... ok
+test labeled::bidirectional::deferred::tests::dense_enqueue_propagates_captured_policies_to_re_enqueued_span ... ok
+test labeled::bidirectional::deferred::tests::delete_purge_keeps_neighbor_survivors_order_preserving ... ok
+test labeled::bidirectional::deferred::tests::detach_delete_flushes_emptied_spans_as_merged_runs ... ok
+test labeled::bidirectional::deferred::tests::failed_compaction_step_is_requeued_not_silently_completed ... ok
+test labeled::bidirectional::deferred::tests::enqueued_insertion_capture_never_reorders_without_ambient_table ... ok
+test labeled::bidirectional::deferred::tests::directed_unordered_reuse_applies_to_both_orientations ... ok
+test labeled::bidirectional::deferred::tests::inline_property_bytes_compaction_work_item_round_trips_and_runs_once ... ok
+test labeled::bidirectional::deferred::tests::enqueued_unordered_capture_swap_compacts_without_ambient_table ... ok
+test labeled::bidirectional::deferred::tests::materialize_inline_property_stream_drains_via_bidi_maintenance_queue ... ok
+test labeled::bidirectional::deferred::tests::maintenance_key_presence_dedups_and_preserves_delete_cursor ... ok
+test labeled::bidirectional::deferred::tests::logical_slot_reader_handles_slab_and_overflow_locations ... ok
+test labeled::bidirectional::deferred::tests::directed_insert_deferred_materialize_via_wrapper_retry_after_drain ... ok
+test labeled::bidirectional::deferred::tests::missing_label_in_captured_map_falls_back_to_order_preserving ... ok
+test labeled::bidirectional::deferred::tests::pending_dense_maintenance_short_circuits_before_policy_capture ... ok
+test labeled::bidirectional::deferred::tests::pending_span_maintenance_short_circuits_before_policy_capture ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_gate_is_pure_descriptor_arithmetic ... ok
+test labeled::bidirectional::deferred::tests::paired_directed_post_write_failures_trap ... ok
+test labeled::bidirectional::deferred::tests::remove_directed_deferred_uses_edge_inline_property_to_select_parallel_edge ... ok
+test labeled::bidirectional::deferred::tests::paired_undirected_post_write_failures_trap ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_dedups_pending_span ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_fires_at_hysteresis ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_below_threshold_no_fire ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_excludes_unordered ... ok
+test labeled::bidirectional::deferred::tests::remove_undirected_deferred_uses_edge_inline_property_to_select_parallel_edge ... ok
+test labeled::bidirectional::deferred::tests::reverse_parallel_edges_preserve_ordinal_and_inline_bytes ... ok
+test labeled::bidirectional::deferred::tests::scalar_undirected_location_pair_preserves_owner_and_self_loop_shape ... ok
+test labeled::bidirectional::deferred::tests::directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew ... ok
+test labeled::bidirectional::deferred::tests::versioned_encoding_rejects_legacy_bytes_and_unknown_pairs ... ok
+test labeled::bucket_label_key::tests::default_is_unlabeled_directed_wire ... ok
+test labeled::bucket_label_key::tests::msb_encodes_directed ... ok
+test labeled::bucket_label_key::tests::ord_groups_undirected_before_directed ... ok
+test labeled::bidirectional::deferred::tests::remove_side_compaction_skips_missing_bucket ... ok
+test labeled::bidirectional::deferred::tests::stepped_delete_bypass_vertex_with_interior_tombstone ... ok
+test labeled::bucket_store::tests::directedness_range_empty_when_degree_zero ... ok
+test labeled::bidirectional::deferred::tests::stalled_retry_preempts_routine_compaction ... ok
+test labeled::bidirectional::deferred::tests::scalar_insert_returns_exact_forward_and_reverse_locations ... ok
+test labeled::bucket_store::tests::compact_segment_releases_old_span_for_reuse ... ok
+test labeled::bucket_store::tests::degree_only_write_preserves_edge_and_inline_property_bytes_physical_state ... ok
+test labeled::bidirectional::deferred::tests::tiny_deferred_alternating_removes_stay_live ... ok
+test labeled::bucket_store::tests::init_rejects_partial_layout_when_free_spans_wiped ... ok
+test labeled::bidirectional::deferred::tests::scalar_inline_property_parallel_overflow_locations_match_live_slots ... ok
+test labeled::bucket_store::tests::in_place_descriptor_append_still_validates_unchanged_prefix ... ok
+test labeled::graph::batch_write::tests::logical_batch_shape_rejects_malformed_self_loop ... ok
+test labeled::bucket_store::tests::insert_label_bucket_rewrites_owning_segment ... ok
+test labeled::graph::batch_write::tests::logical_batch_shape_rejects_mismatched_directed_pair ... ok
+test labeled::graph::batch_write::tests::merged_undirected_plan_validates_same_bucket_projections_once ... ok
+test labeled::graph::batch_write::tests::recoverable_geometry_classification_excludes_fatal_errors ... ok
+test labeled::graph::batch_write::tests::reserve_checks_total_edge_and_inline_property_bytes_slot_counts_fit_in_u32_results ... ok
+test labeled::bucket_store::tests::init_reopens_fully_populated_layout ... ok
+test labeled::bucket_store::tests::partition_strategies_agree_on_mixed_directedness ... ok
+test labeled::bucket_store::tests::in_place_descriptor_insert_preserves_prefix_and_shifts_suffix ... ok
+test labeled::bucket_store::tests::undirected_only_vertex_has_full_range_for_undirected ... ok
+test labeled::graph::batch_write::tests::batch_append_preserves_order_after_scalar_leaf_relocation ... ok
+test labeled::graph::batch_write::tests::slab_batch_appends_after_interior_tombstone_without_reordering_live_edges ... ok
+test labeled::graph::batch_write::tests::unordered_batch_hole_fill_rollback_leaves_state_unchanged ... ok
+test labeled::graph::batch_write::tests::unordered_batch_fills_slab_tombstone_holes_first ... ok
+test labeled::graph::batch_write::tests::reserve_rejects_duplicate_bucket_runs ... ok
+test labeled::graph::batch_write::tests::reserve_prepares_new_bucket_in_initial_slice ... ok
+test labeled::graph::batch_write_test::tests::batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run ... ok
+test labeled::graph::batch_write::tests::reserve_rejects_out_of_order_ordinals ... ok
+test labeled::graph::batch_write::tests::unordered_batch_hole_fill_window_rewrite_matches_per_hole ... ok
+test labeled::graph::batch_write_test::tests::batch_run_rejects_exactly_full_tail_block ... ok
+test labeled::graph::batch_write_test::tests::batch_run_admits_tree_mode_bucket_tail_fit ... ok
+test labeled::graph::batch_write_test::tests::batch_run_rejects_tree_mode_bucket_fail_closed ... ok
+test labeled::graph::batch_write_test::tests::commit_inline_property_bytes_batch_new_span_success ... ok
+test labeled::graph::batch_write_test::tests::commit_inline_property_bytes_batch_second_run_success ... ok
+test labeled::graph::batch_write_test::tests::commit_edge_only_batch_success ... ok
+test labeled::graph::batch_write::tests::unordered_batch_hole_fill_writes_inline_property_bytes_at_live_ordinal ... ok
+test labeled::graph::batch_write_test::tests::commit_multi_run_batch_success ... ok
+test labeled::graph::batch_write_test::tests::batch_run_past_t_promote_then_scalar_promotes_correctly ... ok
+test labeled::bidirectional::deferred::tests::gap_promote_with_active_overflow_log_keeps_every_row ... ok
+test labeled::graph::batch_write_test::tests::commit_multi_inline_property_run_offsets_match_read_back ... ok
+test labeled::graph::batch_write_test::tests::reserve_failure_restores_edge_capacity_after_inline_property_bytes_alloc_failure ... ok
+test labeled::graph::batch_write_test::tests::reserve_mid_allocation_failure_rolls_back_inline_property_bytes_tail ... ok
+test labeled::graph::batch_write_test::tests::reserve_rejects_duplicate_bucket_runs ... ok
+test labeled::graph::batch_write_test::tests::reserve_rejects_empty_plan ... ok
+test labeled::graph::batch_write_test::tests::commit_stale_bucket_panics_before_writes ... ok
+test labeled::graph::batch_write_test::tests::tiny_bucket_run_rejected_before_width_check ... ok
+test labeled::graph::batch_write_test::tests::reserve_rejects_out_of_order_ordinals ... ok
+test labeled::graph::batch_write_test::tests::scalar_fallback_after_exactly_full_tail_block_advances_correctly ... ok
+test labeled::graph::batch_write_test::tests::reserve_prepares_new_bucket_in_initial_slice ... ok
+test labeled::graph::batch_write_test::tests::commit_wrong_graph_instance_panics_before_writes ... ok
+test labeled::graph::bucket::tests::bucket_tail_missing_cache_revalidates_cached_slot_label ... ok
+test labeled::graph::bucket::tests::insert_beyond_initial_label_bucket_store_vertex_segment_relocates_buckets ... ok
+test labeled::graph::bucket::tests::label_buckets_and_edges_follow_label_order ... ok
+test labeled::graph::bucket::tests::labeled_leaf_density_triggers_rebalance_not_vertex_span_alone ... ok
+test labeled::bidirectional::deferred::tests::stepped_delete_vertex_drains_hub_one_edge_per_step ... ok
+test labeled::graph::bucket::tests::labeled_leaf_segment_is_dense_uses_pma_not_geometry_when_pinned ... ok
+test labeled::graph::bucket::tests::out_edge_bucket_index_range_agrees_with_slice_partition ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_deferred_for_overflow_log_backed_row ... ok
+test labeled::graph::bucket::tests::visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_descending_parity_after_compaction ... ok
+test labeled::graph::bucket::tests::empty_middle_label_bucket_does_not_expose_neighbor_edges ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_left_packs_and_preserves_order ... ok
+test labeled::graph::bypass::tests::default_bypass_points_directly_into_edge_csr ... ok
+test labeled::graph::bypass::tests::empty_bypass_promotes_as_empty_when_next_insert_uses_different_label ... ok
+test labeled::graph::bypass::tests::first_homogeneous_insert_enters_bypass_without_enable ... ok
+test labeled::graph::bypass::tests::bypass_compact_step_invariants_pass ... ok
+test labeled::graph::bypass::tests::bypass_grow_does_not_repoint_bucket_mode_successor_bucket_base ... ok
+test labeled::graph::bypass::tests::homogeneous_undirected_bypass_and_promotion_on_named_label ... ok
+test labeled::graph::bypass::tests::bypass_promotion_failure_atomic_at_free_span_reservation ... ok
+test labeled::graph::bypass::tests::homogeneous_bypass_append_extends_edge_capacity ... ok
+test labeled::graph::bypass::tests::bypass_promotion_success_after_rejected_free_span_reservation ... ok
+test labeled::graph::cap_enforcement_tests::bucket_mode_maps_tiny_and_caps_at_max_degree ... ok
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_slab_mode_triggers_at_t_promote ... ok
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_tiny_mode_measures_the_used_width ... ok
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_tree_mode_promoted_bucket_not_rejected ... ok
+test labeled::graph::bypass::tests::mixed_default_bypass_and_normal_labeled_pma_counts_stay_consistent ... ok
+test labeled::graph::cap_enforcement_tests::check_alloc_cap_tree_mode_rejects_beyond_structural_coverage ... ok
+test labeled::graph::bypass::tests::out_edges_by_directedness_bypass_empty_when_directedness_mismatches ... ok
+test labeled::graph::cap_enforcement_tests::check_vertex_bucket_count_cap_triggers_at_max_buckets_per_vertex ... ok
+test labeled::graph::cap_enforcement_tests::compute_bucket_allocation_returns_stored_slots_for_slab_mode_without_gap ... ok
+test labeled::graph::cap_enforcement_tests::compute_bucket_allocation_returns_stored_slots_for_tree_mode ... ok
+test labeled::graph::compact::tests::bucket_span_region_len_returns_correct_region_per_mode ... ok
+test labeled::graph::bypass::tests::same_label_insert_into_tail_bypass_row_stays_in_bypass_mode ... ok
+test labeled::graph::bypass::tests::non_tail_single_label_insert_does_not_rebase_successor_bypass_edges ... ok
+test labeled::graph::compact::tests::base_resolution_never_reports_a_width_it_did_not_obtain ... ok
+test labeled::graph::bypass::tests::same_label_insert_into_non_tail_bypass_row_promotes_to_bucket_mode ... ok
+test labeled::graph::compact::tests::contiguous_tiled_out_edges_rejects_span_end_overflow ... ok
+test labeled::graph::compact::tests::compact_vertex_edge_span_shrinks_vertex_edge_span ... ok
+test labeled::graph::compact::tests::compact_vertex_edge_span_uses_edge_tombstone_contract ... ok
+test labeled::graph::compact::tests::bucket_vertex_prefix_end_rejects_slot_overflow ... ok
+test labeled::graph::compact::tests::compact_label_bucket_vertex_segment_preserves_rows ... ok
+test labeled::graph::compact::tests::catalog_label_parallel_inserts_use_single_bucket_row ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_append_rejects_degree_overflow ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_appends_stay_slab_only_without_overflow_log ... ok
+test labeled::graph::compact::tests::find_bucket_resolves_non_default_label_after_parallel_inserts ... ok
+test labeled::graph::compact::tests::edge_overflow_compaction_does_not_fold_inline_property_bytes_log ... ok
+test labeled::graph::compact::tests::incremental_vertex_edge_span_compact_preserves_other_label_bucket ... ok
+test labeled::graph::compact::tests::homogeneous_bypass_region_end_rejects_slot_overflow ... ok
+test labeled::graph::compact::tests::incremental_vertex_edge_span_compact_clears_many_tombstones ... ok
+test labeled::graph::compact::tests::label_bucket_accumulates_many_slab_tombstones_before_compact ... ok
+test labeled::graph::compact::tests::label_bucket_store_vertex_segment_compacts_across_thirty_two_vertices ... ok
+test labeled::graph::compact::tests::labeled_leaf_rebalance_does_not_release_span ... ok
+test labeled::graph::compact::tests::labeled_leaf_weighted_slide_preserves_total_live_edges ... ok
+test labeled::graph::compact::tests::insertion_bucket_compaction_keeps_left_pack_order ... ok
+test labeled::graph::compact::tests::labeled_leaf_rebalance_rewrites_all_bucket_starts_in_leaf ... ok
+test labeled::graph::compact::tests::labeled_proportional_slack_by_label_degree_after_slide ... ok
+test labeled::graph::compact::tests::labeled_relocation_preserves_all_leaf_vertices ... ok
+test labeled::graph::compact::tests::labeled_relocate_commit_order ... ok
+test labeled::graph::compact::tests::labeled_rewrite_within_pinned_leaf_does_not_release_vertex_footprint ... ok
+test labeled::graph::compact::tests::labeled_segment_relocate_releases_single_footprint ... ok
+test labeled::graph::compact::tests::labeled_segment_relocate_does_not_call_vertex_span_release ... ok
+test labeled::graph::compact::tests::labeled_segment_relocate_reuses_free_span ... ok
+test labeled::graph::compact::tests::leaf_vertex_positions_use_resident_edge_slots_only ... ok
+test labeled::graph::compact::tests::last_bucket_successor_rejects_span_end_overflow ... ok
+test labeled::graph::compact::tests::labeled_segment_slide_coalesces_adjacent_free ... ok
+test labeled::graph::bypass::tests::bypass_promotion_failure_atomic_at_bucket_slab_allocation ... ok
+test labeled::graph::bypass::tests::bypass_promotion_success_after_rejected_bucket_slab_allocation ... ok
+test labeled::bucket_store::tests::in_place_descriptor_count_rejection_keeps_backed_rows_unchanged ... ok
+test labeled::graph::compact::tests::overflow_direct_unlink_reports_bounded_moves_before_tombstone_free_fold ... ok
+test labeled::graph::compact::tests::fold_growth_stays_mate_disjoint_across_span_growth ... ok
+test labeled::graph::compact::tests::normal_label_bucket_insert_rejects_edge_len_overflow ... ok
+test labeled::graph::compact::tests::overflow_log_bucket_past_leaf0_cap_reads_descending ... ok
+test labeled::graph::compact::tests::rewrite_copy_byte_len_rejects_usize_overflow ... ok
+test labeled::graph::bypass::tests::undirected_homogeneous_bypass_promotion_failure_atomic_at_bucket_slab_allocation ... ok
+test labeled::graph::compact::tests::push_vertex_rejects_normal_row_with_label_bucket_overflow ... ok
+test labeled::graph::compact::tests::parallel_catalog_edges_on_high_index_vertex_stay_on_slab ... ok
+test labeled::graph::compact::tests::spanless_tiny_vertex_does_not_request_slack ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_k_equals_m_skips_value_rotation ... ok
+test labeled::graph::compact::tests::labeled_hub_33_labels_bounded_insert_time ... ok
+test labeled::graph::compact::tests::unordered_swap_gate_rejects_value_log_and_non_dense_spans ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_moves_last_live_into_first_interior_tombstone ... ok
+test labeled::graph::compact::tests::vertex_edge_span_retire_intervals_cover_interior_gaps_and_tail ... ok
+test labeled::graph::compact::tests::vertex_edge_span_rewrite_rejects_total_live_overflow ... ok
+test labeled::graph::compact::tests::gap_tree_full_path_growth_past_5728_releases_only_owned_regions ... ok
+test labeled::graph::compact::tests::unordered_swap_compaction_two_swaps_reorder_and_trim ... ok
+test labeled::graph::compact::tests::unordered_swap_step_forced_error_returns_before_mutation ... ok
+test labeled::graph::init::tests::fresh_layout_applies_independent_initial_capacities ... ok
+test labeled::graph::init::tests::fresh_layout_uses_segment16_quota1_policy ... ok
+test labeled::graph::init::tests::init_rejects_partial_layout_when_vertices_wiped ... ok
+test labeled::graph::init::tests::init_reopens_fully_populated_layout ... ok
+test labeled::graph::init::tests::label_edge_span_positioning_rejects_impossible_live_width ... ok
+test labeled::graph::insert::g6_zero_read_tests::g6_tiny_insert_reads_no_edge_bytes ... ok
+test labeled::graph::insert::tests::first_label_bucket_born_tiny_promotes_to_span ... ok
+test labeled::graph::insert::tests::insertion_placement_never_reuses_interior_tombstone ... ok
+test labeled::graph::insert::tests::insert_beyond_initial_label_edge_span_capacity_relocates_labeled_leaf ... ok
+test labeled::graph::compact::tests::mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log ... ok
+test labeled::graph::insert::tests::labeled_bypass_still_uses_core_vertex_path ... ok
+test labeled::graph::insert::tests::labeled_insert_and_iter_by_label ... ok
+test labeled::graph::compact::tests::mixed_label_hub_33_labels_span_release_regression ... ok
+test labeled::graph::insert::tests::labeled_insert_skip_leaf_cascade_does_not_rebalance ... ok
+test labeled::graph::insert::tests::push_vertex_grows_pma_segment_tree_before_high_leaf_edge_insert ... ok
+test labeled::graph::insert::tests::tiny_append_grows_inline_without_leaf_accounting ... ok
+test labeled::graph::insert::tests::labeled_no_vertex_edge_span_rewrite_on_routine_insert ... ok
+test labeled::graph::insert::tests::tiny_fourth_insert_stays_inline_fifth_promotes_to_slab ... ok
+test labeled::graph::insert::tests::single_label_tree_promotion_preserves_edge_only_tail_headroom ... ok
+test labeled::graph::insert::tests::tiny_live_slot_count_invariant_catches_degree_drift ... ok
+test labeled::graph::compact::tests::single_label_parallel_insert_survives_overflow_log_fold ... ok
+test labeled::graph::insert::tests::unordered_delete_insert_cycles_keep_stored_slots_bounded ... ok
+test labeled::graph::insert::tests::unordered_insert_appends_when_bucket_is_dense ... ok
+test labeled::graph::insert::tests::unordered_scalar_insert_reuses_interior_slab_tombstone ... ok
+test labeled::graph::iter::tests::inline_iter_next_with_slot_and_advance ... ok
+test labeled::graph::iter::tests::inline_iter_walks_both_orders ... ok
+test labeled::graph::insert::tests::unordered_reuse_writes_inline_property_bytes_at_live_ordinal ... ok
+test labeled::graph::compact::tests::mixed_label_hub_20_labels_500_edges_each ... ok
+test labeled::graph::compact::tests::two_label_hub_500_then_173_parallel_edges ... ok
+test labeled::graph::insert::tests::unordered_reuse_skips_log_backed_inline_property_bytes_bucket ... ok
+test labeled::graph::compact::tests::vertex_edge_span_rewrite_weights_slack_by_label_degree ... ok
+test labeled::graph::init::tests::init_reopen_with_empty_ltb_succeeds ... ok
+test labeled::graph::insert::tests::labeled_insert_does_not_grow_elem_capacity_for_hub_growth ... ok
+test labeled::graph::leaf_pin::tests::labeled_leaf_pma_density_matches_counts_store_when_pinned ... ok
+test labeled::graph::compact::tests::mixed_label_hub_50_labels_1000_edges_each ... ok
+test labeled::graph::leaf_pin::tests::labeled_leaf_physical_block_covers_all_label_buckets ... ok
+test labeled::graph::leaf_pin::tests::labeled_heavy_relocation_survives_reopen_without_corruption ... ok
+test labeled::graph::leaf_pin::tests::labeled_leaf_vertices_share_span_meta_physical_start ... ok
+test labeled::graph::promote::spill_test::normal_and_bypass_relocation_retains_runs_and_values ... ok
+test labeled::graph::promote::spill_test::promotion_retained_allocation_failure_releases_target_and_preserves_source ... ok
+test labeled::graph::leaf_pin::tests::labeled_span_meta_assigned_on_first_leaf_edge_write ... ok
+test labeled::graph::leaf_pin::tests::leaf_mate_overlap_guard_detects_injected_overlap ... ok
+test labeled::graph::promote::spill_test::promotion_retained_below_cap_rejects_without_mutation ... ok
+test labeled::graph::promote::spill_test::promotion_retained_no_holes ... ok
+test labeled::graph::promote::spill_test::promotion_retained_eight_holes ... ok
+test labeled::graph::promote::spill_test::promotion_retained_sixteen_holes ... ok
+test labeled::graph::leaf_pin::tests::labeled_reopen_preserves_leaf_physical_pin ... ok
+test labeled::graph::promote::spill_test::promotion_retained_wide_rejects_without_mutation ... ok
+test labeled::graph::promote::spill_test::public_bypass_capacity_eight_holes ... ok
+test labeled::graph::promote::spill_test::cascade_retained_prefix_ownership_four_bytes ... ok
+test labeled::graph::promote::spill_test::public_bypass_capacity_no_holes ... ok
+test labeled::graph::promote::tests::promote_edge_start_points_to_leg_offset ... ok
+test labeled::graph::promote::spill_test::public_bypass_capacity_sixteen_holes ... ok
+test labeled::graph::promote::tests::promote_leg_root_region_holds_block_id_sequence ... ok
+test labeled::graph::promote::spill_test::public_bypass_capacity_target_failure_preserves_source ... ok
+test labeled::graph::promote::tests::promote_ltb_blocks_hold_correctly_ordered_edge_data ... ok
+test labeled::graph::promote::tests::promote_pre_and_post_edge_start_differ ... ok
+test labeled::graph::leaf_pin::tests::leaf_mate_overlap_guard_passes_for_normal_inserts ... ok
+test labeled::graph::promote::tests::promote_rejects_empty_existing_bucket ... ok
+test labeled::graph::promote::tests::promote_missing_bucket_returns_bucket_not_found ... ok
+test labeled::graph::promote::spill_test::cascade_retained_prefix_ownership_ten_bytes ... ok
+test labeled::graph::promote::tests::promote_rejects_existing_bucket_below_cap ... ok
+test labeled::graph::promote::tests::promote_reserve_phase_rolls_back_on_mint_failure ... ok
+test labeled::graph::promote::tests::promote_publish_phase_atomic_descriptor_write ... ok
+test labeled::graph::remove::tests::default_bypass_conversion_clears_vertex_edge_span_allocation ... ok
+test labeled::graph::remove::tests::emptied_bucket_releases_span_and_zeroes_vertex_cover ... ok
+test labeled::graph::promote::tests::promote_succeeds_when_alloc_space_at_cap ... ok
+test labeled::graph::promote::tests::promote_rejects_wide_edge_type_fail_closed ... ok
+test labeled::graph::remove::g6_zero_read_tests::g6_tiny_delete_reads_no_edge_bytes ... ok
+test labeled::graph::remove::tests::remove_edge_leaves_slab_tombstone_until_rebalance ... ok
+test labeled::graph::remove::tests::removing_last_inline_property_bytes_edge_by_slot_clears_vertex_inline_property_bytes_allocation ... ok
+test labeled::graph::promote::spill_test::public_capacity_bucket_reservation_failure_preserves_cached_peer ... ok
+test labeled::graph::remove::tests::remove_edge_from_one_label_keeps_next_label_isolated ... ok
+test labeled::graph::remove::tests::remove_edge_at_slot_uses_edge_tombstone_contract ... ok
+test labeled::graph::promote::tests::wide_edge_insert_stays_slab_past_promote_cap ... ok
+test labeled::graph::remove::tests::tombstone_bit_edges_satisfy_csr_liveness_contract ... ok
+test labeled::graph::remove::tests::tiny_hole_uses_layout_native_tombstone_predicate ... ok
+test labeled::graph::remove::tests::tiny_remove_out_of_range_is_noop ... ok
+test labeled::graph::remove::tests::tiny_remove_matching_scans_holes_and_whole_used_width ... ok
+test labeled::graph::remove::tests::tiny_remove_tombstones_inline ... ok
+test labeled::graph::remove::tests::removing_last_inline_property_bytes_edge_clears_vertex_inline_property_bytes_allocation ... ok
+test labeled::graph::remove::tests::tiny_remove_matching_finds_inline_target ... ok
+test labeled::graph::spill_swap_test::a_bucket_with_slab_headroom_owns_no_run ... ok
+test labeled::graph::spill_read_test::spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors ... ok
+test labeled::graph::spill_read_test::retained_run_append_preserves_prefix_and_ordinals_four_bytes ... ok
+test labeled::graph::spill_read_test::retained_run_append_preserves_prefix_and_ordinals_ten_bytes ... ok
+test labeled::graph::spill_swap_test::a_deleted_spill_row_is_tombstoned_in_place ... ok
+test labeled::graph::spill_swap_test::a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals ... ok
+test labeled::graph::spill_swap_test::a_reinsert_after_a_spill_delete_appends_at_the_dense_end ... ok
+test labeled::graph::spill_swap_test::a_slab_delete_leaves_the_run_alone ... ok
+test labeled::graph::spill_read_test::retained_run_all_label_four_bytes ... ok
+test labeled::graph::spill_swap_test::a_tiny_bucket_never_allocates_a_run ... ok
+test labeled::graph::spill_read_test::retained_run_all_label_ten_bytes ... ok
+test labeled::graph::spill_swap_test::a_run_backed_vertex_is_not_force_rewritten_by_the_cascade ... ok
+test labeled::graph::spill_swap_test::a_spill_delete_never_shifts_the_runs_other_rows ... ok
+test labeled::graph::spill_swap_test::bypass_conversion_carries_the_run_and_the_total_width ... ok
+test labeled::graph::spill_swap_test::growing_the_run_preserves_the_rows_and_the_ordinals ... ok
+test labeled::graph::spill_swap_test::resident_width_is_the_prefix_plus_the_runs_rows ... ok
+test labeled::graph::spill_swap_test::deleting_every_row_keeps_the_run_until_compaction ... ok
+test labeled::graph::spill_swap_test::scans_yield_a_multi_row_run_in_materialization_order_both_ways ... ok
+test labeled::graph::spill_swap_test::the_sentinel_round_trips_through_a_bucket_slot_write ... ok
+test labeled::graph::spill_swap_test::promoting_a_spilling_bucket_keeps_every_row ... ok
+test labeled::graph::spill_swap_test::the_batch_defers_a_run_backed_append_without_writing ... ok
+test labeled::graph::spill_swap_test::the_first_row_beyond_the_prefix_allocates_exactly_one_class ... ok
+test labeled::graph::traverse::tests::default_label_selected_slots_read_live_edges_in_requested_order ... ok
+test labeled::graph::traverse::tests::default_label_bypass_point_and_visitor_reads ... ok
+test labeled::graph::traverse::g6_zero_read_tests::g6_tiny_scan_reads_no_edge_bytes ... ok
+test labeled::graph::spill_read_test::spill_matching_preserves_ordinals_and_stops_predicates_at_match ... ok
+test labeled::graph::traverse::tests::counts_internal_nodes_are_derived_and_repaired_on_demand ... ok
+test labeled::graph::traverse::tests::inline_property_bytes_enforces_width_match ... ok
+test labeled::graph::traverse::tests::inline_property_bytes_rejects_nonzero_width_with_empty_bytes - should panic ... ok
+test labeled::graph::traverse::tests::inline_property_bytes_rejects_width_mismatch - should panic ... ok
+test labeled::graph::traverse::tests::hybrid_replay_after_overflow_delete_falls_back_to_sparse ... ok
+test labeled::graph::traverse::tests::hybrid_inline_property_bytes_first_keeps_replay_with_tombstone_free_slab_prefix ... ok
+test labeled::graph::traverse::tests::inline_property_bytes_zero_width_is_empty ... ok
+test labeled::graph::traverse::tests::hybrid_replay_from_other_vertex_in_same_leaf_falls_back_to_sparse ... ok
+test labeled::graph::traverse::tests::hybrid_contract_holes_keep_exact_nonzero_values ... ok
+test labeled::graph::traverse::tests::inline_property_window_preserves_sparse_live_rows_and_bytes ... ok
+test labeled::graph::traverse::tests::hybrid_contract_phase_two_keeps_run_ordinals ... ok
+test labeled::graph::traverse::tests::inline_property_window_preserves_slots_edges_and_bytes_for_hybrid_orders ... ok
+test labeled::graph::remove::tests::releasing_one_bucket_inline_property_bytes_span_keeps_other_bucket_inline_property_bytes_log ... ok
+test labeled::graph::traverse::tests::hybrid_contract_break_stops_between_stages ... ok
+test labeled::graph::traverse::tests::inline_property_zero_width_returns_empty_bytes_without_storage_read ... ok
+test labeled::graph::promote::spill_test::promotion_retained_sidecars_keep_slot_identity ... ok
+test labeled::graph::traverse::tests::labeled_out_edges_iter_advance_by_and_nth_match_scan ... ok
+test labeled::graph::traverse::tests::normal_labeled_edges_update_pma_leaf_segment_counts ... ok
+test labeled::graph::traverse::tests::labeled_desc_out_edges_iter_matches_reversed_materialized_rows ... ok
+test labeled::graph::traverse::tests::labeled_dense_leaf_triggers_leaf_rebalance ... ok
+test labeled::graph::traverse::tests::out_edges_by_directedness_filters_and_orders ... ok
+test labeled::graph::traverse::tests::out_edges_iterator_streams_desc_order ... ok
+test labeled::graph::traverse::tests::read_edge_finds_live_slot_and_returns_none_for_missing_or_tombstoned ... ok
+test labeled::graph::traverse::tests::visit_edges_ascending_and_descending_match_logical_order ... ok
+test labeled::graph::traverse::tests::unchecked_label_iteration_matches_checked_for_valid_vertices ... ok
+test labeled::graph::traverse::tests::stale_hybrid_overflow_replay_falls_back_to_canonical_read ... ok
+test labeled::graph::traverse::tests::phase2_replay_reuse_yields_the_same_edges_as_the_canonical_read ... ok
+test labeled::graph::traverse::tests::visit_edges_early_break_returns_break_value ... ok
+test labeled::graph::traverse::tests::parallel_edges_keep_ordinal_slots_and_exact_inline_bytes ... ok
+test labeled::graph::traverse::tests::visit_edges_window_cuts_tombstone_inclusive_positions_when_tombstones_make_bucket_sparse ... ok
+test labeled::graph::remove::tests::removing_spill_edge_tombstones_in_place_and_preserves_slots ... ok
+test labeled::graph::traverse::tests::visit_edges_window_applies_offset_limit_and_preserves_breaks ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_property_leaf_fanout_matches_documented_table ... ok
+test labeled::graph::traverse::tests::visit_edges_at_sorts_dedupes_and_skips_missing_slots ... ok
+test labeled::graph::traverse::tests::visit_edges_window_tree_and_slab_agree_on_tombstone_inclusive_positions ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_f2_cap_guard ... ok
+test labeled::graph::traverse::tests::visit_edges_with_inline_property_reads_exact_bytes_for_slab_and_overflow ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_combined_span_round_trip ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_read_round_trip_at_w_4_stored_4096 ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_rework_f6_deepen_property_root_relocates ... ok
+test labeled::graph::tree_read::tests::tree_property_slot_bound_rejects_block_zero_alias ... ok
+test labeled::graph::tree_read::tests::tree_read_after_promote_preserves_bucket_count_and_degree ... ok
+test labeled::graph::tree_read::tests::tree_read_collect_matches_promoted_data ... ok
+test labeled::graph::tree_read::tests::lpb_in_tree_demote_round_trip_at_w_4_stored_4096 ... ok
+test labeled::graph::tree_read::tests::tombstoned_tree_bucket_visit_preserves_logical_positions ... ok
+test labeled::graph::tree_read::tests::tree_read_random_slot_access_matches ... ok
+test labeled::graph::tree_read::tests::tree_read_tail_block_trimmed_at_stored_slots ... ok
+test labeled::graph::tree_read::tests::tree_read_out_of_range_returns_none ... ok
+test labeled::graph::tree_read::tests::tree_visit_edges_via_public_api_works_on_dense_tree_bucket ... ok
+test labeled::graph::tree_read::tests::visit_edges_window_tree_matches_slab_tombstone_positions ... ok
+test labeled::graph::tree_read::tests::tree_window_skip_fails_closed_on_count_mismatch ... ok
+test labeled::graph::tree_read::tests::tree_visit_edges_descending_order ... ok
+test labeled::graph::tree_write::tests::deepen_fail_closed_at_max_depth ... ok
+test labeled::graph::tree_write::tests::deepen_restructures_root_region ... ok
+test labeled::graph::tree_read::tests::tree_property_scan_reads_each_payload_block_once ... ok
+test labeled::graph::tree_write::tests::demote_atomic_on_failure ... ok
+test labeled::graph::tree_read::tests::tree_visit_break_stops_property_reads ... ok
+test labeled::graph::tree_write::tests::demote_degree_zero_reclaims_all_blocks ... ok
+test labeled::graph::tree_write::tests::demote_hysteresis_trigger_via_remove_path ... ok
+test labeled::graph::tree_write::tests::demote_hysteresis_no_oscillation ... ok
+test labeled::graph::tree_write::tests::demote_round_trip_preserves_live_edge_set ... ok
+test labeled::graph::tree_write::tests::insert_after_promote_appends_into_tree_tail ... ok
+test labeled::graph::tree_read::tests::tree_visit_break_stops_topology_reads ... ok
+test labeled::graph::tree_write::tests::flatten_inverts_deepen ... ok
+test labeled::graph::tree_write::tests::insert_crosses_root_growth_boundary ... ok
+test labeled::graph::tree_write::tests::interior_row_append_keeps_root_constant ... ok
+test labeled::graph::tree_write::tests::pre_promotion_span_inside_pinned_leaf_helper ... ok
+test labeled::graph::traverse::tests::labeled_scan_never_reads_free_span_store ... ok
+test labeled::graph::tree_write::tests::edge_deepen_with_property_deepen_anticipation ... ok
+test labeled::graph::tree_write::tests::promote_wires_into_insert_path ... ok
+test labeled::graph::tree_write::tests::promote_skip_release_inside_pinned_leaf ... ok
+test labeled::graph::tree_write::tests::property_root_entry_count_and_depth_boundary_math ... ok
+test labeled::graph::tree_write::tests::new_interior_mint_grows_root ... ok
+test labeled::graph::traverse::tests::labeled_scan_never_reads_span_meta ... ok
+test labeled::graph::traverse::tests::labeled_hub_materialized_matches_all_scan_iters ... ok
+test labeled::graph::tree_write::tests::production_insert_path_fails_closed_at_2_30_cap ... ok
+test labeled::graph::tree_write::tests::tree_insert_rejects_inline_property_edge ... ok
+test labeled::graph::tree_write::tests::resolve_leaf_block_id_walks_synthetic_depth2_layout ... ok
+test labeled::graph::tree_write::tests::tree_insert_fails_closed_at_2_30_cap ... ok
+test labeled::graph::tree_write::tests::property_deepen_random_slot_read_write_model ... ok
+test labeled::graph::tree_write::tests::tree_remove_then_insert_appends_to_tail ... ok
+test labeled::graph::tree_write::tests::tree_remove_writes_tombstone_and_updates_accounting ... ok
+test labeled::graph::tree_write::tests::tree_remove_idempotent_does_not_double_count ... ok
+test labeled::graph::tree_write::tests::tree_remove_increments_block_header_tombstone_count ... ok
+test labeled::graph::tree_write::tests::depth_ge2_property_append_at_k_boundary ... ok
+test labeled::graph::tree_write::tests::demote_physical_depth_2_releases_interiors ... ok
+test labeled::graph::tree_write::tests::tree_reuse_preserves_bucket_entry_position_identity ... ok
+test labeled::graph::tree_write::tests::tree_reuse_insertion_policy_never_reuses ... ok
+test labeled::graph::tree_write::tests::tree_reuse_then_demote_rebuilds_clean ... ok
+test labeled::graph::tree_write::tests::tree_reuse_decrements_block_header_count ... ok
+test labeled::graph::tree_write::tests::tree_reuse_never_mints_deepens_or_promotes ... ok
+test labeled::graph::tree_write::tests::tree_reuse_writes_target_and_property_at_reused_position ... ok
+test labeled::graph::tree_write::tests::vertex_bucket_count_cap_rejects_1025th_bucket ... ok
+test labeled::graph::tree_write::tests::tree_reuse_remove_reuse_remove_keeps_counts_exact ... ok
+test labeled::graph::values::tests::deferred_inline_property_insert_skips_synchronous_compaction ... ok
+test labeled::graph::tree_write::tests::tree_reuse_window_bound_ignores_out_of_window_tombstones ... ok
+test labeled::graph::values::tests::cannot_change_bucket_inline_property_byte_width_after_allocation ... ok
+test labeled::graph::values::tests::dense_inline_property_value_batches_follow_requested_order ... ok
+test labeled::graph::tree_write::tests::property_deepen_at_k_boundary_preserves_all_values ... ok
+test labeled::graph::values::tests::dense_inline_property_value_batches_match_edge_inline_property_batches ... ok
+test labeled::graph::values::tests::dense_read_out_edge_slots_follow_requested_order ... ok
+test labeled::graph::values::tests::edge_inline_property_batches_keep_label_widths_separate ... ok
+test labeled::graph::values::tests::dense_edge_inline_property_batches_follow_requested_order ... ok
+test labeled::graph::values::tests::edge_inline_propertys_preserved ... ok
+test labeled::graph::values::tests::edge_inline_propertys_preserved_after_tombstone_delete_and_compact ... ok
+test labeled::graph::values::tests::dense_read_out_edge_slots_match_topology_foreach ... ok
+test labeled::graph::values::tests::edge_inline_propertys_round_trip_via_unchecked_label_iteration ... ok
+test labeled::graph::values::tests::edge_inline_propertys_survive_middle_vertex_insert ... ok
+test labeled::graph::values::tests::edge_inline_propertys_survive_rewrite_with_tombstones ... ok
+test labeled::graph::values::tests::edge_inline_propertys_survive_middle_vertex_insert_with_overflow_log ... ok
+test labeled::graph::values::tests::edge_inline_propertys_survive_unrelated ... ok
+test labeled::graph::values::tests::edge_inline_propertys_round_trip_when_edge_and_value_use_overflow_log ... ok
+test labeled::graph::values::tests::inline_property_bytes_compaction_moves_only_inline_property_bytes_spans ... ok
+test labeled::graph::values::tests::inline_property_bytes_edge_rejected_from_default_bypass_without_promoting_row ... ok
+test labeled::graph::tree_write::tests::public_read_accessors_over_depth_2 ... ok
+test labeled::graph::values::tests::find_out_edge_predicate_sees_attached_inline_property_bytes ... ok
+test labeled::graph::values::tests::inline_property_bytes_edge_requires_predeclared_bucket_inline_property_byte_width ... ok
+test labeled::graph::values::tests::inline_property_bytes_first_dense_phase_matches_combined_batch_edges ... ok
+test labeled::graph::values::tests::inline_property_bytes_initial_quota_is_one_value_width_and_zero_width_is_unallocated ... ok
+test labeled::graph::values::tests::hybrid_out_edge_inline_property_batches_match_span_iter_for_48_overflow_edges ... ok
+test labeled::graph::values::tests::inline_property_bytes_compaction_needed_detects_contiguous_allocation_pressure ... ok
+test labeled::graph::values::tests::hybrid_inline_property_batches_ascending_visits_slab_before_log ... ok
+test labeled::graph::values::tests::inline_property_bytes_storage_stats_join_live_buckets_with_allocator_state ... ok
+test labeled::graph::values::tests::labeled_inline_property_bytes_edge_order_matches_edge_slab_order ... ok
+test labeled::graph::values::tests::materialize_atomic_on_failure ... ok
+test labeled::graph::values::tests::materialize_rejects_w1_to_w2_and_teardown ... ok
+test labeled::graph::values::tests::inline_property_bytes_log_read_failure_is_reported_by_streaming_apis ... ok
+test labeled::graph::values::tests::inline_property_bytes_log_read_failure_is_reported_during_scan ... ok
+test labeled::graph::values::tests::log_backed_edge_inline_property_batches_match_iterator_values ... ok
+test labeled::graph::values::tests::materialize_empty_bucket_rejected ... ok
+test labeled::graph::values::tests::materialize_tombstone_inclusive_fill ... ok
+test labeled::graph::values::tests::materialize_zero_to_w_preserves_positions ... ok
+test labeled::graph::values::tests::materialize_rejects_zero_width ... ok
+test labeled::graph::values::tests::non_empty_bucket_rejects_inline_property_byte_width_changes ... ok
+test labeled::graph::values::tests::remove_matching_middle_edge_removes_same_inline_property_bytes_ordinal ... ok
+test labeled::graph::values::tests::removing_non_last_inline_property_bytes_edge_by_slot_folds_inline_property_bytes_log_independently ... ok
+test labeled::graph::values::tests::out_bucket_dense_inline_property_batch_eligible_matches_dense_vs_overflow_hub ... ok
+test labeled::graph::values::tests::slab_inline_property_byte_width_12_round_trips ... ok
+test labeled::graph::values::tests::sparse_inline_property_bytes_first_phase_matches_combined_batch_edges ... ok
+test labeled::invariants::tests::ascending_contiguous_u32_runs_groups_runs ... ok
+test labeled::invariants::tests::inline_property_bytes_byte_offset_at_slot_scales_by_width ... ok
+test labeled::ltb_raw_block_store::tests::fresh_free_list_is_empty ... ok
+test labeled::ltb_raw_block_store::tests::header_round_trip_preserves_kind_owner_ordinal ... ok
+test labeled::ltb_raw_block_store::tests::mint_release_pop_round_trip_returns_lifo_ids ... ok
+test labeled::ltb_raw_block_store::tests::payload_round_trip_4096_bytes ... ok
+test labeled::ltb_raw_block_store::tests::pop_remint_repop_yields_same_id ... ok
+test labeled::ltb_raw_block_store::tests::read_payload_partial_reads_only_offset_range ... ok
+test labeled::ltb_raw_block_store::tests::read_payload_partial_rejects_length_overflow ... ok
+test labeled::graph::values::tests::valued_default_label_insert_uses_bucket_storage ... ok
+test labeled::ltb_raw_block_store::tests::read_payload_partial_rejects_offset_out_of_bounds ... ok
+test labeled::ltb_raw_block_store::tests::read_payload_partial_rejects_past_tail_next ... ok
+test labeled::graph::values::tests::sparse_read_out_edge_slots_resolve_log_backed_indices ... ok
+test labeled::ltb_raw_block_store::tests::read_payload_partial_zero_length_is_noop ... ok
+test labeled::ltb_raw_block_store::tests::release_double_release_panics ... ok
+test labeled::ltb_raw_block_store::tests::reopen_free_list_walk_validates_bounds_kind_and_cycle ... ok
+test labeled::ltb_raw_block_store::tests::reopen_init_lazy_creates_on_empty_memory ... ok
+test labeled::ltb_raw_block_store::tests::reopen_counter_consistency_free_count_must_not_exceed_tail_next ... ok
+test labeled::ltb_raw_block_store::tests::reopen_validates_magic_version_payload_bytes_r_max_and_reserved ... ok
+test labeled::ltb_raw_block_store::tests::walk_free_list_respects_envelope ... ok
+test labeled::ltb_raw_block_store::tests::write_payload_partial_rejects_out_of_bounds ... ok
+test labeled::record::tests::bucket_slack_metadata_is_u16_wide ... ok
+test labeled::record::tests::label_bucket_count_fits_matches_wire_space ... ok
+test labeled::ltb_raw_block_store::tests::write_payload_partial_writes_only_offset_range ... ok
+test labeled::ltb_raw_block_store::tests::walk_free_list_returns_ids_in_lifo_order ... ok
+test labeled::record::tests::label_bucket_inline_property_bytes_offset_round_trips_on_wire ... ok
+test labeled::record::tests::label_bucket_round_trips_exact_layout ... ok
+test labeled::record::tests::label_bucket_round_trips_w64_inline_property_byte_width ... ok
+test labeled::record::tests::label_bucket_spill_run_ids_round_trip_at_the_extremes ... ok
+test labeled::record::tests::label_bucket_tiny_bit_takes_tiny_validation_not_reserved ... ok
+test labeled::record::tests::label_bucket_tombstone_delete_keeps_physical_width ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_accepted_by_validator ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_cleared_default ... ok
+test labeled::record::tests::label_bucket_tree_mode_bit_round_trips ... ok
+test labeled::record::tests::label_bucket_wire_bytes_golden ... ok
+test labeled::record::tests::label_bucket_with_tree_mode_toggles_and_preserves_other_fields ... ok
+test labeled::record::tests::labeled_vertex_round_trips_default_bypass_and_tombstone_bits ... ok
+test labeled::record::tests::labeled_vertex_wire_bytes_golden ... ok
+test labeled::record::tests::setting_one_label_bucket_spill_run_leaves_every_other_field_alone ... ok
+test labeled::record::tests::stored_slots_accessor_is_mode_aware ... ok
+test labeled::record::tests::tiny_payload_survives_the_spill_run_fields ... ok
+test labeled::record::tests::tiny_roundtrip_degrees_0_to_4 ... ok
+test labeled::record::tests::tiny_target_t2_splits_across_three_fields ... ok
+test labeled::record::tests::tiny_wire_bytes_golden ... ok
+test labeled::record::tests::try_enable_tiny_mode_is_idempotent ... ok
+test labeled::record::tests::try_enable_tiny_mode_rejects_each_rule ... ok
+test labeled::record::tests::try_from_parts_rejects_out_of_range_fields ... ok
+test labeled::record::tests::try_read_from_rejects_each_tiny_rule ... ok
+test labeled::record::tests::try_read_from_rejects_normal_row_with_overflow_degree ... ok
+test labeled::record::tests::try_with_base_slot_start_rejects_slot_overflow ... ok
+test labeled::record::tests::try_with_label_bucket_count_rejects_overflow_in_release ... ok
+test labeled::record::tests::wire_rows_match_documented_layout ... ok
+test labeled::slot_index::tests::bucket_word_round_trips_fields ... ok
+test labeled::slot_index::tests::replace_bucket_label_key_preserves_other_bits ... ok
+test labeled::slot_index::tests::the_word_tail_is_the_mode_flags_and_the_edge_id_low_bits ... ok
+test labeled::record::tests::label_bucket_descriptor_span_is_degree_plus_slack ... ok
+test labeled::spill_run_store::tests::a_full_arena_reports_exhaustion_instead_of_aborting ... ok
+test labeled::spill_run_store::tests::a_memory_growth_failure_is_not_arena_exhaustion ... ok
+test labeled::graph::values::tests::sparse_inline_property_batches_match_edge_inline_property_batches ... ok
+test labeled::spill_run_store::tests::a_released_run_is_reused_by_its_own_class_only ... ok
+test labeled::spill_run_store::tests::a_run_at_the_largest_class_reports_no_in_place_growth ... ok
+test labeled::graph::values::tests::valued_insert_reusing_low_tombstone_preserves_existing_values ... ok
+test labeled::spill_run_store::tests::a_run_owns_one_header_row_plus_its_class ... ok
+test labeled::spill_run_store::tests::a_tail_run_grows_in_place_and_others_do_not ... ok
+test labeled::spill_run_store::tests::allocate_grows_the_backing_over_every_byte_of_the_last_row ... ok
+test labeled::spill_run_store::tests::appending_advances_the_used_length_until_the_class_is_full ... ok
+test labeled::spill_run_store::tests::arena_capacity_is_the_min_over_referencing_rows ... ok
+test labeled::spill_run_store::tests::classes_are_powers_of_two_bounded_by_the_two_ends ... ok
+test labeled::graph::values::tests::w4_edge_inline_propertys_round_trip ... ok
+test labeled::spill_run_store::tests::growing_a_non_tail_run_moves_it_and_copies_every_row ... ok
+test labeled::spill_run_store::tests::bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes ... ok
+test labeled::spill_run_store::tests::growing_a_tail_run_extends_in_place_and_preserves_rows ... ok
+test labeled::spill_run_store::tests::growing_a_tail_run_past_the_arena_limit_reports_exhaustion ... ok
+test labeled::spill_run_store::tests::release_needs_no_growth_so_it_cannot_fail_after_freeing ... ok
+test labeled::spill_run_store::tests::run_id_mint_is_fail_closed_at_both_ends ... ok
+test labeled::spill_run_store::tests::release_takes_the_class_from_the_run_header ... ok
+test labeled::spill_run_store::tests::reopening_the_same_memory_keeps_the_arena_and_free_lists ... ok
+test labeled::spill_run_store::tests::rows_round_trip_within_a_run ... ok
+test labeled::spill_run_store::tests::the_arena_grows_by_the_class_capacity_plus_the_header ... ok
+test labeled::spill_run_store::tests::the_header_word_is_a_length_while_live_and_a_link_while_free ... ok
+test labeled::tree_csr::tests::counterpart_pair_walks_logical_positions_in_insertion_order ... ok
+test labeled::tree_csr::tests::deepening_at_max_depth_boundary_is_fail_closed ... ok
+test labeled::tree_csr::tests::derived_depth_one_for_4k_64k_1m ... ok
+test labeled::tree_csr::tests::empty_bucket_has_depth_one_and_zero_root ... ok
+test labeled::tree_csr::tests::for_each_chunk_walks_blocks_in_order_with_tail_trim ... ok
+test labeled::tree_csr::tests::derived_depth_matches_adr_formula ... ok
+test labeled::tree_csr::tests::random_ordinal_access_visits_only_in_range_slots ... ok
+test labeled::tree_csr::tests::left_packing_invariant_holds_at_depth_one_boundary ... ok
+test labeled::tree_csr::tests::published_state_invariant_holds_after_insert ... ok
+test labeled::tree_csr::tests::remove_at_out_of_range_returns_none ... ok
+test labeled::tree_csr::tests::remove_at_shifts_left_and_preserves_order ... ok
+test labeled::graph::values::tests::wide_inline_property_byte_width_12_round_trips_via_overflow_blob_log ... ok
+test lara::edge::counts::tests::counts_header_reserved_region_is_zeroed_and_reopens ... ok
+test lara::edge::counts::tests::counts_init_rejects_nonzero_reserved_byte ... ok
+test lara::edge::counts::tests::segment_edge_counts_entry_size_is_fixed ... ok
+test lara::edge::edges::tests::edge_slab_header_reads_current_fields_and_preserves_error_precedence ... ok
+test labeled::tree_csr::tests::deepen_and_flatten_probes_report_current_depth ... ok
+test lara::edge::edges::tests::edge_slab_init_rejects_nonzero_reserved_byte ... ok
+test lara::edge::edges::tests::edge_slab_header_reserved_region_is_zeroed_and_reopens ... ok
+test lara::edge::edges::tests::edge_slab_init_rejects_elem_capacity_above_index_space ... ok
+test labeled::tree_csr::tests::range_target_reads_only_4_bytes_at_slot ... ok
+test labeled::spill_run_store::tests::a_failed_grow_during_grow_to_leaves_the_old_run_allocated ... ok
+test labeled::graph::tree_write::tests::cascade_at_2_20_plus_1_deepens ... ok
+test lara::edge::free_span::tests::allocator_summary_matches_every_mutation_shape ... ok
+test lara::edge::free_span::tests::binned_overlap_next_rejected ... ok
+test labeled::graph::tree_write::tests::tree_mode_leaf_actual_counts_slab_edges_only ... ok
+test lara::edge::free_span::tests::binned_free_span_ending_at_lookup ... ok
+test lara::edge::free_span::tests::binned_duplicate_start_rejected ... ok
+test lara::edge::free_span::tests::binned_paged_take_split_restore_and_reopen ... ok
+test lara::edge::free_span::tests::binned_paged_release_coalesces_three ... ok
+test lara::edge::free_span::tests::allocator_stats_track_mutations_and_reopen ... ok
+test lara::edge::free_span::tests::binned_release_coalesces_three ... ok
+test lara::edge::free_span::tests::binned_reopen_preserves_state ... ok
+test lara::edge::free_span::tests::binned_reopen_rejects_one_sided_region_loss ... ok
+test lara::edge::free_span::tests::binned_replace_pair_is_non_destructive_on_missing_right ... ok
+test lara::edge::free_span::tests::binned_release_rejects_overflowing_span ... ok
+test lara::edge::free_span::tests::binned_restore_allocated_prefix_rejoins_remainder ... ok
+test lara::edge::free_span::tests::binned_take_best_fit_splits ... ok
+test lara::edge::free_span::tests::binned_replace_pair ... ok
+test lara::edge::free_span::tests::binned_take_best_fit_zero_returns_none ... ok
+test lara::edge::free_span::tests::binned_take_best_fit_finds_fit_beyond_bounded_scan ... ok
+test lara::edge::init::tests::grow_segment_tree_failure_atomic_at_counts_reservation ... ok
+test lara::edge::init::tests::grow_segment_tree_failure_atomic_at_span_meta_reservation ... ok
+test lara::edge::init::tests::grow_segment_tree_reopens_after_every_rejected_growth ... ok
+test lara::edge::free_span::tests::binned_take_prefix_at_requires_exact_start_and_sufficient_len ... ok
+test lara::edge::init::tests::grow_segment_tree_success_after_rejected_counts_reservation ... ok
+test lara::edge::free_span::tests::drained_store_reopens_and_allocates ... ok
+test lara::edge::init::tests::init_reopens_fully_populated_layout ... ok
+test lara::edge::log::tests::grow_segment_count_initializes_new_indexes ... ok
+test lara::edge::log::tests::init_rejects_backing_smaller_than_declared_layout ... ok
+test lara::edge::log::tests::init_rejects_bad_magic ... ok
+test lara::edge::log::tests::init_rejects_empty_memory ... ok
+test lara::edge::log::tests::log_header_reserved_region_is_zeroed_and_reopens ... ok
+test lara::edge::log::tests::log_init_rejects_nonzero_reserved_byte ... ok
+test lara::edge::init::tests::init_rejects_partial_layout_when_one_region_is_wiped ... ok
+test lara::edge::log::tests::release_segment_clears_entries_and_index ... ok
+test lara::edge::free_span::tests::header_reserved_region_is_zeroed_and_validated_on_reopen ... ok
+test lara::edge::log::tests::write_read_entry_round_trip ... ok
+test lara::edge::log_mut::tests::every_arena_refusal_is_the_single_promotion_outcome ... ok
+test lara::edge::init::tests::grow_segment_tree_success_after_rejected_span_meta_reservation ... ok
+test lara::edge::free_span::tests::binned_take_prefix_at_splits_exact_start ... ok
+test lara::edge::scan::tests::edge_store_scan_uses_base_and_degree_only ... ok
+test lara::edge::log_mut::tests::spill_append_signals_a_full_class_without_writing ... ok
+test lara::edge::log_mut::tests::spill_read_row_rejects_an_index_at_the_used_length ... ok
+test lara::edge::scan::tests::edge_store_uses_csr_neighbor_bases_for_slab_space ... ok
+test lara::edge::span_meta::tests::replace_physical_start_returns_old_and_writes_new ... ok
+test lara::edge::span_meta::tests::segment_span_meta_store_reopens_physical_starts ... ok
+test lara::edge::span_meta::tests::span_meta_header_reserved_region_is_zeroed_and_reopens ... ok
+test lara::edge::free_span::tests::reserve_for_releases_fails_atomically_on_records_grow ... ok
+test lara::edge::scan::tests::out_edges_iter_nth_pure_slab_matches_ascending_scan ... ok
+test lara::edge::spill_read_test::bucket_append_preflight_checks_width_and_keeps_spill_prefix ... ok
+test lara::edge::span_meta::tests::span_meta_init_rejects_nonzero_reserved_byte ... ok
+test lara::edge::spill_read_test::core_vertex_append_preflight_rejects_width_overflow ... ok
+test lara::edge::span_meta::tests::update_physical_start_transforms_row_once ... ok
+test lara::edge::scan::tests::edge_store_reads_slab_then_log_neighborhood ... ok
+test lara::edge::free_span::tests::reserve_for_releases_fails_atomically_on_by_start_grow ... ok
+test lara::edge_inline_property::cell::tests::inline_cell_round_trips_with_bucket_width ... ok
+test lara::edge_inline_property::cell::tests::inline_property_bytes_log_uses_blob_from_bucket_width ... ok
+test lara::edge::spill_read_test::spill_replay_reads_chunks_for_ten_byte_rows ... ok
+test lara::edge::spill_read_test::spill_iterator_fresh_nth_loads_requested_chunk ... ok
+test lara::edge::spill_read_test::spill_replay_reads_chunks_not_scalar_rows ... ok
+test lara::edge_inline_property::tests::a_values_run_reads_oldest_to_newest_by_ordinal ... ok
+test lara::edge_inline_property::tests::a_values_run_round_trips_inline_property_bytes ... ok
+test lara::edge_inline_property::tests::init_rejects_fresh_when_only_blob_region_populated ... ok
+test lara::edge_inline_property::tests::a_values_run_round_trips_wide_inline_property_bytes_through_the_blob_map ... ok
+test lara::edge::spill_read_test::spill_iterator_last_loads_partial_tail ... ok
+test lara::edge_inline_property::tests::grow_byte_span_in_place_extends_tail_span ... ok
+test lara::edge_inline_property::tests::allocator_stats_reports_retired_inline_property_spans ... ok
+test lara::edge::spill_read_test::spill_iterator_nth_crosses_loaded_chunk ... ok
+test lara::edge_inline_property::tests::init_reopens_fully_populated_layout ... ok
+test lara::edge_inline_property::tests::init_rejects_partial_layout_when_log_wiped ... ok
+test lara::edge_inline_property::tests::slab_header_reserved_regions_are_zeroed_and_reopen ... ok
+test lara::edge_inline_property::tests::inline_property_bytes_slab_round_trips_bytes ... ok
+test lara::edge_inline_property::tests::release_byte_span_at_tail_does_not_recycle ... ok
+test lara::edge_inline_property::tests::init_reopens_when_blob_region_is_empty ... ok
+test lara::edge_inline_property::tests::slab_init_rejects_nonzero_reserved_byte_in_each_region ... ok
+test lara::edge::free_span::tests::release_prefers_inner_overlap_over_adjacent_merge ... ok
+test lara::edge_inline_property::tests::releasing_a_values_run_frees_it_for_reuse ... ok
+test lara::edge_inline_property::tests::retire_byte_span_reuses_via_free_list ... ok
+test lara::edge_inline_property::tests::values_read_rejects_blob_width_mismatch ... ok
+test lara::edge_inline_property::values_spill::tests::a_values_run_round_trips_inline_cells_in_ordinal_order ... ok
+test lara::maintenance::tests::deferred_config_default_thresholds_validate ... ok
+test lara::maintenance::tests::deferred_config_rejects_out_of_range_ratios ... ok
+test lara::vertex::tests::header_reserved_region_is_zeroed_and_reopens ... ok
+test lara::edge_inline_property::values_spill::tests::minting_rejects_the_no_run_sentinel_and_the_arena_limit ... ok
+test lara::edge_inline_property::tests::values_read_rejects_missing_blob ... ok
+test lara::edge_inline_property::values_spill::tests::releasing_a_run_drops_its_blob_sites ... ok
+test lara::edge_inline_property::values_spill::tests::a_wide_value_lives_in_the_blob_map_under_its_run_row ... ok
+test lara::vertex::tests::oversized_spill_run_is_rejected ... ok
+test lara::vertex::tests::tombstone_bit_preserves_spill_run ... ok
+test lara::vertex::tests::try_from_parts_rejects_slot_overflow ... ok
+test lara::vertex::tests::try_from_parts_rejects_spill_run_overflow ... ok
+test lara::edge_inline_property::tests::values_read_rejects_a_row_past_the_used_length ... ok
+test lara::edge_inline_property::tests::values_read_rejects_undersized_output_buffer ... ok
+test lara::vertex::tests::try_read_from_accepts_the_full_spill_run_range ... ok
+test lara::vertex::tests::try_read_from_rejects_wire_length_mismatch ... ok
+test lara::vertex::tests::vertex_default_has_no_spill_run ... ok
+test lara::vertex::tests::vertex_golden_wire_bytes ... ok
+test lara::vertex::tests::set_many_replaces_contiguous_rows ... ok
+test lara::vertex::tests::vertex_row_is_16_bytes ... ok
+test lara::vertex::tests::init_rejects_nonzero_reserved_byte ... ok
+test lara::vertex::tests::vertex_storable_roundtrip_default_tail ... ok
+test log_head::tests::none_is_max_u8 ... ok
+test log_head::tests::round_trip_i32 ... ok
+test slab_index::tests::exclusive_end_bound_is_one_past_max_index ... ok
+test slab_index::tests::locator_round_trips_slot_and_meta ... ok
+test slab_index::tests::try_replace_rejects_slot_above_36_bits ... ok
+test slab_index::tests::validate_elem_capacity_rejects_above_index_space ... ok
+test tests::grow_failed_display_includes_current_size_and_delta ... ok
+test tests::safe_write_returns_grow_failed_when_memory_cannot_grow ... ok
+test traverse::iter::tests::find_stops_at_first_match ... ok
+test traverse::iter::tests::try_visit_propagates_storage_errors ... ok
+test traverse::iter::tests::visit_indexed_preserves_slots ... ok
+test traverse::iter::tests::visit_propagates_break_without_consuming_the_tail ... ok
+test test_support::tests::failpoint_memory_preserves_writes_and_fails_selected_grow ... ok
+test lara::edge::free_span::tests::max_heap_rebuild_bounds_stale_candidates ... ok
+test lara::edge_inline_property::values_spill::tests::growing_a_moved_run_rekeys_its_blob_sites ... ok
+test labeled::graph::values::tests::inline_property_bytes_log_full_rebalances_inline_property_bytes_log_only_and_insert_succeeds ... ok
+
+test result: ok. 659 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.73s

@@ -1,0 +1,27 @@
+   Compiling ic-stable-lara v0.1.0 (/private/tmp/spill-p2-16k-7735.fmxSXg/source-5ad7f5a61-__x4nk4b/crates/ic-stable-lara)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.88s
+CROSSOVER compiled_manifest=/private/tmp/spill-p2-16k-7735.fmxSXg/source-5ad7f5a61-__x4nk4b/crates/ic-stable-lara
+CROSSOVER phase=constructor seconds=0.123359 rwg=[[0, 0, 5, 64, 1, 1], [0, 0, 12, 65, 1, 549], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 8, 80, 1, 1], [0, 0, 12, 65, 1, 165], [0, 0, 1, 64, 1, 1], [0, 0, 7, 48, 1, 1], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 7, 65, 1, 17], [0, 0, 9, 1072, 1, 1], [0, 0, 11, 65, 2, 3], [0, 0, 1, 64, 1, 1], [0, 0, 3, 92, 1, 1], [0, 0, 9, 64, 1, 1]] decodes=[0, 0]
+CROSSOVER phase=seed seconds=0.054824 rwg=[[65695, 1642375, 31, 754, 0, 0], [65831, 2699120, 16436, 558178, 0, 0], [124, 992, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [16468, 263488, 16394, 262304, 0, 0], [25, 1133796, 32794, 1428429, 1, 6], [64818, 369864, 18594, 129456, 1, 1], [58, 464, 8, 64, 0, 0], [695, 5140, 52, 809, 0, 0], [576, 3984, 131, 896, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[18432, 0]
+CROSSOVER shape=seeded mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=16384 global=16384 leaf=SegmentEdgeCounts { actual: 16384, total: 17536 }
+CROSSOVER seeded identities verified=16384
+CROSSOVER phase=remove_even seconds=0.013378 rwg=[[8192, 204800, 0, 0, 0, 0], [24576, 1064960, 8192, 32768, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [8192, 131072, 8192, 131072, 0, 0], [8192, 81920, 16384, 147456, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER shape=removed mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 17536, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=16384 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER precompact identities verified=8192
+CROSSOVER compaction progress step=0 stats=[1, 0, 0, 0]
+CROSSOVER compaction progress step=1024 stats=[1025, 0, 0, 0]
+CROSSOVER compaction progress step=2048 stats=[2049, 0, 0, 0]
+CROSSOVER compaction progress step=3072 stats=[3073, 0, 0, 0]
+CROSSOVER compaction progress step=4096 stats=[4097, 0, 0, 0]
+CROSSOVER compaction progress step=5120 stats=[5121, 0, 0, 0]
+CROSSOVER compaction progress step=6144 stats=[6145, 0, 0, 0]
+CROSSOVER compaction progress step=7168 stats=[7169, 0, 0, 0]
+CROSSOVER compaction progress step=8192 stats=[8192, 1, 0, 0]
+CROSSOVER phase=compact seconds=6.956106 rwg=[[8197, 204925, 2, 50, 0, 0], [32780, 1343980, 2, 68, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [3, 48, 0, 0, 0, 0], [67141633, 671498240, 16385, 245760, 0, 0], [0, 0, 0, 0, 0, 0], [3, 24, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[33583104, 33566720]
+CROSSOVER outcome finished=true error=None stats=[8192, 1, 0, 1]
+CROSSOVER shape=after_compact mode=slab vertex=LabeledVertex { locator: 1125899907891200, degree: 1, stored_slots: 8192, inline_property_bytes_allocated_bytes: 0, bypass_spill_run: 4294967295 } prefix=8192 run=4294967295 used=0 degree=8192 global=8192 leaf=SegmentEdgeCounts { actual: 8192, total: 17536 }
+CROSSOVER completion_bulk_remapped=0
+CROSSOVER phase=final_asc seconds=0.000535 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER phase=final_desc seconds=0.000418 rwg=[[1, 25, 0, 0, 0, 0], [2, 82, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [1, 81920, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]] decodes=[8192, 0]
+CROSSOVER final identities verified=8192 completed=true stopping_error=None
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 653 filtered out; finished in 7.23s

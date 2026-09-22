@@ -1,0 +1,103 @@
+{
+  "baseline_head": "7735a59875e573cb3d45ee0a3e4ec786ba275a9d",
+  "descriptor_fix": "bc5c7d37f",
+  "references": {
+    "3ea7dc739": {
+      "path": "/tmp/spill-p2-16k-7735.fmxSXg/source-3ea7dc739-jiyk3tb8",
+      "commit": "3ea7dc7397ead1e21e2997a66eb019116690362c",
+      "native_target": "/Users/yota/dev/gleaph-spill/target",
+      "benchmark_sha256": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+      "original_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "probe_sha256": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c",
+      "source_timestamp_refresh": {
+        "files": 82,
+        "content_sha256": "fdb98e907ce0440876d3cc770ce2ed26173d99878eedbc8dc5ddd09d63472e71",
+        "reason": "git archive mtimes older than shared-target build; force source freshness without cleaning target"
+      }
+    },
+    "5ad7f5a61": {
+      "path": "/tmp/spill-p2-16k-7735.fmxSXg/source-5ad7f5a61-__x4nk4b",
+      "commit": "5ad7f5a61696588bda6ea07c952093d2ee59b3f1",
+      "native_target": "/Users/yota/dev/gleaph-spill/target",
+      "benchmark_sha256": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+      "original_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "probe_sha256": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c",
+      "source_timestamp_refresh": {
+        "files": 83,
+        "content_sha256": "33edbd199befe0429be4cfd0f98bf61ba321a9f97509ef4e8cbf2d595e639082",
+        "reason": "git archive mtimes older than shared-target build; force source freshness without cleaning target"
+      }
+    }
+  },
+  "native": {
+    "3ea7dc739": {
+      "log": "native-3ea-canonical.log",
+      "steps": 2,
+      "reported_movements": 0,
+      "final_rows": 8192,
+      "step_trace_sha256": "a0ae73541c390697b15924f8395198b0368b818e0c6f8d4539bde2534adc89a1",
+      "movement_trace_sha256": "01037dfb3371c05aa93070e3259141c06614a20f33cf4625048d1d57470bc7a2",
+      "final_rows_sha256": "c5dae1b9e6885ebbd122fc2e6c5cfd87b1e9f12e53f0c738f99e8e3472bd95a3"
+    },
+    "5ad7f5a61": {
+      "log": "native-5ad-canonical.log",
+      "steps": 8194,
+      "reported_movements": 8192,
+      "final_rows": 8192,
+      "step_trace_sha256": "755dcf955e7be80e8a59440ddfdadb2c79532c21a3aaa076141ab065f8b37a54",
+      "movement_trace_sha256": "57f2dfe151795dc56f5ea14fdd4b2d38e0e127534a1119229b5e74b0f0fe95ae",
+      "final_rows_sha256": "c5dae1b9e6885ebbd122fc2e6c5cfd87b1e9f12e53f0c738f99e8e3472bd95a3"
+    }
+  },
+  "canbench": {
+    "3ea7dc739": {
+      "instructions": 43376650,
+      "totals": 1,
+      "scopes": 10,
+      "wasm_sha256": "5b078329f7fb84b572ad2fdd6565dfcf5bac4cce496629d193c54b67f532a1d6",
+      "csv_raw_sha256": "5f15b65dbb3a729da295518311b43ddf165d9d6b7ece15d56bea043e61df41f0",
+      "persist": false
+    },
+    "5ad7f5a61": {
+      "instructions": 15498702117,
+      "totals": 1,
+      "scopes": 9,
+      "wasm_sha256": "cac46d80df783cda77331f6673c17deff03138e432e21162128ab8b3be5280fa",
+      "csv_raw_sha256": "ea5cfc4f204d8d5352bdcb47b5033d9f53b2c679dede14e5fe2e30bd74849ca9",
+      "persist": false
+    }
+  },
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "observed_seconds": 259.9830754987197,
+  "artifact_sha256": {
+    "adr0097-crossover-16k-probe.rs": "17379d2b5993849c365f6969754e10f2d3c98d99755ee2c18460eb1ea15d904c",
+    "adr0097-crossover-16k-3ea-native.txt": "bb1cef6a73d7c262cb8f5df252b20cd741bb9883477c792c99d91f4ed0e79ea5",
+    "adr0097-crossover-16k-3ea-steps.tsv": "a0ae73541c390697b15924f8395198b0368b818e0c6f8d4539bde2534adc89a1",
+    "adr0097-crossover-16k-3ea-movements.tsv": "01037dfb3371c05aa93070e3259141c06614a20f33cf4625048d1d57470bc7a2",
+    "adr0097-crossover-16k-3ea.csv": "5f15b65dbb3a729da295518311b43ddf165d9d6b7ece15d56bea043e61df41f0",
+    "adr0097-crossover-16k-5ad-native.txt": "b8da604309afa87e001bcd4a1f4a23ad724ec42e9fda3c1b5ce98a5135c1d2e7",
+    "adr0097-crossover-16k-5ad-steps.tsv": "755dcf955e7be80e8a59440ddfdadb2c79532c21a3aaa076141ab065f8b37a54",
+    "adr0097-crossover-16k-5ad-movements.tsv": "57f2dfe151795dc56f5ea14fdd4b2d38e0e127534a1119229b5e74b0f0fe95ae",
+    "adr0097-crossover-16k-5ad.csv": "ea5cfc4f204d8d5352bdcb47b5033d9f53b2c679dede14e5fe2e30bd74849ca9",
+    "adr0097-crossover-as-used-lock.patch": "15ad4f3b4a670a2c050b34c0fd0147c8fb88deeb9258b53d31fbae68291dcc1f",
+    "adr0097-crossover-16k-final-ordinals.tsv": "c5dae1b9e6885ebbd122fc2e6c5cfd87b1e9f12e53f0c738f99e8e3472bd95a3"
+  },
+  "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+  "pinned_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "lock_patch_apply": "git apply --unidiff-zero adr0097-crossover-as-used-lock.patch",
+  "mechanism_function_hashes": {
+    "first_edge_slot_move_in_bucket": {
+      "3ea": "7bf715e51125aa7c2325c070aa480e5e1b2b4bb95fedd080894c17cb13f0b4bd",
+      "5ad": "7bf715e51125aa7c2325c070aa480e5e1b2b4bb95fedd080894c17cb13f0b4bd"
+    },
+    "compact_label_bucket_overflow_to_slab": {
+      "3ea": "dbf5444b1437072502b447f5fd727c656dc6d0e1e51aa63970278293e1b4cb7c",
+      "5ad": "dbf5444b1437072502b447f5fd727c656dc6d0e1e51aa63970278293e1b4cb7c"
+    },
+    "compact_vertex_edge_span_one_step_with_span_policy": {
+      "3ea": "3421383ef08d6735324689497d18f2bd80a9268fa1c28817a78ffdc4a0238955",
+      "5ad": "3421383ef08d6735324689497d18f2bd80a9268fa1c28817a78ffdc4a0238955"
+    }
+  }
+}

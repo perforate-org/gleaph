@@ -1,0 +1,12 @@
+status,name,scope_calls,scope_calls Δ,scope_calls Δ%,instructions,instructions Δ,instructions Δ%,heap_increase,heap_increase Δ,heap_increase Δ%,stable_memory_increase,stable_memory_increase Δ,stable_memory_increase Δ%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,,,,43376650,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_finalize,1,0,0.00%,1439,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_rewrite_read_and_plan,1,0,0.00%,7506,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_build_resident_buckets,1,0,0.00%,639,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_calculate_bucket_positions,1,0,0.00%,1039,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_encode_edge_run,1,0,0.00%,359587,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_prepare_edge_buffer,1,0,0.00%,344,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_update_accounting,1,0,0.00%,1367,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_bucket_row,1,0,0.00%,761,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_run,1,0,0.00%,82526,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384::labeled_vertex_write_edge_runs,1,0,0.00%,362948,0,0.00%,0,0,0.00%,0,0,0.00%
