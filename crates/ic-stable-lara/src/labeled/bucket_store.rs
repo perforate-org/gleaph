@@ -742,9 +742,6 @@ impl<M: Memory> LabelBucketStore<M> {
             let insert_at = base
                 .checked_add(u64::from(insert_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            // The full old row was validated above. Only this suffix changes;
-            // the prefix remains owned in place and needs no re-encoding.
-            self.write_label_bucket_slots_contiguous(insert_at, &row[insert_index as usize..])?;
             let next_degree = v
                 .degree()
                 .checked_add(1)
@@ -754,6 +751,9 @@ impl<M: Memory> LabelBucketStore<M> {
                 .try_with_label_bucket_count(next_degree)?
                 .with_bucket_slack_slots(v.bucket_slack_slots().saturating_sub(1))
                 .ensure_valid_normal_row()?;
+            // Validate the full old row and prepare its updated locator before
+            // shifting canonical descriptors. Only the suffix needs re-encoding.
+            self.write_label_bucket_slots_contiguous(insert_at, &row[insert_index as usize..])?;
             vertices.set(vid, &updated);
             return Ok((insert_at, false));
         }
@@ -1089,6 +1089,78 @@ mod tests {
         );
         assert_eq!(*memory.borrow(), before);
         assert_eq!(vertices.get(VertexId::from(0)), row);
+    }
+
+    #[test]
+    fn in_place_descriptor_count_rejection_keeps_backed_rows_unchanged() {
+        use crate::labeled::{BucketLabelKey, record::MAX_VERTEX_LABEL_BUCKETS};
+
+        let count = MAX_VERTEX_LABEL_BUCKETS;
+        let mut mutated_indices = Vec::new();
+        for index in [0, count / 2, count] {
+            let memories = std::array::from_fn::<_, 3, _>(|_| vector_memory());
+            let buckets = LabelBucketStore::new(
+                memories[0].clone(),
+                memories[1].clone(),
+                memories[2].clone(),
+                u64::from(count) + 1,
+                4,
+            )
+            .unwrap();
+            let base = buckets.allocate_span(u64::from(count) + 1).unwrap();
+            let descriptors: Vec<_> = (0..count)
+                .map(|key| {
+                    LabelBucket::default().with_bucket_label_key(BucketLabelKey::from_raw(
+                        u16::try_from(key).unwrap(),
+                    ))
+                })
+                .collect();
+            buckets
+                .write_label_bucket_slots_contiguous(base, &descriptors)
+                .unwrap();
+            let row = LabeledVertex::default()
+                .try_with_bucket_row_and_slack(base, count, 1)
+                .unwrap();
+            assert_eq!(row.ensure_valid_normal_row(), Ok(row));
+            assert!(!row.is_default_edge_labeled());
+            assert_eq!(row.bucket_slack_slots(), 1);
+            assert_eq!(
+                buckets
+                    .read_label_bucket_slots_contiguous(base, count)
+                    .unwrap(),
+                descriptors
+            );
+            let vertices = VertexFixture {
+                vertex: RefCell::new(row),
+            };
+            let before = memories.each_ref().map(|memory| memory.borrow().clone());
+            let mut vertex_before = [0; LabeledVertex::BYTES];
+            row.write_to(&mut vertex_before);
+            // All wire keys are already present. The store must reject its own
+            // count limit before shifting any descriptor, including duplicate keys.
+            let inserted = LabelBucket::default().with_bucket_label_key(BucketLabelKey::from_raw(
+                u16::try_from(index.min(count - 1)).unwrap(),
+            ));
+            assert!(matches!(
+                buckets.insert_label_bucket_at(&vertices, VertexId::from(0), inserted, index),
+                Err(LaraOperationError::RowDegreeOverflow)
+            ));
+            let mut vertex_after = [0; LabeledVertex::BYTES];
+            vertices.get(VertexId::from(0)).write_to(&mut vertex_after);
+            assert_eq!(vertex_after, vertex_before);
+            if memories
+                .iter()
+                .zip(&before)
+                .any(|(memory, bytes)| *memory.borrow() != *bytes)
+            {
+                mutated_indices.push(index);
+            }
+        }
+        assert_eq!(
+            mutated_indices,
+            Vec::<u32>::new(),
+            "rejected insertion mutated backed bytes"
+        );
     }
 
     #[test]
