@@ -531,9 +531,12 @@ pub(crate) fn retained_compaction_fixture(
         9
     );
     assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
-    assert_ne!(
-        source.inline_property_bytes_slab_slots(),
-        source.stored_slots()
+    assert_eq!(source.inline_property_bytes_slab_slots(), 13);
+    assert_eq!(
+        graph
+            .values
+            .spill_used_len(graph.values.spill_mint(source.values_spill_run()).unwrap()),
+        1,
     );
     assert_eq!(buckets[1].edge_spill_run(), crate::traits::NO_SPILL_RUN);
     assert!(matches!(
