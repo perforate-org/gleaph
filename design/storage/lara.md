@@ -91,6 +91,11 @@ Whole-span maintenance admits only slab buckets to logical move selection and sl
 A slab trigger does not exclude tree/tiny siblings from the job: the shared step advances over
 those modes unchanged. Tree extent includes native tombstones; moving a root region physically
 must preserve its IDs, LTB metadata, logical ordinals and property identities.
+This is not acceptance of tree deletion or demotion: the
+[valid-backed property-deletion investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
+leaves that repair paused at native point-admission and demotion prerequisites
+(GAP-2026-09-22-001/003/004). The obsolete combined-maintenance tag also remains
+outside observer-safe acceptance (GAP-2026-09-22-005). No deletion behavior changed.
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
 

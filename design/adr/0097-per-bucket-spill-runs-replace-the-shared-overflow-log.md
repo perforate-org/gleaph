@@ -262,6 +262,11 @@ bucket.
    root region, preserving its IDs, LTB bytes/metadata, logical ordinals and property identities.
    This is not tree compaction.
    [Real-backed caller, observer and finalization witnesses](../evidence/adr0097-tree-compaction-admission.md).
+   This approved exclusion does not validate tree deletion/demotion. The
+   [property-deletion prerequisite investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
+   reproduces public no-op admission and post-delete demotion failures; the assertion-only
+   candidate was removed. GAP-2026-09-22-001 remains open behind 003/004, and obsolete
+   combined-maintenance observer handling is tracked separately as 005.
 
    **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
    window offers additional slab space. Increasing the initialized prefix would shift existing

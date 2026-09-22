@@ -11,7 +11,11 @@ improvement). The full-canister implementation slice (Plan 0317) is now
 unblocked; the remaining Gate 2 rows are amend (deterministic splitmix
 closure and per-write payload constant in non-promotion ops) and
 recorded as design-scope evidence, not as blockers.)
-Last revised: 2026-09-13
+Last revised: 2026-09-22
+
+Implementation status: **Partially Implemented**. Native property-tree traversal and
+bounded slab-compaction exclusion do not establish public tree deletion, point admission
+or demotion safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
 
 Supersedes the deferred Stage 2 direction of
 [ADR 0022](0022-degree-driven-hub-edge-storage.md): the dedicated-span tier (2a)
@@ -1044,12 +1048,14 @@ demotion as follow-up slices.
   because it hits production `Memory::grow` limits in test
   environments).
 
-**Plan 0319 (Steps 1-3, 2026-09-01) — demotion + rewrite-path tree
-awareness.** The slab→tree transition (promote) is now reversible
-via `tree_mode_demote_to_slab`, a failure-atomic reserve/commit/
-publish primitive that rebuilds a tree bucket as a fresh CSR slab
-of only live edges and releases all LTB leaves + interiors + the
-old root region. Demotion fires inline at the single tree-mode
+**Plan 0319 (Steps 1-3, 2026-09-01) — historical demotion + rewrite-path
+checkpoint.** The slab→tree transition gained `tree_mode_demote_to_slab`,
+reported at that checkpoint as a failure-atomic reserve/commit/publish primitive.
+That general atomicity/deletion claim is not established: the
+[2026-09-22 prerequisite audit](#property-bearing-deletion-prerequisite-2026-09-22)
+finds property collection and movement-publication defects. The primitive rebuilds a
+tree bucket as a fresh CSR slab of only live edges and releases all LTB leaves + interiors
+and the old root region. Demotion fires inline at the single tree-mode
 remove dispatch point via the `T_DEMOTE = T_PROMOTE / 2 = 2048`
 degree-hysteresis trigger (`remove.rs:328`). The rewrite path
 (`vertex_edge_span_retire_intervals`) adopts the new
@@ -1417,3 +1423,26 @@ reads, the demote-hysteresis removal loop, the inline-property materialization
 scenario, which now uses wider rows to stay above the materialize byte budget
 while below the cap). The suite is green at both constants (602 / 602), so a
 future re-tune does not require touching them again.
+
+## Property-bearing deletion prerequisite (2026-09-22)
+
+**Status: implementation paused; no deletion repair retained.** The
+[valid-backed investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
+reproduces the width-zero assertion through public post-promotion deletion. A temporary
+assertion-only diagnostic confirms dead-property retention and exact 8/33-byte
+Insertion append / Unordered reuse above the demotion floor, but also exposes:
+
+- Already-dead public deletion returns `Some(tombstone)` because its existence owner
+  probes LEG rather than the LTB row. Point-state and matching-removal paths share the
+  same Tree/Slab addressing mistake and need one canonical native-position contract.
+- At live degree 512, demotion collects 1024 property rows against 512 live edges and
+  panics after deletion has committed. Its successful path also packs survivors without
+  returning their movement events; that later failure is source-audited, preempted by
+  the measured property panic. Combined-root reservation, publication/error ordering
+  and property-tree retirement need review in the demotion owner, not just a value filter.
+
+GAP-2026-09-22-001 remains open behind prerequisites 003/004 in the
+[implementation ledger](../implementation-gaps.md). GAP-002 producer/header validation
+remains separate. The approved slab-compaction admission repair preserves tree siblings;
+that is not evidence of tree mutation, counterpart or demotion safety. No threshold,
+wire layout, fresh-state requirement or benchmark changed in this investigation.

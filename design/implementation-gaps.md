@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-09-22
-Anchor timestamp: 2026-09-22 06:38:47 UTC +0000
+Anchor timestamp: 2026-09-22 07:29:43 UTC +0000
 
 ## Status
 
@@ -49,7 +49,8 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
 
-- **Status:** Open; separate from the bounded tree-compaction admission repair.
+- **Status:** Open; implementation paused at demotion and public-admission prerequisites
+  GAP-2026-09-22-003/004. The bounded tree-compaction admission repair is separately approved.
 - **Observed behavior:** A real 1024-slot tree produced by `transcribe_and_publish_tree`
   with 33-byte properties panics on `remove_edge_at_slot` in native debug execution:
   `tree mode rejects inline-property buckets (promote is fail-closed)`, left 33/right 0.
@@ -65,10 +66,15 @@ defect from being rediscovered without its prior reasoning.
   [tree-compaction evidence](evidence/adr0097-tree-compaction-admission.md#setup-findings-not-compaction-reds).
 - **Impact:** Native debug property-tree removal cannot reach its write path. Release-mode
   property preservation, tombstone reuse and demotion safety are not established by this failure.
-- **Next decision:** Audit the existing tree removal/reuse/demotion owners together and add
-  a valid-backed property-tree deletion witness before changing the stale assertion. The
-  compaction fixture instead deletes real source rows before promotion; transcription creates
-  native tree tombstones without invoking this separate failing operation.
+- **Bounded follow-up:** A real public post-promotion deletion reproduces the assertion.
+  With only that assertion temporarily removed, an 8/33-byte Insertion/Unordered owner
+  matrix preserves the tested rows, dead property bytes, append/reuse identities and neighbors.
+  Public repeated deletion nevertheless returns `Some(tombstone)`, and crossing the demotion
+  floor panics after the deletion commit. All diagnostic Rust changes were removed; this is
+  not a deletion fix. [Source-pinned evidence](evidence/adr0097-tree-deletion-prerequisites.md).
+- **Next decision:** Resolve the shared tree-position/liveness and demotion prerequisites
+  before enabling property-bearing deletion. Preserve the current compaction fixture and its
+  accepted coverage; its pre-promotion source deletes do not validate tree deletion.
 
 ### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
 
@@ -91,6 +97,84 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** Audit all producers and dereference checks, then reconcile implemented
   metadata with the active ADR contract in a separate bounded slice. Do not add another mapping
   or silently claim validation from successful traversal.
+
+### GAP-2026-09-22-003 — Tree demotion does not preserve property and movement contracts
+
+- **Status:** Open; prerequisite to GAP-2026-09-22-001, not repaired in the deletion investigation.
+- **Observed behavior:** On a real 1024-position / 33-byte tree, the 512th public deletion
+  reaches `T_DEMOTE = 512`. With only the stale deletion assertion removed, demotion panics:
+  `live property values must cover degree * w bytes`, 33792 versus 16896. The marker,
+  degree (513 → 512) and global count have already changed; extent remains 1024 and the
+  observed root bytes remain unchanged. The property collector retains every native slot
+  while the edge collector filters tombstones. Separately, source inspection shows that
+  successful demotion packs survivors but its removal caller returns no movement events.
+  The runtime property panic preempts that later event-parity check.
+- **Expected behavior:** Edge/value transcription must select the same live positions;
+  survivor ordinals and external identities must agree with the removal/movement contract.
+  Rejection must not expose partial publication or release live roots. See
+  [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#property-bearing-deletion-prerequisite-2026-09-22)
+  and [ADR 0097 §7](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
+- **Owner:** `graph/tree_write.rs::tree_mode_demote_to_slab` and
+  `graph/remove.rs::remove_edge_at_slot_with_move`'s demotion dispatch.
+- **Evidence:** [Actual public threshold witness and first-write audit](evidence/adr0097-tree-deletion-prerequisites.md#reachable-demotion-failure).
+  Source audit also finds edge-only root avoidance, property-root retirement that assumes
+  leaf entries, and fallible work after descriptor publication. Those overlap/depth/failure
+  paths were not runtime tested here; the valid witness is distinct from the historical
+  synthetic `demote_atomic_on_failure` fixture correction.
+- **Impact:** Removing the stale width assertion alone exposes an unsafe public deletion path.
+  Filtering property values alone cannot establish movement publication or allocation safety.
+- **Next decision:** One bounded demotion-owner design must reconcile position preservation or
+  explicit movement, edge/value collection, combined-root reservation, publication and
+  retirement. Do not change thresholds, suppress demotion or silently bulk-remap survivors
+  as a workaround. Property-tree deletion remains paused until that contract is established.
+
+### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
+
+- **Status:** Open; shared addressing prerequisite, separate from GAP-002 header metadata.
+- **Observed behavior:** After real public deletion of tree slot 125, repeating the request
+  returns `Some(tombstone)` with no moves, rather than `None`; source snapshots/counts stay
+  unchanged. `edge_exists_at_slot` invokes `locate_bucket_edge_for_delete` without tree
+  dispatch and probes LEG rather than the LTB row. The tree writer returns `Some(current)`
+  for a native tombstone. Out-of-range 1024 and `u32::MAX` return `None` in the witness.
+- **Expected behavior:** Point liveness and removal must resolve canonical native positions
+  for each mode. Root-array bytes or adjacent LEG slots are not edge rows. Counterpart
+  selection must consume the same live-row contract; see [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
+- **Owner:** `graph/remove.rs::{edge_exists_at_slot, locate_bucket_edge_for_delete,
+  remove_edge_matching_skip_leaf_cascade_with_move}` and
+  `graph/traverse.rs::{read_edge_state_internal, read_edge_state_at_slot}`.
+- **Evidence:** [Public no-op witness and symmetric caller audit](evidence/adr0097-tree-deletion-prerequisites.md#public-no-op-failure).
+  Six forward/reverse removal/property-update admissions use the existence helper.
+  Point-state reads and matching deletion also group Tree/Slab and use LEG addressing;
+  counterpart lookup consumes the point-state owner. These latter paths were source-audited,
+  not runtime validated; no general false-negative or counterpart corruption measurement is claimed.
+- **Impact:** A successful slot deletion above the demotion floor does not establish public,
+  counterpart, matching or detach safety. Reusing the existing point-state reader unchanged
+  would copy the same defect into a second path.
+- **Next decision:** Unify native tree-position/liveness ownership across those sites before
+  patching callers; use existing root resolution, not a second index/cache or separate guards.
+  Add exact live/dead/missing and counterpart/predicate witnesses at their owning boundaries.
+
+### GAP-2026-09-22-005 — Obsolete combined maintenance tag discards movement events
+
+- **Status:** Open; pre-production cleanup, explicitly not changed by the deletion slice.
+- **Observed behavior:** `CompactVertexEdgeAndValueSpanV1`'s handler ignores both
+  `EdgeMoved(_)` and `OverflowRewrite(_)` while requeueing Required compaction in either
+  orientation. Repository search finds its enum/tag/codec/key/priority handling and these
+  requeues, but no initial enqueue producer. It is not observer-safe.
+- **Expected behavior:** Any retained logical compaction path must publish all survivor
+  movements through the canonical observer contract; superseded pre-production paths should
+  be deleted rather than preserved for compatibility. See
+  [ADR 0097 §7](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
+- **Owner:** `labeled/bidirectional/deferred.rs::MaintenanceWorkItem`, its codec and
+  `maintenance_with_edge_slot_move_observer` handler.
+- **Evidence:** [Exact handler/caller audit](evidence/adr0097-tree-deletion-prerequisites.md#obsolete-combined-maintenance-tag).
+  No queued-tag runtime witness ran; absence of a producer is a source-search result, not
+  proof that the decoder cannot reach the handler.
+- **Impact:** The tag cannot be included in the approved movement-publication or observer-safe
+  maintenance scope. Existing persisted decoding alone does not justify a compatibility path.
+- **Next decision:** Confirm obsolescence and remove its variant/codec/handler together under
+  fresh-state policy, or establish a concrete active producer and unify its observer ownership.
+  No handler behavior or persistent layout changed in this evidence slice.
 
 ### GAP-2026-09-20-007 — The leaf cascade's span rewrite failed for a bucket that owns a spill run
 

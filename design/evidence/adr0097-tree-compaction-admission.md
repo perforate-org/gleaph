@@ -1,7 +1,13 @@
 # ADR 0097: tree siblings in slab-triggered compaction
 
-**Status:** Bounded correctness repair implemented in `90757825c`; independent review open.
+**Status:** Bounded correctness repair `90757825c` and its evidence approved;
+overall ADR0097 and landing remain open.
 **Anchor:** 2026-09-22 06:38:47 UTC +0000.
+
+**Follow-up (2026-09-22 07:29:43 UTC +0000):** The separately authorized
+[property-tree deletion investigation](adr0097-tree-deletion-prerequisites.md) is paused
+at public-admission and demotion prerequisites. Its diagnostic edits were removed;
+this report's measurements, fixture and accepted compaction behavior are unchanged.
 
 ## Result
 

@@ -2,7 +2,7 @@
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
 **Last updated:** 2026-09-22\
-**Anchor timestamp:** 2026-09-22 06:38:47 UTC +0000\
+**Anchor timestamp:** 2026-09-22 07:29:43 UTC +0000\
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -138,6 +138,7 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - `rebalance_vertex_edge_span` and `rewrite_vertex_edge_span` resolve bases via leaf relocate when pinned; tail append is limited to unpinned rows and relocate-internal escape hatches.
 - Physical publication has no logical-packing mode. Completion and peer cascades share the run-retaining publisher with leaf relocation; `Finished` cannot normalize missing movement notifications. A non-forcing pass may complete with retained holes/runs when folding cannot fit. [Owner/observer evidence](../evidence/adr0097-compaction-movement-publication.md).
 - Whole-span logical compaction has one slab-mode admission boundary before ordered/swap selection and metadata finalization. Tree/tiny siblings advance unchanged even in a slab-triggered job; root-region relocation is physical copying, not tree ordinal compaction. [Caller and native-tree evidence](../evidence/adr0097-tree-compaction-admission.md).
+- Property-bearing tree deletion remains blocked: real public deletion exposes stale admission and demotion's unequal edge/value filtering; point/matching paths also require a shared native-tree liveness contract. The diagnostic assertion removal was not retained. [Prerequisite evidence](../evidence/adr0097-tree-deletion-prerequisites.md); GAP-2026-09-22-001/003/004. The obsolete combined maintenance tag's discarded moves remain open as GAP-2026-09-22-005, not observer-safe behavior.
 
 **Edge-row payload ceiling (blessed shard capacity bound).** Each labeled CSR
 adjacency row is a 4-byte `VertexRef` whose payload is 30 bits: at most ~1.07e9
