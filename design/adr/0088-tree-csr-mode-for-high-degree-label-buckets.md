@@ -13,9 +13,10 @@ closure and per-write payload constant in non-promotion ops) and
 recorded as design-scope evidence, not as blockers.)
 Last revised: 2026-09-22
 
-Implementation status: **Partially Implemented**. Native property-tree traversal and
-bounded slab-compaction exclusion do not establish public tree deletion, point admission
-or demotion safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
+Implementation status: **Partially Implemented**. Native property-tree traversal, bounded
+point-state/no-op admission and slab-compaction exclusion are implemented. They do not
+establish live property-tree deletion, matching mutation, selected property hydration or
+demotion safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
 
 Supersedes the deferred Stage 2 direction of
 [ADR 0022](0022-degree-driven-hub-edge-storage.md): the dedicated-span tier (2a)
@@ -1426,23 +1427,35 @@ future re-tune does not require touching them again.
 
 ## Property-bearing deletion prerequisite (2026-09-22)
 
-**Status: implementation paused; no deletion repair retained.** The
-[valid-backed investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
-reproduces the width-zero assertion through public post-promotion deletion. A temporary
-assertion-only diagnostic confirms dead-property retention and exact 8/33-byte
-Insertion append / Unordered reuse above the demotion floor, but also exposes:
+**Status: live-deletion implementation paused; mutation assertion and demotion unchanged.**
+The [valid-backed investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
+reproduced the width-zero assertion through public post-promotion deletion. Its temporary
+assertion-only diagnostic confirmed dead-property retention and exact 8/33-byte
+Insertion append / Unordered reuse above the demotion floor, but also exposed:
 
-- Already-dead public deletion returns `Some(tombstone)` because its existence owner
-  probes LEG rather than the LTB row. Point-state and matching-removal paths share the
-  same Tree/Slab addressing mistake and need one canonical native-position contract.
+- Already-dead public deletion returned `Some(tombstone)` because its existence owner
+  probed LEG rather than LTB. The subsequent point-state repair below fixes that read/no-op
+  boundary; the matching-removal mutation path still requires separate repair.
 - At live degree 512, demotion collects 1024 property rows against 512 live edges and
   panics after deletion has committed. Its successful path also packs survivors without
   returning their movement events; that later failure is source-audited, preempted by
   the measured property panic. Combined-root reservation, publication/error ordering
   and property-tree retirement need review in the demotion owner, not just a value filter.
 
-GAP-2026-09-22-001 remains open behind prerequisites 003/004 in the
-[implementation ledger](../implementation-gaps.md). GAP-002 producer/header validation
-remains separate. The approved slab-compaction admission repair preserves tree siblings;
-that is not evidence of tree mutation, counterpart or demotion safety. No threshold,
-wire layout, fresh-state requirement or benchmark changed in this investigation.
+GAP-2026-09-22-001/003 remain open in the [implementation ledger](../implementation-gaps.md).
+GAP-002 producer/header validation remains separate. The approved slab-compaction repair
+preserves tree siblings; it is not evidence of tree mutation or demotion safety. No threshold,
+wire layout or fresh-state requirement changed.
+
+### Canonical point-state read prerequisite (2026-09-22)
+
+`70b080ca0` implements only GAP-004's bounded topology/liveness read and dead/missing
+admission contract, using the [existing LARA point owner](../storage/lara.md#canonical-point-reads).
+Native tree positions are resolved through the existing roots, including property-bearing
+buckets, without changing raw visitor semantics or the mutation assertion. Six real-backed
+witnesses include both populated public orientations and a separate read-only directed
+parallel-edge counterpart test. [Evidence and limitations](../evidence/adr0097-point-state-reads.md).
+
+Matching mutation remains open under GAP-004; direct selected property hydration has a
+separate source-audited value-plane prerequisite (GAP-006). This read repair is not general
+counterpart/Graph integration, demotion, release/Wasm deletion or landing approval.

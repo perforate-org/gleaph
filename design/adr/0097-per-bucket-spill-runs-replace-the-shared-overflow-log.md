@@ -264,9 +264,12 @@ bucket.
    [Real-backed caller, observer and finalization witnesses](../evidence/adr0097-tree-compaction-admission.md).
    This approved exclusion does not validate tree deletion/demotion. The
    [property-deletion prerequisite investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
-   reproduces public no-op admission and post-delete demotion failures; the assertion-only
-   candidate was removed. GAP-2026-09-22-001 remains open behind 003/004, and obsolete
-   combined-maintenance observer handling is tracked separately as 005.
+   recorded no-op admission and post-delete demotion failures; its assertion-only candidate was
+   removed. The subsequent [canonical point-state read repair](../evidence/adr0097-point-state-reads.md)
+   implements GAP-004's bounded read/no-op sub-contract, including retained bypass runs, without
+   removing the mutation assertion. The [LARA read owner](../storage/lara.md#canonical-point-reads)
+   is shared by existence and direct point consumers. GAP-001/003, matching mutation (004),
+   selected property hydration (006), metadata (002) and obsolete maintenance (005) remain open.
 
    **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
    window offers additional slab space. Increasing the initialized prefix would shift existing

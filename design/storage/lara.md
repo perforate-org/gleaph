@@ -91,13 +91,29 @@ Whole-span maintenance admits only slab buckets to logical move selection and sl
 A slab trigger does not exclude tree/tiny siblings from the job: the shared step advances over
 those modes unchanged. Tree extent includes native tombstones; moving a root region physically
 must preserve its IDs, LTB metadata, logical ordinals and property identities.
-This is not acceptance of tree deletion or demotion: the
-[valid-backed property-deletion investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
-leaves that repair paused at native point-admission and demotion prerequisites
-(GAP-2026-09-22-001/003/004). The obsolete combined-maintenance tag also remains
-outside observer-safe acceptance (GAP-2026-09-22-005). No deletion behavior changed.
+This is not acceptance of live tree deletion or demotion. The
+[property-deletion investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
+leaves the writer/demotion repair paused (GAP-2026-09-22-001/003). The bounded point-state
+read repair below establishes dead/missing admission only; matching mutation (004), selected
+property hydration (006), metadata (002) and obsolete combined-maintenance observer handling
+(005) remain open.
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
+
+### Canonical point reads
+
+`LabeledLaraGraph::read_edge_state` owns `Live`, `Tombstone` and `Missing` topology results.
+Its private `read_edge_state_at_slot` resolves tiny inline positions, initialized slab prefixes
+and used spill rows, or native tree root/leaf positions before classifying a row. Live edges
+carry the requested logical slot and storage label. For valid rows, missing labels/out-of-range
+positions are absent; storage corruption errors are not converted to absence.
+
+Bypass rows use the existing `bypass_bucket_view`, whose prefix comes from
+`EdgeStore::initialized_slab_slots`; the vertex remains the owner and retained run positions
+do not become contiguous LEG slots. `edge_exists_at_slot` is the live-only projection of this
+API, shared by all six forward/reverse removal/property-update admissions. Raw native tree
+visitors remain tombstone-inclusive. Point topology does not hydrate property bytes or make
+live mutation safe. [Bounded implementation and evidence](../evidence/adr0097-point-state-reads.md).
 
 ### 3. Segment physical contract (rope)
 

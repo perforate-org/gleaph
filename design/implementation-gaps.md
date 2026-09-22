@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-09-22
-Anchor timestamp: 2026-09-22 07:29:43 UTC +0000
+Anchor timestamp: 2026-09-22 08:19:50 UTC +0000
 
 ## Status
 
@@ -49,8 +49,10 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
 
-- **Status:** Open; implementation paused at demotion and public-admission prerequisites
-  GAP-2026-09-22-003/004. The bounded tree-compaction admission repair is separately approved.
+- **Status:** Open; live deletion remains paused at the writer/demotion boundary (GAP-003).
+  GAP-004's bounded point-state/no-op admission read repair is implemented separately; it
+  does not remove the assertion or establish live mutation safety. The bounded tree-compaction
+  admission repair is separately approved.
 - **Observed behavior:** A real 1024-slot tree produced by `transcribe_and_publish_tree`
   with 33-byte properties panics on `remove_edge_at_slot` in native debug execution:
   `tree mode rejects inline-property buckets (promote is fail-closed)`, left 33/right 0.
@@ -72,9 +74,10 @@ defect from being rediscovered without its prior reasoning.
   Public repeated deletion nevertheless returns `Some(tombstone)`, and crossing the demotion
   floor panics after the deletion commit. All diagnostic Rust changes were removed; this is
   not a deletion fix. [Source-pinned evidence](evidence/adr0097-tree-deletion-prerequisites.md).
-- **Next decision:** Resolve the shared tree-position/liveness and demotion prerequisites
-  before enabling property-bearing deletion. Preserve the current compaction fixture and its
-  accepted coverage; its pre-promotion source deletes do not validate tree deletion.
+- **Next decision:** Establish the coherent writer/demotion contract before enabling live
+  property-bearing deletion. The [point-state read repair](evidence/adr0097-point-state-reads.md)
+  covers no-op admission, not that mutation boundary. Preserve the accepted compaction fixture;
+  its pre-promotion source deletes do not validate tree deletion.
 
 ### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
 
@@ -130,29 +133,31 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
 
-- **Status:** Open; shared addressing prerequisite, separate from GAP-002 header metadata.
-- **Observed behavior:** After real public deletion of tree slot 125, repeating the request
-  returns `Some(tombstone)` with no moves, rather than `None`; source snapshots/counts stay
-  unchanged. `edge_exists_at_slot` invokes `locate_bucket_edge_for_delete` without tree
-  dispatch and probes LEG rather than the LTB row. The tree writer returns `Some(current)`
-  for a native tombstone. Out-of-range 1024 and `u32::MAX` return `None` in the witness.
-- **Expected behavior:** Point liveness and removal must resolve canonical native positions
-  for each mode. Root-array bytes or adjacent LEG slots are not edge rows. Counterpart
-  selection must consume the same live-row contract; see [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
-- **Owner:** `graph/remove.rs::{edge_exists_at_slot, locate_bucket_edge_for_delete,
-  remove_edge_matching_skip_leaf_cascade_with_move}` and
-  `graph/traverse.rs::{read_edge_state_internal, read_edge_state_at_slot}`.
-- **Evidence:** [Public no-op witness and symmetric caller audit](evidence/adr0097-tree-deletion-prerequisites.md#public-no-op-failure).
-  Six forward/reverse removal/property-update admissions use the existence helper.
-  Point-state reads and matching deletion also group Tree/Slab and use LEG addressing;
-  counterpart lookup consumes the point-state owner. These latter paths were source-audited,
-  not runtime validated; no general false-negative or counterpart corruption measurement is claimed.
-- **Impact:** A successful slot deletion above the demotion floor does not establish public,
-  counterpart, matching or detach safety. Reusing the existing point-state reader unchanged
-  would copy the same defect into a second path.
-- **Next decision:** Unify native tree-position/liveness ownership across those sites before
-  patching callers; use existing root resolution, not a second index/cache or separate guards.
-  Add exact live/dead/missing and counterpart/predicate witnesses at their owning boundaries.
+- **Status:** Open for matching-removal mutation. The bounded **point-state/liveness READ
+  sub-contract** is implemented in `70b080ca0`, awaiting independent review; this does not
+  close GAP-001/003, header metadata (002), property hydration (006) or landing gates.
+- **Historical behavior:** The [assertion-only deletion investigation](evidence/adr0097-tree-deletion-prerequisites.md#public-no-op-failure)
+  returned `Some(tombstone)` on a repeated public request. The existence helper and point
+  reader interpreted tree roots as LEG targets. Bypass point reads also treated the total
+  prefix-plus-run extent as a contiguous slab. That evidence remains unchanged.
+- **Implemented read boundary:** `graph/traverse.rs::read_edge_state` remains the canonical
+  API; its private bucket reader owns mode-aware addressing and state classification.
+  `edge_exists_at_slot` consumes it, covering all six forward/reverse removal/property-update
+  admissions. The checked bypass projection preserves retained runs; native tree reads reuse
+  root resolution without reading property bytes. See the [LARA point-read contract](storage/lara.md#canonical-point-reads).
+- **Evidence:** [Six valid-backed red/green witnesses and caller audit](evidence/adr0097-point-state-reads.md)
+  cover tiny, slab/run, retained bypass, native tree boundaries, property-bearing tree points,
+  populated public no-ops and read-only parallel-edge counterpart ranks. Native visitors remain
+  tombstone-inclusive. Scope-specific preservation/error assertions are not general atomicity
+  or Graph sidecar integration evidence.
+- **Remaining owner:** `graph/remove.rs::remove_edge_matching_skip_leaf_cascade_with_move`
+  still groups Tree/Slab for LEG selection and slab deletion; `locate_bucket_edge_for_delete`
+  remains a mutation-specific slab/run locator. Neither mutation owner changed. Direct selected
+  property reads have a separate value-plane prerequisite (006).
+- **Impact:** Correct point liveness is not authorization to enable live property-tree deletion,
+  predicate removal, detach or demotion. Their mutation/error/movement contracts remain open.
+- **Next decision:** A separately bounded matching-removal design must consume canonical native
+  selection and a safe writer, rather than adding caller guards or changing raw visitor semantics.
 
 ### GAP-2026-09-22-005 — Obsolete combined maintenance tag discards movement events
 
@@ -175,6 +180,26 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** Confirm obsolescence and remove its variant/codec/handler together under
   fresh-state policy, or establish a concrete active producer and unify its observer ownership.
   No handler behavior or persistent layout changed in this evidence slice.
+
+### GAP-2026-09-22-006 — Selected tree inline-property hydration still assumes slab values
+
+- **Status:** Open; source-audited prerequisite, not a measured runtime failure in the point-read slice.
+- **Observed source behavior:** `visit_edges_at_with_inline_property` now obtains topology through
+  the canonical point owner, but its direct path still calls `bucket_live_ordinal_at_edge_slot`
+  and the slab/run property readers. The rank helper collects through `LabelEdgeSpanAccess`;
+  neither that collection nor those value readers implements native tree-property addressing.
+- **Expected behavior:** Selected property values must use the native position and property root
+  stream for tree buckets, including holes, without substituting slab live ranks or LEG roots.
+- **Owner:** `graph/traverse.rs::visit_edges_at_with_inline_property`, `graph/values.rs` selected
+  value addressing/rank helpers, and the existing `tree_read.rs::read_property_value_at_slot`.
+- **Evidence:** [Direct-caller audit](evidence/adr0097-point-state-reads.md#remaining-boundaries).
+  Full native property traversal and topology point reads are tested separately; they do not
+  validate selected property hydration. No tree selected-property runtime claim is made.
+- **Impact:** The point-state repair does not establish the combined selected topology/value API
+  for trees. This does not invalidate the tested topology-only and dead/missing admission contract.
+- **Next decision:** Add a bounded read-only selected-property witness with independent values,
+  then reconcile the existing value-plane owner with native property roots. Do not bundle live
+  deletion, demotion or another persisted mapping into that repair.
 
 ### GAP-2026-09-20-007 — The leaf cascade's span rewrite failed for a bucket that owns a spill run
 
