@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-20
-Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
+Last updated: 2026-09-22
+Anchor timestamp: 2026-09-22 06:38:47 UTC +0000
 
 ## Status
 
@@ -46,6 +46,51 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
+
+- **Status:** Open; separate from the bounded tree-compaction admission repair.
+- **Observed behavior:** A real 1024-slot tree produced by `transcribe_and_publish_tree`
+  with 33-byte properties panics on `remove_edge_at_slot` in native debug execution:
+  `tree mode rejects inline-property buckets (promote is fail-closed)`, left 33/right 0.
+  This occurred during fixture setup, before compaction. No release/Wasm deletion result
+  was measured.
+- **Expected behavior:** Tree producers, deletion admission and the property-plane contract
+  must agree. Property-bearing promotion and traversal are implemented; a stale debug-only
+  rejection is not a deliberate public error contract. See
+  [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
+- **Owner:** `graph/tree_write.rs::tree_mode_remove_edge_at_slot` and its removal/demotion
+  callers. Promotion is not fail-closed for nonzero properties.
+- **Evidence:** Preserved initial fixture and setup-failure log in the
+  [tree-compaction evidence](evidence/adr0097-tree-compaction-admission.md#setup-findings-not-compaction-reds).
+- **Impact:** Native debug property-tree removal cannot reach its write path. Release-mode
+  property preservation, tombstone reuse and demotion safety are not established by this failure.
+- **Next decision:** Audit the existing tree removal/reuse/demotion owners together and add
+  a valid-backed property-tree deletion witness before changing the stale assertion. The
+  compaction fixture instead deletes real source rows before promotion; transcription creates
+  native tree tombstones without invoking this separate failing operation.
+
+### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
+
+- **Status:** Open; root reachability and byte preservation are tested, not header validation.
+- **Observed behavior:** `transcribe_and_publish_tree` constructs a base `BlockHeader` with
+  label, owner and ordinal all zero, retaining those values for emitted edge/property blocks.
+  A real label-3 root therefore resolves to a header with label zero; the first witness's
+  label-equality assertion failed before maintenance. Final witnesses preserve those exact
+  producer bytes, distinct root IDs, block kinds/levels/tombstone counts and allocation state.
+- **Expected behavior:** [ADR 0088 §4/§8](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
+  describes owner/ordinal metadata agreement on dereference. Roots remain the sole addressing
+  source; metadata is not a second reachability map.
+- **Owner:** `graph/promote.rs::transcribe_and_publish_tree`, other tree block producers,
+  and tree dereference validation.
+- **Evidence:** The same [setup evidence](evidence/adr0097-tree-compaction-admission.md#setup-findings-not-compaction-reds)
+  and source-pinned promoter/read code. No forged metadata was inserted to make the witness pass.
+- **Impact:** Preservation through compaction does not prove the advertised owner/ordinal
+  validation contract. Incorrect header metadata is not evidence that the valid root references
+  themselves are aliased or unbacked.
+- **Next decision:** Audit all producers and dereference checks, then reconcile implemented
+  metadata with the active ADR contract in a separate bounded slice. Do not add another mapping
+  or silently claim validation from successful traversal.
 
 ### GAP-2026-09-20-007 — The leaf cascade's span rewrite failed for a bucket that owns a spill run
 
@@ -651,10 +696,22 @@ The [owner-layer follow-up](evidence/adr0097-left-pack-bounded-reads.md) adds th
 16K IC fixture improves **15,498,138,427 → 7,185,627,417 instructions (−53.6355%)**, with identical
 movement traces through Finished. Final compaction-filter tests pass **84/0**; no full suite or
 persisted survey was run. The new read path excludes tree descriptors because their stored width
-is logical extent, not initialized root-array width. Existing scalar tree-mode selection/caller
-reachability remains a separate review gate, not repaired by this read optimization. Decode work
-and both cursor strategies remain quadratic; broad performance, atomicity, space, PocketIC and
-landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
+is logical extent, not initialized root-array width. Bounded slab-read batching/evidence through
+`56d381b3f` was approved without granting overall acceptance.
+
+The separate [tree-compaction correctness slice](evidence/adr0097-tree-compaction-admission.md)
+proves that a slab-triggered whole-span job reaches a tree sibling. Before repair, Insertion
+truncated native extent 1024→1020; Unordered reported a bogus tree move 1023→3. `90757825c` fixes the shared
+one-step owner to admit slab logical compaction before either selector, cursor fallback or
+metadata finalization. Three tiny-only gates were removed; tree/tiny rows advance unchanged.
+Real-backed witnesses preserve all native tombstones, property identities and LTB/root bytes,
+replay exactly seven slab events, and finish after physically relocating the root region.
+Selection-only repair still fails both witnesses. Final scoped compaction tests pass **86/0**;
+independent review of this correctness slice remains open. Separate tree writer/header-validation
+findings are tracked as GAP-2026-09-22-001/002 above.
+
+Decode work and both cursor strategies remain quadratic; broad performance, atomicity, space,
+PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
 are preserved, not relabeled.
 
 ### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room

@@ -1,8 +1,8 @@
 # LARA storage contract (DGAP alignment)
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
-**Last updated:** 2026-08-24  
-**Anchor timestamp:** 2026-08-24 02:52:53 UTC +0000  
+**Last updated:** 2026-09-22\
+**Anchor timestamp:** 2026-09-22 06:38:47 UTC +0000\
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -130,13 +130,14 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block while retaining prefix/run ordinals; old physical span → free list. Explicit run folding is separate and follows the movement-publication contract in [ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
 - **No per-vertex `release_span` on routine growth.**
 
-**Today (implemented — `labeled/graph/compact.rs`):**
+**Implemented — `labeled/graph/compact.rs`:**
 
 - Labeled edge bytes are pinned to PMA leaf blocks (`span_meta.physical_start`).
 - Growth uses in-leaf weighted slide and leaf-block relocate; one `release_span` per relocate.
 - `LabeledVertex.stored_slots` tracks the per-vertex sub-range width inside the leaf block; routine insert does not tail-append at `elem_capacity`.
 - `rebalance_vertex_edge_span` and `rewrite_vertex_edge_span` resolve bases via leaf relocate when pinned; tail append is limited to unpinned rows and relocate-internal escape hatches.
 - Physical publication has no logical-packing mode. Completion and peer cascades share the run-retaining publisher with leaf relocation; `Finished` cannot normalize missing movement notifications. A non-forcing pass may complete with retained holes/runs when folding cannot fit. [Owner/observer evidence](../evidence/adr0097-compaction-movement-publication.md).
+- Whole-span logical compaction has one slab-mode admission boundary before ordered/swap selection and metadata finalization. Tree/tiny siblings advance unchanged even in a slab-triggered job; root-region relocation is physical copying, not tree ordinal compaction. [Caller and native-tree evidence](../evidence/adr0097-tree-compaction-admission.md).
 
 **Edge-row payload ceiling (blessed shard capacity bound).** Each labeled CSR
 adjacency row is a 4-byte `VertexRef` whose payload is 30 bits: at most ~1.07e9

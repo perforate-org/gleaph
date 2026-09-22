@@ -87,6 +87,10 @@ per-leaf log is gone, so nothing is provisioned before the first row that does n
 **Slack:** tombstones and initialized extent versus live degree. In labeled rows, logical
 compaction owns ordinal changes and their movement notifications; physical rebalance alone
 preserves prefix/run ordinals ([ADR 0097 §7](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md)).
+Whole-span maintenance admits only slab buckets to logical move selection and slab finalization.
+A slab trigger does not exclude tree/tiny siblings from the job: the shared step advances over
+those modes unchanged. Tree extent includes native tombstones; moving a root region physically
+must preserve its IDs, LTB metadata, logical ordinals and property identities.
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
 

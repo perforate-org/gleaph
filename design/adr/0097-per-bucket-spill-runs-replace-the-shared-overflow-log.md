@@ -252,6 +252,17 @@ bucket.
    inside existing backing. It cannot decode/repack a whole prefix or silently retire a run.
    [Current-head owner/observer witnesses and corrected historical classification](../evidence/adr0097-compaction-movement-publication.md).
 
+   **Mode admission (implemented in `90757825c`).** Whole-span maintenance can encounter tree or tiny
+   siblings even when a slab label triggered the job. The shared
+   `compact_vertex_edge_span_one_step_with_span_policy` boundary admits only slab buckets
+   to left-pack/swap selection, cursor fallback and slab metadata finalization. Tree/tiny
+   buckets return `AdvanceBucket` without logical movement or extent changes. A tree's
+   `stored_slots` is its tombstone-inclusive LTB extent, not its root-array width; slab
+   finalization must not replace it with live degree. Physical publication may relocate the
+   root region, preserving its IDs, LTB bytes/metadata, logical ordinals and property identities.
+   This is not tree compaction.
+   [Real-backed caller, observer and finalization witnesses](../evidence/adr0097-tree-compaction-admission.md).
+
    **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
    window offers additional slab space. Increasing the initialized prefix would shift existing
    spill ordinals. Existing tombstone reuse does not extend the prefix; explicit compaction or
@@ -260,7 +271,7 @@ bucket.
    run; class exhaustion preserves the existing typed promotion outcome without publishing an append.
 
    **Initialized extent is not capacity.** Core vertices and labeled bypass rows store total
-   backing width (prefix plus used spill rows); `LabelBucket` stores prefix width directly.
+   backing width (prefix plus used spill rows); a slab-mode `LabelBucket` stores prefix width directly.
    `CsrVertex::initialized_slab_slots` projects that row-specific contract, and `EdgeStore`
    reads the run length and rejects invalid extents. Ascending/descending scans, slot location,
    and bypass matching/removal share this decision. A capacity window may extend beyond the

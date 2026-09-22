@@ -1,6 +1,6 @@
 # ADR 0097: bounded reads in left-pack selection
 
-**Status: Implemented for the measured slab path; independent review and broader acceptance open.**
+**Status: Bounded slab-read batching/evidence through `56d381b3f` approved; broader acceptance open.**
 
 ## Result
 
@@ -118,9 +118,12 @@ the old scalar path. The predicate is computed per call, not persisted. This fix
 read path's admission without changing existing mode dispatch, move selection or errors. It is
 not a repair or validation of legacy tree-mode compaction. `first_compaction_move_in_bucket`
 skips tiny rows but not trees; both its left-pack and swap selectors scan `stored_slots` when
-reached. That shared caller-admission/selection owner needs separate reachability review and
-valid-backed Tree-CSR coverage, not a fix to just one selector. No artificial tree fixture was
-treated as a valid-backed Tree-CSR witness.
+reached. At that measured source, the shared caller-admission/selection owner still needed
+separate reachability review and valid-backed Tree-CSR coverage, not a fix to just one selector.
+No artificial tree fixture was treated as a valid-backed Tree-CSR witness. The subsequent
+[tree-mode correctness slice](adr0097-tree-compaction-admission.md) establishes slab-triggered
+sibling reachability and repairs shared admission through finalization; it does not rerun or
+extend this instruction comparison.
 
 That necessary admission refinement changed production after the initial measurements, so the
 same IC target, candidate native probe and final scoped checks were repeated on the changed
