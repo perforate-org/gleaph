@@ -1447,6 +1447,118 @@ GAP-002 producer/header validation remains separate. The approved slab-compactio
 preserves tree siblings; it is not evidence of tree mutation or demotion safety. No threshold,
 wire layout or fresh-state requirement changed.
 
+### Experimental: prepared paged-map edits
+
+**Status: Experimental, implemented checkpoint; performance acceptance remains blocked.**
+`ic-stable-paged-ordered-map` owns this generic map API, not LARA's allocation or publication
+policy. The V1 storage layout, page geometry and directory capacity are unchanged. This
+checkpoint does not implement prepared span acquisition, whole-unit LARA publication, tree
+demotion/deletion or Graph transaction handling, and does not accept ADR0097.
+
+#### API and publication
+
+```text
+Edit = Insert { key: u64, value: u64 } | Remove { key: u64 }
+PrepareError = Edit { at: usize, source: Error }
+             | Grow { at: usize, source: GrowFailed }
+             | AddressOverflow { at: usize }
+             | Scratch { at: Option<usize>, source: TryReserveError }
+prepare_edits(&mut self, edits: &[Edit]) -> Result<PreparedEdits<'_, M>, PrepareError>
+PreparedEdits::previous_values(&self) -> &[Option<u64>]
+PreparedEdits::publish(self) -> ()
+PreparedEdits::discard(self) -> ()
+```
+
+Preparation applies intents in order to one private prospective image. Repeated keys and
+missing removals retain their ordered previous values; a later intent cannot rescue an
+earlier rejection. Errors and discard leave canonical bytes unchanged. Successful backing
+growth may remain, so discard is not memory rollback. Resource errors retain the responsible
+intent where available; result-storage reservation can fail before any intent and uses
+`Scratch { at: None, .. }`.
+
+The ready value holds an exclusive map borrow, has no public constructor or image accessor,
+and is neither clonable nor redirectable to another map. Publication consumes it and writes
+only prepared ranges; no encoding, discovery, allocation, growth or recoverable result remains.
+The caller must exclusively own the backing region: independently reopened maps and raw
+mutable Memory aliases are outside this borrow contract. An unexpected publication failure
+is nonrecoverable; native unwind does not undo writes.
+
+Scalar `insert`/`remove` retain their `&self` facades and immediately prepare and publish
+through the same engine. The old immediate page/directory mutation paths are removed.
+Scalar resource failures project to `Error::OutOfMemory`; non-allocation address overflow
+remains a pre-write panic, while the prepared API reports indexed `AddressOverflow`.
+
+#### Image ownership and work bounds
+
+`EditPlan::apply_edit` owns the mutation rules. `EditImage` owns sorted, coalesced dirty ranges
+and packed encoded bytes, not whole-page snapshots. Its private `Scratch` representation keeps
+three range descriptors, 32 encoded bytes and one previous value inline, with fallibly reserved
+overflow. Representation does not select another editor. These are encoded-storage bounds,
+not peak-stack or global-allocation claims.
+
+| Basic scalar operation on valid backing | Publication and resource contract |
+| --- | --- |
+| Existing-key replacement | One 8-byte value write; no header/key rewrite, dynamic scratch reservation or grow |
+| Absent remove | No writes, dynamic scratch reservation or grow; inline `None` |
+| Non-splitting tail insertion into a nonempty page | Three ranges / 26 bytes: entry and two length fields; no old payload or whole-header rewrite, dynamic reservation or grow |
+| Tail removal leaving a nonempty page | Two ranges / 10 bytes: length fields; no entry clearing, dynamic reservation or grow |
+
+Interior shifts, splits and directory shifts reserve their overflowing scratch before use.
+`EditImage::cover` alone owns coalescing, relocation and gap filling; it returns exactly the
+requested borrowed write window. No window survives another image mutation. `EditImage::read`
+alone composes staged bytes with backing and zero padding for admitted new-page extents.
+Fully backed disjoint requests use one canonical read; fully staged requests use staged bytes;
+partial requests retain backing-prefix/zero-tail/overlay composition. Empty reads do no backing I/O.
+
+One edit-scoped lookup chooses canonical reads only with an empty image and sufficient directory
+backing; otherwise it uses the prospective reader. Directory metadata, page metadata and keys
+share that reader and the same validation owners. `DirEntry` and `PageHeader` own decoding;
+checked geometry, selected-page flags/minimum/link checks and error precedence remain enforced.
+The split owner receives the already computed local insertion position rather than searching again.
+
+The non-inlined split snapshots the prospective right sources into a bounded 528-byte array,
+then writes one chunk or a prefix/new pair/suffix. The exact source extent is 33 or 32 old entries,
+expressed by array capacity or capacity minus one entry. Right sources are consumed before the
+left covered window shifts with `copy_within`. Both pre-covers, metadata updates and the existing
+publisher remain. This introduces no shared cache, second overlay reader or copy API.
+
+Backing admission covers the full extent of every allocated page, not merely its highest dirty
+byte, before ready can escape. `reserve_for_inserts` reserves backing only: zero or already-backed
+requests do not write, but reservation does not guarantee directory admission, semantic validation
+or scratch allocation.
+
+#### Validation and measured status
+
+Map source SHA256: `46dfcf02a3193347bc7fe0d80e2d276259cc91239c3afa0b8ad696937f854a6a`.
+The source-bound validation passed scoped formatting, clippy, 27 unit tests and five doctests.
+Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
+reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
+doctests protect the exclusive, nonredirectable, single-use capability. Canonical-only right reads
+and omitted suffix writes were separately rejected by the split contents oracle.
+
+The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
+benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
+The final split slice improved 46,538 to 29,843 instructions (35.87%); the other five recorded
+counts were unchanged relative to its control. All recorded heap/stable page deltas were zero.
+
+| Original acceptance gate | Recorded instructions | Ceiling | Result |
+| --- | ---: | ---: | --- |
+| Missing64 | 89,768 | 85,672 | FAIL |
+| Replace64 | 118,664 | 77,576 | FAIL |
+| Split/directory | 29,843 | 30,930 | PASS |
+| Tail pairs64 | 459,658 | 298,171 | FAIL |
+| LARA total | 2,017,834 | 1,527,576 | FAIL |
+| LARA named | 2,016,873 | 1,526,615 | FAIL |
+
+**One of six original gates passes; the remaining five are unmet.** Relative improvement and
+functional passes do not waive them. These are measurements of the bound development worktree,
+not a clean-checkout LARA validation of this map-only checkpoint. That worktree also contained
+FreeSpanStore admission changes excluded from this checkpoint. Source, dependency and Wasm
+bindings, command logs, CSVs and both bulk-copy attempts remain in the local evidence root
+`/Users/yota/.local/share/gleaph/evidence/adr0097/split-right-bulk-0347/`, with final results in
+`refined/measurement.json` and the closure receipt in `completion/receipt.json`. The first bulk
+candidate remains a failed non-regression attempt; its records and earlier failures are preserved.
+
 ### Canonical point-state read prerequisite (2026-09-22)
 
 `70b080ca0` implements only GAP-004's bounded topology/liveness read and dead/missing
