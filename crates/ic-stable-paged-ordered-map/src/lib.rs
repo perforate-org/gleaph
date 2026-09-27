@@ -558,17 +558,18 @@ impl EditImage {
         let old_ranges = ranges.len();
         // Remove merged descriptors, or insert one when there was no overlap.
         let new_ranges = old_ranges + 1 - (last - first);
-        if new_ranges > old_ranges {
+        let view = if new_ranges > old_ranges {
             let grown = self.ranges.resize_reserved(new_ranges);
             grown.copy_within(last..old_ranges, first + 1);
+            grown
         } else {
             // Shrink or equal length: move the still-live suffix on the current
-            // view first; the final resize below performs any shrink afterward.
+            // view first, then resize to expose the final descriptor set.
             self.ranges
                 .as_mut_slice()
                 .copy_within(last..old_ranges, first + 1);
-        }
-        let view = self.ranges.resize_reserved(new_ranges);
+            self.ranges.resize_reserved(new_ranges)
+        };
         view[first] = DirtyRange {
             address: start,
             offset,
@@ -3892,6 +3893,45 @@ mod tests {
             "bridge: capacity unchanged"
         );
         assert_eq!(backing(&memory), before, "bridge: backing unchanged");
+
+        // Extend only the first range: descriptor count stays fixed while the
+        // packed suffix moves. This differs from both insertion and coalescing.
+        calls.clear();
+        {
+            let window = image.cover(base + 8, 12, |at, dst| {
+                calls.push((at, dst.len()));
+                memory.read(at, dst);
+            });
+            let mut expected_window = canonical[8..16].to_vec();
+            expected_window.extend_from_slice(&staged_a[..4]);
+            assert_eq!(window, expected_window, "equal-count: exact window");
+            window[0] = 0xEF;
+        }
+        assert_eq!(calls, vec![(base + 8, 8)], "equal-count: fill gap");
+        let mut extended = canonical[8..16].to_vec();
+        extended[0] = 0xEF;
+        extended.extend_from_slice(&expected_packed);
+        assert_eq!(
+            image.bytes.as_slice(),
+            extended,
+            "equal-count: packed bytes"
+        );
+        assert_eq!(
+            image
+                .ranges
+                .as_slice()
+                .iter()
+                .map(|range| (range.address, range.offset, range.len))
+                .collect::<Vec<_>>(),
+            vec![(base + 8, 0, 64), (base + 96, 64, 8)],
+            "equal-count: descriptors and trailing rebase"
+        );
+        assert_eq!(
+            (image.ranges.capacity(), image.bytes.capacity()),
+            capacity,
+            "equal-count: capacity unchanged"
+        );
+        assert_eq!(backing(&memory), before, "equal-count: backing unchanged");
     }
 
     #[test]

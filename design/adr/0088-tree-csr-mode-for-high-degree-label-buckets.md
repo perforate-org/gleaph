@@ -1505,8 +1505,11 @@ not peak-stack or global-allocation claims.
 
 Interior shifts, splits and directory shifts reserve their overflowing scratch before use.
 `EditImage::cover` alone owns coalescing, relocation and gap filling; it returns exactly the
-requested borrowed write window. No window survives another image mutation. `EditImage::read`
-alone composes staged bytes with backing and zero padding for admitted new-page extents.
+requested borrowed write window. Growth reuses the descriptor view returned by its resize;
+equal/shrink moves the still-live suffix before resizing. Both join the same descriptor update
+and offset rebase, without a second resize on growth. Capacity checks and gap-fill order remain.
+No window survives another image mutation. `EditImage::read` alone composes staged bytes with
+backing and zero padding for admitted new-page extents.
 Fully backed disjoint requests use one canonical read; fully staged requests use staged bytes;
 partial requests retain backing-prefix/zero-tail/overlay composition. Empty reads do no backing I/O.
 
@@ -1529,35 +1532,40 @@ or scratch allocation.
 
 #### Validation and measured status
 
-Map source SHA256: `46dfcf02a3193347bc7fe0d80e2d276259cc91239c3afa0b8ad696937f854a6a`.
+Map source SHA256: `7ea423add830daf7608f6d3de6fcd91d1100cb7a285b75eb6dd011bff1b5b74b`.
 The source-bound validation passed scoped formatting, clippy, 27 unit tests and five doctests.
 Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
 reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
-doctests protect the exclusive, nonredirectable, single-use capability. Canonical-only right reads
-and omitted suffix writes were separately rejected by the split contents oracle.
+doctests protect the exclusive, nonredirectable, single-use capability. The existing cover fixture
+now also checks equal-count extension, exact bytes, gap filling and trailing descriptor rebasing;
+omitting the shrink resize is rejected by its bridge descriptor oracle. Canonical-only right reads
+and omitted suffix writes were separately rejected in the preceding split checkpoint.
 
 The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
 benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
-The final split slice improved 46,538 to 29,843 instructions (35.87%); the other five recorded
-counts were unchanged relative to its control. All recorded heap/stable page deltas were zero.
+Against the preceding checkpoint, descriptor-view reuse reduces replacement by 1.62%, tail by
+2.09%, split by 0.88% and both LARA rows by 0.18%; missing is unchanged. All six counts are
+non-increasing. All recorded heap/stable page deltas are zero. Map/LARA Wasm sizes increase
+134/216 bytes. These are whole-fixture deltas, not isolated resize instruction prices.
 
 | Original acceptance gate | Recorded instructions | Ceiling | Result |
 | --- | ---: | ---: | --- |
 | Missing64 | 89,768 | 85,672 | FAIL |
-| Replace64 | 118,664 | 77,576 | FAIL |
-| Split/directory | 29,843 | 30,930 | PASS |
-| Tail pairs64 | 459,658 | 298,171 | FAIL |
-| LARA total | 2,017,834 | 1,527,576 | FAIL |
-| LARA named | 2,016,873 | 1,526,615 | FAIL |
+| Replace64 | 116,744 | 77,576 | FAIL |
+| Split/directory | 29,579 | 30,930 | PASS |
+| Tail pairs64 | 450,058 | 298,171 | FAIL |
+| LARA total | 2,014,198 | 1,527,576 | FAIL |
+| LARA named | 2,013,237 | 1,526,615 | FAIL |
 
 **One of six original gates passes; the remaining five are unmet.** Relative improvement and
 functional passes do not waive them. These are measurements of the bound development worktree,
 not a clean-checkout LARA validation of this map-only checkpoint. That worktree also contained
 FreeSpanStore admission changes excluded from this checkpoint. Source, dependency and Wasm
-bindings, command logs, CSVs and both bulk-copy attempts remain in the local evidence root
-`/Users/yota/.local/share/gleaph/evidence/adr0097/split-right-bulk-0347/`, with final results in
-`refined/measurement.json` and the closure receipt in `completion/receipt.json`. The first bulk
-candidate remains a failed non-regression attempt; its records and earlier failures are preserved.
+bindings, command logs, CSVs, codegen inspection and the missing-shrink mutant remain in
+`/Users/yota/.local/share/gleaph/evidence/adr0097/cover-view-0348/`, with results in
+`measurement.json` and the closure receipt in `completion/receipt.json`. The preceding bulk-copy
+slice remains under `split-right-bulk-0347/` in the same evidence directory. Its first candidate
+remains a failed non-regression attempt; those records and earlier failures are preserved.
 
 ### Canonical point-state read prerequisite (2026-09-22)
 
