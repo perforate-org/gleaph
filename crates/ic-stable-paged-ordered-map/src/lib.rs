@@ -689,14 +689,6 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         bytes[count - DIR_ENTRY_SIZE as usize..].fill(0);
     }
 
-    fn entry(&self, address: u64) -> (u64, u64) {
-        let bytes = self.read::<16>(address);
-        (
-            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            u64::from_le_bytes(bytes[8..].try_into().unwrap()),
-        )
-    }
-
     fn set_entry(&mut self, address: u64, entry: (u64, u64)) {
         let mut bytes = [0; 16];
         bytes[..8].copy_from_slice(&entry.0.to_le_bytes());
@@ -1145,9 +1137,25 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                     + 10
                     + if pos == 0 { 8 } else { 0 };
                 self.reserve(bytes, if pos == 0 { 4 } else { 3 })?;
-                for i in (pos..header.len).rev() {
-                    let entry = self.entry(start + u64::from(i) * PAGE_ENTRY_SIZE);
-                    self.set_entry(start + u64::from(i + 1) * PAGE_ENTRY_SIZE, entry);
+                if pos < header.len {
+                    let count = usize::from(header.len - pos + 1) * PAGE_ENTRY_SIZE as usize;
+                    let old_end = start + u64::from(header.len) * PAGE_ENTRY_SIZE;
+                    let memory = &self.owner.memory;
+                    let window = self.image.cover(
+                        start + u64::from(pos) * PAGE_ENTRY_SIZE,
+                        count,
+                        |address, dst| {
+                            // Old live entries on unbacked new pages are already staged.
+                            // Do not read the new slot beyond the old live prefix.
+                            let read =
+                                old_end.saturating_sub(address).min(dst.len() as u64) as usize;
+                            if read != 0 {
+                                memory.read(address, &mut dst[..read]);
+                            }
+                        },
+                    );
+                    window
+                        .copy_within(..count - PAGE_ENTRY_SIZE as usize, PAGE_ENTRY_SIZE as usize);
                 }
                 self.set_entry(start + u64::from(pos) * PAGE_ENTRY_SIZE, (key, value));
                 self.image
@@ -1180,9 +1188,19 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                             3
                         },
                     )?;
-                    for i in pos..header.len - 1 {
-                        let entry = self.entry(start + u64::from(i + 1) * PAGE_ENTRY_SIZE);
-                        self.set_entry(start + u64::from(i) * PAGE_ENTRY_SIZE, entry);
+                    if pos + 1 < header.len {
+                        // Save the final source before relocation, without dirtying its slot.
+                        let last =
+                            self.read::<16>(start + u64::from(header.len - 1) * PAGE_ENTRY_SIZE);
+                        let count = usize::from(header.len - pos - 1) * PAGE_ENTRY_SIZE as usize;
+                        let memory = &self.owner.memory;
+                        let window = self.image.cover(
+                            start + u64::from(pos) * PAGE_ENTRY_SIZE,
+                            count,
+                            |address, dst| memory.read(address, dst),
+                        );
+                        window.copy_within(PAGE_ENTRY_SIZE as usize.., 0);
+                        window[count - PAGE_ENTRY_SIZE as usize..].copy_from_slice(&last);
                     }
                     self.image
                         .write(offset + PAGE_OFFSET_LEN, &(header.len - 1).to_le_bytes());
@@ -2513,6 +2531,174 @@ mod tests {
     }
 
     #[test]
+    fn non_split_windows_preserve_prospective_entries() {
+        let mut m = map();
+        let value = |key| 0xa500_0000_0000_0000 | key;
+        let original: Vec<_> = (1..=63).map(|i| (i * 2, value(i * 2))).collect();
+        // Seed independently of the shift implementation under test.
+        m.write_page_header(
+            1,
+            PageHeader {
+                flags: PAGE_FLAG_ACTIVE,
+                len: 63,
+                prev: 0,
+                next: 0,
+                free_next: 0,
+            },
+        );
+        m.write_dir_entry(
+            0,
+            DirEntry {
+                min_key: 2,
+                page_id: 1,
+            },
+        );
+        for (i, &(key, value)) in original.iter().enumerate() {
+            m.write_entry(1, i as u16, key, value);
+        }
+        m.write_entry(1, 63, u64::MAX, 0xcccc_cccc_cccc_cccc);
+        let header = HeaderV1 {
+            len: 63,
+            page_count: 1,
+            first_page: 1,
+            last_page: 1,
+            dir_len: 1,
+            ..m.header()
+        };
+        write_header(&m.memory, &header).unwrap();
+        m.validate().unwrap();
+        let memory = m.memory.clone();
+        let before = backing(&memory);
+        let size = memory.size();
+        for insert in [true, false] {
+            let positions = if insert {
+                [0u16, 1, 31, 62, 63]
+            } else {
+                [0u16, 1, 31, 61, 62]
+            };
+            for pos in positions {
+                for staged in [false, true] {
+                    eprintln!("NON_SPLIT_CASE insert={insert} pos={pos} staged={staged}");
+                    // The preceding ready object has been consumed; reset only this fixture.
+                    memory.write(0, &before);
+                    let mut expected = original.clone();
+                    let mut expected_bytes = before.clone();
+                    let mut dirty = Vec::new();
+                    let mut edits = Vec::new();
+                    let mut previous = Vec::new();
+                    if staged {
+                        for (i, mask) in [(0usize, 1u64), (31, 2), (62, 3)] {
+                            let (key, old) = expected[i];
+                            let changed = old ^ (mask << 56);
+                            edits.push(Edit::Insert {
+                                key,
+                                value: changed,
+                            });
+                            previous.push(Some(old));
+                            expected[i].1 = changed;
+                            let at = page_entry_offset(1, i as u16) + 8;
+                            expected_bytes[at as usize..at as usize + 8]
+                                .copy_from_slice(&changed.to_le_bytes());
+                            dirty.extend(at..at + 8);
+                        }
+                    }
+                    if insert {
+                        let key = u64::from(pos) * 2 + 1;
+                        let inserted = value(key) ^ (4 << 56);
+                        edits.push(Edit::Insert {
+                            key,
+                            value: inserted,
+                        });
+                        previous.push(None);
+                        expected.insert(usize::from(pos), (key, inserted));
+                    } else {
+                        let (key, old) = expected.remove(usize::from(pos));
+                        edits.push(Edit::Remove { key });
+                        previous.push(Some(old));
+                    }
+                    let len = expected.len();
+                    let start = page_entry_offset(1, pos);
+                    let end = page_entry_offset(1, len as u16);
+                    dirty.extend(start..end);
+                    for (i, &(key, value)) in expected.iter().enumerate() {
+                        let at = page_entry_offset(1, i as u16) as usize;
+                        expected_bytes[at..at + 8].copy_from_slice(&key.to_le_bytes());
+                        expected_bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+                    }
+                    expected_bytes[OFFSET_LEN as usize..OFFSET_LEN as usize + 8]
+                        .copy_from_slice(&(len as u64).to_le_bytes());
+                    dirty.extend(OFFSET_LEN..OFFSET_LEN + 8);
+                    let at = page_offset(1) + PAGE_OFFSET_LEN;
+                    expected_bytes[at as usize..at as usize + 2]
+                        .copy_from_slice(&(len as u16).to_le_bytes());
+                    dirty.extend(at..at + 2);
+                    if pos == 0 {
+                        let at = dir_entry_offset(0);
+                        expected_bytes[at as usize..at as usize + 8]
+                            .copy_from_slice(&expected[0].0.to_le_bytes());
+                        dirty.extend(at..at + 8);
+                    }
+                    dirty.sort_unstable();
+                    dirty.dedup();
+                    let ready = m.prepare_edits(&edits).unwrap();
+                    assert_eq!(ready.previous_values(), previous);
+                    let actual_dirty: Vec<_> = ready
+                        .image
+                        .ranges
+                        .as_slice()
+                        .iter()
+                        .flat_map(|r| r.address..r.end())
+                        .collect();
+                    assert_eq!(actual_dirty, dirty, "dirty destination union");
+                    assert!(
+                        backing(&memory) == before,
+                        "prepare changed canonical bytes"
+                    );
+                    assert_eq!(memory.size(), size);
+                    ready.discard();
+                    assert!(
+                        backing(&memory) == before,
+                        "discard changed canonical bytes"
+                    );
+                    let ready = m.prepare_edits(&edits).unwrap();
+                    assert_eq!(ready.previous_values(), previous);
+                    assert!(
+                        backing(&memory) == before,
+                        "re-prepare changed canonical bytes"
+                    );
+                    ready.publish();
+                    assert_eq!(
+                        m.iter().collect::<Vec<_>>(),
+                        expected,
+                        "exact shifted pairs"
+                    );
+                    assert_eq!(
+                        m.header(),
+                        HeaderV1 {
+                            len: len as u64,
+                            ..header
+                        }
+                    );
+                    assert_eq!(m.read_page_header(1).len, len as u16);
+                    assert_eq!(
+                        m.read_dir_entry(0),
+                        DirEntry {
+                            min_key: expected[0].0,
+                            page_id: 1
+                        }
+                    );
+                    assert!(
+                        backing(&memory) == expected_bytes,
+                        "padding or unused tail changed"
+                    );
+                    assert_eq!(memory.size(), size);
+                    m.validate().unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prepared_edits_order_and_discard() {
         let mut m = map();
         let memory = m.memory.clone();
@@ -2740,7 +2926,17 @@ mod tests {
                 key,
                 value: value(key),
             })
+            // Both shifts use page126's prospective-only payload before admission.
+            .chain([
+                Edit::Remove { key: 4001 },
+                Edit::Insert {
+                    key: 4001,
+                    value: value(4001),
+                },
+            ])
             .collect();
+        let mut expected_previous = vec![None; 4000];
+        expected_previous.extend([Some(value(4001)), None]);
         match m.prepare_edits(&edits) {
             Err(PrepareError::Grow { at, source }) => {
                 assert_eq!(at, 3968, "intent that mints the final required page126");
@@ -2756,6 +2952,9 @@ mod tests {
         }
         assert!(backing(&memory) == before);
         assert_eq!(m.work.get().grows, 1);
+        assert_eq!(m.work.get().completed, 4002);
+        assert_eq!(m.work.get().selected, Some((4001, 126, PAGE_FLAG_ACTIVE)));
+        assert!(page_offset(126) + PAGE_STRIDE > memory.size() * WASM_PAGE_SIZE);
         eprintln!("PREPARED_RESOURCE rejected {:?}", m.work.get());
         // The first edit really splits a full page and needs overflowing byte scratch.
         m.observe_work(|w| w.fail_site = Some("bytes"));
@@ -2790,7 +2989,7 @@ mod tests {
         let mut m =
             StablePagedOrderedMap::init(RestrictedMemory::new(memory.clone(), 0..5)).unwrap();
         let ready = m.prepare_edits(&edits).unwrap();
-        assert_eq!(ready.previous_values(), vec![None; 4000]);
+        assert_eq!(ready.previous_values(), expected_previous);
         assert_eq!(memory.size(), 5);
         let ready_work = ready.owner.work.get();
         assert_eq!((ready_work.grows, ready_work.grown_pages), (1, 2));
@@ -2802,7 +3001,7 @@ mod tests {
         assert_eq!((m.header().len, m.header().page_count), (64, 1));
         m.validate().unwrap();
         let ready = m.prepare_edits(&edits).unwrap();
-        assert_eq!(ready.previous_values(), vec![None; 4000]);
+        assert_eq!(ready.previous_values(), expected_previous);
         let ready_work = ready.owner.work.get();
         assert_eq!(ready_work.grows, 0);
         eprintln!("PREPARED_RESOURCE ready {ready_work:?}");

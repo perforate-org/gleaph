@@ -1513,6 +1513,14 @@ backing and zero padding for admitted new-page extents.
 Fully backed disjoint requests use one canonical read; fully staged requests use staged bytes;
 partial requests retain backing-prefix/zero-tail/overlay composition. Empty reads do no backing I/O.
 
+Non-split entry movement uses one borrowed window instead of per-entry decoding and staging.
+Insertion covers the affected suffix plus its new slot, reads canonical gaps only below the old
+live end, shifts encoded entries right, then encodes the new pair through `set_entry`. Removal
+snapshots the last prospective 16-byte source before covering only its destination suffix; it
+shifts left and fills the final destination from that snapshot without dirtying the old tail.
+Zero-shift paths skip the window. The unused entry decoder is removed; metadata ordering,
+reservation, admission and publication remain unchanged. No page clone or new helper is added.
+
 One edit-scoped lookup chooses canonical reads only with an empty image and sufficient directory
 backing; otherwise it uses the prospective reader. Directory metadata, page metadata and keys
 share that reader and the same validation owners. `DirEntry` and `PageHeader` own decoding;
@@ -1532,40 +1540,47 @@ or scratch allocation.
 
 #### Validation and measured status
 
-Map source SHA256: `7ea423add830daf7608f6d3de6fcd91d1100cb7a285b75eb6dd011bff1b5b74b`.
-The source-bound validation passed scoped formatting, clippy, 27 unit tests and five doctests.
+Map source SHA256: `330260d1d84a7af6530d141166f4d41474f94f164d42bc15a3dc04ed1f33f7be`.
+The source-bound validation passed scoped formatting, clippy, 28 unit tests and five doctests.
 Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
 reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
 doctests protect the exclusive, nonredirectable, single-use capability. The existing cover fixture
 now also checks equal-count extension, exact bytes, gap filling and trailing descriptor rebasing;
 omitting the shrink resize is rejected by its bridge descriptor oracle. Canonical-only right reads
 and omitted suffix writes were separately rejected in the preceding split checkpoint.
+The new non-split test checks 20 direction/position/source cases on one independently seeded map,
+including exact dirty destinations, full backing bytes, priors and discard. The resource fixture
+also exercises remove/reinsert on unbacked page126 before the unchanged admission failure.
+Wrong insertion movement and a lost removal tail each fail at their intended runtime assertions.
 
 The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
 benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
-Against the preceding checkpoint, descriptor-view reuse reduces replacement by 1.62%, tail by
-2.09%, split by 0.88% and both LARA rows by 0.18%; missing is unchanged. All six counts are
-non-increasing. All recorded heap/stable page deltas are zero. Map/LARA Wasm sizes increase
-134/216 bytes. These are whole-fixture deltas, not isolated resize instruction prices.
+Against source `7ea423ad`, bulk movement reduces LARA total/named by 56.5906%/56.6176% and tail
+by 128 instructions. Missing/replacement increase by 128 each (0.1426%/0.1096%), and split by two
+(0.0068%). These small regressions are explicitly accepted for the LARA improvement; the original
+zero-regression hypothesis still fails. All recorded heap/stable page deltas are zero. Map/LARA
+Wasm sizes increase 6807/13260 bytes. The map preparation frame grows 144→160 bytes; its 40 locals
+and the scalar 208-byte frame stay unchanged. These are not isolated IC prices or peak-stack bounds.
 
 | Original acceptance gate | Recorded instructions | Ceiling | Result |
 | --- | ---: | ---: | --- |
-| Missing64 | 89,768 | 85,672 | FAIL |
-| Replace64 | 116,744 | 77,576 | FAIL |
-| Split/directory | 29,579 | 30,930 | PASS |
-| Tail pairs64 | 450,058 | 298,171 | FAIL |
-| LARA total | 2,014,198 | 1,527,576 | FAIL |
-| LARA named | 2,013,237 | 1,526,615 | FAIL |
+| Missing64 | 89,896 | 85,672 | FAIL |
+| Replace64 | 116,872 | 77,576 | FAIL |
+| Split/directory | 29,581 | 30,930 | PASS |
+| Tail pairs64 | 449,930 | 298,171 | FAIL |
+| LARA total | 874,351 | 1,527,576 | PASS |
+| LARA named | 873,390 | 1,526,615 | PASS |
 
-**One of six original gates passes; the remaining five are unmet.** Relative improvement and
-functional passes do not waive them. These are measurements of the bound development worktree,
-not a clean-checkout LARA validation of this map-only checkpoint. That worktree also contained
-FreeSpanStore admission changes excluded from this checkpoint. Source, dependency and Wasm
-bindings, command logs, CSVs, codegen inspection and the missing-shrink mutant remain in
-`/Users/yota/.local/share/gleaph/evidence/adr0097/cover-view-0348/`, with results in
-`measurement.json` and the closure receipt in `completion/receipt.json`. The preceding bulk-copy
-slice remains under `split-right-bulk-0347/` in the same evidence directory. Its first candidate
-remains a failed non-regression attempt; those records and earlier failures are preserved.
+**Three of six original gates pass; missing, replacement and tail remain unmet.** No absolute
+ceiling is relaxed and no general regression tolerance is introduced. These are measurements of
+the bound development worktree, not a clean-checkout LARA validation of this map-only checkpoint.
+That worktree also contained FreeSpanStore admission changes excluded from this checkpoint.
+Source, dependency and Wasm bindings, command logs, CSVs and mutation evidence are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/interior-bulk-0352/`. The initial rejection and
+restoration remain in `completion/receipt.json`; the approved tradeoff and exact candidate
+reinstatement are in `adoption/receipt.json`. The same source passed formatting, clippy, 28 units
+and five doctests after reinstatement; its bound IC measurements are reused, not rerun.
+Earlier `cover-view-0348/` and `split-right-bulk-0347/` evidence remains preserved separately.
 
 ### Canonical point-state read prerequisite (2026-09-22)
 
