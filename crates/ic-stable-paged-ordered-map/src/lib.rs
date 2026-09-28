@@ -507,6 +507,17 @@ impl EditImage {
     ) -> &mut [u8] {
         let end = address + count as u64;
         let ranges = self.ranges.as_slice();
+        // An empty image has no packed bytes to move, even after reserving scratch.
+        if count != 0 && ranges.is_empty() {
+            let bytes = self.bytes.resize_reserved(count);
+            fill_gap(address, bytes);
+            self.ranges.push_reserved(DirtyRange {
+                address,
+                offset: 0,
+                len: count,
+            });
+            return bytes;
+        }
         let first = ranges.partition_point(|r| r.end() < address);
         if let Some(r) = ranges.get(first)
             && r.address <= address

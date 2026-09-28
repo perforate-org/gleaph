@@ -1505,9 +1505,15 @@ not peak-stack or global-allocation claims.
 
 Interior shifts, splits and directory shifts reserve their overflowing scratch before use.
 `EditImage::cover` alone owns coalescing, relocation and gap filling; it returns exactly the
-requested borrowed write window. Growth reuses the descriptor view returned by its resize;
-equal/shrink moves the still-live suffix before resizing. Both join the same descriptor update
-and offset rebase, without a second resize on growth. Capacity checks and gap-fill order remain.
+requested borrowed write window. A positive request on an empty range set obtains the reserved
+byte view, fills its one gap, appends one descriptor at packed offset zero and returns that same
+view. There are no existing bytes to relocate or ranges to merge, even after heap reservation.
+Zero-count and nonempty requests retain the general normalizer: growth reuses the descriptor view
+returned by its resize; equal/shrink moves the still-live suffix before resizing. Both join the
+same descriptor update and offset rebase, without a second resize on growth. Scratch retains
+capacity checks; callers retain no-op/full/live-prefix gap policies. Gap filling still precedes
+descriptor insertion. Fresh-empty zero count keeps one zero-length descriptor without a callback;
+contained zero count does not add a descriptor. No second editor or initialization API is added.
 No window survives another image mutation. `EditImage::read` alone composes staged bytes with
 backing and zero padding for admitted new-page extents.
 Fully backed disjoint requests use one canonical read; fully staged requests use staged bytes;
@@ -1545,7 +1551,7 @@ or scratch allocation.
 
 #### Validation and measured status
 
-Map source SHA256: `073473e40d18efe5d834f005e08bbb2a902d7e7903142aa69d8b137fbda1b234`.
+Map source SHA256: `d750b05526e08723cf46cf2a3a10dfea8a95b9b56edd8e5bc007020e717182fa`.
 The source-bound validation passed scoped formatting, clippy, 28 unit tests and five doctests.
 Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
 reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
@@ -1557,9 +1563,14 @@ The non-split test checks 20 direction/position/source cases on one independentl
 including exact dirty destinations, full backing bytes, priors and discard. The resource fixture
 also exercises remove/reinsert on unbacked page126 before the unchanged admission failure.
 Wrong insertion movement and a lost removal tail were rejected in the preceding movement checkpoint.
-The metadata-first checkpoint preserves all 28 tests byte-for-byte. Its tail-key-only wrong map
-length is rejected at the exact header assertion after setup, replacement and missing removal;
-the measured candidate is restored byte-for-byte afterward.
+The preceding metadata-first checkpoint's tail-key-only wrong map length was rejected at the
+exact header assertion after setup, replacement and missing removal. The current first-cover
+checkpoint preserves all 28 tests byte-for-byte. Its unchanged cover oracle passes before and after
+the change; removing the positive-count guard fails the empty-zero callback assertion after three
+positive cases. Suppressing the 48-byte callback separately fails heap-first after two inline cases
+and the heap representation/capacity checks. Later assertions in each failing case are unreached.
+Both mutant sources and streams are preserved; the candidate is restored byte-for-byte afterward.
+No test fixture, Memory/map constructor or PocketIC installation is added.
 
 The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
 benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
@@ -1568,30 +1579,39 @@ The prior bulk checkpoint (`330260d1` against `7ea423ad`) reduced LARA total/nam
 (0.1426%/0.1096%) and split increase of two (0.0068%) were explicitly accepted for that benefit.
 The initial zero-regression hypothesis failed; its rejection remains recorded separately.
 
-Against retained `330260d1`, metadata-first insertion reduces tail 449,930→406,346 (9.6868%),
-LARA total 874,351→841,909 (3.7104%) and named 873,390→840,948 (3.7145%). Missing, replacement
-and split remain unchanged, so this checkpoint needs no regression tradeoff. LARA total/named
-are overlapping scopes, not independent workloads. All heap/stable page deltas are zero.
-Map/LARA Wasm sizes increase 6/12 bytes; static scalar/preparation frames remain 208/160 bytes
-with 2/40 locals. Source-derived fresh-tail packed-payload relocation falls 34→0 bytes; it is
-neither an isolated IC price nor attribution of the LARA improvement. Frames are not peak-stack bounds.
+The previous metadata-first checkpoint (`073473e4` against `330260d1`) reduced tail
+449,930→406,346 (9.6868%), LARA total 874,351→841,909 (3.7104%) and named
+873,390→840,948 (3.7145%), with missing, replacement and split unchanged.
+
+Against that retained source, first-cover initialization reduces replacement 116,872→105,736
+(9.5284%), tail 406,346→386,954 (4.7723%) and LARA total/named to 832,624/831,663
+(1.1029%/1.1041%). Missing increases by 256 (0.2848%, four per call) and split by 28 (0.0947%).
+Those small regressions and map/LARA Wasm growth of 3,130/6,059 bytes are explicitly accepted for
+the measured benefits. LARA total/named overlap and are not added together. All heap/stable page
+deltas are zero, not zero-global-allocation evidence. Static scalar/preparation frames remain
+208/160 bytes; scalar locals remain two and preparation locals increase 40→41. Missing executes
+no cover call; its increase is not a price for the new branch. Exact instruction attribution is
+unisolated, and frames are not peak-stack bounds. Historical F/G first-cover candidates remain
+rejected in their older source/acceptance context; this is one current-source experiment.
 
 | Original acceptance gate | Recorded instructions | Ceiling | Result |
 | --- | ---: | ---: | --- |
-| Missing64 | 89,896 | 85,672 | FAIL |
-| Replace64 | 116,872 | 77,576 | FAIL |
-| Split/directory | 29,581 | 30,930 | PASS |
-| Tail pairs64 | 406,346 | 298,171 | FAIL |
-| LARA total | 841,909 | 1,527,576 | PASS |
-| LARA named | 840,948 | 1,526,615 | PASS |
+| Missing64 | 90,152 | 85,672 | FAIL |
+| Replace64 | 105,736 | 77,576 | FAIL |
+| Split/directory | 29,609 | 30,930 | PASS |
+| Tail pairs64 | 386,954 | 298,171 | FAIL |
+| LARA total | 832,624 | 1,527,576 | PASS |
+| LARA named | 831,663 | 1,526,615 | PASS |
 
 **Three of six original gates pass; missing, replacement and tail remain unmet.** No absolute
 ceiling is relaxed and no general regression tolerance is introduced. These are measurements of
 the bound development worktree, not a clean-checkout LARA validation of this map-only checkpoint.
 That worktree also contained FreeSpanStore admission changes excluded from this checkpoint.
 Current source, dependency and frozen Wasm bindings, command logs, CSVs and mutation evidence are
-under `/Users/yota/.local/share/gleaph/evidence/adr0097/bulk-insert-order-0353/`; its
-`completion/receipt.json` records the source-bound checks and IC measurements.
+under `/Users/yota/.local/share/gleaph/evidence/adr0097/first-cover-0357/`; its
+`completion/receipt.json` records the source-bound checks and original five/two CSV rows.
+The metadata-first baseline remains under `bulk-insert-order-0353/`, reused without rebuilding
+or remeasurement. Benchmark fixtures remain unchanged; no results were persisted.
 The prior bulk checkpoint remains under `interior-bulk-0352/`: its initial rejection/restoration
 is in `completion/receipt.json`, and the approved tradeoff and exact candidate reinstatement are
 in `adoption/receipt.json`. Earlier `cover-view-0348/` and `split-right-bulk-0347/` evidence remains
