@@ -1563,15 +1563,12 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         // The label is instrumentation only, not a production editing mode.
         #[cfg(not(test))] _: &'static str,
     ) -> Result<(), EditFailure> {
+        #[cfg(test)]
         if scratch
             .as_slice()
             .len()
             .checked_add(additional)
-            .is_some_and(|len| len <= scratch.capacity())
-        {
-            return Ok(());
-        }
-        #[cfg(test)]
+            .is_none_or(|len| len > scratch.capacity())
         {
             self.observe_work(|w| w.reserves += 1);
             if self.work.get().fail_site == Some(site) {
@@ -4189,6 +4186,33 @@ mod tests {
                 heap,
                 "representation unchanged"
             );
+            let prefix = scratch.as_slice().to_vec();
+            scratch.reserve(capacity - prefix.len()).unwrap();
+            assert_eq!(
+                scratch.as_slice(),
+                prefix,
+                "fitting reservation preserves bytes"
+            );
+            assert_eq!(scratch.capacity(), capacity);
+            assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
+            assert!(scratch.reserve(usize::MAX).is_err());
+            assert_eq!(
+                scratch.as_slice(),
+                prefix,
+                "failed reservation preserves bytes"
+            );
+            assert_eq!(scratch.capacity(), capacity);
+            assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
+            if !heap {
+                scratch.reserve(capacity - prefix.len() + 1).unwrap();
+                assert!(matches!(&scratch, Scratch::Heap(_)));
+                assert!(scratch.capacity() > capacity);
+                assert_eq!(
+                    scratch.as_slice(),
+                    prefix,
+                    "heap transition preserves prefix"
+                );
+            }
         }
     }
 

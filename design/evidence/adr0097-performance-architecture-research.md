@@ -1,9 +1,9 @@
 # ADR0097 performance architecture research (whole map-edit / FreeSpan execution)
 
 Status: **Experimental — research and bounded implementation checkpoints, not ADR0097 acceptance.**
-Sections0–9 preserve their named source epochs: their current-source wording, measurements and
+Sections0–10 preserve their named source epochs: their current-source wording, measurements and
 hypotheses apply to those checkpoints, not the live implementation. The latest retained map source
-is `d750b055` (Plan0357), described in [section10](#10-first-cover-borrowed-window-retained).
+is `4e5456e1` (Plan0358), described in [section11](#11-single-reservation-owner-retained).
 Original acceptance remains3/6; unimplemented proposals remain proposals.
 
 ## 0. Gates, anchors, non-claims
@@ -554,3 +554,75 @@ frozen LARA5062516B/SHA256 `1a9716a10d12887728f5b4b95085d86d6537b867612e3bbdfd4c
 Cargo bindings include LARA's default-only map rlib. `measurement.json`, `native/`, `inspect/` and
 `completion/receipt.json` record the tradeoff, validation, codegen limits and exact protected scope.
 This checkpoint includes no original-ceiling waiver, ADR0097 promotion or second optimization.
+
+## 11. Single reservation owner: retained
+
+**Status: implemented, measured and retained.** Plan0358 removes the independent production
+fit/early-success decision from `StablePagedOrderedMap::reserve_scratch`, delegating normal calls
+to the existing `Scratch::reserve`. The wrapper had its own checked live-length/capacity decision;
+Scratch already implements fitting Inline/Heap requests and fallible growth. Those were alternative
+implementations of the decision, not two checks necessarily executed on each missing call.
+
+The only remaining wrapper predicate is cfg(test) observation: count and optionally inject a labelled
+fault for a non-fitting request, then forward to Scratch unless that intentional fault returns.
+Native fitting requests also execute the actual reservation owner. Scratch's capacity/allocation/
+overflow/representation code is unchanged. The three consumers—previous results in prepare_image,
+encoded bytes and descriptors in EditPlan::reserve—retain their order and error projections.
+Lookup checks, prospective reads, first-cover behavior, full-page admission and the first canonical
+write in publish_image are untouched. There is no new helper, type, parameter, mode, unsafe code,
+public/storage API, dependency or editor. This does not revive0349's input specialization,0350's
+unmaterialized state or0356's directory-pair read.
+
+| Metric | Retained0357 | Retained0358 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 | 90152 | 88872 | -1280 | -1.4198% | 85672 | FAIL |
+| Replace64 | 105736 | 102792 | -2944 | -2.7843% | 77576 | FAIL |
+| Split/directory | 29609 | 29531 | -78 | -0.2634% | 30930 | PASS |
+| Tail pairs64 | 386954 | 381066 | -5888 | -1.5216% | 298171 | FAIL |
+| LARA total | 832624 | 831214 | -1410 | -0.1693% | 1527576 | PASS |
+| LARA named | 831663 | 830253 | -1410 | -0.1695% | 1526615 | PASS |
+
+Every instruction control improves, supporting retention of the simpler delegation path. Missing
+still exceeds its ceiling by3200; original acceptance remains3/6, not4/6. No gate, tolerance or
+historical rejection is changed. LARA rows overlap and are not summed. Map total607194 is reference
+only. Heap/stable page increases are0 in every row, not evidence of zero global allocation.
+
+Map Wasm shrinks230B; LARA grows966B. The latter code-size cost is explicitly accepted for the
+measured instruction benefit and removal of the production fit return. Scalar/preparation static
+frames stay208/160B and locals2/41. Source-bound disassembly shows preparation now dispatching
+directly on Scratch representation and its remaining-capacity check rather than the wrapper's
+generic checked-sum/capacity selection. This is codegen corroboration, not isolated instruction
+pricing, causal attribution of each workload's delta or a peak-stack bound. Missing's reduction
+is20 instructions per scalar call in this fixture; that quotient does not price a generic reserve.
+
+### Validation and evidence
+
+The existing two-instance Scratch fixture gains fitting-reservation checks at exact remaining
+capacity, overflow-failure byte/capacity/representation preservation, and nonempty Inline-to-Heap
+prefix/length preservation. It passes before and after the delegation change. No original assertion
+is removed. The existing ordered-edit test passes; a temporary fault that skips only multi-result
+reservation survives scalar setup, prints the seven-intent marker, then fails at
+`resize_reserved<Option<u64>,1>` while `prepare_image` pushes a prior. The backtrace identifies the
+first batch preparation, not construction. Later prior/backing/discard assertions are unreached.
+Mutant source and complete streams are preserved and the candidate restored byte-exactly.
+
+Formatting, scoped clippy, all28 unit tests and5 doctests pass. Test count and Memory/map/PocketIC
+constructor/install counts do not increase; the owner assertions reuse the two Scratch instances.
+Both source-bound release builds and original filtered IC runs pass unchanged pre/postconditions.
+CSVs retain exactly5/2 original14-column rows and expected calls. No benchmark source changes or
+results.yml persistence. The0357 baseline is reused, not rebuilt or rerun; LARA's pending admission
+changes remain fixed, so this is not clean-commit integration.
+
+Lizard1.24.0 conventional CCN: reserve_scratch3→3, NLOC26→23, tokens162→153; the static parser
+includes cfg(test) observation, whereas the production wrapper now only delegates. The expanded
+owner test is CCN3→4/NLOC42→69/tokens372→579. Whole-file CCN458→459, functions144 unchanged;
+no signature grows, no production abstraction is introduced and no superseded fit return remains.
+
+Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/reservation-owner-0358/`.
+Retained lib165868B/SHA256 `4e5456e152e8ddba352fd52d86f721bdf91aa234c01c42c429d2bc90d7f0c434`;
+frozen map742773B/SHA256 `abad51cdadd3f2aaed4e59e9ac2c0010f11f5948c7070733350c8ba5a798384d`;
+frozen LARA5063482B/SHA256 `cdcd861a113f7cee481406fec51e1e3e6517483f54246075820d7ecbe4100de7`.
+Cargo records bind the linked default-only map rlib as well as both Wasm outputs. Source snapshots,
+`mutation.json`, `measurement.json`, native streams, `inspect/` and `completion/receipt.json` bind
+the retained decision and exact scope. No second optimization, benchmark sweep, commit or push is
+part of this experiment.
