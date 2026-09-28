@@ -1137,6 +1137,14 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                     + 10
                     + if pos == 0 { 8 } else { 0 };
                 self.reserve(bytes, if pos == 0 { 4 } else { 3 })?;
+                // Avoid relocating freshly staged payload to insert lower metadata.
+                // Movement uses the captured location, not the newly staged lengths.
+                self.set_u64(OFFSET_LEN, len);
+                if pos == 0 {
+                    self.set_u64(dir_entry_offset(dir_pos), key);
+                }
+                self.image
+                    .write(offset + PAGE_OFFSET_LEN, &(header.len + 1).to_le_bytes());
                 if pos < header.len {
                     let count = usize::from(header.len - pos + 1) * PAGE_ENTRY_SIZE as usize;
                     let old_end = start + u64::from(header.len) * PAGE_ENTRY_SIZE;
@@ -1158,12 +1166,6 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                         .copy_within(..count - PAGE_ENTRY_SIZE as usize, PAGE_ENTRY_SIZE as usize);
                 }
                 self.set_entry(start + u64::from(pos) * PAGE_ENTRY_SIZE, (key, value));
-                self.image
-                    .write(offset + PAGE_OFFSET_LEN, &(header.len + 1).to_le_bytes());
-                if pos == 0 {
-                    self.set_u64(dir_entry_offset(dir_pos), key);
-                }
-                self.set_u64(OFFSET_LEN, len);
                 Ok(None)
             }
             (Edit::Remove { .. }, Ok(pos)) => {

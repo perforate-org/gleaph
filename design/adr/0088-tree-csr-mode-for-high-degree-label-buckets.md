@@ -1518,8 +1518,13 @@ Insertion covers the affected suffix plus its new slot, reads canonical gaps onl
 live end, shifts encoded entries right, then encodes the new pair through `set_entry`. Removal
 snapshots the last prospective 16-byte source before covering only its destination suffix; it
 shifts left and fills the final destination from that snapshot without dirtying the old tail.
-Zero-shift paths skip the window. The unused entry decoder is removed; metadata ordering,
-reservation, admission and publication remain unchanged. No page clone or new helper is added.
+Zero-shift paths skip the window. The unused entry decoder is removed.
+Non-split insertion stages map length, optional directory minimum and page length after its checked
+count and reservation, before the payload window and new pair. Movement uses the captured old
+location/header rather than rereading staged metadata; canonical gaps remain bounded by the old
+live end. Each metadata field is staged once. This avoids relocating freshly staged payload to
+insert lower-address metadata. Reservation, dirty destinations, admission and canonical publication
+order remain unchanged. No page clone or new helper is added.
 
 One edit-scoped lookup chooses canonical reads only with an empty image and sufficient directory
 backing; otherwise it uses the prospective reader. Directory metadata, page metadata and keys
@@ -1540,7 +1545,7 @@ or scratch allocation.
 
 #### Validation and measured status
 
-Map source SHA256: `330260d1d84a7af6530d141166f4d41474f94f164d42bc15a3dc04ed1f33f7be`.
+Map source SHA256: `073473e40d18efe5d834f005e08bbb2a902d7e7903142aa69d8b137fbda1b234`.
 The source-bound validation passed scoped formatting, clippy, 28 unit tests and five doctests.
 Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
 reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
@@ -1548,39 +1553,49 @@ doctests protect the exclusive, nonredirectable, single-use capability. The exis
 now also checks equal-count extension, exact bytes, gap filling and trailing descriptor rebasing;
 omitting the shrink resize is rejected by its bridge descriptor oracle. Canonical-only right reads
 and omitted suffix writes were separately rejected in the preceding split checkpoint.
-The new non-split test checks 20 direction/position/source cases on one independently seeded map,
+The non-split test checks 20 direction/position/source cases on one independently seeded map,
 including exact dirty destinations, full backing bytes, priors and discard. The resource fixture
 also exercises remove/reinsert on unbacked page126 before the unchanged admission failure.
-Wrong insertion movement and a lost removal tail each fail at their intended runtime assertions.
+Wrong insertion movement and a lost removal tail were rejected in the preceding movement checkpoint.
+The metadata-first checkpoint preserves all 28 tests byte-for-byte. Its tail-key-only wrong map
+length is rejected at the exact header assertion after setup, replacement and missing removal;
+the measured candidate is restored byte-for-byte afterward.
 
 The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
 benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
-Against source `7ea423ad`, bulk movement reduces LARA total/named by 56.5906%/56.6176% and tail
-by 128 instructions. Missing/replacement increase by 128 each (0.1426%/0.1096%), and split by two
-(0.0068%). These small regressions are explicitly accepted for the LARA improvement; the original
-zero-regression hypothesis still fails. All recorded heap/stable page deltas are zero. Map/LARA
-Wasm sizes increase 6807/13260 bytes. The map preparation frame grows 144→160 bytes; its 40 locals
-and the scalar 208-byte frame stay unchanged. These are not isolated IC prices or peak-stack bounds.
+The prior bulk checkpoint (`330260d1` against `7ea423ad`) reduced LARA total/named by
+56.5906%/56.6176% and tail by 128 instructions. Its missing/replacement increases of 128 each
+(0.1426%/0.1096%) and split increase of two (0.0068%) were explicitly accepted for that benefit.
+The initial zero-regression hypothesis failed; its rejection remains recorded separately.
+
+Against retained `330260d1`, metadata-first insertion reduces tail 449,930→406,346 (9.6868%),
+LARA total 874,351→841,909 (3.7104%) and named 873,390→840,948 (3.7145%). Missing, replacement
+and split remain unchanged, so this checkpoint needs no regression tradeoff. LARA total/named
+are overlapping scopes, not independent workloads. All heap/stable page deltas are zero.
+Map/LARA Wasm sizes increase 6/12 bytes; static scalar/preparation frames remain 208/160 bytes
+with 2/40 locals. Source-derived fresh-tail packed-payload relocation falls 34→0 bytes; it is
+neither an isolated IC price nor attribution of the LARA improvement. Frames are not peak-stack bounds.
 
 | Original acceptance gate | Recorded instructions | Ceiling | Result |
 | --- | ---: | ---: | --- |
 | Missing64 | 89,896 | 85,672 | FAIL |
 | Replace64 | 116,872 | 77,576 | FAIL |
 | Split/directory | 29,581 | 30,930 | PASS |
-| Tail pairs64 | 449,930 | 298,171 | FAIL |
-| LARA total | 874,351 | 1,527,576 | PASS |
-| LARA named | 873,390 | 1,526,615 | PASS |
+| Tail pairs64 | 406,346 | 298,171 | FAIL |
+| LARA total | 841,909 | 1,527,576 | PASS |
+| LARA named | 840,948 | 1,526,615 | PASS |
 
 **Three of six original gates pass; missing, replacement and tail remain unmet.** No absolute
 ceiling is relaxed and no general regression tolerance is introduced. These are measurements of
 the bound development worktree, not a clean-checkout LARA validation of this map-only checkpoint.
 That worktree also contained FreeSpanStore admission changes excluded from this checkpoint.
-Source, dependency and Wasm bindings, command logs, CSVs and mutation evidence are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/interior-bulk-0352/`. The initial rejection and
-restoration remain in `completion/receipt.json`; the approved tradeoff and exact candidate
-reinstatement are in `adoption/receipt.json`. The same source passed formatting, clippy, 28 units
-and five doctests after reinstatement; its bound IC measurements are reused, not rerun.
-Earlier `cover-view-0348/` and `split-right-bulk-0347/` evidence remains preserved separately.
+Current source, dependency and frozen Wasm bindings, command logs, CSVs and mutation evidence are
+under `/Users/yota/.local/share/gleaph/evidence/adr0097/bulk-insert-order-0353/`; its
+`completion/receipt.json` records the source-bound checks and IC measurements.
+The prior bulk checkpoint remains under `interior-bulk-0352/`: its initial rejection/restoration
+is in `completion/receipt.json`, and the approved tradeoff and exact candidate reinstatement are
+in `adoption/receipt.json`. Earlier `cover-view-0348/` and `split-right-bulk-0347/` evidence remains
+preserved separately.
 
 ### Canonical point-state read prerequisite (2026-09-22)
 
