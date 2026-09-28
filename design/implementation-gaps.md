@@ -47,6 +47,26 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-LARA-TEST-CLIPPY — Strict test-target lint is blocked
+
+- **Status:** Open; discovered during the rejected Plan0359 allocator-operation trial.
+- **Observed behavior:** `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara --lib
+  --tests --target aarch64-apple-darwin -- -D warnings` reports43 LARA test diagnostics in14
+  unchanged files. Categories include unused imports/results, redundant casts/borrows,
+  constant-size chunk iteration, single-pattern matches, boolean assertions, doc indentation,
+  range indexing and dropping a Copy value. Map lib/tests and LARA production-library clippy pass.
+- **Expected behavior:** The affected Rust test targets must pass strict scoped lint without
+  suppressing diagnostics or excluding tests to claim full validation.
+- **Owner:** `ic-stable-lara` test modules under `labeled/{graph,bidirectional}` and `lara/vertex.rs`.
+- **Evidence:** The [rekey trial](evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected)
+  records the command outcome. Its external archive contains `native/clippy.stderr` and
+  `native/clippy-preexisting.json`, which binds every diagnostic file to the unchanged pre-trial
+  snapshot. Exact toolchain, Cargo arguments and source pins are archived there.
+- **Impact:** Production lint and passing runtime tests do not establish a clean test-target lint
+  gate. The rekey candidate was rejected independently on performance; this debt remains afterward.
+- **Next decision:** Repair these test-owned warnings in a separate bounded cleanup, preserving
+  assertions and running the affected tests. No source suppression or unrelated fix was made here.
+
 ### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
 
 - **Status:** Open; live deletion remains paused at the writer/demotion boundary (GAP-003).

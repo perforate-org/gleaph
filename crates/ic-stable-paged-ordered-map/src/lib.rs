@@ -20,7 +20,8 @@
 //! # Layout
 //!
 //! Persistent layout (little-endian). Page indices are 1-based; id `0` means “none”. Each data page holds at most
-//! [`PAGE_CAP`] sorted `(key, value)` pairs (`PAGE_CAP` × 16-byte entries after a 32-byte page header).
+//! [`PAGE_CAP`] sorted `(key, value)` pairs (`PAGE_CAP` × 16-byte entries after a 24-byte page header).
+//! Only the current layout is supported; use fresh backing when its geometry changes.
 //!
 //! ```text
 //! ---------------------------------------- <- Address 0
@@ -74,7 +75,7 @@ const PAGES_START: u64 = DIR_OFFSET + DIR_CAP * DIR_ENTRY_SIZE;
 
 /// Maximum number of `(key, value)` pairs stored in one page before inserting triggers a split.
 pub const PAGE_CAP: u64 = 64;
-const PAGE_HEADER_SIZE: u64 = 32;
+const PAGE_HEADER_SIZE: u64 = 24;
 const PAGE_ENTRY_SIZE: u64 = 16;
 const PAGE_STRIDE: u64 = PAGE_HEADER_SIZE + PAGE_CAP * PAGE_ENTRY_SIZE;
 
@@ -92,7 +93,6 @@ const PAGE_OFFSET_FLAGS: u64 = 0;
 const PAGE_OFFSET_LEN: u64 = 2;
 const PAGE_OFFSET_PREV: u64 = 8;
 const PAGE_OFFSET_NEXT: u64 = 16;
-const PAGE_OFFSET_FREE_NEXT: u64 = 24;
 const PAGE_OFFSET_ENTRIES: u64 = PAGE_HEADER_SIZE;
 
 const PAGE_FLAG_FREE: u8 = 0;
@@ -711,7 +711,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         &self,
         page: u64,
         probe: impl Fn(u64, &mut [u8]),
-    ) -> Result<(u64, PageHeader), EditFailure> {
+    ) -> Result<(u64, PageHeader, u64), EditFailure> {
         let offset = checked_page_offset(page)?;
         let end = offset
             .checked_add(PAGE_STRIDE)
@@ -727,13 +727,14 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         if page > count || (page <= self.initial_pages && end > self.image.backed_end) {
             return Err(EditFailure::Map(Error::Corrupt));
         }
-        let mut bytes = [0; PAGE_HEADER_SIZE as usize];
+        let mut bytes = [0; (PAGE_HEADER_SIZE + 8) as usize];
         probe(offset, &mut bytes);
-        let header = PageHeader::decode(&bytes);
-        if header.prev > count || header.next > count || header.free_next > count {
+        let header = PageHeader::decode(bytes[..PAGE_HEADER_SIZE as usize].try_into().unwrap());
+        if header.prev > count || header.next > count {
             return Err(EditFailure::Map(Error::Corrupt));
         }
-        Ok((offset, header))
+        let first_key = u64::from_le_bytes(bytes[PAGE_HEADER_SIZE as usize..].try_into().unwrap());
+        Ok((offset, header, first_key))
     }
 
     fn reserve(&mut self, bytes: usize, ranges: usize) -> Result<(), EditFailure> {
@@ -747,17 +748,14 @@ impl<'a, M: Memory> EditPlan<'a, M> {
     fn allocate_page(&mut self, at: usize) -> Result<u64, EditFailure> {
         let free = self.u64(OFFSET_FREE_HEAD);
         if free != 0 {
-            let (_, header) = self.page(free, |address, dst| {
+            let (_, header, _) = self.page(free, |address, dst| {
                 self.image.read(&self.owner.memory, address, dst)
             })?;
-            if header.flags != PAGE_FLAG_FREE
-                || header.len != 0
-                || header.free_next == free
-                || header.free_next > self.u64(OFFSET_PAGE_COUNT)
-            {
+            let next = header.free_next().map_err(EditFailure::Map)?;
+            if next == free || next > self.u64(OFFSET_PAGE_COUNT) {
                 return Err(EditFailure::Map(Error::Corrupt));
             }
-            self.set_u64(OFFSET_FREE_HEAD, header.free_next);
+            self.set_u64(OFFSET_FREE_HEAD, next);
             return Ok(free);
         }
         let page = self
@@ -788,7 +786,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         old: u64,
         new: u64,
     ) -> Result<(), EditFailure> {
-        let (offset, header) = self.page(page, |address, dst| {
+        let (offset, header, _) = self.page(page, |address, dst| {
             self.image.read(&self.owner.memory, address, dst)
         })?;
         let link = if field == PAGE_OFFSET_PREV {
@@ -820,7 +818,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         let dir_pos = (0..dir_len)
             .find(|&i| self.directory(i).page_id == page)
             .ok_or(EditFailure::Map(Error::Corrupt))?;
-        let (offset, header) = self.page(page, |address, dst| {
+        let (offset, header, _) = self.page(page, |address, dst| {
             self.image.read(&self.owner.memory, address, dst)
         })?;
         if header.flags != PAGE_FLAG_ACTIVE || u64::from(header.len) != PAGE_CAP {
@@ -907,7 +905,6 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                 len: header.len + 1 - split,
                 prev: page,
                 next: header.next,
-                free_next: 0,
             },
         )?;
         if header.next == 0 {
@@ -949,7 +946,6 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                 len: 1,
                 prev: 0,
                 next: 0,
-                free_next: 0,
             },
         )?;
         self.set_entry(offset + PAGE_OFFSET_ENTRIES, entry);
@@ -1000,9 +996,8 @@ impl<'a, M: Memory> EditPlan<'a, M> {
             PageHeader {
                 flags: PAGE_FLAG_FREE,
                 len: 0,
-                prev: 0,
+                prev: free_next,
                 next: 0,
-                free_next,
             },
         )?;
         self.set_u64(OFFSET_FREE_HEAD, page);
@@ -1038,7 +1033,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                 (0, DirEntry::decode(&entry_bytes))
             }
         };
-        let (offset, header) = self.page(dir.page_id, &probe)?;
+        let (offset, header, first_key) = self.page(dir.page_id, &probe)?;
         #[cfg(test)]
         self.owner
             .observe_work(|w| w.selected = Some((at, dir.page_id, header.flags)));
@@ -1047,14 +1042,11 @@ impl<'a, M: Memory> EditPlan<'a, M> {
             || u64::from(header.len) > PAGE_CAP
             || header.prev == dir.page_id
             || header.next == dir.page_id
-            || header.free_next != 0
         {
             return Err(EditFailure::Map(Error::Corrupt));
         }
         let start = offset + PAGE_OFFSET_ENTRIES;
-        let mut first_key = [0u8; 8];
-        probe(start, &mut first_key);
-        if u64::from_le_bytes(first_key) != dir.min_key {
+        if first_key != dir.min_key {
             return Err(EditFailure::Map(Error::Corrupt));
         }
         let position = search_page(header.len, key, |i| {
@@ -1290,9 +1282,9 @@ impl DirEntry {
 struct PageHeader {
     flags: u8,
     len: u16,
+    // Shared link slot: previous active page, or next free page when flags == FREE.
     prev: u64,
     next: u64,
-    free_next: u64,
 }
 
 impl PageHeader {
@@ -1314,11 +1306,6 @@ impl PageHeader {
                     .try_into()
                     .unwrap(),
             ),
-            free_next: u64::from_le_bytes(
-                bytes[PAGE_OFFSET_FREE_NEXT as usize..PAGE_OFFSET_FREE_NEXT as usize + 8]
-                    .try_into()
-                    .unwrap(),
-            ),
         }
     }
 
@@ -1331,9 +1318,14 @@ impl PageHeader {
             .copy_from_slice(&self.prev.to_le_bytes());
         bytes[PAGE_OFFSET_NEXT as usize..PAGE_OFFSET_NEXT as usize + 8]
             .copy_from_slice(&self.next.to_le_bytes());
-        bytes[PAGE_OFFSET_FREE_NEXT as usize..PAGE_OFFSET_FREE_NEXT as usize + 8]
-            .copy_from_slice(&self.free_next.to_le_bytes());
         bytes
+    }
+
+    fn free_next(self) -> Result<u64, Error> {
+        if self.flags != PAGE_FLAG_FREE || self.len != 0 || self.next != 0 {
+            return Err(Error::Corrupt);
+        }
+        Ok(self.prev)
     }
 }
 
@@ -1453,7 +1445,7 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         })
     }
 
-    /// Returns the stable V1 header fields currently persisted in memory.
+    /// Returns the stable header fields currently persisted in memory.
     pub fn header(&self) -> HeaderV1 {
         read_header(&self.memory)
     }
@@ -1847,10 +1839,7 @@ impl<M: Memory> StablePagedOrderedMap<M> {
                 return Err(Error::Corrupt);
             }
             let header = self.read_page_header(free);
-            if header.flags != PAGE_FLAG_FREE {
-                return Err(Error::Corrupt);
-            }
-            free = header.free_next;
+            free = header.free_next()?;
         }
         Ok(())
     }
@@ -2214,6 +2203,106 @@ mod tests {
     }
 
     #[test]
+    fn page_header_codec() {
+        let active = PageHeader {
+            flags: PAGE_FLAG_ACTIVE,
+            len: 0x1234,
+            prev: 0x0807_0605_0403_0201,
+            next: 0x1817_1615_1413_1211,
+        };
+        let active_bytes = [
+            1, 0, 0x34, 0x12, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15,
+            0x16, 0x17, 0x18,
+        ];
+        assert_eq!(active.encode(), active_bytes);
+        assert_eq!(PageHeader::decode(&active_bytes), active);
+        assert_eq!(active.free_next(), Err(Error::Corrupt));
+        let free = PageHeader {
+            flags: PAGE_FLAG_FREE,
+            len: 0,
+            prev: 7,
+            next: 0,
+        };
+        let free_bytes = [
+            0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(free.encode(), free_bytes);
+        assert_eq!(PageHeader::decode(&free_bytes), free);
+        assert_eq!(free.free_next(), Ok(7));
+        assert_eq!((PAGE_HEADER_SIZE, PAGE_STRIDE), (24, 1048));
+    }
+
+    #[test]
+    fn page_reopen_and_recycle() {
+        let m = StablePagedOrderedMap::init(WorkMemory::default()).unwrap();
+        assert_eq!(m.header().version, 1);
+        for key in 0..97 {
+            m.insert(key, key ^ 0xa500).unwrap();
+        }
+        for key in 0..64 {
+            assert_eq!(m.remove(key), Ok(Some(key ^ 0xa500)));
+        }
+        assert_eq!(
+            (
+                m.header().free_head,
+                m.header().page_count,
+                m.header().first_page
+            ),
+            (2, 3, 3)
+        );
+        assert_eq!(m.read_page_header(2).free_next(), Ok(1));
+        assert_eq!(m.read_page_header(1).free_next(), Ok(0));
+        m.validate().unwrap();
+        for key in 97..128 {
+            m.insert(key, key ^ 0xa500).unwrap();
+        }
+        let healthy = backing(&m.memory.inner);
+        for (field, bytes) in [
+            (PAGE_OFFSET_FLAGS, vec![7]),
+            (PAGE_OFFSET_LEN, 1u16.to_le_bytes().to_vec()),
+            (PAGE_OFFSET_NEXT, 1u64.to_le_bytes().to_vec()),
+            (PAGE_OFFSET_PREV, 2u64.to_le_bytes().to_vec()),
+            (PAGE_OFFSET_PREV, 4u64.to_le_bytes().to_vec()),
+        ] {
+            m.memory.write(page_offset(2) + field, &bytes);
+            let poisoned = backing(&m.memory.inner);
+            assert_eq!(m.validate(), Err(Error::Corrupt));
+            m.memory.traffic.set(Traffic::default());
+            assert_eq!(m.insert(128, 128 ^ 0xa500), Err(Error::Corrupt));
+            assert_eq!(m.memory.traffic.get().writes, 0);
+            assert_eq!(backing(&m.memory.inner), poisoned);
+            m.memory.write(0, &healthy);
+        }
+        // A two-page free-list cycle is detected independently of a self-loop.
+        m.memory
+            .write(page_offset(1) + PAGE_OFFSET_PREV, &2u64.to_le_bytes());
+        let poisoned = backing(&m.memory.inner);
+        assert_eq!(m.validate(), Err(Error::Corrupt));
+        assert_eq!(backing(&m.memory.inner), poisoned);
+        m.memory.write(0, &healthy);
+        assert_eq!(m.insert(128, 128 ^ 0xa500), Ok(None));
+        assert_eq!(
+            (
+                m.header().free_head,
+                m.header().page_count,
+                m.header().last_page
+            ),
+            (1, 3, 2)
+        );
+        m.validate().unwrap();
+        let expected = (64..=128)
+            .map(|key| (key, key ^ 0xa500))
+            .collect::<Vec<_>>();
+        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
+        let memory = m.into_memory();
+        let before = backing(&memory.inner);
+        let reopened = StablePagedOrderedMap::init(memory.clone()).unwrap();
+        assert_eq!(reopened.iter().collect::<Vec<_>>(), expected);
+        reopened.validate().unwrap();
+        assert_eq!(backing(&memory.inner), before);
+    }
+
+    #[test]
     fn canonical_dir_entry_single_read_contract() {
         let m = StablePagedOrderedMap::init(WorkMemory::default()).unwrap();
         let key = 0xa1b2_c3d4_e5f6_0718u64;
@@ -2268,10 +2357,10 @@ mod tests {
         m.validate().unwrap();
         let changed = value(64) ^ (1 << 56);
         let cases = [
-            ("replace", 17, 123, 2, 16, 1, 8),
-            ("missing", 22, 163, 0, 0, 0, 0),
-            ("tail_insert", 32, 217, 8, 51, 3, 26),
-            ("tail_remove", 29, 206, 6, 35, 2, 10),
+            ("replace", 7, 96, 2, 16, 1, 8),
+            ("missing", 9, 104, 0, 0, 0, 0),
+            ("tail_insert", 10, 112, 8, 51, 3, 26),
+            ("tail_remove", 11, 120, 6, 35, 2, 10),
         ];
         for (name, reads, read_bytes, writes, write_bytes, new_writes, new_bytes) in cases {
             let before = backing(&m.memory.inner);
@@ -2288,7 +2377,7 @@ mod tests {
             let traffic = m.memory.traffic.get();
             let work = m.work.get();
             eprintln!("SCALAR_WORK {name} traffic={traffic:?} scratch={work:?}");
-            assert!(traffic.reads <= reads && traffic.read_bytes <= read_bytes);
+            assert_eq!((traffic.reads, traffic.read_bytes), (reads, read_bytes));
             assert!(traffic.writes <= writes && traffic.write_bytes <= write_bytes);
             assert!(traffic.max_read <= 32);
             assert_eq!((traffic.grows, traffic.grown_pages), (0, 0));
@@ -2401,7 +2490,6 @@ mod tests {
                     len,
                     prev: page - 1,
                     next: if page == DIR_CAP { 0 } else { page + 1 },
-                    free_next: 0,
                 },
             );
             m.write_dir_entry(
@@ -2506,7 +2594,6 @@ mod tests {
                     len: 32,
                     prev: 0,
                     next: 2,
-                    free_next: 0,
                 }
             );
             assert_eq!(
@@ -2516,7 +2603,6 @@ mod tests {
                     len: 33,
                     prev: 1,
                     next: 0,
-                    free_next: 0,
                 }
             );
             assert_eq!(
@@ -2553,7 +2639,6 @@ mod tests {
                 len: 63,
                 prev: 0,
                 next: 0,
-                free_next: 0,
             },
         );
         m.write_dir_entry(
@@ -3096,11 +3181,11 @@ mod tests {
         ));
         assert!(matches!(checked_page_offset(1), Ok(131136)));
         assert!(matches!(
-            checked_page_offset(17468507645558164),
-            Ok(18446744073709551264)
+            checked_page_offset(17601855032165478),
+            Ok(18446744073709551032)
         ));
         assert!(matches!(
-            checked_page_offset(17468507645558165),
+            checked_page_offset(17601855032165479),
             Err(EditFailure::AddressOverflow)
         ));
         assert!(matches!(
@@ -3177,7 +3262,7 @@ mod tests {
             let mut image = EditImage::new();
             let plan = EditPlan::new(&m, &mut image).unwrap();
             assert!(matches!(
-                plan.page(17468507645558164, |_, _| {
+                plan.page(17601855032165478, |_, _| {
                     panic!("page address overflow must reject before reading")
                 }),
                 Err(EditFailure::AddressOverflow)
@@ -3197,7 +3282,7 @@ mod tests {
 
         // Case2a: poison count L-1 -> end overflow -> OutOfMemory.
         m.memory
-            .write(OFFSET_PAGE_COUNT, &17468507645558163u64.to_le_bytes());
+            .write(OFFSET_PAGE_COUNT, &17601855032165477u64.to_le_bytes());
         let snap = backing(&m.memory.inner);
         let size_snap = m.memory.size();
         m.memory.traffic.set(Traffic::default());
@@ -3223,7 +3308,7 @@ mod tests {
 
         // Case2b: poison count L -> helper rejection -> exact pre-publication payload.
         m.memory
-            .write(OFFSET_PAGE_COUNT, &17468507645558164u64.to_le_bytes());
+            .write(OFFSET_PAGE_COUNT, &17601855032165478u64.to_le_bytes());
         let snap = backing(&m.memory.inner);
         let size_snap = m.memory.size();
         m.memory.traffic.set(Traffic::default());
@@ -3268,7 +3353,7 @@ mod tests {
                 value: value(1),
             },
         ];
-        for count in [17468507645558163u64, 17468507645558164u64] {
+        for count in [17601855032165477u64, 17601855032165478u64] {
             m.memory.write(OFFSET_PAGE_COUNT, &count.to_le_bytes());
             let snap = backing(&m.memory.inner);
             let size_snap = m.memory.size();
@@ -3392,7 +3477,6 @@ mod tests {
                 len: 32,
                 prev: 0,
                 next: 2,
-                free_next: 0,
             }
         );
         assert_eq!(
@@ -3402,7 +3486,6 @@ mod tests {
                 len: 33,
                 prev: 1,
                 next: 3,
-                free_next: 0,
             }
         );
         assert_eq!(m.read_page_header(3).prev, 2);
@@ -3437,7 +3520,7 @@ mod tests {
                 );
                 expected.push((OFFSET_PAGE_COUNT, 8));
             }
-            expected.push((page_offset(2), PAGE_HEADER_SIZE as usize));
+            expected.push((page_offset(2), 32));
             let reads = std::cell::RefCell::new(Vec::new());
             let location = plan
                 .lookup(Edit::Remove { key }, at, |address, dst| {
@@ -3454,8 +3537,14 @@ mod tests {
                 (location.dir.page_id, location.header.len, location.position),
                 (2, len, position)
             );
+            let reads = reads.into_inner();
+            assert!(
+                !reads
+                    .iter()
+                    .any(|&(address, _)| address == page_entry_offset(2, 0)),
+                "first key must share the header read"
+            );
             let metadata: Vec<_> = reads
-                .into_inner()
                 .into_iter()
                 .filter(|(address, _)| {
                     *address == OFFSET_DIR_LEN
@@ -4223,8 +4312,10 @@ mod tests {
         assert_eq!(memory.grow(3), 0);
         let b = 3 * WASM_PAGE_SIZE;
         assert_eq!(memory.size() * WASM_PAGE_SIZE, b);
-        assert_eq!(checked_page_offset(63).unwrap(), b);
-        let planned_end = b.checked_add(PAGE_STRIDE).unwrap();
+        let first_unbacked = checked_page_offset(64).unwrap();
+        assert_eq!(first_unbacked, 197160);
+        assert!(first_unbacked >= b);
+        let planned_end = first_unbacked.checked_add(PAGE_STRIDE).unwrap();
         let a = 256;
         let canonical: [u8; 128] = std::array::from_fn(|i| (i + 1) as u8);
         memory.write(a, &canonical);

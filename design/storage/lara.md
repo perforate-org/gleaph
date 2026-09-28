@@ -146,6 +146,14 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 
 **Role:** index of **retired physical edge-slab ranges** that update code may allocate from (best-fit, coalescing with neighbors).
 
+**Implemented by-start format:** `FreeSpanStore::by_start` uses the paged map's
+[compact layout](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#paged-map-compact-layout).
+That map alone owns page encoding, address arithmetic and selected-page validation; FreeSpan
+selection, records, bins and heap are unchanged. Only the current layout is supported, with no
+version bump or old-layout detection. Use fresh owning store bundles when the layout changes:
+there is no migration or isolated by-start rebuild beside retained records. This applies to the edge-slab,
+bucket-descriptor and inline-property-byte FreeSpan stores, without allocating new MemoryIds.
+
 **When spans enter the store:**
 
 | Event                                         | Retire to free span?                                     |

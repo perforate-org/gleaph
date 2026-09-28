@@ -1451,9 +1451,62 @@ wire layout or fresh-state requirement changed.
 
 **Status: Experimental, implemented checkpoint; performance acceptance remains blocked.**
 `ic-stable-paged-ordered-map` owns this generic map API, not LARA's allocation or publication
-policy. The V1 storage layout, page geometry and directory capacity are unchanged. This
-checkpoint does not implement prepared span acquisition, whole-unit LARA publication, tree
+policy. The compact page layout below is current; directory capacity, the existing version
+marker and public API are unchanged. This checkpoint does not implement prepared span
+acquisition, whole-unit LARA publication, tree
 demotion/deletion or Graph transaction handling, and does not accept ADR0097.
+
+**Rejected allocator-operation trial: order-preserving rekey (Plan0359).** A generic rekey intent
+and one FreeSpan replacement owner reduced LARA total/named831214/830253→632242/631281, but
+all four map controls regressed: missing88872→89704, replace102792→103624,
+split29531→29544, tail381066→383562. The whole candidate, including API/tests and shared-owner
+refactoring, was restored; no part of that candidate remains. Acceptance was3/6 at that checkpoint.
+Scoped runtime tests pass; strict LARA test-target clippy remains blocked by unchanged test debt.
+[Trial and restoration](../evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected).
+
+#### Paged-map compact layout
+
+**Implemented and retained: compact page header (Plan0360, 4/6 original ceilings).** The previous
+format made selected-page validation read a32B header and then its8B first key, although active and
+free links are mutually exclusive. The map now owns one24B tagged header and1048B page stride;
+`EditPlan::page` reads header plus first key in one32B prefix. Full-page extent/count/backing checks
+still precede that read, and active tag/length/link checks precede directory-minimum agreement.
+Canonical reads, prepared/scalar edits, split, neighbor updates and recycling use the same codec.
+
+| Page-relative bytes | Active tag1 | Free tag0 |
+| --- | --- | --- |
+| 0 | Tag1 | Tag0 |
+| 1, 4..8 | Padding: encode zero, ignore on decode | Same |
+| 2..4 | Little-endian u16 length,1..64 | Zero length |
+| 8..16 | Previous active page, or0 | Next free page, or0 |
+| 16..24 | Next active page, or0 | Required zero |
+| 24..1048 | Up to64 sorted16B key/value entries | Inactive payload, ignored |
+
+The private raw `PageHeader` keeps the shared link in `prev`; it does not claim validated state or
+retain a second free-link field. `PageHeader::free_next()` owns free tag/zero-length/unused-word
+validation for both allocation and the full free-list walk. Bounds, self-link and cycle checks
+remain at their existing traversal/admission owners. Unknown tags are rejected by active/free
+admission. The64B outer header,8192-entry directory and page-id width are unchanged. The existing
+version marker1 and public `HeaderV1` type are unchanged too: development layout revisions do not
+introduce a new format epoch. Only this current layout is supported. **Use fresh owning memory
+bundles when the layout changes; do not rebuild only the by-start region beside retained FreeSpan
+records.** No old-layout detection, compatibility decoder or migration is provided. No MemoryId changes.
+
+Keeping the old two reads leaves the repeated work; widening the read to40B violates the existing
+32B traffic contract. Changing directories or allocator indexes is a separate decision. This
+format fits the existing map owner and changes neither ordering/publication nor FreeSpan selection.
+The compatibility break and rederived offset/overflow fixtures are accepted costs of the measured
+improvement, not authorization to change allocator policy or add another optimization.
+
+Against0358, missing88872→85352, replacement102792→99272, split29531→29274 and tail381066→374026;
+LARA total/named831214/830253→823204/822243. All six improve. Missing clears85672 by320; replacement
+and tail still fail77576/298171, so full acceptance remains blocked. Map/LARA Wasm shrink236/362B;
+all measured heap/stable page increases remain0. No individual read/check instruction price is
+inferred. Source `6bb465d5` passes30 map units,5 doctests,27 unchanged FreeSpan tests and affected
+map/LARA-lib strict lint. Its six measurements exactly match the initial compact-header trial after
+restoring the unchanged version marker/type. Existing LARA test-target lint debt remains open.
+The initial trial's first-key guard bypass failed the corruption oracle; that guard is unchanged.
+[Decision, measurements and limits](../evidence/adr0097-performance-architecture-research.md#14-compact-page-header-retained).
 
 #### API and publication
 
@@ -1556,7 +1609,10 @@ byte, before ready can escape. `reserve_for_inserts` reserves backing only: zero
 requests do not write, but reservation does not guarantee directory admission, semantic validation
 or scratch allocation.
 
-#### Validation and measured status
+#### Previous reservation-owner checkpoint
+
+The following source, validation and measurements describe Plan0358 before the compact layout.
+The retained checkpoint is described in [Paged-map compact layout](#paged-map-compact-layout).
 
 Map source SHA256: `4e5456e152e8ddba352fd52d86f721bdf91aa234c01c42c429d2bc90d7f0c434`.
 The source-bound validation passed scoped formatting, clippy, 28 unit tests and five doctests.

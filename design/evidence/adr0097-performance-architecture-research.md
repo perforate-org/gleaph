@@ -1,10 +1,14 @@
 # ADR0097 performance architecture research (whole map-edit / FreeSpan execution)
 
 Status: **Experimental — research and bounded implementation checkpoints, not ADR0097 acceptance.**
-Sections0–10 preserve their named source epochs: their current-source wording, measurements and
+Sections0–13 preserve their named source epochs: their current-source wording, measurements and
 hypotheses apply to those checkpoints, not the live implementation. The latest retained map source
-is `4e5456e1` (Plan0358), described in [section11](#11-single-reservation-owner-retained).
-Original acceptance remains3/6; unimplemented proposals remain proposals.
+is `6bb465d5` (Plan0360), described in [section14](#14-compact-page-header-retained).
+Original acceptance is now4/6; replacement and tail remain open, with no relaxed ceilings.
+[Section12](#12-structural-options-beyond-local-map-tuning) compares broader storage-format,
+allocator-operation and index alternatives on the0358 source.
+[Section13](#13-order-preserving-rekey-rejected) records option A's rejection and full restoration;
+section14 records option B's retention. Option C remains an unimplemented selection-policy decision.
 
 ## 0. Gates, anchors, non-claims
 
@@ -626,3 +630,363 @@ Cargo records bind the linked default-only map rlib as well as both Wasm outputs
 `mutation.json`, `measurement.json`, native streams, `inspect/` and `completion/receipt.json` bind
 the retained decision and exact scope. No second optimization, benchmark sweep, commit or push is
 part of this experiment.
+
+## 12. Structural options beyond local map tuning
+
+**Status at this research checkpoint: proposals only.** Option A was subsequently tested and
+rejected in [section13](#13-order-preserving-rekey-rejected); B was implemented and retained in
+[section14](#14-compact-page-header-retained). C remains unimplemented.
+The most promising broader distinction is between reducing work inside one map edit and reducing
+how many map edits an allocator operation requires. These address different gates. A FreeSpan-only
+change cannot close the three remaining scalar ceilings, even if it substantially improves LARA.
+
+### Source scope and observed execution
+
+The inspected worktree is `/Users/yota/dev/gleaph-spill` at commit
+`b80566095f1edcec72158185cc27051bab9e2f0d`. Map source is the retained section11 `4e5456e1`.
+`lara/edge/free_span.rs` includes pending work:78962B/SHA256
+`35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd`.
+This is analysis of that development source, not clean-commit integration evidence.
+
+Production consumers found under `crates/` use the paged map through `FreeSpanStore::by_start`
+(`free_span.rs:249–253`). The free store is used for edge-slab, bucket-descriptor and inline-property
+byte allocations; examples are `lara/edge/span.rs:16–62`, `labeled/bucket_store.rs:484–504` and
+`lara/edge_inline_property.rs:751–803`. Units and ownership remain distinct between those stores.
+The spill-run class allocator and native LTB block free list are separate mechanisms, not additional
+users of this by-start map. Normal adjacency scans do not traverse this allocator; the
+[Free-span contract](../storage/lara.md#4-free-span-contract-core-lara) and
+[DGAP alignment](../storage/lara-dgap-contract.md#free-span-when-to-use) already keep in-window slack
+out of FreeSpan and retire pinned edge storage at leaf granularity.
+
+Source-derived work, not IC attribution:
+
+- A basic map scalar call constructs an image and uses the common prepare/apply/admit/publish flow.
+  Missing stages nothing; replacement stages8B; a tail pair stages26B then10B. The retained engine
+  already has one editor and an allocation-free publisher. Splitting those into a second scalar
+  implementation would duplicate its semantic rules.
+- `take_best_fit`'s split arm (`free_span.rs:653–688`) and `replace_existing_span`
+  (`1045–1065`) express a changed start as `remove(old_start)` plus `insert(new_start, id)`.
+  Ordinary split followed by prefix restoration therefore invokes four scalar map edits. Bins,
+  span records, summaries and the transient maximum heap are also maintained.
+- The two replacement paths own the same span-change rule under different entry conditions:
+  selection already gives `take_best_fit` an id; `replace_existing_span` first verifies an exact
+  old span. They must converge on one FreeSpan mutation owner before changing that rule. Preserve
+  their different admission checks. Bin-prepend mechanics also appear in both
+  `write_active_record` and `relink_active_record`.
+- `pick_span_in_bin` (`931–981`) may traverse the entire remaining start-bin list after its first
+  eight probes. `record_max_candidate`, `rebuild_max_heap` and `rebuild_largest_free_span`
+  (`1256–1348`) maintain a lazy heap and may rebuild it. These are separate scaling and cold-state
+  costs; their share of the fixed1024-span gate is not established.
+- `allocate_span_avoiding` (`lara/edge/span.rs:20–62`) currently takes a span, releases the taken
+  prefix if it overlaps the avoided interval, then falls through to tail allocation. A prospective
+  allocation decision could avoid this speculative canonical mutation. It cannot be substituted
+  for the original benchmark's externally completed take and restore operations.
+
+### A. Represent an order-preserving span change directly
+
+This refines section5's rekey alternative. For disjoint free spans, taking a proper prefix changes
+`[p,q)` to `[p+m,q)`, retaining the same SpanId. No other free start lies inside the original span,
+so the indexed key changes without changing its rank. Restoration has the same opportunity only
+when overlap/duplicate checks establish that the expanded span is valid.
+
+An explicit, general-purpose order-preserving rekey operation in the map could update the entry's
+key and, when that entry is first in its page, its directory minimum. It would not remove an entry,
+shift a suffix, change occupancy or split a page. Map ownership includes proving predecessor/new-key/
+successor ordering, including cross-page neighbors; FreeSpan ownership includes non-overlap, exact
+prefix allocation, SpanId retention, bin membership and summaries. Neither may trust the other's
+unstated proof. In the ordinary split/restore case, four map edits could become two rekeys. Those
+are operation counts, not a speedup estimate, and existing Insert/Remove intents must not silently
+be rewritten or cancelled.
+
+Compare separately:
+
+- Existing ordered map batching amortizes preparation but retains remove/insert semantics and
+  their physical shifts. It is the minimum-integration alternative.
+- Explicit rekey removes the semantic need for those shifts. It needs a new map operation/error
+  contract and audit of every enum consumer; absent keys, collisions, order violations and
+  DirectoryFull behavior must be specified rather than inherited accidentally from remove/insert.
+- The planned FreeSpan/Span preparation in ADR0088 can aggregate record/bin/header/index changes
+  and keep allocation private until publication. It is a broader atomicity/integration project,
+  not already implemented by placing two map intents in a batch. Current FreeSpan production
+  source has no `prepare_edits` call; the similarly named local `SpanPlan` in `graph/values.rs`
+  is unrelated. Selection with an avoided interval belongs to that existing allocator owner.
+
+No persistent map format change is intrinsically required for rekey. Prepared allocator wiring
+must still cover heap state, physical versus logical capacity, aliases and all entry points as
+specified in ADR0088. These are alternatives or successive decisions, not one bundled experiment.
+**Best fit:** reduce real allocator edit/search/write work across LARA consumers. **Direct effect on
+missing/replace/tail scalar gates:** none.
+
+### B. Make the page format match selected-page reads
+
+The map's32B page header stores `flags`, `len`, `prev`, `next` and `free_next`
+(`lib.rs:77–96,1289–1338`). Active pages require `free_next == 0`; freeing a page constructs
+`len=0, prev=0, next=0, free_next=head` (`remove_page:999–1006`). Active-chain links and the free-list
+link serve mutually exclusive states. Yet every selected active page currently requires a32B header
+read followed by an8B first-key read for directory-minimum agreement (`page:711–737`,
+`lookup:1040–1060`).
+
+A concrete layout alternative is a24B tagged header:
+
+| Page state | First8B | Second8B | Third8B | Entries start |
+| --- | --- | --- | --- | --- |
+| Active | Tag, length, defined padding | Previous page | Next page | offset24 |
+| Free | Tag, zero length, defined padding | Next free page | Defined unused bytes | offset24 |
+
+This reuses a link slot according to the tag; it does not narrow u64 page ids or duplicate the first
+key in metadata. A selected-page prefix of32B then contains the complete24B header and the first8B
+key. Proposed geometry is24+64*16=1048B per page, replacing1056B. The shared decoder must define
+unknown tags and inactive-field bytes; the Rust representation should not expose simultaneous
+active and free links as independent valid state.
+
+For the existing valid scalar fixture, a combined prefix read could remove one backing read and
+8 transferred bytes per selected-page lookup:64 calls for missing,64 for replacement and128 for
+tail pairs. This is a planned traffic reduction, not an instruction price or measured improvement.
+It retains the32B maximum read size rather than relaxing that oracle to allow the previously
+considered40B read. It also needs no neighbor cache or adjacent-directory prefetch.
+
+The full allocated-page extent must be checked before reading the prefix. Active tag/length/link
+checks and directory/first-key agreement remain, in their semantic error order. Old-format
+`active.free_next != 0` is replaced by an explicit variant encoding; there is no longer a separate
+active free-pointer field to validate. That is an intentional schema change, not deletion of the
+current lookup's check. Free-list bounds/cycles and recycle transitions need equivalent coverage
+under the new representation. Read-only map operations, prospective newly allocated pages, split,
+recycle, overflow arithmetic and all codec users must share the one new layout.
+
+**Cost:** an ADR decision and fresh state for affected backing; no migration or legacy decoder.
+The pre-production change keeps the existing version marker rather than introducing a new epoch. Tests with literal offsets and arithmetic limits need independently
+derived new expectations. Basic dirty-write contracts can remain8/26/10B. Section11 baseline
+artifacts remain reusable, but byte snapshots are valid only within each layout; logical fixture
+contents, operations and instruction ceilings remain the comparison contract. This proposal does
+not include a map-wide header-field reorder, directory redesign or second optimization.
+**Best fit:** a structural common-read candidate directly relevant to all three unmet scalar gates.
+The remaining394/call replacement and about648/call tail gaps are not promised by one fewer read.
+
+### C. Replace the allocator's index combination
+
+A more radical alternative would put address ordering into the existing span records themselves,
+using a balanced intrusive tree with a `subtree_max_len` aggregate. One record remains authoritative
+for start/length; child/parent links and subtree aggregates are maintained by the same FreeSpan
+mutation owner. Address neighbors, a fitting-span search and largest-span lookup could then use
+that structure instead of the separate paged by-start map, bin lists and stale maximum heap.
+
+For a valid balanced tree, searching the leftmost subtree whose maximum length reaches a request
+can find the lowest-address fitting span inO(log F); largest length is available at the root.
+Prefix split/rejoin preserves address rank, so it need not remove/reinsert the node, though length
+aggregate changes may propagate to ancestors. This is an algorithmic derivation, not an IC result.
+Arbitrary insert/remove still requires balancing and prepared writes to every affected ancestor.
+
+The important tradeoff is **selection policy**: address-first-fit is not the current bounded
+best-fit/first-fit fallback policy. Completeness (never miss a usable span) and exact-prefix
+allocation can be retained, but fragmentation and placement change. If size-oriented selection is
+required, compare an address index plus a `(length,start)` index instead; that retains two update
+paths and their consistency work. XFS is a primary-source example of separate address and size
+indexes, not evidence that two generic StableBTreeMaps are fast on IC. The current FreeSpan module
+already records replacing such a secondary BTree with bins; simply undoing that choice has no
+present performance support.
+
+This alternative requires new persistent record/root fields, fresh state, replacement of old index
+and heap paths, and a new reopen-integrity proof. It may reduce structures while increasing stable
+random reads and ancestor writes. Direct scalar map gates do not improve if LARA stops using the
+map: removing its consumer does not waive those gates or justify deleting the crate's contract.
+**Best fit:** a separate allocator design decision when fragmentation, bin tails or heap lifecycle
+costs justify it. **Current recommendation:** compare the policy/cost model, not implement yet.
+
+### Other broad alternatives and exclusions
+
+| Alternative | Work it could remove | Why it is not the first structural choice |
+| --- | --- | --- |
+| Separate prospective edit state from final packed dirty-byte emission within the same editor | Repeated packed-byte relocation during staging | Does not directly help zero-write missing; bounded scratch, overlap composition, ordered errors and priors must be proved. An unbounded append log or whole-page copy is not an acceptable replacement |
+| Multi-level directory / slotted-page map | Large-directory suffix movement / interior payload shifts | The fixed gate hasD=2; tail shifts no entries. Added indirection and persisted metadata need large-D/interior evidence, not a claim about current missing/replacement |
+| TLSF or size-class bitmap alone | Empty-bin scanning | Does not remove partial-bin fit search, start-order coalescing or index mutations. Section4's incomplete-search warning remains binding |
+| Remove FreeSpan, or substitute fixed-size block pools everywhere | Allocator index maintenance | Variable-length exact-prefix reuse and adjacent leaf expansion are real consumers. Spill-run classes and LTB block pools have different allocation contracts |
+| General cache, COW/MVCC, MemoryManager replacement | Various repeated reads or copies | No source-bound attribution justifies their state/consistency cost. The scalar fixture uses direct DefaultMemoryImpl, while LARA's fixture uses VirtualMemory; their call costs cannot be interchanged |
+
+### Boundary assessment and next decision
+
+- **Encapsulation:** B remains wholly inside the generic map. A exposes a generic ordering operation,
+  never FreeSpan record or bin internals. C replaces FreeSpan's internals, not Graph/Router contracts.
+- **Separation of concerns:** map owns ordering/geometry; FreeSpan owns free-interval selection and
+  consistency; EdgeStore owns slab capacity and placement. General GQL crates are unaffected.
+- **Invariants:** nonpublication, full-page admission and ordered failures remain for A/B. C requires
+  equivalent allocator atomicity plus an explicit selection-policy decision, not weaker corruption
+  handling. ICP trap rollback is not a replacement for preparation.
+- **Consistency:** A first reconciles the two span-replacement implementations. B has one tagged
+  codec/layout. C must delete superseded indexes/heap when replacing them, while treating subtree
+  maxima as derived state with a single maintenance owner.
+- **Fitness:** A removes operations the allocator's interval semantics do not need. B removes a
+  mutually exclusive stored field from the common read unit. C has greater conceptual scope but
+  cannot be preferred without accounting for ancestor writes and fragmentation.
+
+For **the three scalar ceilings**, B is the strongest concrete structural question found here.
+For **LARA-wide improvement**, A is the first design comparison, with ordered batching as its
+simpler control and C as the larger replacement alternative. They must not be bundled into a
+single implementation slice. The earlier fixed-slot result-storage proposal remains a small,
+unmeasured bookkeeping idea, not the recommended answer to this broader question.
+
+Before adoption, B needs the complete layout/invariant inventory; A needs a precise operation/error
+contract and one FreeSpan replacement owner; C needs a selection-policy decision and a bounded
+read/write/fragmentation comparison. Relevant existing tests and focused measurements should follow
+the chosen scope. No additional Rust/IC execution occurred in this research. Original acceptance
+remains3/6, and none of the proposals establishes an instruction gain.
+
+External primary sources inspected for C: Linux
+[augmented rbtree documentation](https://docs.kernel.org/core-api/rbtree.html#support-for-augmented-rbtrees)
+requires propagation/copy/rotation maintenance for derived subtree data; its interval example uses
+maximum endpoint, whereas maximum *length* above is this proposal's distinct aggregate. XFS
+[Algorithms & Data Structures](https://www.kernel.org/pub/linux/utils/fs/xfs/docs/xfs_filesystem_structure.pdf)
+§§13.2/13.2.2, printed pp.55/57, describes free-space trees sorted by block address and extent size.
+Neither source supplies Gleaph/IC performance evidence.
+
+## 13. Order-preserving rekey rejected
+
+Plan0359 tested section12 option A alone against the retained0358 source. The candidate added
+`Edit::Rekey { key, new_key }`, scalar `rekey` and `Error::OrderViolation` to the existing generic
+map editor. Source lookup and a second prospective insertion-position lookup proved that the key
+would keep its rank. It wrote only the key and, for a page minimum, its directory minimum. No
+layout, allocation policy, benchmark input or measured closure changed.
+
+FreeSpan's split path and existing replacement path converged on `replace_existing_span`;
+`write_active_record` delegated its duplicated bin prepend to `relink_active_record`. The shared
+replacement retained exact-span admission, rekeyed before bin mutation, then maintained record,
+heap and summaries once. This deliberately accepted the split caller's extra exact lookup rather
+than adding a separate known-id fast path. Composite FreeSpan preparation remained planned A0.
+
+Candidate map:177203B/SHA256 `ff10dce9c99e0331e765a6370a406fe2e2f403c33bc390ca5746d8b1336663eb`.
+Candidate FreeSpan:79526B/SHA256 `45acd5a221c1583ebaf155d951b706f2b7750e5a8fa8dd56ab4a3b387f55f432`.
+LARA includes the same pre-existing pending admission changes, not clean-commit integration.
+
+| Metric | Retained0358 | Candidate0359 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 | 88872 | 89704 | +832 | +0.9362% | 85672 | FAIL |
+| Replace64 | 102792 | 103624 | +832 | +0.8094% | 77576 | FAIL |
+| Split/directory | 29531 | 29544 | +13 | +0.0440% | 30930 | PASS |
+| Tail pairs64 | 381066 | 383562 | +2496 | +0.6550% | 298171 | FAIL |
+| LARA total | 831214 | 632242 | -198972 | -23.9375% | 1527576 | PASS |
+| LARA named | 830253 | 631281 | -198972 | -23.9652% | 1526615 | PASS |
+
+**Decision: reject the whole candidate.** Both LARA rows improve substantially, but all four map
+controls regress. Original acceptance remains3/6. No tradeoff allowance, aggregate substitution,
+partial retention or second optimization was applied. The LARA rows overlap and are not additive.
+These are joint candidate costs, not isolated prices for rekey, dispatch or search. All reported
+heap/stable page increases are zero, which does not establish zero allocation.
+
+Two new map tests cover exact8/16-byte writes, unchanged unrelated bytes/occupancy/value/identity,
+inline storage, extreme keys, missing/equal keys, collisions and rank crossings, ordered prospective
+neighbors, discard, late exact errors and previous-page corruption. Existing full-directory and
+unbacked-page resource fixtures also exercise rekey without weakening their prior assertions.
+The existing FreeSpan split/restore/reopen fixture additionally checks SpanId, complete contents,
+index header and summaries for best-fit and exact-prefix entry points. Map30 units/5 doctests and
+FreeSpan27 units pass; correctness tests add two native map fixtures, no PocketIC installs.
+A rank-guard bypass mutant completes all valid/no-op cases, then fails the exact `64 -> 66`
+collision assertion (`Ok(Some(...))` instead of `OrderViolation`). It was restored byte-for-byte.
+The initial test-only integer-inference compile error was fixed with an explicit u64 argument type.
+
+Formatting, strict map lib/tests clippy and strict LARA lib clippy pass. The combined strict
+lib/tests clippy command fails on43 pre-existing diagnostics in14 unchanged LARA test files; it
+was neither suppressed nor treated as passing. See
+[GAP-LARA-TEST-CLIPPY](../implementation-gaps.md#gap-lara-test-clippy--strict-test-target-lint-is-blocked).
+Both original source-bound IC filters complete with exactly5/2 original CSV rows; the baseline is
+reused without rebuilding or remeasurement. Timed Rust/IC commands total130s.
+
+Lizard1.24.0, conventional `--csv -i -1`, explicit two-source before/candidate snapshots:
+map lookup CCN15/NLOC61 unchanged; apply_edit CCN32 unchanged/NLOC153→160; new rekey helper
+CCN19/NLOC48 and scalar facade CCN1/NLOC3. FreeSpan take_best_fit CCN9→8/NLOC42→30;
+write_active_record CCN6→3/NLOC29→9; relink CCN4 unchanged/NLOC22→23; replacement CCN5 unchanged/
+NLOC18→14. The new helper has source location, old/new keys and a test-only ordinal, not a new
+persistent structure. Branches enforce concrete rank and page-boundary cases; no blanket attribute
+or separate scalar editor was introduced. Complexity is not the rejection metric; runtime controls are.
+Map Wasm grows742773→744429B; LARA shrinks5063482→5062924B. Frozen binaries and linked map rlib
+are source-bound in the evidence archive, not installed as retained artifacts.
+
+The complete candidate Rust files, including new tests and API comments, were restored to the
+pre-trial bytes: map `4e5456e1`, FreeSpan `35b7b008`. All2357 pinned inputs were equal before adding
+this outcome and the lint-gap record. No API or deduplication fragment remains. Candidate sources,
+patches, command streams, source/artifact bindings, CSVs, lint diagnostics and restoration proof live
+under `/Users/yota/.local/share/gleaph/evidence/adr0097/order-preserving-rekey-0359/`.
+
+## 14. Compact page header retained
+
+**Status: implemented, measured and retained.** Plan0360 tested section12 option B alone from
+restored0358. The map's mutually exclusive active/free links share one wire slot, removing the
+independent free pointer. The resulting24B header lets `EditPlan::page` return selected metadata
+and its first key from one32B prefix, without widening the maximum-read contract. No rekey fragment,
+neighbor cache, directory prefetch, scratch change or allocator-policy change is included.
+
+The format and validation owners are specified in
+[ADR0088, compact paged-map layout](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#paged-map-compact-layout).
+The raw decoder retains unvalidated tag/length/link fields; it is not a second validated-page type.
+`PageHeader::free_next()` is the shared free-shape validator for allocation and the full walk.
+Previously those sites had separate checks. Full-page admission and directory/first-key agreement
+remain in their original order. All page constructors, active/free transitions and readers use one
+geometry. Only the current layout is supported; use fresh owning bundles when layout changes.
+The existing version marker1 and public `HeaderV1` type remain unchanged. No old-layout detection,
+migration, compatibility alias or isolated index rebuild is provided. FreeSpan records, bins,
+selection, heap and all production consumers remain unchanged.
+
+| Metric | Retained0358 | Retained0360 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 | 88872 | 85352 | -3520 | -3.9608% | 85672 | PASS |
+| Replace64 | 102792 | 99272 | -3520 | -3.4244% | 77576 | FAIL |
+| Split-directory | 29531 | 29274 | -257 | -0.8703% | 30930 | PASS |
+| Tail-pairs64 | 381066 | 374026 | -7040 | -1.8474% | 298171 | FAIL |
+| LARA total | 831214 | 823204 | -8010 | -0.9637% | 1527576 | PASS |
+| LARA named | 830253 | 822243 | -8010 | -0.9648% | 1526615 | PASS |
+
+Every control improves, so the whole candidate is retained. Missing clears its original ceiling
+by320 instructions; original acceptance advances from3/6 to **4/6**. Replacement remains21696 over
+its ceiling and tail75855 over. This is not full ADR0097 acceptance or permission to waive the map
+controls if a later allocator design no longer uses the map. Map aggregate607194→592857 is context,
+not a seventh gate; LARA total/named scopes overlap and must not be added. All measured heap/stable
+page increases remain0, not a peak-memory or zero-global-allocation claim. These are whole compiled
+candidate deltas, not per-read/check prices.
+
+Validation preserves the intended contracts rather than reusing the former page offsets:
+
+- `page_header_codec` fixes both literal24B encodings; `page_reopen_and_recycle` uses one native
+  backing/map to prove the unchanged version marker, two-link free-list formation, malformed
+  free tag/length/unused word, self/out-of-range links, full-walk cycle rejection, exact reuse of
+  page2 without increasing page count, logical contents and reopen. It adds no PocketIC fixture.
+- Literal overflow witnesses were independently derived for the1048B stride: the last fitting page
+  start is17601855032165478 at18446744073709551032; its full extent overflows. The next start also
+  overflows. The read-partition fixture retains its byte/traffic assertions but admits wholly
+  unbacked page64 at197160, rather than relying on the old page63/Wasm-boundary coincidence.
+- Existing canonical/prospective reader tests require the32B prefix and forbid a separate first-key
+  request. Scalar read assertions are tightened to exact calls/bytes: replace7/96, missing9/104,
+  tail insert10/112 and tail remove11/120. Exact8/26/10B dirty writes, inline/no-grow behavior and
+  max-read32 are preserved. Split-position, staged-source, real backing/growth and ordered-failure
+  tests remain in the full map suite.
+- All30 map units,5 doctests and27 unchanged FreeSpan tests pass on the corrected source. The initial
+  trial's deliberate minimum-comparison bypass made `prepared_edits_reject_inconsistent_minimum`
+  fail with “minimum mismatch unexpectedly reached ready” (rc101), after successful setup. That
+  guard and its test are unchanged; the mutation was not repeated for the version-policy correction.
+  Formatting and map lib/tests plus LARA lib strict clippy pass.
+  The unchanged [LARA test-target lint gap](../implementation-gaps.md#gap-lara-test-clippy--strict-test-target-lint-is-blocked)
+  remains open; the already-failing combined command was not rerun or relabeled as passing.
+- Both unchanged IC filters complete with exactly5 map/2 LARA CSV rows, named calls1, new status and
+  empty deltas; no baseline rebuild/remeasurement or persisted results. Timed Rust/IC commands use
+  115s for the correction, each below300s. Both CSVs are byte-identical to the initial114s trial's
+  outputs. No full-workspace or general PocketIC suite was run.
+
+Lizard1.24.0, conventional `--csv -i -1`, original0358 versus corrected frozen candidate:22 directly
+touched functions, max CCN21→21, aggregate CCN148→154/NLOC1473→1558 including tests. Production
+changed-function totals are CCN100→101/NLOC432→420. `page` CCN10→9/NLOC27→28, `lookup`15→14/61→58,
+allocation11→10/30→27, codec decode25→20 NLOC and encode13→11; shared `free_next` adds CCN4/NLOC6.
+The shared validation replaces separate allocation/walk checks; growth is the two focused tests,
+not an execution framework. No input parameter is added, no5+-parameter signature grows, and the
+sole changed return shape adds the key read with its header. The existing public header type is
+preserved. Review verdict: focused; retain the single layout/read change, with no further
+extraction or generalization. CCN is not performance evidence.
+
+Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/compact-page-header-0360/preproduction-correction/`.
+The initial trial archive in the parent directory is unchanged. The correction restores the existing
+version marker/type and removes only the superseded version-rejection scenario; codec/editor
+production logic is otherwise identical. The baseline is the immutable0358 archive.
+Retained lib169562B/SHA256 `6bb465d5d7cfbe089dd8ff43759a557be051f4063e932222d231e022ea8853e1`;
+map742537B/SHA256 `e255c9c26b5cd716aa8bdf2c33ee4607249aa092984ddccef41dc7f5232bd1cd`;
+LARA5063120B/SHA256 `e18d789ec3deaf21dda2d5357399b9d9119c820f09631a41fc8d5a31989cda28`.
+Map/LARA binaries shrink236/362B. The map Wasm was frozen before building LARA; LARA's default-only
+map rlib is archived separately. Command streams, lock/profile/features, source bindings, CSVs,
+complexity comparison and the correction receipt are retained there. Geometry and the original
+mutation evidence are reused from the parent archive.
+LARA still includes the unchanged pending admission work, not clean-commit integration.

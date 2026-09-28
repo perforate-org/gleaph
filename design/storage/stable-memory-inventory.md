@@ -129,6 +129,12 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 `init_graph()` wires **32** consecutive `MemoryId` regions (0–31) into one `DeferredBidirectionalLabeledLaraGraph`. Thread-local: `GRAPH`.
 
+The FreeSpan by-start indexes now use the
+[compact paged-map layout](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#paged-map-compact-layout).
+Region IDs, counts, classifications and the existing version marker do not change. Use fresh
+owning bundles when the layout changes; an isolated index rebuild beside retained FreeSpan records
+is not supported. Only the current layout is supported, without old-layout detection or migration.
+
 The Router admin composite query `get_stable_memory_stats(graph_name)` forwards to each
 registered graph shard's guarded `admin_stable_memory_stats` query. The response reports the
 logical `VirtualMemory` WebAssembly-page and byte size of all graph-owned regions, including empty
