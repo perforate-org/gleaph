@@ -405,8 +405,16 @@ impl<T: Copy + Default, const N: usize> Scratch<T, N> {
     }
 
     fn push_reserved(&mut self, value: T) {
-        let len = self.as_slice().len();
-        self.resize_reserved(len + 1)[len] = value;
+        match self {
+            Self::Inline { items, len } => {
+                items[*len] = value;
+                *len += 1;
+            }
+            Self::Heap(items) => {
+                assert!(items.len() < items.capacity(), "scratch was not reserved");
+                items.push(value);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -4234,6 +4242,18 @@ mod tests {
 
     #[test]
     fn scratch_resize_reserved_view_contract() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DEFAULTS: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct CountedDefault(u64);
+        impl Default for CountedDefault {
+            fn default() -> Self {
+                DEFAULTS.fetch_add(1, Ordering::Relaxed);
+                Self(0)
+            }
+        }
+
         // Pure owner contract: exact view length, retained prefix, mutation through
         // the view observed after the borrow, capacity and representation fixed.
         for heap in [false, true] {
@@ -4302,6 +4322,43 @@ mod tests {
                     "heap transition preserves prefix"
                 );
             }
+        }
+
+        for heap in [false, true] {
+            let mut scratch: Scratch<CountedDefault, 1> = Scratch::new();
+            if heap {
+                scratch.reserve(2).unwrap();
+            }
+            let capacity = scratch.capacity();
+            DEFAULTS.store(0, Ordering::Relaxed);
+            scratch.push_reserved(CountedDefault(0x1234));
+            assert_eq!(scratch.as_slice(), &[CountedDefault(0x1234)]);
+            assert_eq!(
+                DEFAULTS.load(Ordering::Relaxed),
+                0,
+                "append must not construct a discarded default"
+            );
+            while scratch.as_slice().len() < capacity {
+                let value = CountedDefault(scratch.as_slice().len() as u64 + 0x2000);
+                scratch.push_reserved(value);
+                assert_eq!(scratch.as_slice().last(), Some(&value));
+            }
+            let before = scratch.as_slice().to_vec();
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    scratch.push_reserved(CountedDefault(0xFFFF));
+                }))
+                .is_err()
+            );
+            let len = match &scratch {
+                Scratch::Inline { len, .. } => *len,
+                Scratch::Heap(items) => items.len(),
+            };
+            assert_eq!(len, before.len(), "failed append changed length");
+            assert_eq!(scratch.as_slice(), before, "failed append changed values");
+            assert_eq!(scratch.capacity(), capacity);
+            assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
+            assert_eq!(DEFAULTS.load(Ordering::Relaxed), 0);
         }
     }
 

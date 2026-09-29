@@ -1,14 +1,15 @@
 # ADR0097 performance architecture research (whole map-edit / FreeSpan execution)
 
 Status: **Experimental — research and bounded implementation checkpoints, not ADR0097 acceptance.**
-Sections0–13 preserve their named source epochs: their current-source wording, measurements and
+Sections0–14 preserve their named source epochs: their current-source wording, measurements and
 hypotheses apply to those checkpoints, not the live implementation. The latest retained map source
-is `6bb465d5` (Plan0360), described in [section14](#14-compact-page-header-retained).
-Original acceptance is now4/6; replacement and tail remain open, with no relaxed ceilings.
+is `7c2c11fd` (Plan0361), described in [section15](#15-reserved-append-retained).
+Original acceptance remains4/6; replacement and tail remain open, with no relaxed ceilings.
 [Section12](#12-structural-options-beyond-local-map-tuning) compares broader storage-format,
 allocator-operation and index alternatives on the0358 source.
 [Section13](#13-order-preserving-rekey-rejected) records option A's rejection and full restoration;
-section14 records option B's retention. Option C remains an unimplemented selection-policy decision.
+[section14](#14-compact-page-header-retained) records option B's retained layout. Section15 improves
+shared scratch append without changing that layout. Option C remains a separate selection-policy decision.
 
 ## 0. Gates, anchors, non-claims
 
@@ -990,3 +991,96 @@ map rlib is archived separately. Command streams, lock/profile/features, source 
 complexity comparison and the correction receipt are retained there. Geometry and the original
 mutation evidence are reused from the parent archive.
 LARA still includes the unchanged pending admission work, not clean-commit integration.
+
+## 15. Reserved append retained
+
+**Status: implemented, measured and retained after the disk-capacity interruption.** Plan0361 tested
+one candidate on the shared write path after the compact-header checkpoint. Earlier0354/0355 scope probes are
+observer-affected measurements of an older source, not current component prices. The rejected
+0349 generic-input and0350 lazy-Empty candidates were not retried. First-cover and single-reservation
+changes already belong to the retained implementation.
+
+The selected candidate changes only `Scratch::push_reserved`, shared by first dirty-range creation
+and per-intent prior storage. It appends a supplied initialized value directly instead of taking a
+checked current slice, calling generic resize, then overwriting the new slot. The existing Inline
+array checks its destination before length changes; Heap verifies spare reserved capacity before
+Vec::push. Bulk resize, fallible reservation, initial representation, the edit engine, codecs,
+layout and publication are unchanged. No new production helper, type, mode or parameter is added.
+
+The frozen0360 Wasm contains concrete removable work in the DirtyRange append at0x8a9c: two inline
+length comparisons at0x8ab9/0x8ac0, and a heap zero-vector store at0x8b2f before the supplied value
+store at0x8b6c. These establish code presence, not executed-path frequency or isolated IC prices.
+In particular, scalar inline appends do not execute that heap zero store. No current bottleneck
+ranking or predicted saving is inferred from these observations.
+
+One existing pure Scratch fixture was extended, with two additional cheap Scratch instances and
+no new Memory/map/PocketIC constructor or install. A local Default counter rejects a discarded
+initial value; exact values, full-capacity rejection and unchanged length/content/capacity/variant
+protect both representations. Old production passes the inline cases, including its caught
+full-capacity panic, then fails exactly on the first heap append: Default count1 instead of0.
+The candidate passes the complete fixture. A deliberate inline length-before-index mutant reaches
+the full-capacity failure and is caught by the unchanged-length assertion,2 instead of1. It is
+restored exactly; no mutation code is retained.
+
+### Interrupted validation and exact resumption
+
+The initial candidate passed formatting, strict map lib/tests and LARA lib lint,30 map units and5
+doctests. FreeSpan compilation then failed writing its incremental `query-cache.bin` with
+`No space left on device (os error 28)`, before any FreeSpan test ran. At132MiB available, execution
+stopped; the complete lib and tests were restored to0360. The error, incomplete plan and restoration
+of all2357 input pins remain archived. No speculative retry, build-mode workaround or cache deletion
+was used to conceal that failure. The initial timed commands used35s.
+
+After the user freed storage,73GiB was available. The resume verified all input pins, the exact
+blocked research state, compiler/lock versions, canbench0.7.0/PocketIC13 and frozen baseline
+artifacts, then reinstated the identical candidate. Successful native checks and both negative
+witnesses were reused, not rerun or attributed to another source. The filtered FreeSpan command
+now passes27 tests (652 filtered); both release Wasm builds and the two unchanged original IC
+filters pass. Resume commands use75s, each below300s. The unchanged strict LARA test-target lint
+debt remains open; it was not rerun, suppressed or relabeled as passing.
+
+### Source-bound measurements and decision
+
+| Metric | Retained0360 | Retained0361 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 | 85352 | 84008 | -1344 | -1.5747% | 85672 | PASS |
+| Replace64 | 99272 | 96584 | -2688 | -2.7077% | 77576 | FAIL |
+| Split/directory | 29274 | 29185 | -89 | -0.3040% | 30930 | PASS |
+| Tail pairs64 | 374026 | 368266 | -5760 | -1.5400% | 298171 | FAIL |
+| LARA total | 823204 | 821014 | -2190 | -0.2660% | 1527576 | PASS |
+| LARA named | 822243 | 820053 | -2190 | -0.2663% | 1526615 | PASS |
+
+**Decision: retain the whole candidate.** Replacement and tail strictly improve and none of the
+other four controls regresses; in fact all six improve. Original acceptance remains **4/6**:
+replacement is19008 above its ceiling and tail70095 above. Missing has1664 instructions of margin.
+No ceiling, scalar contract or acceptance metric is relaxed. The overlapping LARA rows are not
+additive. Map aggregate592857→582976 is context, not a seventh gate. Every reported heap/stable
+page increase is0, not evidence of zero allocation or a peak-resource bound. Five/two original
+14-column CSV rows, named calls1, new status and empty deltas are verified; nothing is persisted.
+The0360 baseline was neither rebuilt nor remeasured.
+
+Lizard1.24.0, conventional `--csv -i -1`:3 directly touched functions, CCN5→13/NLOC73→128,
+touched maximum4→10. Production append is CCN1→2/NLOC4→12; the rest is the existing test expansion
+and its local Default implementation. Whole-file CCN465→473/NLOC3810→3865. The final live-source
+measurement matches the archived candidate in every per-function field. Both representation cases
+belong to the existing Scratch owner; no five-plus-parameter signature grows, and no further
+abstraction or scalar-specific path is justified. CCN does not establish the measured speedup.
+
+Map/LARA Wasm grow677/1284B, explicitly accepted for the measured improvement. Frozen codegen
+keeps scalar/preparation static frames208/160B; their local counts are2/41→2/40. The candidate
+has no named standalone DirtyRange append function in the disassembly. That is a compiled-shape
+observation, not proof that append behavior disappeared or an isolated price for a check/store.
+Static frames do not establish peak stack use.
+
+Retained lib171834B/SHA256 `7c2c11fd1aab6909a84df951600726b3713e4d0510bae0df8b244698a1daea40`;
+map743214B/SHA256 `5faa094a178948d0241bdcac7ebf4669dfcd71f856522636ea2759253f789398`;
+LARA5064404B/SHA256 `d3b332637bcda2e0b2824cf4758c4010b88d2f9a2d8fab683c8435e6ccac0312`.
+The map Wasm was frozen before LARA rebuilt its default-only map dependency; that linked rlib is
+archived separately. LARA still includes the unchanged pending admission work, not a clean-commit
+integration validation. No full workspace/PocketIC run, second candidate, commit or push was made.
+
+Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/scratch-resize-dispatch-0361/`.
+The original sources, failed compiler stream, negative witnesses and blocked completion receipt
+remain immutable. `resume/` contains the input verification, successful commands, Cargo artifact
+bindings, frozen Wasm/rlib, CSVs, measurement decision, final codegen/Lizard review and completion
+receipt. The initial restoration is historical; the exact candidate is now retained in the live lib.

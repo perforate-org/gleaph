@@ -1456,6 +1456,25 @@ marker and public API are unchanged. This checkpoint does not implement prepared
 acquisition, whole-unit LARA publication, tree
 demotion/deletion or Graph transaction handling, and does not accept ADR0097.
 
+**Current retained map checkpoint: reserved append (Plan0361, 4/6 original ceilings).**
+Private `Scratch::push_reserved` is the single initialized-value append owner for dirty-range
+creation and per-intent prior results. It no longer uses bulk resize to create a slot that is
+immediately overwritten. Inline's checked element write precedes its length increment; Heap checks
+spare reserved capacity before Vec::push. An over-capacity append changes neither length, contents,
+capacity nor representation, and a valid append does not construct a discarded Default value.
+Bulk `resize_reserved` still owns resized views and initialization of newly exposed heap slots;
+fallible reservation and its error ordering are unchanged. No public API, representation, layout,
+version marker, codec, scalar-specific editor or publication rule changes.
+
+Source `7c2c11fd` retains the entire candidate after all six instruction controls improve, with no
+regression in the four map controls. Replacement and tail still exceed their original ceilings;
+4/6 is not full acceptance. Formatting, map lib/tests and LARA lib strict lint,30 map units,
+5 doctests and27 FreeSpan tests pass. The existing LARA test-target lint debt remains open.
+The initial disk-capacity interruption and full restoration are preserved as history; after input
+verification the identical candidate completed its remaining validation. LARA includes unchanged
+pending admission work, not clean-commit integration evidence. The compact layout below is unchanged.
+[Measurements, source bindings and limits](../evidence/adr0097-performance-architecture-research.md#15-reserved-append-retained).
+
 **Rejected allocator-operation trial: order-preserving rekey (Plan0359).** A generic rekey intent
 and one FreeSpan replacement owner reduced LARA total/named831214/830253→632242/631281, but
 all four map controls regressed: missing88872→89704, replace102792→103624,
