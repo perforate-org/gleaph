@@ -2818,12 +2818,10 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
 
 /// Incoming mirror of `overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe`: many edges
 /// point **into** an overflow-log hub, so `PointingLeft` inline-property-bytes-first expand routes through the
-/// reverse phase-1 replay reuse path. Asserts end-to-end correctness parity with phase-1 selection.
-/// The replay-reuse itself (phase 2 not rebuilding the overflow chain) is proven at the LARA
-/// boundary by `read_in_edge_slots_for_label_with_replay_reuses_reverse_replay` in `ic-stable-lara`,
-/// because the reuse counter is `#[cfg(test)]`-internal to that crate.
+/// reverse value-batch/selected-slot path. Asserts exact incoming candidate identities after
+/// phase-one filtering; LARA owns the selected range reads.
 #[test]
-fn incoming_overflow_hub_edge_inline_property_predicate_reuses_reverse_replay() {
+fn incoming_overflow_hub_edge_inline_property_predicate_selects_exact_reverse_edges() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{
         EdgeDirectedness, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,

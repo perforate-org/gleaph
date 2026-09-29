@@ -155,7 +155,7 @@ pub use graph::BucketEntryPosition;
 pub use graph::{EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage};
 pub use graph::{EdgeRemoval, EdgeSlotMove};
 pub use graph::{
-    HybridOverflowEdgeReplay, InitError as LabeledGraphInitError, LabeledEdgeInlinePropertyBatch,
+    InitError as LabeledGraphInitError, LabeledEdgeInlinePropertyBatch,
     LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatch,
     LabeledInlinePropertyValueBatchScratch, LabeledLaraGraph, LabeledOperationError,
     LabeledOutEdgesIter, OutEdgeOrder,

@@ -169,7 +169,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
     /// Checked initialized widths of the slab prefix and spill suffix. Allocation slack is
     /// never a logical slot, and the sum is validated here for every reader.
-    pub(super) fn initialized_row_slots<V: CsrVertex>(
+    pub(crate) fn initialized_row_slots<V: CsrVertex>(
         &self,
         v: &V,
     ) -> Result<(u32, u32), LaraOperationError> {

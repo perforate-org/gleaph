@@ -98,7 +98,7 @@ pub enum TraversalOrder {
 /// window is intentionally
 /// separate from [`TraversalRequest`]: a request identifies the logical edge set and its order,
 /// whereas a window is a reusable execution/paging control and must not affect point-read or
-/// replay identity.
+/// selected-slot identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TraversalWindow {
     /// Number of matching live edges to skip before invoking the visitor.
@@ -173,8 +173,8 @@ fn finish_window<B, E>(
 ///
 /// Implementations use an associated slot and error type because labeled traversal addresses a
 /// bucket-local logical slot while ordinary traversal may use a different slot representation.
-/// Domain-specific fields such as owner, label, direction, selected slots, and replay capability
-/// belong to the concrete request type.
+/// Domain-specific fields such as owner, label, direction, and selected slots belong to the
+/// concrete request type.
 pub trait TraversalRequest {
     /// Slot type delivered to the visitor.
     type Slot;
@@ -201,8 +201,6 @@ pub trait Traversal {
     /// underlying property buffer for the next row, so callers that retain the value must
     /// explicitly materialize the property bytes.
     type EdgeWithInlinePropertyRef<'a>;
-    /// Replay or scratch context accepted by selected-slot traversal.
-    type Replay;
     /// Error returned when logical storage validation or decoding fails.
     type Error;
 
@@ -314,17 +312,5 @@ pub trait Traversal {
         request: &Self::Request,
         slots: &[Self::Slot],
         visit: impl for<'a> FnMut(Self::Slot, Self::EdgeWithInlinePropertyRef<'a>) -> ControlFlow<B>,
-    ) -> Result<ControlFlow<B>, Self::Error>;
-
-    /// Visits selected logical slots while optionally reusing the backend replay/scratch context.
-    ///
-    /// An incompatible or stale replay must be rejected or safely ignored by the implementation;
-    /// it must never change the logical result.
-    fn visit_edges_at_with_replay<B>(
-        &self,
-        request: &Self::Request,
-        slots: &[Self::Slot],
-        replay: Option<&Self::Replay>,
-        visit: impl FnMut(Self::Slot, Self::Edge) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, Self::Error>;
 }

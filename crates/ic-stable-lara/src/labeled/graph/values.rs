@@ -469,6 +469,8 @@ where
         start_slot: u32,
         slot_count: u32,
     ) -> Result<Vec<u8>, LabeledOperationError> {
+        // This is a physical slab span, also consumed while promoting staged descriptors.
+        // Unlike live-ordinal reads, it does not require a published slab/run split.
         let width = bucket.inline_property_byte_width();
         if width == 0 {
             return Ok(Vec::new());
@@ -494,43 +496,77 @@ where
         log_chains: Option<&Vec<u32>>,
         buf: &mut Vec<u8>,
     ) -> Result<(), LabeledOperationError> {
-        let width = bucket.inline_property_byte_width();
-        buf.resize(usize::from(width), 0);
-        if width == 0 {
-            return Ok(());
-        }
-        // ADR 0097 §5: the rows beyond the slab prefix are rows `0..used_len` of the bucket's own
-        // values run, in ordinal order - there is no chain and no leaf log to walk.
-        let run = self.values.spill_mint(bucket.values_spill_run()).ok();
-        let slab_inline_property_bytes_slots = bucket.inline_property_bytes_slab_slots();
-        if slot_index < slab_inline_property_bytes_slots {
-            let offset = super::super::invariants::inline_property_bytes_byte_offset_at_slot(
-                bucket, slot_index,
-            )?;
-            self.values.read_bytes(offset, buf);
-            return Ok(());
-        }
-        let asc_log_index = slot_index
-            .checked_sub(slab_inline_property_bytes_slots)
+        let prefix = bucket.inline_property_bytes_slab_slots();
+        let ordinal = if bucket.inline_property_byte_width() > 0 && slot_index >= prefix {
+            if let Some(chain) = log_chains {
+                let asc_log_index = slot_index - prefix;
+                let row = *chain
+                    .get(asc_log_index as usize)
+                    .ok_or(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index })?;
+                prefix
+                    .checked_add(row)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            } else {
+                slot_index
+            }
+        } else {
+            slot_index
+        };
+        let end = ordinal
+            .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        // A descriptor that claims values beyond its slab with no run holding them is malformed:
-        // fail closed rather than read whatever follows the prefix.
-        let Some(run) = run else {
-            return Err(LabeledOperationError::from(
-                InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index },
-            ));
-        };
-        let row = match log_chains {
-            Some(chain) => *chain.get(asc_log_index as usize).ok_or_else(|| {
-                LabeledOperationError::from(InlinePropertyBytesLogReadError::MissingAscLogIndex {
-                    asc_log_index,
-                })
-            })?,
-            None => asc_log_index,
-        };
-        self.values
-            .spill_read(run, row, width, buf)
-            .map_err(LabeledOperationError::from)?;
+        self.read_bucket_inline_property_bytes_range_into(bucket, ordinal..end, buf)
+    }
+
+    /// Reads ascending live value ordinals across their independent slab/run split. Edge slots
+    /// must already have been mapped to live ordinals by the traversal or mutation owner.
+    pub(super) fn read_bucket_inline_property_bytes_range_into(
+        &self,
+        bucket: &LabelBucket,
+        ordinals: std::ops::Range<u32>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), LabeledOperationError> {
+        let width = usize::from(bucket.inline_property_byte_width());
+        let count = ordinals
+            .end
+            .checked_sub(ordinals.start)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let bytes = (count as usize)
+            .checked_mul(width)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if bytes > buf.len() {
+            buf.try_reserve_exact(bytes - buf.len())
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        }
+        buf.resize(bytes, 0);
+        if bytes == 0 {
+            return Ok(());
+        }
+        let prefix = bucket.inline_property_bytes_slab_slots();
+        let slab_rows = ordinals.end.min(prefix).saturating_sub(ordinals.start);
+        let slab_bytes = slab_rows as usize * width;
+        if slab_rows > 0 {
+            let offset = super::super::invariants::inline_property_bytes_byte_offset_at_slot(
+                bucket,
+                ordinals.start,
+            )?;
+            self.values.read_bytes(offset, &mut buf[..slab_bytes]);
+        }
+        if slab_rows < count {
+            let first = ordinals.start.max(prefix) - prefix;
+            let run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(|_| InlinePropertyBytesLogReadError::MissingAscLogIndex {
+                    asc_log_index: first,
+                })?;
+            self.values.spill_read_range(
+                run,
+                first..ordinals.end - prefix,
+                bucket.inline_property_byte_width(),
+                &mut buf[slab_bytes..],
+            )?;
+        }
         Ok(())
     }
 

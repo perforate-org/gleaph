@@ -2,13 +2,16 @@
 
 Date: 2026-07-25
 Status: implemented
-Implementation status: Phase 4 in progress. Phase 1/2 substrate (`labeled::graph::traverse_next`) and Phase 2 benchmarks are in place; CounterpartScan consumes `read_edge_state` and `visit_edges`; the physical-location reader `visit_storage_edge_locations` is implemented and the legacy `read_physical_edge_at_slot_for_label` / `for_each_live_physical_edge_location_for_label` methods are deleted; selected-slot APIs (`read_out_edge_slots_for_label*` / `read_in_edge_slots_for_label*`) now accept typed `BucketEntryPosition` instead of raw `u32`; the new module has local implementations for state reads and selected-slot traversal, so the legacy internal helpers `for_each_edges_for_label_topology_unchecked`, `for_each_live_edge_slot_for_label_desc`, `read_edge_slot_state_for_label`, and `for_each_live_edge_slot_for_label` have been removed; adoption-fixture and mate-adoption-gate physical scans are migrated to the new surface. Phase 4 completed: `for_each_edges_for_label_ordered` retains its measured dense, tombstone-free bulk-read fast path in the legacy wrapper and delegates hybrid/sparse buckets to `traverse_next::visit_edges_with_inline_property`; `for_each_edges_for_label_topology_ordered` and `for_each_edges_for_label_unchecked` delegate to `traverse_next::visit_edges` / `visit_edges_with_inline_property_unchecked`; the dead `skip_then_visit_each_out_edge_for_label` and `skip_then_visit_each_out_edge_by_directedness` legacy methods are removed; `visit_edges_with_inline_property_unchecked` was added to `traverse_next`; `DeferredBidirectionalLabeledGraph` unchecked label wrappers route through the unchecked visitor. Phase 4b completed: the `read_out_edge_slots_for_label*` family and its internal helpers are removed; tests now call `traverse_next::visit_edges_at_with_replay`. Phase 4c completed: `visit_label_out_edges_inner` now delegates to `traverse_next::visit_all_labels_with_inline_property`; new `visit_all_labels` and `visit_all_labels_with_inline_property` visitors cover all label buckets with the same dense/hybrid/sparse per-bucket fast paths; public `visit_out_edges` / `visit_asc_out_edges` / `out_edges` / `asc_out_edges` now route through the consolidated visitor. Phase 4d completed: added `visit_out_edges_by_directedness` (topology-only) to `traverse_next`; `iter_out_edges_by_directedness` / `iter_out_edges_directed_only` / `iter_out_edges_undirected_only` collect via the new visitor. Phase 4e completed (2026-07-28 UTC): `LabeledOutEdgesIter` is now bucket-lazy and delegates each bucket to `traverse_next::visit_edges_with_inline_property`; `labeled_out_edges_iter`, `desc_out_edges_iter`, `asc_out_edges_iter`, and `out_edges_by_directedness_iter` no longer use legacy slab/overflow-log streaming internals; the unused `out_edges_iter_for_label*` family is removed. Phase 4f completed (2026-07-27 21:06:54 UTC): `labeled_bucket_span_iter` internals moved into `traverse_next::single_bucket_span_iter`; `visit_edges`, `visit_edges_window`, and `visit_edges_with_inline_property_impl` now use it for sparse/hybrid buckets; the dense bulk-read fast paths remain in `traverse_next`. Phase 4g completed (2026-07-27 21:28:53 UTC): the legacy public batch/value entry points `visit_out_edge_inline_property_batches_for_label` and `visit_out_inline_property_batches_for_label` now delegate to their `traverse_next` counterparts; all private dense/hybrid/sparse batch helpers that duplicated the `*_next` implementation were removed from `traverse.rs`. Phase 5 completed (2026-07-27 21:46:51 UTC): `traverse_next` was renamed to `traverse`, the legacy `traverse.rs` module was deleted, and the consolidated module now hosts both the canonical read surface and the `ContiguousBucketRun` maintenance helper previously owned by the legacy module. The public API signatures and caller imports are preserved; internal callers were updated from `graph::traverse_next` to `graph::traverse`.
+Last revised: 2026-09-29
+Implementation status: consolidated `labeled::graph::traverse` is implemented. Selected slab/spill reads coalesce adjacent logical slots; hybrid value batches use range reads. `HybridOverflowEdgeReplay`, the trait replay capability, and directional replay/scratch adapters are removed. Property-first phase two uses canonical `visit_edges_at` reads; property bytes remain in the phase-one scratch buffer.
+
+Implementation history (completed consolidation; method names below describe those phases): Phase 1/2 substrate (`labeled::graph::traverse_next`) and Phase 2 benchmarks are in place; CounterpartScan consumes `read_edge_state` and `visit_edges`; the physical-location reader `visit_storage_edge_locations` is implemented and the legacy `read_physical_edge_at_slot_for_label` / `for_each_live_physical_edge_location_for_label` methods are deleted; selected-slot APIs (`read_out_edge_slots_for_label*` / `read_in_edge_slots_for_label*`) now accept typed `BucketEntryPosition` instead of raw `u32`; the new module has local implementations for state reads and selected-slot traversal, so the legacy internal helpers `for_each_edges_for_label_topology_unchecked`, `for_each_live_edge_slot_for_label_desc`, `read_edge_slot_state_for_label`, and `for_each_live_edge_slot_for_label` have been removed; adoption-fixture and mate-adoption-gate physical scans are migrated to the new surface. Phase 4 completed: `for_each_edges_for_label_ordered` retains its measured dense, tombstone-free bulk-read fast path in the legacy wrapper and delegates hybrid/sparse buckets to `traverse_next::visit_edges_with_inline_property`; `for_each_edges_for_label_topology_ordered` and `for_each_edges_for_label_unchecked` delegate to `traverse_next::visit_edges` / `visit_edges_with_inline_property_unchecked`; the dead `skip_then_visit_each_out_edge_for_label` and `skip_then_visit_each_out_edge_by_directedness` legacy methods are removed; `visit_edges_with_inline_property_unchecked` was added to `traverse_next`; `DeferredBidirectionalLabeledGraph` unchecked label wrappers route through the unchecked visitor. Phase 4b completed: the `read_out_edge_slots_for_label*` family and its internal helpers are removed; tests now call `traverse_next::visit_edges_at_with_replay`. Phase 4c completed: `visit_label_out_edges_inner` now delegates to `traverse_next::visit_all_labels_with_inline_property`; new `visit_all_labels` and `visit_all_labels_with_inline_property` visitors cover all label buckets with the same dense/hybrid/sparse per-bucket fast paths; public `visit_out_edges` / `visit_asc_out_edges` / `out_edges` / `asc_out_edges` now route through the consolidated visitor. Phase 4d completed: added `visit_out_edges_by_directedness` (topology-only) to `traverse_next`; `iter_out_edges_by_directedness` / `iter_out_edges_directed_only` / `iter_out_edges_undirected_only` collect via the new visitor. Phase 4e completed (2026-07-28 UTC): `LabeledOutEdgesIter` is now bucket-lazy and delegates each bucket to `traverse_next::visit_edges_with_inline_property`; `labeled_out_edges_iter`, `desc_out_edges_iter`, `asc_out_edges_iter`, and `out_edges_by_directedness_iter` no longer use legacy slab/overflow-log streaming internals; the unused `out_edges_iter_for_label*` family is removed. Phase 4f completed (2026-07-27 21:06:54 UTC): `labeled_bucket_span_iter` internals moved into `traverse_next::single_bucket_span_iter`; `visit_edges`, `visit_edges_window`, and `visit_edges_with_inline_property_impl` now use it for sparse/hybrid buckets; the dense bulk-read fast paths remain in `traverse_next`. Phase 4g completed (2026-07-27 21:28:53 UTC): the legacy public batch/value entry points `visit_out_edge_inline_property_batches_for_label` and `visit_out_inline_property_batches_for_label` now delegate to their `traverse_next` counterparts; all private dense/hybrid/sparse batch helpers that duplicated the `*_next` implementation were removed from `traverse.rs`. Phase 5 completed (2026-07-27 21:46:51 UTC): `traverse_next` was renamed to `traverse`, the legacy `traverse.rs` module was deleted, and the consolidated module now hosts both the canonical read surface and the `ContiguousBucketRun` maintenance helper previously owned by the legacy module. The public API signatures and caller imports are preserved; internal callers were updated from `graph::traverse_next` to `graph::traverse`.
 Adoption status: partially activated (CounterpartScan + first Graph scan-only caller + physical-location adoption fixtures + edge-property sidecar group via Plan 0186)
 
 ## Context
 
-`crates/ic-stable-lara/src/labeled/graph/traverse.rs` has grown an ad-hoc collection of labeled
-bucket read APIs. The current surface mixes:
+Before consolidation, `crates/ic-stable-lara/src/labeled/graph/traverse.rs` had an ad-hoc collection
+of labeled bucket read APIs. That surface mixed:
 
 - bucket-local logical slots with raw slab/overflow-log locations;
 - live topology reads with inline-property attachment;
@@ -65,10 +68,10 @@ No new storage subsystem, persistent index, or public Graph-owned mapping is req
 consolidation is developed first in a temporary sibling module and only becomes the `traverse`
 module after caller migration and validation complete.
 
-The current specialized selected-slot and batched readers are not accidental duplication. They
-preserve dense bulk reads, hybrid replay reuse, inline-property-first predicate execution, and
-bounded scratch allocation. Those capabilities remain LARA-owned and must not be expressed as a
-generic full-bucket `Vec`.
+The specialized selected-slot and batched readers have distinct contracts. They preserve contiguous
+range reads, inline-property-first predicate execution, and reusable scratch allocation. These
+capabilities remain LARA-owned and must not be expressed as a generic full-bucket `Vec`.
+Hybrid replay is no longer needed: descriptor/run state directly addresses selected ranges.
 
 ## Decision
 
@@ -217,8 +220,8 @@ pub struct EdgeWithInlinePropertyRef<'a, E> {
 ```
 
 The borrowed view is valid only during the callback. Dense buckets borrow directly from the
-bulk-read property span, while sparse and hybrid paths borrow from one reusable property read
-buffer per callback. None of these paths constructs an owned inline-property value for the
+bulk-read property span, while sparse and hybrid paths borrow from reusable property range
+buffers. None of these paths constructs an owned inline-property value for the
 borrowed API. Callers that retain an edge result (for example an execution binding) must
 explicitly materialize owned bytes inside the callback, only when retention is required.
 
@@ -306,11 +309,11 @@ value to carry it without merging storage and caller error types.
 ### 6. Canonical general-purpose read surface
 
 The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated
-`Request`, `Slot`, `EdgeState`, `EdgeWithInlinePropertyRef<'a>`, `Replay`, and `Error` types allow
+`Request`, `Slot`, `EdgeState`, `EdgeWithInlinePropertyRef<'a>`, and `Error` types allow
 normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge`
 is bounded by the existing `CsrEdge` trait; storage codec and inline property bytes behavior
 therefore remain single-sourced. The trait includes topology point reads, state reads, borrowed
-inline-property visits, full visits, selected-slot visits, and replay-aware selected-slot visits.
+inline-property visits, full visits, and selected-slot visits. No associated replay state is exposed.
 Owned property materialization is a concrete/facade concern rather than part of this core trait.
 The isolated labeled implementation is the first adapter; other backends are added against this
 contract.
@@ -399,9 +402,8 @@ rows. The labeled **topology** override `visit_edges_window` instead cuts tombst
 positions in request order, as specified by ADR 0088: ascending position is the slot itself;
 descending position is `extent - 1 - slot`. Holes consume positions but yield no callback. This
 existing topology contract permits a direct range read even when the row contains tombstones.
-Selected-slot/replay APIs keep their own explicit slot set and are not implicitly windowed,
-preventing paging state from becoming part of replay identity or being applied twice by
-property-first Graph execution.
+Selected-slot APIs keep their own explicit slot set and are not implicitly windowed, preventing
+paging state from being applied twice by property-first Graph execution.
 
 GQL `OFFSET`/`LIMIT` may use this capability only when the planner proves that traversal order is
 the result order and no later sort, distinct, aggregation, or other row-expanding operation changes
@@ -450,12 +452,13 @@ reader decodes in the requested order, skips tombstones without renumbering slot
 initialized width. Labeled traversal attaches label identity after tiny/tree mode dispatch.
 
 Topology visitors, zero-width borrowed/materialized property visitors, and the topology portion of
-existing dense property visitors share this primitive. Nonzero-property hybrid rank mapping,
-property-first batching, selected-slot replay, core streaming iterators and tree readers retain
-their existing execution paths. Full scans buffer their initialized extent, as the dense slab
-reader already did; topology windows buffer only the selected range. `Break` stops further decoding
-and callbacks, but does not cancel the already-completed bulk read. No fold, capacity, promotion,
-layout or write policy changes are part of this read optimization.
+existing dense property visitors share this primitive. `visit_row_edge_slots` shares its physical
+range reader and decoder, but reads only adjacent selected runs. Full scans buffer their initialized
+extent, as the dense slab reader already did; topology windows buffer only the selected range.
+`Break` stops further decoding and callbacks, but does not cancel an already-completed bulk read;
+selected reads do not read subsequent runs after a break. Core streaming iterators and tree readers
+keep their separate execution paths. No fold, capacity, promotion, layout or write policy changes
+are part of this read optimization.
 
 [Focused measurements and contract tests](../evidence/adr0097-contiguous-spill-traversal.md).
 
@@ -549,32 +552,16 @@ It:
 - preserves the dense contiguous-read optimization; and
 - does not attach inline properties.
 
-Selected reads that need the existing two-phase inline property bytes optimization use a separate capability and
-do not allocate one inline property bytes value per edge:
+For slab/run buckets, labeled traversal resolves the descriptor once and delegates normalized
+slots to `EdgeStore::visit_row_edge_slots`. Only adjacent requested positions share a range read;
+isolated selections do not read the whole bucket. Tiny/tree point-state readers keep their native
+addressing. Owner, label and orientation are resolved from canonical state on every call.
 
-```rust
-pub(crate) fn visit_edges_at_with_replay<B>(
-    &self,
-    owner: VertexId,
-    label: BucketLabelKey,
-    slots: &[BucketEntryPosition],
-    order: OutEdgeOrder,
-    replay: Option<&HybridOverflowEdgeReplay>,
-    visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
-) -> Result<ControlFlow<B>, LabeledOperationError>;
-```
-
-`HybridOverflowEdgeReplay` is the existing opaque snapshot carried by
-`LabeledPayloadValueBatchScratch`. It is accepted only when its owner, label, slab/log split, and
-bucket snapshot match; otherwise the implementation discards it and performs the canonical sparse
-read. The replay is borrowed for the call and never becomes a source of truth. Inline-property
-bytes are attached by the dedicated property-first phase using the same scratch's `slot_indices`
-and `values` buffers; the selected visitor consumes those bytes without allocating per-edge
-inline property bytes buffers. The reverse wrapper has the identical contract with reverse orientation.
-
-Replay/scratch reuse remains an optimized LARA capability. The replay object is opaque, proves its
-`(owner, label, bucket fingerprint)` before use, and falls back to canonical reads on mismatch. It
-must not become a second source of truth.
+Property-first execution uses this same capability in phase two. Phase one retains only its
+`slot_indices` and `values` buffers; it does not capture an edge replay. Graph joins those bytes to
+the returned selected slots. The outgoing and incoming wrappers have the same contract.
+`HybridOverflowEdgeReplay`, `visit_edges_at_with_replay`, and the Graph scratch-reusing adapters
+are deleted, with no compatibility path or replacement cache.
 
 The borrowed `visit_edges_at_with_inline_property` capability owns selected topology/value
 hydration. It sorts and deduplicates requests and emits only canonical live positions. For tree
@@ -583,12 +570,25 @@ value at that same original logical position through `tree_read::read_property_v
 Tree holes are not converted to slab live ranks. Width-zero trees borrow empty bytes without
 property-root access. Raw native bulk visitors retain their separate tombstone-inclusive contract.
 
-For slab/run buckets, the existing adaptive range choice is unchanged: one property buffer for
-spill rows, a bulk selected slab-ordinal span when possible, or the canonical bulk-friendly
-visitor for compact overflow-backed selections. Sparse or tail selections use direct slot reads.
+For slab/run buckets, initialized extent equal to live degree admits slot-as-live-ordinal mapping.
+Otherwise one ascending topology pass computes the selected live ranks, stopping at the largest
+requested position; descending output reverses only the selected results. Holes retain their
+original logical positions. Adjacent live ordinals share value range reads through
+`read_bucket_inline_property_bytes_range_into`. This rank computation can still inspect the sparse
+prefix: no persistent rank/select index is introduced.
+
+`ValuesSpillStore::read_range` owns scalar/range width, output and used-length validation. Inline
+cells are read in bulk; values wider than eight bytes still require per-site blob-map decoding.
+Hybrid property-first admission reads initialized lengths without prefetching edge bodies, and
+streaming property batches reuse bounded value ranges rather than reading each value separately.
+Physical slab-span reads used by existing dense/maintenance paths retain their distinct contract.
+
 Property bytes remain borrowed only for the callback, and user `ControlFlow::Break` values are
-preserved. Implementations may prepare topology or value buffers before callbacks; this API does
+preserved. Selected hydration may prepare topology or value buffers before callbacks; this API does
 not promise an error-after-Break ordering across storage modes.
+
+[Range-read implementation and measurements](../evidence/adr0097-selected-hybrid-range-reads.md)
+cover the replay removal, exact identities, range IO and remaining wide-value cost.
 
 The bounded tree-selected repair is implemented in `036649e67`; [valid-backed evidence and limits](../evidence/adr0097-selected-tree-properties.md)
 cover width8/33 boundaries, original holes, sparse selections, exact root errors and read-only
@@ -598,8 +598,8 @@ preservation. It does not enable tree mutation or establish Graph transaction/at
 
 **Planned; not implemented and not part of the current persistence format.**
 
-The current range choice uses an inexpensive estimated scan length and a measured heuristic. A
-future research slice may partition the logical bucket extent into fixed-size blocks (for example,
+Current selected topology reads coalesce adjacent requested positions without a heuristic.
+Sparse property hydration still counts prefix liveness. A future research slice may partition the logical bucket extent into fixed-size blocks (for example,
 16 or 32 slots), group selected slots into block runs, and choose canonical scanning or direct
 reads per run. A block directory could skip empty or irrelevant blocks while preserving the
 existing logical-slot and tombstone contracts.
@@ -660,8 +660,8 @@ visit_edge_inline_property_batches(...)
 visit_inline_property_batches(...)
 ```
 
-The associated batch, scratch, and replay types follow the same terminology when the naming
-migration lands. These APIs may select dense, hybrid, or sparse implementations privately.
+The associated batch and scratch types use the same terminology. These APIs select dense, hybrid,
+or sparse implementations privately; scratch does not contain a topology replay.
 
 They are not folded into `visit_edges_with_inline_property`: attached per-edge values and borrowed
 property batches have different allocation and lifetime contracts.
@@ -810,13 +810,17 @@ and make return types depend on runtime flags.
 
 Replace point, selected-slot, attached-property, and batched-property reads with a generic cursor.
 
-Rejected because borrowed batches, point states, selected-slot replay, and attached `E` values do
+Rejected because borrowed batches, point states, selected-slot reads, and attached `E` values do
 not share one stable lifetime or allocation contract. The abstraction is broader than the
 demonstrated problem and would put performance policy into a generic framework.
 
-## Migration
+## Consolidation migration history
 
-Adoption is phased. The temporary module, its tests, and its benchmark module are authoritative for
+The following records the completed consolidation sequence and its original activation gates.
+Removed replay/scratch adapters in the map resolve to the canonical selected-slot contract above.
+Other ADRs' caller-adoption obligations retain their own status.
+
+Adoption was phased. The temporary module, its tests, and its benchmark module are authoritative for
 new work during migration; the legacy `traverse` module remains authoritative only for callers not
 yet migrated. The final rename happens only after all callers and validation gates pass.
 
@@ -936,11 +940,11 @@ mapping for the known single-label read families is:
 | `read_out_edge_slot_for_label` | `read_edge(BucketEntryPosition)` |
 | `read_edge_slot_state_for_label` | `read_edge_state(BucketEntryPosition)` |
 | `read_out_edge_slots_for_label` | `visit_edges_at` |
-| `read_out_edge_slots_for_label_with_replay` | `visit_edges_at` plus replay/scratch |
-| `read_out_edge_slots_for_label_reusing_inline_property_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve inline property bytes attachment |
+| `read_out_edge_slots_for_label_with_replay` | removed; canonical `visit_edges_at` |
+| `read_out_edge_slots_for_label_reusing_inline_property_scratch` | removed; canonical `visit_edges_at`, with phase-one bytes joined by the caller |
 | `read_in_edge_slots_for_label` | reverse `visit_edges_at` |
-| `read_in_edge_slots_for_label_with_replay` | reverse `visit_edges_at` plus replay/scratch |
-| `read_in_edge_slots_for_label_reusing_inline_property_scratch` | reverse `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve inline property bytes attachment |
+| `read_in_edge_slots_for_label_with_replay` | removed; reverse canonical `visit_edges_at` |
+| `read_in_edge_slots_for_label_reusing_inline_property_scratch` | removed; reverse canonical `visit_edges_at`, with phase-one bytes joined by the caller |
 | `read_physical_edge_at_slot_for_label` | remove; migrate `mate` to logical read |
 | `for_each_live_physical_edge_location_for_label` | physical-location visitor |
 | `visit_out_edge_inline_property_batches_for_label` | forward inline-property batch capability |
@@ -1008,7 +1012,10 @@ The test matrix covers:
   occurs;
 - attached inline-property bytes versus topology-only rows;
 - inline-property-first filtering followed by selected-slot traversal;
-- stale replay rejection and canonical fallback;
+- phase-two reads resolve current owner/label state after in-place deletion, without replay;
+- selected-run IO excludes unrelated rows and stops before subsequent runs on `Break`;
+- dense hybrid property-first admission does not read topology bodies;
+- sparse selected-property ranks require at most one prefix pass;
 - Graph/LARA slot adapters reject direct use of the reverse-in alias tag, and logical slot values
   remain distinct from encoded raw storage locations;
 - a delete/reinsert slot-reuse case proves that slot-only mutation input is rejected, while a
@@ -1044,7 +1051,7 @@ Focused canbench comparisons cover at least:
 - mixed-label ascending and descending scan;
 - overflow-log scan;
 - CounterpartScan point/rank-select paths;
-- selected-slot dense and hybrid replay paths; and
+- selected-slot dense and hybrid range paths; and
 - edge-attached and property-first batched inline-property paths.
 
 The migration must not introduce full-bucket allocation into streaming or selected-slot paths.

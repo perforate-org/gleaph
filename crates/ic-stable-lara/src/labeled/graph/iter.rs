@@ -74,54 +74,6 @@ impl<E> LabeledEdgeInlinePropertyBatchScratch<E> {
     }
 }
 
-/// Cached overflow-log replay from hybrid inline-property-bytes phase 1 for phase-2 topology reads.
-///
-/// When present, [`super::LabeledLaraGraph::visit_edges_at_with_replay`] can decode
-/// matching overflow-log edges from the cached segment table instead of rebuilding the
-/// ascending log chain and re-reading stable memory.
-#[derive(Clone, Debug, Default)]
-pub struct HybridOverflowEdgeReplay {
-    /// Owner vertex this replay was built for. `leaf` alone is ambiguous because
-    /// `leaf = src / segment_size`, so distinct vertices share a leaf; phase 2 matches on `src` to
-    /// reject a replay carried over from a different vertex in the same leaf.
-    pub(super) src: VertexId,
-    pub(super) label_id: BucketLabelKey,
-    pub(super) slab_slots: u32,
-    /// Snapshot of the source bucket at phase-1 capture time. `src` + `label_id` + `slab_slots`
-    /// stay constant across an in-place tombstone delete (the row is marked removed without
-    /// changing the prefix/spill split), so phase 2 also re-checks this snapshot and falls back to
-    /// sparse on any bucket mutation between the two phases.
-    pub(super) degree: u32,
-    pub(super) stored_slots: u32,
-    /// The bucket's edge-plane spill run at capture time (ADR 0097 §3), or `None` when the bucket
-    /// held none. Phase 2 compares it with the descriptor's, so a released or replaced run
-    /// invalidates the replay instead of being read.
-    pub(super) spill_run: Option<crate::labeled::spill_run_store::SpillRunId>,
-    pub(super) edge_start: u64,
-    /// Live rows beyond the prefix, indexed by `raw_slot - slab_slots`: `Some(row index)` for a
-    /// live row and `None` for a tombstoned one. A run is contiguous, so the row index is the
-    /// ordinal and replay lookup stays direct - no chain, no leaf table.
-    pub(super) spill_indices_by_slot: Vec<Option<u32>>,
-}
-
-impl HybridOverflowEdgeReplay {
-    /// Returns whether this replay cache contains data that can satisfy a phase-2 topology read.
-    pub fn is_active(&self) -> bool {
-        self.slab_slots > 0 || !self.spill_indices_by_slot.is_empty()
-    }
-
-    pub(super) fn clear(&mut self) {
-        self.src = VertexId::default();
-        self.label_id = BucketLabelKey::from_raw(0);
-        self.slab_slots = 0;
-        self.degree = 0;
-        self.stored_slots = 0;
-        self.spill_run = None;
-        self.edge_start = 0;
-        self.spill_indices_by_slot.clear();
-    }
-}
-
 /// Reusable buffers for inline-property-bytes-only batch traversal (phase 1).
 #[derive(Clone, Debug, Default)]
 pub struct LabeledInlinePropertyValueBatchScratch {
@@ -129,23 +81,15 @@ pub struct LabeledInlinePropertyValueBatchScratch {
     pub slot_indices: Vec<u32>,
     /// Flattened inline property bytes: `slot_indices.len() * byte_width` when emitted.
     pub values: Vec<u8>,
-    /// Populated by hybrid overflow inline-property-bytes phase 1 for phase-2 slot reads.
-    pub hybrid_overflow_replay: HybridOverflowEdgeReplay,
     /// Reusable bulk-read buffer for contiguous inline property bytes slab IO.
     pub(super) io_inline_property_bytes: Vec<u8>,
 }
 
 impl LabeledInlinePropertyValueBatchScratch {
-    /// Clears batch buffers while preserving hybrid overflow replay for phase 2.
+    /// Clears batch buffers while retaining their allocation.
     pub fn clear(&mut self) {
         self.slot_indices.clear();
         self.values.clear();
-    }
-
-    /// Clears batch buffers and any cached hybrid overflow replay.
-    pub fn clear_all(&mut self) {
-        self.clear();
-        self.hybrid_overflow_replay.clear();
     }
 
     pub(super) fn io_inline_property_bytes_slice_mut(&mut self, len: usize) -> &mut [u8] {

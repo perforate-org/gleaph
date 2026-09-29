@@ -2544,29 +2544,6 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Like [`Self::read_out_edge_slots_for_label`], reusing hybrid overflow replay from phase 1.
-    pub fn read_out_edge_slots_for_label_with_replay<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slots: &[BucketEntryPosition],
-        order: OutEdgeOrder,
-        replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
-        mut visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        self.forward
-            .visit_edges_at_with_replay(src, label_id, slots, order, replay, |_slot, edge| {
-                visit(edge.with_label_id(label_id.raw()));
-                ControlFlow::<()>::Continue(())
-            })
-            .map(|_| ())
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
     pub fn visit_out_edge_inline_property_batches_for_label<Visit>(
         &self,
@@ -2643,30 +2620,6 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
-    /// Like [`Self::read_in_edge_slots_for_label`], reusing hybrid overflow replay from the reverse
-    /// phase-1 scan (`visit_in_inline_property_batches_for_label`). Mirrors the forward
-    /// [`Self::read_out_edge_slots_for_label_with_replay`] contract on reverse orientation.
-    pub fn read_in_edge_slots_for_label_with_replay<Visit>(
-        &self,
-        dst: VertexId,
-        label_id: BucketLabelKey,
-        slots: &[BucketEntryPosition],
-        order: OutEdgeOrder,
-        replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
-        mut visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        self.reverse
-            .visit_edges_at_with_replay(dst, label_id, slots, order, replay, |_slot, edge| {
-                visit(edge.with_label_id(label_id.raw()));
-                ControlFlow::<()>::Continue(())
-            })
-            .map(|_| ())
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
-    }
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
     /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel
     /// value bytes for one label in `order`.
@@ -7405,12 +7358,7 @@ mod tests {
         );
     }
 
-    /// Proves the reverse inline-property-bytes-first phase-2 read actually reuses the phase-1 replay: many edges
-    /// point into one hub, so the hub's reverse bucket is an overflow-log hybrid. Reading the
-    /// in-edge slots with the captured replay must avoid the overflow-log chain rebuild (0), while a
-    /// no-replay read takes the sparse fallback (>= 1) — both returning the same incoming edges. This
-    /// guards `read_in_edge_slots_for_label_with_replay`, which the incoming inline-property-bytes-first expand
-    /// executor depends on.
+    /// Adjacent reverse value buckets remain writable after skew creates a retained spill run.
     #[test]
     fn directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew() {
         let graph = valued_bidirectional_graph();

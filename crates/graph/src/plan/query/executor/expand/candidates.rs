@@ -144,7 +144,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     }
 
     if pending_slots.is_empty() {
-        value_scratch.clear_all();
+        value_scratch.clear();
         return Ok(true);
     }
 
@@ -184,28 +184,26 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .read_out_edge_slots_for_label_reusing_inline_property_scratch(
+            .read_out_edge_slots_for_label(
                 src_id,
                 storage_label,
                 &pending_slots,
                 order,
-                &value_scratch,
                 &mut visit_edge,
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .read_in_edge_slots_for_label_reusing_inline_property_scratch(
+            .read_in_edge_slots_for_label(
                 src_id,
                 storage_label,
                 &pending_slots,
                 order,
-                &value_scratch,
                 &mut visit_edge,
             )
             .map_err(GraphStoreError::from)?,
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
-    value_scratch.clear_all();
+    value_scratch.clear();
     if let Some(err) = error {
         return Err(err);
     }

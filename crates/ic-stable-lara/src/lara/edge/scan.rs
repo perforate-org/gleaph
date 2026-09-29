@@ -7,7 +7,7 @@ use crate::{
     traverse::{TraversalOrder, TraversalWindow},
 };
 use ic_stable_structures::Memory;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 
 use super::iter::OutEdgeSlabChunk;
 use super::{
@@ -44,46 +44,84 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             TraversalOrder::Ascending => (offset, offset + count),
             TraversalOrder::Descending => (extent - offset - count, extent - offset),
         };
+        let mut bytes = Vec::new();
+        self.read_row_range(row, prefix, lo..hi, &mut bytes)?;
+        Ok(visit_edge_bytes(&bytes, lo, order, &mut visit))
+    }
+
+    /// Visits sorted, deduplicated row-local slots. Adjacent selections share a range read;
+    /// isolated selections never cause unrelated rows to be read. The labeled boundary owns
+    /// normalization and tiny/tree dispatch. A break prevents reading subsequent ranges.
+    pub(crate) fn visit_row_edge_slots<V: CsrVertex, B>(
+        &self,
+        row: &V,
+        slots: &[u32],
+        order: TraversalOrder,
+        mut visit: impl FnMut(u32, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LaraOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if slots.is_empty() || row.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let (prefix, spill) = self.initialized_row_slots(row)?;
+        let extent = prefix + spill;
+        let mut bytes = Vec::new();
+        for group in slots.chunk_by(|a, b| a.abs_diff(*b) == 1) {
+            let first = group[0];
+            let last = group[group.len() - 1];
+            let lo = first.min(last).min(extent);
+            let hi = first.max(last).saturating_add(1).min(extent);
+            if lo == hi {
+                continue;
+            }
+            self.read_row_range(row, prefix, lo..hi, &mut bytes)?;
+            if let ControlFlow::Break(value) = visit_edge_bytes(&bytes, lo, order, &mut visit) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Both callers obtain `prefix` from initialized_row_slots and clip the range to its extent.
+    /// Physical addressing and range allocation stay here, shared by window and selected reads.
+    fn read_row_range<V: CsrVertex>(
+        &self,
+        row: &V,
+        prefix: u32,
+        range: Range<u32>,
+        bytes: &mut Vec<u8>,
+    ) -> Result<(), LaraOperationError> {
+        let count = range.end - range.start;
         let byte_len = (count as usize)
             .checked_mul(E::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let mut bytes = Vec::new();
+        bytes.clear();
         bytes
             .try_reserve_exact(byte_len)
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         bytes.resize(byte_len, 0);
-        let slab_rows = hi.min(prefix).saturating_sub(lo);
+        let slab_rows = range.end.min(prefix).saturating_sub(range.start);
         let slab_bytes = slab_rows as usize * E::BYTES;
         if slab_rows > 0 {
             let start = row
                 .base_slot_start()
-                .checked_add(u64::from(lo))
+                .checked_add(u64::from(range.start))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.read_slots_contiguous(start, &mut bytes[..slab_bytes]);
         }
         if slab_rows < count {
             let run = self.spill_mint(row.spill_run())?;
-            if !self
-                .spill
-                .read_rows(run, lo.max(prefix) - prefix, &mut bytes[slab_bytes..])
-            {
+            if !self.spill.read_rows(
+                run,
+                range.start.max(prefix) - prefix,
+                &mut bytes[slab_bytes..],
+            ) {
                 return Err(LaraOperationError::SpillRowOutOfRange);
             }
         }
-        let mut emit = |(index, raw): (usize, &[u8])| {
-            let slot = lo + index as u32;
-            let edge = E::read_from(raw).with_slot_index(slot);
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                ControlFlow::Continue(())
-            } else {
-                visit(slot, edge)
-            }
-        };
-        let rows = bytes.chunks_exact(E::BYTES).enumerate();
-        Ok(match order {
-            TraversalOrder::Ascending => crate::traverse::iter::visit(rows, &mut emit),
-            TraversalOrder::Descending => crate::traverse::iter::visit(rows.rev(), &mut emit),
-        })
+        Ok(())
     }
 
     pub(crate) fn collect_out_edges_slot_order<V, A>(
@@ -338,19 +376,27 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             inserted,
         ))
     }
+}
 
-    /// The run's rows as replay tags: `Some(row index)` for a live row, `None` for a tombstone.
-    /// Descending and ascending replay are the same ordinal list now that a run has no chain.
-    pub(crate) fn prefetch_spill_replay_tags(
-        &self,
-        run: crate::labeled::spill_run_store::SpillRunId,
-    ) -> Result<Vec<Option<u32>>, LaraOperationError> {
-        let entries = self.spill_replay_entries(run)?;
-        Ok(entries
-            .into_iter()
-            .enumerate()
-            .map(|(index, edge)| edge.map(|_| index as u32))
-            .collect())
+fn visit_edge_bytes<E: CsrEdge + CsrEdgeTombstone, B>(
+    bytes: &[u8],
+    low: u32,
+    order: TraversalOrder,
+    visit: &mut impl FnMut(u32, E) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    let mut emit = |(index, raw): (usize, &[u8])| {
+        let slot = low + index as u32;
+        let edge = E::read_from(raw).with_slot_index(slot);
+        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+            ControlFlow::Continue(())
+        } else {
+            visit(slot, edge)
+        }
+    };
+    let rows = bytes.chunks_exact(E::BYTES).enumerate();
+    match order {
+        TraversalOrder::Ascending => crate::traverse::iter::visit(rows, &mut emit),
+        TraversalOrder::Descending => crate::traverse::iter::visit(rows.rev(), &mut emit),
     }
 }
 

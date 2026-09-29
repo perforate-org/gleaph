@@ -603,6 +603,19 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
             .map_err(map_values_spill_read_error)
     }
 
+    /// Reads a contiguous range of value ordinals, packing exact-width values into `out`.
+    pub(crate) fn spill_read_range(
+        &self,
+        run: SpillRunId,
+        rows: std::ops::Range<u32>,
+        width: u16,
+        out: &mut [u8],
+    ) -> Result<(), InlinePropertyBytesLogReadError> {
+        self.values_spill
+            .read_range(&self.blobs, run, rows, width, out)
+            .map_err(map_values_spill_read_error)
+    }
+
     /// Writes row `row` of `run`, which must already exist: the compaction path claims a row it has
     /// just folded.
     pub(crate) fn spill_write(
@@ -1135,6 +1148,80 @@ mod tests {
         let mut out = [0u8; 24];
         store.spill_read(run, 0, 24, &mut out).expect("read");
         assert_eq!(out, wide);
+    }
+
+    #[test]
+    fn values_range_reads_exact_widths_and_rejects_slack() {
+        for width in [1u16, 2, 8, 9, 33] {
+            let store = test_store();
+            let mut run = None;
+            let value = |row: u8| {
+                (0..width)
+                    .map(|i| row.wrapping_mul(7).wrapping_add(i as u8))
+                    .collect::<Vec<_>>()
+            };
+            for row in 0..35 {
+                run = Some(store.spill_append(run, width, &value(row)).unwrap().0);
+            }
+            let run = run.unwrap();
+            for rows in [0..35, 1..4, 31..35, 35..35] {
+                let mut out = vec![0xA5; (rows.end - rows.start) as usize * usize::from(width)];
+                store
+                    .spill_read_range(run, rows.clone(), width, &mut out)
+                    .unwrap();
+                assert_eq!(
+                    out,
+                    rows.flat_map(|row| value(row as u8)).collect::<Vec<_>>()
+                );
+            }
+            let mut out = vec![0xA5; 2 * usize::from(width)];
+            assert_eq!(
+                store.spill_read_range(run, 34..36, width, &mut out),
+                Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index: 35 })
+            );
+            assert_eq!(out, vec![0xA5; 2 * usize::from(width)]);
+            assert_eq!(
+                store.spill_read_range(run, 0..2, width, &mut out[..usize::from(width)]),
+                Err(InlinePropertyBytesLogReadError::OutputTooSmall {
+                    width,
+                    out_len: usize::from(width)
+                })
+            );
+            if width > 8 {
+                store.drop_inline_property_bytes_blob_for_test(run.get(), 33);
+                assert_eq!(
+                    store.spill_read_range(
+                        run,
+                        32..35,
+                        width,
+                        &mut vec![0; 3 * usize::from(width)]
+                    ),
+                    Err(InlinePropertyBytesLogReadError::MissingBlob {
+                        run: run.get(),
+                        row: 33
+                    })
+                );
+                store
+                    .blobs
+                    .put_blob(
+                        EdgeInlinePropertyBytesBlobId::from_run_row(run.get(), 33),
+                        &[7; 8],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    store.spill_read_range(
+                        run,
+                        32..35,
+                        width,
+                        &mut vec![0; 3 * usize::from(width)]
+                    ),
+                    Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
+                        expected: width,
+                        actual: 8
+                    })
+                );
+            }
+        }
     }
 
     #[test]

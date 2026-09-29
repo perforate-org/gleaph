@@ -201,41 +201,79 @@ impl<M: Memory> ValuesSpillStore<M> {
         width: u16,
         out: &mut [u8],
     ) -> Result<(), ValuesSpillReadError> {
+        let end = index
+            .checked_add(1)
+            .ok_or(ValuesSpillReadError::RowOutOfRange { index })?;
+        self.read_range(blobs, run, index..end, width, out)
+    }
+
+    /// One bounded read for inline cells; wide values retain per-site blob validation. Scalar
+    /// reads delegate here so output, used-range and width rejection have one owner.
+    pub(crate) fn read_range(
+        &self,
+        blobs: &EdgeInlinePropertyBytesBlobMap<M>,
+        run: SpillRunId,
+        rows: std::ops::Range<u32>,
+        width: u16,
+        out: &mut [u8],
+    ) -> Result<(), ValuesSpillReadError> {
+        let count = rows
+            .end
+            .checked_sub(rows.start)
+            .ok_or(ValuesSpillReadError::RowOutOfRange { index: rows.start })?;
         let w = usize::from(width);
-        if w == 0 || out.len() < w {
+        let byte_len = u64::from(count) * u64::from(width);
+        if w == 0 || (out.len() as u64) < byte_len {
             return Err(ValuesSpillReadError::OutputTooSmall {
                 width,
                 out_len: out.len(),
             });
         }
-        if index >= self.used_len(run) {
-            return Err(ValuesSpillReadError::RowOutOfRange { index });
+        // The arena owns the used-length/corrupt-header bound, including for blob-backed rows.
+        if !self.arena.read_rows(run, rows.end, &mut []) {
+            return Err(ValuesSpillReadError::RowOutOfRange {
+                index: rows.start.max(self.used_len(run)),
+            });
         }
+        let out = &mut out[..byte_len as usize];
         if inline_property_bytes_log_uses_blob(width) {
             let mut buf = Vec::with_capacity(w);
-            if !blobs.get_blob(
-                EdgeInlinePropertyBytesBlobId::from_run_row(run.get(), index),
-                &mut buf,
-            ) {
-                return Err(ValuesSpillReadError::MissingBlob {
-                    run: run.get(),
-                    row: index,
-                });
+            for (index, value) in rows.zip(out.chunks_exact_mut(w)) {
+                buf.clear();
+                if !blobs.get_blob(
+                    EdgeInlinePropertyBytesBlobId::from_run_row(run.get(), index),
+                    &mut buf,
+                ) {
+                    return Err(ValuesSpillReadError::MissingBlob {
+                        run: run.get(),
+                        row: index,
+                    });
+                }
+                if buf.len() != w {
+                    return Err(ValuesSpillReadError::BlobWidthMismatch {
+                        width,
+                        actual: buf.len(),
+                    });
+                }
+                value.copy_from_slice(&buf);
             }
-            if buf.len() != w {
-                return Err(ValuesSpillReadError::BlobWidthMismatch {
-                    width,
-                    actual: buf.len(),
-                });
+        } else {
+            let mut cells = vec![0; count as usize * INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
+            if !self.arena.read_rows(run, rows.start, &mut cells) {
+                return Err(ValuesSpillReadError::RowOutOfRange { index: rows.start });
             }
-            out[..w].copy_from_slice(&buf);
-            return Ok(());
+            for (cell, value) in cells
+                .as_chunks::<INLINE_PROPERTY_BYTES_LOG_CELL_BYTES>()
+                .0
+                .iter()
+                .zip(out.chunks_exact_mut(w))
+            {
+                InlinePropertyBytesLogCell::from_bytes(*cell)
+                    .decode_inline(width, value)
+                    .ok_or(ValuesSpillReadError::InvalidInlineCell { width })?;
+            }
         }
-        let cell = self.read_cell(run, index);
-        if cell.decode_inline(width, out).is_some() {
-            return Ok(());
-        }
-        Err(ValuesSpillReadError::InvalidInlineCell { width })
+        Ok(())
     }
 
     /// Writes row `index` of `run`, which must already exist: the compaction path claims a row it

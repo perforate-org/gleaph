@@ -1,36 +1,7 @@
 use super::*;
 use crate::VertexId;
+use crate::test_support::CountMemory;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
-use ic_stable_structures::Memory;
-use std::{cell::Cell, rc::Rc};
-
-#[derive(Clone, Default)]
-struct CountMemory {
-    inner: crate::VectorMemory,
-    reads: Rc<Cell<usize>>,
-    bytes: Rc<Cell<usize>>,
-}
-impl Memory for CountMemory {
-    fn size(&self) -> u64 {
-        self.inner.size()
-    }
-    fn grow(&self, pages: u64) -> i64 {
-        self.inner.grow(pages)
-    }
-    fn read(&self, offset: u64, bytes: &mut [u8]) {
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + bytes.len());
-        self.inner.read(offset, bytes);
-    }
-    unsafe fn read_unsafe(&self, offset: u64, bytes: *mut u8, len: usize) {
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + len);
-        unsafe { self.inner.read_unsafe(offset, bytes, len) }
-    }
-    fn write(&self, offset: u64, bytes: &[u8]) {
-        self.inner.write(offset, bytes)
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Row<const N: usize>(u32);
 impl<const N: usize> CsrEdge for Row<N> {
@@ -358,6 +329,79 @@ fn bulk_row<const N: usize>() {
                     );
                     for i in [0, 3, 4, 5] {
                         assert_eq!(memories[i].reads.get(), 0);
+                    }
+                }
+                for mut selected in [
+                    vec![],
+                    vec![65],
+                    vec![1, 2, 3, 4, 5, 31, 32, 64, 65, 66],
+                    vec![1, 33, 65, 67, u32::MAX],
+                    (0..67).collect(),
+                ] {
+                    if order == TraversalOrder::Descending {
+                        selected.reverse();
+                    }
+                    for stop in [false, true] {
+                        for m in &memories {
+                            m.reads.set(0);
+                            m.bytes.set(0);
+                        }
+                        let mut expected = Vec::new();
+                        let (mut slab_calls, mut spill_calls, mut slab_rows, mut spill_rows) =
+                            (0, 0, 0, 0);
+                        for group in selected.chunk_by(|a, b| a.abs_diff(*b) == 1) {
+                            let valid: Vec<_> = group.iter().copied().filter(|s| *s < 67).collect();
+                            let slab = valid.iter().filter(|s| **s < prefix).count();
+                            let spill = valid.len() - slab;
+                            slab_calls += usize::from(slab > 0);
+                            spill_calls += usize::from(spill > 0);
+                            slab_rows += slab;
+                            spill_rows += spill;
+                            expected.extend(
+                                valid
+                                    .into_iter()
+                                    .filter(|s| !holes || !dead.contains(s))
+                                    .map(|s| (s, Row::<N>(1000 + s))),
+                            );
+                            if stop && !expected.is_empty() {
+                                expected.truncate(1);
+                                break;
+                            }
+                        }
+                        let mut seen = Vec::new();
+                        let flow = store
+                            .visit_row_edge_slots(&bucket, &selected, order, |slot, edge| {
+                                seen.push((slot, edge));
+                                if stop {
+                                    ControlFlow::Break(17)
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            seen, expected,
+                            "selected={selected:?}, prefix={prefix}, holes={holes}, stop={stop}"
+                        );
+                        assert_eq!(
+                            flow,
+                            if stop && !expected.is_empty() {
+                                ControlFlow::Break(17)
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        );
+                        let length_reads = usize::from(run.is_some() && !selected.is_empty());
+                        assert_eq!(memories[1].reads.get(), slab_calls);
+                        assert_eq!(memories[1].bytes.get(), slab_rows * N);
+                        assert_eq!(memories[2].reads.get(), length_reads + 2 * spill_calls);
+                        assert_eq!(
+                            memories[2].bytes.get(),
+                            4 * (length_reads + spill_calls) + spill_rows * N
+                        );
+                        for i in [0, 3, 4, 5] {
+                            assert_eq!(memories[i].reads.get(), 0);
+                        }
                     }
                 }
                 let expected: Vec<_> = slots

@@ -2,6 +2,37 @@ use crate::traits::CsrEdgeTombstone;
 use crate::*;
 use std::{cell::RefCell, rc::Rc};
 
+/// Per-region read accounting over inspectable memory, shared by storage read-contract tests.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct CountMemory {
+    pub(crate) inner: crate::VectorMemory,
+    pub(crate) reads: Rc<std::cell::Cell<usize>>,
+    pub(crate) bytes: Rc<std::cell::Cell<usize>>,
+}
+#[cfg(test)]
+impl ic_stable_structures::Memory for CountMemory {
+    fn size(&self) -> u64 {
+        self.inner.size()
+    }
+    fn grow(&self, pages: u64) -> i64 {
+        self.inner.grow(pages)
+    }
+    fn read(&self, offset: u64, bytes: &mut [u8]) {
+        self.reads.set(self.reads.get() + 1);
+        self.bytes.set(self.bytes.get() + bytes.len());
+        self.inner.read(offset, bytes);
+    }
+    unsafe fn read_unsafe(&self, offset: u64, bytes: *mut u8, len: usize) {
+        self.reads.set(self.reads.get() + 1);
+        self.bytes.set(self.bytes.get() + len);
+        unsafe { self.inner.read_unsafe(offset, bytes, len) }
+    }
+    fn write(&self, offset: u64, bytes: &[u8]) {
+        self.inner.write(offset, bytes)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TestEdge(pub(crate) u32);
 

@@ -59,27 +59,27 @@ impl CsrEdgeTombstone for BenchEdge {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct InlinePropertyBenchEdge {
+struct InlinePropertyBenchEdge<const W: usize = 8> {
     target: u32,
-    inline_property: [u8; 8],
+    inline_property: [u8; W],
 }
 
-impl InlinePropertyBenchEdge {
+impl<const W: usize> InlinePropertyBenchEdge<W> {
     fn new(target: u32, value: u64) -> Self {
         Self {
             target,
-            inline_property: value.to_le_bytes(),
+            inline_property: std::array::from_fn(|i| value.to_le_bytes()[i % 8]),
         }
     }
 }
 
-impl CsrEdge for InlinePropertyBenchEdge {
+impl<const W: usize> CsrEdge for InlinePropertyBenchEdge<W> {
     const BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
         Self {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            inline_property: [0u8; 8],
+            inline_property: [0u8; W],
         }
     }
 
@@ -99,7 +99,7 @@ impl CsrEdge for InlinePropertyBenchEdge {
     }
 
     fn edge_inline_property_byte_width(&self) -> u16 {
-        INLINE_VALUE_WIDTH
+        W as u16
     }
 
     fn edge_inline_property_bytes(&self) -> &[u8] {
@@ -107,18 +107,18 @@ impl CsrEdge for InlinePropertyBenchEdge {
     }
 
     fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
-        let len = usize::from(width).min(bytes.len()).min(8);
-        self.inline_property = [0u8; 8];
+        let len = usize::from(width).min(bytes.len()).min(W);
+        self.inline_property = [0u8; W];
         self.inline_property[..len].copy_from_slice(&bytes[..len]);
         self
     }
 }
 
-impl CsrEdgeTombstone for InlinePropertyBenchEdge {
+impl<const W: usize> CsrEdgeTombstone for InlinePropertyBenchEdge<W> {
     fn tombstone_edge() -> Self {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
-            inline_property: [0u8; 8],
+            inline_property: [0u8; W],
         }
     }
 }
@@ -956,9 +956,9 @@ fn bench_t_v_hyb() -> canbench_rs::BenchResult {
     })
 }
 
-/// Selected-slot topology read reusing a cached hybrid overflow replay.
+/// Selected-slot topology read after an untimed hybrid value scan.
 #[bench(raw)]
-fn bench_t_v_at_replay() -> canbench_rs::BenchResult {
+fn bench_t_v_at_after_values() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -991,12 +991,11 @@ fn bench_t_v_at_replay() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut count = 0u32;
         let _ = graph
-            .visit_edges_at_with_replay(
+            .visit_edges_at(
                 src,
                 label,
                 &selected,
                 OutEdgeOrder::Ascending,
-                Some(&scratch.hybrid_overflow_replay),
                 |_slot, _edge| {
                     count += 1;
                     std::ops::ControlFlow::<()>::Continue(())
@@ -1369,12 +1368,11 @@ fn bench_t_v_pf_then_sel() -> canbench_rs::BenchResult {
             .unwrap();
         let mut count = 0u32;
         let _ = graph
-            .visit_edges_at_with_replay(
+            .visit_edges_at(
                 src,
                 label,
                 &selected,
                 OutEdgeOrder::Ascending,
-                Some(&scratch.hybrid_overflow_replay),
                 |_slot, _edge| {
                     count += 1;
                     std::ops::ControlFlow::<()>::Continue(())
@@ -1384,6 +1382,368 @@ fn bench_t_v_pf_then_sel() -> canbench_rs::BenchResult {
         black_box((count, selected.len()));
     })
 }
+
+/// Mutation fixtures must retain logical positions when deletion resolves live value ranks.
+/// The target/value codec is shared with the fixed-width baseline edge above.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RangeBenchEdge<const W: usize>(InlinePropertyBenchEdge<W>, u32);
+impl<const W: usize> CsrEdge for RangeBenchEdge<W> {
+    const BYTES: usize = InlinePropertyBenchEdge::<W>::BYTES;
+    fn read_from(bytes: &[u8]) -> Self {
+        Self(InlinePropertyBenchEdge::read_from(bytes), 0)
+    }
+    fn write_to(&self, bytes: &mut [u8]) {
+        self.0.write_to(bytes);
+    }
+    fn neighbor_vid(&self) -> VertexId {
+        self.0.neighbor_vid()
+    }
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        Self(self.0.with_neighbor_vid(vid), self.1)
+    }
+    fn with_slot_index(self, slot: u32) -> Self {
+        Self(self.0, slot)
+    }
+    fn edge_slot_index_raw(&self) -> u32 {
+        self.1
+    }
+    fn edge_inline_property_byte_width(&self) -> u16 {
+        self.0.edge_inline_property_byte_width()
+    }
+    fn edge_inline_property_bytes(&self) -> &[u8] {
+        self.0.edge_inline_property_bytes()
+    }
+    fn with_stored_inline_property_bytes(self, width: u16, bytes: &[u8]) -> Self {
+        Self(
+            self.0.with_stored_inline_property_bytes(width, bytes),
+            self.1,
+        )
+    }
+}
+impl<const W: usize> CsrEdgeTombstone for RangeBenchEdge<W> {
+    fn tombstone_edge() -> Self {
+        Self(InlinePropertyBenchEdge::tombstone_edge(), 0)
+    }
+}
+
+/// Same 256-slot fixture for value phase one, selected topology and selected hydration.
+/// Scopes are separate operations, not additive components of one predicate query.
+fn range_read_bench<const W: usize, M: ic_stable_structures::Memory>(
+    memories: [M; 16],
+    selection: std::ops::Range<u32>,
+    stride: usize,
+    holes: bool,
+) -> canbench_rs::BenchResult {
+    let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = memories;
+    let graph = LabeledLaraGraph::<RangeBenchEdge<W>, M>::new(
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        g,
+        h,
+        i,
+        j,
+        k,
+        l,
+        m,
+        n,
+        o,
+        p,
+        crate::labeled::InitialCapacities::uniform(4096),
+        BucketLabelKey::from_raw(1),
+    )
+    .unwrap();
+    let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    let add = |label, slot: u32| {
+        graph
+            .ensure_label_bucket_inline_property_byte_width(src, label, W as u16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                RangeBenchEdge(InlinePropertyBenchEdge::new(slot + 10, u64::from(slot)), 0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    };
+    for slot in 0..255 {
+        if slot == 32 {
+            add(BucketLabelKey::from_raw(3), 9000);
+        }
+        add(label, slot);
+    }
+    let dead: Vec<_> = if holes {
+        (0..255).step_by(16).collect()
+    } else {
+        Vec::new()
+    };
+    for &slot in &dead {
+        graph
+            .remove_edge_at_slot(src, label, slot)
+            .unwrap()
+            .unwrap();
+    }
+    add(BucketLabelKey::from_raw(4), 9001);
+    add(label, 255);
+    let vertex = graph.vertices().get(src);
+    let bucket = graph
+        .buckets()
+        .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
+        .unwrap();
+    assert!(!bucket.is_tree_mode());
+    assert_ne!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+    assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
+    let selected: Vec<_> = selection
+        .step_by(stride)
+        .map(BucketEntryPosition::new)
+        .collect();
+    let expected: Vec<_> = selected
+        .iter()
+        .map(|s| s.raw())
+        .filter(|s| !dead.contains(s))
+        .collect();
+    // Exact slot/target/value validation is outside the measured closure, in both orders.
+    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edges_at_with_inline_property(src, label, &selected, order, |slot, item| {
+                assert_eq!(item.edge.0.target, slot.raw() + 10);
+                assert_eq!(
+                    item.inline_property.bytes(),
+                    InlinePropertyBenchEdge::<W>::new(0, u64::from(slot.raw())).inline_property
+                );
+                seen.push(slot.raw());
+                std::ops::ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        let mut want = expected.clone();
+        if order == OutEdgeOrder::Descending {
+            want.reverse();
+        }
+        assert_eq!(seen, want);
+    }
+    let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
+    let mut values_seen = Vec::new();
+    graph
+        .visit_out_inline_property_batches_for_label(
+            src,
+            label,
+            OutEdgeOrder::Descending,
+            &mut scratch,
+            |batch| {
+                for (&slot, bytes) in batch.slot_indices.iter().zip(batch.values.chunks_exact(W)) {
+                    assert_eq!(
+                        bytes,
+                        InlinePropertyBenchEdge::<W>::new(0, u64::from(slot)).inline_property
+                    );
+                    values_seen.push(slot);
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        values_seen,
+        (0..256)
+            .rev()
+            .filter(|s| !dead.contains(s))
+            .collect::<Vec<_>>()
+    );
+    let mut topology_seen = Vec::new();
+    let _ = graph
+        .visit_edges_at(
+            src,
+            label,
+            &selected,
+            OutEdgeOrder::Ascending,
+            |slot, edge| {
+                assert_eq!(edge.0.target, slot.raw() + 10);
+                topology_seen.push(slot.raw());
+                std::ops::ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    assert_eq!(topology_seen, expected);
+    bench_fn(|| {
+        {
+            let _scope = canbench_rs::bench_scope("values");
+            graph
+                .visit_out_inline_property_batches_for_label(
+                    src,
+                    label,
+                    OutEdgeOrder::Descending,
+                    &mut scratch,
+                    |batch| {
+                        black_box((batch.slot_indices, batch.values));
+                    },
+                )
+                .unwrap();
+        }
+        {
+            let _scope = canbench_rs::bench_scope("selected");
+            let _ = graph
+                .visit_edges_at(
+                    src,
+                    label,
+                    &selected,
+                    OutEdgeOrder::Ascending,
+                    |slot, edge| {
+                        black_box((slot, edge));
+                        std::ops::ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+        }
+        {
+            let _scope = canbench_rs::bench_scope("hydrated");
+            let _ = graph
+                .visit_edges_at_with_inline_property(
+                    src,
+                    label,
+                    &selected,
+                    OutEdgeOrder::Descending,
+                    |slot, item| {
+                        black_box((slot, item.edge, item.inline_property.bytes()));
+                        std::ops::ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+        }
+    })
+}
+
+fn stable_range_memories()
+-> [ic_stable_structures::memory_manager::VirtualMemory<ic_stable_structures::DefaultMemoryImpl>;
+    16] {
+    use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+    let manager = MemoryManager::init(ic_stable_structures::DefaultMemoryImpl::default());
+    std::array::from_fn(|i| manager.get(MemoryId::new(i as u8)))
+}
+
+macro_rules! range_case {
+    ($name:ident, $width:literal, $memories:expr, $range:expr, $stride:literal, $holes:literal) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            range_read_bench::<$width, _>($memories, $range, $stride, $holes)
+        }
+    };
+}
+range_case!(
+    bench_t_range_v_all8,
+    8,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    0..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_v_point8,
+    8,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    255..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_v_contig8,
+    8,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    112..128,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_v_scattered8,
+    8,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    0..256,
+    16,
+    false
+);
+range_case!(
+    bench_t_range_v_holes8,
+    8,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    0..256,
+    15,
+    true
+);
+range_case!(
+    bench_t_range_v_all33,
+    33,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    0..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_v_holes33,
+    33,
+    std::array::from_fn(|_| crate::test_support::vector_memory()),
+    0..256,
+    15,
+    true
+);
+range_case!(
+    bench_t_range_s_all8,
+    8,
+    stable_range_memories(),
+    0..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_s_point8,
+    8,
+    stable_range_memories(),
+    255..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_s_contig8,
+    8,
+    stable_range_memories(),
+    112..128,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_s_scattered8,
+    8,
+    stable_range_memories(),
+    0..256,
+    16,
+    false
+);
+range_case!(
+    bench_t_range_s_holes8,
+    8,
+    stable_range_memories(),
+    0..256,
+    15,
+    true
+);
+range_case!(
+    bench_t_range_s_all33,
+    33,
+    stable_range_memories(),
+    0..256,
+    1,
+    false
+);
+range_case!(
+    bench_t_range_s_holes33,
+    33,
+    stable_range_memories(),
+    0..256,
+    15,
+    true
+);
 
 /// Fixed-survivor OFFSET matrix: dense control at the first live ordinal.
 #[bench(raw)]
