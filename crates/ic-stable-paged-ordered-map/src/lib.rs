@@ -363,6 +363,7 @@ impl<T: Copy + Default, const N: usize> Scratch<T, N> {
         }
     }
 
+    #[cfg(test)]
     fn capacity(&self) -> usize {
         match self {
             Self::Inline { .. } => N,
@@ -391,13 +392,14 @@ impl<T: Copy + Default, const N: usize> Scratch<T, N> {
 
     #[inline(always)]
     fn resize_reserved(&mut self, new_len: usize) -> &mut [T] {
-        assert!(new_len <= self.capacity(), "scratch was not reserved");
         match self {
             Self::Inline { items, len } => {
+                let view = &mut items[..new_len];
                 *len = new_len;
-                &mut items[..new_len]
+                view
             }
             Self::Heap(items) => {
+                assert!(new_len <= items.capacity(), "scratch was not reserved");
                 items.resize(new_len, T::default());
                 items
             }
@@ -4271,6 +4273,7 @@ mod tests {
                 assert_eq!(window.len(), 20, "exact grown length");
                 assert_eq!(&window[..5], &[9, 8, 7, 6, 5][..], "retained prefix");
                 window[5] = 0xEE;
+                window[13] = 0xA7;
             }
             assert_eq!(
                 &scratch.as_slice()[..6],
@@ -4289,6 +4292,11 @@ mod tests {
                 &[9, 8, 7, 6, 5, 0xEE][..],
                 "re-expand within capacity keeps prefix"
             );
+            assert_eq!(
+                scratch.as_slice()[13],
+                if heap { 0 } else { 0xA7 },
+                "regrowth initializes heap slots but preserves inline slots"
+            );
             assert_eq!(scratch.capacity(), capacity, "capacity unchanged");
             assert_eq!(
                 matches!(&scratch, Scratch::Heap(_)),
@@ -4296,6 +4304,35 @@ mod tests {
                 "representation unchanged"
             );
             let prefix = scratch.as_slice().to_vec();
+            assert_eq!(
+                scratch.resize_reserved(prefix.len()),
+                prefix,
+                "equal resize preserves the exact live view"
+            );
+            {
+                let full = scratch.resize_reserved(capacity);
+                assert_eq!(full.len(), capacity, "exact capacity view");
+                assert_eq!(&full[..prefix.len()], prefix);
+                full[capacity - 1] = 0xB9;
+            }
+            assert_eq!(scratch.as_slice()[capacity - 1], 0xB9);
+            assert!(scratch.resize_reserved(0).is_empty());
+            {
+                let full = scratch.resize_reserved(capacity);
+                assert_eq!(full.len(), capacity, "regrowth from zero");
+                if heap {
+                    assert!(full.iter().all(|&value| value == 0));
+                } else {
+                    assert_eq!(&full[..prefix.len()], prefix);
+                    assert_eq!(full[capacity - 1], 0xB9);
+                }
+            }
+            assert_eq!(scratch.capacity(), capacity);
+            assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
+            scratch
+                .resize_reserved(prefix.len())
+                .copy_from_slice(&prefix);
+            assert_eq!(scratch.as_slice(), prefix, "restore reservation witness");
             scratch.reserve(capacity - prefix.len()).unwrap();
             assert_eq!(
                 scratch.as_slice(),
@@ -4359,6 +4396,28 @@ mod tests {
             assert_eq!(scratch.capacity(), capacity);
             assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
             assert_eq!(DEFAULTS.load(Ordering::Relaxed), 0);
+            for requested in [capacity + 1, usize::MAX] {
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        scratch.resize_reserved(requested);
+                    }))
+                    .is_err(),
+                    "over-capacity resize must fail"
+                );
+                let len = match &scratch {
+                    Scratch::Inline { len, .. } => *len,
+                    Scratch::Heap(items) => items.len(),
+                };
+                assert_eq!(len, before.len(), "failed resize changed length");
+                assert_eq!(scratch.as_slice(), before, "failed resize changed values");
+                assert_eq!(scratch.capacity(), capacity);
+                assert_eq!(matches!(&scratch, Scratch::Heap(_)), heap);
+                assert_eq!(
+                    DEFAULTS.load(Ordering::Relaxed),
+                    0,
+                    "failed resize constructed a default"
+                );
+            }
         }
     }
 

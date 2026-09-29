@@ -1,15 +1,16 @@
 # ADR0097 performance architecture research (whole map-edit / FreeSpan execution)
 
 Status: **Experimental — research and bounded implementation checkpoints, not ADR0097 acceptance.**
-Sections0–14 preserve their named source epochs: their current-source wording, measurements and
+Sections0–15 preserve their named source epochs: their current-source wording, measurements and
 hypotheses apply to those checkpoints, not the live implementation. The latest retained map source
-is `7c2c11fd` (Plan0361), described in [section15](#15-reserved-append-retained).
+is `47796acb` (Plan0362), described in [section16](#16-reserved-resize-retained).
 Original acceptance remains4/6; replacement and tail remain open, with no relaxed ceilings.
 [Section12](#12-structural-options-beyond-local-map-tuning) compares broader storage-format,
 allocator-operation and index alternatives on the0358 source.
 [Section13](#13-order-preserving-rekey-rejected) records option A's rejection and full restoration;
-[section14](#14-compact-page-header-retained) records option B's retained layout. Section15 improves
-shared scratch append without changing that layout. Option C remains a separate selection-policy decision.
+[section14](#14-compact-page-header-retained) records option B's retained layout. Sections15 and16
+retain shared scratch append and resize improvements without changing that layout. Option C remains
+a separate selection-policy decision.
 
 ## 0. Gates, anchors, non-claims
 
@@ -1084,3 +1085,118 @@ The original sources, failed compiler stream, negative witnesses and blocked com
 remain immutable. `resume/` contains the input verification, successful commands, Cargo artifact
 bindings, frozen Wasm/rlib, CSVs, measurement decision, final codegen/Lizard review and completion
 receipt. The initial restoration is historical; the exact candidate is now retained in the live lib.
+
+## 16. Reserved resize retained
+
+**Status: implemented and retained.** Plan0362 makes one representation-local reserved-resize
+change from committed map source `7c2c11fd` / commit `79702eefa`. Replacement and tail improve;
+missing is equal, and split plus both LARA controls improve. Original acceptance remains **4/6**,
+not full acceptance. The remaining gaps are18496 instructions for replacement and67919 for tail.
+
+### Shared owner and concrete residual work
+
+In0361, `Scratch::resize_reserved` selected capacity through `Scratch::capacity`, then matched the
+same Inline/Heap representation to resize and return a view. Inline's checked array prefix repeated
+its capacity bound. All four production calls remain in `EditImage::cover`: first byte window,
+general byte growth, descriptor growth, and descriptor equal/shrink. The0361 direct-append path
+is unchanged.
+
+The frozen0361 map Wasm5faa094a contains this sequence inside `EditImage::write` at0x1cb20:
+
+| Operation | Wasm address |
+| --- | --- |
+| Select representation-dependent capacity and compare requested length |0x1ccba/0x1ccbb|
+| Dispatch on the representation |0x1ccc5|
+| Assign Inline length |0x1cd69|
+| Check the Inline array-prefix bound again |0x1cd70|
+
+Its insert-cover monomorph at0x7dba has the same sequence at0x7f4c/0x7f4d,0x7f57,0x7ff4,0x7ffb.
+The first check made the later length-before-slice ordering safe: redundant work, not a demonstrated
+corruption defect. Source tracing gives one bulk resize per replacement, five per tail insertion
+and three per tail removal; missing has none. These are source-level executions and static compiled
+instructions, not isolated prices. No instrumentation or baseline rebuild/remeasurement was added.
+
+### One retained change, unchanged contracts
+
+`Scratch::resize_reserved` now matches once. Inline obtains the checked mutable array prefix before
+updating length and returns that same view. Heap checks reserved capacity before the unchanged
+`Vec::resize(new_len, T::default())`. The common capacity selection is removed; necessary bounds
+remain. `Scratch::capacity` is now cfg(test)-only, retaining existing observations without dead
+production code or a lint suppression. The resize inline attribute is unchanged.
+
+Exact returned length/write-through, capacity and representation are preserved. Over-capacity
+rejection precedes length/content changes, Default initialization and implicit growth. Inline
+retains initialized hidden slots when shrinking; Heap initializes newly exposed slots when
+regrowing. No append/reserve/caller algorithm, layout/version/HeaderV1, public API, resource-error
+order, full-page admission or publication boundary changes. No helper, mode, cache, dependency or
+second scalar editor is introduced.
+
+The existing fixture still constructs only four cheap Scratch instances, with no Memory/map/PocketIC
+setup added. It now checks zero/exact capacity, equal length, write-through, distinct suffix regrowth,
+and both capacity+1 and usize::MAX rejection. It restores the nonzero prefix before the existing
+reservation assertions. Raw enum length is inspected before as_slice after rejection; exact values,
+capacity, variant and Default count remain fixed. Every old assertion is retained.
+
+The completed fixture passes on unchanged production and on the candidate. The Inline mutant
+assigning length before bounds fails at the unchanged-length assertion (2 instead of1). The Heap
+mutant without its capacity guard returns from capacity+1 resize and fails the expected-panic
+assertion; it never reaches Heap usize::MAX. Each final mutant was run separately and the exact
+candidate restored between them and before final validation. An initial fixture pass lacked the
+planned explicit equal-length call; that omission was corrected and the focused four-command cycle
+repeated before final native/IC validation. Initial and final evidence are both retained.
+
+### Source-bound measurements and decision
+
+| Metric | Retained0361 | Retained0362 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 |84008|84008|0|0.0000%|85672|PASS|
+| Replace64 |96584|96072|-512|-0.5301%|77576|FAIL|
+| Split/directory |29185|29123|-62|-0.2124%|30930|PASS|
+| Tail pairs64 |368266|366090|-2176|-0.5909%|298171|FAIL|
+| LARA total |821014|819559|-1455|-0.1772%|1527576|PASS|
+| LARA named |820053|818598|-1455|-0.1774%|1526615|PASS|
+
+**Decision: retain the whole candidate.** Both strict improvements and all four non-increase controls
+pass. No original ceiling is relaxed. Map aggregate582976→580226 is context, not a seventh gate;
+the overlapping LARA rows are not additive. All measured heap/stable page increases are0, not a
+zero-allocation or peak-resource claim. Five/two original14-column CSV rows, exact names, named calls1,
+new status and empty deltas are verified. Fixture bytes are unchanged; no results.yml was persisted.
+
+Final codegen confirms the intended removal in both inspected resize sequences. `EditImage::write`
+now dispatches at0x1ccbc, guards Inline's bound at0x1cce4, then stores length at0x1cceb; Heap's capacity
+guard remains at0x1ccc7. Insert-cover dispatches at0x7f44, checks Inline at0x7f6c, stores at0x7f73 and
+retains Heap's guard at0x7f4f. Neither selected sequence contains the earlier capacity-select step.
+These addresses establish compiled ordering, not individual instruction prices or peak stack use.
+Map/LARA Wasm grow16/28B; that bounded size cost is accepted for the measured improvement.
+
+Lizard1.24.0 with conventional `--csv -i -1` measures three touched functions, including the capacity
+accessor's cfg-only change: CCN14→19/NLOC131→189, maximum10→15. Resize stays CCN2 and grows13→14 NLOC;
+the existing fixture grows112→169 NLOC and10→15 CCN. Whole-file CCN473→478/NLOC3865→3923, with148
+functions and maximum32 unchanged. No signature, type or abstraction is added. The explicit variant
+cases protect different existing initialization/rejection contracts; splitting them into generic
+test machinery would obscure those witnesses. Complexity metrics do not establish speedup.
+
+Formatting, strict map lib/tests and LARA lib lint,30 map units,5 doctests (1+4 harnesses),27 FreeSpan
+tests (652 filtered), both release builds and both original filtered IC runs pass. Timed commands
+consume100s, each below300s. A shell-only empty-argv/nounset error before the native test batch was
+fixed by forming one nonempty argv; no Rust command had started in that failed invocation. Existing
+GAP-LARA-TEST-CLIPPY remains open, not rerun or waived. LARA includes unchanged pending admission work,
+not clean-commit integration evidence. No full workspace/PocketIC run, second candidate, commit or push.
+
+Retained lib174449B/SHA256 `47796acb7e26ecdd138570922702d12968bd5c52983e89dfc745f436ff1b79e5`;
+map743230B/SHA256 `5fcff73dfc47b3bd3252bb105d5c3f0453031a407bc43951c3115f8e9c1e8e08`;
+LARA5064432B/SHA256 `daa62418a1ac8566dcac92cf0f7f5a389dea3aef084d892f99f202ed284b5a45`.
+The map Wasm was frozen before LARA rebuilt its default-only map dependency; the linked rlib is
+archived separately. The next decision is not selected by this relative improvement.
+
+### Alternatives remain separate
+
+Publication's byte-storage dispatch was already outside its emitted write loops (0361:0x1ca2e).
+Selected-page checks enforce distinct invariants. Moving prior reads into lookup would change its
+result contract. Neither is bundled into this owner-local change. Earlier input/Empty-scratch/
+directory-pair/rekey rejections stay closed; observer-affected0354/0355 scope counts do not rank
+current costs. LARA index replacement remains a separate policy decision.
+
+Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/scratch-resize-owner-0362/` contains input
+pins, all characterization/mutant sources and transcripts, final candidate checks, Cargo/source/lock
+bindings, frozen Wasm/rlib, original-filter CSVs, codegen/Lizard and the completion decision/receipt.
