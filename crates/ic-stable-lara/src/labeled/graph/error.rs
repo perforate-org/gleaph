@@ -435,6 +435,15 @@ pub enum OutEdgeOrder {
     Descending,
 }
 
+impl From<OutEdgeOrder> for crate::traverse::TraversalOrder {
+    fn from(order: OutEdgeOrder) -> Self {
+        match order {
+            OutEdgeOrder::Ascending => Self::Ascending,
+            OutEdgeOrder::Descending => Self::Descending,
+        }
+    }
+}
+
 impl OutEdgeOrder {
     pub(super) fn ascending(self) -> bool {
         matches!(self, Self::Ascending)

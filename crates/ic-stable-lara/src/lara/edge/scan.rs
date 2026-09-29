@@ -3,9 +3,11 @@
 use crate::lara::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
     VertexId,
-    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan},
+    traverse::{TraversalOrder, TraversalWindow},
 };
 use ic_stable_structures::Memory;
+use std::ops::ControlFlow;
 
 use super::iter::OutEdgeSlabChunk;
 use super::{
@@ -13,6 +15,77 @@ use super::{
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Visits initialized row slots directly, bulk-reading each intersecting storage plane once.
+    /// The window counts tombstones; callbacks receive absolute row-local slots in the requested
+    /// order. Only the selected range is buffered, with no decoded replay or allocation slack.
+    /// `Break` stops decoding and callbacks, not the bulk read already completed for this range.
+    /// Callers must dispatch inline/tree records before invoking this slab-plus-spill reader.
+    pub(crate) fn visit_row_edges<V: CsrVertex, B>(
+        &self,
+        row: &V,
+        order: TraversalOrder,
+        window: TraversalWindow,
+        mut visit: impl FnMut(u32, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LaraOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if window.is_empty() || row.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let (prefix, spill) = self.initialized_row_slots(row)?;
+        let extent = prefix + spill; // checked by initialized_row_slots
+        let offset = window.offset.min(extent);
+        let count = window.limit.unwrap_or(extent - offset).min(extent - offset);
+        if count == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let (lo, hi) = match order {
+            TraversalOrder::Ascending => (offset, offset + count),
+            TraversalOrder::Descending => (extent - offset - count, extent - offset),
+        };
+        let byte_len = (count as usize)
+            .checked_mul(E::BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(byte_len)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        bytes.resize(byte_len, 0);
+        let slab_rows = hi.min(prefix).saturating_sub(lo);
+        let slab_bytes = slab_rows as usize * E::BYTES;
+        if slab_rows > 0 {
+            let start = row
+                .base_slot_start()
+                .checked_add(u64::from(lo))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.read_slots_contiguous(start, &mut bytes[..slab_bytes]);
+        }
+        if slab_rows < count {
+            let run = self.spill_mint(row.spill_run())?;
+            if !self
+                .spill
+                .read_rows(run, lo.max(prefix) - prefix, &mut bytes[slab_bytes..])
+            {
+                return Err(LaraOperationError::SpillRowOutOfRange);
+            }
+        }
+        let mut emit = |(index, raw): (usize, &[u8])| {
+            let slot = lo + index as u32;
+            let edge = E::read_from(raw).with_slot_index(slot);
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                ControlFlow::Continue(())
+            } else {
+                visit(slot, edge)
+            }
+        };
+        let rows = bytes.chunks_exact(E::BYTES).enumerate();
+        Ok(match order {
+            TraversalOrder::Ascending => crate::traverse::iter::visit(rows, &mut emit),
+            TraversalOrder::Descending => crate::traverse::iter::visit(rows.rev(), &mut emit),
+        })
+    }
+
     pub(crate) fn collect_out_edges_slot_order<V, A>(
         &self,
         vertices: &A,

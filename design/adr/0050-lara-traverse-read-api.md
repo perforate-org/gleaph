@@ -392,13 +392,16 @@ fn visit_edges_with_inline_property_window<B>(
 ```
 
 `TraversalRequest` remains the identity of the logical edge set (owner, label, direction, and
-order). `TraversalWindow` is execution-time control: `offset` skips matching live rows in request
-order and `limit` bounds delivered rows; `None` is unbounded. Reaching the limit is normal
+order). `TraversalWindow` is execution-time control; `None` is unbounded. Reaching the limit is normal
 `ControlFlow::Continue(())`, while a visitor `Break` propagates unchanged. A zero limit invokes no
-visitor. Implementations may override the default window adapter to skip storage rows efficiently,
-but must preserve these semantics. The labeled adapter may jump directly to the offset when the bucket has no tombstones (live degree equals logical extent); sparse/tombstoned buckets still inspect rows to count live matches. Selected-slot/replay APIs keep their own explicit slot set and
-are not implicitly windowed, preventing paging state from becoming part of replay identity or being
-applied twice by property-first Graph execution.
+visitor. The default adapter, including the inline-property window adapter, counts matching live
+rows. The labeled **topology** override `visit_edges_window` instead cuts tombstone-inclusive
+positions in request order, as specified by ADR 0088: ascending position is the slot itself;
+descending position is `extent - 1 - slot`. Holes consume positions but yield no callback. This
+existing topology contract permits a direct range read even when the row contains tombstones.
+Selected-slot/replay APIs keep their own explicit slot set and are not implicitly windowed,
+preventing paging state from becoming part of replay identity or being applied twice by
+property-first Graph execution.
 
 GQL `OFFSET`/`LIMIT` may use this capability only when the planner proves that traversal order is
 the result order and no later sort, distinct, aggregation, or other row-expanding operation changes
@@ -411,17 +414,17 @@ adds a per-block `u16 tombstone_count` to the LTB block header (single-funnel ma
 fail-closed scan self-verification) and restructures `visit_edges_window`'s tree arm to resolve
 only the blocks overlapping the window's position range, skipping fully-dead in-window blocks
 (Plan 0338; measured attribution in the ADR implementation-status appendix). The tree window cost
-is bounded by the window extent, not the bucket extent. The paragraph below is retained as the
-historical scope boundary for the slab and bypass regimes, which remain intentionally status-quo:
-research investigation §5.5 records the measured slab overshoot (~109K instructions/query at the
-post-ADR-0088 `T_PROMOTE` extent cap), the compact-or-promote cycle that answers churn, and the
-deferred remove-side maintenance-admission improvement.
+is bounded by the window extent, not the bucket extent. Slab and bypass topology windows now also
+read only their selected logical range through the contiguous row reader below. This does not add
+live-rank acceleration to the default inline-property window adapter. Research investigation §5.5's
+slab overshoot (~109K instructions/query at the post-ADR-0088 `T_PROMOTE` extent cap) describes the
+prior execution path, not the cost of this direct slot-range reader. Remove-side maintenance
+admission remains a separate decision.
 
 The current contract does not introduce persistent tombstone-count, live-count, bitmap, or
-rank/select metadata **for slab and bypass buckets**. A sparse or tombstone-bearing slab bucket may
-therefore inspect logical rows while counting live matches for `TraversalWindow.offset`; only a
-proven dense bucket may jump directly to the offset. This remains an intentional scope boundary for
-those regimes, not a claim that the scan cost is optimal.
+rank/select metadata **for slab and bypass buckets**. A live-row-counting property window may still
+inspect a sparse prefix to count live matches. That limitation does not apply to the labeled
+topology window's tombstone-inclusive slot offset.
 
 Persistent interval summaries and live-bitmaps are a future research/implementation topic. Candidate
 designs include fixed-width logical-slot block summaries, hierarchical live-count directories, and
@@ -429,7 +432,32 @@ bitmap rank/select structures. Any future implementation must first establish it
 compaction/rebuild, stable-memory, overflow, forward/reverse, corruption, and benchmark contracts.
 It must remain derived metadata owned by LARA and must never change `BucketEntryPosition` identity or
 allow an unverified summary to skip a live edge. Until that work has an accepted design and measured
-benefit, the existing dense fast path plus exact sparse scan remains authoritative.
+benefit, exact live-rank scanning remains authoritative for property windows.
+
+#### Contiguous slab/spill topology execution
+
+**Implemented:** `EdgeStore::visit_row_edges` owns direct topology traversal for slab-mode and
+bypass rows. `initialized_row_slots` is the shared checked prefix/run extent decision;
+`initialized_slab_slots` projects its prefix for existing callers. The row's `CsrVertex` contract
+decides whether its stored width is prefix-only or includes the spill. Used length remains in the
+run header, never in a duplicated descriptor or read-side cache.
+
+Full scans and topology windows read each intersecting plane once: the initialized slab prefix
+through the slab reader, and the used spill suffix through `SpillRunStore::read_rows`. Range and
+allocation arithmetic is checked; run validation still rejects slack and corrupt lengths. The
+reader decodes in the requested order, skips tombstones without renumbering slots, and propagates
+`Break`. It neither builds/reverses replay entries nor reads successor descriptors to infer
+initialized width. Labeled traversal attaches label identity after tiny/tree mode dispatch.
+
+Topology visitors, zero-width borrowed/materialized property visitors, and the topology portion of
+existing dense property visitors share this primitive. Nonzero-property hybrid rank mapping,
+property-first batching, selected-slot replay, core streaming iterators and tree readers retain
+their existing execution paths. Full scans buffer their initialized extent, as the dense slab
+reader already did; topology windows buffer only the selected range. `Break` stops further decoding
+and callbacks, but does not cancel the already-completed bulk read. No fold, capacity, promotion,
+layout or write policy changes are part of this read optimization.
+
+[Focused measurements and contract tests](../evidence/adr0097-contiguous-spill-traversal.md).
 
 There is no separate full-bucket `Vec` API. A caller that needs materialization collects
 `visit_edges` output explicitly, making the allocation visible at the caller.

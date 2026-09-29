@@ -201,6 +201,51 @@ fn exercise<const N: usize>(bypass: bool) {
                 seen, expected,
                 "width={N} bypass={bypass} target={target} order={order:?}"
             );
+            let mut materialized = Vec::new();
+            graph
+                .visit_edges_for_label(vid, label, order, |edge| {
+                    materialized.push((edge.edge_slot_index_raw(), edge.0, edge.1));
+                })
+                .unwrap();
+            assert_eq!(
+                materialized,
+                expected
+                    .iter()
+                    .map(|(slot, target)| (*slot, *target, label.raw()))
+                    .collect::<Vec<_>>()
+            );
+            for window in [
+                crate::traverse::TraversalWindow::new(0, Some(0)),
+                crate::traverse::TraversalWindow::new(prefix.saturating_sub(1), Some(4)),
+                crate::traverse::TraversalWindow::new(31, Some(4)),
+                crate::traverse::TraversalWindow::new(65, Some(4)),
+                crate::traverse::TraversalWindow::new(67, None),
+                crate::traverse::TraversalWindow::new(u32::MAX, Some(u32::MAX)),
+            ] {
+                let mut slots: Vec<_> = (0..67).collect();
+                if order == OutEdgeOrder::Descending {
+                    slots.reverse();
+                }
+                let want: Vec<_> = slots
+                    .into_iter()
+                    .skip(window.offset as usize)
+                    .take(window.limit.unwrap_or(u32::MAX) as usize)
+                    .filter(|slot| ![31, 32, 66].contains(slot))
+                    .map(|slot| (slot, Row::<N>(slot, label.raw(), slot)))
+                    .collect();
+                let mut actual = Vec::new();
+                let flow = graph
+                    .visit_edges_window(vid, label, order, window, |slot, edge| {
+                        actual.push((slot.raw(), edge));
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                assert_eq!(flow, ControlFlow::Continue(()));
+                assert_eq!(
+                    actual, want,
+                    "width={N} bypass={bypass} order={order:?} window={window:?}"
+                );
+            }
             let mut with_empty_values = Vec::new();
             let flow = graph
                 .visit_edges_with_inline_property(vid, label, order, |slot, item| {

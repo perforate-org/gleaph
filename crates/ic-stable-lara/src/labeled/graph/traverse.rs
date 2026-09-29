@@ -25,7 +25,7 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 use std::ops::ControlFlow;
 
-use crate::traverse::iter::{try_visit_indexed, visit_indexed};
+use crate::traverse::iter::visit_indexed;
 use crate::traverse::{Traversal, TraversalOrder, TraversalRequest, TraversalWindow};
 
 #[cfg(feature = "canbench")]
@@ -82,10 +82,7 @@ impl TraversalRequest for LabeledTraversalRequest {
     type Error = LabeledOperationError;
 
     fn order(&self) -> TraversalOrder {
-        match self.order {
-            OutEdgeOrder::Ascending => TraversalOrder::Ascending,
-            OutEdgeOrder::Descending => TraversalOrder::Descending,
-        }
+        self.order.into()
     }
 }
 
@@ -508,64 +505,27 @@ where
         Ok(selected)
     }
 
-    /// Visits every live edge in a dense, tombstone-free label bucket by bulk-reading the
-    /// topology slab in one call.
+    /// Adds label identity to the store's direct slab-prefix/spill-suffix visitor.
+    /// The caller has already dispatched tiny and tree records to their own readers.
     #[inline]
-    fn visit_dense_label_bucket_edges<B>(
+    fn visit_slab_bucket_edges<B>(
         &self,
-        _owner: VertexId,
-        label: BucketLabelKey,
         bucket: &LabelBucket,
         order: OutEdgeOrder,
+        window: TraversalWindow,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        let degree = bucket.degree();
-        if degree == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let edge_bytes_len =
-            (degree as usize)
-                .checked_mul(E::BYTES)
-                .ok_or(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ))?;
-        let mut raw_edges = vec![0u8; edge_bytes_len];
         self.edges
-            .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
-        match order {
-            OutEdgeOrder::Ascending => {
-                for slot in 0..degree {
-                    let off = slot as usize * E::BYTES;
-                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                        .with_slot_index(slot)
-                        .with_label_id(label.raw());
-                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                        continue;
-                    }
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                }
-            }
-            OutEdgeOrder::Descending => {
-                for slot in (0..degree).rev() {
-                    let off = slot as usize * E::BYTES;
-                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                        .with_slot_index(slot)
-                        .with_label_id(label.raw());
-                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                        continue;
-                    }
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                }
-            }
-        }
-        Ok(ControlFlow::Continue(()))
+            .visit_row_edges(bucket, order.into(), window, |slot, edge| {
+                visit(
+                    BucketEntryPosition::new(slot),
+                    edge.with_label_id(bucket.bucket_label_key().raw()),
+                )
+            })
+            .map_err(Into::into)
     }
 
     /// Visits every live edge together with its inline-property bytes in a dense,
@@ -818,40 +778,29 @@ where
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
-                        visit(BucketEntryPosition::new(slot), edge)
-                    })
-                }
-                OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
-                        visit(BucketEntryPosition::new(slot), edge)
-                    })
-                }
-            };
+            return self
+                .edges
+                .visit_row_edges(
+                    &vertex,
+                    order.into(),
+                    TraversalWindow::unbounded(),
+                    |slot, edge| {
+                        visit(
+                            BucketEntryPosition::new(slot),
+                            edge.with_label_id(label.raw()),
+                        )
+                    },
+                )
+                .map_err(Into::into);
         }
-        let BucketSearch::Found {
-            slot: _bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, &vertex, label)?
-        else {
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
             return Ok(ControlFlow::Continue(()));
         };
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read. Slab arm: dense fast path (2% bench parity)
-        // first, then the slow span walk below. Tree has its own arm.
+        // Mode dispatch precedes storage reads: tiny is inline, slab mode reads
+        // initialized prefix plus spill directly, and tree has its own reader.
         match BucketMode::from_bucket(&bucket) {
             // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
             // not storage); the slow funnel serves them inline.
@@ -900,29 +849,7 @@ where
                 return Ok(ControlFlow::Continue(()));
             }
             BucketMode::Slab => {
-                // Dense fast path first so slab buckets skip tree handling
-                // (2% bench parity); arm-guaranteed slab-only, no mode guards.
-                if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-                {
-                    return self
-                        .visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
-                }
-                let mut iter = self.single_bucket_span_iter(
-                    owner,
-                    &vertex,
-                    _bucket_slot,
-                    &bucket,
-                    order,
-                    false,
-                )?;
-                while let Some(result) = iter.next_with_slot() {
-                    let (slot, edge) = result?;
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                }
-                Ok(ControlFlow::Continue(()))
+                self.visit_slab_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
             }
             // Tree arm: LTB walk (arm-guaranteed tree-only).
             BucketMode::Tree => {
@@ -1595,9 +1522,8 @@ where
     /// live ordinals, which disagreed with the tree path on tombstoned
     /// buckets).
     ///
-    /// For dense, tombstone-free label buckets this bulk-reads the topology
-    /// slab and applies the offset/limit directly, avoiding the per-slot
-    /// round trips that the generic sparse path pays.
+    /// Slab and bypass rows bulk-read only the selected slot range from the slab
+    /// prefix and spill suffix. Holes consume positions but never callbacks.
     pub(crate) fn visit_edges_window<B>(
         &self,
         owner: VertexId,
@@ -1619,75 +1545,26 @@ where
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
-            let offset = window.offset;
-            let remaining = window.limit;
-            // Bypass extent: bypass rows span `vertex.stored_slots` slots
-            // with no overflow log. Descending positions are
-            // `extent - 1 - slot`.
-            let extent = vertex.stored_slots;
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
-                    // Window positions are tombstone-inclusive (ADR 0088 §2);
-                    // the bypass scan yields live rows with absolute slots, so
-                    // the window cut compares slot ids directly.
-                    while let Some((slot, edge)) = iter.next_with_slot() {
-                        if slot < offset {
-                            continue;
-                        }
-                        if let Some(limit) = remaining
-                            && slot >= offset.saturating_add(limit)
-                        {
-                            break;
-                        }
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), edge)
-                        {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                    Ok(ControlFlow::Continue(()))
-                }
-                OutEdgeOrder::Descending => {
-                    let mut iter = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
-                    while let Some((slot, edge)) = iter.next_with_slot() {
-                        let position = u64::from(extent)
-                            .saturating_sub(1)
-                            .saturating_sub(u64::from(slot));
-                        if position < u64::from(offset) {
-                            continue;
-                        }
-                        if let Some(limit) = remaining
-                            && position >= u64::from(offset).saturating_add(u64::from(limit))
-                        {
-                            break;
-                        }
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), edge)
-                        {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                    Ok(ControlFlow::Continue(()))
-                }
-            };
+            return self
+                .edges
+                .visit_row_edges(&vertex, order.into(), window, |slot, edge| {
+                    visit(
+                        BucketEntryPosition::new(slot),
+                        edge.with_label_id(label.raw()),
+                    )
+                })
+                .map_err(Into::into);
         }
 
-        let BucketSearch::Found {
-            slot: _bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, &vertex, label)?
-        else {
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
             return Ok(ControlFlow::Continue(()));
         };
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
 
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read. Tiny arm: self-contained inline window
-        // (ordinals are slots; holes skipped via the layout predicate). Slab arm: dense fast path
-        // first (2% bench parity), then sparse. Tree has its own arm below.
+        // Mode dispatch precedes storage reads. Every arm cuts the requested
+        // tombstone-inclusive positions before visiting live rows.
         match BucketMode::from_bucket(&bucket) {
             // ADR 0096 §5: tiny window is a plain ordinal range cut — no slab,
             // log, or tombstone reads (dense bulk path would misread the anchor).
@@ -1743,124 +1620,7 @@ where
                 }
                 return Ok(ControlFlow::Continue(()));
             }
-            BucketMode::Slab => {
-                // Dense fast path first so slab buckets skip tree handling
-                // (2% bench parity); arm-guaranteed slab-only, no mode guards.
-                if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-                {
-                    let degree = bucket.degree();
-                    let edge_bytes_len = (degree as usize).checked_mul(E::BYTES).ok_or(
-                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
-                    )?;
-                    let mut raw_edges = vec![0u8; edge_bytes_len];
-                    self.edges
-                        .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
-
-                    // Window positions are tombstone-inclusive (ADR 0088 §2). The
-                    // dense condition guarantees a tombstone-free bucket, so slot
-                    // ids are the position space and the window is a plain range.
-                    let offset = window.offset.min(degree);
-                    let limit = window
-                        .limit
-                        .map(|l| l.min(degree - offset))
-                        .unwrap_or(degree - offset);
-
-                    match order {
-                        OutEdgeOrder::Ascending => {
-                            for slot in offset..offset + limit {
-                                let off = slot as usize * E::BYTES;
-                                let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                                    .with_slot_index(slot)
-                                    .with_label_id(label.raw());
-                                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                                    continue;
-                                }
-                                if let ControlFlow::Break(value) =
-                                    visit(BucketEntryPosition::new(slot), edge)
-                                {
-                                    return Ok(ControlFlow::Break(value));
-                                }
-                            }
-                        }
-                        OutEdgeOrder::Descending => {
-                            let start = degree.saturating_sub(offset + limit);
-                            let end = degree.saturating_sub(offset);
-                            for slot in (start..end).rev() {
-                                let off = slot as usize * E::BYTES;
-                                let edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                                    .with_slot_index(slot)
-                                    .with_label_id(label.raw());
-                                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                                    continue;
-                                }
-                                if let ControlFlow::Break(value) =
-                                    visit(BucketEntryPosition::new(slot), edge)
-                                {
-                                    return Ok(ControlFlow::Break(value));
-                                }
-                            }
-                        }
-                    }
-                    return Ok(ControlFlow::Continue(()));
-                }
-
-                // Sparse path (tombstoned slab buckets): the window cuts the
-                // tombstone-inclusive position space (ADR 0088 §2), matching the
-                // tree path. Positions run in the requested order over the
-                // bucket's full slot extent (span slots + overflow-log suffix);
-                // the span iterator yields only live rows with their absolute
-                // slot ids, so the cut maps slot ids to positions per order —
-                // tombstoned positions inside the window contribute no yield
-                // but still consume position space.
-                let offset = window.offset;
-                let limit = window.limit.unwrap_or(u32::MAX - offset);
-                // Ascending position == slot id. Descending position ==
-                // `extent - 1 - slot`, so the descending cut needs the extent.
-                let extent = match order {
-                    OutEdgeOrder::Ascending => 0,
-                    OutEdgeOrder::Descending => {
-                        let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
-                            Ok(run) => self.edges.spill_used_len(run),
-                            Err(_) => 0,
-                        };
-                        bucket.stored_slots_raw().checked_add(spill_rows).ok_or(
-                            LabeledOperationError::from(
-                                LaraOperationError::CollectAllocationOverflow,
-                            ),
-                        )?
-                    }
-                };
-                let mut iter = self.single_bucket_span_iter(
-                    owner,
-                    &vertex,
-                    _bucket_slot,
-                    &bucket,
-                    order,
-                    false,
-                )?;
-                while let Some(result) = iter.next_with_slot() {
-                    let (slot, edge) = result?;
-                    let position = match order {
-                        OutEdgeOrder::Ascending => u64::from(slot),
-                        OutEdgeOrder::Descending => u64::from(extent)
-                            .saturating_sub(1)
-                            .saturating_sub(u64::from(slot)),
-                    };
-                    // Both orders walk request-order positions monotonically
-                    // upward from the traversal start, so the cut is uniform.
-                    if position < u64::from(offset) {
-                        continue;
-                    }
-                    if position >= u64::from(offset).saturating_add(u64::from(limit)) {
-                        break;
-                    }
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                }
-                Ok(ControlFlow::Continue(()))
-            }
+            BucketMode::Slab => self.visit_slab_bucket_edges(&bucket, order, window, visit),
             // Tree arm: LTB walk with window (arm-guaranteed tree-only).
             BucketMode::Tree => {
                 // Tree-mode visits yield tombstone-inclusive slot positions
@@ -2189,38 +1949,23 @@ where
                 return Ok(ControlFlow::Continue(()));
             }
             let empty = InlinePropertyBytesRef::from_parts(0, &[]);
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
+            return self
+                .edges
+                .visit_row_edges(
+                    vertex,
+                    order.into(),
+                    TraversalWindow::unbounded(),
+                    |slot, edge| {
                         visit(
                             BucketEntryPosition::new(slot),
                             EdgeWithInlinePropertyRef {
-                                edge,
+                                edge: edge.with_label_id(label.raw()),
                                 inline_property: empty,
                             },
                         )
-                    })
-                }
-                OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
-                        visit(
-                            BucketEntryPosition::new(slot),
-                            EdgeWithInlinePropertyRef {
-                                edge,
-                                inline_property: empty,
-                            },
-                        )
-                    })
-                }
-            };
+                    },
+                )
+                .map_err(Into::into);
         }
 
         let BucketSearch::Found {
@@ -2292,6 +2037,22 @@ where
                 return Ok(ControlFlow::Continue(()));
             }
             BucketMode::Tree | BucketMode::Slab => {
+                if !bucket.is_tree_mode() && width == 0 {
+                    return self.visit_slab_bucket_edges(
+                        &bucket,
+                        order,
+                        TraversalWindow::unbounded(),
+                        |slot, edge| {
+                            visit(
+                                slot,
+                                EdgeWithInlinePropertyRef {
+                                    edge,
+                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                                },
+                            )
+                        },
+                    );
+                }
                 // Width is bucket schema here (both modes carry real schema;
                 // tiny diverged above). Inner routing below is arm-local: dense
                 // bulk reads slab bytes, so tree diverts to LPB/slow; the
@@ -2301,21 +2062,16 @@ where
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
-                    let inline_property_bytes = if width > 0 {
-                        self.read_bucket_inline_property_bytes_span(
-                            owner,
-                            &bucket,
-                            0,
-                            bucket.degree(),
-                        )?
-                    } else {
-                        Vec::new()
-                    };
-                    return self.visit_dense_label_bucket_edges(
+                    let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
                         owner,
-                        label,
+                        &bucket,
+                        0,
+                        bucket.degree(),
+                    )?;
+                    return self.visit_slab_bucket_edges(
                         &bucket,
                         order,
+                        TraversalWindow::unbounded(),
                         |slot, edge| {
                             let byte_width = usize::from(width);
                             let start = slot.raw() as usize * byte_width;
@@ -2478,24 +2234,19 @@ where
             if label != self.bypass_storage_label_for(vertex) {
                 return Ok(());
             }
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    for edge in self
-                        .edges
-                        .collect_out_edges_slot_order(&self.vertices, owner)?
-                    {
+            return self
+                .edges
+                .visit_row_edges(
+                    vertex,
+                    order.into(),
+                    TraversalWindow::unbounded(),
+                    |_, edge| {
                         visit(edge.with_label_id(label.raw()));
-                    }
-                    Ok(())
-                }
-                OutEdgeOrder::Descending => {
-                    let iter = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
-                    for edge in iter {
-                        visit(edge.with_label_id(label.raw()));
-                    }
-                    Ok(())
-                }
-            };
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
+                .map_err(Into::into);
         }
 
         let BucketSearch::Found { slot, bucket } = self.find_bucket(owner, vertex, label)? else {
@@ -2544,59 +2295,46 @@ where
                 return Ok(());
             }
             BucketMode::Slab => {
+                let width = bucket.inline_property_byte_width();
+                if width == 0 {
+                    return self
+                        .visit_slab_bucket_edges(
+                            &bucket,
+                            order,
+                            TraversalWindow::unbounded(),
+                            |_, edge| {
+                                visit(edge);
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )
+                        .map(|_| ());
+                }
                 if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
-                    let width = bucket.inline_property_byte_width();
-                    let inline_property_bytes = if width > 0 {
-                        self.read_bucket_inline_property_bytes_span(
-                            owner,
-                            &bucket,
-                            0,
-                            bucket.degree(),
-                        )?
-                    } else {
-                        Vec::new()
-                    };
-                    let degree = bucket.degree();
-                    let edge_bytes_len = (degree as usize).checked_mul(E::BYTES).ok_or(
-                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
+                    let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
+                        owner,
+                        &bucket,
+                        0,
+                        bucket.degree(),
                     )?;
-                    let mut raw_edges = vec![0u8; edge_bytes_len];
-                    self.edges
-                        .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
-                    let mut visit_slot = |slot| {
-                        let off = slot as usize * E::BYTES;
-                        let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
-                            .with_slot_index(slot)
-                            .with_label_id(label.raw());
-                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                            return;
-                        }
-                        if width > 0 {
-                            let start = slot as usize * usize::from(width);
-                            let end = start + usize::from(width);
-                            edge = edge.with_stored_inline_property_bytes(
-                                width,
-                                &inline_property_bytes[start..end],
-                            );
-                        }
-                        visit(edge);
-                    };
-                    match order {
-                        OutEdgeOrder::Ascending => {
-                            for slot in 0..degree {
-                                visit_slot(slot);
-                            }
-                        }
-                        OutEdgeOrder::Descending => {
-                            for slot in (0..degree).rev() {
-                                visit_slot(slot);
-                            }
-                        }
-                    }
-                    return Ok(());
+                    return self
+                        .visit_slab_bucket_edges(
+                            &bucket,
+                            order,
+                            TraversalWindow::unbounded(),
+                            |slot, edge| {
+                                let start = slot.raw() as usize * usize::from(width);
+                                let end = start + usize::from(width);
+                                visit(edge.with_stored_inline_property_bytes(
+                                    width,
+                                    &inline_property_bytes[start..end],
+                                ));
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )
+                        .map(|_| ());
                 }
 
                 let mut iter =

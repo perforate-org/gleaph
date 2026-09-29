@@ -164,6 +164,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         v: &V,
     ) -> Result<u32, LaraOperationError> {
+        self.initialized_row_slots(v).map(|(prefix, _)| prefix)
+    }
+
+    /// Checked initialized widths of the slab prefix and spill suffix. Allocation slack is
+    /// never a logical slot, and the sum is validated here for every reader.
+    pub(super) fn initialized_row_slots<V: CsrVertex>(
+        &self,
+        v: &V,
+    ) -> Result<(u32, u32), LaraOperationError> {
         let spill_rows = if v.spill_run() == crate::traits::NO_SPILL_RUN {
             0
         } else {
@@ -179,7 +188,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         prefix
             .checked_add(spill_rows)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        Ok(prefix)
+        Ok((prefix, spill_rows))
     }
 
     pub(super) fn have_space_on_slab<V, A>(
