@@ -12,9 +12,9 @@
 //!    returns a `BatchReservation` token that records the preflight snapshot
 //!    and required destination geometry.  If reserve fails part-way through
 //!    capacity reservation, it restores the logical edge-store capacity and the
-//!    inline property bytes occupied tail to their pre-reserve values.  Any inline property bytes that
-//!    were already appended are retired to the inline property free-list as reusable
-//!    slack.  The underlying stable-memory pages are not shrunk.  Canonical
+//!    inline property bytes occupied tail to their pre-reserve values. Consumed
+//!    free-list prefixes are restored; appended bytes return to the implicit tail,
+//!    not also to the free list. Backing pages are not shrunk. Canonical
 //!    adjacency and bucket metadata are never modified.
 //! 2. `BatchReservation::commit` performs the actual stable-memory mutations.
 //!    Because all fallible checks happened in reserve, a recoverable error
@@ -31,17 +31,10 @@
 //! Empty plans are rejected by `reserve_one_orientation_batch`; the batch
 //! boundary does not define a no-op success path.
 //!
-//! The current slice supports existing buckets through one of four paths:
-//! - direct slab append when the bucket's window has room;
-//! - per-leaf overflow-log append when the slab is full but the log has room;
-//! - one in-place PMA leaf expansion when neither slab nor log can absorb the
-//!   projected geometry. Fixed-width inline property bytes spans are folded and extended
-//!   together with the edge slab when the existing span is reusable or grows at
-//!   the occupied tail;
-//! - one relocation to a brand-new physical block per affected leaf, followed by
-//!   slab append. Inline property bytes spans are copied when relocation needs a
-//!   replacement non-tail span. New-bucket creation, default/unlabeled promotion,
-//!   and maintenance compaction remain unsupported and fall back to the scalar path.
+//! Current admission supports slab append, unordered slab-hole fill and tree-tail
+//! append. A run requiring spill is deferred before reservation (ADR 0097 §7);
+//! expanded/relocated commits have no admission path. Named bucket preparation
+//! belongs to this boundary; tiny runs fall back to scalar insertion.
 
 use crate::{
     VertexId,
@@ -859,7 +852,7 @@ enum RunDestination {
     Slab {
         /// First edge slab slot written for the run.
         edge_start_slot: u64,
-        /// Byte offset in the inline property bytes slab where the run writes, if inline-property-bearing.
+        /// Base of the complete reserved value span, including the existing prefix.
         inline_property_bytes_offset: Option<u64>,
         /// Number of inline property bytes reserved.
         inline_property_bytes_byte_count: u64,
@@ -1107,8 +1100,8 @@ where
     /// fallible validation before any canonical write.  If reserve fails after
     /// growing edge/inline-property-bytes backing capacity, it restores the logical edge-store
     /// capacity and inline property bytes occupied tail to their pre-reserve values.  InlinePropertyBytes
-    /// bytes that were already appended are retired to the inline property free-list
-    /// as reusable slack; the underlying stable-memory pages are not shrunk.
+    /// bytes that were appended return to the implicit tail; consumed free-list
+    /// prefixes are restored separately. Stable-memory pages are not shrunk.
     /// Canonical adjacency and edge rows are never modified. New named bucket
     /// descriptors are structurally prepared and owned by the returned
     /// reservation token. On success it returns an opaque [`BatchReservation`]
@@ -1202,8 +1195,8 @@ where
             preflight.push(p);
         }
 
-        // Reserve old-span retirement at commit, or consumed prefixes plus the
-        // appended tail on rollback, before changing logical allocator state.
+        // Each allocating run can retire its old span at commit OR restore one
+        // consumed free prefix on rollback. Tail rewind adds no free-list entry.
         let value_allocations = preflight
             .iter()
             .filter(|run| {
@@ -1211,7 +1204,6 @@ where
                     run.inline_property_bytes_allocation,
                     Some(
                         InlinePropertyBytesAllocationKind::New { .. }
-                            | InlinePropertyBytesAllocationKind::GrowInPlace { .. }
                             | InlinePropertyBytesAllocationKind::Reallocated { .. }
                     )
                 )
@@ -1219,7 +1211,7 @@ where
             .count() as u64;
         if value_allocations > 0 {
             self.values
-                .reserve_retired_byte_spans(value_allocations + 1)
+                .reserve_retired_byte_spans(value_allocations)
                 .map_err(storage_resize_error)?;
         }
 
@@ -1874,9 +1866,10 @@ where
 
     /// Roll back inline property bytes allocation performed during a partially-failed reserve.
     ///
-    /// Tail allocations are retired as one range, while free-span prefixes consumed by
-    /// replacement allocations are restored individually. Existing inline property bytes
-    /// spans are untouched. The underlying stable-memory pages are not shrunk.
+    /// Appended bytes return to the implicit tail without entering the free list:
+    /// registering them there too would let a later tail growth alias a free-list
+    /// allocation. Only consumed free-list prefixes are restored. Live spans and
+    /// the retained backing capacity are untouched.
     fn rollback_inline_property_bytes_tail(
         &self,
         original_tail: u64,
@@ -1884,9 +1877,6 @@ where
     ) {
         let current_tail = self.values.header().slab_occupied_tail;
         if current_tail > original_tail {
-            self.values
-                .retire_byte_span(original_tail, current_tail - original_tail)
-                .expect("reserve rollback must restore inline property free-list consistency");
             self.values.reset_slab_occupied_tail(original_tail);
         }
         for span in allocated_free_spans.iter().rev() {
@@ -2640,6 +2630,7 @@ where
         );
 
         let total_edge_slots: u64 = self.runs.iter().map(|r| u64::from(r.edge_slot_count)).sum();
+        let mut vertex_updates = std::collections::BTreeMap::new();
 
         // Pre-pass: validate every run against current canonical state and prove
         // that the upcoming metadata updates cannot overflow.  Any mismatch here
@@ -2700,6 +2691,69 @@ where
                 "bucket occupancy changed between reserve and commit"
             );
 
+            // Accumulate all runs for an owner before any canonical write. Value
+            // accounting and vertex coverage must not depend on the destination.
+            let (projected, edge_base) = vertex_updates
+                .entry(res.bucket_fingerprint.owner_vertex_id)
+                .or_insert_with(|| {
+                    (
+                        vertex,
+                        graph
+                            .labeled_edge_base_from_first_bucket(
+                                res.bucket_fingerprint.owner_vertex_id,
+                            )
+                            .expect("reserved owner has a physical edge span"),
+                    )
+                });
+            let folded_values = match &res.destination {
+                RunDestination::ExpandedSlab {
+                    inline_property_bytes_log_len,
+                    ..
+                }
+                | RunDestination::RelocatedSlab {
+                    inline_property_bytes_log_len,
+                    ..
+                } => *inline_property_bytes_log_len,
+                _ => 0,
+            };
+            let added_bytes = (u64::from(res.edge_slot_count) + u64::from(folded_values))
+                * u64::from(res.inline_property_width);
+            let allocated = projected
+                .inline_property_bytes_allocated_bytes()
+                .checked_add(added_bytes)
+                .expect("batch vertex value allocation overflow");
+            *projected = projected
+                .try_with_inline_property_bytes_allocated_bytes(allocated)
+                .expect("batch vertex value allocation must fit the row");
+            let edge_end = match &res.destination {
+                RunDestination::Slab {
+                    edge_start_slot, ..
+                } => Some(
+                    edge_start_slot
+                        .checked_add(u64::from(res.edge_slot_count))
+                        .expect("batch edge end overflow"),
+                ),
+                RunDestination::SlabHoles {
+                    edge_start_slot,
+                    tail_edge_slot_count,
+                    ..
+                } => Some(
+                    edge_start_slot
+                        .checked_add(
+                            u64::from(bucket.stored_slots()) + u64::from(*tail_edge_slot_count),
+                        )
+                        .expect("batch hole-fill end overflow"),
+                ),
+                _ => None,
+            };
+            if let Some(end) = edge_end {
+                let slots = u32::try_from(
+                    end.checked_sub(*edge_base)
+                        .expect("batch edge span precedes its vertex"),
+                )
+                .expect("batch vertex span must fit u32");
+                *projected = projected.with_stored_slots(projected.stored_slots.max(slots));
+            }
             let _updated_degree = bucket
                 .degree
                 .checked_add(res.edge_slot_count)
@@ -2825,6 +2879,13 @@ where
                         .expect("reserve guaranteed edge slab capacity");
 
                     let inline_property_width = u64::from(res.inline_property_width);
+                    let inline_property_bytes_offset = inline_property_bytes_offset.map(|base| {
+                        base.checked_add(
+                            u64::from(bucket.inline_property_bytes_slab_slots())
+                                * inline_property_width,
+                        )
+                        .expect("reserved value prefix and append must fit")
+                    });
                     if let Some(locations) = locations.as_mut() {
                         locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
                             OneOrientationBatchLocation {
@@ -3182,40 +3243,18 @@ where
             }
         }
 
-        // Publish any vertex span growth caused by growing the last bucket on a
-        // vertex.  For non-last buckets the end slot stays within the existing
-        // vertex span, so the vertex row is unchanged.  Overflow-log runs do not
-        // change the vertex slab span.  Expanded-slab runs already updated the
-        // vertex span through rebalance.
-        let mut vertex_stored_slot_ends: std::collections::BTreeMap<VertexId, u64> =
-            std::collections::BTreeMap::new();
-        for res in &self.runs {
-            let end = match &res.destination {
-                RunDestination::Slab {
-                    edge_start_slot, ..
-                } => *edge_start_slot + u64::from(res.edge_slot_count),
-                RunDestination::SlabHoles {
-                    edge_start_slot,
-                    tail_edge_slot_count,
-                    ..
-                } => (*edge_start_slot)
-                    .saturating_add(u64::from(res.bucket_fingerprint.stored_slots))
-                    .saturating_add(u64::from(*tail_edge_slot_count)),
-                _ => continue,
-            };
-            let entry = vertex_stored_slot_ends
-                .entry(res.bucket_fingerprint.owner_vertex_id)
-                .or_default();
-            *entry = (*entry).max(end);
-        }
-        for (vid, end) in vertex_stored_slot_ends {
+        // Publish the checked per-owner aggregates once, retaining any base and
+        // cover already established by physical relocation.
+        for (vid, (projected, _)) in vertex_updates {
             let vertex = graph.vertices.get(vid);
-            if end > u64::from(vertex.stored_slots) {
-                let updated = vertex.with_stored_slots(
-                    u32::try_from(end).expect("reserve guaranteed vertex stored_slots fit in u32"),
-                );
-                graph.vertices.set(vid, &updated);
-            }
+            graph.vertices.set(
+                vid,
+                &vertex
+                    .with_stored_slots(vertex.stored_slots.max(projected.stored_slots))
+                    .with_inline_property_bytes_allocated_bytes(
+                        projected.inline_property_bytes_allocated_bytes(),
+                    ),
+            );
         }
 
         // Finally update the global edge count.
@@ -3419,9 +3458,6 @@ where
                 .checked_add(u64::from(inline_property_bytes_log_len))
                 .and_then(|slots| slots.checked_add(u64::from(res.edge_slot_count)))
                 .expect("reserve guaranteed relocated inline property slot count");
-            let old_bytes = u64::from(existing_inline_property_bytes_slots)
-                .checked_mul(width)
-                .expect("reserve guaranteed relocated old inline property bytes");
             updated_bucket = updated_bucket
                 .with_inline_property_bytes_offset(new_offset)
                 .with_inline_property_bytes_slab_slots(
@@ -3429,18 +3465,6 @@ where
                         .expect("reserve guaranteed relocated inline property slots fit"),
                 )
                 .with_inline_property_bytes_log_head(-1);
-            let vertex = graph.vertices.get(owner);
-            let total_bytes = total_slots
-                .checked_mul(width)
-                .expect("reserve guaranteed relocated inline property byte count");
-            let new_alloc = vertex
-                .inline_property_bytes_allocated_bytes()
-                .checked_add(total_bytes.saturating_sub(old_bytes))
-                .expect("reserve guaranteed relocated vertex inline property accounting");
-            graph.vertices.set(
-                owner,
-                &vertex.with_inline_property_bytes_allocated_bytes(new_alloc),
-            );
             inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
                 .checked_add(u64::from(res.edge_slot_count))
                 .expect("reserve guaranteed relocated inline property slots written");
@@ -3874,9 +3898,6 @@ where
                 .checked_add(u64::from(inline_property_bytes_log_len))
                 .and_then(|s| s.checked_add(u64::from(res.edge_slot_count)))
                 .expect("reserve guaranteed inline property bytes slot count");
-            let had_bytes = u64::from(existing_inline_property_bytes_slots)
-                .checked_mul(width)
-                .expect("reserve guaranteed existing inline property byte count");
             updated_bucket = updated_bucket
                 .with_inline_property_bytes_offset(new_inline_property_bytes_offset)
                 .with_inline_property_bytes_slab_slots(total_inline_property_bytes_slots as u32)
@@ -3884,24 +3905,6 @@ where
             inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
                 .checked_add(u64::from(res.edge_slot_count))
                 .expect("reserve guaranteed inline property bytes slot count");
-
-            let total_inline_property_bytes = total_inline_property_bytes_slots
-                .checked_mul(width)
-                .expect("reserve guaranteed inline property byte count");
-            let alloc_delta = total_inline_property_bytes - had_bytes;
-            if alloc_delta > 0 {
-                let vertex = graph.vertices.get(owner);
-                let new_alloc = vertex
-                    .inline_property_bytes_allocated_bytes()
-                    .checked_add(alloc_delta)
-                    .expect(
-                        "reserve guaranteed vertex inline property allocated bytes overflow safety",
-                    );
-                graph.vertices.set(
-                    owner,
-                    &vertex.with_inline_property_bytes_allocated_bytes(new_alloc),
-                );
-            }
         }
 
         graph.publish_bucket_inline_property_bytes_span(
@@ -4159,12 +4162,12 @@ mod tests {
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::{
-        InlinePropertyTestEdge, TestEdge as GraphTestEdge,
-        inline_property_test_graph_with_capacity, promote_bucket_to_slab, test_graph_with_default,
+        InlinePropertyTestEdge, TestEdge as GraphTestEdge, inline_property_test_graph_segment16,
+        inline_property_test_graph_with_capacity, promote_bucket_to_slab, retained_compaction_rows,
+        retained_compaction_value, test_graph_with_default,
     };
     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
-    use crate::traits::CsrEdge;
     use crate::traits::CsrVertex;
 
     use super::{
@@ -4220,6 +4223,579 @@ mod tests {
                     },
                 }],
             }],
+        }
+    }
+
+    fn seed_batch_value_bucket<M: ic_stable_structures::Memory>(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, M>,
+        owner: VertexId,
+        targets: &[u32],
+        width: u16,
+    ) {
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(owner, label, width)
+            .unwrap();
+        for &target in targets {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    owner,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &retained_compaction_value(target, width),
+                    ),
+                    super::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph.compact_vertex_edge_span(owner, 0).unwrap();
+        graph
+            .rewrite_vertex_edge_span(owner, Some(0), 2, true, None)
+            .unwrap();
+    }
+
+    fn batch_value_run(
+        owner: VertexId,
+        targets: &[u32],
+        width: u16,
+    ) -> OneOrientationBucketRun<InlinePropertyTestEdge> {
+        let label = BucketLabelKey::from_raw(2);
+        OneOrientationBucketRun {
+            owner_vertex_id: owner,
+            label_id: label,
+            inline_property_width: width,
+            placement: super::EdgePlacementPolicy::Insertion,
+            edges: targets
+                .iter()
+                .enumerate()
+                .map(|(ordinal, &target)| OneOrientationBatchEdge {
+                    logical_ordinal: ordinal as u32,
+                    owner_vertex_id: owner,
+                    neighbor_vertex_id: VertexId::from(target),
+                    label_id: label,
+                    edge: InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &retained_compaction_value(target, width),
+                    ),
+                })
+                .collect(),
+        }
+    }
+
+    fn check_batch_value_span_relocation(width: u16, placement: super::EdgePlacementPolicy) {
+        let graph = inline_property_test_graph_with_capacity(256);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        seed_batch_value_bucket(&graph, src, &[11, 22, 33, 44], width);
+        if placement == super::EdgePlacementPolicy::Unordered {
+            graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
+        }
+        seed_batch_value_bucket(&graph, peer, &[77], width);
+        let vertex = graph.vertices.get(src);
+        let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let before = graph.buckets.read_label_bucket_slot(slot).unwrap();
+        assert_eq!(before.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_eq!(before.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        let stats = graph.inline_property_bytes_storage_stats().unwrap();
+        let old_len = u64::from(before.inline_property_bytes_slab_slots()) * u64::from(width);
+        assert!(old_len > 0);
+        assert!(before.inline_property_bytes_offset() + old_len < stats.slab_occupied_tail);
+        let mut run = batch_value_run(src, &[55, 66], width);
+        run.placement = placement;
+        let plan = OneOrientationBatchPlan { runs: vec![run] };
+        let preflight = graph
+            .preflight_run(&plan.runs[0], &mut Default::default(), &Default::default())
+            .unwrap();
+        assert_eq!(
+            preflight.inline_property_bytes_allocation,
+            Some(super::InlinePropertyBytesAllocationKind::Reallocated {
+                offset: before.inline_property_bytes_offset(),
+                had_bytes: old_len,
+                new_bytes: old_len + 2 * u64::from(width),
+            })
+        );
+        let reservation = graph.reserve_one_orientation_batch(&plan).unwrap();
+        let (targets, pending_slots) = if placement == super::EdgePlacementPolicy::Insertion {
+            assert!(matches!(
+                reservation.runs[0].destination,
+                super::RunDestination::Slab { .. }
+            ));
+            (vec![11, 22, 33, 44, 55, 66], [4, 5])
+        } else {
+            assert!(
+                matches!(&reservation.runs[0].destination, super::RunDestination::SlabHoles {
+                hole_window_indices, tail_edge_slot_count: 1, ..
+            } if hole_window_indices == &[1])
+            );
+            (vec![11, 55, 33, 44, 66], [1, 4])
+        };
+        let result = reservation.commit_with_locations(&graph);
+        assert_eq!(result.edge_slots_written, 2);
+        assert_eq!(result.inline_property_bytes_slots_written, 2);
+        let after = graph.buckets.read_label_bucket_slot(slot).unwrap();
+        assert_ne!(
+            after.inline_property_bytes_offset(),
+            before.inline_property_bytes_offset()
+        );
+        assert_eq!(after.edge_start(), before.edge_start());
+        assert_eq!(after.degree(), targets.len() as u32);
+        assert_eq!(
+            graph.vertices.get(src).degree(),
+            vertex.degree(),
+            "batch append preserves the descriptor count"
+        );
+        assert_eq!(after.stored_slots(), targets.len() as u32);
+        assert_eq!(
+            after.inline_property_bytes_slab_slots(),
+            targets.len() as u32
+        );
+        assert_eq!(after.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        let check_rows = || {
+            for (owner, expected_targets) in [(src, targets.as_slice()), (peer, &[77][..])] {
+                let mut expected: Vec<_> = expected_targets
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, &target)| {
+                        (
+                            slot as u32,
+                            target,
+                            retained_compaction_value(target, width),
+                        )
+                    })
+                    .collect();
+                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                    if order == OutEdgeOrder::Descending {
+                        expected.reverse();
+                    }
+                    assert_eq!(
+                        retained_compaction_rows(&graph, owner, label, order),
+                        expected
+                    );
+                }
+            }
+        };
+        check_rows();
+        let locations = result.locations.unwrap();
+        assert_eq!(locations.len(), 2);
+        for (ordinal, location) in locations.iter().enumerate() {
+            assert_eq!(location.logical_ordinal, ordinal as u32);
+            assert_eq!(location.owner_vertex_id, src);
+            assert_eq!(location.logical_slot, pending_slots[ordinal]);
+            assert_eq!(
+                location.location,
+                OneOrientationPhysicalLocation::Slab {
+                    edge_slot: after.edge_start() + u64::from(pending_slots[ordinal]),
+                    inline_property_bytes_offset: Some(
+                        after.inline_property_bytes_offset()
+                            + u64::from(pending_slots[ordinal]) * u64::from(width)
+                    ),
+                }
+            );
+        }
+        let committed = graph.inline_property_bytes_storage_stats().unwrap();
+        assert_eq!(
+            committed.free_bytes,
+            stats.free_bytes + old_len,
+            "replaced source must be retired"
+        );
+        assert_eq!(
+            committed.allocated_bytes,
+            stats.allocated_bytes + 2 * u64::from(width)
+        );
+        assert_eq!(
+            committed.slab_occupied_tail,
+            committed.allocated_bytes + committed.free_bytes
+        );
+        assert_eq!(
+            graph
+                .vertices
+                .get(src)
+                .inline_property_bytes_allocated_bytes(),
+            vertex.inline_property_bytes_allocated_bytes() + 2 * u64::from(width)
+        );
+        assert_eq!(
+            graph.vertices.get(src).stored_slots,
+            vertex.stored_slots,
+            "append within reserved edge headroom must not enlarge the vertex cover"
+        );
+        let reused = graph.values.allocate_byte_span(old_len).unwrap();
+        assert_eq!(reused, before.inline_property_bytes_offset());
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            committed.slab_occupied_tail
+        );
+        graph
+            .values
+            .write_bytes(reused, &vec![0xcc; old_len as usize])
+            .unwrap();
+        check_rows();
+        graph.values.retire_byte_span(reused, old_len).unwrap();
+        assert_eq!(
+            graph.inline_property_bytes_storage_stats().unwrap(),
+            committed
+        );
+    }
+
+    #[test]
+    fn batch_value_span_relocation_slab_8() {
+        check_batch_value_span_relocation(8, super::EdgePlacementPolicy::Insertion);
+    }
+
+    #[test]
+    fn batch_value_span_relocation_slab_33() {
+        check_batch_value_span_relocation(33, super::EdgePlacementPolicy::Insertion);
+    }
+
+    #[test]
+    fn batch_value_span_relocation_holes_8() {
+        check_batch_value_span_relocation(8, super::EdgePlacementPolicy::Unordered);
+    }
+
+    #[test]
+    fn batch_value_span_relocation_holes_33() {
+        check_batch_value_span_relocation(33, super::EdgePlacementPolicy::Unordered);
+    }
+
+    #[test]
+    fn batch_value_span_multiple_runs_share_vertex_counts() {
+        let graph = inline_property_test_graph_segment16();
+        let owner = VertexId::from(0);
+        let mut runs = Vec::new();
+        for (raw, target) in [(2, 11), (4, 22)] {
+            let label = BucketLabelKey::from_raw(raw);
+            graph
+                .ensure_label_bucket_inline_property_byte_width(owner, label, 8)
+                .unwrap();
+            let mut run = batch_value_run(owner, &[target], 8);
+            run.label_id = label;
+            run.edges[0].label_id = label;
+            runs.push(run);
+        }
+        graph
+            .rewrite_vertex_edge_span(owner, None, 2, true, None)
+            .unwrap();
+        let before = graph.vertices.get(owner);
+        let plan = OneOrientationBatchPlan { runs };
+        let reservation = graph.reserve_one_orientation_batch(&plan).unwrap();
+        assert_eq!(reservation.runs.len(), 2);
+        assert!(
+            reservation
+                .runs
+                .iter()
+                .all(|run| matches!(run.destination, super::RunDestination::Slab { .. }))
+        );
+        reservation.commit(&graph);
+        let after = graph.vertices.get(owner);
+        assert_eq!(after.degree(), 2);
+        assert_eq!(after.inline_property_bytes_allocated_bytes(), 16);
+        assert_eq!(after.base_slot_start(), before.base_slot_start());
+        assert_eq!(after.stored_slots, before.stored_slots);
+        for (raw, target) in [(2, 11), (4, 22)] {
+            assert_eq!(
+                retained_compaction_rows(
+                    &graph,
+                    owner,
+                    BucketLabelKey::from_raw(raw),
+                    OutEdgeOrder::Ascending
+                ),
+                vec![(0, target, retained_compaction_value(target, 8))]
+            );
+        }
+        let stats = graph.inline_property_bytes_storage_stats().unwrap();
+        assert_eq!(stats.live_bytes, 16);
+        assert_eq!(stats.allocated_bytes, 16);
+        assert_eq!(stats.slab_occupied_tail, 16);
+        assert_eq!(stats.free_bytes, 0);
+    }
+
+    #[test]
+    fn batch_value_span_reservation_failure_and_rollback() {
+        use crate::test_support::failpoint_labeled_memories;
+        use ic_stable_structures::Memory;
+        let memories = failpoint_labeled_memories();
+        let [a, b, c, d, e, f, g, h, i, j, k, records, m, n, o, p] = memories.clone();
+        let graph = LabeledLaraGraph::<InlinePropertyTestEdge, _>::new_with_segment_size(
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            h,
+            i,
+            j,
+            k,
+            records.clone(),
+            m,
+            n,
+            o,
+            p,
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+            16,
+        )
+        .unwrap();
+        for _ in 0..33 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let owners = [0, 16, 32].map(VertexId::from);
+        // Scratch is owned by this test, before the last live span so that the
+        // mixed plan still projects a real GrowInPlace allocation.
+        let scratch = graph.values.allocate_byte_span(8192).unwrap();
+        seed_batch_value_bucket(&graph, owners[0], &[], 8);
+        seed_batch_value_bucket(&graph, owners[1], &[11], 8);
+        seed_batch_value_bucket(&graph, owners[2], &[22], 8);
+        graph.values.retire_byte_span(scratch, 64).unwrap();
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                batch_value_run(owners[2], &[33], 8),
+                batch_value_run(owners[1], &[44], 8),
+                batch_value_run(owners[0], &[55], 8),
+            ],
+        };
+        let allocations: Vec<_> = plan
+            .runs
+            .iter()
+            .map(|run| {
+                graph
+                    .preflight_run(run, &mut Default::default(), &Default::default())
+                    .unwrap()
+                    .inline_property_bytes_allocation
+                    .unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            allocations.as_slice(),
+            [
+                super::InlinePropertyBytesAllocationKind::GrowInPlace { .. },
+                super::InlinePropertyBytesAllocationKind::Reallocated { .. },
+                super::InlinePropertyBytesAllocationKind::New { .. },
+            ]
+        ));
+        let grows = records.grow_count();
+        records.fail_at_grow(grows + 1);
+        let boundary = (0..4000).find(|i| {
+            if graph.values.reserve_retired_byte_spans(2).is_err() {
+                return true;
+            }
+            graph
+                .values
+                .retire_byte_span(scratch + 128 + 2 * i, 1)
+                .unwrap();
+            false
+        });
+        assert!(
+            boundary.is_some(),
+            "bounded scratch must reach the release reservation boundary"
+        );
+        assert_eq!(records.grow_count(), grows + 1);
+        graph.values.reserve_retired_byte_spans(1).unwrap();
+        assert_eq!(
+            records.grow_count(),
+            grows + 1,
+            "one release fits without growing records"
+        );
+        records.fail_at_grow(grows + 2);
+        let tail = graph.values.header().slab_occupied_tail;
+        let grow_only = OneOrientationBatchPlan {
+            runs: vec![plan.runs[0].clone()],
+        };
+        graph
+            .reserve_one_orientation_batch(&grow_only)
+            .unwrap()
+            .rollback(&graph);
+        assert_eq!(
+            records.grow_count(),
+            grows + 1,
+            "tail growth and rewind need no free-list records"
+        );
+        assert_eq!(graph.values.header().slab_occupied_tail, tail);
+        assert_eq!(
+            graph.values.peek_free_byte_span(8).unwrap().start_slot,
+            scratch
+        );
+        let vertices = owners.map(|owner| graph.vertices.get(owner));
+        let buckets = owners.map(|owner| {
+            graph
+                .read_vertex_label_buckets(&graph.vertices.get(owner))
+                .unwrap()
+        });
+        let rows = owners.map(|owner| graph.out_edges(owner).unwrap());
+        let stats = graph.inline_property_bytes_storage_stats().unwrap();
+        let edge_header = graph.edges.header();
+        let backing = memories.each_ref().map(|memory| {
+            let mut bytes = vec![0; memory.byte_len()];
+            memory.read(0, &mut bytes);
+            bytes
+        });
+        let unchanged = |expected_stats| {
+            assert_eq!(owners.map(|owner| graph.vertices.get(owner)), vertices);
+            assert_eq!(
+                owners.map(|owner| graph
+                    .read_vertex_label_buckets(&graph.vertices.get(owner))
+                    .unwrap()),
+                buckets
+            );
+            assert_eq!(owners.map(|owner| graph.out_edges(owner).unwrap()), rows);
+            assert_eq!(
+                graph.inline_property_bytes_storage_stats().unwrap(),
+                expected_stats
+            );
+            assert_eq!(graph.edges.header(), edge_header);
+        };
+        let unchanged_backing = || {
+            unchanged(stats);
+            for (memory, saved) in memories.iter().zip(&backing) {
+                let mut bytes = vec![0; saved.len()];
+                memory.read(0, &mut bytes);
+                assert_eq!(&bytes, saved, "pre-existing backing changed on rejection");
+            }
+        };
+        // Neither a too-wide slab run nor a grow failure may enter the inactive
+        // leaf-expansion/relocation paths or perform a canonical write.
+        let oversized = OneOrientationBatchPlan {
+            runs: vec![batch_value_run(
+                owners[2],
+                &(100..612).collect::<Vec<_>>(),
+                8,
+            )],
+        };
+        assert!(
+            matches!(graph.reserve_one_orientation_batch(&oversized).unwrap_err(),
+            OneOrientationBatchError::SpillRunDeferred { owner_vertex_id, label_id }
+            if owner_vertex_id == owners[2] && label_id == BucketLabelKey::from_raw(2))
+        );
+        unchanged_backing();
+        records.fail_at_grow(records.grow_count() + 1);
+        assert!(
+            matches!(graph.reserve_one_orientation_batch(&plan).unwrap_err(),
+            OneOrientationBatchError::StorageError(super::LabeledOperationError::Store(
+                crate::lara::operation_error::LaraOperationError::ResizeFailed(crate::GrowFailed { current_size, delta })
+            )) if current_size == records.size() && delta == 1)
+        );
+        assert_eq!(records.grow_count(), grows + 2);
+        unchanged_backing();
+        records.fail_never();
+        let reservation = graph.reserve_one_orientation_batch(&plan).unwrap();
+        assert!(
+            reservation
+                .runs
+                .iter()
+                .all(|run| matches!(run.destination, super::RunDestination::Slab { .. }))
+        );
+        assert_eq!(
+            reservation.inline_property_bytes_free_spans,
+            vec![
+                crate::lara::edge::free_span::FreeSpan {
+                    start_slot: scratch,
+                    len: 16
+                },
+                crate::lara::edge::free_span::FreeSpan {
+                    start_slot: scratch + 16,
+                    len: 8
+                },
+            ]
+        );
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            stats.slab_occupied_tail + 8
+        );
+        reservation.rollback(&graph);
+        unchanged(stats);
+        assert_eq!(
+            graph.values.peek_free_byte_span(64).unwrap(),
+            crate::lara::edge::free_span::FreeSpan {
+                start_slot: scratch,
+                len: 64
+            }
+        );
+        assert!(graph.values.allocate_byte_span_at(scratch, 64).unwrap());
+        graph.values.write_bytes(scratch, &[0xcc; 64]).unwrap();
+        assert_eq!(owners.map(|owner| graph.out_edges(owner).unwrap()), rows);
+        graph.values.retire_byte_span(scratch, 64).unwrap();
+        unchanged(stats);
+
+        // Fail the third allocation after tail growth and one consumed free
+        // prefix. The larger New span cannot fit the remaining 48-byte prefix.
+        let mut failing = plan.clone();
+        failing.runs[2] = batch_value_run(owners[0], &(55..63).collect::<Vec<_>>(), 8);
+        let pending = graph
+            .preflight_run(
+                &failing.runs[2],
+                &mut Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            pending.destination,
+            super::RunDestination::Slab { .. }
+        ));
+        assert_eq!(
+            pending.inline_property_bytes_allocation,
+            Some(super::InlinePropertyBytesAllocationKind::New { byte_len: 64 })
+        );
+        let free_spans = graph.values.free_byte_spans();
+        crate::lara::edge_inline_property::force_inline_property_bytes_allocation_error_after(1);
+        assert!(
+            matches!(graph.reserve_one_orientation_batch(&failing).unwrap_err(),
+            OneOrientationBatchError::StorageError(super::LabeledOperationError::Store(
+                crate::lara::operation_error::LaraOperationError::ResizeFailed(crate::GrowFailed { current_size, delta: 0 })
+            )) if current_size == stats.byte_capacity)
+        );
+        unchanged(stats);
+        assert_eq!(graph.values.free_byte_spans(), free_spans);
+        let retry = graph.reserve_one_orientation_batch(&plan).unwrap();
+        let mut spans: Vec<_> = retry
+            .runs
+            .iter()
+            .zip([16, 16, 8])
+            .map(|(run, len)| {
+                let super::RunDestination::Slab {
+                    inline_property_bytes_offset: Some(offset),
+                    ..
+                } = run.destination
+                else {
+                    panic!("retry must use the same slab destinations");
+                };
+                (offset, offset + len)
+            })
+            .collect();
+        spans.sort_unstable();
+        assert!(
+            spans.windows(2).all(|pair| pair[0].1 <= pair[1].0),
+            "reserved value spans must remain disjoint after rollback: {spans:?}"
+        );
+        let result = retry.commit(&graph);
+        assert_eq!(result.edge_slots_written, 3);
+        assert_eq!(result.inline_property_bytes_slots_written, 3);
+        for (owner, expected) in owners
+            .into_iter()
+            .zip([&[55][..], &[11, 44][..], &[22, 33][..]])
+        {
+            let actual: Vec<_> = graph
+                .out_edges(owner)
+                .unwrap()
+                .into_iter()
+                .map(|edge| (edge.target, edge.value))
+                .collect();
+            assert_eq!(
+                actual,
+                expected
+                    .iter()
+                    .map(|&target| (target, retained_compaction_value(target, 8)))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph
+                    .vertices
+                    .get(owner)
+                    .inline_property_bytes_allocated_bytes(),
+                expected.len() as u64 * 8
+            );
         }
     }
 

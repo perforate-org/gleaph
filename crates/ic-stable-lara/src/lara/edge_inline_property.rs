@@ -695,9 +695,9 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
 
     /// Resets the occupied tail to `tail` and persists the header.
     ///
-    /// Used internally to roll back partially-failed batch reservations that
-    /// only appended bytes at the occupied tail.  Callers must first retire
-    /// any newly appended byte range.
+    /// Used to roll back unpublished tail allocations. The rewound range is
+    /// owned by the implicit tail and must NOT also be registered as free:
+    /// append/in-place growth can claim it without consulting the free list.
     pub(crate) fn reset_slab_occupied_tail(&self, tail: u64) {
         let mut h = self.header();
         h.slab_occupied_tail = tail;

@@ -1,6 +1,16 @@
 # Replaced value spans are reusable at the publication boundary
 
-**Status: Implemented in the spill worktree; scoped validation complete.**
+**Status: Implemented in the spill worktree; scoped validation and batch-fix independent re-review complete.**
+
+The [independent review of 0371](adr0097-value-span-retirement-review.md) approved the
+implementation/ownership axis and identified one P2 batch coverage gap. The
+[0372 batch witnesses and owning-layer repair](adr0097-batch-value-span-regressions.md) address the
+reachable paths and correct the review's admission/reservation assumptions. Final independent
+Standards and Spec re-reviews both approve with no findings. Repeated-fold performance work has not
+started. The subsequent commit authorization is limited to the reviewed 0372 slice.
+
+The runtime results and numeric tables below remain the pinned 0371 measurements; they are not
+claimed as reruns of the uncommitted 0372 source.
 
 The [0370 missing-retirement defect](adr0097-value-prefix-reclamation.md) is repaired at the shared
 value-span publication boundary. A fold now returns its old 32-slot prefix to the existing allocator:
@@ -202,7 +212,8 @@ tables were preserved; no commit or main-worktree edit had been made. LARA and A
 synchronized; 0368–0370 link this repair without rewriting their measurements.
 
 **Limits:** strict `-D warnings` remains unmet by `GAP-LARA-TEST-CLIPPY`; warnings are not suppressed
-or counted as a strict pass. Full library/workspace/PocketIC suites, independent review, reopen or
-upgrade fault injection, repeated-fold performance policy and persisted artifact updates are not
-claimed. Native failure evidence covers the two stated pre-publication boundaries, not every outer
+or counted as a strict pass. Full library/workspace/PocketIC suites, reopen or upgrade fault injection,
+repeated-fold performance policy and persisted artifact updates are not claimed. Independent review
+is recorded separately above; it was not part of the original validation checkpoint.
+Native failure evidence covers the two stated pre-publication boundaries, not every outer
 Graph/Router operation. The previous main value-order and allocator acceptance gates remain separate.

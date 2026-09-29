@@ -165,11 +165,21 @@ bucket-descriptor and inline-property-byte FreeSpan stores, without allocating n
 
 **Why LARA has this and DGAP does not (as explicitly):** DGAP often recovers space through `resize_V1` and implicit segment totals on a PMEM heap. LARA targets **incremental** relocation — `segment_slide`, in-place expansion into adjacent free gaps (`try_expand_segment_in_place`), and reuse without rewriting the entire slab on every cascade. The free-span store is the retirement pool that makes localized relocation safe and reusable.
 
-**Failure-atomic stable mutations.** Owner-level mutations are split into an infallible validation phase, a preflight phase that only grows backing memory, and a commit phase that publishes logical metadata:
+**Failure-atomic stable mutations.** Owners validate geometry and reserve backing capacity before publishing pending data. Batch admission additionally owns reversible bucket and allocator reservations:
 
 1. `EdgeStore::grow_segment_tree_to` reserves `counts_store` and `span_meta` before it migrates counts, appends span-meta rows, and writes the edge header (ADR 0097 removed the per-segment log capacity this step used to reserve).
 2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
-3. `LabeledLaraGraph::reserve_one_orientation_batch` (Plans 0122–0124) validates the plan, reserves edge-slab `elem_capacity` and inline property bytes slab spans for clean-slab runs, and rejects, before reserving anything, an existing-bucket run whose rows would land in the bucket's spill run: those runs take the scalar fallback, which appends to the run, grows it by class and promotes the bucket when it must (ADR 0097 §7). It returns an opaque `BatchReservation` token before any canonical write. On failure it restores the logical edge capacity and inline property bytes occupied tail; inline property bytes already appended are retired to the inline property bytes free-list as reusable slack, and the underlying stable-memory pages are not shrunk. Deferred runs touch nothing: the rejection happens before any reservation. `BatchReservation::rollback` consumes the token and applies the same restoration. `BatchReservation::commit` validates the token, graph instance, and bucket fingerprints before the first canonical byte write; after that, panic is an invariant violation and, in an ICP message, traps the whole message. Plans 0125 and 0128 extend the same boundary to pending-aware one-shot PMA leaf expansion: when the clean slab window cannot absorb the projected geometry (existing slab slots + pending batch edges — a bucket that owns a spill run is deferred above), reserve expands the pinned leaf block in place by consuming an adjacent free span or growing the edge-store tail capacity, records the consumed free span for rollback, and commit rebalances the vertex span, folds preserved inline-property-bytes log entries into the new slab layout, writes the pending edge/inline-property-bytes values, and publishes the leaf block growth in segment counts. Plan 0125 covers edge-only runs; Plan 0128 admits fixed, uniform non-zero inline property byte widths when the inline property bytes span is reusable or grows at the occupied tail, while rejecting non-tail relocation. GraphStore observes only the resulting admission classification and rollback boundary; PMA/log cursors and bucket heads remain LARA-owned.
+3. `LabeledLaraGraph::reserve_one_orientation_batch` validates the plan and reserves edge-slab
+   `elem_capacity` and inline-property-byte spans for admitted runs. Runs requiring spill overflow
+   return `SpillRunDeferred` before bucket/storage reservation; the scalar fallback owns spill append,
+   class growth and promotion (ADR0097 §7). The opaque `BatchReservation` owns reversible bucket and
+   allocator reservations, not yet committed pending edge/value rows. Failed admission and explicit
+   token rollback share restoration without shrinking physical pages; value-span ownership is
+   specified below. Commit validates graph identity, bucket fingerprints and checked per-owner
+   accounting before writing pending rows. After that, panic is an invariant violation and, in an
+   ICP message, traps the whole message. Disconnected leaf-expansion/relocation machinery is not a
+   current admission path. GraphStore observes admission classification and the rollback boundary;
+   physical cursors and bucket heads remain LARA-owned.
 
 The edge slab keeps `elem_capacity` exact while reserving one additional physical stable-memory page
 when crossing a page boundary. This amortizes repeated `Memory::grow` calls during relocation-heavy
@@ -184,15 +194,22 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 **Value-span replacement (implemented in the spill worktree).**
 `LabeledLaraGraph::publish_bucket_inline_property_bytes_span` owns descriptor publication followed by
 retirement of a changed, nonempty source span through `EdgeInlinePropertyBytesStore`. Scalar admission,
-value-slab compaction and the batch Slab/SlabHoles/RelocatedSlab/ExpandedSlab paths share this boundary.
-Callers reserve retirement capacity before mutation; batch preflight also covers consumed-prefix and
-appended-tail rollback. Scalar admission checks the final vertex allocation delta before allocating a
-destination. Once the replacement is backed, publication and retirement are infallible commit work;
+value-slab compaction and batch replacement paths share this boundary. Current batch admission
+reaches Slab/SlabHoles, not the disconnected ExpandedSlab/RelocatedSlab machinery: runs requiring
+overflow return `SpillRunDeferred` before mutation. Batch commit accumulates checked value-byte
+accounting and relative edge-span coverage per owner before writes; descriptor count is preserved.
+Callers reserve retirement capacity before mutation. Batch preflight reserves at most one release
+record per New/Reallocated run, for source retirement or consumed-free-prefix rollback. GrowInPlace
+needs none. Rollback restores consumed free prefixes and rewinds the implicit tail; it must not also
+register the rewound tail as free, which would give the same bytes two owners. Scalar admission checks
+the final vertex allocation delta before allocating a destination. Once the replacement is backed,
+publication and retirement are infallible commit work;
 a post-preflight failure is an invariant violation, not a recoverable error after publication.
 A sufficient span is retained, and in-place growth never retires its live source. Slab compaction
 consumes registered free spans; it does not discover orphaned prefixes. Fresh state is required for
 experiments that previously leaked those bytes; no orphan recovery or layout change is introduced.
 [Repeated-relocation, failure-boundary and fold-cost evidence](../evidence/adr0097-value-span-retirement.md).
+[Batch replacement, reservation and rollback regressions](../evidence/adr0097-batch-value-span-regressions.md).
 
 **Labeled note:** per-vertex `release_vertex_edge_span_footprint` on routine growth is **not** this contract; see [ADR 0001](../adr/0001-labeled-segment-slide.md).
 
