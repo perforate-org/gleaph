@@ -2485,17 +2485,10 @@ where
         for ordinal in 0..bucket.degree() {
             saved.push(self.read_bucket_inline_property_bytes_for_slot(&bucket, ordinal, None)?);
         }
-        let old_inline_property_bytes_slots =
-            self.bucket_resident_inline_property_bytes_slots_for(src, &bucket);
         // The rows are about to move into the slab, so the descriptor stops pointing at the run
         // *before* admission: `needed_slots` must cover every row the slab will hold.
         let mut bucket = bucket.without_values_spill_run();
-        bucket = self.ensure_bucket_inline_property_bytes_span(
-            src,
-            bucket_slot,
-            bucket,
-            old_inline_property_bytes_slots,
-        )?;
+        bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let width = bucket.inline_property_byte_width();
         for (slot_index, bytes) in saved.iter().enumerate() {
             let slot_index = u32::try_from(slot_index)

@@ -200,6 +200,13 @@ bucket.
    coalescing. Because a run's used length is **monotone** (deletes tombstone in place; rows leave the spill only
    when compaction copies them back into the prefix, and the run is released with exactly the length it has),
    `ceil_pow2(length)` always equals the allocated class — so the descriptor needs **no capacity field**.
+
+   **Value-slab retirement (implemented in the spill worktree).** Releasing a values spill run and
+   retiring the slab span replaced during a fold are separate allocator operations. Scalar admission,
+   slab compaction and batch replacement now share the graph-owned value-span publisher described in
+   the [LARA free-span contract](../storage/lara.md#4-free-span-contract-core-lara).
+   [0371 witnesses and remeasurement](../evidence/adr0097-value-span-retirement.md) close the missing
+   old-prefix retirement diagnosed in0370. This changes neither run classes nor layout or fold policy.
 6. **Growth.** Appending past the current class allocates the next class, copies its used rows (including
    tombstones) and releases the old run (amortized O(1), capacity <2x used length), and grows in place when
    the run is the arena tail (see the slot

@@ -832,13 +832,7 @@ where
                 self.values.read_bytes(source, &mut trailing);
             }
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
-            let previous_slab_slots = bucket.inline_property_bytes_slab_slots();
-            bucket = self.ensure_bucket_inline_property_bytes_span(
-                src,
-                bucket_slot,
-                bucket,
-                previous_slab_slots,
-            )?;
+            bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
             if trailing_len > 0 {
                 let destination = (u64::from(ordinal_before) + 1)
                     .checked_mul(u64::from(width))

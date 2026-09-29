@@ -183,16 +183,12 @@ where
                 .unwrap_or_else(|_| {
                     panic!("preflighted inline property bytes compaction write failed")
                 });
-            self.buckets.write_label_bucket_slot(
+            self.publish_bucket_inline_property_bytes_span(
                 plan.bucket_slot,
+                plan.bucket,
                 plan.bucket
                     .with_inline_property_bytes_offset(plan.new_offset),
-            )?;
-            self.values
-                .retire_byte_span(plan.old_offset, plan.len)
-                .unwrap_or_else(|_| {
-                    panic!("reserved inline property bytes compaction retirement failed")
-                });
+            );
             result.moved_spans = result.moved_spans.saturating_add(1);
             result.moved_bytes = result.moved_bytes.saturating_add(plan.len);
         }
@@ -627,13 +623,7 @@ where
                 Err(err) => return Err(err),
             }
         }
-        let previous_slab_slots = bucket.inline_property_bytes_slab_slots();
-        let bucket = self.ensure_bucket_inline_property_bytes_span(
-            src,
-            bucket_slot,
-            bucket,
-            previous_slab_slots,
-        )?;
+        let bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         self.write_edge_inline_property_at_slot(&bucket, slot_index, edge)?;
         Ok(bucket)
     }
@@ -1223,23 +1213,40 @@ where
         Ok(())
     }
 
+    /// Publishes a prepared descriptor before returning its replaced value span.
+    /// Callers must reserve retirement capacity and descriptor writability before
+    /// their first commit write. In-place growth and empty sources retire nothing.
+    pub(super) fn publish_bucket_inline_property_bytes_span(
+        &self,
+        bucket_slot: u64,
+        previous: LabelBucket,
+        bucket: LabelBucket,
+    ) {
+        let old_bytes = self.bucket_resident_inline_property_bytes(&previous);
+        self.buckets
+            .write_label_bucket_slot(bucket_slot, bucket)
+            .expect("preflighted value-span descriptor publication failed");
+        if old_bytes > 0
+            && previous.inline_property_bytes_offset() != bucket.inline_property_bytes_offset()
+        {
+            self.values
+                .retire_byte_span(previous.inline_property_bytes_offset(), old_bytes)
+                .expect("reserved value-span retirement failed");
+        }
+    }
+
     pub(super) fn ensure_bucket_inline_property_bytes_span(
         &self,
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
-        _previous_slab_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        // ADR 0096 §4b capacity contract: value-span admission never serves tiny
-        // buckets (width ≡ 0, zero slab). R2b upgrades to a typed guard if a
-        // dispatcher bug could route tiny here.
         debug_assert!(
             !bucket.is_tiny_mode(),
             "tiny bucket must not reach value-span admission"
         );
         let width = bucket.inline_property_byte_width();
-        // Rows the bucket's values run already holds do not need slab slots: only the rows that
-        // are still to be admitted do (ADR 0097 §5).
+        // Run-backed rows need no slab space until the caller folds them.
         let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
             Ok(run) => self.values.spill_used_len(run),
             Err(_) => 0,
@@ -1248,37 +1255,29 @@ where
             .degree()
             .checked_sub(run_rows)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if width == 0 || needed_slots == 0 {
+        let needed_bytes = u64::from(needed_slots) * u64::from(width);
+        let had_bytes = self.bucket_resident_inline_property_bytes(&bucket);
+        // Admission preserves sufficient capacity, including non-tail spans.
+        if needed_bytes <= had_bytes {
             return Ok(bucket);
         }
-        let needed_bytes = u64::from(needed_slots)
-            .checked_mul(u64::from(width))
+        let previous = bucket;
+        let vertex = self.vertices.get(src);
+        let new_alloc = vertex
+            .inline_property_bytes_allocated_bytes()
+            .checked_add(needed_bytes - had_bytes)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let had_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
-            .checked_mul(u64::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let tail = self.values.header().slab_occupied_tail;
+        let updated_vertex = vertex
+            .try_with_inline_property_bytes_allocated_bytes(new_alloc)
+            .map_err(LabeledOperationError::from)?;
         let old_offset = bucket.inline_property_bytes_offset();
         let span_ends_at_tail = old_offset
             .checked_add(had_bytes)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?
-            == tail;
-        if needed_bytes <= had_bytes && span_ends_at_tail {
-            return Ok(bucket);
-        }
-        let extra = needed_bytes.saturating_sub(had_bytes);
-        let alloc_delta;
-
-        // A fixed-width update can overwrite the existing span in place. This is
-        // the common scalar mutation case and must not turn into a free-span
-        // allocation merely because the span is not at the slab tail.
-        if needed_bytes == had_bytes {
-            return Ok(bucket);
-        }
+            == self.values.header().slab_occupied_tail;
 
         if had_bytes == 0 {
-            // First span for this bucket: bump the occupied tail when the slab already
-            // has bytes so we do not place a second bucket at offset 0.
+            // First-span admission retains the existing append/compaction policy.
             if !self.inline_property_bytes_compaction_deferred.get()
                 && self.inline_property_bytes_compaction_needed(needed_bytes)?
             {
@@ -1292,7 +1291,6 @@ where
                 .with_inline_property_bytes_offset(offset)
                 .with_inline_property_bytes_slab_slots(needed_slots)
                 .without_values_spill_run();
-            alloc_delta = needed_bytes;
         } else if span_ends_at_tail
             && self
                 .values
@@ -1300,56 +1298,32 @@ where
                 .map_err(LabeledOperationError::from)?
         {
             bucket = bucket.with_inline_property_bytes_slab_slots(needed_slots);
-            alloc_delta = extra;
         } else {
-            let mut old_buf = vec![
-                0u8;
-                usize::try_from(had_bytes).map_err(|_| {
-                    LaraOperationError::CollectAllocationOverflow
-                })?
+            let mut bytes = vec![
+                0;
+                usize::try_from(needed_bytes)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
             ];
-            self.values.read_bytes(old_offset, &mut old_buf);
+            self.values
+                .read_bytes(old_offset, &mut bytes[..had_bytes as usize]);
+            self.values
+                .reserve_retired_byte_spans(1)
+                .map_err(LabeledOperationError::from)?;
             let new_offset = self
                 .values
                 .allocate_byte_span(needed_bytes)
                 .map_err(LabeledOperationError::from)?;
+            // The complete destination is backed. No recoverable operation remains.
             self.values
-                .write_bytes(new_offset, &old_buf)
-                .map_err(LabeledOperationError::from)?;
-            if extra > 0 {
-                let pad = vec![
-                    0u8;
-                    usize::try_from(extra)
-                        .map_err(|_| { LaraOperationError::CollectAllocationOverflow })?
-                ];
-                self.values
-                    .write_bytes(new_offset + had_bytes, &pad)
-                    .map_err(LabeledOperationError::from)?;
-            }
+                .write_bytes(new_offset, &bytes)
+                .expect("allocated value span must be writable");
             bucket = bucket
                 .with_inline_property_bytes_offset(new_offset)
                 .with_inline_property_bytes_slab_slots(needed_slots)
                 .without_values_spill_run();
-            alloc_delta = needed_bytes;
         }
-        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-
-        if alloc_delta > 0 {
-            let vertex = self.vertices.get(src);
-            let new_alloc = vertex
-                .inline_property_bytes_allocated_bytes()
-                .checked_add(alloc_delta)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let updated = vertex
-                .try_with_inline_property_bytes_allocated_bytes(new_alloc)
-                .map_err(LabeledOperationError::from)?;
-            self.vertices.set(src, &updated);
-        }
-        if bucket.is_inline_property_bytes_allocated() {
-            let vertex = self.vertices.get(src);
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            self.reconcile_vertex_inline_property_bytes_allocated_bytes(src, &vertex, &buckets)?;
-        }
+        self.publish_bucket_inline_property_bytes_span(bucket_slot, previous, bucket);
+        self.vertices.set(src, &updated_vertex);
         Ok(bucket)
     }
 
@@ -1409,14 +1383,7 @@ where
             });
         }
         if edge_inline_property_width != 0 {
-            let prev_inline_property_bytes_slots =
-                self.bucket_resident_inline_property_bytes_slots_for(src, &bucket);
-            bucket = self.ensure_bucket_inline_property_bytes_span(
-                src,
-                slot,
-                bucket,
-                prev_inline_property_bytes_slots,
-            )?;
+            bucket = self.ensure_bucket_inline_property_bytes_span(src, slot, bucket)?;
             self.write_edge_inline_property_at_slot(&bucket, slot_index, &edge)?;
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
@@ -1722,6 +1689,298 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+    }
+
+    fn check_value_span_relocation(width: u16) {
+        let graph = inline_property_test_graph_with_capacity(4096);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(src, road, width)
+            .unwrap();
+        let insert = |label, target| {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &retained_compaction_value(target, width),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        };
+        let check_rows = |degree: u32, last_label: u16| {
+            for raw in 2..=last_label {
+                let targets = if raw == 2 {
+                    0..degree
+                } else {
+                    9000 + u32::from(raw)..9001 + u32::from(raw)
+                };
+                let mut expected: Vec<_> = targets
+                    .enumerate()
+                    .map(|(slot, target)| {
+                        (
+                            slot as u32,
+                            target,
+                            retained_compaction_value(target, width),
+                        )
+                    })
+                    .collect();
+                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                    if order == OutEdgeOrder::Descending {
+                        expected.reverse();
+                    }
+                    assert_eq!(
+                        retained_compaction_rows(&graph, src, BucketLabelKey::from_raw(raw), order),
+                        expected
+                    );
+                }
+            }
+        };
+        for target in 0..32 {
+            insert(road, target);
+        }
+        let mut previous_degree = 32;
+        for (degree, peer_raw) in [(64, 3), (96, 4)] {
+            let peer = BucketLabelKey::from_raw(peer_raw);
+            graph
+                .ensure_label_bucket_inline_property_byte_width(src, peer, width)
+                .unwrap();
+            insert(peer, 9000 + u32::from(peer_raw));
+            for target in previous_degree..degree {
+                insert(road, target);
+            }
+            check_rows(degree, peer_raw);
+            let vertex = graph.vertices().get(src);
+            let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+            let before = graph.buckets().read_label_bucket_slot(slot).unwrap();
+            assert_ne!(before.values_spill_run(), crate::traits::NO_SPILL_RUN);
+            let edge_run = graph.edges.spill_mint(before.edge_spill_run()).unwrap();
+            let edge_used = graph.edges.spill_used_len(edge_run);
+            let stats = graph.inline_property_bytes_storage_stats().unwrap();
+            let old_len = u64::from(before.inline_property_bytes_slab_slots()) * u64::from(width);
+            assert_eq!(before.inline_property_bytes_slab_slots(), previous_degree);
+            assert_eq!(
+                graph
+                    .ensure_bucket_inline_property_bytes_span(src, slot, before)
+                    .unwrap(),
+                before,
+                "a sufficient non-tail prefix must not be replaced"
+            );
+            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), stats);
+
+            let after = graph
+                .fold_bucket_values_run_into_slab(src, slot, before)
+                .unwrap();
+            assert_ne!(
+                after.inline_property_bytes_offset(),
+                before.inline_property_bytes_offset()
+            );
+            assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
+            assert_eq!(
+                (
+                    after.edge_start(),
+                    after.stored_slots(),
+                    after.edge_spill_run()
+                ),
+                (
+                    before.edge_start(),
+                    before.stored_slots(),
+                    before.edge_spill_run()
+                )
+            );
+            assert_eq!(graph.edges.spill_used_len(edge_run), edge_used);
+            assert_eq!(
+                (
+                    graph.vertices().get(src).base_slot_start(),
+                    graph.vertices().get(src).stored_slots
+                ),
+                (vertex.base_slot_start(), vertex.stored_slots)
+            );
+            let folded = graph.inline_property_bytes_storage_stats().unwrap();
+            assert_eq!(
+                folded.free_bytes,
+                stats.free_bytes + old_len,
+                "relocated source must be retired"
+            );
+            assert_eq!(
+                folded.allocated_bytes,
+                u64::from(degree + u32::from(peer_raw) - 2) * u64::from(width)
+            );
+            assert_eq!(
+                folded.slab_occupied_tail,
+                folded.allocated_bytes + folded.free_bytes
+            );
+            check_rows(degree, peer_raw);
+
+            let reused = graph.values.allocate_byte_span(old_len).unwrap();
+            assert_eq!(reused, before.inline_property_bytes_offset());
+            assert_eq!(
+                graph.values.header().slab_occupied_tail,
+                folded.slab_occupied_tail
+            );
+            graph
+                .values
+                .write_bytes(reused, &vec![0xcc; old_len as usize])
+                .unwrap();
+            check_rows(degree, peer_raw);
+            graph.values.retire_byte_span(reused, old_len).unwrap();
+            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), folded);
+            previous_degree = degree;
+        }
+        // Tail growth and an already-sufficient span must not retire live bytes.
+        let vertex = graph.vertices().get(src);
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let before = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        let free_before = graph.values.allocator_stats().free_bytes;
+        insert(road, 96);
+        let grown = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(
+            grown.inline_property_bytes_offset(),
+            before.inline_property_bytes_offset()
+        );
+        assert_eq!(grown.inline_property_bytes_slab_slots(), 97);
+        assert_eq!(graph.values.allocator_stats().free_bytes, free_before);
+        graph
+            .ensure_bucket_inline_property_bytes_span(src, slot, grown)
+            .unwrap();
+        assert_eq!(graph.values.allocator_stats().free_bytes, free_before);
+        check_rows(97, 4);
+    }
+
+    #[test]
+    fn value_span_relocation_reclaims_8() {
+        check_value_span_relocation(8);
+    }
+
+    #[test]
+    fn value_span_relocation_reclaims_33() {
+        check_value_span_relocation(33);
+    }
+
+    #[test]
+    fn value_span_relocation_failure_preserves_source() {
+        use crate::test_support::failpoint_labeled_memories;
+        use ic_stable_structures::Memory;
+        let memories = failpoint_labeled_memories();
+        let [a, b, c, d, e, f, g, h, i, j, k, free_records, m, n, o, p] = memories.clone();
+        let graph = LabeledLaraGraph::<InlinePropertyTestEdge, _>::new(
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            h,
+            i,
+            j,
+            k,
+            free_records.clone(),
+            m,
+            n,
+            o,
+            p,
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        for (raw, target) in [(2, 11), (3, 99), (2, 22)] {
+            let label = BucketLabelKey::from_raw(raw);
+            graph
+                .ensure_label_bucket_inline_property_byte_width(src, label, 8)
+                .unwrap();
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &retained_compaction_value(target, 8),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        // The test owns this scratch reservation; alternating bytes are returned to
+        // fill real free-record capacity. Never truncate backing or forge metadata.
+        let scratch = graph.values.allocate_byte_span(8192).unwrap();
+        let grow_before = free_records.grow_count();
+        free_records.fail_at_grow(grow_before + 1);
+        let boundary = (0..4096).find(|i| {
+            if graph.values.reserve_retired_byte_spans(1).is_err() {
+                return true;
+            }
+            graph.values.retire_byte_span(scratch + 2 * i, 1).unwrap();
+            false
+        });
+        assert!(
+            boundary.is_some(),
+            "bounded scratch must reach a free-record page boundary"
+        );
+        assert_eq!(free_records.grow_count(), grow_before + 1);
+        let vertex = graph.vertices().get(src);
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        let stats = graph.inline_property_bytes_storage_stats().unwrap();
+        let backing = memories.each_ref().map(|memory| {
+            let mut bytes = vec![0; memory.byte_len()];
+            memory.read(0, &mut bytes);
+            bytes
+        });
+        let unchanged = || {
+            assert_eq!(graph.vertices().get(src), vertex);
+            assert_eq!(
+                graph.buckets().read_label_bucket_slot(slot).unwrap(),
+                bucket
+            );
+            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), stats);
+            for (memory, saved) in memories.iter().zip(&backing) {
+                let mut bytes = vec![0; saved.len()];
+                memory.read(0, &mut bytes);
+                assert_eq!(&bytes, saved, "pre-existing backing changed on rejection");
+            }
+        };
+        free_records.fail_at_grow(free_records.grow_count() + 1);
+        let error = graph
+            .fold_bucket_values_run_into_slab(src, slot, bucket)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LabeledOperationError::Store(LaraOperationError::RebalanceFailed(_))
+        ));
+        assert_eq!(free_records.grow_count(), grow_before + 2);
+        unchanged();
+        free_records.fail_never();
+        crate::lara::edge_inline_property::force_inline_property_bytes_allocation_error_after(0);
+        let error = graph
+            .fold_bucket_values_run_into_slab(src, slot, bucket)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LabeledOperationError::Store(LaraOperationError::RebalanceFailed(_))
+        ));
+        unchanged();
+        let folded = graph
+            .fold_bucket_values_run_into_slab(src, slot, bucket)
+            .unwrap();
+        assert_eq!(
+            graph.values.allocator_stats().free_bytes,
+            stats.free_bytes + 8
+        );
+        for (ordinal, target) in [11, 22].into_iter().enumerate() {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&folded, ordinal as u32, None)
+                    .unwrap(),
+                retained_compaction_value(target, 8)
+            );
+        }
     }
 
     #[test]

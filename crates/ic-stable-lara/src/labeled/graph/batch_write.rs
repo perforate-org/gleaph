@@ -1202,6 +1202,27 @@ where
             preflight.push(p);
         }
 
+        // Reserve old-span retirement at commit, or consumed prefixes plus the
+        // appended tail on rollback, before changing logical allocator state.
+        let value_allocations = preflight
+            .iter()
+            .filter(|run| {
+                matches!(
+                    run.inline_property_bytes_allocation,
+                    Some(
+                        InlinePropertyBytesAllocationKind::New { .. }
+                            | InlinePropertyBytesAllocationKind::GrowInPlace { .. }
+                            | InlinePropertyBytesAllocationKind::Reallocated { .. }
+                    )
+                )
+            })
+            .count() as u64;
+        if value_allocations > 0 {
+            self.values
+                .reserve_retired_byte_spans(value_allocations + 1)
+                .map_err(storage_resize_error)?;
+        }
+
         // Phase 2.25: reserve the cumulative in-place leaf expansion for every
         // leaf that needs it. Doing this once per leaf after all runs have been
         // projected avoids fragmenting the free span store with incremental
@@ -3089,18 +3110,6 @@ where
                         let new_offset = inline_property_bytes_offset.expect(
                             "reserve inline_property_bytes offset for inline property bytes span",
                         );
-                        let width = u64::from(res.inline_property_width);
-                        let old_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
-                            .checked_mul(width)
-                            .expect("reserve guaranteed existing inline property byte count");
-                        if bucket.inline_property_bytes_slab_slots() > 0
-                            && new_offset != bucket.inline_property_bytes_offset()
-                        {
-                            graph
-                                .values
-                                .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
-                                .expect("reserve guaranteed slab inline property span retirement");
-                        }
                         updated_bucket = updated_bucket.with_inline_property_bytes_slab_slots(
                             bucket
                                 .inline_property_bytes_slab_slots()
@@ -3125,18 +3134,6 @@ where
                         let new_offset = inline_property_bytes_offset.expect(
                             "reserve inline_property_bytes offset for inline property bytes span",
                         );
-                        let width = u64::from(res.inline_property_width);
-                        let old_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
-                            .checked_mul(width)
-                            .expect("reserve guaranteed existing inline property byte count");
-                        if bucket.inline_property_bytes_slab_slots() > 0
-                            && new_offset != bucket.inline_property_bytes_offset()
-                        {
-                            graph
-                                .values
-                                .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
-                                .expect("reserve guaranteed slab inline property span retirement");
-                        }
                         updated_bucket = updated_bucket.with_inline_property_bytes_slab_slots(
                             bucket
                                 .inline_property_bytes_slab_slots()
@@ -3164,10 +3161,7 @@ where
                     updated_bucket = updated_bucket.with_tree_mode(true);
                 }
             }
-            graph
-                .buckets
-                .write_label_bucket_slot(bucket_slot, updated_bucket)
-                .expect("reserve guaranteed bucket slot writability");
+            graph.publish_bucket_inline_property_bytes_span(bucket_slot, bucket, updated_bucket);
 
             // ADR 0096 §5 density parity: `actual` counts live slab/log edge
             // records. A tree run appends rows to LTB blocks, so it leaves the
@@ -3428,14 +3422,6 @@ where
             let old_bytes = u64::from(existing_inline_property_bytes_slots)
                 .checked_mul(width)
                 .expect("reserve guaranteed relocated old inline property bytes");
-            if existing_inline_property_bytes_slots > 0
-                && new_offset != bucket.inline_property_bytes_offset()
-            {
-                graph
-                    .values
-                    .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
-                    .expect("reserve guaranteed relocated old inline property retirement");
-            }
             updated_bucket = updated_bucket
                 .with_inline_property_bytes_offset(new_offset)
                 .with_inline_property_bytes_slab_slots(
@@ -3459,10 +3445,7 @@ where
                 .checked_add(u64::from(res.edge_slot_count))
                 .expect("reserve guaranteed relocated inline property slots written");
         }
-        graph
-            .buckets
-            .write_label_bucket_slot(bucket_slot, updated_bucket)
-            .expect("reserve guaranteed relocated bucket write");
+        graph.publish_bucket_inline_property_bytes_span(bucket_slot, bucket, updated_bucket);
         (
             u64::from(res.edge_slot_count),
             inline_property_bytes_slots_written,
@@ -3894,14 +3877,6 @@ where
             let had_bytes = u64::from(existing_inline_property_bytes_slots)
                 .checked_mul(width)
                 .expect("reserve guaranteed existing inline property byte count");
-            if existing_inline_property_bytes_slots > 0
-                && new_inline_property_bytes_offset != new_bucket.inline_property_bytes_offset()
-            {
-                graph
-                    .values
-                    .retire_byte_span(new_bucket.inline_property_bytes_offset(), had_bytes)
-                    .expect("reserve guaranteed expanded inline property span retirement");
-            }
             updated_bucket = updated_bucket
                 .with_inline_property_bytes_offset(new_inline_property_bytes_offset)
                 .with_inline_property_bytes_slab_slots(total_inline_property_bytes_slots as u32)
@@ -3929,10 +3904,11 @@ where
             }
         }
 
-        graph
-            .buckets
-            .write_label_bucket_slot(new_bucket_slot, updated_bucket)
-            .expect("reserve guaranteed bucket writability");
+        graph.publish_bucket_inline_property_bytes_span(
+            new_bucket_slot,
+            new_bucket,
+            updated_bucket,
+        );
         // The run's rows now live in the expanded prefix: release it (best-effort, like every
         // other span release on this path - a failed release leaks a class, never a row).
         if let Some(run) = folded_run {

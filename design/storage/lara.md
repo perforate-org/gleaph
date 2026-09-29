@@ -144,7 +144,7 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 
 **`FreeSpanStore` is a first-class LARA component**, not an IC-specific extension.
 
-**Role:** index of **retired physical edge-slab ranges** that update code may allocate from (best-fit, coalescing with neighbors).
+**Role:** index of **retired physical ranges** that update code may allocate from (best-fit, coalescing with neighbors). Each instance uses its owning store's units: edge slots, bucket slots, or inline-property bytes.
 
 **Implemented by-start format:** `FreeSpanStore::by_start` uses the paged map's
 [compact layout](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#paged-map-compact-layout).
@@ -165,7 +165,7 @@ bucket-descriptor and inline-property-byte FreeSpan stores, without allocating n
 
 **Why LARA has this and DGAP does not (as explicitly):** DGAP often recovers space through `resize_V1` and implicit segment totals on a PMEM heap. LARA targets **incremental** relocation — `segment_slide`, in-place expansion into adjacent free gaps (`try_expand_segment_in_place`), and reuse without rewriting the entire slab on every cascade. The free-span store is the retirement pool that makes localized relocation safe and reusable.
 
-**Failure-atomic stable mutations.** Two owner-level mutations are split into an infallible validation phase, a preflight phase that only grows backing memory, and a commit phase that publishes logical metadata:
+**Failure-atomic stable mutations.** Owner-level mutations are split into an infallible validation phase, a preflight phase that only grows backing memory, and a commit phase that publishes logical metadata:
 
 1. `EdgeStore::grow_segment_tree_to` reserves `counts_store` and `span_meta` before it migrates counts, appends span-meta rows, and writes the edge header (ADR 0097 removed the per-segment log capacity this step used to reserve).
 2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
@@ -180,6 +180,19 @@ not an assumed exact page-growth event.
 After the first commit write, no recoverable `Memory::grow` or allocation error remains. Physical capacity reserved during preflight is not canonical graph state: retaining it after an error is safe, and the pre-error logical layout reopens unchanged.
 
 **Commit order invariant** (from `lara.rs`): relocate and rewrite all live pointers first; **only then** `release_span` old physical ranges. Queries never observe free-span slots as live adjacency.
+
+**Value-span replacement (implemented in the spill worktree).**
+`LabeledLaraGraph::publish_bucket_inline_property_bytes_span` owns descriptor publication followed by
+retirement of a changed, nonempty source span through `EdgeInlinePropertyBytesStore`. Scalar admission,
+value-slab compaction and the batch Slab/SlabHoles/RelocatedSlab/ExpandedSlab paths share this boundary.
+Callers reserve retirement capacity before mutation; batch preflight also covers consumed-prefix and
+appended-tail rollback. Scalar admission checks the final vertex allocation delta before allocating a
+destination. Once the replacement is backed, publication and retirement are infallible commit work;
+a post-preflight failure is an invariant violation, not a recoverable error after publication.
+A sufficient span is retained, and in-place growth never retires its live source. Slab compaction
+consumes registered free spans; it does not discover orphaned prefixes. Fresh state is required for
+experiments that previously leaked those bytes; no orphan recovery or layout change is introduced.
+[Repeated-relocation, failure-boundary and fold-cost evidence](../evidence/adr0097-value-span-retirement.md).
 
 **Labeled note:** per-vertex `release_vertex_edge_span_footprint` on routine growth is **not** this contract; see [ADR 0001](../adr/0001-labeled-segment-slide.md).
 
