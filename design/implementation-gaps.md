@@ -49,21 +49,57 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-TINY-CURSOR-EXTENT — Cursor paging still treats tiny placement as empty
 
-- **Status:** Open; found while repairing tiny rank/select and visitor identity.
-- **Observed behavior:** Static tracing shows `visit_edges_from_slot_with_inline_property` derives
-  `logical_extent` from `read_label_bucket_placement_info`'s stored/spill counts. Both are zero for
-  a nonempty tiny bucket, so a page beginning at zero returns `(0, true)` without visiting its rows.
-  This cursor path was not executed in the bounded repair's runtime tests.
+- **Status:** Resolved for slice0381's bounded tiny cursor/selected-read contract; independently
+  approved. Disposition **Fix now**. Fixing commit: `fix(lara): preserve tiny cursor extent and
+  empty values`, on parent `7651d6e52`; the [implementation report](evidence/adr0097-tiny-cursor-extent.md#review-and-commit-boundary)
+  identifies the exact external commit receipt.
+- **Observed behavior:** The new `cursor_tiny_pages_keep_used_width` runtime regression confirms
+  a four-edge tiny bucket returns `(0, true)` for start0/limit1 instead of `(1, false)`.
+  `read_label_bucket_placement_info` deliberately reports zero slab/spill geometry for tiny;
+  the cursor incorrectly reconstructed its logical extent from that projection.
 - **Expected behavior:** The cursor must cover the descriptor's tombstone-inclusive used prefix;
   placement capacity is not logical extent. See [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
 - **Owner:** `ic-stable-lara`, `labeled/graph/traverse.rs::visit_edges_from_slot_with_inline_property`;
   public caller `DeferredBidirectionalLabeledLaraGraph::visit_forward_edges_from_slot_with_inline_property`.
-- **Evidence:** [Tiny read repair](evidence/adr0097-tiny-read-invariants.md); the sibling rank/select
-  repair uses the existing `bucket_reserved_edge_slots` extent owner, but leaves cursor semantics unchanged.
-- **Impact:** Cursor-based callers can mistake a nonempty tiny label for an exhausted page.
-- **Next decision:** Add a cursor regression with holes, nonzero starts, both orders and exact
-  `next_slot`/`exhausted` assertions, then route the cursor through the canonical extent owner.
-  This is separate from full-label/rank/select repair, not a compatibility requirement.
+- **Evidence:** [Cursor extent repair](evidence/adr0097-tiny-cursor-extent.md); regression
+  `cursor_tiny_pages_keep_used_width` covers mirrored orientations, both orders, holes, exact
+  cursor pairs, zero limits, missing labels, empty buckets and unchanged stable-memory bytes.
+  `cursor_slab_pages_keep_retained_spill_and_values` covers independent retained edge/value planes.
+- **Necessary read prerequisite (Fix now):** The extent-only candidate reaches the shared
+  `visit_edges_at_with_inline_property` path, which interpreted a tiny slot2 tombstone as width65535
+  and read outside the value memory. A direct selected-property call reproduces the same failure.
+  That reader now dispatches Tiny/Tree/Slab before schema interpretation and reuses the existing
+  valueless selected-topology path for tiny; no cursor-specific decoder or fallback was added.
+- **Implemented boundary:** The normal bucket cursor resolves the descriptor and consumes the
+  existing `bucket_reserved_edge_slots` owner. Duplicate placement arithmetic is removed;
+  vertex-owned bypass width, canonical topology decoding, tree/slab value hydration,
+  page-end arithmetic and public signatures are unchanged.
+- **Impact:** The recorded false-exhaustion and native tombstone/schema failures are repaired.
+  The bounded runtime tests and both independent reviews pass; inherited strict lint remains failed.
+  No full-suite, canonical-lock, mutation or Graph integration approval is implied.
+- **Next decision:** The separate sparse slab work-bound gap below remains open. This repair is
+  separate from slice0380's full-label/rank/select contract, not a compatibility path.
+
+### GAP-SPARSE-CURSOR-PREFIX — Sparse slab value pages can rescan the cursor prefix
+
+- **Status:** Open; disposition **Record here**, non-blocking for slice0381's tiny extent repair.
+- **Observed behavior:** Static tracing shows that the cursor selects only `[start_slot, end_slot)`,
+  but its shared selected-property reader scans `[0, last_requested_slot + 1)` when a property-bearing
+  slab bucket has holes, to recover live value ranks. The existing cursor and Graph export comments
+  promise no prior-prefix rescan; that work-bound claim is not implemented for this branch.
+  No instruction/scaling measurement of these pages ran in slice0381.
+- **Expected or needed behavior:** Resolve the cursor's work-bound contract explicitly: bounded
+  selected positions are not proof of bounded underlying topology work. Tiny's descriptor-only
+  selected reads and native tree property addressing do not use this sparse slab rank scan.
+- **Owner:** `ic-stable-lara`, `traverse.rs::visit_edges_at_with_inline_property`'s sparse slab
+  live-rank mapping, consumed by `visit_edges_from_slot_with_inline_property`; Graph owns the
+  export cursor, not a second physical value-rank decoder.
+- **Evidence:** [Cursor repair limitations](evidence/adr0097-tiny-cursor-extent.md#review-and-commit-boundary)
+  and [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
+- **Impact:** Later sparse property pages can repeat prior topology reads despite a small page limit.
+- **Next decision:** Design and measure the owning LARA cursor/value-rank contract in a separate
+  slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
+  or weakened runtime assertion is introduced by slice0381.
 
 ### GAP-LARA-TEST-CLIPPY — Strict test-target lint is blocked
 

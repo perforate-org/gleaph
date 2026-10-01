@@ -1721,8 +1721,9 @@ where
     /// Unlike the offset-based visitors, this method never walks the prefix before `start_slot`.
     /// It selects at most `limit` logical positions directly and resolves only those positions,
     /// so callers can persist `next_slot` as an opaque page cursor without turning later pages
-    /// into unbounded rescans. `exhausted` is computed from the bucket's stable logical extent,
-    /// including the overflow-log suffix.
+    /// into unbounded rescans. `exhausted` uses the canonical logical extent, including tiny
+    /// tombstone holes and resident spill rows, rather than placement geometry. Both orders
+    /// select `[start_slot, end_slot)`; descending reverses delivery within that page only.
     pub(crate) fn visit_edges_from_slot_with_inline_property(
         &self,
         owner: VertexId,
@@ -1742,18 +1743,13 @@ where
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
         let logical_extent = if vertex.is_default_edge_labeled() {
-            // Bypass rows have no inline bytes, but their physical slab extent is still the
-            // complete logical slot range accepted by `read_edge_state_internal`.
             vertex.stored_slots
         } else {
-            let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
+            let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)?
+            else {
                 return Ok((start_slot, true));
             };
-            info.stored_edge_slots
-                .checked_add(info.edge_spill_rows)
-                .ok_or(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ))?
+            self.bucket_reserved_edge_slots(owner, &bucket)
         };
 
         if start_slot >= logical_extent {
@@ -2938,36 +2934,40 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        if bucket.is_tree_mode() {
-            // Native values retain the original edge positions, including holes. Slab live-rank
-            // mapping and the independent slab/run value sequence do not apply to either tree.
-            let width = bucket.inline_property_byte_width();
-            let mut bytes = vec![0; usize::from(width)];
-            for slot_index in selected {
-                let EdgeSlotState::Live(edge) =
-                    self.read_edge_state_at_slot(&bucket, slot_index)?
-                else {
-                    continue;
-                };
-                if width > 0 {
-                    super::tree_read::read_property_value_at_slot(
-                        self, &bucket, slot_index, &mut bytes,
-                    )?;
+        let width = match BucketMode::from_bucket(&bucket) {
+            // Tiny schema bytes are target payload, including native tombstone encodings.
+            // Reuse valueless selected topology without interpreting those bytes as a width.
+            BucketMode::Tiny => 0,
+            BucketMode::Tree => {
+                // Native values retain the original edge positions, including holes. Slab live-rank
+                // mapping and the independent slab/run value sequence do not apply to either tree.
+                let width = bucket.inline_property_byte_width();
+                let mut bytes = vec![0; usize::from(width)];
+                for slot_index in selected {
+                    let EdgeSlotState::Live(edge) =
+                        self.read_edge_state_at_slot(&bucket, slot_index)?
+                    else {
+                        continue;
+                    };
+                    if width > 0 {
+                        super::tree_read::read_property_value_at_slot(
+                            self, &bucket, slot_index, &mut bytes,
+                        )?;
+                    }
+                    if let ControlFlow::Break(value) = visit(
+                        BucketEntryPosition::new(slot_index),
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(width, &bytes),
+                        },
+                    ) {
+                        return Ok(ControlFlow::Break(value));
+                    }
                 }
-                if let ControlFlow::Break(value) = visit(
-                    BucketEntryPosition::new(slot_index),
-                    EdgeWithInlinePropertyRef {
-                        edge,
-                        inline_property: InlinePropertyBytesRef::from_parts(width, &bytes),
-                    },
-                ) {
-                    return Ok(ControlFlow::Break(value));
-                }
+                return Ok(ControlFlow::Continue(()));
             }
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        let width = bucket.inline_property_byte_width();
+            BucketMode::Slab => bucket.inline_property_byte_width(),
+        };
         if width == 0 {
             return self.visit_bucket_edge_slots(&bucket, &selected, order, |slot, edge| {
                 visit(
@@ -4863,6 +4863,251 @@ mod tests {
             }
             graph.edges().write_slots_contiguous(root, &saved).unwrap();
             assert_eq!(snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn cursor_tiny_pages_keep_used_width() {
+        let memories = [labeled_memories(), labeled_memories()];
+        let default_label = BucketLabelKey::directed_from_index(1);
+        let label = BucketLabelKey::directed_from_index(2);
+        let forward = open_labeled_graph(&memories[0], 256, default_label);
+        let reverse = open_labeled_graph(&memories[1], 256, default_label);
+        for graph in [&forward, &reverse] {
+            for _ in 0..3 {
+                graph.push_vertex(LabeledVertex::default()).unwrap();
+            }
+        }
+        let rows = [
+            (&forward, VertexId::from(1), 2),
+            (&reverse, VertexId::from(2), 1),
+        ];
+        for (graph, owner, target) in rows {
+            for _ in 0..4 {
+                graph
+                    .insert_edge(
+                        owner,
+                        label,
+                        TestEdge { target },
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+        }
+        let snapshot = || {
+            memories
+                .iter()
+                .flatten()
+                .map(|memory| memory.borrow().clone())
+                .collect::<Vec<_>>()
+        };
+        // Both orientation rows retain identical logical positions, not identical neighbors.
+        for (removed, live, extent) in [
+            (&[][..], &[0, 1, 2, 3][..], 4),
+            (&[0, 2][..], &[1, 3][..], 4),
+            (&[1, 3][..], &[][..], 0),
+        ] {
+            for (graph, owner, target) in rows {
+                for &slot in removed {
+                    assert_eq!(
+                        graph.remove_edge_at_slot(owner, label, slot).unwrap(),
+                        Some(TestEdge { target })
+                    );
+                }
+                let BucketSearch::Found { bucket, .. } = graph
+                    .find_bucket(owner, &graph.vertices().get(owner), label)
+                    .unwrap()
+                else {
+                    panic!("tiny bucket missing");
+                };
+                assert!(bucket.is_tiny_mode());
+                assert_eq!(bucket.tiny_used_width(), extent);
+                assert_eq!(bucket.degree(), live.len() as u32);
+                let placement = graph
+                    .read_label_bucket_placement_info(owner, label)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    (placement.stored_edge_slots, placement.edge_spill_rows),
+                    (0, 0)
+                );
+            }
+            let before = snapshot();
+            for (graph, owner, target) in rows {
+                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                    let selected = [u32::MAX, 3, 2, 1, 0, 4, 3].map(BucketEntryPosition::new);
+                    let mut selected_rows = Vec::new();
+                    assert_eq!(
+                        graph
+                            .visit_edges_at_with_inline_property(
+                                owner,
+                                label,
+                                &selected,
+                                order,
+                                |slot, item| {
+                                    assert_eq!(item.inline_property.width(), 0);
+                                    assert!(item.inline_property.bytes().is_empty());
+                                    selected_rows.push((slot.raw(), item.edge.target));
+                                    ControlFlow::<()>::Continue(())
+                                },
+                            )
+                            .unwrap(),
+                        ControlFlow::Continue(())
+                    );
+                    let mut expected_selected: Vec<_> =
+                        live.iter().map(|&slot| (slot, target)).collect();
+                    if order == OutEdgeOrder::Descending {
+                        expected_selected.reverse();
+                    }
+                    assert_eq!(selected_rows, expected_selected);
+                    let mut stopped_rows = Vec::new();
+                    let flow = graph
+                        .visit_edges_at_with_inline_property(
+                            owner,
+                            label,
+                            &selected,
+                            order,
+                            |slot, item| {
+                                let row = (slot.raw(), item.edge.target);
+                                stopped_rows.push(row);
+                                ControlFlow::Break(row)
+                            },
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        flow,
+                        expected_selected
+                            .first()
+                            .copied()
+                            .map(ControlFlow::Break)
+                            .unwrap_or(ControlFlow::Continue(()))
+                    );
+                    assert_eq!(
+                        stopped_rows,
+                        expected_selected[..expected_selected.len().min(1)]
+                    );
+                    for (start, limit, end, exhausted) in [
+                        (0, 0, 0, false),
+                        (2, 0, 2, false),
+                        (u32::MAX, 0, u32::MAX, false),
+                        (0, 1, 1, false),
+                        (0, 4, 4, true),
+                        (1, 2, 3, false),
+                        (2, 1, 3, false),
+                        (3, 1, 4, true),
+                        (3, u32::MAX, 4, true),
+                        (4, 1, 4, true),
+                        (u32::MAX, 1, 4, true),
+                    ] {
+                        let mut seen = Vec::new();
+                        let cursor = graph
+                            .visit_edges_from_slot_with_inline_property(
+                                owner,
+                                label,
+                                order,
+                                start,
+                                limit,
+                                |slot, edge| {
+                                    assert_eq!(edge.edge_inline_property_byte_width(), 0);
+                                    assert!(edge.edge_inline_property_bytes().is_empty());
+                                    seen.push((slot.raw(), edge.target));
+                                },
+                            )
+                            .unwrap();
+                        let expected_cursor = if extent == 0 && limit != 0 {
+                            (0, true)
+                        } else {
+                            (end, exhausted)
+                        };
+                        assert_eq!(
+                            cursor, expected_cursor,
+                            "owner={owner:?} order={order:?} start={start} limit={limit} extent={extent}"
+                        );
+                        let mut expected: Vec<_> = live
+                            .iter()
+                            .copied()
+                            .filter(|&slot| start <= slot && slot < end)
+                            .map(|slot| (slot, target))
+                            .collect();
+                        if order == OutEdgeOrder::Descending {
+                            expected.reverse();
+                        }
+                        assert_eq!(seen, expected);
+                    }
+                    assert_eq!(
+                        graph
+                            .visit_edges_from_slot_with_inline_property(
+                                owner,
+                                BucketLabelKey::directed_from_index(99),
+                                order,
+                                2,
+                                1,
+                                |_, _| panic!("missing label emitted a row"),
+                            )
+                            .unwrap(),
+                        (2, true)
+                    );
+                }
+            }
+            assert_eq!(snapshot(), before, "cursor reads changed stable memory");
+        }
+    }
+
+    #[test]
+    fn cursor_slab_pages_keep_retained_spill_and_values() {
+        for width in [8, 33] {
+            let graph = retained_compaction_fixture(width);
+            let owner = VertexId::from(0);
+            let label = BucketLabelKey::from_raw(2);
+            let before = graph
+                .read_vertex_label_buckets(&graph.vertices().get(owner))
+                .unwrap();
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                for (start, limit, end, exhausted, live) in [
+                    (7, 4, 11, false, vec![7, 8, 10]),
+                    (8, 2, 10, false, vec![8]),
+                    (15, 4, 17, true, vec![15, 16]),
+                    (17, 1, 17, true, vec![]),
+                    (u32::MAX, 1, 17, true, vec![]),
+                ] {
+                    let mut seen = Vec::new();
+                    assert_eq!(
+                        graph
+                            .visit_edges_from_slot_with_inline_property(
+                                owner,
+                                label,
+                                order,
+                                start,
+                                limit,
+                                |slot, edge| {
+                                    assert_eq!(edge.edge_slot_index_raw(), slot.raw());
+                                    assert_eq!(edge.edge_inline_property_byte_width(), width);
+                                    seen.push((
+                                        slot.raw(),
+                                        edge.target,
+                                        edge.edge_inline_property_bytes().to_vec(),
+                                    ));
+                                },
+                            )
+                            .unwrap(),
+                        (end, exhausted)
+                    );
+                    let mut expected: Vec<_> = live
+                        .into_iter()
+                        .map(|slot| (slot, slot, retained_compaction_value(slot, width)))
+                        .collect();
+                    if order == OutEdgeOrder::Descending {
+                        expected.reverse();
+                    }
+                    assert_eq!(seen, expected);
+                }
+            }
+            assert_eq!(
+                graph
+                    .read_vertex_label_buckets(&graph.vertices().get(owner))
+                    .unwrap(),
+                before
+            );
         }
     }
 
