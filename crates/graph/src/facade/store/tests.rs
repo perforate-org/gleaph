@@ -6,9 +6,7 @@ use gleaph_graph_kernel::entry::{
 };
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
-    labeled::{
-        BucketLabelKey as LaraLabelId, LabeledEdgeInlinePropertyBatchScratch, LabeledOrientation,
-    },
+    labeled::{LabeledEdgeInlinePropertyBatchScratch, LabeledOrientation},
     traits::CsrEdge,
 };
 use std::collections::BTreeMap;
@@ -1298,88 +1296,198 @@ fn detach_delete_homogeneous_directed_edge() {
     assert!(store.directed_in_edges(b).expect("in").is_empty());
 }
 
+fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
+    use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
+
+    let store = GraphStore::new();
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
+    let property = store.get_or_insert_property_id("move_marker").unwrap();
+    let budget = MaintenanceBudget {
+        max_instructions: 0,
+        reserve_instructions: 0,
+        checkpoint_every: 1,
+        max_work_items: None,
+        max_segments: None,
+        max_delete_edge_steps: None,
+    };
+    for (mode, seed_len, final_slots) in [("tiny", 3, [1, 2]), ("slab", 5, [0, 1])] {
+        let source = store.insert_vertex().unwrap();
+        let targets: Vec<_> = (0..seed_len)
+            .map(|_| store.insert_vertex().unwrap())
+            .collect();
+        let handles: Vec<_> = targets
+            .iter()
+            .enumerate()
+            .map(|(slot, &target)| {
+                let handle = store
+                    .insert_directed_edge(source, target, Some(label))
+                    .unwrap();
+                assert_eq!(handle, EdgeHandle::at_slot(source, wire_label, slot as u32));
+                handle
+            })
+            .collect();
+        let placement = || {
+            store.with_graph_mut(|graph| {
+                graph
+                    .read_forward_bucket_placement_info(source, wire_label)
+                    .unwrap()
+                    .unwrap()
+            })
+        };
+        let rows = || {
+            store
+                .directed_out_edges(source)
+                .unwrap()
+                .into_iter()
+                .map(|edge| {
+                    assert_eq!(edge.label_id, wire_label.raw());
+                    assert!(edge.edge_inline_property_bytes().is_empty());
+                    (edge.edge_slot_index.raw(), edge.neighbor_vid())
+                })
+                .collect::<Vec<_>>()
+        };
+        let drain_span = || {
+            assert_eq!(
+                GraphStore::maintenance_policy_for_label(wire_label),
+                ic_stable_lara::labeled::EdgePlacementPolicy::Insertion
+            );
+            assert_eq!(store.maintenance_queue_len(), 0, "fresh capture at {mode}");
+            store.with_graph_mut(|graph| {
+                graph
+                    .mark_compact_vertex_edge_span(
+                        LabeledOrientation::Forward,
+                        source,
+                        0,
+                        &GraphStore::maintenance_policy_for_label,
+                    )
+                    .unwrap();
+            });
+            assert!(store.maintenance_queue_len() > 0, "enqueued at {mode}");
+            let report = store.run_maintenance_best_effort(budget).unwrap();
+            assert_eq!(report.remaining_queue_len(), 0, "finished at {mode}");
+        };
+        // Ordinary fifth insertion leaves tiny naturally. Remove only padding and
+        // prove slab-only storage; drain completion alone is not this precondition.
+        if seed_len == 5 {
+            for &handle in &handles[3..] {
+                store.delete_edge_by_handle(handle).unwrap();
+            }
+            drain_span();
+            assert!(placement().stored_edge_slots >= 3, "slab prefix at {mode}");
+        } else {
+            assert_eq!(placement().stored_edge_slots, 0, "spanless tiny at {mode}");
+        }
+        assert_eq!((placement().degree, placement().edge_spill_rows), (3, 0));
+        assert_eq!(
+            rows(),
+            vec![(0, targets[0]), (1, targets[1]), (2, targets[2])]
+        );
+        for (&handle, marker) in handles[..3].iter().zip([11, 22, 33]) {
+            store
+                .set_edge_property(
+                    handle.occurrence(LabeledOrientation::Forward),
+                    property,
+                    Value::Int64(marker),
+                )
+                .unwrap();
+        }
+        store.delete_edge_by_handle(handles[0]).unwrap();
+        assert_eq!(
+            rows(),
+            vec![(1, targets[1]), (2, targets[2])],
+            "before drain at {mode}"
+        );
+        assert!(store.directed_in_edges(targets[0]).unwrap().is_empty());
+        for (&handle, marker) in handles[1..3].iter().zip([22, 33]) {
+            assert_eq!(
+                store
+                    .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                    .unwrap(),
+                Some(Value::Int64(marker)),
+                "before move at {mode}"
+            );
+        }
+        drain_span();
+        assert_eq!(
+            rows(),
+            vec![(final_slots[0], targets[1]), (final_slots[1], targets[2])],
+            "exact survivor order and slots at {mode}"
+        );
+        assert_eq!((placement().degree, placement().edge_spill_rows), (2, 0));
+        for ((slot, target), marker) in final_slots
+            .into_iter()
+            .zip([targets[1], targets[2]])
+            .zip([22, 33])
+        {
+            let handle = EdgeHandle::at_slot(source, wire_label, slot);
+            assert_eq!(
+                store
+                    .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                    .unwrap(),
+                Some(Value::Int64(marker)),
+                "canonical sidecar at {mode}"
+            );
+            let incoming = store.directed_in_edges(target).unwrap();
+            assert_eq!(incoming.len(), 1);
+            assert_eq!(
+                (incoming[0].neighbor_vid(), incoming[0].label_id),
+                (source, wire_label.raw())
+            );
+            let reverse =
+                EdgeHandle::at_slot(target, wire_label, incoming[0].edge_slot_index.raw());
+            assert_eq!(
+                store
+                    .edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)
+                    .unwrap(),
+                Some(Value::Int64(marker)),
+                "reverse canonical sidecar at {mode}"
+            );
+        }
+        let old_third =
+            store.edge_property(handles[2].occurrence(LabeledOrientation::Forward), property);
+        if seed_len == 5 {
+            assert!(
+                matches!(&old_third, Err(GraphStoreError::CounterpartLookup(
+                CounterpartLookupError::SourceNotFound(occurrence)
+            )) if *occurrence == handles[2].occurrence(LabeledOrientation::Forward)),
+                "non-live old third at {mode}: {old_third:?}"
+            );
+        } else {
+            assert_eq!(
+                old_third.unwrap(),
+                Some(Value::Int64(33)),
+                "tiny handle remains live"
+            );
+            assert_eq!(placement().stored_edge_slots, 0);
+        }
+    }
+}
+
 #[test]
 fn forward_edge_compaction_moves_property_sidecars() {
-    let store = GraphStore::new();
-    let source = store.insert_vertex().expect("source");
-    let first = store.insert_vertex().expect("first");
-    let second = store.insert_vertex().expect("second");
-    let third = store.insert_vertex().expect("third");
+    use gleaph_graph_kernel::plan_exec::{
+        EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+    };
     let label = crate::test_labels::edge_label_id_for_name("CompactionMovesForward");
-    let property = store
-        .get_or_insert_property_id("move_marker")
-        .expect("property");
-
-    let first_edge = store
-        .insert_directed_edge(source, first, Some(label))
-        .expect("first edge");
-    store
-        .insert_directed_edge(source, second, Some(label))
-        .expect("second edge");
-    store
-        .insert_directed_edge(source, third, Some(label))
-        .expect("third edge");
-
-    let old_third = EdgeHandle::at_slot(
-        source,
-        lara_label(label.pack(EdgeDirectedness::Directed)),
-        2,
-    );
-    store
-        .set_edge_property(
-            old_third.occurrence(LabeledOrientation::Forward),
-            property,
-            Value::Int64(33),
-        )
-        .expect("set property");
-    store
-        .delete_edge_by_handle(first_edge)
-        .expect("delete first");
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &super::GraphStore::maintenance_policy_for_label,
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(ResolvedLabelTable {
+        edge: vec![
+            ResolvedEdgeLabel::new(
+                "CompactionMovesForward",
+                label,
+                gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::no_inline_property(),
             )
-            .expect("mark compaction");
-    });
-    store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        })
-        .expect("maintenance");
-
-    let moved = store
-        .directed_out_edges(source)
-        .expect("out edges")
-        .into_iter()
-        .find(|edge| edge.neighbor_vid() == third)
-        .expect("third edge after compaction");
-    assert_eq!(moved.edge_slot_index, EdgeSlotIndex::from_raw(1));
-    let new_third = EdgeHandle::at_slot(
-        source,
-        LaraLabelId::from_raw(moved.label_id),
-        moved.edge_slot_index.raw(),
-    );
+            .with_ordering(EdgeOrderingPolicy::Insertion),
+        ],
+        ..Default::default()
+    }));
     assert_eq!(
-        store
-            .edge_property(new_third.occurrence(LabeledOrientation::Forward), property)
-            .unwrap(),
-        Some(Value::Int64(33))
+        crate::edge_inline_property_schema::resolved_edge_label_with(None, label)
+            .unwrap()
+            .ordering,
+        EdgeOrderingPolicy::Insertion
     );
-    assert!(
-        store
-            .edge_property(old_third.occurrence(LabeledOrientation::Forward), property)
-            .is_err(),
-        "stale handle after compaction must fail closed"
-    );
+    check_forward_sidecars_across_maintenance(label);
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
 }
 
 #[test]
@@ -1780,81 +1888,11 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
 
 #[test]
 fn maintenance_without_resolved_table_compacts_order_preserving() {
-    // No resolved table and a no-profile label: the maintenance resolver maps the absent
-    // policy to order-preserving (never swap), so the left-pack layout survives.
-    let store = GraphStore::new();
-    let source = store.insert_vertex().expect("source");
-    let first = store.insert_vertex().expect("first");
-    let second = store.insert_vertex().expect("second");
-    let third = store.insert_vertex().expect("third");
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
     let label = crate::test_labels::edge_label_id_for_name("SafeFallbackCompaction");
-    let property = store
-        .get_or_insert_property_id("safe_fallback_marker")
-        .expect("property");
-
-    let first_edge = store
-        .insert_directed_edge(source, first, Some(label))
-        .expect("first edge");
-    store
-        .insert_directed_edge(source, second, Some(label))
-        .expect("second edge");
-    let third_edge = store
-        .insert_directed_edge(source, third, Some(label))
-        .expect("third edge");
-    store
-        .set_edge_property(
-            third_edge.occurrence(LabeledOrientation::Forward),
-            property,
-            Value::Int64(33),
-        )
-        .expect("set property");
-    store
-        .delete_edge_by_handle(first_edge)
-        .expect("delete first");
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &super::GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark compaction");
-    });
-    store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        })
-        .expect("maintenance");
-
-    let third_edge = store
-        .directed_out_edges(source)
-        .expect("out edges")
-        .into_iter()
-        .find(|edge| edge.neighbor_vid() == third)
-        .expect("third edge after compaction");
-    assert_eq!(
-        third_edge.edge_slot_index,
-        EdgeSlotIndex::from_raw(1),
-        "absent policy must compact order-preservingly (left-pack), not swap"
-    );
-    let new_third = EdgeHandle::at_slot(
-        source,
-        lara_label(label.pack(EdgeDirectedness::Directed)),
-        third_edge.edge_slot_index.raw(),
-    );
-    assert_eq!(
-        store
-            .edge_property(new_third.occurrence(LabeledOrientation::Forward), property)
-            .unwrap(),
-        Some(Value::Int64(33)),
-        "sidecar follows the order-preserving move"
-    );
+    assert!(crate::edge_inline_property_schema::resolved_edge_label_with(None, label).is_none());
+    check_forward_sidecars_across_maintenance(label);
+    assert!(crate::edge_inline_property_schema::resolved_edge_label_with(None, label).is_none());
 }
 
 #[test]
