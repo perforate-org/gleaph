@@ -291,7 +291,6 @@ where
         &self,
         owner: VertexId,
         label: BucketLabelKey,
-        logical_slots: u32,
         mut visit: impl FnMut(u32, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
@@ -306,7 +305,7 @@ where
         let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
             return Ok(ControlFlow::Continue(()));
         };
-        for slot_index in 0..logical_slots {
+        for slot_index in 0..self.bucket_reserved_edge_slots(owner, &bucket) {
             match self.read_edge_state_at_slot(&bucket, slot_index)? {
                 EdgeSlotState::Missing => break,
                 EdgeSlotState::Tombstone => (),
@@ -363,20 +362,8 @@ where
         if info.degree == 1 {
             return Ok(0);
         }
-        // ADR 0096 §5: tiny buckets hold live edges but zero reserved
-        // capacity (placement reports stored 0); the logical width is the
-        // dense prefix itself. Without this the scan below covers 0 slots.
-        let logical_slots = if info.stored_edge_slots == 0 && info.edge_spill_rows == 0 {
-            info.degree
-        } else {
-            info.stored_edge_slots
-                .checked_add(info.edge_spill_rows)
-                .ok_or(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ))?
-        };
         let mut count = 0u32;
-        let _ = self.visit_live_edge_slots_until(owner, label, logical_slots, |slot, edge| {
+        let _ = self.visit_live_edge_slots_until(owner, label, |slot, edge| {
             if slot >= before_slot.raw() {
                 return ControlFlow::Break(());
             }
@@ -464,21 +451,9 @@ where
         {
             return Ok(Some(BucketEntryPosition::new(0)));
         }
-        // ADR 0096 §5: tiny buckets hold live edges but zero reserved
-        // capacity (placement reports stored 0); the logical width is the
-        // dense prefix itself. Without this the scan below covers 0 slots.
-        let logical_slots = if info.stored_edge_slots == 0 && info.edge_spill_rows == 0 {
-            info.degree
-        } else {
-            info.stored_edge_slots
-                .checked_add(info.edge_spill_rows)
-                .ok_or(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ))?
-        };
         let mut matching = 0u32;
         let mut selected: Option<BucketEntryPosition> = None;
-        let _ = self.visit_live_edge_slots_until(owner, label, logical_slots, |slot, edge| {
+        let _ = self.visit_live_edge_slots_until(owner, label, |slot, edge| {
             if edge.neighbor_vid() != neighbor {
                 return ControlFlow::Continue(());
             }
@@ -490,6 +465,36 @@ where
             ControlFlow::<()>::Continue(())
         })?;
         Ok(selected)
+    }
+
+    /// Visits a descriptor-resident window without renumbering survivors around holes.
+    /// The tiny point reader and shared classifier preserve slot/label metadata in both orders.
+    fn visit_tiny_bucket_edges<B>(
+        &self,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        window: TraversalWindow,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert!(bucket.is_tiny_mode());
+        let width = bucket.tiny_used_width();
+        let offset = window.offset.min(width);
+        let limit = window.limit.unwrap_or(width).min(width - offset);
+        for index in offset..offset + limit {
+            let slot = match order {
+                OutEdgeOrder::Ascending => index,
+                OutEdgeOrder::Descending => width - 1 - index,
+            };
+            if let EdgeSlotState::Live(edge) = Self::read_tiny_edge_state_at_slot(bucket, slot)
+                && let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge)
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Adds label identity to the store's direct slab-prefix/spill-suffix visitor.
@@ -648,20 +653,16 @@ where
             // irrelevant (width ≡ 0 → always empty values); property entries divert
             // here and interpret the bare edges with empty values.
             BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
                 let mut edges = Vec::with_capacity(bucket.degree() as usize);
-                for ordinal in 0..bucket.tiny_used_width() {
-                    let target = bucket.tiny_target(ordinal);
-                    // Layout-native liveness (same predicate as slab/tree read paths).
-                    if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
-                        continue;
-                    }
-                    let edge = E::read_from(&target.to_le_bytes()).with_slot_index(ordinal);
-                    edges.push((ordinal, edge));
-                }
+                let _ = self.visit_tiny_bucket_edges(
+                    bucket,
+                    OutEdgeOrder::Ascending,
+                    TraversalWindow::unbounded(),
+                    |slot, edge| {
+                        edges.push((slot.raw(), edge));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )?;
                 return Ok(super::iter::LabeledSpanIter::inline(edges, order));
             }
             // Slow core iterators read LEG slab+log geometry, which misreads
@@ -792,48 +793,7 @@ where
             // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
             // not storage); the slow funnel serves them inline.
             BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                // Tombstone-inclusive prefix: ordinals are slots in both orders; holes skipped.
-                // (Duplicated asc/desc loops mirror the dense-path style; the
-                // shared closure would need `impl Trait` in closure position.)
-                match order {
-                    OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.tiny_used_width() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .with_slot_index(ordinal);
-                            if let ControlFlow::Break(value) =
-                                visit(BucketEntryPosition::new(ordinal), edge)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                    OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.tiny_used_width()).rev() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .with_slot_index(ordinal);
-                            if let ControlFlow::Break(value) =
-                                visit(BucketEntryPosition::new(ordinal), edge)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                }
-                return Ok(ControlFlow::Continue(()));
+                self.visit_tiny_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
             }
             BucketMode::Slab => {
                 self.visit_slab_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
@@ -1553,60 +1513,7 @@ where
         // Mode dispatch precedes storage reads. Every arm cuts the requested
         // tombstone-inclusive positions before visiting live rows.
         match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny window is a plain ordinal range cut — no slab,
-            // log, or tombstone reads (dense bulk path would misread the anchor).
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                // Tombstone-inclusive positions over the used width, matching the
-                // slab/tree window contract (ADR 0088 §2); dead slots consume
-                // position space but yield nothing.
-                let extent = bucket.tiny_used_width();
-                let offset = window.offset.min(extent);
-                let limit = window
-                    .limit
-                    .map(|l| l.min(extent - offset))
-                    .unwrap_or(extent - offset);
-                match order {
-                    OutEdgeOrder::Ascending => {
-                        for slot in offset..offset + limit {
-                            if E::read_from(&bucket.tiny_target(slot).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
-                                .with_slot_index(slot);
-                            if let ControlFlow::Break(value) =
-                                visit(BucketEntryPosition::new(slot), edge)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                    OutEdgeOrder::Descending => {
-                        let start = extent.saturating_sub(offset + limit);
-                        let end = extent.saturating_sub(offset);
-                        for slot in (start..end).rev() {
-                            if E::read_from(&bucket.tiny_target(slot).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(slot).to_le_bytes())
-                                .with_slot_index(slot);
-                            if let ControlFlow::Break(value) =
-                                visit(BucketEntryPosition::new(slot), edge)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                }
-                return Ok(ControlFlow::Continue(()));
-            }
+            BucketMode::Tiny => self.visit_tiny_bucket_edges(&bucket, order, window, visit),
             BucketMode::Slab => self.visit_slab_bucket_edges(&bucket, order, window, visit),
             // Tree arm: LTB walk with window (arm-guaranteed tree-only).
             BucketMode::Tree => {
@@ -1974,55 +1881,20 @@ where
             // ADR 0096 §5: tiny buckets visit inline (topology + empty values).
             // Width bytes are payload on tiny and must never feed the dense bulk
             // path or the value attach below.
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                match order {
-                    OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.tiny_used_width() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .with_slot_index(ordinal);
-                            if let ControlFlow::Break(value) = visit(
-                                BucketEntryPosition::new(ordinal),
-                                EdgeWithInlinePropertyRef {
-                                    edge,
-                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
-                                },
-                            ) {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                    OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.tiny_used_width()).rev() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .with_slot_index(ordinal);
-                            if let ControlFlow::Break(value) = visit(
-                                BucketEntryPosition::new(ordinal),
-                                EdgeWithInlinePropertyRef {
-                                    edge,
-                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
-                                },
-                            ) {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                }
-                return Ok(ControlFlow::Continue(()));
-            }
+            BucketMode::Tiny => self.visit_tiny_bucket_edges(
+                &bucket,
+                order,
+                TraversalWindow::unbounded(),
+                |slot, edge| {
+                    visit(
+                        slot,
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                        },
+                    )
+                },
+            ),
             BucketMode::Tree | BucketMode::Slab => {
                 if !bucket.is_tree_mode() && width == 0 {
                     return self.visit_slab_bucket_edges(
@@ -2260,38 +2132,12 @@ where
         match BucketMode::from_bucket(&bucket) {
             // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
             // not storage); the slow funnel serves them inline.
-            BucketMode::Tiny => {
-                debug_assert!(
-                    E::BYTES == 4,
-                    "tiny buckets require 4-byte edges (birth gate)"
-                );
-                // Tombstone-inclusive prefix: ordinals are slots; holes skipped; no values.
-                match order {
-                    OutEdgeOrder::Ascending => {
-                        for ordinal in 0..bucket.tiny_used_width() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
-                            visit(edge.with_label_id(label.raw()));
-                        }
-                    }
-                    OutEdgeOrder::Descending => {
-                        for ordinal in (0..bucket.tiny_used_width()).rev() {
-                            if E::read_from(&bucket.tiny_target(ordinal).to_le_bytes())
-                                .is_deleted_slot()
-                            {
-                                continue;
-                            }
-                            let edge = E::read_from(&bucket.tiny_target(ordinal).to_le_bytes());
-                            visit(edge.with_label_id(label.raw()));
-                        }
-                    }
-                }
-                return Ok(());
-            }
+            BucketMode::Tiny => self
+                .visit_tiny_bucket_edges(&bucket, order, TraversalWindow::unbounded(), |_, edge| {
+                    visit(edge);
+                    ControlFlow::<()>::Continue(())
+                })
+                .map(|_| ()),
             BucketMode::Slab => {
                 let width = bucket.inline_property_byte_width();
                 if width == 0 {
@@ -3232,6 +3078,7 @@ where
 
     /// Shared point-state owner for a resolved descriptor (including a read-only
     /// bypass projection). Mode selects addressing before interpreting any row.
+    #[inline]
     fn read_edge_state_at_slot(
         &self,
         bucket: &LabelBucket,
@@ -3242,11 +3089,7 @@ where
     {
         let edge = match BucketMode::from_bucket(bucket) {
             BucketMode::Tiny => {
-                debug_assert_eq!(E::BYTES, 4, "tiny buckets require 4-byte edges");
-                if slot_index >= bucket.tiny_used_width() {
-                    return Ok(EdgeSlotState::Missing);
-                }
-                E::read_from(&bucket.tiny_target(slot_index).to_le_bytes())
+                return Ok(Self::read_tiny_edge_state_at_slot(bucket, slot_index));
             }
             BucketMode::Tree => {
                 let Some(target) =
@@ -3278,13 +3121,42 @@ where
                 }
             }
         };
-        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-            return Ok(EdgeSlotState::Tombstone);
+        Ok(Self::decoded_edge_state_at_slot(bucket, slot_index, edge))
+    }
+
+    /// Descriptor-only point reader shared by tiny scans and mode-dispatched point reads.
+    /// It cannot touch slab, tree or spill storage after the caller has resolved tiny mode.
+    #[inline]
+    fn read_tiny_edge_state_at_slot(bucket: &LabelBucket, slot_index: u32) -> EdgeSlotState<E>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert!(bucket.is_tiny_mode());
+        debug_assert_eq!(E::BYTES, 4, "tiny buckets require 4-byte edges");
+        if slot_index >= bucket.tiny_used_width() {
+            return EdgeSlotState::Missing;
         }
-        Ok(EdgeSlotState::Live(
+        let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes());
+        Self::decoded_edge_state_at_slot(bucket, slot_index, edge)
+    }
+
+    /// One liveness and logical-identity rule, independent of the row's storage addressing.
+    #[inline]
+    fn decoded_edge_state_at_slot(
+        bucket: &LabelBucket,
+        slot_index: u32,
+        edge: E,
+    ) -> EdgeSlotState<E>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+            return EdgeSlotState::Tombstone;
+        }
+        EdgeSlotState::Live(
             edge.with_slot_index(slot_index)
                 .with_label_id(bucket.bucket_label_key().raw()),
-        ))
+        )
     }
 
     /// One selected-topology owner for resolved descriptors, including bypass projections.

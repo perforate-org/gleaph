@@ -2399,6 +2399,131 @@ fn edge_property_write_fails_before_mutation_on_missing_source() -> Result<(), G
 }
 
 #[test]
+fn tiny_parallel_visitors_preserve_slot_identity() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().unwrap();
+    let target = store.insert_vertex().unwrap();
+    // Keep both orientations out of the last-vertex bypass path.
+    store.insert_vertex().unwrap();
+    let handles: Vec<_> = (0..4)
+        .map(|_| store.insert_directed_edge(source, target, None).unwrap())
+        .collect();
+    assert_eq!(
+        handles
+            .iter()
+            .map(|h| h.slot_index.raw())
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    let label = handles[0].label_id;
+    let property = store
+        .get_or_insert_property_id("tiny_survivor_marker")
+        .unwrap();
+    store
+        .set_edge_property(
+            handles[3].occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(44),
+        )
+        .unwrap();
+
+    let check_slots = |slots: &[u32]| {
+        store.with_graph_mut(|graph| {
+            for (adjacency, owner, neighbor) in [
+                (graph.forward(), source, target),
+                (graph.reverse(), target, source),
+            ] {
+                let info = adjacency
+                    .read_label_bucket_placement_info(owner, label)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    (info.degree, info.stored_edge_slots, info.edge_spill_rows),
+                    (slots.len() as u32, 0, 0)
+                );
+                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                    let mut actual = Vec::new();
+                    adjacency
+                        .for_each_edges_for_label_ordered(owner, label, order, |edge| {
+                            assert!(edge.edge_inline_property_bytes().is_empty());
+                            actual.push((
+                                edge.edge_slot_index.raw(),
+                                edge.neighbor_vid(),
+                                edge.label_id,
+                            ));
+                        })
+                        .unwrap();
+                    let mut expected: Vec<_> = slots
+                        .iter()
+                        .map(|&slot| (slot, neighbor, label.raw()))
+                        .collect();
+                    if order == OutEdgeOrder::Descending {
+                        expected.reverse();
+                    }
+                    assert_eq!(actual, expected, "owner={owner:?} order={order:?}");
+                }
+            }
+        });
+    };
+    check_slots(&[0, 1, 2, 3]);
+    store.delete_edge_by_handle(handles[0]).unwrap();
+    store.delete_edge_by_handle(handles[1]).unwrap();
+    check_slots(&[2, 3]);
+    let reverse = EdgeHandle::at_slot(target, label, 3);
+    assert_eq!(store.canonical_reverse_in_edge_handle(reverse), handles[3]);
+    for occurrence in [
+        handles[3].occurrence(LabeledOrientation::Forward),
+        reverse.occurrence(LabeledOrientation::Reverse),
+    ] {
+        assert_eq!(
+            store.edge_property(occurrence, property).unwrap(),
+            Some(Value::Int64(44))
+        );
+    }
+    store.delete_edge_by_handle(handles[2]).unwrap();
+    check_slots(&[3]);
+    let reused = store.insert_directed_edge(source, target, None).unwrap();
+    assert_eq!(
+        reused.slot_index.raw(),
+        0,
+        "Unordered reuses the first hole"
+    );
+    check_slots(&[0, 3]);
+    assert_eq!(
+        store
+            .edge_property(handles[3].occurrence(LabeledOrientation::Forward), property)
+            .unwrap(),
+        Some(Value::Int64(44))
+    );
+
+    // Fill earlier holes so slot 2 is the only vacant position after deletion.
+    let filled_one = store.insert_directed_edge(source, target, None).unwrap();
+    assert_eq!(filled_one.slot_index.raw(), 1);
+    check_slots(&[0, 1, 3]);
+    let filled_two = store.insert_directed_edge(source, target, None).unwrap();
+    assert_eq!(filled_two.slot_index.raw(), 2);
+    check_slots(&[0, 1, 2, 3]);
+    store.delete_edge_by_handle(filled_two).unwrap();
+    check_slots(&[0, 1, 3]);
+    let reused_two = store.insert_directed_edge(source, target, None).unwrap();
+    assert_eq!(reused_two.slot_index.raw(), 2);
+    check_slots(&[0, 1, 2, 3]);
+    assert_eq!(
+        store.canonical_reverse_in_edge_handle(EdgeHandle::at_slot(target, label, 2)),
+        reused_two
+    );
+    for occurrence in [
+        handles[3].occurrence(LabeledOrientation::Forward),
+        reverse.occurrence(LabeledOrientation::Reverse),
+    ] {
+        assert_eq!(
+            store.edge_property(occurrence, property).unwrap(),
+            Some(Value::Int64(44))
+        );
+    }
+}
+
+#[test]
 fn unordered_default_reuses_tombstoned_slot() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");

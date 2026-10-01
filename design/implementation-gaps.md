@@ -47,6 +47,24 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-TINY-CURSOR-EXTENT — Cursor paging still treats tiny placement as empty
+
+- **Status:** Open; found while repairing tiny rank/select and visitor identity.
+- **Observed behavior:** Static tracing shows `visit_edges_from_slot_with_inline_property` derives
+  `logical_extent` from `read_label_bucket_placement_info`'s stored/spill counts. Both are zero for
+  a nonempty tiny bucket, so a page beginning at zero returns `(0, true)` without visiting its rows.
+  This cursor path was not executed in the bounded repair's runtime tests.
+- **Expected behavior:** The cursor must cover the descriptor's tombstone-inclusive used prefix;
+  placement capacity is not logical extent. See [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
+- **Owner:** `ic-stable-lara`, `labeled/graph/traverse.rs::visit_edges_from_slot_with_inline_property`;
+  public caller `DeferredBidirectionalLabeledLaraGraph::visit_forward_edges_from_slot_with_inline_property`.
+- **Evidence:** [Tiny read repair](evidence/adr0097-tiny-read-invariants.md); the sibling rank/select
+  repair uses the existing `bucket_reserved_edge_slots` extent owner, but leaves cursor semantics unchanged.
+- **Impact:** Cursor-based callers can mistake a nonempty tiny label for an exhausted page.
+- **Next decision:** Add a cursor regression with holes, nonzero starts, both orders and exact
+  `next_slot`/`exhausted` assertions, then route the cursor through the canonical extent owner.
+  This is separate from full-label/rank/select repair, not a compatibility requirement.
+
 ### GAP-LARA-TEST-CLIPPY — Strict test-target lint is blocked
 
 - **Status:** Open; discovered during the rejected Plan0359 allocator-operation trial.

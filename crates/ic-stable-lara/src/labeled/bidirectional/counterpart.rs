@@ -784,6 +784,137 @@ mod tests {
     }
 
     #[test]
+    fn tiny_parallel_counterparts_keep_slots_after_holes() {
+        let label = directed_label(44);
+        let (forward, reverse) = two_sided_graphs(label);
+        // Both owners precede the last vertex, so neither can use homogeneous bypass.
+        push_both_vertices(&forward, &reverse, 4);
+        for (graph, owner, neighbor) in [(&forward, 1, 2), (&reverse, 2, 1)] {
+            let owner = VertexId::from(owner);
+            for _ in 0..4 {
+                graph
+                    .insert_edge(
+                        owner,
+                        label,
+                        TestEdge { target: neighbor },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap();
+            }
+            let info = graph
+                .read_label_bucket_placement_info(owner, label)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (info.degree, info.stored_edge_slots, info.edge_spill_rows),
+                (4, 0, 0)
+            );
+            for slot in [0, 1] {
+                assert_eq!(
+                    graph.remove_edge_at_slot(owner, label, slot).unwrap(),
+                    Some(TestEdge { target: neighbor })
+                );
+            }
+            assert_eq!(
+                graph
+                    .count_preceding_live_edges_with_neighbor(
+                        owner,
+                        label,
+                        BucketEntryPosition::new(3),
+                        VertexId::from(neighbor),
+                    )
+                    .unwrap(),
+                1,
+                "rank must include slot 2, beyond the live degree"
+            );
+            for (order, first, prefix) in [
+                (OutEdgeOrder::Ascending, 2, vec![]),
+                (OutEdgeOrder::Descending, 3, vec![3, 2]),
+            ] {
+                let mut visited = Vec::new();
+                let flow = graph
+                    .visit_edges_window(
+                        owner,
+                        label,
+                        order,
+                        crate::traverse::TraversalWindow::new(0, Some(2)),
+                        |slot, _| {
+                            visited.push(slot.raw());
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(flow, ControlFlow::Continue(()));
+                assert_eq!(visited, prefix, "holes consume window positions");
+                let mut calls = 0;
+                let flow = graph
+                    .visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                        calls += 1;
+                        assert_eq!(item.inline_property.width(), 0);
+                        assert!(item.inline_property.bytes().is_empty());
+                        ControlFlow::Break(slot.raw())
+                    })
+                    .unwrap();
+                assert_eq!(flow, ControlFlow::Break(first));
+                assert_eq!(calls, 1, "tiny borrowed visitor must honor early break");
+            }
+            for (ordinal, expected) in [(0, Some(2)), (1, Some(3)), (2, None)] {
+                assert_eq!(
+                    graph
+                        .select_live_edge_by_neighbor_ordinal(
+                            owner,
+                            label,
+                            VertexId::from(neighbor),
+                            ordinal,
+                        )
+                        .unwrap()
+                        .map(BucketEntryPosition::raw),
+                    expected
+                );
+            }
+        }
+        let occurrence = |orientation, owner, slot| CanonicalEdgeOccurrence {
+            orientation,
+            owner_vertex_id: VertexId::from(owner),
+            label_id: label,
+            slot_index: BucketEntryPosition::new(slot),
+        };
+        let check_pair = |slot| {
+            let fwd = occurrence(Orientation::Forward, 1, slot);
+            let rev = occurrence(Orientation::Reverse, 2, slot);
+            for (source, expected) in [(fwd, rev), (rev, fwd)] {
+                assert_eq!(
+                    counterpart_of(&forward, &reverse, source).unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    counterpart_of_verified(&forward, &reverse, source).unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    canonical_handle(&forward, &reverse, source).unwrap(),
+                    fwd.handle()
+                );
+            }
+        };
+        check_pair(2);
+        check_pair(3);
+        for (graph, owner) in [(&forward, 1), (&reverse, 2)] {
+            graph
+                .remove_edge_at_slot(VertexId::from(owner), label, 2)
+                .unwrap()
+                .unwrap();
+        }
+        // Singleton fast paths must not assume the last survivor lives at slot zero.
+        check_pair(3);
+        let dead = occurrence(Orientation::Forward, 1, 0);
+        assert_eq!(
+            counterpart_of(&forward, &reverse, dead),
+            Err(CounterpartLookupError::SourceNotLive(dead))
+        );
+    }
+
+    #[test]
     fn interleaved_neighbors_do_not_change_pair_order() {
         let label = directed_label(41);
         let (forward, reverse) = two_sided_graphs(label);
