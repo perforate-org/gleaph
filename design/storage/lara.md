@@ -1,6 +1,7 @@
 # LARA: Localized Adjacency Relocation Array
 
-**Status:** accepted  
+**Status:** Partially Implemented — accepted storage model; grouped W2 first-write admission remains planned
+
 **Crate:** `ic-stable-lara`  
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/`)  
 **Detail:** [lara-dgap-contract.md](./lara-dgap-contract.md) · [lara-and-facade.md](./lara-and-facade.md)
@@ -187,7 +188,31 @@ workloads without exposing the reserve as allocatable slots or changing free-spa
 reserve is physical capacity only; failure-atomic tests must target logical allocation boundaries,
 not an assumed exact page-growth event.
 
-After the first commit write, no recoverable `Memory::grow` or allocation error remains. Physical capacity reserved during preflight is not canonical graph state: retaining it after an error is safe, and the pre-error logical layout reopens unchanged.
+**Commit boundary requirement:** after the first commit write, no recoverable `Memory::grow` or
+allocation error may remain. Physical capacity reserved during preflight is not canonical graph
+state and may be retained after rejection. This requirement is implemented at the paired
+free-span owner below; it is not yet a general native multi-store W2 admission guarantee.
+
+**Allocator paired publication (implemented).** `FreeSpanStore::replace_spans` is the single
+record/bin/by-start publication path used by release, whole removal, prefix split, prefix restore
+and exact pair replacement, including adjacent coalescing. Its private prospective edit validates
+record IDs/bin links, checked counters and range arithmetic, and the fully backed source-record
+extent. It prepares the final heap maximum without changing cache contents, reserves backing and
+scratch, preencodes every record/bin/header write, and obtains the existing paged map's complete
+`PreparedEdits` before the first canonical write. Publication performs only fully backed encoded
+writes and consuming index publication; its map borrow is released before cache installation.
+Returned `Err` preserves original canonical bytes, spans, summaries and heap candidates/ready flag;
+backing or scratch capacity may remain. There is no IC rollback assumption.
+`OutOfMemory` and `IndexFull` are non-persistent allocator errors, not stored variants. The record
+and index layout remains V1. `reserve_for_releases` reserves physical backing only, not directory
+admission or scratch, and is not a ready publication receipt. Restore shares release's overlap
+validation, so an adjacent remainder cannot hide an intervening free span. Contiguous record
+encoding/decoding remains owned by the existing record type.
+[Native rejection/reopen evidence and allocator cost disposition](../evidence/adr0097-allocator-publication-preflight.md).
+
+**W2 scope still planned:** grouped bucket-segment/leaf geometry publication, outer allocation-origin
+reservation/abort proof, queue ownership, Graph first-write admission and live width declaration
+are not established by this allocator-only boundary.
 
 **Commit order invariant** (from `lara.rs`): relocate and rewrite all live pointers first; **only then** `release_span` old physical ranges. Queries never observe free-span slots as live adjacency.
 
@@ -198,13 +223,16 @@ value-slab compaction and batch replacement paths share this boundary. Current b
 reaches Slab/SlabHoles, not the disconnected ExpandedSlab/RelocatedSlab machinery: runs requiring
 overflow return `SpillRunDeferred` before mutation. Batch commit accumulates checked value-byte
 accounting and relative edge-span coverage per owner before writes; descriptor count is preserved.
-Callers reserve retirement capacity before mutation. Batch preflight reserves at most one release
+Callers reserve physical retirement capacity before mutation; this alone is not a complete
+allocator ready receipt. Batch preflight reserves at most one release
 record per New/Reallocated run, for source retirement or consumed-free-prefix rollback. GrowInPlace
 needs none. Rollback restores consumed free prefixes and rewinds the implicit tail; it must not also
 register the rewound tail as free, which would give the same bytes two owners. Scalar admission checks
 the final vertex allocation delta before allocating a destination. Once the replacement is backed,
-publication and retirement are infallible commit work;
+publication and retirement are required to be infallible commit work;
 a post-preflight failure is an invariant violation, not a recoverable error after publication.
+General native directory/scratch admission before the descriptor write remains part of the planned
+grouped W2 first-write gate; the implemented allocator boundary does not certify that outer gate.
 A sufficient span is retained, and in-place growth never retires its live source. Slab compaction
 consumes registered free spans; it does not discover orphaned prefixes. Fresh state is required for
 experiments that previously leaked those bytes; no orphan recovery or layout change is introduced.

@@ -32,6 +32,14 @@ fn populate_store(n: u64) -> FreeSpanStore<helper::BenchMemory> {
 
 fn bench_take_best_fit_split(n: u64) -> canbench_rs::BenchResult {
     let store = populate_store(n);
+    // Read-only setup checks preserve the measured fixture's topology and cache.
+    let candidate = store.peek_best_fit(MIN_LEN).expect("split candidate");
+    assert!(candidate.len >= MIN_LEN);
+    assert_eq!(
+        store.free_span_starting_at(candidate.start_slot),
+        Some(candidate)
+    );
+    assert_eq!(store.allocator_stats().free_span_count, n);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_free_span_store_take_best_fit_split");
         for i in 0..16 {
@@ -171,6 +179,14 @@ fn populate_largest_bin_store(n: u64) -> FreeSpanStore<helper::BenchMemory> {
 
 fn bench_largest_bin_recovery(n: u64) -> canbench_rs::BenchResult {
     let store = populate_largest_bin_store(n);
+    assert_eq!(
+        store.peek_best_fit(128),
+        Some(FreeSpan {
+            start_slot: 0,
+            len: 128
+        })
+    );
+    assert_eq!(store.allocator_stats().free_span_count, n);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_free_span_largest_bin_recovery");
         for _ in 0..16 {
