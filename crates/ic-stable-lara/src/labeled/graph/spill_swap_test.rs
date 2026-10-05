@@ -127,7 +127,7 @@ fn a_deleted_spill_row_is_tombstoned_in_place() {
     let tombstone = graph.edges().spill_edge_at(run, 0).unwrap();
     assert!(tombstone.is_deleted_slot());
     let mut survivors: Vec<u32> = Vec::new();
-    graph
+    let flow = graph
         .visit_edges(
             VertexId::from(0),
             label,
@@ -138,6 +138,7 @@ fn a_deleted_spill_row_is_tombstoned_in_place() {
             },
         )
         .unwrap();
+    assert_eq!(flow, ControlFlow::Continue(()));
     assert_eq!(survivors, vec![0, 1, 2, 3, 4, 6, 7]);
 }
 
@@ -278,7 +279,7 @@ fn scans_yield_a_multi_row_run_in_materialization_order_both_ways() {
     assert_eq!(ascending, (0..9).collect::<Vec<_>>());
 
     let mut descending = Vec::new();
-    graph
+    let flow = graph
         .visit_edges(
             VertexId::from(0),
             label,
@@ -289,6 +290,7 @@ fn scans_yield_a_multi_row_run_in_materialization_order_both_ways() {
             },
         )
         .unwrap();
+    assert_eq!(flow, ControlFlow::Continue(()));
     assert_eq!(descending, (0..9).rev().collect::<Vec<_>>());
 }
 
@@ -411,13 +413,12 @@ fn a_spill_delete_never_shifts_the_runs_other_rows() {
 
     let after = bucket_of(&graph, VertexId::from(0), label);
     assert_eq!(after.edge_spill_run(), before.edge_spill_run());
-    assert_eq!(
+    assert!(
         graph
             .edges()
             .spill_edge_at(run, 0)
             .unwrap()
-            .is_deleted_slot(),
-        true
+            .is_deleted_slot()
     );
     assert_eq!(
         graph.edges().spill_edge_at(run, 1).unwrap().target,

@@ -43,4 +43,12 @@ impl<V: CsrVertex, M: Memory> VertexAccess<V> for VertexStore<V, M> {
     fn set(&self, id: VertexId, item: &V) {
         self.set(id, item);
     }
+
+    fn prepare_set(
+        &self,
+        id: VertexId,
+        item: &V,
+    ) -> Result<vertex::PreparedVertexWrite<'_, V>, operation_error::LaraOperationError> {
+        self.prepare_set(id, item)
+    }
 }

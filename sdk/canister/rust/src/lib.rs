@@ -783,7 +783,7 @@ mod tests {
             raw: Float256,
             data: Vec<u8>,
             owner: Principal,
-        truncated: None,
+            truncated: None,
         }
 
         let response = GqlQueryResult {

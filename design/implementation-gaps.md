@@ -47,6 +47,131 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
+
+- **Status:** Planned;0394 STOPPED IMPLEMENTATION awaiting separate production allocation after
+  completed post0395 Q1 APPROVE DRAFT BOUNDARY (exit0/101.35s, ZERO tools, no required P0/P1/P2). Disposition **Prerequisite complete; geometry integration pending**:
+  [Plan0395](../plans/0395-pinned-vertex-physical-layout-preparation.md) closes the existing compact
+  physical-layout capability; [0394](../plans/0394-grouped-tiny-leaf-geometry.md) now scopes its
+  composition into one logical same-leaf ready unit. Three archived native RED/stop proofs and
+  prior approvals remain historical; the tiny geometry defect stays open until real grouped and
+  eight-case scalar/caller GREEN, measurement and independent implementation closure.
+- **Observed behavior:** Source tracing of `insert.rs::promote_tiny_to_slab` shows publishing
+  `set_elem_capacity`, first-pin allocation or a mate's reduced `stored_slots` before later
+  checked transcription, descriptor writes and PMA count-index work. `leaf_pin.rs::ensure_labeled_leaf_block_pinned`
+  allocates, publishes `physical_start`, then calls the fallible count update. Independent same-leaf
+  calls use canonical occupancy/counts rather than one combined prospective image.
+- **Additional source findings:** The promoter's target/mate content-end loops use
+  `stored_slots_raw` for every non-tiny bucket, although tree residency is its combined LEG roots,
+  owned by `compact.rs::bucket_resident_region`. The promoter also appends a newly promoted bucket
+  at content end. If its label sorts before the existing first non-tiny descriptor, that descriptor
+  becomes the inferred cover anchor without moving older resident bytes. The source therefore
+  does not establish the existing first-non-tiny cover invariant for that shape. Native proof now
+  confirms all four real callers (insert, inline materialize, stepped materialize, compatible
+  width-on-slot) succeed in both label orders with exact topology/schema/global/leaf counts, but
+  each later-first case strands resident[256,260) before final cover[260,269). Singleton promotion
+  returns Ok rather than the planned append-only rejection. The pin proof returns exact
+  SegmentCountsTreeTooSmall after capacity256→272 publication. Later preservation assertions are
+  not reached in those REDs; no data-loss/reopen/frequency/performance claim is made.
+- **Physical prerequisite admission gap:** `leaf_pin.rs::try_expand_labeled_leaf_in_place` consumes
+  the exact adjacent prefix immediately through `FreeSpanStore::take_prefix_at`; the existing
+  prospective `prepare_replacement` chooses best-fit only.0395's physical-only unit must preserve
+  this source identity with a minimal exact-prefix prepared entry and shared selected-prefix split
+  projection at FreeSpanStore, not substitute a nonadjacent span or publish acquisition early.
+  Source hashes and correction scope are bound in `W/prerequisite-r4-prefix-admission-gap.json`.
+  The allocated0395 allocator checkpoint implements that choice through the single private
+  physical replacement entry, without changing allocator layout/index. Exact-prefix/free-hole
+  tests pass; the unified physical-only compact rewrite/leaf-slide consumers now join that loan.
+  Tiny first-pin/grouped promotion callers do not;0394 remains stopped.
+- **Expected behavior:** The existing geometry owner must prepare one same-leaf placement/count
+  image, validate final cover/physical residency and all writer/allocator admission, then consume
+  an error-free publisher. Reject unsupported/full/overlapping geometry before canonical mutation.
+  [The approved0384 protocol](evidence/adr0097-bucket-segment-publication-preflight.md#planned-tinyleaf-geometry-0394)
+  remains authoritative for bounded width preparation; the ledger does not add width semantics.
+- **Owner:** `ic-stable-lara` labeled tiny promoter/leaf-pin geometry; descriptor, vertex, edge,
+  span-meta, count and allocator stores continue to own their writer/address/encoding contracts.
+- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/insert.rs::promote_tiny_to_slab`,
+  `leaf_pin.rs::{ensure_labeled_leaf_block_pinned,labeled_leaf_occupied_spans}` and
+  `compact.rs::bucket_resident_region`; source hashes and current dirty baseline are bound in
+  `segment-implementation/tiny-leaf-geometry/{baseline,implementation-baseline,red-stop}.json`
+  under the ADR0097 evidence root. `red-proofs.rs`/`red-proofs.patch` preserve the temporary test-only
+  addition; `tiny-leaf-red-pin-count.log`, `tiny-leaf-red-earlier-anchor.log` and
+  `tiny-leaf-stop-current-callers-width0.log` are exact1-test failed terminal receipts. The initial
+  nonempty width2 fixture is separately preserved as an intentional width rejection, not stop
+  evidence. The source suffix is restored byte-for-byte; no production geometry changed.
+- **Impact:** Native returned errors are not yet proven to preserve prior pin/mate/descriptor/count
+  state. Hoisting only scalar checks cannot admit two requests sharing the same physical leaf;
+  using logical tree width or changing the inferred anchor can invalidate cover/release ownership.
+- **Next decision:** Historical r3/r4 NOT APPROVE reports/queues remain immutable. Completed
+  focused r5 (exit0/116.36s, zero tools) approves the revised0395 DRAFT boundary and satisfies both
+  retirement-owner/hole-success findings plus prior capability/slide/test/prefix obligations.
+  `W/prerequisite-review-r5-completion.json` binds the exact reviewed packet/diff/source scope.
+  Implementation is allocated; the dirty baseline,18-path manifest, retained Wasm and all three
+  BEFORE controls are frozen. `FreeSpanStore::prepare_physical_replacement` is now implemented
+  with one guard, original-source hole subtraction, shared prefix/coalescer admission and ready
+  witnesses. Its allocator portion passes native709 (allocator34/bucket17 retained) and strict
+  Clippy, including fixed retire/statistics, exact-prefix versus best-fit, publisher1/probes0 and
+  changed-hole/neighbor publisher0 assertions. The subsequent buffered slab owner checkpoint
+  replaces the old single-range constructor with `EdgeSlabStore::prepare_physical_image`, checking
+  all buffered ranges/backing before writes and installing one header. Its partial backing test
+  reaches real grow rejection, reserve/drop preservation and a premature-write counterexample;
+  native710 retains allocator34/bucket17 at that intermediate checkpoint. The subsequent physical
+  graph checkpoint implements the nonpublishing desired copy and sole canonical vertex/leaf ready
+  publisher; all seven identities now exist. Ordinary rewrite, streamed relocation and overlapping
+  slide share complete admission, one header/count and guarded retirement; duplicate finalizers and
+  per-vertex slide deltas are removed. Native715, strict Clippy/format and restored mutation pass.
+  Historical r4 AFTER was slab1,530,362/tree1,577,466 instructions; current I2 source-bound controls
+  are slab1,531,031/tree1,578,135/prefix1,048,658, growth0. Native replay supplies read/write and
+  retained1536/2048-byte observables, not peak heap/system-call tracing. I2 reproduces and fixes
+  unpinned overlap retirement of newly live destination slots, makes singleton metadata admission
+  fallible and preserves canonical ordinal ties with allocation-free sorting. Its bounded tests
+  prove exact retire2slots, reopen and reuse without new graph/memory/identity (23/368, reopens14).
+  Completed independent I2 ends APPROVE IMPLEMENTATION ONLY, no actionable implementation/doc P1/P2.
+  Prefix +20,730/+2.0167% versus BEFORE, unchanged after I2, is separately user-accepted with
+  `そうしよう` as a known shared-implementation/safety trade-off, not proof all instructions are
+  indispensable or inherited0386 tolerance. No new allocator/map/layout, second physical publisher,
+  tiny/width integration or outer-operation guarantee is claimed.
+  `W/physical-layout-implementation/physical-layout-user-cost-acceptance-u1.json` binds the explicit
+  decision; `physical-layout-final-closure-u1.json` binds final plan/source/doc/validation/preservation.
+  Earlier `{allocator,slab-image,physical-publisher}-checkpoint-results.json`, r4/T3 and incomplete I1
+  remain immutable with their historical scopes; no earlier receipt is rebound to current I2.
+  Do not use sequential publishing rewrite, minimum-address cover or unsafe fallback.0395's
+  physical-only prerequisite is CLOSED; this tiny-geometry gap and0394 stay STOPPED IMPLEMENTATION.
+  Q1 now drafts required earlier-label copy success, real retained-prefix/root scratch, generic first
+  pin and one final logical geometry/header/count/pin/allocator unit through the existing compact
+  admitted publisher. Physical-only factories stay restricted and desired copies alone cannot mint
+  ready. Baseline715/planned728 preserves all0395 tests. Correct the misleading fourth-inline-insert
+  control into same-length `tiny_promote_d4_1024` before any production geometry change, freezing
+  new BEFORE/export/install sanity with no extra methods or old-result rewrite. New
+  `W/geometry-copy-composition/rescope-q1-baseline.json` binds the four-path planning revision and
+  immutable0395 closure; `rescope-review-q1-{report.md,completion.json}` in that directory now binds
+  completed draft approval, not implementation/runtime/performance/0383 approval. Explicit production
+  allocation remains required. Its mixed-mode/group order, real caller GREEN/mutation, cost and implementation closure remain
+  unproved. Queue/Graph/live width/0383 stay later gates.
+
+### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
+
+- **Status:**0395's two new entries are fixed and runtime-verified; broader capacity remains
+  unresolved. Corrected export-section verification and all three BEFORE measurements pass.
+- **Observed/owner:** The benchmark-only LARA Wasm's retained baseline exports19963 method-name
+  bytes. Two new physical-copy controls raise this to20125 and PocketIC13 rejects install against
+  the20000 limit, before any measurement. `canbench-rs-macros`0.7 emits both measurement and trace
+  queries and has no name override; `labeled/bench.rs` owns these new entries, not production graph
+  state. Official execution-error guidance recommends shorter method names.
+- **Evidence:** `vertex-layout-before-slab64.log` and
+  `segment-implementation/tiny-leaf-geometry/physical-layout-implementation/export-limit-diagnostics.json`
+  in the ADR0097 maintenance evidence bind exact original/current export lists and hashes.
+- **Current correction:** Only the two new entries use the existing CDK0.20.1 query-name API:
+  `__canbench__vls64` and `__canbench__vlt64` return the same measured fixture/result, with no optional
+  trace query. All original exports and saved results stay unchanged; actual corrected sum19997
+  is verified from the Wasm section (initial19995 estimate undercounted the12-byte prefix). No production layout/API or generic export framework changes.
+- **Impact/next decision:** Two short queries consume34 of37 remaining bytes; broader future
+  benchmark additions need a separately reviewed export-set/feature decision rather than repeated
+  name compression or deletion of domain coverage. This is not a sandbox failure or permission to
+  retry through external terminals.0395 finished its bound BEFORE before production behavior edits;
+  `W/physical-layout-implementation/before-{export-verification,benchmark-results}.json` records
+  successful install/measurement and unchanged original exports/saved results.
+
 ### GAP-TINY-CURSOR-EXTENT — Cursor paging still treats tiny placement as empty
 
 - **Status:** Resolved for slice0381's bounded tiny cursor/selected-read contract; independently
@@ -101,25 +226,31 @@ defect from being rediscovered without its prior reasoning.
   slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
   or weakened runtime assertion is introduced by slice0381.
 
-### GAP-LARA-TEST-CLIPPY — Strict test-target lint is blocked
+### GAP-LARA-TEST-CLIPPY — Strict test-target lint diagnostics
 
-- **Status:** Open; discovered during the rejected Plan0359 allocator-operation trial.
-- **Observed behavior:** `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara --lib
-  --tests --target aarch64-apple-darwin -- -D warnings` reports43 LARA test diagnostics in14
-  unchanged files. Categories include unused imports/results, redundant casts/borrows,
-  constant-size chunk iteration, single-pattern matches, boolean assertions, doc indentation,
-  range indexing and dropping a Copy value. Map lib/tests and LARA production-library clippy pass.
+- **Status:** Resolved by0393's scoped validation and review; the fixing source is included in the
+  validated0386/0393/0395 publication checkpoint. Discovered during the rejected Plan0359
+  allocator-operation trial.
+- **Observed behavior:** The historical `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara
+  --lib --tests --target aarch64-apple-darwin -- -D warnings` reported43 LARA test diagnostics in14
+  unchanged files. The later frozen0386 checkpoint had41 across13 exact paths. These are separate
+  historical inventories, not interchangeable counts. Categories included unused imports/results,
+  redundant casts/borrows, constant-size chunks, single-pattern matches, boolean assertions, doc
+  indentation, range indexing and dropping a Copy value.
 - **Expected behavior:** The affected Rust test targets must pass strict scoped lint without
   suppressing diagnostics or excluding tests to claim full validation.
 - **Owner:** `ic-stable-lara` test modules under `labeled/{graph,bidirectional}` and `lara/vertex.rs`.
 - **Evidence:** The [rekey trial](evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected)
-  records the command outcome. Its external archive contains `native/clippy.stderr` and
-  `native/clippy-preexisting.json`, which binds every diagnostic file to the unchanged pre-trial
-  snapshot. Exact toolchain, Cargo arguments and source pins are archived there.
-- **Impact:** Production lint and passing runtime tests do not establish a clean test-target lint
-  gate. The rekey candidate was rejected independently on performance; this debt remains afterward.
-- **Next decision:** Repair these test-owned warnings in a separate bounded cleanup, preserving
-  assertions and running the affected tests. No source suppression or unrelated fix was made here.
+  preserves the original diagnostics/toolchain/source pins. [0393 validation closure](evidence/adr0097-bucket-segment-publication-preflight.md#validation-closure-0393)
+  records actual exit0 for `cargo clippy -p ic-stable-lara --locked --lib --tests -- -D warnings`,
+  native708/0 with unchanged allocator34/bucket17 identities, workspace format and independent
+  cleanup APPROVE. `validation-closure/baseline.json` binds exact dirty-before paths/bytes; every
+  formerly ignored traversal result now asserts exact Continue, and existing test contracts remain.
+- **Impact:** Current LARA lib/test lint is clean; production lint or runtime success was not used
+  as a substitute. Historical failed commands remain failed and the rejected rekey trial remains
+  rejected. No domain, API/layout, fixture or benchmark behavior changed in the cleanup.
+- **Next decision:** None for this lint debt. Broader W2,0383 acceptance and separate implementation
+  prerequisites remain open; resolving this entry does not approve them.
 
 ### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
 

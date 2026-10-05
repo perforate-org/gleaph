@@ -37,9 +37,14 @@
 //! --------------------------------------------------
 //! ```
 
+#[cfg(any(test, feature = "canbench"))]
+use super::operation_error::VertexAccess;
 use crate::{
     GrowFailed, VertexId,
-    lara::reserved::{region_is_zero, write_zeroes},
+    lara::{
+        operation_error::{LaraOperationError, VertexAccessError},
+        reserved::{region_is_zero, write_zeroes},
+    },
     read_u32, safe_write,
     slab_index::{
         decode_meta28, decode_slot_index, encode_locator_word, pack_vertex_tail28, slot_index_fits,
@@ -70,6 +75,50 @@ struct HeaderV1 {
     version: u8,
     len: u32,
     stride: u32,
+}
+
+/// Prepared existing-row data. Stable rows contain their encoded bytes and checked address;
+/// explicit value-only accessors copy a validated value without a byte serializer.
+pub(crate) struct PreparedVertexWrite<'a, V: CsrVertex>(VertexWriteTarget<'a, V>);
+
+enum VertexWriteTarget<'a, V: CsrVertex> {
+    Memory {
+        memory: &'a dyn Memory,
+        address: u64,
+        bytes: Vec<u8>,
+        row: std::marker::PhantomData<V>,
+    },
+    #[cfg(any(test, feature = "canbench"))]
+    Value {
+        owner: &'a dyn VertexAccess<V>,
+        id: VertexId,
+        item: V,
+    },
+}
+
+impl<'a, V: CsrVertex> PreparedVertexWrite<'a, V> {
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn value(
+        owner: &'a dyn VertexAccess<V>,
+        id: VertexId,
+        item: V,
+    ) -> Result<Self, LaraOperationError> {
+        owner.get_in_range(id)?;
+        Ok(Self(VertexWriteTarget::Value { owner, id, item }))
+    }
+
+    pub(crate) fn write(&self) {
+        match &self.0 {
+            VertexWriteTarget::Memory {
+                memory,
+                address,
+                bytes,
+                ..
+            } => memory.write(*address, bytes),
+            #[cfg(any(test, feature = "canbench"))]
+            VertexWriteTarget::Value { owner, id, item } => owner.set(*id, item),
+        }
+    }
 }
 
 /// Errors returned when reopening a persisted [`VertexStore`].
@@ -518,6 +567,37 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         );
     }
 
+    /// Prepare bytes and backing for an existing row, without changing it.
+    pub(crate) fn prepare_set(
+        &self,
+        id: VertexId,
+        item: &V,
+    ) -> Result<PreparedVertexWrite<'_, V>, LaraOperationError> {
+        let index = u64::from(id);
+        if index >= u64::from(self.len()) {
+            return Err(VertexAccessError::OutOfRange.into());
+        }
+        let address = self.entry_offset(index);
+        let bytes = item.to_bytes_checked().into_owned();
+        let end = address
+            .checked_add(bytes.len() as u64)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let backed = self
+            .memory
+            .size()
+            .checked_mul(crate::WASM_PAGE_SIZE)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if end > backed {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        Ok(PreparedVertexWrite(VertexWriteTarget::Memory {
+            memory: &self.memory,
+            address,
+            bytes,
+            row: std::marker::PhantomData,
+        }))
+    }
+
     /// Replaces a contiguous run of existing vertex rows with one stable-memory write.
     pub(crate) fn set_many(&self, start: VertexId, items: impl IntoIterator<Item = V>) {
         let items: Vec<V> = items.into_iter().collect();
@@ -738,7 +818,7 @@ mod tests {
         // unrepresentable id, and the spill API's `try_with_spill_run` returns `Err` instead -
         // a typed rejection rather than a panic (ADR 0097 §3).
         let v = Vertex::default();
-        assert!(v.try_with_spill_run(VERTEX_TAIL_RUN_MASK as u32).is_err());
+        assert!(v.try_with_spill_run(VERTEX_TAIL_RUN_MASK).is_err());
     }
 
     #[test]
@@ -754,7 +834,7 @@ mod tests {
         // A 27-bit field cannot hold an out-of-range id, so the wire check that remains is the
         // round trip: the retired 170-entry log cap no longer rejects a wire row, and the largest
         // encodable run id (`mask - 1`, because the tail stores `run + 1`) survives encode/decode.
-        for run in [170u32, VERTEX_TAIL_RUN_MASK as u32 - 1] {
+        for run in [170u32, VERTEX_TAIL_RUN_MASK - 1] {
             let tail = pack_vertex_tail28(run as i32, false);
             let locator = encode_locator_word(0, tail);
             let mut bytes = [0u8; Vertex::BYTES];

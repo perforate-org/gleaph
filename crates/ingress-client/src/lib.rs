@@ -48,4 +48,4 @@ pub mod net;
 pub mod wire;
 
 pub use client::ProvisionClient;
-pub use ingress::{IngressError, IcIngress};
+pub use ingress::{IcIngress, IngressError};

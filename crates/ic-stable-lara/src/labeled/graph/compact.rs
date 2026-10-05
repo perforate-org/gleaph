@@ -1,5 +1,2274 @@
 //! Labeled graph `compact` implementation.
 
+#[cfg(test)]
+mod physical_layout_tests {
+    use super::{
+        LeafPhysicalDestination, PhysicalLayoutEvent, PhysicalLayoutOperation,
+        VertexPhysicalPlacement,
+    };
+    use crate::lara::edge::free_span::{
+        FreeSpan, FreeSpanAllocatorStats, FreeSpanError, FreeSpanStore, PhysicalSpanSelection,
+        free_span_release_calls, reset_free_span_release_calls,
+    };
+    use crate::{
+        VertexId,
+        labeled::{BucketLabelKey, InitialCapacities, LabeledVertex, record::LabelBucket},
+        traits::CsrVertex,
+    };
+    use ic_stable_structures::{Memory, VectorMemory};
+
+    type PhysicalTestGraph<E> = super::LabeledLaraGraph<E, CopyAdmissionMemory>;
+    type CacheEntry = (VertexId, BucketLabelKey, u64, u32, u64);
+
+    fn empty_physical_fixture<E: crate::traits::CsrEdge>(
+        capacities: InitialCapacities,
+        segment: u32,
+    ) -> (PhysicalTestGraph<E>, [CopyAdmissionMemory; 16]) {
+        let m = std::array::from_fn(|_| CopyAdmissionMemory::default());
+        let graph = super::LabeledLaraGraph::new_with_segment_size(
+            m[0].clone(),
+            m[1].clone(),
+            m[2].clone(),
+            m[3].clone(),
+            m[4].clone(),
+            m[5].clone(),
+            m[6].clone(),
+            m[7].clone(),
+            m[8].clone(),
+            m[9].clone(),
+            m[10].clone(),
+            m[11].clone(),
+            m[12].clone(),
+            m[13].clone(),
+            m[14].clone(),
+            m[15].clone(),
+            capacities,
+            BucketLabelKey::from_raw(9),
+            segment,
+        )
+        .unwrap();
+        (graph, m)
+    }
+
+    fn physical_fixture<E: crate::traits::CsrEdge>()
+    -> (PhysicalTestGraph<E>, [CopyAdmissionMemory; 16]) {
+        let (graph, m) = empty_physical_fixture(InitialCapacities::uniform(256), 16);
+        for ordinal in 0..2 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+            graph.vertices.set(
+                VertexId::from(ordinal),
+                &LabeledVertex::from_parts(ordinal as u64, 1, 8, 0),
+            );
+            let (origin, degree, width, words) = if ordinal == 0 {
+                (100, 3, 4, vec![7u32, 0, u32::MAX, 7])
+            } else {
+                (68, 2, 3, vec![11u32, u32::MAX, 11])
+            };
+            graph
+                .buckets
+                .write_label_bucket_slot(
+                    ordinal as u64,
+                    LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, degree, width),
+                )
+                .unwrap();
+            graph
+                .edges
+                .write_slots_contiguous_bytes(
+                    origin,
+                    &words
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+        }
+        graph
+            .edges
+            .set_segment_physical_start(crate::SegmentId::from(0), 64)
+            .unwrap();
+        graph
+            .edges
+            .bump_vertex_segment_counts(VertexId::from(0), 5, 64)
+            .unwrap();
+        graph.edges.set_num_edges(5);
+        (graph, m)
+    }
+
+    fn reopen_physical<E: crate::traits::CsrEdge>(
+        m: &[CopyAdmissionMemory; 16],
+    ) -> PhysicalTestGraph<E> {
+        super::LabeledLaraGraph::init(
+            m[0].clone(),
+            m[1].clone(),
+            m[2].clone(),
+            m[3].clone(),
+            m[4].clone(),
+            m[5].clone(),
+            m[6].clone(),
+            m[7].clone(),
+            m[8].clone(),
+            m[9].clone(),
+            m[10].clone(),
+            m[11].clone(),
+            m[12].clone(),
+            m[13].clone(),
+            m[14].clone(),
+            m[15].clone(),
+            InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(9),
+        )
+        .unwrap()
+    }
+
+    fn canonical_bytes(m: &[CopyAdmissionMemory; 16]) -> Vec<Vec<u8>> {
+        m.iter()
+            .map(|memory| memory.bytes.borrow().clone())
+            .collect()
+    }
+
+    fn assert_canonical_bytes(m: &[CopyAdmissionMemory; 16], expected: &[Vec<u8>]) {
+        for (memory, bytes) in m.iter().zip(expected) {
+            assert_eq!(&memory.bytes.borrow()[..bytes.len()], bytes);
+            assert!(
+                memory.bytes.borrow()[bytes.len()..]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
+        }
+    }
+
+    fn append_physical_source_run<E: crate::traits::CsrEdge>(
+        graph: &PhysicalTestGraph<E>,
+    ) -> LabelBucket {
+        let src = VertexId::from(0);
+        let bucket = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let access = crate::labeled::access::LabelEdgeSpanAccess::with_bucket(
+            &graph.buckets,
+            0,
+            bucket,
+            bucket.edge_start() + u64::from(bucket.stored_slots()),
+            src,
+        );
+        for target in [31u32, 0, 13, 31] {
+            assert!(matches!(
+                graph
+                    .edges
+                    .insert_edge_without_logical_slot(
+                        &access,
+                        src,
+                        E::read_from(&target.to_le_bytes())
+                    )
+                    .unwrap(),
+                crate::lara::edge::InsertLocation::Spill { .. }
+            ));
+        }
+        let populated = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let run = graph.edges.spill_mint(populated.edge_spill_run()).unwrap();
+        assert_eq!(run.get(), 0);
+        assert_eq!(graph.edges.spill_used_len(run), 4);
+        graph
+            .edges
+            .spill_write_row(run, 2, &u32::MAX.to_le_bytes())
+            .unwrap();
+        let source = populated.with_degree_field(bucket.degree() + 3);
+        graph.buckets.write_label_bucket_slot(0, source).unwrap();
+        graph.edges.bump_vertex_segment_counts(src, -1, 0).unwrap();
+        graph
+            .edges
+            .set_num_edges(graph.edges.header().num_edges - 1);
+        assert_eq!(source.stored_slots(), bucket.stored_slots());
+        source
+    }
+
+    fn seed_mixed_physical_residents<E: crate::traits::CsrEdge>(
+        graph: &PhysicalTestGraph<E>,
+    ) -> [LabelBucket; 3] {
+        use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
+        let mut roots = Vec::new();
+        for ordinal in 0..2u32 {
+            let id = graph.ltb.mint().unwrap();
+            assert_eq!(id, ordinal);
+            graph.ltb.write_block_header(
+                id,
+                &BlockHeader {
+                    kind: if ordinal == 0 {
+                        BlockKind::Edge
+                    } else {
+                        BlockKind::InlineProperty
+                    },
+                    bucket_label_key_wire: 3,
+                    owner_or_next_free: 0,
+                    ordinal: 0,
+                    level: 0,
+                    tombstone_count: 0,
+                    reserved: [0],
+                },
+            );
+            let mut payload = [0u8; 4096];
+            for (index, word) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                word.copy_from_slice(&(1000 + ordinal * 2000 + index as u32).to_le_bytes());
+            }
+            graph.ltb.write_payload(id, &payload).unwrap();
+            roots.extend(id.to_le_bytes());
+        }
+        let slab = append_physical_source_run(graph);
+        let tree = LabelBucket::from_parts_with_inline_property(
+            BucketLabelKey::from_raw(3),
+            112,
+            512,
+            512,
+            4,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .with_tree_mode(true);
+        let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 114, 0, 0)
+            .try_enable_tiny_mode()
+            .unwrap()
+            .with_tiny_target(0, 55)
+            .with_degree_field(1)
+            .with_tiny_used_width(1);
+        graph
+            .edges
+            .write_slots_contiguous_bytes(112, &roots)
+            .unwrap();
+        graph
+            .buckets
+            .write_label_bucket_slots_contiguous(0, &[slab, tree, tiny])
+            .unwrap();
+        graph
+            .vertices
+            .set(VertexId::from(0), &LabeledVertex::from_parts(0, 3, 16, 0));
+        let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 68, 2, 3);
+        graph.buckets.write_label_bucket_slot(3, peer).unwrap();
+        graph
+            .vertices
+            .set(VertexId::from(1), &LabeledVertex::from_parts(3, 1, 8, 0));
+        graph.edges.set_num_edges(521);
+        [slab, tree, tiny]
+    }
+
+    fn cache_snapshot<E: crate::traits::CsrEdge>(
+        graph: &PhysicalTestGraph<E>,
+    ) -> (Option<CacheEntry>, [Option<CacheEntry>; 64]) {
+        let project = |entry: Option<super::super::BucketLookupCache>| {
+            entry.map(|entry| {
+                (
+                    entry.vid,
+                    entry.bucket_key,
+                    entry.base_slot_start,
+                    entry.degree,
+                    entry.slot,
+                )
+            })
+        };
+        (
+            project(graph.last_bucket_lookup.get()),
+            graph
+                .bucket_lookup_cache
+                .each_ref()
+                .map(|entry| project(entry.get())),
+        )
+    }
+
+    fn warm_physical_caches<E: crate::traits::CsrEdge>(graph: &PhysicalTestGraph<E>) {
+        for ordinal in 0..2 {
+            let id = VertexId::from(ordinal);
+            graph
+                .find_bucket(id, &graph.vertices.get(id), BucketLabelKey::from_raw(2))
+                .unwrap();
+        }
+    }
+
+    fn take_events() -> Vec<PhysicalLayoutEvent> {
+        super::PHYSICAL_LAYOUT_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+    }
+
+    fn assert_physical_result<E: crate::traits::CsrEdge>(
+        graph: &PhysicalTestGraph<E>,
+        starts: [u64; 2],
+        widths: [u32; 2],
+        total: i64,
+    ) {
+        for (ordinal, (start, width)) in starts.into_iter().zip(widths).enumerate() {
+            assert_eq!(
+                graph.vertices.get(VertexId::from(ordinal as u32)),
+                LabeledVertex::from_parts(ordinal as u64, 1, width, 0)
+            );
+            let (degree, stored, words) = if ordinal == 0 {
+                (3, 4, vec![7u32, 0, u32::MAX, 7])
+            } else {
+                (2, 3, vec![11u32, u32::MAX, 11])
+            };
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(ordinal as u64),
+                Some(LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(2),
+                    start,
+                    degree,
+                    stored
+                ))
+            );
+            let mut bytes = vec![0; stored as usize * 4];
+            graph.edges.read_slots_contiguous_bytes(start, &mut bytes);
+            assert_eq!(
+                bytes,
+                words
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            graph.edges.counts_store().get(1),
+            super::SegmentEdgeCounts { actual: 5, total }
+        );
+        assert_eq!(graph.edges.header().num_edges, 5);
+    }
+
+    // Raw physical images must not require the logical tombstone trait.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CopyOnlyEdge(u32);
+
+    impl crate::traits::CsrEdge for CopyOnlyEdge {
+        const BYTES: usize = 4;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self(u32::from_le_bytes(bytes.try_into().unwrap()))
+        }
+
+        fn write_to(&self, bytes: &mut [u8]) {
+            bytes.copy_from_slice(&self.0.to_le_bytes());
+        }
+
+        fn neighbor_vid(&self) -> crate::VertexId {
+            crate::VertexId::from(self.0)
+        }
+
+        fn with_neighbor_vid(&self, vid: crate::VertexId) -> Self {
+            Self(u32::from(vid))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CopyAdmissionMemory {
+        bytes: VectorMemory,
+        reject_grow: std::rc::Rc<std::cell::Cell<bool>>,
+        grows: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
+        writes: std::rc::Rc<std::cell::Cell<u64>>,
+        write_bytes: std::rc::Rc<std::cell::Cell<u64>>,
+        reads: std::rc::Rc<std::cell::Cell<u64>>,
+        read_bytes: std::rc::Rc<std::cell::Cell<u64>>,
+        header_writes: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl Memory for CopyAdmissionMemory {
+        fn size(&self) -> u64 {
+            self.bytes.size()
+        }
+
+        fn grow(&self, pages: u64) -> i64 {
+            self.grows.borrow_mut().push(pages);
+            if self.reject_grow.replace(false) {
+                -1
+            } else {
+                self.bytes.grow(pages)
+            }
+        }
+
+        fn read(&self, offset: u64, bytes: &mut [u8]) {
+            self.reads.set(self.reads.get() + 1);
+            self.read_bytes
+                .set(self.read_bytes.get() + bytes.len() as u64);
+            self.bytes.read(offset, bytes);
+        }
+
+        fn write(&self, offset: u64, bytes: &[u8]) {
+            self.writes.set(self.writes.get() + 1);
+            self.write_bytes
+                .set(self.write_bytes.get() + bytes.len() as u64);
+            if offset == 0 && bytes.len() == 64 {
+                self.header_writes.set(self.header_writes.get() + 1);
+            }
+            self.bytes.write(offset, bytes);
+        }
+    }
+
+    #[test]
+    fn physical_layout_overlapping_copy_keeps_source_ordinals() {
+        use super::super::test_support::TestEdge;
+        for destination in [98u64, 102] {
+            let (graph, m) = physical_fixture::<TestEdge>();
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            let before = canonical_bytes(&m);
+            take_events();
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src: VertexId::from(0),
+                    placement: VertexPhysicalPlacement::new(destination, 8, None, 0),
+                })
+                .unwrap();
+            assert_canonical_bytes(&m, &before);
+            assert_eq!(cache_snapshot(&graph), caches);
+            preparation.ready().unwrap().publish();
+            drop(preparation);
+            assert_physical_result(&graph, [destination, 68], [8, 8], 64);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert!(graph.edges.free_byte_spans().is_empty());
+            let events = take_events();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Publish)
+                    .count(),
+                1
+            );
+            assert!(!events.contains(&PhysicalLayoutEvent::Count));
+            drop(graph);
+            let graph = reopen_physical::<TestEdge>(&m);
+            assert_physical_result(&graph, [destination, 68], [8, 8], 64);
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    BucketLabelKey::from_raw(2),
+                    TestEdge { target: 17 },
+                    super::super::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            let targets: Vec<_> = graph
+                .iter_edges_for_label(VertexId::from(0), BucketLabelKey::from_raw(2))
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.target)
+                .collect();
+            assert_eq!(targets, [17, 7, 0, 7]);
+            let mut raw = [0u8; 20];
+            graph
+                .edges
+                .read_slots_contiguous_bytes(destination, &mut raw);
+            assert_eq!(
+                raw,
+                [7u32, 0, u32::MAX, 7, 17]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+
+            // A second overlapping copy retains a real run, not just NO_SPILL_RUN.
+            // The original no-run next-insert case above remains independently fixed.
+            let source = append_physical_source_run(&graph);
+            assert_eq!(source.degree(), 7);
+            assert_eq!(source.stored_slots(), 5);
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            let spill_before = m[6].bytes.borrow().clone();
+            let untouched_before = canonical_bytes(&m)[10..16].to_vec();
+            take_events();
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src: VertexId::from(0),
+                    placement: VertexPhysicalPlacement::new(100, 8, None, 0),
+                })
+                .unwrap();
+            preparation.ready().unwrap().publish();
+            drop(preparation);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+            assert_eq!(&canonical_bytes(&m)[10..16], untouched_before);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(source.with_edge_range(100, 5))
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(1),
+                Some(LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(2),
+                    68,
+                    2,
+                    3
+                ))
+            );
+            assert_eq!(
+                graph.edges.counts_store().get(1),
+                super::SegmentEdgeCounts {
+                    actual: 9,
+                    total: 64
+                }
+            );
+            assert_eq!(graph.edges.header().num_edges, 9);
+            graph.edges.read_slots_contiguous_bytes(100, &mut raw);
+            assert_eq!(
+                raw.as_slice(),
+                [7u32, 0, u32::MAX, 7, 17]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            for ordinal in 0..2u32 {
+                assert_eq!(
+                    graph.vertices.get(VertexId::from(ordinal)),
+                    LabeledVertex::from_parts(u64::from(ordinal), 1, 8, 0)
+                );
+            }
+            let mut peer_raw = [0u8; 12];
+            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            assert_eq!(
+                peer_raw.as_slice(),
+                [11u32, u32::MAX, 11]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            assert!(!take_events().contains(&PhysicalLayoutEvent::Count));
+            drop(graph);
+            let graph = reopen_physical::<TestEdge>(&m);
+            let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+            assert_eq!(graph.edges.spill_used_len(run), 4);
+            for (ordinal, target) in [31u32, 0, u32::MAX, 31].into_iter().enumerate() {
+                assert_eq!(
+                    graph
+                        .edges
+                        .spill_edge_at(run, ordinal as u32)
+                        .unwrap()
+                        .target,
+                    target
+                );
+            }
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(source.with_edge_range(100, 5))
+            );
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    BucketLabelKey::from_raw(2),
+                    TestEdge { target: 19 },
+                    super::super::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            assert_eq!(graph.edges.spill_used_len(run), 5);
+            assert_eq!(graph.edges.spill_edge_at(run, 4).unwrap().target, 19);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(source.with_edge_range(100, 5).with_degree_field(8))
+            );
+            let targets: Vec<_> = graph
+                .iter_edges_for_label(VertexId::from(0), BucketLabelKey::from_raw(2))
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.target)
+                .collect();
+            assert_eq!(targets, [19, 31, 0, 31, 17, 7, 0, 7]);
+
+            // Outside a pin, overlapping rewrites retire only old slots outside
+            // the whole new cover, including its uninitialized reserved slack.
+            let src = VertexId::from(0);
+            graph
+                .edges
+                .set_segment_physical_start(
+                    crate::SegmentId::from(0),
+                    crate::lara::edge::span_meta::SPAN_PHYSICAL_UNASSIGNED,
+                )
+                .unwrap();
+            graph.edges.counts_store().set(
+                1,
+                &super::SegmentEdgeCounts {
+                    actual: 10,
+                    total: 16,
+                },
+            );
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            let spill_before = m[6].bytes.borrow().clone();
+            let publications = graph.edges.free_span_store().publication_count();
+            reset_free_span_release_calls();
+            take_events();
+            graph
+                .rewrite_vertex_edge_span(src, None, 0, false, Some((destination, 8)))
+                .unwrap();
+            let retired = FreeSpan {
+                start_slot: if destination == 98 { 106 } else { 100 },
+                len: 2,
+            };
+            assert_eq!(graph.edges.free_byte_spans(), vec![retired]);
+            assert_eq!(
+                graph.edges.allocator_stats(),
+                FreeSpanAllocatorStats {
+                    free_bytes: 2,
+                    largest_free_span: 2,
+                    free_span_count: 1,
+                }
+            );
+            assert_eq!(
+                graph.edges.free_span_store().publication_count() - publications,
+                1
+            );
+            assert_eq!(free_span_release_calls(), 0);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+            let events = take_events();
+            for event in [
+                PhysicalLayoutEvent::Prepare(src),
+                PhysicalLayoutEvent::Ready,
+                PhysicalLayoutEvent::Publish,
+                PhysicalLayoutEvent::Header,
+                PhysicalLayoutEvent::Vertex(src),
+                PhysicalLayoutEvent::Count,
+                PhysicalLayoutEvent::Retire,
+            ] {
+                assert_eq!(events.iter().filter(|actual| **actual == event).count(), 1);
+            }
+            assert!(!events.contains(&PhysicalLayoutEvent::Pin));
+            assert_eq!(graph.labeled_leaf_physical_range(src), None);
+            let expected_bucket = source.with_edge_range(destination, 5).with_degree_field(8);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(expected_bucket)
+            );
+            graph
+                .edges
+                .read_slots_contiguous_bytes(destination, &mut raw);
+            assert_eq!(
+                raw.as_slice(),
+                [7u32, 0, u32::MAX, 7, 17]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.edges.counts_store().get(1),
+                super::SegmentEdgeCounts {
+                    actual: 10,
+                    total: 16
+                }
+            );
+            assert_eq!(graph.edges.header().num_edges, 10);
+            drop(graph);
+            let graph = reopen_physical::<TestEdge>(&m);
+            assert_eq!(graph.edges.free_byte_spans(), vec![retired]);
+            assert_eq!(
+                graph.edges.allocator_stats(),
+                FreeSpanAllocatorStats {
+                    free_bytes: 2,
+                    largest_free_span: 2,
+                    free_span_count: 1,
+                }
+            );
+            assert_eq!(graph.labeled_leaf_physical_range(src), None);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(expected_bucket)
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(1),
+                Some(LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(2),
+                    68,
+                    2,
+                    3,
+                ))
+            );
+            for ordinal in 0..2u32 {
+                assert_eq!(
+                    graph.vertices.get(VertexId::from(ordinal)),
+                    LabeledVertex::from_parts(u64::from(ordinal), 1, 8, 0)
+                );
+            }
+            assert_eq!(
+                graph.edges.counts_store().get(1),
+                super::SegmentEdgeCounts {
+                    actual: 10,
+                    total: 16
+                }
+            );
+            assert_eq!(graph.edges.header().num_edges, 10);
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+            let run = graph
+                .edges
+                .spill_mint(expected_bucket.edge_spill_run())
+                .unwrap();
+            assert_eq!(graph.edges.spill_used_len(run), 5);
+            for (ordinal, target) in [31u32, 0, u32::MAX, 31, 19].into_iter().enumerate() {
+                assert_eq!(
+                    graph
+                        .edges
+                        .spill_edge_at(run, ordinal as u32)
+                        .unwrap()
+                        .target,
+                    target
+                );
+            }
+            // Reusing and overwriting the freed range must not touch any new
+            // resident or peer; allocator validity alone cannot prove that.
+            assert_eq!(
+                graph.edges.free_span_store().take_best_fit(2).unwrap(),
+                Some(retired)
+            );
+            graph
+                .edges
+                .write_slots_contiguous_bytes(
+                    retired.start_slot,
+                    &[29u32, 37]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            assert!(graph.edges.free_byte_spans().is_empty());
+            graph.edges.free_span_store().validate().unwrap();
+            graph
+                .edges
+                .read_slots_contiguous_bytes(destination, &mut raw);
+            assert_eq!(
+                raw.as_slice(),
+                [7u32, 0, u32::MAX, 7, 17]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            assert_eq!(
+                peer_raw.as_slice(),
+                [11u32, u32::MAX, 11]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(expected_bucket)
+            );
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+        }
+    }
+
+    #[test]
+    fn physical_layout_ready_rejects_changed_source() {
+        for changed in 0..5 {
+            let (graph, m) = physical_fixture::<CopyOnlyEdge>();
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            take_events();
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src: VertexId::from(0),
+                    placement: VertexPhysicalPlacement::new(98, 8, None, 0),
+                })
+                .unwrap();
+            match changed {
+                0 => graph
+                    .vertices
+                    .set(VertexId::from(0), &LabeledVertex::from_parts(0, 1, 9, 0)),
+                1 => graph
+                    .buckets
+                    .write_label_bucket_slot(
+                        0,
+                        LabelBucket::from_parts(BucketLabelKey::from_raw(2), 100, 2, 4),
+                    )
+                    .unwrap(),
+                2 => graph.edges.set_num_edges(6),
+                3 => graph
+                    .edges
+                    .set_segment_physical_start(crate::SegmentId::from(0), 65)
+                    .unwrap(),
+                4 => graph.edges.counts_store().set(
+                    1,
+                    &super::SegmentEdgeCounts {
+                        actual: 6,
+                        total: 64,
+                    },
+                ),
+                _ => unreachable!(),
+            }
+            let deliberate = canonical_bytes(&m);
+            assert!(matches!(
+                preparation.ready(),
+                Err(super::LabeledOperationError::Store(
+                    super::LaraOperationError::CollectAllocationOverflow
+                ))
+            ));
+            drop(preparation);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert_canonical_bytes(&m, &deliberate);
+            assert!(!take_events().contains(&PhysicalLayoutEvent::Publish));
+        }
+    }
+
+    #[test]
+    fn physical_layout_mixed_residency_keeps_tree_and_values() {
+        for destination in [80u64, 104] {
+            let (graph, m) = physical_fixture::<CopyOnlyEdge>();
+            let [slab, tree, tiny] = seed_mixed_physical_residents(&graph);
+            assert_eq!(slab.degree(), 6);
+            assert_eq!(slab.stored_slots(), 4);
+            let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 68, 2, 3);
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            let spill_before = m[6].bytes.borrow().clone();
+            let ltb_before = m[15].bytes.borrow().clone();
+            let value_before = canonical_bytes(&m)[10..15].to_vec();
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src: VertexId::from(0),
+                    placement: VertexPhysicalPlacement::new(destination, 16, None, 0),
+                })
+                .unwrap();
+            preparation.ready().unwrap().publish();
+            drop(preparation);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+            assert_eq!(*m[15].bytes.borrow(), ltb_before);
+            assert_eq!(&canonical_bytes(&m)[10..15], value_before);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(slab.with_edge_range(destination, 4))
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(1),
+                Some(tree.with_edge_range(destination + 4, 512))
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(2),
+                Some(tiny.with_edge_range(destination + 15, 0))
+            );
+            assert_eq!(graph.buckets.read_label_bucket_slot(3), Some(peer));
+            let mut actual = [0u8; 24];
+            graph
+                .edges
+                .read_slots_contiguous_bytes(destination, &mut actual);
+            assert_eq!(
+                actual,
+                [7u32, 0, u32::MAX, 7, 0, 1]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+            assert_eq!(
+                graph.edges.counts_store().get(1),
+                super::SegmentEdgeCounts {
+                    actual: 8,
+                    total: 64
+                }
+            );
+            assert_eq!(graph.edges.header().num_edges, 521);
+            assert_eq!(
+                graph.vertices.get(VertexId::from(0)),
+                LabeledVertex::from_parts(0, 3, 16, 0)
+            );
+            assert_eq!(
+                graph.vertices.get(VertexId::from(1)),
+                LabeledVertex::from_parts(3, 1, 8, 0)
+            );
+            let mut peer_raw = [0u8; 12];
+            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            assert_eq!(
+                peer_raw.as_slice(),
+                [11u32, u32::MAX, 11]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            );
+            drop(graph);
+            let graph = reopen_physical::<CopyOnlyEdge>(&m);
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(0),
+                Some(slab.with_edge_range(destination, 4))
+            );
+            assert_eq!(
+                graph.buckets.read_label_bucket_slot(1),
+                Some(tree.with_edge_range(destination + 4, 512))
+            );
+            assert_eq!(*m[6].bytes.borrow(), spill_before);
+            assert_eq!(*m[15].bytes.borrow(), ltb_before);
+        }
+    }
+
+    fn physical_copy_64_metrics() {
+        use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
+        for tree in [false, true] {
+            let (graph, m) =
+                empty_physical_fixture::<CopyOnlyEdge>(InitialCapacities::uniform(4096), 64);
+            for ordinal in 0..64u32 {
+                let vid = VertexId::from(ordinal);
+                graph.push_vertex(LabeledVertex::default()).unwrap();
+                let origin = 128 + u64::from(ordinal) * 16 + 5;
+                let (bucket, width, raw) = if tree {
+                    let mut raw = Vec::new();
+                    for index in 0..8u32 {
+                        let id = graph.ltb.mint().unwrap();
+                        assert_eq!(id, ordinal * 8 + index);
+                        graph.ltb.write_block_header(
+                            id,
+                            &BlockHeader {
+                                kind: if index < 4 {
+                                    BlockKind::Edge
+                                } else {
+                                    BlockKind::InlineProperty
+                                },
+                                bucket_label_key_wire: 2,
+                                owner_or_next_free: ordinal,
+                                ordinal: index % 4,
+                                level: 0,
+                                tombstone_count: 0,
+                                reserved: [0],
+                            },
+                        );
+                        let mut payload = [0u8; 4096];
+                        for (slot, word) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                            let value = if index < 4 {
+                                ordinal * 4096 + index * 1024 + slot as u32
+                            } else {
+                                0x4000_0000 + ordinal * 4096 + (index - 4) * 1024 + slot as u32
+                            };
+                            word.copy_from_slice(&value.to_le_bytes());
+                        }
+                        graph.ltb.write_payload(id, &payload).unwrap();
+                        raw.extend(id.to_le_bytes());
+                    }
+                    (
+                        LabelBucket::from_parts_with_inline_property(
+                            BucketLabelKey::from_raw(2),
+                            origin,
+                            4096,
+                            4096,
+                            4,
+                            0,
+                            0,
+                            -1,
+                            0,
+                        )
+                        .with_tree_mode(true),
+                        8,
+                        raw,
+                    )
+                } else {
+                    (
+                        LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, 4, 6),
+                        6,
+                        [
+                            ordinal * 16,
+                            u32::MAX,
+                            ordinal * 16 + 2,
+                            ordinal * 16 + 2,
+                            u32::MAX,
+                            ordinal * 16 + 5,
+                        ]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect(),
+                    )
+                };
+                graph
+                    .edges
+                    .write_slots_contiguous_bytes(origin, &raw)
+                    .unwrap();
+                graph
+                    .buckets
+                    .write_label_bucket_slot(u64::from(ordinal), bucket)
+                    .unwrap();
+                graph.vertices.set(
+                    vid,
+                    &LabeledVertex::from_parts(u64::from(ordinal), 1, width, 0),
+                );
+            }
+            graph
+                .edges
+                .set_segment_physical_start(crate::SegmentId::from(0), 128)
+                .unwrap();
+            graph
+                .edges
+                .bump_vertex_segment_counts(VertexId::from(0), if tree { 0 } else { 256 }, 1024)
+                .unwrap();
+            graph
+                .edges
+                .set_num_edges(if tree { 64 * 4096 } else { 256 });
+            let before: Vec<_> = m
+                .iter()
+                .map(|memory| {
+                    (
+                        memory.reads.get(),
+                        memory.read_bytes.get(),
+                        memory.writes.get(),
+                        memory.write_bytes.get(),
+                        memory.size(),
+                    )
+                })
+                .collect();
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+                    src: VertexId::from(0),
+                    destination: LeafPhysicalDestination::Current(FreeSpan {
+                        start_slot: 128,
+                        len: 1024,
+                    }),
+                })
+                .unwrap();
+            let (retained, scratch) = preparation.slab.copy_buffer_metrics();
+            assert_eq!(retained, if tree { 2048 } else { 1536 });
+            assert_eq!(scratch, 0);
+            preparation.ready().unwrap().publish();
+            drop(preparation);
+            let after: Vec<_> = m
+                .iter()
+                .zip(&before)
+                .map(|(memory, before)| {
+                    (
+                        memory.reads.get() - before.0,
+                        memory.read_bytes.get() - before.1,
+                        memory.writes.get() - before.2,
+                        memory.write_bytes.get() - before.3,
+                        memory.size() - before.4,
+                    )
+                })
+                .collect();
+            assert_eq!(after[5].2, 65);
+            assert_eq!(after[5].3, retained as u64 + 64);
+            assert_eq!(after[1].2, 64);
+            assert_eq!(after[1].3, 64 * 34);
+            assert_eq!(after[0].2, 64);
+            assert_eq!(after[0].3, 64 * 25);
+            assert_eq!(after[4].2, 1);
+            assert!(after.iter().all(|row| row.4 == 0));
+            assert_eq!(after[15].0, 0);
+            assert_eq!(after[15].2, 0);
+            println!(
+                "physical_copy_64_metrics shape={} retained={} streaming_scratch={} validation_stack=128 regions={:?}",
+                if tree { "tree" } else { "slab" },
+                retained,
+                scratch,
+                after
+            );
+            for ordinal in 0..64u32 {
+                let origin = if tree {
+                    128 + u64::from(ordinal) * 16
+                } else {
+                    128 + u64::from(ordinal) * 15
+                };
+                let width = if tree {
+                    16
+                } else if ordinal == 63 {
+                    79
+                } else {
+                    15
+                };
+                assert_eq!(
+                    graph.vertices.get(VertexId::from(ordinal)),
+                    LabeledVertex::from_parts(u64::from(ordinal), 1, width, 0)
+                );
+                assert_eq!(
+                    graph
+                        .buckets
+                        .read_label_bucket_slot(u64::from(ordinal))
+                        .unwrap()
+                        .edge_start(),
+                    origin
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn physical_layout_commit_paths_share_admission() {
+        use super::super::test_support::TestEdge;
+        for branch in 0..3 {
+            let (graph, m) = physical_fixture::<TestEdge>();
+            let src = VertexId::from(0);
+            let original = graph.vertices.get(src);
+            let bucket = graph.buckets.read_label_bucket_slot(0).unwrap();
+            graph.buckets.write_label_bucket_slot(255, bucket).unwrap();
+            graph.vertices.set(
+                src,
+                &original.try_with_bucket_row_and_slack(255, 1, 1).unwrap(),
+            );
+            warm_physical_caches(&graph);
+            let caches = cache_snapshot(&graph);
+            let before = canonical_bytes(&m);
+            let publications = graph.edges.free_span_store().publication_count();
+            reset_free_span_release_calls();
+            let consume = || match branch {
+                0 => graph.rewrite_vertex_edge_span(src, None, 0, false, Some((98, 8))),
+                1 => graph.relocate_labeled_leaf_physical_block(src),
+                2 => graph.rebalance_labeled_leaf_weighted_slide(src),
+                _ => unreachable!(),
+            };
+            take_events();
+            assert!(matches!(
+                consume(),
+                Err(super::LabeledOperationError::Store(
+                    super::LaraOperationError::CollectAllocationOverflow
+                ))
+            ));
+            assert_canonical_bytes(&m, &before);
+            assert_eq!(cache_snapshot(&graph), caches);
+            assert_eq!(
+                graph.edges.free_span_store().publication_count(),
+                publications
+            );
+            assert_eq!(free_span_release_calls(), 0);
+            let events = take_events();
+            assert!(!events.contains(&PhysicalLayoutEvent::Publish));
+            assert_eq!(
+                events.last(),
+                Some(&PhysicalLayoutEvent::AdmitDescriptor(src))
+            );
+            if branch != 0 {
+                assert!(events.contains(&PhysicalLayoutEvent::AdmitDescriptor(VertexId::from(1))));
+            }
+            graph.vertices.set(src, &original);
+            take_events();
+            consume().unwrap();
+            assert_eq!(
+                graph.edges.free_span_store().publication_count() - publications,
+                1
+            );
+            assert_eq!(free_span_release_calls(), 0);
+            assert_eq!(
+                graph.edges.free_byte_spans(),
+                if branch == 1 {
+                    vec![FreeSpan {
+                        start_slot: 64,
+                        len: 64,
+                    }]
+                } else {
+                    vec![]
+                }
+            );
+            let events = take_events();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Pin)
+                    .count(),
+                usize::from(branch == 1)
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Prepare(src))
+                    .count(),
+                1
+            );
+            for event in [
+                PhysicalLayoutEvent::Ready,
+                PhysicalLayoutEvent::Publish,
+                PhysicalLayoutEvent::Header,
+                PhysicalLayoutEvent::Retire,
+            ] {
+                assert_eq!(events.iter().filter(|actual| **actual == event).count(), 1);
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Count)
+                    .count(),
+                usize::from(branch != 0)
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Vertex(src))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == PhysicalLayoutEvent::Vertex(VertexId::from(1)))
+                    .count(),
+                usize::from(branch != 0)
+            );
+            match branch {
+                0 => assert_physical_result(&graph, [98, 68], [8, 8], 64),
+                1 => {
+                    assert!(events.contains(&PhysicalLayoutEvent::Streamed));
+                    assert_physical_result(&graph, [256, 301], [45, 35], 80);
+                    assert_eq!(graph.edges.span_meta_store().get(0).physical_start, 256);
+                    assert_eq!(graph.edges.header().elem_capacity, 336);
+                }
+                2 => {
+                    assert!(events.contains(&PhysicalLayoutEvent::Buffered));
+                    assert_physical_result(&graph, [64, 100], [36, 28], 64);
+                }
+                _ => unreachable!(),
+            }
+            if branch == 0 {
+                // The pinned case above must not stand in for ordinary unpinned
+                // count admission. Reuse its graph; only the fixture pin/count changes.
+                graph
+                    .edges
+                    .set_segment_physical_start(
+                        crate::SegmentId::from(0),
+                        crate::lara::edge::span_meta::SPAN_PHYSICAL_UNASSIGNED,
+                    )
+                    .unwrap();
+                graph.edges.counts_store().set(
+                    1,
+                    &super::SegmentEdgeCounts {
+                        actual: 5,
+                        total: i64::MAX,
+                    },
+                );
+                let before = canonical_bytes(&m);
+                let caches = cache_snapshot(&graph);
+                let publications = graph.edges.free_span_store().publication_count();
+                reset_free_span_release_calls();
+                take_events();
+                assert!(matches!(
+                    graph.rewrite_vertex_edge_span(src, None, 0, false, Some((98, 12))),
+                    Err(super::LabeledOperationError::Store(
+                        super::LaraOperationError::CollectAllocationOverflow
+                    ))
+                ));
+                assert_canonical_bytes(&m, &before);
+                assert_eq!(cache_snapshot(&graph), caches);
+                assert_eq!(
+                    graph.edges.free_span_store().publication_count(),
+                    publications
+                );
+                assert_eq!(free_span_release_calls(), 0);
+                assert!(!take_events().contains(&PhysicalLayoutEvent::Publish));
+                graph.edges.counts_store().set(
+                    1,
+                    &super::SegmentEdgeCounts {
+                        actual: 5,
+                        total: 16,
+                    },
+                );
+                take_events();
+                graph
+                    .rewrite_vertex_edge_span(src, None, 0, false, Some((98, 12)))
+                    .unwrap();
+                assert_eq!(
+                    graph.edges.free_span_store().publication_count() - publications,
+                    1
+                );
+                assert_eq!(free_span_release_calls(), 0);
+                let events = take_events();
+                for event in [
+                    PhysicalLayoutEvent::Prepare(src),
+                    PhysicalLayoutEvent::Ready,
+                    PhysicalLayoutEvent::Publish,
+                    PhysicalLayoutEvent::Header,
+                    PhysicalLayoutEvent::Vertex(src),
+                    PhysicalLayoutEvent::Count,
+                    PhysicalLayoutEvent::Retire,
+                ] {
+                    assert_eq!(events.iter().filter(|actual| **actual == event).count(), 1);
+                }
+                assert!(!events.contains(&PhysicalLayoutEvent::Pin));
+                assert_physical_result(&graph, [98, 68], [12, 8], 20);
+                assert_eq!(cache_snapshot(&graph), caches);
+            }
+            drop(graph);
+            let graph = reopen_physical::<TestEdge>(&m);
+            assert_eq!(
+                graph.edges.free_byte_spans(),
+                if branch == 1 {
+                    vec![FreeSpan {
+                        start_slot: 64,
+                        len: 64,
+                    }]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(
+                graph.edges.allocator_stats(),
+                if branch == 1 {
+                    FreeSpanAllocatorStats {
+                        free_bytes: 64,
+                        largest_free_span: 64,
+                        free_span_count: 1,
+                    }
+                } else {
+                    FreeSpanAllocatorStats {
+                        free_bytes: 0,
+                        largest_free_span: 0,
+                        free_span_count: 0,
+                    }
+                }
+            );
+            graph.edges.free_span_store().validate().unwrap();
+            match branch {
+                0 => {
+                    assert_physical_result(&graph, [98, 68], [12, 8], 20);
+                    assert_eq!(graph.labeled_leaf_physical_range(src), None);
+                }
+                1 => {
+                    assert_physical_result(&graph, [256, 301], [45, 35], 80);
+                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((256, 80)));
+                    assert_eq!(graph.edges.header().elem_capacity, 336);
+                }
+                2 => {
+                    assert_physical_result(&graph, [64, 100], [36, 28], 64);
+                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((64, 64)));
+                }
+                _ => unreachable!(),
+            }
+        }
+        physical_copy_64_metrics();
+    }
+
+    #[test]
+    fn physical_layout_backing_rejection_is_unpublished() {
+        use crate::lara::{
+            edge::{EdgeHeaderV1, EdgeSlabStore},
+            operation_error::LaraOperationError,
+        };
+
+        let memory = CopyAdmissionMemory::default();
+        let header = EdgeHeaderV1::new(16, 1, 16, 4, 0);
+        let store = EdgeSlabStore::<CopyOnlyEdge, _>::new(memory.clone(), header).unwrap();
+        let prefix: Vec<u8> = [7u32, 0, u32::MAX, 7]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let roots: Vec<u8> = [101u32, 0, 103, 201]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        store.write_slots_contiguous(0, &prefix).unwrap();
+        store.write_slots_contiguous(8, &roots).unwrap();
+        let before = memory.bytes.borrow().clone();
+        let writes_before = memory.writes.get();
+        let headers_before = memory.header_writes.get();
+        assert_eq!(memory.size(), 5);
+        memory.grows.borrow_mut().clear();
+
+        let grown_header = EdgeHeaderV1 {
+            elem_capacity: 100_000,
+            ..header
+        };
+        memory.reject_grow.set(true);
+        let error = store
+            .prepare_physical_image(
+                grown_header,
+                vec![(0, roots.clone()), (90_000, prefix.clone())],
+            )
+            .map_err(LaraOperationError::ResizeFailed)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            LaraOperationError::ResizeFailed(crate::GrowFailed {
+                current_size: 5,
+                delta: 6,
+            })
+        ));
+        assert_eq!(*memory.grows.borrow(), [6]);
+        assert_eq!(memory.writes.get(), writes_before);
+        assert_eq!(memory.header_writes.get(), headers_before);
+        assert_eq!(*memory.bytes.borrow(), before);
+        assert_eq!(store.header().unwrap(), header);
+
+        // A later invalid range must be checked before even backing admission.
+        memory.grows.borrow_mut().clear();
+        let error = store
+            .prepare_physical_image(
+                grown_header,
+                vec![(0, roots.clone()), (100_000, prefix.clone())],
+            )
+            .err()
+            .unwrap();
+        assert_eq!(error.current_size, 5);
+        assert_eq!(error.delta, 0);
+        assert!(memory.grows.borrow().is_empty());
+        assert_eq!(*memory.bytes.borrow(), before);
+        assert_eq!(memory.writes.get(), writes_before);
+        assert_eq!(memory.header_writes.get(), headers_before);
+
+        // Successful reserve may keep backing capacity, never a new logical header.
+        let image = store
+            .prepare_physical_image(
+                grown_header,
+                vec![(0, roots.clone()), (90_000, prefix.clone())],
+            )
+            .unwrap();
+        assert_eq!(*memory.grows.borrow(), [6]);
+        assert_eq!(memory.size(), 11);
+        assert_eq!(memory.writes.get() - writes_before, 1);
+        assert_eq!(memory.header_writes.get(), headers_before);
+        assert_eq!(&memory.bytes.borrow()[..before.len()], before.as_slice());
+        assert_eq!(store.header().unwrap(), header);
+        drop(image);
+        assert_eq!(&memory.bytes.borrow()[..before.len()], before.as_slice());
+        assert_eq!(store.header().unwrap(), header);
+        memory.grows.borrow_mut().clear();
+        let before = memory.bytes.borrow().clone();
+        let writes_before = memory.writes.get();
+
+        let image = store
+            .prepare_physical_image(
+                header,
+                vec![(2, prefix.clone()), (7, roots.clone()), (16, Vec::new())],
+            )
+            .unwrap();
+        assert_eq!(*memory.bytes.borrow(), before);
+        assert_eq!(memory.writes.get(), writes_before);
+        drop(image);
+        assert_eq!(*memory.bytes.borrow(), before);
+        assert_eq!(memory.header_writes.get(), headers_before);
+
+        // Both buffers are retained before their destinations overwrite old sources.
+        // This proves only the slab owner; enclosing graph readiness is tested later.
+        let image = store
+            .prepare_physical_image(header, vec![(2, prefix), (7, roots)])
+            .unwrap();
+        image.write();
+        assert_eq!(memory.writes.get() - writes_before, 3);
+        assert_eq!(memory.header_writes.get() - headers_before, 1);
+        let mut actual = [0u8; 16];
+        store.read_slots_contiguous(2, &mut actual);
+        assert_eq!(
+            actual,
+            [7u32, 0, u32::MAX, 7]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        store.read_slots_contiguous(7, &mut actual);
+        assert_eq!(
+            actual,
+            [101u32, 0, 103, 201]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        assert_eq!(store.header().unwrap(), header);
+        assert!(memory.grows.borrow().is_empty());
+
+        let (graph, m) = physical_fixture::<CopyOnlyEdge>();
+        let [original, tree, tiny] = seed_mixed_physical_residents(&graph);
+        let src = VertexId::from(0);
+        graph.edges.release_span(88, 4).unwrap();
+        warm_physical_caches(&graph);
+        graph
+            .find_bucket(src, &graph.vertices.get(src), BucketLabelKey::from_raw(3))
+            .unwrap();
+        let caches = cache_snapshot(&graph);
+        let allocator_cache = graph.edges.free_span_store().physical_cache_snapshot();
+        let before = canonical_bytes(&m);
+        m[5].grows.borrow_mut().clear();
+        m[5].reject_grow.set(true);
+        take_events();
+        let error = graph
+            .prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+                src,
+                destination: LeafPhysicalDestination::Relocate(100_000),
+            })
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            super::LabeledOperationError::Store(LaraOperationError::ResizeFailed(
+                crate::GrowFailed {
+                    current_size: 5,
+                    delta: 6
+                }
+            ))
+        ));
+        assert_eq!(*m[5].grows.borrow(), [6]);
+        assert_eq!(cache_snapshot(&graph), caches);
+        assert_eq!(
+            graph.edges.free_span_store().physical_cache_snapshot(),
+            allocator_cache
+        );
+        assert_canonical_bytes(&m, &before);
+        assert!(!take_events().contains(&PhysicalLayoutEvent::Publish));
+
+        // A malformed desired descriptor reaches the shared round-trip owner,
+        // independently of the backing failure and without requiring any grow.
+        // This independently reached encode failure retains the same live roots,
+        // run and peer; only the unpersisted desired tiny descriptor is malformed.
+        warm_physical_caches(&graph);
+        graph
+            .find_bucket(src, &graph.vertices.get(src), BucketLabelKey::from_raw(3))
+            .unwrap();
+        let caches = cache_snapshot(&graph);
+        let allocator_cache = graph.edges.free_span_store().physical_cache_snapshot();
+        let before = canonical_bytes(&m);
+        let grows: Vec<_> = m.iter().map(|memory| memory.grows.borrow().len()).collect();
+        let mut malformed = tiny;
+        malformed.degree = 5;
+        take_events();
+        let error = super::PreparedVertexPhysicalCopy::reserve_desired(
+            &graph,
+            src,
+            (vec![original, tree, malformed], vec![None, None, None]),
+            VertexPhysicalPlacement::new(98, 16, None, 0),
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(
+            error,
+            super::LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
+        assert_eq!(take_events(), [PhysicalLayoutEvent::AdmitDescriptor(src)]);
+        assert_eq!(
+            m.iter()
+                .map(|memory| memory.grows.borrow().len())
+                .collect::<Vec<_>>(),
+            grows
+        );
+        assert_eq!(cache_snapshot(&graph), caches);
+        assert_eq!(
+            graph.edges.free_span_store().physical_cache_snapshot(),
+            allocator_cache
+        );
+        assert_canonical_bytes(&m, &before);
+    }
+
+    #[test]
+    fn physical_layout_earlier_shape_admits_without_publication() {
+        use super::{PhysicalLayoutOperation, PreparedVertexPhysicalCopy, VertexPhysicalPlacement};
+        use crate::{
+            SegmentId, VertexId,
+            labeled::{BucketLabelKey, InitialCapacities, LabeledVertex, record::LabelBucket},
+            traits::CsrVertex,
+        };
+
+        for order in [[0usize, 3], [3, 0]] {
+            let memories: [VectorMemory; 16] = std::array::from_fn(|_| VectorMemory::default());
+            let graph = super::LabeledLaraGraph::<CopyOnlyEdge, _>::new_with_segment_size(
+                memories[0].clone(),
+                memories[1].clone(),
+                memories[2].clone(),
+                memories[3].clone(),
+                memories[4].clone(),
+                memories[5].clone(),
+                memories[6].clone(),
+                memories[7].clone(),
+                memories[8].clone(),
+                memories[9].clone(),
+                memories[10].clone(),
+                memories[11].clone(),
+                memories[12].clone(),
+                memories[13].clone(),
+                memories[14].clone(),
+                memories[15].clone(),
+                InitialCapacities::uniform(256),
+                BucketLabelKey::from_raw(9),
+                16,
+            )
+            .unwrap();
+            let src = VertexId::from(0);
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+            let early = LabelBucket::from_parts(BucketLabelKey::from_raw(1), 80, 0, 0)
+                .try_enable_tiny_mode()
+                .unwrap()
+                .with_tiny_target(0, 41)
+                .with_tiny_target(1, 0)
+                .with_tiny_target(2, u32::MAX)
+                .with_tiny_target(3, 41)
+                .with_degree_field(3)
+                .with_tiny_used_width(4);
+            let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 80, 3, 4);
+            let tree = LabelBucket::from_parts_with_inline_property(
+                BucketLabelKey::from_raw(3),
+                88,
+                512,
+                512,
+                4,
+                0,
+                0,
+                -1,
+                0,
+            )
+            .with_tree_mode(true);
+            let late = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 90, 0, 0)
+                .try_enable_tiny_mode()
+                .unwrap()
+                .with_tiny_target(0, 51)
+                .with_degree_field(1)
+                .with_tiny_used_width(1);
+            let source = vec![early, slab, tree, late];
+            graph
+                .buckets
+                .write_label_bucket_slots_contiguous(0, &source)
+                .unwrap();
+            graph
+                .vertices
+                .set(src, &LabeledVertex::from_parts(0, 4, 32, 0));
+            let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 192, 1, 2);
+            graph.buckets.write_label_bucket_slot(4, peer).unwrap();
+            graph
+                .vertices
+                .set(VertexId::from(1), &LabeledVertex::from_parts(4, 1, 16, 0));
+            let words = |values: &[u32]| {
+                values
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>()
+            };
+            graph
+                .edges
+                .write_slots_contiguous_bytes(80, &words(&[21, 0, u32::MAX, 21]))
+                .unwrap();
+            graph
+                .edges
+                .write_slots_contiguous_bytes(88, &words(&[101, 201]))
+                .unwrap();
+            graph
+                .edges
+                .write_slots_contiguous_bytes(192, &words(&[61, u32::MAX]))
+                .unwrap();
+            graph
+                .edges
+                .set_segment_physical_start(SegmentId::from(0), 64)
+                .unwrap();
+            graph.edges.bump_vertex_segment_counts(src, 4, 144).unwrap();
+            graph.edges.set_num_edges(520);
+
+            // Desired logical transcription is supplied by the geometry caller;
+            // neither requested promotion order can influence final label order.
+            let mut desired = source.clone();
+            let mut transcribed = vec![None, None, None, None];
+            for index in order {
+                desired[index] = LabelBucket::from_parts(
+                    source[index].bucket_label_key(),
+                    source[index].edge_start(),
+                    source[index].degree(),
+                    source[index].tiny_used_width(),
+                );
+                transcribed[index] = Some(if index == 0 {
+                    words(&[41, 0, u32::MAX, 41])
+                } else {
+                    words(&[51])
+                });
+            }
+            let before: Vec<_> = memories.iter().map(|m| m.borrow().clone()).collect();
+            graph
+                .find_bucket(src, &graph.vertices.get(src), BucketLabelKey::from_raw(2))
+                .unwrap();
+            graph
+                .find_bucket(
+                    VertexId::from(1),
+                    &graph.vertices.get(VertexId::from(1)),
+                    BucketLabelKey::from_raw(2),
+                )
+                .unwrap();
+            let cache_value = |entry: Option<super::super::BucketLookupCache>| {
+                entry.map(|entry| {
+                    (
+                        entry.vid,
+                        entry.bucket_key,
+                        entry.base_slot_start,
+                        entry.degree,
+                        entry.slot,
+                    )
+                })
+            };
+            let cache_snapshot = || {
+                (
+                    cache_value(graph.last_bucket_lookup.get()),
+                    graph
+                        .bucket_lookup_cache
+                        .each_ref()
+                        .map(|entry| cache_value(entry.get())),
+                )
+            };
+            let caches = cache_snapshot();
+            let placement = VertexPhysicalPlacement::new(64, 16, None, 0);
+            let component = PreparedVertexPhysicalCopy::reserve_desired(
+                &graph,
+                src,
+                (desired, transcribed),
+                placement,
+            )
+            .unwrap();
+            assert_eq!(
+                component
+                    .final_buckets
+                    .iter()
+                    .copied()
+                    .map(LabelBucket::edge_start)
+                    .collect::<Vec<_>>(),
+                [64, 68, 72, 78]
+            );
+            assert_eq!(
+                component.final_vertex,
+                LabeledVertex::from_parts(0, 4, 16, 0)
+            );
+            assert_eq!(component.retained_source_bytes(), 24);
+            assert_eq!(component.transcribed_bytes(), 20);
+            component.validate_source().unwrap();
+            drop(component);
+            assert_eq!(cache_snapshot(), caches);
+            for (memory, expected) in memories.iter().zip(&before) {
+                assert_eq!(&memory.borrow()[..expected.len()], expected);
+            }
+
+            // Only canonical descriptors enter the physical-only ready factory.
+            // This subcase uses CsrEdge with no CsrEdgeTombstone implementation.
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src,
+                    placement: VertexPhysicalPlacement::new(80, 16, None, 0),
+                })
+                .unwrap();
+            preparation.ready().unwrap().publish();
+            assert_eq!(
+                graph.vertices.get(src),
+                LabeledVertex::from_parts(0, 4, 16, 0)
+            );
+            let final_buckets = graph
+                .read_vertex_label_buckets(&graph.vertices.get(src))
+                .unwrap();
+            assert_eq!(final_buckets[0], early.with_edge_range(80, 41));
+            assert_eq!(final_buckets[1], slab.with_edge_range(80, 4));
+            assert_eq!(final_buckets[2], tree.with_edge_range(84, 512));
+            assert_eq!(final_buckets[3], late.with_edge_range(95, 0));
+            assert_eq!(graph.edges.counts_store().get(1).actual, 4);
+            assert_eq!(graph.edges.counts_store().get(1).total, 144);
+            assert_eq!(graph.edges.header().num_edges, 520);
+            assert_eq!(graph.buckets.read_label_bucket_slot(4), Some(peer));
+            let mut raw = [0u8; 16];
+            graph.edges.read_slots_contiguous_bytes(80, &mut raw);
+            assert_eq!(raw.as_slice(), words(&[21, 0, u32::MAX, 21]));
+            graph.edges.read_slots_contiguous_bytes(84, &mut raw[..8]);
+            assert_eq!(&raw[..8], words(&[101, 201]));
+        }
+    }
+
+    #[test]
+    fn physical_layout_abort_preserves_owners_and_caches() {
+        for choice in 0..3 {
+            let expected_free: Vec<_> = match choice {
+                0 => vec![(48, 8), (88, 4), (160, 32), (208, 32)],
+                1 => vec![(48, 8), (64, 64)],
+                2 => vec![(48, 8), (64, 64), (160, 16)],
+                _ => unreachable!(),
+            }
+            .into_iter()
+            .map(|(start_slot, len)| FreeSpan { start_slot, len })
+            .collect();
+            let expected_stats = match choice {
+                0 => FreeSpanAllocatorStats {
+                    free_bytes: 76,
+                    largest_free_span: 32,
+                    free_span_count: 4,
+                },
+                1 => FreeSpanAllocatorStats {
+                    free_bytes: 72,
+                    largest_free_span: 64,
+                    free_span_count: 2,
+                },
+                2 => FreeSpanAllocatorStats {
+                    free_bytes: 88,
+                    largest_free_span: 64,
+                    free_span_count: 3,
+                },
+                _ => unreachable!(),
+            };
+            for consume in [false, true] {
+                let (graph, m) = physical_fixture::<CopyOnlyEdge>();
+                let src = VertexId::from(0);
+                for (start, len) in [(48, 8), (88, 4)] {
+                    graph.edges.release_span(start, len).unwrap();
+                }
+                match choice {
+                    0 => {
+                        graph.edges.release_span(128, 64).unwrap();
+                        graph.edges.release_span(208, 32).unwrap();
+                    }
+                    1 => graph.edges.release_span(160, 96).unwrap(),
+                    2 => graph.edges.release_span(160, 16).unwrap(),
+                    _ => unreachable!(),
+                }
+                warm_physical_caches(&graph);
+                let caches = cache_snapshot(&graph);
+                let allocator_cache = graph.edges.free_span_store().physical_cache_snapshot();
+                let before = canonical_bytes(&m);
+                let publications = graph.edges.free_span_store().publication_count();
+                reset_free_span_release_calls();
+                take_events();
+                let mut preparation = graph
+                    .prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+                        src,
+                        destination: LeafPhysicalDestination::Relocate(96),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    preparation.allocator.selected_span(),
+                    match choice {
+                        0 => Some(FreeSpan {
+                            start_slot: 128,
+                            len: 64
+                        }),
+                        1 => Some(FreeSpan {
+                            start_slot: 160,
+                            len: 96
+                        }),
+                        2 => None,
+                        _ => unreachable!(),
+                    }
+                );
+                assert_eq!(
+                    preparation.allocator.retired_intervals(),
+                    if choice == 0 {
+                        &[][..]
+                    } else {
+                        &[
+                            FreeSpan {
+                                start_slot: 64,
+                                len: 24,
+                            },
+                            FreeSpan {
+                                start_slot: 92,
+                                len: 36,
+                            },
+                        ][..]
+                    }
+                );
+                assert_canonical_bytes(&m, &before);
+                assert_eq!(cache_snapshot(&graph), caches);
+                if choice == 1 && !consume {
+                    preparation.allocator.change_source_span_len_for_test(88, 6);
+                    let deliberate = canonical_bytes(&m);
+                    assert!(matches!(
+                        preparation.ready(),
+                        Err(super::LabeledOperationError::Store(
+                            super::LaraOperationError::RebalanceFailed(crate::GrowFailed {
+                                current_size: 0,
+                                delta: 0
+                            })
+                        ))
+                    ));
+                    drop(preparation);
+                    assert_canonical_bytes(&m, &deliberate);
+                } else {
+                    let ready = preparation.ready().unwrap();
+                    if consume {
+                        ready.publish();
+                    } else {
+                        drop(ready);
+                    }
+                    drop(preparation);
+                    if consume {
+                        let (start, widths) = match choice {
+                            0 => (64, [54, 42]),
+                            1 => (160, [54, 42]),
+                            2 => (256, [54, 42]),
+                            _ => unreachable!(),
+                        };
+                        assert_physical_result(&graph, [start, start + 54], widths, 96);
+                        assert_eq!(graph.edges.free_byte_spans(), expected_free);
+                        assert_eq!(graph.edges.allocator_stats(), expected_stats);
+                        graph.edges.free_span_store().validate().unwrap();
+                    } else {
+                        assert_canonical_bytes(&m, &before);
+                    }
+                }
+                assert_eq!(
+                    graph.edges.free_span_store().publication_count() - publications,
+                    u64::from(consume)
+                );
+                assert_eq!(free_span_release_calls(), 0);
+                assert_eq!(cache_snapshot(&graph), caches);
+                if !consume {
+                    assert_eq!(
+                        graph.edges.free_span_store().physical_cache_snapshot(),
+                        allocator_cache
+                    );
+                    assert!(!take_events().contains(&PhysicalLayoutEvent::Publish));
+                } else {
+                    drop(graph);
+                    let graph = reopen_physical::<CopyOnlyEdge>(&m);
+                    let start = match choice {
+                        0 => 64,
+                        1 => 160,
+                        2 => 256,
+                        _ => unreachable!(),
+                    };
+                    assert_physical_result(&graph, [start, start + 54], [54, 42], 96);
+                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((start, 96)));
+                    assert_eq!(graph.edges.free_byte_spans(), expected_free);
+                    assert_eq!(graph.edges.allocator_stats(), expected_stats);
+                    graph.edges.free_span_store().validate().unwrap();
+                }
+            }
+        }
+
+        // One source-aware loan must subtract canonical holes before taking a
+        // prefix, including when the allocation is inside a candidate cover.
+        for consume in [false, true] {
+            let records = VectorMemory::default();
+            let index = VectorMemory::default();
+            let store = FreeSpanStore::new(records.clone(), index.clone()).unwrap();
+            store.release_span(30, 10).unwrap();
+            let before = store.header();
+            let cache_before = store.physical_cache_snapshot();
+            let records_before = records.borrow().clone();
+            let index_before = index.borrow().clone();
+            let publications_before = store.publication_count();
+            reset_free_span_release_calls();
+            let mut preparation = store
+                .prepare_physical_replacement(
+                    PhysicalSpanSelection::BestFit(4),
+                    &[FreeSpan {
+                        start_slot: 20,
+                        len: 20,
+                    }],
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                preparation.selected_span(),
+                Some(FreeSpan {
+                    start_slot: 30,
+                    len: 10
+                })
+            );
+            assert_eq!(
+                preparation.taken_span(),
+                Some(FreeSpan {
+                    start_slot: 30,
+                    len: 4
+                })
+            );
+            assert_eq!(
+                preparation.retired_intervals(),
+                &[FreeSpan {
+                    start_slot: 20,
+                    len: 10
+                }]
+            );
+            assert_eq!(store.header(), before);
+            assert_eq!(store.physical_cache_snapshot(), cache_before);
+            assert_eq!(
+                &records.borrow()[..records_before.len()],
+                records_before.as_slice()
+            );
+            assert_eq!(
+                &index.borrow()[..index_before.len()],
+                index_before.as_slice()
+            );
+            let ready = preparation.ready().unwrap();
+            if consume {
+                ready.publish();
+            } else {
+                drop(ready);
+            }
+            drop(preparation);
+            assert_eq!(
+                store.publication_count() - publications_before,
+                u64::from(consume)
+            );
+            assert_eq!(free_span_release_calls(), 0);
+            if !consume {
+                assert_eq!(store.physical_cache_snapshot(), cache_before);
+                assert_eq!(store.header(), before);
+                assert_eq!(
+                    &records.borrow()[..records_before.len()],
+                    records_before.as_slice()
+                );
+                assert_eq!(
+                    &index.borrow()[..index_before.len()],
+                    index_before.as_slice()
+                );
+            }
+            assert_eq!(
+                store.spans(),
+                if consume {
+                    vec![
+                        FreeSpan {
+                            start_slot: 20,
+                            len: 10,
+                        },
+                        FreeSpan {
+                            start_slot: 34,
+                            len: 6,
+                        },
+                    ]
+                } else {
+                    vec![FreeSpan {
+                        start_slot: 30,
+                        len: 10,
+                    }]
+                }
+            );
+            assert_eq!(
+                store.allocator_stats(),
+                if consume {
+                    FreeSpanAllocatorStats {
+                        free_bytes: 16,
+                        largest_free_span: 10,
+                        free_span_count: 2,
+                    }
+                } else {
+                    FreeSpanAllocatorStats {
+                        free_bytes: 10,
+                        largest_free_span: 10,
+                        free_span_count: 1,
+                    }
+                }
+            );
+            store.validate().unwrap();
+        }
+        let store = FreeSpanStore::new(VectorMemory::default(), VectorMemory::default()).unwrap();
+        for (start, len) in [(10, 15), (30, 5), (45, 15)] {
+            store.release_span(start, len).unwrap();
+        }
+        let publications_before = store.publication_count();
+        reset_free_span_release_calls();
+        let mut preparation = store
+            .prepare_physical_replacement(
+                PhysicalSpanSelection::BestFit(32),
+                &[FreeSpan {
+                    start_slot: 20,
+                    len: 30,
+                }],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(preparation.selected_span(), None);
+        assert_eq!(preparation.taken_span(), None);
+        assert_eq!(
+            preparation.retired_intervals(),
+            &[
+                FreeSpan {
+                    start_slot: 25,
+                    len: 5
+                },
+                FreeSpan {
+                    start_slot: 35,
+                    len: 10
+                },
+            ]
+        );
+        preparation.ready().unwrap().publish();
+        drop(preparation);
+        assert_eq!(store.publication_count() - publications_before, 1);
+        assert_eq!(free_span_release_calls(), 0);
+        assert_eq!(
+            store.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: 50,
+                largest_free_span: 50,
+                free_span_count: 1
+            }
+        );
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 10,
+                len: 50
+            }]
+        );
+        assert_eq!(
+            store
+                .prepare_replacement(
+                    0,
+                    &[FreeSpan {
+                        start_slot: 30,
+                        len: 5
+                    }]
+                )
+                .err(),
+            Some(FreeSpanError::OverlapPrevious {
+                previous: FreeSpan {
+                    start_slot: 10,
+                    len: 50
+                },
+                inserted: FreeSpan {
+                    start_slot: 30,
+                    len: 5
+                },
+            })
+        );
+
+        let store = FreeSpanStore::new(VectorMemory::default(), VectorMemory::default()).unwrap();
+        store.release_span(40, 10).unwrap();
+        store.release_span(90, 6).unwrap();
+        assert_eq!(
+            store.peek_best_fit(4),
+            Some(FreeSpan {
+                start_slot: 90,
+                len: 6
+            })
+        );
+        let before = store.header();
+        let publications_before = store.publication_count();
+        reset_free_span_release_calls();
+        assert!(
+            store
+                .prepare_physical_replacement(PhysicalSpanSelection::ExactPrefixAt(41, 4), &[],)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.header(), before);
+        let mut preparation = store
+            .prepare_physical_replacement(PhysicalSpanSelection::ExactPrefixAt(40, 4), &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            preparation.selected_span(),
+            Some(FreeSpan {
+                start_slot: 40,
+                len: 10
+            })
+        );
+        assert_eq!(
+            preparation.taken_span(),
+            Some(FreeSpan {
+                start_slot: 40,
+                len: 4
+            })
+        );
+        assert!(preparation.retired_intervals().is_empty());
+        preparation.ready().unwrap().publish();
+        drop(preparation);
+        assert_eq!(store.publication_count() - publications_before, 1);
+        assert_eq!(free_span_release_calls(), 0);
+        assert_eq!(
+            store.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: 12,
+                largest_free_span: 6,
+                free_span_count: 2
+            }
+        );
+        assert_eq!(
+            store.spans(),
+            vec![
+                FreeSpan {
+                    start_slot: 44,
+                    len: 6
+                },
+                FreeSpan {
+                    start_slot: 90,
+                    len: 6
+                }
+            ]
+        );
+        store.validate().unwrap();
+
+        let store = FreeSpanStore::new(VectorMemory::default(), VectorMemory::default()).unwrap();
+        store.release_span(12, 2).unwrap();
+        let publications_before = store.publication_count();
+        assert_eq!(
+            store
+                .prepare_replacement(
+                    0,
+                    &[FreeSpan {
+                        start_slot: 8,
+                        len: 4
+                    }; 2]
+                )
+                .err(),
+            Some(FreeSpanError::DuplicateStart { start_slot: 8 })
+        );
+        assert_eq!(store.publication_count(), publications_before);
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 12,
+                len: 2
+            }]
+        );
+        let mut preparation = store
+            .prepare_physical_replacement(
+                PhysicalSpanSelection::NoAllocation,
+                &[
+                    FreeSpan {
+                        start_slot: 8,
+                        len: 10,
+                    },
+                    FreeSpan {
+                        start_slot: 10,
+                        len: 10,
+                    },
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            preparation.retired_intervals(),
+            &[
+                FreeSpan {
+                    start_slot: 8,
+                    len: 4
+                },
+                FreeSpan {
+                    start_slot: 14,
+                    len: 6
+                },
+            ]
+        );
+        preparation.ready().unwrap().publish();
+        drop(preparation);
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 8,
+                len: 12
+            }]
+        );
+        store.validate().unwrap();
+
+        // Kept interior hole and right boundary neighbor are not image edits,
+        // but both are source facts. Rejection preserves the deliberate change,
+        // the other memory, and cache contents BEFORE any lookup can refill.
+        for changed_start in [22u64, 40] {
+            let records = VectorMemory::default();
+            let index = VectorMemory::default();
+            let store = FreeSpanStore::new(records.clone(), index.clone()).unwrap();
+            for (start, len) in [(10, 4), (22, 2), (40, 4)] {
+                store.release_span(start, len).unwrap();
+            }
+            let cache_before = store.physical_cache_snapshot();
+            let header_before = store.header();
+            let publications_before = store.publication_count();
+            reset_free_span_release_calls();
+            let mut preparation = store
+                .prepare_physical_replacement(
+                    PhysicalSpanSelection::NoAllocation,
+                    &[FreeSpan {
+                        start_slot: 20,
+                        len: 10,
+                    }],
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                preparation.retired_intervals(),
+                &[
+                    FreeSpan {
+                        start_slot: 20,
+                        len: 2
+                    },
+                    FreeSpan {
+                        start_slot: 24,
+                        len: 6
+                    },
+                ]
+            );
+            preparation.change_source_span_len_for_test(changed_start, 9);
+            let deliberate_records = records.borrow().clone();
+            let deliberate_index = index.borrow().clone();
+            assert!(matches!(
+                preparation.ready(),
+                Err(FreeSpanError::BinInvariant)
+            ));
+            drop(preparation);
+            assert_eq!(store.publication_count(), publications_before);
+            assert_eq!(free_span_release_calls(), 0);
+            assert_eq!(store.physical_cache_snapshot(), cache_before);
+            assert_eq!(store.header(), header_before);
+            assert_eq!(*records.borrow(), deliberate_records);
+            assert_eq!(*index.borrow(), deliberate_index);
+        }
+    }
+}
+
 use crate::{
     SegmentId, VertexId,
     labeled::{
@@ -7,7 +2276,16 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
-    lara::{edge::EdgeStore, operation_error::LaraOperationError},
+    lara::{
+        edge::{
+            BackedPhysicalEdgeImage, BackedSlabImage, EdgeHeaderV1, EdgeStore, PhysicalSlabPayload,
+            counts::{PhysicalCountProjection, PreparedPhysicalCounts, SegmentEdgeCounts},
+            free_span::{FreeSpan, FreeSpanPreparation, PhysicalSpanSelection, PreparedFreeSpans},
+            span_meta::{PreparedSegmentPhysicalStart, SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta},
+        },
+        operation_error::LaraOperationError,
+        vertex::PreparedVertexWrite,
+    },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -71,6 +2349,516 @@ impl LabeledRebalanceResolveGuard {
 impl Drop for LabeledRebalanceResolveGuard {
     fn drop(&mut self) {
         LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.set(false));
+    }
+}
+
+/// Physical tiling, not a desired logical row or an allocation request.
+#[derive(Clone, Copy)]
+struct VertexPhysicalPlacement {
+    start: u64,
+    slots: u32,
+    preferred: Option<usize>,
+    extra: u32,
+}
+
+impl VertexPhysicalPlacement {
+    fn new(start: u64, slots: u32, preferred: Option<usize>, extra: u32) -> Self {
+        Self {
+            start,
+            slots,
+            preferred,
+            extra,
+        }
+    }
+}
+
+enum LeafPhysicalDestination {
+    Current(FreeSpan),
+    Relocate(u64),
+}
+
+enum PhysicalLayoutOperation {
+    VertexRewrite {
+        src: VertexId,
+        placement: VertexPhysicalPlacement,
+    },
+    LeafSlide {
+        src: VertexId,
+        destination: LeafPhysicalDestination,
+    },
+}
+
+struct PhysicalLayoutSource<'a, E: CsrEdge, M: Memory> {
+    owner: &'a LabeledLaraGraph<E, M>,
+    header: EdgeHeaderV1,
+    bucket_header: EdgeHeaderV1,
+    vertex_len: u32,
+    count_index: u64,
+    count_len: u64,
+    counts: SegmentEdgeCounts,
+    leaf: u32,
+    pin_len: u64,
+    pin: SegmentSpanMeta,
+}
+
+impl<E: CsrEdge, M: Memory> Copy for PhysicalLayoutSource<'_, E, M> {}
+impl<E: CsrEdge, M: Memory> Clone for PhysicalLayoutSource<'_, E, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
+    fn capture(
+        owner: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+    ) -> Result<Self, LabeledOperationError> {
+        if u32::from(src) >= owner.vertices.len() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        let header = owner.edges.header();
+        let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(src, header.segment_size.max(1));
+        let count_index = owner.edges.vertex_segment_counts_index(src)?;
+        if u64::from(leaf) >= owner.edges.span_meta_store().len() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        Ok(Self {
+            owner,
+            header,
+            bucket_header: owner.buckets.header(),
+            vertex_len: owner.vertices.len(),
+            count_index,
+            count_len: owner.edges.counts_store().len(),
+            counts: owner.edges.counts_store().get(count_index),
+            leaf,
+            pin_len: owner.edges.span_meta_store().len(),
+            pin: owner.edges.span_meta_store().get(u64::from(leaf)),
+        })
+    }
+
+    fn validate(&self) -> Result<(), LabeledOperationError> {
+        if !self.owner.edges.physical_header_matches(self.header)
+            || self.owner.buckets.header() != self.bucket_header
+            || self.owner.vertices.len() != self.vertex_len
+            || !self.owner.edges.counts_store().physical_source_matches(
+                self.count_index,
+                self.count_len,
+                self.counts,
+            )
+            || !self.owner.edges.span_meta_store().physical_source_matches(
+                u64::from(self.leaf),
+                self.pin_len,
+                self.pin,
+            )
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        Ok(())
+    }
+
+    fn pinned_range(&self) -> Result<Option<FreeSpan>, LabeledOperationError> {
+        if self.pin.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+            return Ok(None);
+        }
+        let len = u64::try_from(self.counts.total)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let end = crate::slab_index::checked_add_slot_exclusive_end(self.pin.physical_start, len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if end > self.header.elem_capacity {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        Ok(Some(FreeSpan {
+            start_slot: self.pin.physical_start,
+            len,
+        }))
+    }
+}
+
+struct CanonicalPhysicalVertex {
+    src: VertexId,
+    vertex: LabeledVertex,
+    buckets: Vec<LabelBucket>,
+}
+
+impl CanonicalPhysicalVertex {
+    fn copy_source(&self) -> Result<Self, LabeledOperationError> {
+        let mut buckets = Vec::new();
+        buckets
+            .try_reserve_exact(self.buckets.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        buckets.extend_from_slice(&self.buckets);
+        Ok(Self {
+            src: self.src,
+            vertex: self.vertex,
+            buckets,
+        })
+    }
+
+    fn capture<E: CsrEdge, M: Memory>(
+        owner: &LabeledLaraGraph<E, M>,
+        src: VertexId,
+    ) -> Result<Self, LabeledOperationError> {
+        let vertex = owner.vertices.get(src);
+        Ok(Self {
+            src,
+            vertex,
+            buckets: owner.leaf_span_buckets(&vertex)?,
+        })
+    }
+
+    fn validate<E: CsrEdge, M: Memory>(
+        &self,
+        owner: &LabeledLaraGraph<E, M>,
+    ) -> Result<(), LabeledOperationError> {
+        if owner.vertices.get(self.src) != self.vertex
+            || owner.leaf_span_buckets(&self.vertex)? != self.buckets
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        Ok(())
+    }
+}
+
+enum PhysicalCopyInput {
+    Buffered(Vec<Option<Vec<u8>>>),
+    Disjoint,
+}
+
+/// A desired shape can reserve and revalidate, never manufacture a ready publisher.
+/// Its opaque store writers are consumed only inside the canonical factory below.
+struct PreparedVertexPhysicalCopy<'a, E: CsrEdge, M: Memory> {
+    source: PhysicalLayoutSource<'a, E, M>,
+    canonical: CanonicalPhysicalVertex,
+    final_buckets: Vec<LabelBucket>,
+    final_vertex: LabeledVertex,
+    payload: BackedSlabImage<'a, E, M>,
+    writers: PhysicalVertexWriters<'a, M>,
+}
+
+impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
+    fn reserve_desired(
+        owner: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+        shape: (Vec<LabelBucket>, Vec<Option<Vec<u8>>>),
+        placement: VertexPhysicalPlacement,
+    ) -> Result<Self, LabeledOperationError> {
+        let source = PhysicalLayoutSource::capture(owner, src)?;
+        let canonical = CanonicalPhysicalVertex::capture(owner, src)?;
+        let header = source.header;
+        let component = Self::reserve(
+            source,
+            canonical,
+            shape.0,
+            (placement, header),
+            PhysicalCopyInput::Buffered(shape.1),
+        )?;
+        component.validate_source()?;
+        Ok(component)
+    }
+
+    fn reserve(
+        source: PhysicalLayoutSource<'a, E, M>,
+        canonical: CanonicalPhysicalVertex,
+        desired: Vec<LabelBucket>,
+        destination: (VertexPhysicalPlacement, EdgeHeaderV1),
+        input: PhysicalCopyInput,
+    ) -> Result<Self, LabeledOperationError> {
+        let owner = source.owner;
+        let (placement, header) = destination;
+        if desired.len() != canonical.buckets.len()
+            || desired
+                .windows(2)
+                .any(|pair| pair[0].bucket_label_key() >= pair[1].bucket_label_key())
+            || desired
+                .iter()
+                .zip(&canonical.buckets)
+                .any(|(new, old)| new.bucket_label_key() != old.bucket_label_key())
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        let end = crate::slab_index::checked_add_slot_exclusive_end(
+            placement.start,
+            u64::from(placement.slots),
+        )
+        .filter(|end| *end <= header.elem_capacity)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let positions = if canonical.vertex.is_default_edge_labeled() {
+            let mut positions = Vec::new();
+            positions
+                .try_reserve_exact(1)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            positions.push(placement.start);
+            positions
+        } else {
+            LabeledLaraGraph::<E, M>::calculate_label_edge_span_positions_by_resident_slots(
+                placement.start,
+                placement.slots,
+                &desired,
+                placement.preferred,
+                placement.extra,
+            )?
+        };
+        let transcribed = match input {
+            PhysicalCopyInput::Buffered(bytes) => {
+                if bytes.len() != desired.len() {
+                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                }
+                Some(bytes)
+            }
+            PhysicalCopyInput::Disjoint => None,
+        };
+        let mut final_buckets = Vec::new();
+        final_buckets
+            .try_reserve_exact(desired.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let mut payloads = Vec::new();
+        payloads
+            .try_reserve_exact(desired.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let mut supplied = transcribed.map(Vec::into_iter);
+        for ((old, new), position) in canonical.buckets.iter().zip(desired).zip(positions) {
+            let region = bucket_resident_region(&new);
+            let bytes = supplied.as_mut().and_then(Iterator::next).flatten();
+            if let Some((_, slots)) = region {
+                if crate::slab_index::checked_add_slot_exclusive_end(position, u64::from(slots))
+                    .is_none_or(|bound| bound > end)
+                    || position < placement.start
+                {
+                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                }
+                let old_region = bucket_resident_region(old);
+                if let Some(bytes) = bytes {
+                    if bytes.len() != LabeledLaraGraph::<E, M>::edge_bytes_for_len(slots as usize)?
+                    {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    payloads.push(PhysicalSlabPayload::Buffered {
+                        source: None,
+                        destination: position,
+                        bytes,
+                    });
+                } else {
+                    let (start, old_slots) =
+                        old_region.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if old_slots != slots {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    if supplied.is_some() {
+                        let len = LabeledLaraGraph::<E, M>::edge_bytes_for_len(slots as usize)?;
+                        let mut bytes = Vec::new();
+                        bytes
+                            .try_reserve_exact(len)
+                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                        bytes.resize(len, 0);
+                        owner.edges.read_slots_contiguous(start, &mut bytes);
+                        payloads.push(PhysicalSlabPayload::Buffered {
+                            source: Some(start),
+                            destination: position,
+                            bytes,
+                        });
+                    } else {
+                        payloads.push(PhysicalSlabPayload::Disjoint {
+                            source: start,
+                            destination: position,
+                            slots: u64::from(slots),
+                        });
+                    }
+                }
+            } else if bytes.is_some() {
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            }
+            final_buckets.push(new.with_edge_range(position, new.stored_slots_raw()));
+        }
+        // The final first resident, not the source anchor, owns the whole cover.
+        if final_buckets
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
+            .is_some_and(|bucket| bucket.edge_start() != placement.start)
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        let final_vertex = if canonical.vertex.is_default_edge_labeled() {
+            canonical.vertex.with_base_slot_start(placement.start)
+        } else {
+            canonical.vertex.with_stored_slots(placement.slots)
+        };
+        let descriptors = if canonical.vertex.is_default_edge_labeled() {
+            None
+        } else {
+            #[cfg(test)]
+            physical_layout_event(PhysicalLayoutEvent::AdmitDescriptor(canonical.src));
+            Some(
+                owner
+                    .buckets
+                    .prepare_existing_row_image(canonical.vertex, &final_buckets)?,
+            )
+        };
+        let vertex = owner.vertices.prepare_set(canonical.src, &final_vertex)?;
+        let payload = owner.edges.prepare_physical_copy_image(header, payloads)?;
+        let writers = PhysicalVertexWriters {
+            vertex,
+            descriptors,
+            #[cfg(test)]
+            id: canonical.src,
+        };
+        Ok(Self {
+            source,
+            canonical,
+            final_buckets,
+            final_vertex,
+            payload,
+            writers,
+        })
+    }
+
+    fn validate_source(&self) -> Result<(), LabeledOperationError> {
+        self.source.validate()?;
+        self.canonical.validate(self.source.owner)?;
+        if !self.payload.validate_source() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn retained_source_bytes(&self) -> usize {
+        self.payload.retained_source_bytes()
+    }
+    #[cfg(test)]
+    fn transcribed_bytes(&self) -> usize {
+        self.payload.transcribed_bytes()
+    }
+}
+
+struct PhysicalVertexWriters<'a, M: Memory> {
+    vertex: PreparedVertexWrite<'a, LabeledVertex>,
+    descriptors: Option<crate::labeled::bucket_store::PreparedExistingBucketRow<'a, M>>,
+    #[cfg(test)]
+    id: VertexId,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PhysicalLayoutEvent {
+    Prepare(VertexId),
+    Buffered,
+    Streamed,
+    Ready,
+    Publish,
+    Header,
+    AdmitDescriptor(VertexId),
+    Descriptor(VertexId),
+    Vertex(VertexId),
+    Pin,
+    Count,
+    Retire,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PHYSICAL_LAYOUT_EVENTS: std::cell::RefCell<Vec<PhysicalLayoutEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn physical_layout_event(event: PhysicalLayoutEvent) {
+    PHYSICAL_LAYOUT_EVENTS.with(|events| events.borrow_mut().push(event));
+}
+
+struct PhysicalLayoutPreparation<'a, E: CsrEdge, M: Memory> {
+    source: PhysicalLayoutSource<'a, E, M>,
+    canonical: Vec<CanonicalPhysicalVertex>,
+    rows: Vec<PhysicalVertexWriters<'a, M>>,
+    slab: BackedPhysicalEdgeImage<'a, E, M>,
+    counts: Option<PreparedPhysicalCounts<'a, E, M>>,
+    pin: Option<PreparedSegmentPhysicalStart<'a, M>>,
+    allocator: FreeSpanPreparation<'a, M>,
+    #[cfg(test)]
+    retired_leaf: Option<FreeSpan>,
+}
+
+struct ReadyPhysicalLayout<'a, E: CsrEdge, M: Memory> {
+    rows: &'a [PhysicalVertexWriters<'a, M>],
+    slab: &'a BackedPhysicalEdgeImage<'a, E, M>,
+    counts: Option<&'a PreparedPhysicalCounts<'a, E, M>>,
+    pin: Option<&'a PreparedSegmentPhysicalStart<'a, M>>,
+    allocator: PreparedFreeSpans<'a, M>,
+    #[cfg(test)]
+    retired_leaf: Option<FreeSpan>,
+}
+
+impl<E: CsrEdge, M: Memory> PhysicalLayoutPreparation<'_, E, M> {
+    fn ready(&mut self) -> Result<ReadyPhysicalLayout<'_, E, M>, LabeledOperationError> {
+        self.source.validate()?;
+        for canonical in &self.canonical {
+            canonical.validate(self.source.owner)?;
+        }
+        if !self.slab.validate_source()
+            || self
+                .counts
+                .as_ref()
+                .is_some_and(|image| !image.validate_source())
+            || self
+                .pin
+                .as_ref()
+                .is_some_and(|image| !image.validate_source())
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        let allocator = self.allocator.ready().map_err(|_| {
+            LaraOperationError::RebalanceFailed(crate::GrowFailed {
+                current_size: 0,
+                delta: 0,
+            })
+        })?;
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Ready);
+        Ok(ReadyPhysicalLayout {
+            rows: &self.rows,
+            slab: &self.slab,
+            counts: self.counts.as_ref(),
+            pin: self.pin.as_ref(),
+            allocator,
+            #[cfg(test)]
+            retired_leaf: self.retired_leaf,
+        })
+    }
+}
+
+impl<E: CsrEdge, M: Memory> ReadyPhysicalLayout<'_, E, M> {
+    fn publish(self) {
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Publish);
+        self.slab.write();
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Header);
+        for row in self.rows {
+            if let Some(descriptors) = &row.descriptors {
+                descriptors.write();
+                #[cfg(test)]
+                physical_layout_event(PhysicalLayoutEvent::Descriptor(row.id));
+            }
+            row.vertex.write();
+            #[cfg(test)]
+            physical_layout_event(PhysicalLayoutEvent::Vertex(row.id));
+        }
+        if let Some(pin) = self.pin {
+            pin.write();
+            #[cfg(test)]
+            physical_layout_event(PhysicalLayoutEvent::Pin);
+        }
+        if let Some(counts) = self.counts {
+            counts.write();
+            #[cfg(test)]
+            physical_layout_event(PhysicalLayoutEvent::Count);
+        }
+        self.allocator.publish();
+        #[cfg(test)]
+        {
+            physical_layout_event(PhysicalLayoutEvent::Retire);
+            if self.retired_leaf.is_some() {
+                record_labeled_leaf_physical_release();
+            }
+        }
     }
 }
 
@@ -353,6 +3141,432 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// The sole ready constructor takes an operation, never a desired logical copy.
+    fn prepare_physical_layout(
+        &self,
+        operation: PhysicalLayoutOperation,
+    ) -> Result<PhysicalLayoutPreparation<'_, E, M>, LabeledOperationError> {
+        let src = match &operation {
+            PhysicalLayoutOperation::VertexRewrite { src, .. }
+            | PhysicalLayoutOperation::LeafSlide { src, .. } => *src,
+        };
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Prepare(src));
+        let source = PhysicalLayoutSource::capture(self, src)?;
+        let pinned = source.pinned_range()?;
+        let seg = source.header.segment_size.max(1);
+        let first = source
+            .leaf
+            .checked_mul(seg)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let last = first
+            .checked_add(seg)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .min(source.vertex_len);
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact((last - first) as usize)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        for ordinal in first..last {
+            canonical.push(CanonicalPhysicalVertex::capture(
+                self,
+                VertexId::from(ordinal),
+            )?);
+        }
+        let mut header = source.header;
+        let mut retired = Vec::new();
+        retired
+            .try_reserve_exact(canonical.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let (allocator, block, count_projection) = match &operation {
+            PhysicalLayoutOperation::VertexRewrite { placement, .. } => {
+                let row = canonical
+                    .iter()
+                    .find(|row| row.src == src)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if row.vertex.stored_slots > 0
+                    && let Some(bucket) = row.buckets.iter().find(|bucket| !bucket.is_tiny_mode())
+                {
+                    let old_base = bucket.edge_start();
+                    if placement.start != old_base
+                        && !self.labeled_edge_footprint_in_current_leaf_pin(
+                            src,
+                            old_base,
+                            row.vertex.stored_slots,
+                        )
+                    {
+                        let live_end = crate::slab_index::checked_add_slot_exclusive_end(
+                            placement.start,
+                            u64::from(placement.slots),
+                        )
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        for (start_slot, len) in Self::vertex_edge_span_retire_intervals(
+                            old_base,
+                            row.vertex.stored_slots,
+                            &row.buckets,
+                        )? {
+                            let old_end = checked_add_slot_index(start_slot, len)
+                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            // The retained destination owns its entire cover, not just
+                            // the copied prefix. Free holes remain the allocator's rule.
+                            for (start, end) in [
+                                (start_slot, old_end.min(placement.start)),
+                                (start_slot.max(live_end), old_end),
+                            ] {
+                                if start < end {
+                                    retired.try_reserve(1).map_err(|_| {
+                                        LaraOperationError::CollectAllocationOverflow
+                                    })?;
+                                    retired.push(FreeSpan {
+                                        start_slot: start,
+                                        len: end - start,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                let allocator = self
+                    .edges
+                    .prepare_physical_span_edit(PhysicalSpanSelection::NoAllocation, &retired)?
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let projection = pinned
+                    .is_none()
+                    .then_some(PhysicalCountProjection::VertexSpan {
+                        old: row.vertex.stored_slots,
+                        new: placement.slots,
+                    });
+                (allocator, pinned, projection)
+            }
+            PhysicalLayoutOperation::LeafSlide { destination, .. } => match destination {
+                LeafPhysicalDestination::Current(range) => {
+                    if Some(*range) != pinned {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    let allocator = self
+                        .edges
+                        .prepare_physical_span_edit(PhysicalSpanSelection::NoAllocation, &[])?
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    (
+                        allocator,
+                        Some(*range),
+                        Some(PhysicalCountProjection::LeafBlock(range.len)),
+                    )
+                }
+                LeafPhysicalDestination::Relocate(len) => {
+                    let adjacent = if let Some(old) = pinned.filter(|old| *len > old.len) {
+                        let start = crate::slab_index::checked_add_slot_exclusive_end(
+                            old.start_slot,
+                            old.len,
+                        )
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        self.edges.prepare_physical_span_edit(
+                            PhysicalSpanSelection::ExactPrefixAt(start, *len - old.len),
+                            &[],
+                        )?
+                    } else {
+                        None
+                    };
+                    if let Some(allocator) = adjacent {
+                        let range = FreeSpan {
+                            start_slot: pinned.expect("adjacent source pin").start_slot,
+                            len: *len,
+                        };
+                        let end = crate::slab_index::checked_add_slot_exclusive_end(
+                            range.start_slot,
+                            range.len,
+                        )
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        header.elem_capacity = header.elem_capacity.max(end);
+                        (
+                            allocator,
+                            Some(range),
+                            Some(PhysicalCountProjection::LeafBlock(*len)),
+                        )
+                    } else {
+                        if let Some(old) = pinned {
+                            retired.push(old);
+                        } else {
+                            for row in &canonical {
+                                if let Some(bucket) =
+                                    row.buckets.iter().find(|bucket| !bucket.is_tiny_mode())
+                                {
+                                    for (start_slot, len) in
+                                        Self::vertex_edge_span_retire_intervals(
+                                            bucket.edge_start(),
+                                            row.vertex.stored_slots,
+                                            &row.buckets,
+                                        )?
+                                    {
+                                        retired.try_reserve(1).map_err(|_| {
+                                            LaraOperationError::CollectAllocationOverflow
+                                        })?;
+                                        retired.push(FreeSpan { start_slot, len });
+                                    }
+                                }
+                            }
+                        }
+                        let allocator = self
+                            .edges
+                            .prepare_physical_span_edit(
+                                PhysicalSpanSelection::BestFit(*len),
+                                &retired,
+                            )?
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        if allocator.selected_span().is_some_and(|whole| {
+                            whole
+                                .start_slot
+                                .checked_add(whole.len)
+                                .is_none_or(|end| end > header.elem_capacity)
+                        }) {
+                            return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        }
+                        let start_slot = allocator
+                            .taken_span()
+                            .map_or(header.elem_capacity, |span| span.start_slot);
+                        let end =
+                            crate::slab_index::checked_add_slot_exclusive_end(start_slot, *len)
+                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        header.elem_capacity = header.elem_capacity.max(end);
+                        (
+                            allocator,
+                            Some(FreeSpan {
+                                start_slot,
+                                len: *len,
+                            }),
+                            Some(PhysicalCountProjection::LeafBlock(*len)),
+                        )
+                    }
+                }
+            },
+        };
+        let mut positioned = Vec::new();
+        positioned
+            .try_reserve_exact(canonical.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        match &operation {
+            PhysicalLayoutOperation::VertexRewrite { placement, .. } => {
+                if placement.slots > 0 {
+                    let end = crate::slab_index::checked_add_slot_exclusive_end(
+                        placement.start,
+                        u64::from(placement.slots),
+                    )
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if let Some(pin) = pinned
+                        && (placement.start < pin.start_slot || end > pin.start_slot + pin.len)
+                    {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    for mate in canonical
+                        .iter()
+                        .filter(|row| row.src != src && row.vertex.stored_slots > 0)
+                    {
+                        if let Some(bucket) =
+                            mate.buckets.iter().find(|bucket| !bucket.is_tiny_mode())
+                        {
+                            let mate_end = crate::slab_index::checked_add_slot_exclusive_end(
+                                bucket.edge_start(),
+                                u64::from(mate.vertex.stored_slots),
+                            )
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            if placement.start < mate_end && bucket.edge_start() < end {
+                                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                            }
+                        }
+                    }
+                }
+                let index = canonical
+                    .iter()
+                    .position(|row| row.src == src)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                positioned.push((index, *placement));
+            }
+            PhysicalLayoutOperation::LeafSlide { .. } => {
+                let range = block.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let leaf_end =
+                    crate::slab_index::checked_add_slot_exclusive_end(range.start_slot, range.len)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let mut residents = Vec::new();
+                residents
+                    .try_reserve_exact(canonical.len())
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                let mut indexes = Vec::new();
+                indexes
+                    .try_reserve_exact(canonical.len())
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                let mut total = 0u64;
+                for (index, row) in canonical.iter().enumerate() {
+                    if (row.vertex.degree() == 0 && row.vertex.stored_slots == 0)
+                        || (!row.buckets.is_empty()
+                            && row.buckets.iter().all(|bucket| bucket.is_tiny_mode()))
+                    {
+                        continue;
+                    }
+                    let resident = row.buckets.iter().try_fold(0u32, |n, bucket| {
+                        n.checked_add(self.bucket_resident_rows(bucket)?)
+                            .ok_or(LaraOperationError::RowDegreeOverflow)
+                            .map_err(LabeledOperationError::from)
+                    })?;
+                    total = total
+                        .checked_add(u64::from(resident))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    residents.push(resident);
+                    indexes.push(index);
+                }
+                let gaps = range
+                    .len
+                    .checked_sub(total)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let starts = Self::calculate_labeled_leaf_vertex_positions(
+                    range.start_slot,
+                    &residents,
+                    gaps,
+                )?;
+                for (i, index) in indexes.into_iter().enumerate() {
+                    let end = if residents[i] == 0 {
+                        starts[i]
+                    } else {
+                        starts.get(i + 1).copied().unwrap_or(leaf_end)
+                    };
+                    let width = u32::try_from(
+                        end.checked_sub(starts[i])
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                    )
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    positioned.push((
+                        index,
+                        VertexPhysicalPlacement::new(starts[i], width, None, 0),
+                    ));
+                }
+                positioned.sort_unstable_by_key(|(index, placement)| {
+                    (std::cmp::Reverse(placement.start), *index)
+                });
+            }
+        }
+        // Streaming requires complete block disjointness AND containment of every
+        // actual resident source, never just disjoint descriptor anchors.
+        let stream = matches!(operation, PhysicalLayoutOperation::LeafSlide { .. })
+            && pinned.zip(block).is_some_and(|(old, new)| {
+                let old_end = old.start_slot + old.len;
+                let new_end = new.start_slot + new.len;
+                (old_end <= new.start_slot || new_end <= old.start_slot)
+                    && canonical
+                        .iter()
+                        .flat_map(|row| &row.buckets)
+                        .filter_map(bucket_resident_region)
+                        .all(|(start, len)| {
+                            start >= old.start_slot
+                                && start
+                                    .checked_add(u64::from(len))
+                                    .is_some_and(|end| end <= old_end)
+                        })
+            });
+        #[cfg(test)]
+        physical_layout_event(if stream {
+            PhysicalLayoutEvent::Streamed
+        } else {
+            PhysicalLayoutEvent::Buffered
+        });
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(positioned.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let mut images = Vec::new();
+        images
+            .try_reserve_exact(positioned.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        for (index, placement) in positioned {
+            let row = &canonical[index];
+            let mut desired = Vec::new();
+            desired
+                .try_reserve_exact(row.buckets.len())
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            desired.extend_from_slice(&row.buckets);
+            let mut transcribed = Vec::new();
+            transcribed
+                .try_reserve_exact(row.buckets.len())
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            transcribed.resize_with(row.buckets.len(), || None);
+            let component = if matches!(operation, PhysicalLayoutOperation::VertexRewrite { .. }) {
+                PreparedVertexPhysicalCopy::reserve_desired(
+                    self,
+                    row.src,
+                    (desired, transcribed),
+                    placement,
+                )?
+            } else {
+                PreparedVertexPhysicalCopy::reserve(
+                    source,
+                    row.copy_source()?,
+                    desired,
+                    (placement, header),
+                    if stream {
+                        PhysicalCopyInput::Disjoint
+                    } else {
+                        PhysicalCopyInput::Buffered(transcribed)
+                    },
+                )?
+            };
+            if component.canonical.vertex != row.vertex
+                || component.canonical.buckets != row.buckets
+                || component
+                    .final_buckets
+                    .iter()
+                    .zip(&row.buckets)
+                    .any(|(new, old)| {
+                        new.with_edge_range(old.edge_start(), old.stored_slots_raw()) != *old
+                    })
+                || component.final_vertex
+                    != if row.vertex.is_default_edge_labeled() {
+                        row.vertex.with_base_slot_start(placement.start)
+                    } else {
+                        row.vertex.with_stored_slots(placement.slots)
+                    }
+            {
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            }
+            rows.push(component.writers);
+            images.push(component.payload);
+        }
+        let counts = count_projection
+            .map(|projection| self.edges.prepare_physical_counts(src, projection))
+            .transpose()?;
+        let pin = if matches!(operation, PhysicalLayoutOperation::LeafSlide { .. })
+            && block.is_some_and(|range| source.pin.physical_start != range.start_slot)
+        {
+            Some(self.edges.prepare_segment_physical_start(
+                SegmentId::from(source.leaf),
+                block.expect("slide destination").start_slot,
+            )?)
+        } else {
+            None
+        };
+        let slab = self.edges.prepare_physical_image(header, images)?;
+        if !slab.validate_source() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        source.validate()?;
+        for row in &canonical {
+            row.validate(self)?;
+        }
+        Ok(PhysicalLayoutPreparation {
+            source,
+            canonical,
+            rows,
+            slab,
+            counts,
+            pin,
+            allocator,
+            #[cfg(test)]
+            retired_leaf: if matches!(operation, PhysicalLayoutOperation::LeafSlide { .. })
+                && pinned != block
+            {
+                pinned
+            } else {
+                None
+            },
+        })
+    }
+
     pub(super) fn vertex_label_edge_span_end_exclusive(
         vertex: &LabeledVertex,
         first_bucket: &LabelBucket,
@@ -442,33 +3656,41 @@ where
         // neighboring buckets (corruption). The helper
         // `bucket_span_region_len` returns the correct region length
         // for both modes.
-        let mut bucket_intervals: Vec<(u64, u64)> = buckets
-            .iter()
-            // ADR 0096 §5 + GAP-2026-09-17-001: tiny buckets occupy zero slab
-            // slots (including them would validate phantom anchor spans
-            // against real geometry); tree buckets occupy only their root
-            // region (`bucket_physical_resident_slots` — the logical
-            // `stored_slots` width is NOT releasable). The zero-physical
-            // filter below subsumes both (tiny and empty buckets carry no
-            // owned ranges).
-            .filter(|bucket| bucket_physical_resident_slots(bucket) > 0)
-            .map(|bucket| {
-                // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
-                // buckets, the vertex span is `[edge root | property
-                // root]` (gap 0, ADR 0088 §2). The combined length is
-                // `edge_root_len + property_root_len` — the physical width
-                // from `bucket_physical_resident_slots` (NOT the logical
-                // `stored_slots`). The single interval covers both regions
-                // contiguously; no separate property-root interval is needed.
-                (
-                    bucket.edge_start(),
-                    u64::from(bucket_physical_resident_slots(bucket)),
-                )
-            })
-            .collect();
-        bucket_intervals.sort_by_key(|(start, _)| *start);
+        let mut bucket_intervals: Vec<(u64, u64)> = Vec::new();
+        bucket_intervals
+            .try_reserve_exact(buckets.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        bucket_intervals.extend(
+            buckets
+                .iter()
+                // ADR 0096 §5 + GAP-2026-09-17-001: tiny buckets occupy zero slab
+                // slots (including them would validate phantom anchor spans
+                // against real geometry); tree buckets occupy only their root
+                // region (`bucket_physical_resident_slots` — the logical
+                // `stored_slots` width is NOT releasable). The zero-physical
+                // filter below subsumes both (tiny and empty buckets carry no
+                // owned ranges).
+                .filter(|bucket| bucket_physical_resident_slots(bucket) > 0)
+                .map(|bucket| {
+                    // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
+                    // buckets, the vertex span is `[edge root | property
+                    // root]` (gap 0, ADR 0088 §2). The combined length is
+                    // `edge_root_len + property_root_len` — the physical width
+                    // from `bucket_physical_resident_slots` (NOT the logical
+                    // `stored_slots`). The single interval covers both regions
+                    // contiguously; no separate property-root interval is needed.
+                    (
+                        bucket.edge_start(),
+                        u64::from(bucket_physical_resident_slots(bucket)),
+                    )
+                }),
+        );
+        bucket_intervals.sort_unstable_by_key(|(start, _)| *start);
 
-        let mut merged_buckets: Vec<(u64, u64)> = Vec::with_capacity(bucket_intervals.len());
+        let mut merged_buckets: Vec<(u64, u64)> = Vec::new();
+        merged_buckets
+            .try_reserve_exact(bucket_intervals.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         for (start, len) in bucket_intervals {
             let end = checked_add_slot_index(start, len)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -488,6 +3710,14 @@ where
         }
 
         let mut intervals: Vec<(u64, u64)> = Vec::new();
+        let interval_count = merged_buckets
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        intervals
+            .try_reserve_exact(interval_count)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         let mut cursor = span_start;
         for (bucket_start, bucket_len) in merged_buckets {
             if cursor < bucket_start {
@@ -712,26 +3942,6 @@ where
         self.finish_span_resolution(src, new_alloc, SpanResolutionPolicy::Required, false)
     }
 
-    pub(super) fn release_labeled_leaf_physical_footprint(
-        &self,
-        span_start: u64,
-        span_len: u64,
-    ) -> Result<(), LabeledOperationError> {
-        if span_len == 0 {
-            return Ok(());
-        }
-        #[cfg(test)]
-        record_labeled_leaf_physical_release();
-        // Same stale-cover hazard as the tree step-7 path (T=1024 arm at edge
-        // ~2063): the old leaf cover may overlap ranges already recycled (a
-        // tree realloc re-took the freed head for the live root). A bare
-        // `release_span` of the whole cover double-frees (`DuplicateStart`).
-        // Delegate to the slab fallback, which releases exactly the owned
-        // remainder and never double-frees. When the cover is fully live the
-        // fallback releases it whole — identical behavior.
-        self.release_vertex_edge_span_slab(span_start, span_len)
-    }
-
     /// Releases a relocated VertexEdgeSpan footprint back to the edge free-span store.
     ///
     /// The footprint is released as the mode-aware bucket regions plus the
@@ -946,15 +4156,14 @@ where
             return Ok(());
         }
 
-        let (buckets, old_alloc, old_base, new_alloc, moved, new_base) = self
-            .rewrite_vertex_edge_span_read_and_plan(
-                src,
-                &planned_vertex,
-                preferred_extra,
-                force_slack_grow,
-                in_window_layout,
-                policy,
-            )?;
+        let (buckets, _, _, new_alloc, _, new_base) = self.rewrite_vertex_edge_span_read_and_plan(
+            src,
+            &planned_vertex,
+            preferred_extra,
+            force_slack_grow,
+            in_window_layout,
+            policy,
+        )?;
 
         // Resolving a growth base may relocate the leaf and update bucket origins.
         // Re-read the edge buckets rather than publishing positions from a stale
@@ -981,40 +4190,19 @@ where
             );
         }
 
-        // Physical publication has no movement-result channel. Capture prefixes/root
-        // arrays only; logical compaction belongs to the notification-bearing steps.
-        let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
-        let mut bucket_row_bytes_buf: Vec<u8> = Vec::new();
-        self.commit_vertex_edge_span_layout(
-            src,
-            &vertex,
-            &buckets,
-            &per_bucket_raw,
-            &mut bucket_row_bytes_buf,
-            new_base,
-            new_alloc,
-            preferred_bucket.map(|index| index as usize),
-            preferred_extra,
-            false, // not a leaf-relocation commit
-            true,  // the finalize block below owns the vertex-footprint release
-        )?;
-
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_rewrite_finalize");
-        if moved
-            && old_alloc > 0
-            && new_base != old_base
-            && !self.vertex_edge_span_relocates_within_pinned_leaf(
-                src, old_base, old_alloc, new_base, new_alloc,
-            )
-            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
-        {
-            self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
-        }
-        self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
-
-        let d_total = i64::from(new_alloc) - i64::from(old_alloc);
-        self.bump_vertex_edge_span_total_delta(src, d_total)?;
+        // Destination policy and any earlier relocation have completed. This is
+        // the physical unit's freeze point, not rollback of the outer resolver.
+        let mut preparation =
+            self.prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                src,
+                placement: VertexPhysicalPlacement::new(
+                    new_base,
+                    new_alloc,
+                    preferred_bucket.map(|index| index as usize),
+                    preferred_extra,
+                ),
+            })?;
+        preparation.ready()?.publish();
         Ok(())
     }
 
@@ -1046,7 +4234,9 @@ where
         let mut cursor_fp = u128::from(leaf_start)
             .checked_mul(P)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let mut out = Vec::with_capacity(resident_slots.len());
+        let mut out = Vec::new();
+        out.try_reserve_exact(resident_slots.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         for resident in resident_slots {
             let start = u64::try_from(cursor_fp / P)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -1079,9 +4269,15 @@ where
             Some(range) => range,
             None => return Ok(()),
         };
-        self.rebalance_labeled_leaf_weighted_slide_in_block(
-            src, leaf_start, leaf_len, false, true, None,
-        )
+        let mut preparation = self.prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+            src,
+            destination: LeafPhysicalDestination::Current(FreeSpan {
+                start_slot: leaf_start,
+                len: leaf_len,
+            }),
+        })?;
+        preparation.ready()?.publish();
+        Ok(())
     }
 
     pub(crate) fn relocate_labeled_leaf_physical_block(
@@ -1093,73 +4289,13 @@ where
     {
         let _relocate_guard = LabeledLeafRelocateGuard::new();
         let target = self.plan_labeled_leaf_relocation(src)?;
-        let pinned_range = self.labeled_leaf_physical_range(src);
-        let old_start = target.old_start;
-        let old_len = target.old_len;
-        let leaf = target.leaf;
-        let new_len = target.new_len;
-
-        let grew_in_place = if pinned_range.is_some() {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_try_expand_in_place");
-            let r = self.try_expand_labeled_leaf_in_place(old_start, old_len, new_len);
-            r?
-        } else {
-            false
-        };
-        let new_start = if grew_in_place {
-            old_start
-        } else {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_allocate_span");
-            let s = self.edges.allocate_span(new_len);
-            s.map_err(LabeledOperationError::from)?
-        };
-
-        // Install destination geometry before committing vertex origins. Source
-        // vertices still carry the old prefix locations used by the snapshot;
-        // this relocation retains runs rather than folding them.
-        if !grew_in_place {
-            self.edges
-                .set_segment_physical_start(SegmentId::from(leaf), new_start)
-                .map_err(LabeledOperationError::from)?;
-        }
-
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_weighted_slide_commit");
-            let r = self.rebalance_labeled_leaf_weighted_slide_in_block(
-                src,
-                new_start,
-                new_len,
-                true,
-                true,
-                if grew_in_place { None } else { pinned_range },
-            );
-            r?;
-        }
-
-        if !grew_in_place && pinned_range.is_some() {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_release_old_footprint");
-            self.release_labeled_leaf_physical_footprint(old_start, old_len)?;
-        }
-
-        // Per-vertex commits update PMA total from each vertex's prior logical
-        // allocation. Zero-length anchors mean those allocations do not always
-        // sum to the old physical block width, so reconcile to the one physical
-        // source of truth instead of applying a second blind block delta.
-        let counts_after = self.leaf_segment_counts_for_vid(src);
-        let new_total =
-            i64::try_from(new_len).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        let correction = new_total
-            .checked_sub(counts_after.total)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if correction != 0 {
-            self.edges
-                .bump_vertex_segment_counts(src, 0, correction)
-                .map_err(LabeledOperationError::from)?;
-        }
+        // Destination acquisition, pin/count and retirement now join one loan.
+        // No allocator/header/pin mutation occurs between this freeze and ready.
+        let mut preparation = self.prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+            src,
+            destination: LeafPhysicalDestination::Relocate(target.new_len),
+        })?;
+        preparation.ready()?.publish();
         Ok(())
     }
 
@@ -1242,183 +4378,6 @@ where
         })
     }
 
-    pub(crate) fn rebalance_labeled_leaf_weighted_slide_in_block(
-        &self,
-        src: VertexId,
-        leaf_start: u64,
-        leaf_len: u64,
-        leaf_relocate_commit: bool,
-        suppress_vertex_footprint_release: bool,
-        source_range: Option<(u64, u64)>,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let header = self.edges.header();
-        let seg = header.segment_size.max(1);
-        let leaf = Self::leaf_index_for_vid(src, seg);
-        // ADR 0097 §3: there is no shared leaf log to fold before a slide, so the slide starts
-        // from the currently published block, never from a stale range captured by the caller.
-        let (leaf_start, leaf_len) = if leaf_relocate_commit {
-            (leaf_start, leaf_len)
-        } else {
-            self.labeled_leaf_physical_range(src)
-                .unwrap_or((leaf_start, leaf_len))
-        };
-        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-
-        let start_vid = leaf.saturating_mul(seg);
-        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
-
-        let (slices, total_resident) = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_collect_slices");
-            let mut slices: Vec<(VertexId, LabeledVertex, Vec<LabelBucket>, u32)> = Vec::new();
-            let mut total_resident = 0u64;
-            for vid_u in start_vid..end_vid {
-                let vid = VertexId::from(vid_u);
-                let vertex = self.vertices.get(vid);
-                if vertex.degree() == 0 && vertex.stored_slots == 0 {
-                    continue;
-                }
-                let buckets = self.leaf_span_buckets(&vertex)?;
-                let resident = buckets.iter().try_fold(0u32, |acc, bucket| {
-                    acc.checked_add(self.bucket_resident_rows(bucket)?)
-                        .ok_or(LaraOperationError::RowDegreeOverflow)
-                        .map_err(LabeledOperationError::from)
-                })?;
-                // A newly created label bucket is an active zero-edge vertex span. Keep
-                // it in the slide so the relocation capacity planned for `active_vertices`
-                // is actually assigned to it; otherwise an oversized leaf mate consumes
-                // the whole new block and the first bucket cannot obtain an anchor.
-                // ADR 0096 §5: all-tiny vertices are spanless by construction
-                // (no slab bytes to move, no tile to grant). Sliding them stamps
-                // a block-share tile onto vertex.stored, manufacturing phantom
-                // occupancy ([anchor, +tile)) that blocks find_free and corrupts
-                // cover arithmetic. Skip them; stored stays 0 and promotion
-                // places their first span.
-                if !buckets.is_empty() && buckets.iter().all(|bucket| bucket.is_tiny_mode()) {
-                    continue;
-                }
-                total_resident = total_resident.saturating_add(u64::from(resident));
-                slices.push((vid, vertex, buckets, resident));
-            }
-            (slices, total_resident)
-        };
-        if slices.is_empty() {
-            return Ok(());
-        }
-
-        let gaps = leaf_len.saturating_sub(total_resident);
-        let position_inputs: Vec<u32> =
-            slices.iter().map(|(_, _, _, resident)| *resident).collect();
-        let vertex_starts = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_calculate_positions");
-            Self::calculate_labeled_leaf_vertex_positions(leaf_start, &position_inputs, gaps)?
-        };
-
-        let mut positioned: Vec<(VertexId, LabeledVertex, Vec<LabelBucket>, u64, u32)> =
-            Vec::with_capacity(slices.len());
-        for (i, (vid, vertex, buckets, resident)) in slices.into_iter().enumerate() {
-            let v_start = vertex_starts[i];
-            // ADR 0096 §5: empty slices (all-tiny-skipped remnants, emptied slab
-            // buckets) own no bytes — granting the leaf-end remainder to an
-            // empty LAST slice manufactures phantom occupancy ([anchor, +tile))
-            // that blocks find_free in fresh blocks. Zero-width keeps them
-            // positioned (anchors) without reserving; the audit floor covers
-            // unassigned tail slack, and commit syncs their vertex.stored to 0.
-            let v_end = if resident == 0 {
-                v_start
-            } else {
-                vertex_starts.get(i + 1).copied().unwrap_or(leaf_end)
-            };
-            let span_slots = u32::try_from(v_end.saturating_sub(v_start))
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            positioned.push((vid, vertex, buckets, v_start, span_slots));
-        }
-
-        positioned.sort_by_key(|(_, _, _, v_start, _)| std::cmp::Reverse(*v_start));
-        let disjoint_source = source_range.filter(|(source_start, source_len)| {
-            *source_len > 0
-                && source_start
-                    .checked_add(*source_len)
-                    .zip(leaf_start.checked_add(leaf_len))
-                    .is_some_and(|(source_end, dest_end)| {
-                        source_end <= leaf_start || dest_end <= *source_start
-                    })
-        });
-        if disjoint_source.is_some() {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_stream_disjoint_relocation");
-            let mut bucket_row_bytes_buf = Vec::new();
-            for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
-                self.commit_vertex_edge_span_layout(
-                    vid,
-                    &vertex,
-                    &buckets,
-                    &per_bucket_raw,
-                    &mut bucket_row_bytes_buf,
-                    v_start,
-                    span_slots,
-                    None,
-                    0,
-                    leaf_relocate_commit,
-                    suppress_vertex_footprint_release,
-                )?;
-            }
-        } else {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_materialize_plans");
-            let mut plans = Vec::with_capacity(positioned.len());
-            for (vid, vertex, buckets, v_start, span_slots) in positioned {
-                let per_bucket_raw = self.materialize_labeled_vertex_edge_plan(&buckets)?;
-                plans.push((vid, vertex, buckets, v_start, span_slots, per_bucket_raw));
-            }
-            let mut bucket_row_bytes_buf = Vec::new();
-            for (vid, vertex, buckets, v_start, span_slots, per_bucket_raw) in plans {
-                self.commit_vertex_edge_span_layout(
-                    vid,
-                    &vertex,
-                    &buckets,
-                    &per_bucket_raw,
-                    &mut bucket_row_bytes_buf,
-                    v_start,
-                    span_slots,
-                    None,
-                    0,
-                    leaf_relocate_commit,
-                    suppress_vertex_footprint_release,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Capture only physical regions: tiny descriptors have none, trees have root
-    /// arrays, and slab buckets have initialized prefixes. Publication changes origins,
-    /// never logical ordinals or run ownership, so it requires no move notifications.
-    fn materialize_labeled_vertex_edge_plan(
-        &self,
-        buckets: &[LabelBucket],
-    ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
-        buckets
-            .iter()
-            .map(|bucket| {
-                let bytes =
-                    Self::edge_bytes_for_len(bucket_physical_resident_slots(bucket) as usize)?;
-                let mut raw = vec![0u8; bytes];
-                if !raw.is_empty() {
-                    self.edges
-                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
-                }
-                Ok(raw)
-            })
-            .collect()
-    }
-
     /// Reservation width: physical region plus used spill rows. For slab buckets
     /// this is the tombstone-inclusive logical extent used for promotion admission.
     /// It is not the number of prefix rows copied by a run-retaining relocation.
@@ -1435,146 +4394,6 @@ where
             .checked_add(spill_rows)
             .ok_or(LaraOperationError::RowDegreeOverflow)
             .map_err(LabeledOperationError::from)
-    }
-
-    fn commit_vertex_edge_span_layout(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        buckets: &[LabelBucket],
-        per_bucket_raw: &[Vec<u8>],
-        bucket_row_bytes_buf: &mut Vec<u8>,
-        new_base: u64,
-        new_alloc: u32,
-        preferred_bucket: Option<usize>,
-        preferred_extra: u32,
-        leaf_relocate_commit: bool,
-        suppress_vertex_footprint_release: bool,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if vertex.is_default_edge_labeled() {
-            // Leaf relocation owns the physical cover. Move only the captured prefix,
-            // then publish its new origin; the vertex's run and logical width stay owned.
-            let raw = &per_bucket_raw[0];
-            self.edges.write_slots_contiguous(new_base, raw)?;
-            self.set_labeled_vertex(src, vertex.with_base_slot_start(new_base))?;
-            return Ok(());
-        }
-        let old_alloc = vertex.stored_slots;
-        // ADR 0096 §5: anchor at the first NON-TINY bucket (tiny anchors are
-        // placeholders; releasing from an anchor poisons the free store with
-        // live ranges). Spanless vertices resolve to 0 (callers skip release
-        // on empty spans).
-        let old_base = buckets
-            .iter()
-            .find(|bucket| !bucket.is_tiny_mode())
-            .map(|bucket| bucket.edge_start())
-            .unwrap_or(0);
-        let resident_buckets = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_build_resident_buckets");
-            let mut resident_buckets = Vec::with_capacity(buckets.len());
-            for index in 0..buckets.len() {
-                let bucket = &buckets[index];
-                // ADR 0096 delete redesign: tiny buckets keep their wire
-                // state (`stored` = prefix width incl. holes) through
-                // rewrites — the resident rebuild below would zero it (empty
-                // materialized run) while degree stays live, corrupting the
-                // wire. Anchors still advance via positions.
-                if bucket.is_tiny_mode() {
-                    resident_buckets.push(bucket.without_edge_spill_run());
-                    continue;
-                }
-                // GAP-2026-09-17-001: tree buckets are NOT slab content —
-                // their LEG region is the root array and `stored_slots` is a
-                // logical count. The materialized run above holds the physical
-                // root bytes; republishing `stored_slots` as the width would
-                // reintroduce the logical-width cover the retire path then
-                // releases as unowned ranges. Keep the descriptor's logical
-                // width untouched (root bytes move by anchor only).
-                if bucket.is_tree_mode() {
-                    resident_buckets.push(bucket.without_edge_spill_run());
-                    continue;
-                }
-                let resident_slots = u32::try_from(per_bucket_raw[index].len() / E::BYTES)
-                    .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-                resident_buckets.push(bucket.with_stored_slots(resident_slots));
-            }
-            resident_buckets
-        };
-        let positions = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_calculate_bucket_positions");
-            Self::calculate_label_edge_span_positions_by_resident_slots(
-                new_base,
-                new_alloc,
-                &resident_buckets,
-                preferred_bucket,
-                preferred_extra,
-            )?
-        };
-        let mut row_buckets = Vec::with_capacity(buckets.len());
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_write_edge_runs");
-            for (index, bucket) in resident_buckets.iter().enumerate() {
-                let row_start = positions[index];
-                // Tiny rows retain their inline prefix width, including holes;
-                // only the anchor advances to the running boundary.
-                if buckets[index].is_tiny_mode() {
-                    row_buckets.push(
-                        buckets[index]
-                            .with_edge_range(row_start, buckets[index].stored_slots_raw())
-                            .without_edge_spill_run(),
-                    );
-                    continue;
-                }
-                let raw = &per_bucket_raw[index];
-                if !raw.is_empty() {
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("labeled_vertex_write_edge_run");
-                    self.edges.write_slots_contiguous(row_start, raw)?;
-                }
-                row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots_raw()));
-            }
-        }
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_write_bucket_row");
-            if row_buckets.len() >= 256 {
-                self.buckets.write_label_bucket_row_adaptive_with_scratch(
-                    vertex.base_slot_start(),
-                    &row_buckets,
-                    bucket_row_bytes_buf,
-                )?;
-            } else {
-                self.buckets
-                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-            }
-        }
-        // Vertex-level release of the old footprint (cover-contiguous spans;
-        // see R2b triage).
-        if !leaf_relocate_commit
-            && !suppress_vertex_footprint_release
-            && old_alloc > 0
-            && new_base != old_base
-            && !self.vertex_edge_span_relocates_within_pinned_leaf(
-                src, old_base, old_alloc, new_base, new_alloc,
-            )
-            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
-        {
-            self.release_vertex_edge_span_footprint(old_base, old_alloc, buckets)?;
-        }
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_vertex_update_accounting");
-            self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
-            let d_total = i64::from(new_alloc) - i64::from(old_alloc);
-            self.bump_vertex_edge_span_total_delta(src, d_total)?;
-        }
-        Ok(())
     }
 
     /// Remove physical inter-bucket slack without changing any logical ordinal.
@@ -2212,7 +5031,9 @@ where
         preferred: Option<usize>,
         preferred_extra: u32,
     ) -> Result<Vec<u64>, LabeledOperationError> {
-        let mut out = Vec::with_capacity(buckets.len());
+        let mut out = Vec::new();
+        out.try_reserve_exact(buckets.len())
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         if buckets.is_empty() {
             return Ok(out);
         }
@@ -2901,7 +5722,7 @@ mod tests {
             graph.iter_edges_for_label(src, neighbor).unwrap(),
             rows_before
         );
-        assert_eq!(graph.edges().header().num_edges as u64, 12);
+        assert_eq!(graph.edges().header().num_edges, 12);
     }
 
     #[test]
@@ -5542,22 +8363,17 @@ mod tests {
         }
         let cover_before = graph.vertices().get(vid).stored_slots;
         let requested = cover_before.saturating_add(100_000);
-        match graph.resolve_labeled_edge_base_for_rebalance(vid, requested) {
-            Ok((base, width)) => {
-                // The width the caller will publish must be backed by the span the
-                // vertex actually holds after the resolution. A relocation may have
-                // grown that span (`cover_before` is only the pre-resolution value), so
-                // the check is against the published cover, not the request.
-                let backed = graph.vertices().get(vid).stored_slots;
-                assert!(
-                    width <= backed,
-                    "resolution reported width {width} over a backing of {backed} (requested {requested}, was {cover_before})"
-                );
-                let _ = base;
-            }
-            Err(_) => {}
+        if let Ok((_, width)) = graph.resolve_labeled_edge_base_for_rebalance(vid, requested) {
+            // The width the caller will publish must be backed by the span the
+            // vertex actually holds after the resolution. A relocation may have
+            // grown that span (`cover_before` is only the pre-resolution value), so
+            // the check is against the published cover, not the request.
+            let backed = graph.vertices().get(vid).stored_slots;
+            assert!(
+                width <= backed,
+                "resolution reported width {width} over a backing of {backed} (requested {requested}, was {cover_before})"
+            );
         }
-        let _ = cover_before;
         crate::labeled::invariants::assert_labeled_layout_invariants(
             graph.vertices(),
             graph.buckets(),

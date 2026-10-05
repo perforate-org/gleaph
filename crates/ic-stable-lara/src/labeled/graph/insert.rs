@@ -2270,7 +2270,7 @@ mod tests {
         );
         assert_eq!(graph.edges().header().num_edges, 3);
         let mut seen = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(
                 vid,
                 label,
@@ -2281,6 +2281,7 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(seen, vec![10, 11, 12]);
     }
 
@@ -2329,7 +2330,7 @@ mod tests {
         );
         assert_eq!(graph.edges().header().num_edges, 5);
         let mut seen = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(
                 vid,
                 label,
@@ -2340,6 +2341,7 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(seen, vec![10, 11, 12, 13, 14]);
     }
 }

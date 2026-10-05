@@ -187,12 +187,13 @@ fn exercise<const N: usize>(bypass: bool) {
         }
         for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
             let mut seen = Vec::new();
-            graph
+            let flow = graph
                 .visit_edges(vid, label, order, |slot, edge| {
                     seen.push((slot.raw(), edge.0));
                     ControlFlow::<()>::Continue(())
                 })
                 .unwrap();
+            assert_eq!(flow, ControlFlow::Continue(()));
             let mut expected: Vec<_> = live.iter().map(|i| (*i, *i)).collect();
             if order == OutEdgeOrder::Descending {
                 expected.reverse();
@@ -284,12 +285,13 @@ fn exercise<const N: usize>(bypass: bool) {
             assert!(result.moves.is_empty());
         }
         let mut survivors = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
                 survivors.push((slot.raw(), edge.0));
                 ControlFlow::<()>::Continue(())
             })
             .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(
             survivors,
             live.into_iter()
@@ -371,13 +373,14 @@ fn spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors() 
     assert!(graph.edges().spill_used_len(run) > 32);
     assert!(bucket.stored_slots_raw() <= 33, "match must reach spill");
     let mut before = Vec::new();
-    graph
+    let flow = graph
         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
             before.push((slot.raw(), item.edge.target));
             ControlFlow::<()>::Continue(())
         })
         .unwrap();
+    assert_eq!(flow, ControlFlow::Continue(()));
     let mut predicates = Vec::new();
     let removed = graph
         .remove_edge_matching_with_move(vid, label, |edge| {
@@ -392,13 +395,14 @@ fn spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors() 
     assert_eq!(removed.removed.value, 33u32.to_le_bytes());
     assert!(removed.moves.is_empty());
     let mut after = Vec::new();
-    graph
+    let flow = graph
         .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Descending, |slot, item| {
             assert_eq!(item.inline_property.bytes(), item.edge.target.to_le_bytes());
             after.push((slot.raw(), item.edge.target));
             ControlFlow::<()>::Continue(())
         })
         .unwrap();
+    assert_eq!(flow, ControlFlow::Continue(()));
     assert_eq!(
         after,
         before

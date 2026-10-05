@@ -8,9 +8,9 @@
 //! SDKs re-export this module, so one implementation serves the application client and
 //! the canister CDK.
 
+use crate::types::GqlQueryResult;
 use gleaph_gql_ic_wire::{GqlWireRow, GqlWireValue};
 use gleaph_prepared_api::{Column, SemanticType};
-use crate::types::GqlQueryResult;
 
 pub use gleaph_prepared_api::RecordField;
 
@@ -108,11 +108,7 @@ pub fn validate_rows(rows: &[GqlWireRow], columns: &[Column]) -> Result<(), RowS
 /// but absent from the schema are ignored.
 pub fn validate_row(row: &GqlWireRow, columns: &[Column]) -> Result<(), RowSchemaError> {
     for column in columns {
-        let Some((_, value)) = row
-            .columns
-            .iter()
-            .find(|(name, _)| name == &column.name)
-        else {
+        let Some((_, value)) = row.columns.iter().find(|(name, _)| name == &column.name) else {
             return Err(RowSchemaError::MissingColumn {
                 column: column.name.clone(),
             });
@@ -155,9 +151,7 @@ fn validate_value(
         SemanticType::Record { fields } => match value {
             GqlWireValue::Record(wire_fields) => {
                 for field in fields {
-                    let Some((_, wire)) = wire_fields
-                        .iter()
-                        .find(|(name, _)| name == &field.name)
+                    let Some((_, wire)) = wire_fields.iter().find(|(name, _)| name == &field.name)
                     else {
                         return Err(RowSchemaError::MissingField {
                             column: column.to_owned(),
@@ -320,11 +314,7 @@ mod tests {
     /// must fail with both sides named (declared Bytes, received List).
     #[test]
     fn bytes_column_rejects_a_list_value_naming_both_sides() {
-        let columns = [column(
-            "cite_edge_id",
-            SemanticType::Bytes,
-            false,
-        )];
+        let columns = [column("cite_edge_id", SemanticType::Bytes, false)];
         let value = GqlWireValue::List(vec![GqlWireValue::Bytes(vec![1])]);
         let error = validate_row(&row(vec![("cite_edge_id", value)]), &columns)
             .expect_err("List under a Bytes column must fail");
@@ -409,10 +399,7 @@ mod tests {
             },
             false,
         )];
-        let value = GqlWireValue::List(vec![
-            GqlWireValue::Bytes(vec![1]),
-            GqlWireValue::Int64(7),
-        ]);
+        let value = GqlWireValue::List(vec![GqlWireValue::Bytes(vec![1]), GqlWireValue::Int64(7)]);
         let error = validate_row(&row(vec![("ids", value)]), &columns)
             .expect_err("element drift must fail");
         assert_eq!(
@@ -440,21 +427,15 @@ mod tests {
         )];
 
         // Missing field.
-        let error = validate_row(
-            &row(vec![("hit", GqlWireValue::Record(vec![]))]),
-            &columns,
-        )
-        .expect_err("missing record field must fail");
+        let error = validate_row(&row(vec![("hit", GqlWireValue::Record(vec![]))]), &columns)
+            .expect_err("missing record field must fail");
         assert!(matches!(error, RowSchemaError::MissingField { .. }));
 
         // Field type drift.
         let error = validate_row(
             &row(vec![(
                 "hit",
-                GqlWireValue::Record(vec![(
-                    "score".to_owned(),
-                    GqlWireValue::Int64(9),
-                )]),
+                GqlWireValue::Record(vec![("score".to_owned(), GqlWireValue::Int64(9))]),
             )]),
             &columns,
         )

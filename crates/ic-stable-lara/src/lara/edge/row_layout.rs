@@ -137,6 +137,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Self::max_slab_window_for_vertex(v, base, end)
     }
 
+    pub(crate) fn prepare_segment_physical_start(
+        &self,
+        segment: SegmentId,
+        physical_start: u64,
+    ) -> Result<super::span_meta::PreparedSegmentPhysicalStart<'_, M>, LaraOperationError> {
+        self.span_meta
+            .prepare_physical_start(u64::from(segment), physical_start)
+    }
+
+    pub(crate) fn prepare_physical_counts(
+        &self,
+        vid: VertexId,
+        projection: super::counts::PhysicalCountProjection,
+    ) -> Result<super::counts::PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+        self.counts
+            .prepare_physical_counts(self.vertex_segment_counts_index(vid)?, projection)
+    }
+
     pub(crate) fn set_segment_physical_start(
         &self,
         segment: SegmentId,
@@ -253,9 +271,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // leaf only; `LaraGraph::rebuild_counts_internal_nodes` restores the
         // internal rows from the leaves where an aggregate is needed (segment
         // growth, audits, or a future reader).
-        let mut c = self.counts.get(idx);
-        c.actual += d_actual;
-        c.total += d_total;
+        let c = self.counts.get(idx).checked_delta(d_actual, d_total)?;
         self.counts.set(idx, &c);
         Ok(())
     }

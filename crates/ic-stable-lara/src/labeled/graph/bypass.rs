@@ -165,7 +165,7 @@ where
 
         // Plan the segment-bucket rewrite without allocating or mutating anything.
         let new_alloc = self.edges.header().segment_size.max(1).max(stored_slots);
-        let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
+        let plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
             bucket,
@@ -178,18 +178,10 @@ where
         // it here keeps the subsequent reserve and commit infallible.
         self.edges.vertex_segment_counts_index(src)?;
 
-        // Reserve all fallible backing capacity while the bypass row is still the
-        // canonical interpretation. No vertex row is mutated until reservation
-        // succeeds.
-        self.buckets
-            .reserve_promote_bypass_to_bucket_mode(&mut plan)?;
-
-        // Commit: publish the bucket-mode row. The first vertex write is the
-        // source row ceasing to be a valid bypass interpretation; every
-        // subsequent operation below was preflighted and cannot return a
-        // recoverable error.
-        self.buckets
-            .commit_promote_bypass_to_bucket_mode(&self.vertices, plan)?;
+        // Source fields, destination bytes and every retirement index edit are
+        // admitted before the segment publisher can write a descriptor or row.
+        let mut preparation = plan.reserve()?;
+        preparation.ready()?.publish();
         self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
             .expect("commit: cache invalidation must succeed after preflight");
         self.edges

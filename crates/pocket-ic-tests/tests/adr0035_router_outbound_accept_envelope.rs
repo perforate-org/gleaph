@@ -121,8 +121,7 @@ fn call_grant_upsert(
             env.provision,
             caller,
             "upsert_deployment_grant",
-            Encode!(&UpsertDeploymentGrantArgs { issuer })
-                .expect("encode upsert_deployment_grant"),
+            Encode!(&UpsertDeploymentGrantArgs { issuer }).expect("encode upsert_deployment_grant"),
         )
         .unwrap_or_else(|e| panic!("upsert_deployment_grant on provision: {e:?}"));
 
@@ -193,8 +192,7 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
     assert_eq!(grant_result.action, BootstrapAuthAction::Upsert);
     assert_eq!(grant_result.caller, env.admin);
     // Idempotent: upserting the same issuer again succeeds.
-    call_grant_upsert(&env, env.admin, second_issuer)
-        .expect("grant upsert is idempotent");
+    call_grant_upsert(&env, env.admin, second_issuer).expect("grant upsert is idempotent");
 
     // Scenario 8: grant upsert as a non-governance principal returns Unauthorized.
     let wrong_principal = Principal::from_slice(&[0xCD; 29]);

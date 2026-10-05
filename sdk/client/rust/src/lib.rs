@@ -19,8 +19,8 @@ pub mod transport;
 /// Router data-plane wire contract as a module, for path-qualified use in bindings.
 pub mod types {
     pub use gleaph_prepared_api::{PreparedManifest, PreparedRegistration, PreparedSortSpec};
+    pub use gleaph_router_wire::rows;
     pub use gleaph_router_wire::types::*;
-pub use gleaph_router_wire::rows;
 
     /// GQL `Date` row binding used by generated client bindings.
     #[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]

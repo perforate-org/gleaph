@@ -411,11 +411,7 @@ mod tests {
     }
     #[test]
     fn grant_upsert_maps_issuer() {
-        let cli = parse(&[
-            "grant",
-            "upsert",
-            "r7inp-6aaaa-aaaaa-aaabq-cai",
-        ]);
+        let cli = parse(&["grant", "upsert", "r7inp-6aaaa-aaaaa-aaabq-cai"]);
         match cli.command {
             Command::Grant(GrantCommand::Upsert(args)) => {
                 assert_eq!(args.issuer, "r7inp-6aaaa-aaaaa-aaabq-cai");

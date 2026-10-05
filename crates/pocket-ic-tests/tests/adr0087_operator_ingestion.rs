@@ -333,7 +333,10 @@ fn operator_transport_drives_real_provision_ingestion() {
             .expect("decode grant upsert");
     let entry = entry.expect("grant upsert ok");
     assert_eq!(entry.action, op_wire::BootstrapAuthAction::Upsert);
-    assert_eq!(entry.deployment_id.as_deref(), Some(router.to_text().as_str()));
+    assert_eq!(
+        entry.deployment_id.as_deref(),
+        Some(router.to_text().as_str())
+    );
 
     // Non-authority upserting a grant decodes to Unauthorized.
     let stranger = Principal::from_slice(&[0x03; 29]);

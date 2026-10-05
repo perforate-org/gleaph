@@ -205,17 +205,17 @@ fn check_promotion(deletes: u32) {
     for i in 0..deletes {
         assert_eq!(g.remove_edge_at_slot(v, label, i).unwrap().unwrap().0, i);
     }
-    let old = bucket(&g, label);
+    let old = bucket(g, label);
     let run = g.edges().spill_mint(old.edge_spill_run()).unwrap();
     let extent = old.stored_slots() + g.edges().spill_used_len(run);
     let count = g.edges().header().num_edges;
-    let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+    let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
     assert_eq!(
         before.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(),
         (deletes..extent).map(|i| (i, i)).collect::<Vec<_>>()
     );
-    promote_bucket_to_tree_mode(&g, v, label).unwrap();
-    let after = bucket(&g, label);
+    promote_bucket_to_tree_mode(g, v, label).unwrap();
+    let after = bucket(g, label);
     assert!(after.is_tree_mode());
     assert_eq!(after.stored_slots(), extent);
     assert_eq!(after.degree(), old.degree());
@@ -239,21 +239,21 @@ fn promotion_retained_below_cap_rejects_without_mutation() {
     let outer = retained::<4>(128);
     let g = outer.forward();
     let label = g.default_label();
-    let old = bucket(&g, label);
+    let old = bucket(g, label);
     let run = g.edges().spill_mint(old.edge_spill_run()).unwrap();
     let used = g.edges().spill_used_len(run);
-    let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+    let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
     let count = g.edges().header().num_edges;
-    let result = promote_bucket_to_tree_mode(&g, VertexId::from(0), label);
+    let result = promote_bucket_to_tree_mode(g, VertexId::from(0), label);
     assert!(
         matches!(result,Err(LabeledOperationError::AllocSpaceCapReached{current_alloc_space,cap:T_PROMOTE,mode:BucketMode::Slab}) if current_alloc_space==old.stored_slots()+used),
         "{result:?}"
     );
-    assert_eq!(bucket(&g, label), old);
+    assert_eq!(bucket(g, label), old);
     assert_eq!(g.edges().spill_used_len(run), used);
     assert_eq!(g.edges().header().num_edges, count);
     assert_eq!(
-        rows(&g, label, super::super::OutEdgeOrder::Ascending),
+        rows(g, label, super::super::OutEdgeOrder::Ascending),
         before
     );
 }
@@ -262,21 +262,21 @@ fn promotion_retained_wide_rejects_without_mutation() {
     let outer = retained::<10>(crate::labeled::spill_run_store::MAX_ROWS);
     let g = outer.forward();
     let label = g.default_label();
-    let old = bucket(&g, label);
+    let old = bucket(g, label);
     let run = g.edges().spill_mint(old.edge_spill_run()).unwrap();
     let used = g.edges().spill_used_len(run);
-    let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
+    let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
     assert!(matches!(
-        promote_bucket_to_tree_mode(&g, VertexId::from(0), label),
+        promote_bucket_to_tree_mode(g, VertexId::from(0), label),
         Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
             actual: 10,
             expected: 4
         })
     ));
-    assert_eq!(bucket(&g, label), old);
+    assert_eq!(bucket(g, label), old);
     assert_eq!(g.edges().spill_used_len(run), used);
     assert_eq!(
-        rows(&g, label, super::super::OutEdgeOrder::Ascending),
+        rows(g, label, super::super::OutEdgeOrder::Ascending),
         before
     );
 }

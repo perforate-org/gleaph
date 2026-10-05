@@ -38,15 +38,11 @@
 //! ```
 
 use crate::{
-    GrowFailed, VertexCount,
-    lara::reserved::{region_is_zero, write_zeroes},
-    safe_write,
-    traits::CsrEdge,
-    types::Address,
-    write_u32, write_u64,
+    GrowFailed, VertexCount, lara::reserved::region_is_zero, safe_write, traits::CsrEdge,
+    types::Address, write_u64,
 };
 use ic_stable_structures::Memory;
-use std::{fmt, marker::PhantomData};
+use std::{cell::RefCell, fmt, marker::PhantomData};
 
 /// Magic bytes that identify a LARA edge slab memory.
 pub const MAGIC: [u8; 3] = *b"LEG";
@@ -118,6 +114,32 @@ impl HeaderV1 {
             initial_vertex_edge_slots,
         }
     }
+
+    fn encode(self) -> [u8; HEADER_SIZE as usize] {
+        let mut bytes = [0; HEADER_SIZE as usize];
+        bytes[..3].copy_from_slice(&self.magic);
+        bytes[3] = self.version;
+        for (offset, value) in [
+            (ELEM_CAPACITY_OFFSET, self.elem_capacity),
+            (NUM_EDGES_OFFSET, self.num_edges),
+            (SLAB_OCCUPIED_TAIL_OFFSET, self.slab_occupied_tail),
+        ] {
+            bytes[offset as usize..offset as usize + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [
+            (SEGMENT_COUNT_OFFSET, self.segment_count),
+            (SEGMENT_SIZE_OFFSET, self.segment_size),
+            (TREE_HEIGHT_OFFSET, self.tree_height),
+            (EDGE_STRIDE_OFFSET, self.stride),
+            (
+                INITIAL_VERTEX_EDGE_SLOTS_OFFSET,
+                self.initial_vertex_edge_slots,
+            ),
+        ] {
+            bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
 }
 
 /// Errors returned when reopening a persisted edge slab.
@@ -169,6 +191,104 @@ impl std::error::Error for InitError {}
 pub struct EdgeSlabStore<E: CsrEdge, M: Memory> {
     memory: M,
     _marker: PhantomData<E>,
+}
+
+/// Resident bytes or a proved-disjoint raw source. Addresses are slab slots.
+pub(crate) enum PhysicalSlabPayload {
+    Buffered {
+        source: Option<u64>,
+        destination: u64,
+        bytes: Vec<u8>,
+    },
+    Disjoint {
+        source: u64,
+        destination: u64,
+        slots: u64,
+    },
+}
+
+struct BackedSlabRange {
+    destination: u64,
+    source: Option<u64>,
+    bytes: Vec<u8>,
+    streamed_bytes: u64,
+}
+
+/// Checked, encoded slab image; writing it cannot grow or encode.
+pub(crate) struct BackedSlabImage<'a, E: CsrEdge, M: Memory> {
+    owner: &'a EdgeSlabStore<E, M>,
+    header: [u8; HEADER_SIZE as usize],
+    ranges: Vec<BackedSlabRange>,
+    scratch: RefCell<Vec<u8>>,
+}
+
+impl<E: CsrEdge, M: Memory> BackedSlabImage<'_, E, M> {
+    pub(crate) fn validate_source(&self) -> bool {
+        let mut scratch = [0u8; 128];
+        for range in &self.ranges {
+            let Some(source) = range.source else { continue };
+            // Streamed sources remain outside every destination; their row/header
+            // witnesses are revalidated by the enclosing physical preparation.
+            for (index, bytes) in range.bytes.chunks(scratch.len()).enumerate() {
+                let offset = source + (index * scratch.len()) as u64;
+                self.owner.memory.read(offset, &mut scratch[..bytes.len()]);
+                if scratch[..bytes.len()] != *bytes {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn write_payloads(&self) {
+        let mut scratch = self.scratch.borrow_mut();
+        for range in &self.ranges {
+            if range.streamed_bytes == 0 {
+                if !range.bytes.is_empty() {
+                    self.owner.memory.write(range.destination, &range.bytes);
+                }
+                continue;
+            }
+            let source = range.source.expect("admitted streamed source");
+            let mut copied = 0u64;
+            while copied < range.streamed_bytes {
+                let n = (range.streamed_bytes - copied).min(scratch.len() as u64) as usize;
+                self.owner.memory.read(source + copied, &mut scratch[..n]);
+                self.owner
+                    .memory
+                    .write(range.destination + copied, &scratch[..n]);
+                copied += n as u64;
+            }
+        }
+    }
+
+    pub(crate) fn write(&self) {
+        self.write_payloads();
+        self.owner.memory.write(0, &self.header);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn copy_buffer_metrics(&self) -> (usize, usize) {
+        (self.retained_source_bytes(), self.scratch.borrow().len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_source_bytes(&self) -> usize {
+        self.ranges
+            .iter()
+            .filter(|range| range.source.is_some())
+            .map(|range| range.bytes.len())
+            .sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transcribed_bytes(&self) -> usize {
+        self.ranges
+            .iter()
+            .filter(|range| range.source.is_none())
+            .map(|range| range.bytes.len())
+            .sum()
+    }
 }
 
 impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
@@ -228,47 +348,223 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         self.read_header()
     }
 
-    /// Writes the full slab header to stable memory.
-    ///
-    /// Infallible by precondition: every caller has already grown the memory for
-    /// this header, so the reserved-region zero-fill cannot need a further grow.
+    /// Writes the full slab header, including zero reserved bytes, to backed memory.
     pub(crate) fn write_header(&self, h: &HeaderV1) {
-        self.memory.write(0, &h.magic);
-        self.memory.write(3, &[h.version]);
-        write_u64(
-            &self.memory,
-            Address::from(ELEM_CAPACITY_OFFSET),
-            h.elem_capacity,
+        self.memory.write(0, &h.encode());
+    }
+
+    /// Admit every buffered destination and one header before publishing any range.
+    pub(crate) fn prepare_physical_image(
+        &self,
+        header: HeaderV1,
+        ranges: Vec<(u64, Vec<u8>)>,
+    ) -> Result<BackedSlabImage<'_, E, M>, GrowFailed> {
+        let mut payloads = Vec::new();
+        payloads
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| self.image_error())?;
+        for (destination, bytes) in ranges {
+            payloads.push(PhysicalSlabPayload::Buffered {
+                source: None,
+                destination,
+                bytes,
+            });
+        }
+        self.prepare_physical_copy_image(header, payloads)
+    }
+
+    fn image_error(&self) -> GrowFailed {
+        GrowFailed {
+            current_size: self.memory.size(),
+            delta: 0,
+        }
+    }
+
+    fn image_extent(&self, header: HeaderV1) -> Result<u64, GrowFailed> {
+        if E::BYTES == 0
+            || header.stride as usize != E::BYTES
+            || header.magic != MAGIC
+            || header.version != LAYOUT_VERSION
+            || !crate::slab_index::slot_exclusive_end_fits(header.elem_capacity)
+        {
+            return Err(self.image_error());
+        }
+        header
+            .elem_capacity
+            .checked_mul(E::BYTES as u64)
+            .and_then(|n| n.checked_add(HEADER_SIZE))
+            .ok_or_else(|| self.image_error())
+    }
+
+    fn image_range(
+        &self,
+        header: HeaderV1,
+        start: u64,
+        slots: u64,
+    ) -> Result<(u64, u64), GrowFailed> {
+        let end = crate::slab_index::checked_add_slot_exclusive_end(start, slots)
+            .filter(|end| *end <= header.elem_capacity)
+            .ok_or_else(|| self.image_error())?;
+        let offset = start
+            .checked_mul(E::BYTES as u64)
+            .and_then(|n| n.checked_add(HEADER_SIZE))
+            .ok_or_else(|| self.image_error())?;
+        let end = end
+            .checked_mul(E::BYTES as u64)
+            .and_then(|n| n.checked_add(HEADER_SIZE))
+            .ok_or_else(|| self.image_error())?;
+        Ok((offset, end - offset))
+    }
+
+    /// Source and destination offsets, backing and maximum-chunk scratch have one owner.
+    pub(crate) fn prepare_physical_copy_image(
+        &self,
+        header: HeaderV1,
+        payloads: Vec<PhysicalSlabPayload>,
+    ) -> Result<BackedSlabImage<'_, E, M>, GrowFailed> {
+        let extent = self.image_extent(header)?;
+        let source_header = self.header().map_err(|_| self.image_error())?;
+        let mut ranges = Vec::new();
+        ranges
+            .try_reserve_exact(payloads.len())
+            .map_err(|_| self.image_error())?;
+        let mut max_stream = 0u64;
+        for payload in payloads {
+            let (destination, source, bytes, streamed_bytes) = match payload {
+                PhysicalSlabPayload::Buffered {
+                    source,
+                    destination,
+                    bytes,
+                } => {
+                    if !bytes.len().is_multiple_of(E::BYTES) {
+                        return Err(self.image_error());
+                    }
+                    let slots =
+                        u64::try_from(bytes.len() / E::BYTES).map_err(|_| self.image_error())?;
+                    let (destination, _) = self.image_range(header, destination, slots)?;
+                    let source = source
+                        .map(|source| {
+                            self.image_range(source_header, source, slots)
+                                .map(|(offset, _)| offset)
+                        })
+                        .transpose()?;
+                    (destination, source, bytes, 0)
+                }
+                PhysicalSlabPayload::Disjoint {
+                    source,
+                    destination,
+                    slots,
+                } => {
+                    let (source, len) = self.image_range(source_header, source, slots)?;
+                    let (destination, _) = self.image_range(header, destination, slots)?;
+                    if len > 0 && source < destination + len && destination < source + len {
+                        return Err(self.image_error());
+                    }
+                    max_stream = max_stream.max(len);
+                    (destination, Some(source), Vec::new(), len)
+                }
+            };
+            ranges.push(BackedSlabRange {
+                destination,
+                source,
+                bytes,
+                streamed_bytes,
+            });
+        }
+        // Disjointness is global, not merely each range's own source/destination pair.
+        Self::validate_stream_disjointness(&ranges).map_err(|_| self.image_error())?;
+        let chunk = max_stream.min(
+            (super::OUT_EDGE_SLAB_CHUNK_SLOTS as usize)
+                .checked_mul(E::BYTES)
+                .ok_or_else(|| self.image_error())? as u64,
         );
-        write_u32(
-            &self.memory,
-            Address::from(SEGMENT_COUNT_OFFSET),
-            h.segment_count,
-        );
-        write_u32(
-            &self.memory,
-            Address::from(SEGMENT_SIZE_OFFSET),
-            h.segment_size,
-        );
-        write_u32(
-            &self.memory,
-            Address::from(TREE_HEIGHT_OFFSET),
-            h.tree_height,
-        );
-        write_u64(&self.memory, Address::from(NUM_EDGES_OFFSET), h.num_edges);
-        write_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET), h.stride);
-        write_u64(
-            &self.memory,
-            Address::from(SLAB_OCCUPIED_TAIL_OFFSET),
-            h.slab_occupied_tail,
-        );
-        write_u32(
-            &self.memory,
-            Address::from(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
-            h.initial_vertex_edge_slots,
-        );
-        write_zeroes(&self.memory, RESERVED_OFFSET, RESERVED_SIZE)
-            .expect("edge slab reserved region lies within grown memory");
+        let chunk = usize::try_from(chunk).map_err(|_| self.image_error())?;
+        let mut scratch = Vec::new();
+        scratch
+            .try_reserve_exact(chunk)
+            .map_err(|_| self.image_error())?;
+        scratch.resize(chunk, 0);
+        self.grow_for_header(&header)?;
+        let backed = self
+            .memory
+            .size()
+            .checked_mul(crate::WASM_PAGE_SIZE)
+            .ok_or_else(|| self.image_error())?;
+        if extent > backed {
+            return Err(self.image_error());
+        }
+        Ok(BackedSlabImage {
+            owner: self,
+            header: header.encode(),
+            ranges,
+            scratch: RefCell::new(scratch),
+        })
+    }
+
+    fn validate_stream_disjointness(ranges: &[BackedSlabRange]) -> Result<(), ()> {
+        for source in ranges.iter().filter(|range| range.streamed_bytes > 0) {
+            let start = source.source.ok_or(())?;
+            let end = start.checked_add(source.streamed_bytes).ok_or(())?;
+            for destination in ranges {
+                let len = if destination.streamed_bytes > 0 {
+                    destination.streamed_bytes
+                } else {
+                    destination.bytes.len() as u64
+                };
+                if len > 0
+                    && start < destination.destination.checked_add(len).ok_or(())?
+                    && destination.destination < end
+                {
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Combine already-admitted components without retaining a header per participant.
+    pub(crate) fn combine_physical_images<'a>(
+        &'a self,
+        header: HeaderV1,
+        images: Vec<BackedSlabImage<'a, E, M>>,
+    ) -> Result<BackedSlabImage<'a, E, M>, GrowFailed> {
+        let extent = self.image_extent(header)?;
+        let encoded = header.encode();
+        let count = images.iter().try_fold(0usize, |n, image| {
+            if !std::ptr::eq(image.owner, self) || image.header != encoded {
+                return Err(self.image_error());
+            }
+            n.checked_add(image.ranges.len())
+                .ok_or_else(|| self.image_error())
+        })?;
+        let mut ranges = Vec::new();
+        ranges
+            .try_reserve_exact(count)
+            .map_err(|_| self.image_error())?;
+        let mut scratch = Vec::new();
+        for image in images {
+            ranges.extend(image.ranges);
+            let candidate = image.scratch.into_inner();
+            if candidate.len() > scratch.len() {
+                scratch = candidate;
+            }
+        }
+        Self::validate_stream_disjointness(&ranges).map_err(|_| self.image_error())?;
+        self.grow_for_header(&header)?;
+        if self
+            .memory
+            .size()
+            .checked_mul(crate::WASM_PAGE_SIZE)
+            .is_none_or(|backed| extent > backed)
+        {
+            return Err(self.image_error());
+        }
+        Ok(BackedSlabImage {
+            owner: self,
+            header: encoded,
+            ranges,
+            scratch: RefCell::new(scratch),
+        })
     }
 
     /// Updates the logical edge count field in the header.

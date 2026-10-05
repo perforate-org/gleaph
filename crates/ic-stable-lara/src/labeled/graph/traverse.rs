@@ -6912,12 +6912,13 @@ mod g6_zero_read_tests {
         reads.set(0);
         writes.set(0);
         let mut seen = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(vid, label, OutEdgeOrder::Ascending, |_, edge| {
                 seen.push(u32::from(edge.neighbor_vid()));
                 ControlFlow::<()>::Continue(())
             })
             .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(seen, vec![10, 11, 12]);
         let r = reads.get();
         let w = writes.get();

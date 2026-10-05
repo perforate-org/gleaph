@@ -9,8 +9,8 @@ mod tests {
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::batch_write::{
-        OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
-        OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+        OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
+        OneOrientationBucketRun,
     };
     use crate::labeled::graph::iter::LabeledEdgeInlinePropertyBatchScratch;
     use crate::labeled::graph::test_support::{InlinePropertyTestEdge, test_graph_with_default};

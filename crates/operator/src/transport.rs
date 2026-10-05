@@ -11,4 +11,4 @@
 //! Failure policies (transport-failure panic inside driver runs, typed preflight calls) are
 //! documented on the shared crate.
 
-pub use gleaph_ingress_client::{IngressError, IcIngress, ProvisionClient};
+pub use gleaph_ingress_client::{IcIngress, IngressError, ProvisionClient};

@@ -70,7 +70,7 @@ pub mod span_meta;
 use crate::labeled::spill_run_store::SpillRunStore;
 use crate::traits::CsrEdge;
 use counts::SegmentEdgeCountsStore;
-pub(crate) use edges::EdgeSlabStore;
+pub(crate) use edges::{BackedSlabImage, EdgeSlabStore, PhysicalSlabPayload};
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::FreeSpanStore;
 use ic_stable_structures::Memory;
@@ -120,7 +120,58 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
+pub(crate) struct BackedPhysicalEdgeImage<'a, E: CsrEdge, M: Memory> {
+    owner: &'a EdgeStore<E, M>,
+    image: BackedSlabImage<'a, E, M>,
+    header: EdgeHeaderV1,
+}
+
+impl<E: CsrEdge, M: Memory> BackedPhysicalEdgeImage<'_, E, M> {
+    pub(crate) fn validate_source(&self) -> bool {
+        self.image.validate_source()
+    }
+    #[cfg(test)]
+    pub(crate) fn copy_buffer_metrics(&self) -> (usize, usize) {
+        self.image.copy_buffer_metrics()
+    }
+
+    pub(crate) fn write(&self) {
+        self.image.write();
+        self.owner.header.set(self.header);
+    }
+}
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    pub(crate) fn physical_header_matches(&self, header: EdgeHeaderV1) -> bool {
+        self.header() == header && self.edges.header().ok() == Some(header)
+    }
+
+    pub(crate) fn prepare_physical_copy_image(
+        &self,
+        header: EdgeHeaderV1,
+        payloads: Vec<PhysicalSlabPayload>,
+    ) -> Result<BackedSlabImage<'_, E, M>, crate::lara::operation_error::LaraOperationError> {
+        self.edges
+            .prepare_physical_copy_image(header, payloads)
+            .map_err(crate::lara::operation_error::LaraOperationError::ResizeFailed)
+    }
+
+    pub(crate) fn prepare_physical_image<'a>(
+        &'a self,
+        header: EdgeHeaderV1,
+        images: Vec<BackedSlabImage<'a, E, M>>,
+    ) -> Result<BackedPhysicalEdgeImage<'a, E, M>, crate::lara::operation_error::LaraOperationError>
+    {
+        let image = self
+            .edges
+            .combine_physical_images(header, images)
+            .map_err(crate::lara::operation_error::LaraOperationError::ResizeFailed)?;
+        Ok(BackedPhysicalEdgeImage {
+            owner: self,
+            image,
+            header,
+        })
+    }
     /// Returns edge-slab allocator statistics (free span accounting).
     pub fn allocator_stats(&self) -> crate::lara::edge::free_span::FreeSpanAllocatorStats {
         self.free_spans.allocator_stats()

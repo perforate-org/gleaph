@@ -92,11 +92,7 @@ fn insert_cites_edge(env: &FederationEnv, key: &str, from_title: &str, to_title:
 
 /// Seed A→B→C→D via CITES; A carries the op's literal-matched title.
 fn seed_citation_chain(env: &FederationEnv) {
-    insert_document(
-        env,
-        "citation-reach-seed-a",
-        "GraphRAG retrieval",
-    );
+    insert_document(env, "citation-reach-seed-a", "GraphRAG retrieval");
     insert_document(env, "citation-reach-seed-b", "Chain B");
     insert_document(env, "citation-reach-seed-c", "Chain C");
     insert_document(env, "citation-reach-seed-d", "Chain D");

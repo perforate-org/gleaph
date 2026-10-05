@@ -1285,10 +1285,7 @@ mod tests {
     }
 
     fn init_args_json() -> String {
-        format!(
-            r#"{{"governance_principal":"{}"}}"#,
-            principal_text(0x02),
-        )
+        format!(r#"{{"governance_principal":"{}"}}"#, principal_text(0x02),)
     }
 
     #[test]
@@ -1362,8 +1359,12 @@ mod tests {
 
     #[test]
     fn hex_escape_hatch_overrides_json_for_provision() {
-        let bytes = load_init_args(BootstrapKind::Provision, Some(&init_args_json()), Some("00"))
-            .expect("hex wins");
+        let bytes = load_init_args(
+            BootstrapKind::Provision,
+            Some(&init_args_json()),
+            Some("00"),
+        )
+        .expect("hex wins");
         assert_eq!(bytes, vec![0x00]);
     }
 }

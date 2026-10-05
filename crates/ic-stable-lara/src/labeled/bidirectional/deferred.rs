@@ -5577,16 +5577,18 @@ mod tests {
         assert!(u32::try_from(root_before.len() / 4).unwrap() < tree_before.stored_slots());
         assert_eq!(tree_before.tree_mode_physical_depth(), 1);
         let ids: std::collections::BTreeSet<_> = root_before
-            .chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
             .collect();
         assert_eq!(
             ids.len(),
             root_before.len() / 4,
             "each root owns a distinct minted block"
         );
-        for (i, bytes) in root_before.chunks_exact(4).enumerate() {
-            let id = u32::from_le_bytes(bytes.try_into().unwrap());
+        for (i, bytes) in root_before.as_chunks::<4>().0.iter().enumerate() {
+            let id = u32::from_le_bytes(*bytes);
             let header = graph.forward().ltb().read_block_header(id);
             assert_eq!(header.owner_or_next_free, 0);
             // The current promoter leaves informational label/ordinal metadata zero;

@@ -127,7 +127,11 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
             intent_lock_count,
             created_resources,
         }) => {
-            assert_eq!(job_view.deployment_id, deployment_id(), "scenario 3 deployment_id");
+            assert_eq!(
+                job_view.deployment_id,
+                deployment_id(),
+                "scenario 3 deployment_id"
+            );
             assert_eq!(
                 job_view.request_id,
                 expected_request_id(1),
@@ -159,7 +163,8 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         other_principal(),
         expected_request_id(1),
-        &deployment_id(),    );
+        &deployment_id(),
+    );
     assert!(
         wrong_query.is_none(),
         "scenario 5: wrong principal query must map to None"
@@ -171,7 +176,8 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         router_principal(),
         expected_request_id(1),
-        &deployment_id(),    );
+        &deployment_id(),
+    );
     assert!(
         view.is_some(),
         "scenario 6: router query must return Some(view)"
@@ -182,7 +188,11 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         expected_request_id(1),
         "scenario 6 request_id"
     );
-    assert_eq!(view.deployment_id, deployment_id(), "scenario 6 deployment_id");
+    assert_eq!(
+        view.deployment_id,
+        deployment_id(),
+        "scenario 6 deployment_id"
+    );
     assert_eq!(view.state_name, "Reserved", "scenario 6 state_name");
 }
 

@@ -142,6 +142,19 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
     fn get(&self, id: VertexId) -> V;
     fn set(&self, id: VertexId, item: &V);
 
+    /// Prepare an existing-row write without lazy encoding, offset calculation or grow.
+    /// Accessors without that writer capability deliberately reject.
+    fn prepare_set(
+        &self,
+        _: VertexId,
+        _: &V,
+    ) -> Result<super::vertex::PreparedVertexWrite<'_, V>, LaraOperationError>
+    where
+        Self: Sized,
+    {
+        Err(LaraOperationError::CollectAllocationOverflow)
+    }
+
     /// Graph vertex used for per-leaf overflow log addressing and PMA bumps.
     ///
     /// Synthetic accessors (for example [`crate::labeled::access::LabelEdgeSpanAccess`])

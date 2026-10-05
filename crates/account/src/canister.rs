@@ -221,7 +221,6 @@ async fn send_issuance_request(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{

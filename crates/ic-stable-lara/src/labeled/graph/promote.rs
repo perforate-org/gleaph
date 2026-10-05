@@ -427,21 +427,16 @@ pub(super) fn promote_bypass_with_edge<E: CsrEdgeTombstone, M: Memory>(
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     transcribe_and_publish_tree(graph, vid, source, Some(edge), |target| {
         let new_alloc = super::compact::combined_span_region_len(&target);
-        let mut plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
+        let plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
             graph.vertices(),
             vid,
             target,
             new_alloc,
         )?;
-        graph
-            .buckets()
-            .reserve_promote_bypass_to_bucket_mode(&mut plan)?;
-        // Reservation is the last recoverable failure. Publish the final tree directly,
-        // never an intermediate bucket descriptor referring to the original run.
-        graph
-            .buckets()
-            .commit_promote_bypass_to_bucket_mode(graph.vertices(), plan)
-            .expect("reserved bypass publication");
+        let mut preparation = plan.reserve()?;
+        // Ready admission is the last recoverable failure. Publish the final tree
+        // through the same segment publisher, not an intermediate run descriptor.
+        preparation.ready()?.publish();
         graph
             .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
             .expect("preflighted bucket segment");
@@ -906,7 +901,7 @@ pub mod tests {
                 .expect("read_payload");
             for in_block_slot in 0..BLOCK_B as u32 {
                 let slot_idx = block_idx * BLOCK_B as u32 + in_block_slot;
-                let expected = (slot_idx as u32).wrapping_add(100);
+                let expected = slot_idx.wrapping_add(100);
                 let got = u32::from_le_bytes(
                     buf[(in_block_slot as usize) * 4..(in_block_slot as usize) * 4 + 4]
                         .try_into()

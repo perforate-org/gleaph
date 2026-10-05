@@ -28,7 +28,10 @@
 
 use crate::{
     GrowFailed,
-    lara::reserved::{region_is_zero, write_zeroes},
+    lara::{
+        operation_error::LaraOperationError,
+        reserved::{region_is_zero, write_zeroes},
+    },
     read_u64, safe_write,
     traits::CsrEdge,
     types::Address,
@@ -106,7 +109,45 @@ pub struct SegmentEdgeCounts {
     pub total: i64,
 }
 
+pub(crate) enum PhysicalCountProjection {
+    VertexSpan { old: u32, new: u32 },
+    LeafBlock(u64),
+}
+
+pub(crate) struct PreparedPhysicalCounts<'a, E: CsrEdge, M: Memory> {
+    owner: &'a SegmentEdgeCountsStore<E, M>,
+    index: u64,
+    source_len: u64,
+    source: SegmentEdgeCounts,
+    offset: u64,
+    bytes: [u8; 16],
+}
+
+impl<E: CsrEdge, M: Memory> PreparedPhysicalCounts<'_, E, M> {
+    pub(crate) fn validate_source(&self) -> bool {
+        self.owner
+            .physical_source_matches(self.index, self.source_len, self.source)
+    }
+
+    pub(crate) fn write(&self) {
+        self.owner.memory.write(self.offset, &self.bytes);
+    }
+}
+
 impl SegmentEdgeCounts {
+    pub(crate) fn checked_delta(self, actual: i64, total: i64) -> Result<Self, LaraOperationError> {
+        Ok(Self {
+            actual: self
+                .actual
+                .checked_add(actual)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+            total: self
+                .total
+                .checked_add(total)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+        })
+    }
+
     #[inline]
     fn as_le_bytes(&self) -> [u8; 16] {
         let mut b = [0u8; 16];
@@ -247,6 +288,62 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
     pub fn get(&self, index: u64) -> SegmentEdgeCounts {
         assert!(index < self.len());
         Self::read_entry(&self.memory, index)
+    }
+
+    pub(crate) fn physical_source_matches(
+        &self,
+        index: u64,
+        len: u64,
+        row: SegmentEdgeCounts,
+    ) -> bool {
+        self.len() == len
+            && read_u64(&self.memory, Address::from(LEN_OFFSET)) == len
+            && index < len
+            && self.get(index) == row
+    }
+
+    pub(crate) fn prepare_physical_counts(
+        &self,
+        index: u64,
+        projection: PhysicalCountProjection,
+    ) -> Result<PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+        if index >= self.len() {
+            return Err(LaraOperationError::SegmentCountsTreeTooSmall);
+        }
+        let source = self.get(index);
+        let final_row = match projection {
+            PhysicalCountProjection::VertexSpan { old, new } => {
+                source.checked_delta(0, i64::from(new) - i64::from(old))?
+            }
+            PhysicalCountProjection::LeafBlock(len) => SegmentEdgeCounts {
+                actual: source.actual,
+                total: i64::try_from(len)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+            },
+        };
+        let offset = index
+            .checked_mul(ENTRY_BYTES)
+            .and_then(|n| n.checked_add(DATA_OFFSET))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let end = offset
+            .checked_add(ENTRY_BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if self
+            .memory
+            .size()
+            .checked_mul(crate::WASM_PAGE_SIZE)
+            .is_none_or(|backed| end > backed)
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        Ok(PreparedPhysicalCounts {
+            owner: self,
+            index,
+            source_len: self.len(),
+            source,
+            offset,
+            bytes: final_row.as_le_bytes(),
+        })
     }
 
     /// Iterator over all entries in index order (length is fixed when [`Self::iter`] is called).

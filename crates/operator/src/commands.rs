@@ -118,9 +118,7 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         Command::Canister(CanisterCommand::Install(args)) => {
             run_canister_install(connection, args).await
         }
-        Command::Grant(GrantCommand::Upsert(args)) => {
-            run_grant_upsert(connection, args).await
-        }
+        Command::Grant(GrantCommand::Upsert(args)) => run_grant_upsert(connection, args).await,
         Command::Audit(AuditCommand::History) => run_audit_history(connection).await,
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
         // so it uses the connection's network/identity but never `--provision`.
@@ -380,9 +378,7 @@ async fn run_grant_upsert(
         .await??;
     println!(
         "grant upserted: deployment={:?} action={:?} timestamp_ns={}",
-        entry.deployment_id,
-        entry.action,
-        entry.timestamp_ns
+        entry.deployment_id, entry.action, entry.timestamp_ns
     );
     Ok(())
 }

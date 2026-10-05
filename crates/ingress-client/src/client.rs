@@ -14,10 +14,10 @@ use gleaph_artifact_api::types::{
     ReleaseManifest, ReleasePublishArgs,
 };
 
-use crate::ingress::{IngressError, IcIngress};
+use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, InstallError, ReleaseInstallArgs,
-    ReleaseInstallResult, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    ArtifactAuditEntry, BootstrapAuthEntry, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
+    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].

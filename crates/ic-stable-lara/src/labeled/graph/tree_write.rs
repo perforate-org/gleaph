@@ -3293,8 +3293,8 @@ mod tests {
         .expect("collect");
         assert_eq!(collected.len(), 4097);
         // First 4096 entries are the pre-promote slab prefix (slot i = i + 100).
-        for i in 0..4096 {
-            assert_eq!(collected[i].target, (i as u32) + 100, "slot {i} mismatch");
+        for (i, edge) in collected[..4096].iter().enumerate() {
+            assert_eq!(edge.target, (i as u32) + 100, "slot {i} mismatch");
         }
         // Last entry is the new edge at slot 4096.
         assert_eq!(collected[4096].target, 8800);
@@ -5142,8 +5142,10 @@ mod tests {
             .edges()
             .read_slots_contiguous_bytes(post_bucket.edge_start(), &mut new_root_bytes);
         let new_root: Vec<u32> = new_root_bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
             .collect();
         assert_eq!(
             new_root.len(),
@@ -6158,7 +6160,7 @@ mod tests {
         let kp = 4096u32;
         let stored: u32 = (1u32 << 20) + 4096; // edge depth 2; K boundary slot
         let bucket_slot = 0u64;
-        let seed = |slot: u32| (slot & 0xff) as u32;
+        let seed = |slot: u32| slot & 0xff;
         // Build the synthetic depth-2 edge layout by hand.
         let edge_leaf_count = stored.div_ceil(1024); // 1028
         let edge_root_len = edge_leaf_count.div_ceil(1024); // 2
@@ -6267,7 +6269,6 @@ mod tests {
                 "post slot {slot}"
             );
         }
-        drop(post);
 
         // ---------- Part (b): new-edge-interior mint ----------
         let graph_b = inline_property_test_graph();

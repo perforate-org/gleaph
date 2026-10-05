@@ -5,7 +5,10 @@
 
 use crate::{
     GrowFailed,
-    lara::reserved::{region_is_zero, write_zeroes},
+    lara::{
+        operation_error::LaraOperationError,
+        reserved::{region_is_zero, write_zeroes},
+    },
     read_u64, safe_write,
     types::Address,
     write_u64,
@@ -111,6 +114,26 @@ pub struct SegmentSpanMetaStore<M: Memory> {
     _marker: PhantomData<SegmentSpanMeta>,
 }
 
+pub(crate) struct PreparedSegmentPhysicalStart<'a, M: Memory> {
+    owner: &'a SegmentSpanMetaStore<M>,
+    index: u64,
+    source_len: u64,
+    source: SegmentSpanMeta,
+    offset: u64,
+    bytes: [u8; 8],
+}
+
+impl<M: Memory> PreparedSegmentPhysicalStart<'_, M> {
+    pub(crate) fn validate_source(&self) -> bool {
+        self.owner
+            .physical_source_matches(self.index, self.source_len, self.source)
+    }
+
+    pub(crate) fn write(&self) {
+        self.owner.memory.write(self.offset, &self.bytes);
+    }
+}
+
 impl<M: Memory> SegmentSpanMetaStore<M> {
     /// Creates a fresh empty segment span metadata store.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
@@ -186,6 +209,51 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         SegmentSpanMeta {
             physical_start: read_u64(&self.memory, Address::from(Self::entry_offset(index))),
         }
+    }
+
+    pub(crate) fn physical_source_matches(
+        &self,
+        index: u64,
+        len: u64,
+        row: SegmentSpanMeta,
+    ) -> bool {
+        self.len() == len
+            && read_u64(&self.memory, Address::from(LEN_OFFSET)) == len
+            && index < len
+            && self.get(index) == row
+    }
+
+    pub(crate) fn prepare_physical_start(
+        &self,
+        index: u64,
+        new_start: u64,
+    ) -> Result<PreparedSegmentPhysicalStart<'_, M>, LaraOperationError> {
+        if index >= self.len() || !crate::slab_index::slot_exclusive_end_fits(new_start) {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        let offset = index
+            .checked_mul(ENTRY_SIZE)
+            .and_then(|n| n.checked_add(DATA_OFFSET))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let end = offset
+            .checked_add(ENTRY_SIZE)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if self
+            .memory
+            .size()
+            .checked_mul(crate::WASM_PAGE_SIZE)
+            .is_none_or(|backed| end > backed)
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        Ok(PreparedSegmentPhysicalStart {
+            owner: self,
+            index,
+            source_len: self.len(),
+            source: self.get(index),
+            offset,
+            bytes: new_start.to_le_bytes(),
+        })
     }
 
     /// Replaces the metadata row at `index`.

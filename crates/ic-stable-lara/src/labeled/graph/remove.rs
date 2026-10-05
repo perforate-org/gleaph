@@ -2032,7 +2032,7 @@ mod tests {
         assert!(TestEdge::read_from(&bucket.tiny_target(1).to_le_bytes()).is_deleted_slot());
         // Tombstone-inclusive positions preserved (slab contract).
         let mut seen = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(
                 vid,
                 label,
@@ -2043,6 +2043,7 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(flow, std::ops::ControlFlow::Continue(()));
         assert_eq!(seen, vec![(0, 10), (2, 12)]);
         // Inline delete touches no leaf counts (tiny edges occupy no slots);
         // only the global live-edge census decrements (-1).
@@ -2112,7 +2113,7 @@ mod tests {
         );
         // ...while survivors scan intact with tombstone-inclusive positions.
         let mut seen = Vec::new();
-        graph
+        let flow = graph
             .visit_edges(
                 VertexId::from(0),
                 label,
@@ -2123,6 +2124,7 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(flow, std::ops::ControlFlow::Continue(()));
         assert_eq!(
             seen,
             vec![(0, VertexId::from(10)), (2, VertexId::from(12)),]

@@ -1,6 +1,6 @@
 # LARA: Localized Adjacency Relocation Array
 
-**Status:** Partially Implemented — accepted storage model; grouped W2 first-write admission remains planned
+**Status:** Partially Implemented — allocator and bucket-segment ready publication implemented; W2 leaf/Graph first-write admission remains planned
 
 **Crate:** `ic-stable-lara`  
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/`)  
@@ -169,7 +169,7 @@ bucket-descriptor and inline-property-byte FreeSpan stores, without allocating n
 **Failure-atomic stable mutations.** Owners validate geometry and reserve backing capacity before publishing pending data. Batch admission additionally owns reversible bucket and allocator reservations:
 
 1. `EdgeStore::grow_segment_tree_to` reserves `counts_store` and `span_meta` before it migrates counts, appends span-meta rows, and writes the edge header (ADR 0097 removed the per-segment log capacity this step used to reserve).
-2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
+2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` prepares descriptors through `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and the shared `SegmentRewritePlan::reserve` / `SegmentRewritePreparation::ready` boundary. The ready publisher writes backed slab bytes, encoded vertex links and admitted descriptor-span retirement. Outer bypass-span retirement and PMA segment counts remain graph-owned; this descriptor guarantee does not certify their native failure atomicity.
 3. `LabeledLaraGraph::reserve_one_orientation_batch` validates the plan and reserves edge-slab
    `elem_capacity` and inline-property-byte spans for admitted runs. Runs requiring spill overflow
    return `SpillRunDeferred` before bucket/storage reservation; the scalar fallback owns spill append,
@@ -190,17 +190,20 @@ not an assumed exact page-growth event.
 
 **Commit boundary requirement:** after the first commit write, no recoverable `Memory::grow` or
 allocation error may remain. Physical capacity reserved during preflight is not canonical graph
-state and may be retained after rejection. This requirement is implemented at the paired
-free-span owner below; it is not yet a general native multi-store W2 admission guarantee.
+state and may be retained after rejection. The paired allocator and bucket-segment boundaries
+below implement this requirement. General native multi-store W2 admission remains planned.
 
-**Allocator paired publication (implemented).** `FreeSpanStore::replace_spans` is the single
-record/bin/by-start publication path used by release, whole removal, prefix split, prefix restore
-and exact pair replacement, including adjacent coalescing. Its private prospective edit validates
-record IDs/bin links, checked counters and range arithmetic, and the fully backed source-record
-extent. It prepares the final heap maximum without changing cache contents, reserves backing and
-scratch, preencodes every record/bin/header write, and obtains the existing paged map's complete
+**Allocator paired publication (implemented).** `FreeSpanPreparation::ready` and
+`PreparedFreeSpans::publish` are the single record/bin/by-start publication path used by scalar
+release, whole removal, prefix split, prefix restore, exact pair replacement and grouped segment
+replacement, including adjacent coalescing. Its private prospective edit validates record IDs/bin
+links, checked counters and range arithmetic, and the fully backed source-record extent. It
+prepares the final heap maximum without changing cache contents, reserves backing and scratch,
+preencodes every record/bin/header write, and obtains the existing paged map's complete
 `PreparedEdits` before the first canonical write. Publication performs only fully backed encoded
-writes and consuming index publication; its map borrow is released before cache installation.
+writes and consuming index publication. The prepared map loan is consumed before cache
+installation; installation uses prepared candidates without reading the guarded map. The owner
+preparation retains its `RefMut` for the synchronous window and releases it when discarded.
 Returned `Err` preserves original canonical bytes, spans, summaries and heap candidates/ready flag;
 backing or scratch capacity may remain. There is no IC rollback assumption.
 `OutOfMemory` and `IndexFull` are non-persistent allocator errors, not stored variants. The record
@@ -210,9 +213,102 @@ validation, so an adjacent remainder cannot hide an intervening free span. Conti
 encoding/decoding remains owned by the existing record type.
 [Native rejection/reopen evidence and allocator cost disposition](../evidence/adr0097-allocator-publication-preflight.md).
 
-**W2 scope still planned:** grouped bucket-segment/leaf geometry publication, outer allocation-origin
+**Bucket-segment publication (implemented; scoped validation and review complete).** `LabelBucketStore` now owns one
+current-source `SegmentRewritePlan` for normal compact/clear/insert/remove and bypass conversion.
+Grouped targets share one complete final segment image; repeated targets reject before reservation.
+Source rows, owner identity and descriptors are revalidated at reserve and ready admission.
+`label_bucket_descriptor_span` checks that every nonempty source live-plus-slack range ends within
+logical `elem_capacity`; planning, retirement preparation and in-place insertion share this check.
+Backing for live descriptors alone cannot admit slack that overlaps an appended destination.
+`FreeSpanStore::prepare_replacement` tentatively selects the actual free prefix or append origin
+and prepares every old descriptor-span retirement together. Discard consumes no canonical prefix
+and publishes no append accounting, so it requires neither a prefix restoration nor a suffix free
+entry. Selected prefixes are excluded from the final retirement image; old ranges retire only
+after all live vertex links have moved.
+
+The slab writer owns checked offsets/backing and the encoded header. `VertexStore::prepare_set`
+owns checked existing-row addresses and encoding; unsupported accessors reject before publication.
+`ReadySegmentRewrite::publish` consumes only backed slab bytes, prepared vertex writes and the
+allocator receipt, in that order, and returns `()` with no growth, encoding or recoverable error.
+The normal insertion slow path also prepares its return locator before publication. In-place
+insertion retains its separate no-relocation guard. Layout, leaf geometry, queue and width rules
+are unchanged. Scalar and grouped allocator writes share one ready/publish owner, reusing the
+encoded prospective image and retaining exact prior-value/index/cache admission. Native
+owner/allocator/crate tests pass, including independent grouped expectations and immediate peer
+checks.0393 closes strict LARA lib/test Clippy, native708 and workspace formatting; independent
+retained-test and diagnostic-cleanup review verdicts are APPROVE. Production behavior is unchanged
+by that cleanup. [Current validation evidence](../evidence/adr0097-bucket-segment-publication-preflight.md#validation-closure-0393).
+The residual scalar benchmark cost is explicitly user-accepted to retain necessary safety, not
+proved instruction-by-instruction necessary. [Performance decision and remaining functional gates](../evidence/adr0097-bucket-segment-publication-preflight.md#performance-acceptance).
+
+**W2 scope still planned:** grouped edge-leaf/tiny geometry publication, outer graph allocation-origin
 reservation/abort proof, queue ownership, Graph first-write admission and live width declaration
-are not established by this allocator-only boundary.
+are not established by these allocator/descriptor boundaries. [0394's geometry unit and stop proof](../evidence/adr0097-bucket-segment-publication-preflight.md#planned-tinyleaf-geometry-0394)
+plan one same-leaf tiny group or first pin, including virtual mate extents and aggregated leaf
+counts, before canonical writes. It is not implemented: native proofs reproduce capacity publication
+before typed count rejection and successful earlier-label promotion that strands older residents
+before the new first-non-tiny cover. [Plan0395](../../plans/0395-pinned-vertex-physical-layout-preparation.md)
+uses the existing compact resident-copy/position/commit owner as the required physical-layout
+prerequisite. Its revised, r5-approved draft boundary requires a non-publishable
+desired logical-shape component and one physical-only ready vertex/selected-leaf unit that owns
+all payload/header/row/count/pin/retirement admission before publication, including the existing
+adjacent-prefix expansion choice through the same guarded span preparation. That choice needs
+an owning guarded physical replacement entry at the current free-span owner, not a best-fit
+substitution. Earlier r4 findings required original-free subtraction and successful exact owned
+retirement; completed r5 approves that draft correction (`W/prerequisite-review-r5-completion.json`).
+Allocated0395 implements `FreeSpanStore::prepare_physical_replacement` with that original-source
+projection, one guard, shared prefix/coalescer image and ready source witnesses. Buffered
+`EdgeSlabStore::prepare_physical_image` now checks every supplied range/backing before payload
+writes, then installs one header; descriptor segment rewrites share it instead of a separate
+single-range constructor. The physical graph checkpoint adds a nonpublishing desired-shape copy
+component and one canonical `prepare_physical_layout` constructor. Ordinary rewrite, disjoint
+relocation and overlapping leaf slide share `ReadyPhysicalLayout::publish`: all participants admit
+payload/descriptor/vertex/pin/count/span images before the first write, then publish one header and
+count image before allocator retirement. For an unpinned overlapping vertex rewrite, compact excludes
+the entire final live destination cover, including reserved slack, from old candidate retirement;
+the allocator then independently subtracts original canonical-free holes. Current-block/adjacent
+leaf moves retain their block and do not retire it. Duplicate finalizers and per-vertex slide deltas
+are deleted. Leaf preparation shares one global source snapshot; raw overlapping sources are buffered before
+publication. Native715, strict Clippy and formatting pass with allocator34/bucket17 retained; all
+seven contract identities exist, including late rejection, changed source, cache/drop and bounded
+premature-write mutation assertions. Existing layout/index and strict retirement errors remain.
+The frozen64 r4 controls measured the new whole-leaf unit at slab1,530,362/tree1,577,466 instructions.
+I2's source-bound controls after the overlap-retirement and metadata-admission corrections are
+slab1,531,031/tree1,578,135, growth0; both remain below BEFORE1,826,569/1,842,268. The default-edge
+singleton also reserves fallibly; participant sorting allocates no scratch and explicitly preserves
+canonical ordinal order for equal destination anchors. Source collection, placement and retirement
+scratch reserve fallibly.
+A shared scratch-admission inlining correction reduces the new prefix
+control from1,054,418 to1,048,658, +20,730/+2.0167% versus BEFORE1,027,928. The user explicitly
+accepts that known trade-off for the shared implementation/safety contract, without claiming every
+residual instruction is indispensable. `physical-layout-user-cost-acceptance-u1.json` binds the
+separate decision to unchanged I2 source/Wasm/controls; it is not inherited0386 tolerance or a
+future-regression waiver. Native memory-boundary replay supplies read/write and retained-buffer
+observables without instrumenting those Wasm closures. Completed I2 implementation review is
+APPROVE IMPLEMENTATION ONLY; its original NEEDS USER DECISION cost verdict remains immutable.
+Final structural/preservation closure is bound by `physical-layout-final-closure-u1.json`. The unpinned left/right
+regression now proves exact retire coverage, count/pin/cache/run ownership, reopen and
+reuse of only freed slots within the existing fixture family (23 graphs/368 memories/14 reopens).
+See `physical-layout-implementation/physical-implementation-i2-fix-checklist.json` and the source-bound
+I2 Wasm/control receipts and `physical-implementation-review-i2-{report.md,completion.json}` under its
+evidence root; earlier publisher/r4 evidence remains immutable. Approval-status updates do not change
+the reviewed source/execution contract.
+0395's physical prerequisite is CLOSED.0394 stays STOPPED IMPLEMENTATION awaiting separate
+allocation after completed post0395 Q1 review: APPROVE DRAFT BOUNDARY, exit0/101.35s, ZERO tools,
+no required P0/P1/P2 (`geometry-copy-composition/rescope-review-q1-{report.md,completion.json}`). That draft reuses desired resident-copy admission under one
+source-bound logical geometry/header/count/pin/allocator unit and one surviving compact publisher;
+canonical physical-only factory restrictions and nonpublishable standalone copy components remain.
+Earlier-label scalar/current-caller success must now be proven with retained bytes moved into the
+unchanged descriptor-order cover rule, not converted into append-only rejection. Retained slab/
+combined-root scratch is accounted separately from four-target tiny transcription. First-pin remains
+CsrEdge-generic; live width and outer operations remain excluded. Baseline715/planned728 and the
+actual degree4→5 measurement correction belong to the separately reviewed0394 scope, not0395 approval.
+[GAP-LARA-TINY-GEOMETRY](../implementation-gaps.md#gap-lara-tiny-geometry--tiny-promotion-publishes-before-complete-geometry-admission)
+records exact failed receipts and restored diagnostic source. Tiny/logical geometry remains
+unchanged;0395 does change the physical-only copy/admission/publication paths.
+General relocation, complete insertion/materialization and paired orientation atomicity remain
+separate boundaries; neither the stopped tiny unit nor the completed physical-only prerequisite
+certifies those outer operations.
 
 **Commit order invariant** (from `lara.rs`): relocate and rewrite all live pointers first; **only then** `release_span` old physical ranges. Queries never observe free-span slots as live adjacency.
 

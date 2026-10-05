@@ -14,9 +14,8 @@
 //! the same surfaces.
 
 use crate::config::{self, LoadedConfig};
-use crate::progress::{bar, ProgressLine};
+use crate::progress::{ProgressLine, bar};
 use crate::remote::RemoteTransport;
-use std::io::IsTerminal;
 #[cfg(test)]
 use candid::Decode;
 use candid::Encode;
@@ -27,6 +26,7 @@ use ic_management_canister_types::{
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -1003,13 +1003,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
-    fn find_platform_workspace_detects_the_gleaph_workspace_and_ignores_ordinary_cargo_projects()
-    {
+    fn find_platform_workspace_detects_the_gleaph_workspace_and_ignores_ordinary_cargo_projects() {
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "gleaph-ws-detect-{}-{nonce}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("gleaph-ws-detect-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(root.join("crates/router")).expect("mkdir");
         std::fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("write");
         std::fs::write(root.join("crates/router/Cargo.toml"), "").expect("write");
@@ -1026,10 +1023,8 @@ mod tests {
         // ...an ordinary cargo project without the platform crates is NOT the workspace:
         // its owner is a consumer and must not be asked to build platform wasms.
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-        let plain = std::env::temp_dir().join(format!(
-            "gleaph-ws-plain-{}-{nonce}",
-            std::process::id()
-        ));
+        let plain =
+            std::env::temp_dir().join(format!("gleaph-ws-plain-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&plain).expect("mkdir");
         std::fs::write(plain.join("Cargo.toml"), "[package]\n").expect("write");
         assert_eq!(find_platform_workspace(&plain), None);
@@ -1045,10 +1040,8 @@ mod tests {
         // wasm discovery reads (target/pocket-ic-wasm under the workspace root), mirroring
         // the PocketIC suite's build (shared isolation, never the host target/).
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "gleaph-ws-build-{}-{nonce}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("gleaph-ws-build-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(root.join("crates/router")).expect("mkdir");
         // A build failure must be fail-closed: an empty workspace cannot build the canister
         // crates, so the runner surfaces cargo's failure instead of deploying stale wasm.

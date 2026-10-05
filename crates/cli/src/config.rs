@@ -739,10 +739,8 @@ canister = \"config-local\"
         // Nothing supplied: built-in defaults. The active session must NOT leak an identity
         // here, so the test runs against an isolated (empty) config home.
         let guard = crate::identity::test_support::lock_config_home();
-        let isolated = std::env::temp_dir().join(format!(
-            "gleaph-merge-remote-{}",
-            std::process::id()
-        ));
+        let isolated =
+            std::env::temp_dir().join(format!("gleaph-merge-remote-{}", std::process::id()));
         std::fs::create_dir_all(&isolated).expect("temp config home");
         let prior = std::env::var_os("GLEAPH_CONFIG_HOME");
         // SAFETY: single-threaded here — the config-home lock is held.

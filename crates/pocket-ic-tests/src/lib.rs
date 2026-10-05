@@ -332,8 +332,7 @@ pub fn install_provision_canister(
             provision,
             governance,
             "upsert_deployment_grant",
-            Encode!(&UpsertDeploymentGrantArgs { issuer: *issuer })
-                .expect("encode upsert args"),
+            Encode!(&UpsertDeploymentGrantArgs { issuer: *issuer }).expect("encode upsert args"),
         )
         .expect("seed deployment grant");
     }

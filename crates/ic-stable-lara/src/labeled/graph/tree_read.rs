@@ -1321,6 +1321,7 @@ mod tests {
     ///      tombstoned slot,
     ///   3. the slot 100 visitor sees a tombstone edge (target =
     ///      `EDGE_TOMBSTONE_SENTINEL`).
+    ///
     /// For tombstoned tree buckets, the live-only fix would have
     /// position 100 mapped to 100 in the live-ordinal space (skipping
     /// over the tombstone in the wrong direction).

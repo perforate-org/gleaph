@@ -463,10 +463,7 @@ fn bootstrap_tier_deploys_and_upgrades_provision_end_to_end() {
     let adapter = ManagementPicAdapter::new(&pic, gov());
 
     // --- deploy through the operator stack, including the real JSON init-args loader ---
-    let init_json = format!(
-        r#"{{"governance_principal":"{}"}}"#,
-        gov().to_text(),
-    );
+    let init_json = format!(r#"{{"governance_principal":"{}"}}"#, gov().to_text(),);
     let init_args = load_init_args(BootstrapKind::Provision, Some(&init_json), None)
         .expect("provision init args from operator mirror");
     let request = DeployRequest {

@@ -4,13 +4,29 @@ use crate::{GrowFailed, traits::CsrEdge};
 use ic_stable_structures::Memory;
 
 use super::EdgeStore;
-use super::free_span::FreeSpan;
+use super::free_span::{FreeSpan, FreeSpanPreparation, PhysicalSpanSelection};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn spans_overlap(a_start: u64, a_len: u64, b_start: u64, b_len: u64) -> bool {
         let a_end = a_start.saturating_add(a_len);
         let b_end = b_start.saturating_add(b_len);
         a_start < b_end && b_start < a_end
+    }
+
+    pub(crate) fn prepare_physical_span_edit(
+        &self,
+        selection: PhysicalSpanSelection,
+        covers: &[FreeSpan],
+    ) -> Result<Option<FreeSpanPreparation<'_, M>>, crate::lara::operation_error::LaraOperationError>
+    {
+        self.free_spans
+            .prepare_physical_replacement(selection, covers)
+            .map_err(|_| {
+                crate::lara::operation_error::LaraOperationError::RebalanceFailed(GrowFailed {
+                    current_size: 0,
+                    delta: 0,
+                })
+            })
     }
 
     pub(crate) fn allocate_span(&self, len: u64) -> Result<u64, GrowFailed> {

@@ -4318,3 +4318,279 @@ fn tiny_workload_skewed_mix() -> canbench_rs::BenchResult {
     black_box(graph.vertex_count());
     result
 }
+
+#[derive(Clone, Copy)]
+enum PhysicalCopyFixture {
+    Slab,
+    TreeRoots,
+}
+
+/// One pinned leaf,64 participants, with every source shifted five slots within its tile.
+/// A single memory manager gives sanity and measured graphs disjoint region IDs.
+fn physical_copy_fixture(
+    memories: &mut helper::BenchMemoryFactory,
+    shape: PhysicalCopyFixture,
+) -> LabeledLaraGraph<OneMTestEdge, helper::BenchMemory> {
+    use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
+    use crate::labeled::record::LabelBucket;
+
+    let graph = LabeledLaraGraph::new_with_segment_size(
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        crate::labeled::InitialCapacities::uniform(4096),
+        BucketLabelKey::from_raw(1),
+        64,
+    )
+    .expect("physical copy graph");
+    let label = BucketLabelKey::from_raw(2);
+    for ordinal in 0..64u32 {
+        let vid = VertexId::from(ordinal);
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        let origin = 128 + u64::from(ordinal) * 16 + 5;
+        let (bucket, physical) = match shape {
+            PhysicalCopyFixture::Slab => {
+                let targets = [
+                    ordinal * 16,
+                    u32::MAX,
+                    ordinal * 16 + 2,
+                    ordinal * 16 + 2,
+                    u32::MAX,
+                    ordinal * 16 + 5,
+                ];
+                let bytes: Vec<_> = targets
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect();
+                graph
+                    .edges()
+                    .write_slots_contiguous_bytes(origin, &bytes)
+                    .expect("prefix");
+                (LabelBucket::from_parts(label, origin, 4, 6), 6)
+            }
+            PhysicalCopyFixture::TreeRoots => {
+                let mut roots = [0u8; 32];
+                for index in 0..8u32 {
+                    let id = graph.ltb().mint().expect("block");
+                    assert_eq!(id, ordinal * 8 + index);
+                    graph.ltb().write_block_header(
+                        id,
+                        &BlockHeader {
+                            kind: if index < 4 {
+                                BlockKind::Edge
+                            } else {
+                                BlockKind::InlineProperty
+                            },
+                            bucket_label_key_wire: 2,
+                            owner_or_next_free: ordinal,
+                            ordinal: index % 4,
+                            level: 0,
+                            tombstone_count: 0,
+                            reserved: [0],
+                        },
+                    );
+                    let mut payload = [0u8; 4096];
+                    for (slot, bytes) in payload.chunks_exact_mut(4).enumerate() {
+                        let value = if index < 4 {
+                            ordinal * 4096 + index * 1024 + slot as u32
+                        } else {
+                            0x4000_0000 + ordinal * 4096 + (index - 4) * 1024 + slot as u32
+                        };
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                    graph.ltb().write_payload(id, &payload).expect("payload");
+                    roots[index as usize * 4..index as usize * 4 + 4]
+                        .copy_from_slice(&id.to_le_bytes());
+                }
+                graph
+                    .edges()
+                    .write_slots_contiguous_bytes(origin, &roots)
+                    .expect("roots");
+                (
+                    LabelBucket::from_parts_with_inline_property(
+                        label, origin, 4096, 4096, 4, 0, 0, -1, 0,
+                    )
+                    .with_tree_mode(true),
+                    8,
+                )
+            }
+        };
+        graph
+            .buckets()
+            .write_label_bucket_slot(u64::from(ordinal), bucket)
+            .expect("descriptor");
+        graph.vertices().set(
+            vid,
+            &LabeledVertex::from_parts(u64::from(ordinal), 1, physical, 0),
+        );
+    }
+    graph
+        .edges()
+        .set_segment_physical_start(crate::SegmentId::from(0), 128)
+        .expect("pin");
+    graph
+        .edges()
+        .bump_vertex_segment_counts(
+            VertexId::from(0),
+            match shape {
+                PhysicalCopyFixture::Slab => 256,
+                PhysicalCopyFixture::TreeRoots => 0,
+            },
+            1024,
+        )
+        .expect("counts");
+    graph.edges().set_num_edges(match shape {
+        PhysicalCopyFixture::Slab => 256,
+        PhysicalCopyFixture::TreeRoots => 64 * 4096,
+    });
+    graph
+}
+
+fn assert_physical_copy_fixture(
+    graph: &LabeledLaraGraph<OneMTestEdge, helper::BenchMemory>,
+    shape: PhysicalCopyFixture,
+) {
+    use crate::labeled::record::LabelBucket;
+    for ordinal in 0..64u32 {
+        let row = graph.vertices().get(VertexId::from(ordinal));
+        assert_eq!(row.base_slot_start(), u64::from(ordinal));
+        assert_eq!(row.degree(), 1);
+        // The existing fixed-point allocator rounds the slab's fractional
+        // weight down at every participant:63 tiles of15, then the79-slot tail.
+        let (origin, width) = match shape {
+            PhysicalCopyFixture::Slab => (
+                128 + u64::from(ordinal) * 15,
+                if ordinal == 63 { 79 } else { 15 },
+            ),
+            PhysicalCopyFixture::TreeRoots => (128 + u64::from(ordinal) * 16, 16),
+        };
+        assert_eq!(row.stored_slots, width);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(u64::from(ordinal))
+            .expect("row");
+        let expected = match shape {
+            PhysicalCopyFixture::Slab => {
+                LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, 4, 6)
+            }
+            PhysicalCopyFixture::TreeRoots => LabelBucket::from_parts_with_inline_property(
+                BucketLabelKey::from_raw(2),
+                origin,
+                4096,
+                4096,
+                4,
+                0,
+                0,
+                -1,
+                0,
+            )
+            .with_tree_mode(true),
+        };
+        assert_eq!(bucket, expected);
+        let mut bytes = [0u8; 32];
+        let count = match shape {
+            PhysicalCopyFixture::Slab => 24,
+            PhysicalCopyFixture::TreeRoots => 32,
+        };
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(origin, &mut bytes[..count]);
+        match shape {
+            PhysicalCopyFixture::Slab => {
+                let expected: Vec<_> = [
+                    ordinal * 16,
+                    u32::MAX,
+                    ordinal * 16 + 2,
+                    ordinal * 16 + 2,
+                    u32::MAX,
+                    ordinal * 16 + 5,
+                ]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+                assert_eq!(&bytes[..24], expected);
+            }
+            PhysicalCopyFixture::TreeRoots => {
+                for index in 0..8u32 {
+                    assert_eq!(
+                        &bytes[index as usize * 4..index as usize * 4 + 4],
+                        &(ordinal * 8 + index).to_le_bytes()
+                    );
+                    let mut payload = [0u8; 4096];
+                    graph
+                        .ltb()
+                        .read_payload(ordinal * 8 + index, &mut payload)
+                        .expect("retained payload");
+                    for (slot, bytes) in payload.chunks_exact(4).enumerate() {
+                        let expected = if index < 4 {
+                            ordinal * 4096 + index * 1024 + slot as u32
+                        } else {
+                            0x4000_0000 + ordinal * 4096 + (index - 4) * 1024 + slot as u32
+                        };
+                        assert_eq!(bytes, expected.to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
+    let counts = graph.edges().counts_store().get(1);
+    assert_eq!(counts.total, 1024);
+    assert_eq!(
+        counts.actual,
+        match shape {
+            PhysicalCopyFixture::Slab => 256,
+            PhysicalCopyFixture::TreeRoots => 0,
+        }
+    );
+    assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 128);
+    assert_eq!(
+        graph.edges().header().num_edges,
+        match shape {
+            PhysicalCopyFixture::Slab => 256,
+            PhysicalCopyFixture::TreeRoots => 64 * 4096,
+        }
+    );
+}
+
+fn bench_physical_copy(shape: PhysicalCopyFixture) -> canbench_rs::BenchResult {
+    let mut memories = helper::BenchMemoryFactory::new();
+    let sanity = physical_copy_fixture(&mut memories, shape);
+    sanity
+        .rebalance_labeled_leaf_weighted_slide(VertexId::from(0))
+        .expect("sanity slide");
+    assert_physical_copy_fixture(&sanity, shape);
+    drop(sanity);
+    let graph = physical_copy_fixture(&mut memories, shape);
+    let result = bench_fn(|| {
+        graph
+            .rebalance_labeled_leaf_weighted_slide(black_box(VertexId::from(0)))
+            .expect("slide");
+    });
+    assert_physical_copy_fixture(&graph, shape);
+    result
+}
+
+// Measurement queries only: extra trace-query exports exceed the benchmark
+// canister's aggregate method-name limit. The Rust fixture names stay descriptive.
+#[ic_cdk::query(name = "__canbench__vls64")]
+fn vertex_layout_copy_slab_64() -> canbench_rs::BenchResult {
+    bench_physical_copy(PhysicalCopyFixture::Slab)
+}
+
+#[ic_cdk::query(name = "__canbench__vlt64")]
+fn vertex_layout_copy_tree_roots_64() -> canbench_rs::BenchResult {
+    bench_physical_copy(PhysicalCopyFixture::TreeRoots)
+}
