@@ -140,14 +140,19 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
         let total = self.rows.iter().try_fold(0u64, |sum, row| {
             let live = u32::try_from(row.buckets.len())
                 .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-            LabelBucketStore::<M>::slack_for_physical_span(live, row.physical)?;
-            if row.vertex.is_default_edge_labeled()
-                || row
+            if row.vertex.is_default_edge_labeled() {
+                if row.physical != 0 || !row.buckets.is_empty() {
+                    return Err(LaraOperationError::CollectAllocationOverflow);
+                }
+            } else {
+                LabelBucketStore::<M>::slack_for_physical_span(live, row.physical)?;
+                if row
                     .buckets
                     .windows(2)
                     .any(|pair| pair[0].bucket_label_key() >= pair[1].bucket_label_key())
-            {
-                return Err(LaraOperationError::CollectAllocationOverflow);
+                {
+                    return Err(LaraOperationError::CollectAllocationOverflow);
+                }
             }
             sum.checked_add(u64::from(row.physical))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)
@@ -193,10 +198,13 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
         for row in self.rows {
             let live = u32::try_from(row.buckets.len())
                 .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-            let slack = LabelBucketStore::<M>::slack_for_physical_span(live, row.physical)?;
-            let vertex = row
-                .vertex
-                .try_with_bucket_row_and_slack(cursor, live, slack)?;
+            let vertex = if row.vertex.is_default_edge_labeled() {
+                row.vertex
+            } else {
+                let slack = LabelBucketStore::<M>::slack_for_physical_span(live, row.physical)?;
+                row.vertex
+                    .try_with_bucket_row_and_slack(cursor, live, slack)?
+            };
             let mut encoded_vertex = [0; LabeledVertex::BYTES];
             vertex.write_to(&mut encoded_vertex);
             if LabeledVertex::try_read_from(&encoded_vertex).ok() != Some(vertex) {
@@ -1037,6 +1045,31 @@ impl<M: Memory> LabelBucketStore<M> {
         let mut preparation = plan.reserve()?;
         preparation.ready()?.publish();
         Ok(true)
+    }
+
+    /// Retire a normal descriptor row and publish its final bypass through the segment owner.
+    pub(crate) fn plan_enable_default_edge_bypass<'a, V>(
+        &'a self,
+        vertices: &'a V,
+        vid: VertexId,
+        final_row: LabeledVertex,
+    ) -> Result<SegmentRewritePlan<'a, V, M>, LaraOperationError>
+    where
+        V: VertexAccess<LabeledVertex>,
+    {
+        if !final_row.is_default_edge_labeled() {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        let mut plan = self.plan_segment_rewrite(vertices, &[vid])?;
+        let row = plan
+            .rows
+            .iter_mut()
+            .find(|row| row.ordinal == u32::from(vid))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        row.vertex = final_row;
+        row.buckets.clear();
+        row.physical = 0;
+        Ok(plan)
     }
 
     /// Build a bypass conversion using the same grouped segment source and publisher.

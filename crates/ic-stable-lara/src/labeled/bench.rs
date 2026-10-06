@@ -4003,42 +4003,108 @@ fn tiny_scan_d2_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// G3-adjacent: tiny promotion (degree 3 -> 4: span reserve + transcribe).
-#[bench(raw)]
-fn tiny_promote_d3_1024() -> canbench_rs::BenchResult {
+fn tiny_promotion_fixture_1024() -> LabeledLaraGraph<OneMTestEdge, crate::VectorMemory> {
     let graph = bench_graph_4byte(8192);
     let label = BucketLabelKey::from_raw(2);
     for v in 0..helper::MEDIUM_N as u32 {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
-        for k in 0..3u32 {
+        for k in 0..4u32 {
             graph
                 .insert_edge(
                     VertexId::from(v),
                     label,
                     OneMTestEdge {
-                        target: v.wrapping_add(k * 1_000_000),
+                        target: v + k * 1_000_000,
                     },
                     EdgePlacementPolicy::Insertion,
                 )
                 .expect("seed");
         }
+        let vertex = graph.vertices().get(VertexId::from(v));
+        let bucket = match graph
+            .find_bucket(VertexId::from(v), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("expected seeded tiny bucket"),
+        };
+        assert!(bucket.is_tiny_mode());
+        assert_eq!(bucket.degree(), 4);
     }
-    bench_fn(|| {
-        for v in 0..helper::MEDIUM_N as u32 {
-            let v = black_box(v);
-            graph
-                .insert_edge(
-                    VertexId::from(v),
-                    label,
-                    OneMTestEdge {
-                        target: v.wrapping_add(3_000_000),
-                    },
-                    EdgePlacementPolicy::Insertion,
-                )
-                .expect("promote");
-        }
-        black_box(graph.vertex_count());
-    })
+    graph
+}
+
+fn tiny_promotion_fifth_1024(graph: &LabeledLaraGraph<OneMTestEdge, crate::VectorMemory>) {
+    let label = BucketLabelKey::from_raw(2);
+    for v in 0..helper::MEDIUM_N as u32 {
+        let v = black_box(v);
+        graph
+            .insert_edge(
+                VertexId::from(v),
+                label,
+                OneMTestEdge {
+                    target: v + 4_000_000,
+                },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("promote");
+    }
+    black_box(graph.vertex_count());
+}
+
+/// Tiny degree4→5 promotion through real insertion, including its pressure retries.
+#[bench(raw)]
+fn tiny_promote_d4_1024() -> canbench_rs::BenchResult {
+    // A separate identical run proves the path outside measurement.
+    let sanity = tiny_promotion_fixture_1024();
+    tiny_promotion_fifth_1024(&sanity);
+    let label = BucketLabelKey::from_raw(2);
+    assert_eq!(sanity.edges().header().num_edges, 5 * helper::MEDIUM_N);
+    for v in 0..helper::MEDIUM_N as u32 {
+        let vid = VertexId::from(v);
+        let vertex = sanity.vertices().get(vid);
+        let bucket = match sanity.find_bucket(vid, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("expected promoted bucket"),
+        };
+        assert!(!bucket.is_tiny_mode() && !bucket.is_tree_mode());
+        assert_eq!(bucket.degree(), 5);
+        assert_eq!(bucket.stored_slots(), 5);
+        let mut targets = Vec::new();
+        assert!(
+            sanity
+                .visit_edges(vid, label, OutEdgeOrder::Ascending, |_slot, edge| {
+                    targets.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                })
+                .expect("sanity targets")
+                .is_continue()
+        );
+        assert_eq!(
+            targets,
+            (0..5).map(|k| v + k * 1_000_000).collect::<Vec<_>>()
+        );
+        let (start, len) = sanity
+            .labeled_leaf_physical_range(vid)
+            .unwrap()
+            .expect("promotion pin");
+        let cover_end = bucket.edge_start() + u64::from(vertex.stored_slots);
+        assert!(
+            bucket.edge_start() >= start
+                && bucket.edge_start() + 5 <= cover_end
+                && cover_end <= start + len
+        );
+        let counts = sanity.edges().counts_store().get(
+            sanity
+                .edges()
+                .vertex_segment_counts_index(vid)
+                .expect("sanity count index"),
+        );
+        assert_eq!(counts.actual, 80);
+        assert_eq!(counts.total, i64::try_from(len).expect("pin total"));
+    }
+    let graph = tiny_promotion_fixture_1024();
+    bench_fn(|| tiny_promotion_fifth_1024(&graph))
 }
 
 /// G3 workload control (ADR 0096 D2 input): 1024 bare vertices, then ALL 4096

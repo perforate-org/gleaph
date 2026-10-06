@@ -15,12 +15,43 @@ use super::{
 use crate::VertexId;
 use crate::labeled::{
     bucket_label_key::BucketLabelKey,
+    bucket_store::{PreparedExistingBucketRow, ReadySegmentRewrite, SegmentRewritePreparation},
     ltb_raw_block_store::BLOCK_PAYLOAD_BYTES,
-    record::LabelBucket,
+    record::{LabelBucket, LabeledVertex},
     tree_csr::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
 };
-use crate::lara::operation_error::LaraOperationError;
+use crate::lara::operation_error::{LaraOperationError, VertexAccess};
 use crate::traits::{CsrEdgeTombstone, CsrVertex};
+
+// The existing writers differ in ownership, not in tree source admission. Keep
+// their preparations alive until both storage-ready and tree witnesses pass.
+enum TreePublication<'a, V, M: Memory> {
+    Existing(PreparedExistingBucketRow<'a, M>),
+    Segment(SegmentRewritePreparation<'a, V, M>),
+}
+
+enum ReadyTreePublication<'a, M: Memory> {
+    Existing(&'a PreparedExistingBucketRow<'a, M>),
+    Segment(ReadySegmentRewrite<'a, M>),
+}
+
+impl<V: VertexAccess<LabeledVertex>, M: Memory> TreePublication<'_, V, M> {
+    fn ready(&mut self) -> Result<ReadyTreePublication<'_, M>, LaraOperationError> {
+        match self {
+            Self::Existing(image) => Ok(ReadyTreePublication::Existing(image)),
+            Self::Segment(preparation) => preparation.ready().map(ReadyTreePublication::Segment),
+        }
+    }
+}
+
+impl<M: Memory> ReadyTreePublication<'_, M> {
+    fn publish(self) {
+        match self {
+            Self::Existing(image) => image.write(),
+            Self::Segment(ready) => ready.publish(),
+        }
+    }
+}
 
 /// Promote an admitted bucket without compacting its source edge or value plane.
 /// Native tree tombstones preserve the original high-water slot extent; sidecars
@@ -92,37 +123,33 @@ where
     M: Memory,
 {
     let vertex = graph.vertices().get(vid);
-    let BucketSearch::Found {
-        slot: bucket_slot,
-        bucket,
-    } = graph.find_bucket(vid, &vertex, label)?
-    else {
+    let BucketSearch::Found { bucket, .. } = graph.find_bucket(vid, &vertex, label)? else {
         return Err(LabeledOperationError::BucketNotFound { vid, label });
     };
     if bucket.is_tree_mode() {
         return Ok(());
     }
-    transcribe_and_publish_tree(graph, vid, bucket, None, |target| {
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, target)?;
-        Ok(())
-    })
+    transcribe_and_publish_tree(graph, vid, bucket, None)
 }
 
-/// All target allocations stay owned here until the caller's prepared publication succeeds.
-/// The optional edge is an insertion committed together with bypass-to-tree conversion.
+/// All target allocations stay owned here until storage preparation and final tree
+/// source admission succeed. The optional edge commits with bypass-to-tree conversion.
 fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     bucket: LabelBucket,
     pending: Option<&E>,
-    publish: impl FnOnce(LabelBucket) -> Result<(), LabeledOperationError>,
 ) -> Result<(), LabeledOperationError> {
     use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
     use crate::traits::NO_SPILL_RUN;
     use std::ops::ControlFlow;
     let label = bucket.bucket_label_key();
+    let next_count = graph
+        .edges()
+        .header()
+        .num_edges
+        .checked_add(u64::from(pending.is_some()))
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     let edge_run = if bucket.edge_spill_run() == NO_SPILL_RUN {
         None
     } else {
@@ -202,12 +229,42 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
         .with_tree_mode(true)
         .with_tree_mode_property_depth(property_depth);
-    graph.edges().vertex_segment_counts_index(vid)?;
+    let source = super::compact::PhysicalLayoutSource::capture(graph, vid)?;
+    let canonical = super::compact::CanonicalPhysicalVertex::capture(graph, vid)?;
+    let old_alloc = if canonical.vertex.is_default_edge_labeled() {
+        0
+    } else {
+        canonical.vertex.stored_slots
+    };
+    let new_alloc = if canonical.vertex.is_default_edge_labeled() {
+        combined_len
+    } else {
+        old_alloc
+    };
+    let counts = graph.edges().prepare_vertex_span_counts(
+        vid,
+        old_alloc,
+        new_alloc,
+        -i64::from(bucket.degree()),
+    )?;
+    let sheltered_prefix = super::tree_write::pre_promotion_span_inside_pinned_leaf(
+        graph,
+        vid,
+        bucket.edge_start(),
+        prefix,
+    )?;
+    source.validate()?;
+    canonical.validate(graph)?;
     graph.edges().free_span_store().reserve_for_releases(2)?;
     graph.values().reserve_retired_byte_spans(1)?;
     let new_start = graph.edges().allocate_span(u64::from(combined_len))?;
+    let allocated_header = graph.edges().header();
     let mut allocated_blocks = Vec::new();
     let prepared = (|| -> Result<(), LabeledOperationError> {
+        let source = source.bind_allocated_header(allocated_header)?;
+        crate::slab_index::checked_add_slot_exclusive_end(new_start, u64::from(combined_len))
+            .filter(|end| *end <= allocated_header.elem_capacity)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let base_header = BlockHeader {
             kind: BlockKind::Edge,
             bucket_label_key_wire: 0,
@@ -361,7 +418,44 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                 .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
         }
-        publish(template.with_base_slot_start(new_start))?;
+        let target = template.with_base_slot_start(new_start);
+        let mut publication = if canonical.vertex.is_default_edge_labeled() {
+            let plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
+                graph.vertices(),
+                vid,
+                target,
+                new_alloc,
+            )?;
+            TreePublication::Segment(plan.reserve()?)
+        } else {
+            let mut desired = graph.read_vertex_label_buckets(&canonical.vertex)?;
+            let row = desired
+                .iter_mut()
+                .find(|row| row.bucket_label_key() == label)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            *row = target;
+            TreePublication::Existing(
+                graph
+                    .buckets()
+                    .prepare_existing_row_image(canonical.vertex, &desired)?,
+            )
+        };
+        let ready = publication.ready()?;
+        source.validate()?;
+        canonical.validate(graph)?;
+        if !counts.validate_source() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        ready.publish();
+        counts.write();
+        if canonical.vertex.is_default_edge_labeled() {
+            graph
+                .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+                .expect("admitted bucket segment");
+        }
+        if pending.is_some() {
+            graph.edges().set_num_edges(next_count);
+        }
         Ok(())
     })();
     if let Err(error) = prepared {
@@ -378,10 +472,6 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         return Err(error);
     }
     // No recoverable errors after publication. Only old allocations are retired here.
-    graph
-        .edges()
-        .bump_vertex_segment_counts(vid, -i64::from(bucket.degree), 0)
-        .expect("promotion counts were preflighted");
     if let Some(run) = edge_run {
         graph
             .edges()
@@ -394,12 +484,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             .spill_release(run)
             .expect("source values run was validated");
     }
-    if !super::tree_write::pre_promotion_span_inside_pinned_leaf(
-        graph,
-        vid,
-        bucket.edge_start(),
-        prefix,
-    ) {
+    if !sheltered_prefix {
         graph
             .edges()
             .release_span(bucket.edge_start(), u64::from(prefix))
@@ -419,34 +504,7 @@ pub(super) fn promote_bypass_with_edge<E: CsrEdgeTombstone, M: Memory>(
 ) -> Result<(), LabeledOperationError> {
     let vertex = graph.vertices().get(vid);
     let source = graph.bypass_bucket_view(&vertex)?;
-    let next_count = graph
-        .edges()
-        .header()
-        .num_edges
-        .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-    transcribe_and_publish_tree(graph, vid, source, Some(edge), |target| {
-        let new_alloc = super::compact::combined_span_region_len(&target);
-        let plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
-            graph.vertices(),
-            vid,
-            target,
-            new_alloc,
-        )?;
-        let mut preparation = plan.reserve()?;
-        // Ready admission is the last recoverable failure. Publish the final tree
-        // through the same segment publisher, not an intermediate run descriptor.
-        preparation.ready()?.publish();
-        graph
-            .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
-            .expect("preflighted bucket segment");
-        graph
-            .edges()
-            .bump_vertex_segment_counts(vid, 0, i64::from(new_alloc))
-            .expect("preflighted counts row");
-        graph.edges().set_num_edges(next_count);
-        Ok(())
-    })
+    transcribe_and_publish_tree(graph, vid, source, Some(edge))
 }
 
 /// Plan 0321 Step 1: `pub(crate)` test-only wrapper that lets

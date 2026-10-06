@@ -148,23 +148,34 @@ where
         if !vertex.is_default_edge_labeled() {
             return Ok(());
         }
-        let stored_slots = vertex.stored_slots;
-        let logical_degree = vertex.degree;
         let bucket = self.bypass_bucket_view(&vertex)?;
+        let prefix = bucket.stored_slots();
         let run = vertex.bypass_spill_run();
-        if logical_degree == 0 && run == crate::traits::NO_SPILL_RUN {
+        let source = super::compact::PhysicalLayoutSource::capture(self, src)?;
+        let counts = self.edges.prepare_vertex_span_counts(src, 0, prefix, 0)?;
+        source.validate()?;
+        if prefix == 0 && run == crate::traits::NO_SPILL_RUN {
             // Clearing default-label bypass must also reset locator fields so the row is a
             // coherent empty *normal* bucket row (`base_slot_start` is LabelBucket slab space).
             let cleared = vertex
                 .with_default_edge_labeled(false)
                 .with_bucket_row_and_slack(0, 0, 0)
-                .with_stored_slots(0);
-            self.set_labeled_vertex(src, cleared)?;
+                .with_stored_slots(0)
+                .without_bypass_spill_run();
+            let write = self.vertices.prepare_set(src, &cleared)?;
+            source.validate()?;
+            if self.vertices.get(src) != vertex || !counts.validate_source() {
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            }
+            write.write();
+            counts.write();
+            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+                .expect("admitted empty mode handoff has a valid bucket segment");
             return Ok(());
         }
 
         // Plan the segment-bucket rewrite without allocating or mutating anything.
-        let new_alloc = self.edges.header().segment_size.max(1).max(stored_slots);
+        let new_alloc = prefix;
         let plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
@@ -172,21 +183,17 @@ where
             new_alloc,
         )?;
 
-        // Verify the segment-count tree already covers `src` before any
-        // fallible allocation. This is the only remaining check inside
-        // `bump_vertex_segment_counts` and it cannot grow the store, so checking
-        // it here keeps the subsequent reserve and commit infallible.
-        self.edges.vertex_segment_counts_index(src)?;
-
         // Source fields, destination bytes and every retirement index edit are
         // admitted before the segment publisher can write a descriptor or row.
         let mut preparation = plan.reserve()?;
+        source.validate()?;
+        if !counts.validate_source() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
         preparation.ready()?.publish();
+        counts.write();
         self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
-            .expect("commit: cache invalidation must succeed after preflight");
-        self.edges
-            .bump_vertex_segment_counts(src, 0, i64::from(new_alloc))
-            .expect("commit: segment count bump must succeed after preflight");
+            .expect("admitted mode handoff has a valid bucket segment");
         Ok(())
     }
 }
@@ -645,6 +652,11 @@ mod tests {
         assert!(vertex.is_default_edge_labeled());
         assert_eq!(vertex.degree(), 0);
         assert_eq!(vertex.stored_degree(), 1);
+        let source_start = vertex.base_slot_start();
+        let mut source_bytes = [0; 4];
+        graph
+            .edges()
+            .read_slot_bytes(source_start, &mut source_bytes);
 
         graph
             .insert_edge(
@@ -657,8 +669,29 @@ mod tests {
 
         assert_eq!(
             graph.out_edge_label_ids(VertexId::from(0)).unwrap(),
-            vec![road]
+            vec![road, default]
         );
+        // Empty live adjacency still owns an initialized tombstone prefix.
+        let normal = graph.vertices().get(VertexId::from(0));
+        let BucketSearch::Found { bucket, .. } = graph
+            .find_bucket(VertexId::from(0), &normal, default)
+            .unwrap()
+        else {
+            panic!("owned zero-live prefix descriptor missing");
+        };
+        assert_eq!(
+            (
+                bucket.degree(),
+                bucket.stored_slots(),
+                bucket.edge_spill_run()
+            ),
+            (0, 1, crate::traits::NO_SPILL_RUN)
+        );
+        let mut after_bytes = [0; 4];
+        graph
+            .edges()
+            .read_slot_bytes(bucket.edge_start(), &mut after_bytes);
+        assert_eq!(after_bytes, source_bytes);
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![TestEdge { target: 20 }]

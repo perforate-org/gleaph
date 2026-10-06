@@ -2022,29 +2022,26 @@ pub(crate) fn pre_promotion_span_inside_pinned_leaf<E, M>(
     vid: VertexId,
     edge_start: u64,
     len: u32,
-) -> bool
+) -> Result<bool, LabeledOperationError>
 where
     E: CsrEdge,
     M: Memory,
 {
     if len == 0 {
-        return false;
+        return Ok(false);
     }
     // The labeled PMA keeps a single physical range per vertex (the
     // leaf-block anchor). If a leaf is pinned for `vid`, the pre-promotion
     // span that lives entirely inside that anchor is pin-sheltered: leaf
     // compaction reclaims the subrange when the leaf is recycled.
-    let Some((physical_start, physical_len)) = graph.labeled_leaf_physical_range(vid) else {
-        return false;
+    let Some((physical_start, physical_len)) = graph.labeled_leaf_physical_range(vid)? else {
+        return Ok(false);
     };
     let span_start = edge_start;
-    let span_end = edge_start
-        .checked_add(u64::from(len))
-        .expect("pre_promotion_span overflows u64");
-    let physical_end = physical_start
-        .checked_add(physical_len)
-        .expect("physical range overflows u64");
-    span_start >= physical_start && span_end <= physical_end
+    let span_end = crate::slab_index::checked_add_slot_exclusive_end(edge_start, u64::from(len))
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    let physical_end = physical_start + physical_len;
+    Ok(span_start >= physical_start && span_end <= physical_end)
 }
 
 /// Translate an LTB grow failure into a `LabeledOperationError`.
@@ -4274,7 +4271,7 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         // No leaf is pinned for vid 0 in a fresh test graph.
-        let result = super::pre_promotion_span_inside_pinned_leaf(&graph, vid, 0, 4096);
+        let result = super::pre_promotion_span_inside_pinned_leaf(&graph, vid, 0, 4096).unwrap();
         assert!(!result, "fresh graph has no pinned leaf");
     }
 

@@ -110,7 +110,8 @@ pub struct SegmentEdgeCounts {
 }
 
 pub(crate) enum PhysicalCountProjection {
-    VertexSpan { old: u32, new: u32 },
+    VertexSpan { old: u32, new: u32, actual: i64 },
+    RetainAssignment { actual: i64 },
     LeafBlock(u64),
 }
 
@@ -120,7 +121,7 @@ pub(crate) struct PreparedPhysicalCounts<'a, E: CsrEdge, M: Memory> {
     source_len: u64,
     source: SegmentEdgeCounts,
     offset: u64,
-    bytes: [u8; 16],
+    bytes: Option<[u8; 16]>,
 }
 
 impl<E: CsrEdge, M: Memory> PreparedPhysicalCounts<'_, E, M> {
@@ -129,8 +130,12 @@ impl<E: CsrEdge, M: Memory> PreparedPhysicalCounts<'_, E, M> {
             .physical_source_matches(self.index, self.source_len, self.source)
     }
 
-    pub(crate) fn write(&self) {
-        self.owner.memory.write(self.offset, &self.bytes);
+    pub(crate) fn write(&self) -> bool {
+        let Some(bytes) = &self.bytes else {
+            return false;
+        };
+        self.owner.memory.write(self.offset, bytes);
+        true
     }
 }
 
@@ -290,37 +295,10 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         Self::read_entry(&self.memory, index)
     }
 
-    pub(crate) fn physical_source_matches(
-        &self,
-        index: u64,
-        len: u64,
-        row: SegmentEdgeCounts,
-    ) -> bool {
-        self.len() == len
-            && read_u64(&self.memory, Address::from(LEN_OFFSET)) == len
-            && index < len
-            && self.get(index) == row
-    }
-
-    pub(crate) fn prepare_physical_counts(
-        &self,
-        index: u64,
-        projection: PhysicalCountProjection,
-    ) -> Result<PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+    fn checked_source(&self, index: u64) -> Result<(u64, SegmentEdgeCounts), LaraOperationError> {
         if index >= self.len() {
             return Err(LaraOperationError::SegmentCountsTreeTooSmall);
         }
-        let source = self.get(index);
-        let final_row = match projection {
-            PhysicalCountProjection::VertexSpan { old, new } => {
-                source.checked_delta(0, i64::from(new) - i64::from(old))?
-            }
-            PhysicalCountProjection::LeafBlock(len) => SegmentEdgeCounts {
-                actual: source.actual,
-                total: i64::try_from(len)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-            },
-        };
         let offset = index
             .checked_mul(ENTRY_BYTES)
             .and_then(|n| n.checked_add(DATA_OFFSET))
@@ -336,13 +314,58 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         {
             return Err(LaraOperationError::CollectAllocationOverflow);
         }
+        let mut bytes = [0; ENTRY_BYTES as usize];
+        self.memory.read(offset, &mut bytes);
+        Ok((offset, SegmentEdgeCounts::unpack_le(&bytes)))
+    }
+
+    pub(crate) fn checked_get(&self, index: u64) -> Result<SegmentEdgeCounts, LaraOperationError> {
+        self.checked_source(index).map(|(_, row)| row)
+    }
+
+    pub(crate) fn physical_source_matches(
+        &self,
+        index: u64,
+        len: u64,
+        row: SegmentEdgeCounts,
+    ) -> bool {
+        self.len() == len
+            && self.checked_get(index).is_ok_and(|current| current == row)
+            && read_u64(&self.memory, Address::from(LEN_OFFSET)) == len
+    }
+
+    pub(crate) fn prepare_physical_counts(
+        &self,
+        index: u64,
+        projection: PhysicalCountProjection,
+    ) -> Result<PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+        let (offset, source) = self.checked_source(index)?;
+        let bytes = match projection {
+            PhysicalCountProjection::RetainAssignment { actual: 0 } => None,
+            PhysicalCountProjection::RetainAssignment { actual } => {
+                Some(source.checked_delta(actual, 0)?.as_le_bytes())
+            }
+            PhysicalCountProjection::VertexSpan { old, new, actual } => Some(
+                source
+                    .checked_delta(actual, i64::from(new) - i64::from(old))?
+                    .as_le_bytes(),
+            ),
+            PhysicalCountProjection::LeafBlock(len) => Some(
+                SegmentEdgeCounts {
+                    actual: source.actual,
+                    total: i64::try_from(len)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                }
+                .as_le_bytes(),
+            ),
+        };
         Ok(PreparedPhysicalCounts {
             owner: self,
             index,
             source_len: self.len(),
             source,
             offset,
-            bytes: final_row.as_le_bytes(),
+            bytes,
         })
     }
 
@@ -538,6 +561,148 @@ mod tests {
     use crate::VectorMemory;
     use crate::test_support::{TestEdge, vector_memory};
     use ic_stable_structures::Memory;
+
+    #[test]
+    fn mode_footprint_arithmetic_rejects_before_publication() {
+        use super::{PhysicalCountProjection, SegmentEdgeCounts, SegmentEdgeCountsStore};
+        use crate::{lara::operation_error::LaraOperationError, test_support::CountMemory};
+
+        let memory = CountMemory::default();
+        let store = SegmentEdgeCountsStore::<TestEdge, _>::new(memory.clone()).unwrap();
+        store
+            .push(SegmentEdgeCounts {
+                actual: 7,
+                total: 11,
+            })
+            .unwrap();
+        for (source, actual_delta, old, new) in [
+            (
+                SegmentEdgeCounts {
+                    actual: i64::MAX,
+                    total: 19,
+                },
+                1,
+                0,
+                0,
+            ),
+            (
+                SegmentEdgeCounts {
+                    actual: i64::MIN,
+                    total: 23,
+                },
+                -1,
+                0,
+                0,
+            ),
+            (
+                SegmentEdgeCounts {
+                    actual: 17,
+                    total: i64::MAX,
+                },
+                0,
+                0,
+                1,
+            ),
+            (
+                SegmentEdgeCounts {
+                    actual: 29,
+                    total: i64::MIN,
+                },
+                0,
+                1,
+                0,
+            ),
+        ] {
+            store.set(0, &source);
+            let before = memory.inner.borrow().clone();
+            assert!(matches!(
+                source.checked_delta(actual_delta, i64::from(new) - i64::from(old)),
+                Err(LaraOperationError::CollectAllocationOverflow)
+            ));
+            assert!(matches!(
+                store.prepare_physical_counts(
+                    0,
+                    PhysicalCountProjection::VertexSpan {
+                        old,
+                        new,
+                        actual: actual_delta
+                    }
+                ),
+                Err(LaraOperationError::CollectAllocationOverflow)
+            ));
+            assert_eq!(*memory.inner.borrow(), before);
+            assert_eq!(store.get(0), source);
+        }
+
+        let source = SegmentEdgeCounts {
+            actual: 7,
+            total: 11,
+        };
+        store.set(0, &source);
+        let before = memory.inner.borrow().clone();
+        assert!(matches!(
+            store.prepare_physical_counts(
+                1,
+                PhysicalCountProjection::VertexSpan {
+                    old: 0,
+                    new: 0,
+                    actual: 0
+                }
+            ),
+            Err(LaraOperationError::SegmentCountsTreeTooSmall)
+        ));
+        assert_eq!(*memory.inner.borrow(), before);
+        let unbacked = crate::WASM_PAGE_SIZE / super::ENTRY_BYTES;
+        for index in [unbacked, u64::MAX - 1] {
+            store.set_len(index + 1);
+            let before = memory.inner.borrow().clone();
+            for (old, new) in [(0, 0), (0, 1), (1, 0)] {
+                memory.reads.set(0);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    store
+                        .prepare_physical_counts(
+                            index,
+                            PhysicalCountProjection::VertexSpan {
+                                old,
+                                new,
+                                actual: 0,
+                            },
+                        )
+                        .err()
+                }));
+                assert!(matches!(
+                    result.expect("count admission must reject an unbacked row before reading it"),
+                    Some(LaraOperationError::CollectAllocationOverflow)
+                ));
+                assert_eq!(memory.reads.get(), 0);
+                assert_eq!(*memory.inner.borrow(), before);
+            }
+            memory.reads.set(0);
+            assert!(!store.physical_source_matches(index, store.len(), source));
+            assert_eq!(memory.reads.get(), 0);
+            assert_eq!(*memory.inner.borrow(), before);
+        }
+        store.set_len(1);
+        let prepared = store
+            .prepare_physical_counts(0, PhysicalCountProjection::RetainAssignment { actual: 0 })
+            .unwrap();
+        assert!(prepared.validate_source());
+        let before = memory.inner.borrow().clone();
+        assert!(
+            !prepared.write(),
+            "retained assignment admission must emit no count write"
+        );
+        assert_eq!(*memory.inner.borrow(), before);
+        memory.inner.borrow_mut().clear();
+        memory.reads.set(0);
+        assert!(!prepared.validate_source());
+        assert_eq!(
+            memory.reads.get(),
+            0,
+            "ready admission must not read an unbacked source header or row"
+        );
+        assert!(memory.inner.borrow().is_empty());
+    }
 
     #[test]
     fn segment_edge_counts_entry_size_is_fixed() {

@@ -1232,7 +1232,7 @@ where
                     .all(|(s, e)| span_end <= *s || content >= *e);
                 // Pinned leaves contain their spans (floor covers); unpinned
                 // leaves tail-grow like slab appends.
-                let floor_covers = match self.labeled_leaf_physical_range(src) {
+                let floor_covers = match self.labeled_leaf_physical_range(src)? {
                     Some((block_start, block_len)) => {
                         let block_end = block_start
                             .checked_add(block_len)
@@ -1241,7 +1241,7 @@ where
                     }
                     None => false,
                 };
-                let pinned = self.labeled_leaf_physical_range(src).is_some();
+                let pinned = self.labeled_leaf_physical_range(src)?.is_some();
                 if !mates_free || (pinned && !floor_covers) {
                     return Err(LaraOperationError::CollectAllocationOverflow.into());
                 }
@@ -1409,41 +1409,61 @@ where
         if vertex.degree() > 1 {
             return Err(LabeledOperationError::InvalidDefaultBypass);
         }
-        if vertex.degree() == 1 {
+        let updated = if vertex.degree() == 1 {
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let old_alloc = vertex.stored_slots;
-            // ADR 0097 §3: a bypass row carries its own spill run id, so the bucket's run is
-            // handed over instead of folded into the slab - no row moves, and the bypass reader's
-            // prefix derivation (`stored_degree - run rows`) reproduces the bucket's prefix width.
-            // A bypass row's `stored_slots` is its **total** backing width (the bypass reader
-            // derives the slab prefix as `stored_degree - run rows`), so the bucket's prefix plus
-            // the run's rows carry over - not the prefix alone.
-            let spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
-                Ok(run) => self.edges.spill_used_len(run),
-                Err(_) => 0,
-            };
-            let mut updated = vertex
-                .with_default_edge_labeled(true)
-                .with_bypass_undirected(bucket.bucket_label_key().is_undirected())
-                .with_base_slot_start(bucket.edge_start())
-                .with_degree(bucket.degree)
-                .with_stored_slots(bucket.stored_slots().saturating_add(spill_rows));
-            if spill_rows > 0 {
-                updated = updated.with_bypass_spill_run(bucket.edge_spill_run());
+            if bucket.is_tiny_mode()
+                || bucket.is_tree_mode()
+                || bucket.inline_property_byte_width() != 0
+                || vertex.inline_property_bytes_allocated_bytes() != 0
+            {
+                return Err(LabeledOperationError::InvalidDefaultBypass);
             }
-            self.clear_vertex_label_buckets_for_segment(src)?;
-            self.set_labeled_vertex(src, updated)?;
-            self.edges
-                .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;
+            let (prefix, spill) = self.edges.initialized_row_slots(&bucket)?;
+            let stored = prefix
+                .checked_add(spill)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let updated = vertex
+                .with_homogeneous_bypass_label(bucket.bucket_label_key())
+                .with_base_slot_start(bucket.edge_start())
+                .with_degree(bucket.degree())
+                .with_stored_slots(stored)
+                .without_bypass_spill_run();
+            if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+                updated
+            } else {
+                updated
+                    .try_with_bypass_spill_run(bucket.edge_spill_run())
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            }
         } else {
-            self.set_labeled_vertex(
-                src,
-                vertex.with_homogeneous_bypass_label(self.default_label),
-            )?;
+            if vertex.inline_property_bytes_allocated_bytes() != 0 {
+                return Err(LabeledOperationError::InvalidDefaultBypass);
+            }
+            vertex
+                .with_homogeneous_bypass_label(self.default_label)
+                .with_base_slot_start(0)
+                .without_bypass_spill_run()
+        };
+        let source = super::compact::PhysicalLayoutSource::capture(self, src)?;
+        let counts = self
+            .edges
+            .prepare_vertex_span_counts(src, vertex.stored_slots, 0, 0)?;
+        source.validate()?;
+        let plan = self
+            .buckets
+            .plan_enable_default_edge_bypass(&self.vertices, src, updated)?;
+        let mut preparation = plan.reserve()?;
+        source.validate()?;
+        if !counts.validate_source() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
+        preparation.ready()?.publish();
+        counts.write();
+        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+            .expect("admitted mode handoff has a valid bucket segment");
         Ok(())
     }
 }
@@ -1553,6 +1573,7 @@ mod tests {
         assert!(
             graph
                 .labeled_leaf_physical_range(VertexId::from(0))
+                .unwrap()
                 .is_none()
         );
         // K=4: a completely full inline bucket still owns no leaf span.
@@ -1577,6 +1598,7 @@ mod tests {
         assert!(
             graph
                 .labeled_leaf_physical_range(VertexId::from(0))
+                .unwrap()
                 .is_none()
         );
         // The 5th edge is the one that promotes.
@@ -1666,7 +1688,7 @@ mod tests {
         let cap_after_tiny_anchor = graph.edges().header().elem_capacity;
         // ADR 0096 §4: the anchor insert births a tiny bucket (no pin, no span).
         // Pinning defers to promotion (K+1 = 5th edge of a bucket) and slab growth.
-        assert!(graph.labeled_leaf_physical_range(vid).is_none());
+        assert!(graph.labeled_leaf_physical_range(vid).unwrap().is_none());
         // Growth label must sort after `anchor` so bucket layout stays in pinned-leaf order.
         let road = BucketLabelKey::from_raw(100);
         for target in 0..5u32 {
@@ -1679,7 +1701,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(graph.labeled_leaf_physical_range(vid).is_some());
+        assert!(graph.labeled_leaf_physical_range(vid).unwrap().is_some());
         for target in 5..128u32 {
             graph
                 .insert_edge(

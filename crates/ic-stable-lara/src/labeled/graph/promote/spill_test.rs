@@ -110,6 +110,100 @@ fn retained_bypass<const N: usize, M: Memory>(
     }
     outer
 }
+#[test]
+fn mode_footprint_retained_roundtrip_preserves_assigned_pin() {
+    use super::super::OutEdgeOrder::{Ascending, Descending};
+
+    let memories: [VectorMemory; 33] =
+        std::array::from_fn(|_| crate::test_support::vector_memory());
+    let mut index = 0;
+    let outer = retained_bypass::<4, _>(64, || {
+        let memory = memories[index].clone();
+        index += 1;
+        memory
+    });
+    let g = outer.forward();
+    let owner = VertexId::from(0);
+    let label = g.default_label();
+    let header = g.edges().header();
+    let free = g.edges().free_byte_spans();
+    let run = g.vertices().get(owner).bypass_spill_run();
+    let expected: Vec<_> = (0..69).map(|slot| (slot, slot, Vec::new())).collect();
+    let mut states = Vec::new();
+    assert_eq!(header.segment_size, 16);
+    assert_eq!(header.elem_capacity, 272);
+
+    for stage in 0..3 {
+        let vertex = g.vertices().get(owner);
+        let view = if vertex.is_default_edge_labeled() {
+            g.bypass_bucket_view(&vertex).unwrap()
+        } else {
+            bucket(g, label)
+        };
+        let counts = g.leaf_segment_counts_for_vid(owner);
+        assert_eq!(g.edges().initialized_slab_slots(&view).unwrap(), 5);
+        assert_eq!(view.edge_spill_run(), run);
+        assert_eq!(
+            g.edges().spill_used_len(g.edges().spill_mint(run).unwrap()),
+            64
+        );
+        assert_eq!(counts.actual, 69);
+        assert_eq!(rows(g, label, Ascending), expected);
+        assert_eq!(
+            rows(g, label, Descending),
+            expected.iter().cloned().rev().collect::<Vec<_>>()
+        );
+        assert_eq!(g.edges().header(), header);
+        assert_eq!(g.edges().free_byte_spans(), free);
+        let reopened = LabeledLaraGraph::<Edge<4>, _>::init(
+            memories[0].clone(),
+            memories[1].clone(),
+            memories[2].clone(),
+            memories[3].clone(),
+            memories[4].clone(),
+            memories[5].clone(),
+            memories[6].clone(),
+            memories[7].clone(),
+            memories[8].clone(),
+            memories[9].clone(),
+            memories[10].clone(),
+            memories[11].clone(),
+            memories[12].clone(),
+            memories[13].clone(),
+            memories[14].clone(),
+            memories[15].clone(),
+            crate::labeled::InitialCapacities::uniform(256),
+            label,
+        )
+        .unwrap();
+        assert_eq!(reopened.vertices().get(owner), vertex);
+        assert_eq!(reopened.leaf_segment_counts_for_vid(owner), counts);
+        assert_eq!(reopened.edges().header(), header);
+        assert_eq!(rows(&reopened, label, Ascending), expected);
+        assert_eq!(reopened.edges().free_byte_spans(), free);
+        states.push((
+            vertex.is_default_edge_labeled(),
+            vertex.stored_slots,
+            counts.total,
+            g.edges().span_meta_store().get(0).physical_start,
+        ));
+        match stage {
+            0 => g.promote_bypass_to_bucket_mode(owner).unwrap(),
+            1 => g.enable_default_edge_bypass(owner).unwrap(),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        states,
+        vec![
+            (true, 69, 16, 256),
+            (false, 5, 16, 256),
+            (true, 69, 16, 256)
+        ],
+        "metadata-only mode handoff must preserve the allocated16-slot pin and exclude spill from normal cover"
+    );
+}
+
 fn bucket<E: CsrEdgeTombstone, M: Memory>(
     g: &LabeledLaraGraph<E, M>,
     label: BucketLabelKey,
@@ -865,6 +959,16 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
         for i in 0..67 {
+            if i == 32 {
+                let BucketSearch::Found { bucket, .. } =
+                    g.find_bucket(peer, &g.vertices().get(peer), label).unwrap()
+                else {
+                    panic!("peer bucket missing");
+                };
+                // Materialize a wide initialized prefix, then retain subsequent rows in a run.
+                // Overlap must come from real prefix bytes, not spill-inclusive normal cover.
+                compact_run_into_prefix_with_growth_retry(&g, peer, 0, bucket).unwrap();
+            }
             g.insert_edge_skip_leaf_cascade(
                 peer,
                 label,
@@ -908,6 +1012,8 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
             let value_used = g.values().spill_used_len(value_run);
             let peer_before = g.vertices().get(peer);
             let peer_prefix = g.edges().initialized_slab_slots(&peer_before).unwrap();
+            assert!(peer_prefix >= 32);
+            assert_ne!(peer_before.bypass_spill_run(), crate::traits::NO_SPILL_RUN);
             let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
             let last = if streaming { 96 } else { 97 };
             let expected: Vec<_> = (0..=last)
@@ -936,13 +1042,13 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
                     vec![(0, target, distinct_sidecar(target, width))]
                 );
             }
-            let old = g.labeled_leaf_physical_range(owner).unwrap();
+            let old = g.labeled_leaf_physical_range(owner).unwrap().unwrap();
             if streaming {
                 g.relocate_labeled_leaf_physical_block(owner).unwrap();
             } else {
                 g.rebalance_labeled_leaf_weighted_slide(owner).unwrap();
             }
-            let (start, len) = g.labeled_leaf_physical_range(owner).unwrap();
+            let (start, len) = g.labeled_leaf_physical_range(owner).unwrap().unwrap();
             if streaming {
                 assert!(
                     start >= old.0 + old.1 || start + len <= old.0,
@@ -1240,5 +1346,10 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     assert_eq!(
         g.leaf_segment_counts_for_vid(owner).actual,
         leaf.actual - i64::from(source.degree)
+    );
+    assert_eq!(
+        g.leaf_segment_counts_for_vid(owner).total,
+        leaf.total,
+        "standalone root allocation must not enlarge an assigned leaf pin"
     );
 }

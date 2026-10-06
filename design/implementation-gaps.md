@@ -137,17 +137,127 @@ defect from being rediscovered without its prior reasoning.
   remain immutable with their historical scopes; no earlier receipt is rebound to current I2.
   Do not use sequential publishing rewrite, minimum-address cover or unsafe fallback.0395's
   physical-only prerequisite is CLOSED; this tiny-geometry gap and0394 stay STOPPED IMPLEMENTATION.
-  Q1 now drafts required earlier-label copy success, real retained-prefix/root scratch, generic first
+  The historical Q1 draft required earlier-label copy success, real retained-prefix/root scratch, generic first
   pin and one final logical geometry/header/count/pin/allocator unit through the existing compact
   admitted publisher. Physical-only factories stay restricted and desired copies alone cannot mint
-  ready. Baseline715/planned728 preserves all0395 tests. Correct the misleading fourth-inline-insert
-  control into same-length `tiny_promote_d4_1024` before any production geometry change, freezing
-  new BEFORE/export/install sanity with no extra methods or old-result rewrite. New
+  ready. Its historical baseline715/planned728 preserved all0395 tests. The misleading fourth-inline-
+  insert control was corrected to same-length `tiny_promote_d4_1024` for prerequisite measurement;
+  BEFORE/export/install sanity retains its source binding, with no extra method or old-result rewrite. New
   `W/geometry-copy-composition/rescope-q1-baseline.json` binds the four-path planning revision and
   immutable0395 closure; `rescope-review-q1-{report.md,completion.json}` in that directory now binds
-  completed draft approval, not implementation/runtime/performance/0383 approval. Explicit production
-  allocation remains required. Its mixed-mode/group order, real caller GREEN/mutation, cost and implementation closure remain
+  completed draft approval, not implementation/runtime/performance/0383 approval.0394 subsequently
+  received production allocation but stopped on the mode prerequisite, now closed by0396. Its
+  mixed-mode/group order, real caller GREEN/mutation, cost and implementation closure remain
   unproved. Queue/Graph/live width/0383 stay later gates.
+
+0396 separately resolves the diagnosed mode-writer count/range defect; see
+[GAP-LARA-MODE-FOOTPRINT](#gap-lara-mode-footprint--normalbypass-handoff-corrupts-assigned-pin-width).
+Current723 plus13 planned geometry identities implies736; the earlier715/728 is historical.
+0394 still requires a fresh baseline and its own geometry/runtime/cost/implementation gates.
+
+### GAP-LARA-MODE-FOOTPRINT — Normal/bypass handoff corrupts assigned pin width
+
+- **Status:** Resolved in the validated dirty worktree by [0396](../plans/0396-mode-footprint-handoff.md),
+  with P5 independent implementation/cost approval and final closure. Fixing change:
+  `fix(lara): preserve assigned pin width across mode changes`, parent f25567bad;
+  `mode-footprint-user-commit-c1/commit-receipt.json` binds the exact commit and index-only validation.
+  The owning regressions are `mode_footprint_retained_roundtrip_preserves_assigned_pin` and
+  `mode_footprint_tree_append_preserves_pin_and_retirement`.0394 still needs a fresh baseline.
+  Draft approval, original REDs and P3 BEFORE bindings remain immutable.
+- **Observed:** The existing retained-prefix/run fixture reaches physical prefix5 and assigned
+  pin16 at256. Normal→bypass subtracts5; after spill reaches64, bypass→normal charges raw69 as
+  normal cover and adds69 to total11. Pin/capacity are unchanged and the inferred end336 exceeds272.
+  The strengthened temporary exact1 assertion fails, exit101. Its diagnostic source is archived
+  and restored; the original success contract is unchanged.
+- **Owner:** `graph/insert.rs::enable_default_edge_bypass`,
+  `graph/bypass.rs::promote_bypass_to_bucket_mode` and the tree-append sibling
+  `graph/promote.rs::promote_bypass_with_edge`; `EdgeStore` and its counts/row-layout owners enforce
+  prepared physical contribution/range decisions. Segment rewrite owns descriptors/final row links.
+  Existing prefix/root projection owners remain authoritative.
+- **Evidence:** [Source diagnosis, current representations and proposed boundary](evidence/adr0097-pin-extent-source-diagnosis.md).
+  `W/geometry-copy-composition/pin-extent-source-r1/{baseline,stage-cause}.json` plus
+  `stage-red-source.rs`/`stage-red.patch` and `pin-extent-source-r1-stage-red.log` bind four reached
+  stages and the source. One existing graph/33 memories; no new identity/PocketIC/install/reopen.
+- **Historical impact:** The defective writers manufactured pin slack, truncated its inferred extent
+  and published a cover containing spill width. Strict admission rejected an existing caller. The old
+  mixed-mode audit skipped total and missed intermediate11. No data-loss claim follows from this probe.
+- **Implemented ownership:** `EdgeStore::prepare_vertex_span_counts` selects assigned retention or
+  exact unassigned contribution for compact/ordinary/tree paths. One checked count-source read admits
+  backing before capture/preparation/revalidation. The segment publisher owns the final bypass row
+  without clear→set; the tree transcriber owns prepared actual exclusion and the exact post-allocation
+  header witness. One checked assigned-range interpretation replaces the inspected reader formulas.
+  Current formats, clean scans and root placement/retirement policy remain unchanged; no clamp,
+  count reset, additional length field or compatibility path is introduced. Fresh state is required
+  for old corrupt counts/covers. P5 deletes both fallible tree publication callbacks and preserves the
+  existing two writer forms in private transient prepared/ready sum types. Storage reserve/ready
+  precedes one final transcriber admission. The same6-case fixture injects during descriptor reserve,
+  preserves active source LTB0, checks exact free targets1/2/links/kinds and exact logical-row/allocator
+  integrity at the existing rejection reopen. Bypass audit bounds now use initialized prefix, not spill.
+- **P4 validation:** Native723 passes with all715 original identities and8 additions. Frozen fixture
+  cost is16 fresh graphs,1 outer graph,290 native memories and8 reopens,0 PocketIC/installs. Retained,
+  mixed, unassigned, empty/zero-live/run ownership, index/arithmetic/backing, stale-source, eligibility
+  and allocator-grown tree success/cleanup variants pass. Three exact mutants (assigned charging,
+  raw spill-inclusive cover, late count admission) fail at their advertised assertions; byte-identical
+  restoration and the same exact tests pass. Strict lib/tests Clippy, format and locked Wasm build pass.
+  The zero-live prefix expectation is intentionally retained rather than discarded; the existing
+  relocation fixture seeds a real folded prefix while keeping exact67 rows and both-order assertions.
+  `W/geometry-copy-composition/mode-footprint-p4/{fixtures-r4,native-validated}.json` and
+  `mutation-*-{applied,restored}.json` bind these stages. Failed RED/build/first-native commands stay failed.
+- **P5 continuation:** User `いいよ。進めて` authorizes a separately bound runner admitting only R/crate
+  and four fresh external AFTER directories. It derives the immutable real-lock contract; protected
+  old runners/configs/CSVs and repository saved results remain unchanged. Native723/Clippy/format,
+  the late-tree-admission mutant/restored exact GREEN and fresh locked Wasm pass. Fresh AFTER versus
+  P3 BEFORE: slab1530725 (-306), tree1577829 (-306), tiny191032946 (+207223/+0.1086%), bypass18854 (0),
+  all page growth0. Independent re-review accepts the tiny pressure-retry increment as bounded
+  safety-admission cost; no weakened sanity or0395 cost approval substitution. `mode-footprint-p5/{baseline,
+  runner-permission,fixture-red-r2,native-validated,mutation-restored,after-results}.json` binds this.
+- **Closure:** P4's packet-only REQUEST CHANGES (148.22s, one turn/ZERO tools) stays recorded. P5
+  re-review returns APPROVE IMPLEMENTATION AND COST BOUNDARY (45.80s, one turn/ZERO tools), no
+  remaining concrete P1/P2. `mode-footprint-p5/{review-completion,pre-closure,closure}.json` binds the
+  verdict, unchanged reviewed code, all required gates and exact source/protected/index preservation.
+  These are pre-commit receipts; subsequent user authorization permits the scoped commit, not push.
+  0394 may re-freeze its723-native source/performance baseline; this is not geometry/runtime approval
+  or reinterpretation of its historical715/728 estimates.
+- **Preflight:** The historical P2 locked-build stop is resolved by P3's separate
+  [workspace lock prerequisite](#gap-workspace-lock-drift--locked-build-prerequisite-resolved).
+  P3's four fresh BEFORE controls are retained as BEFORE; P4 native/Wasm are not benchmark passes.
+
+### GAP-WORKSPACE-LOCK-DRIFT — Locked build prerequisite (resolved)
+
+- **Status:** Resolved by user-authorized P3 lock-only alignment, before mode production changes.
+  No manifest/source/version upgrade. P3's no-stage/commit/push receipt remains historical; the
+  subsequent user-authorized mode-fix commit includes the reviewed lock. Lock alignment alone does
+  not resolve the mode defect.
+- **Historical P2 observation:** `env CARGO_TARGET_DIR=target/canbench cargo build -p ic-stable-lara
+  --locked --release --target wasm32-unknown-unknown --features canbench` failed before compilation
+  because Cargo needed to update `Cargo.lock` (exit101/1.08s). Locked target metadata also failed
+  (exit101/1.29s). These failures remain immutable.
+- **Owner:** Workspace manifest/lock consistency; `Cargo.lock`, workspace/package manifests and
+  dependency resolution, not `EdgeStore` or the mode-conversion publishers.
+- **Evidence:** `W/geometry-copy-composition/mode-footprint-p2/baseline.json` freezes the continuation.
+  `lock-diagnostic.json`/`lock-delta-summary.json` record successful offline resolution in a separate
+  diagnostic mirror:1227→1083 lock packages, morph-dict gains unicode-normalization, obsolete local
+  graph-explorer-new is removed, GPUI disambiguation changes; no changed canbench/ic/LARA package rows
+  are observed. The P2 real lock had SHA256 `15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2`.
+  `minimal-lock-diagnostic.json` shows that adding only morph-dict's dependency to another diagnostic
+  copy still fails locked metadata (exit101/1.35s); a one-line canonical repair is not proven.
+- **P3 resolution:** User `いいよ` authorizes the lock exception. Independent r3 packet-only review
+  approves only its boundary (exit0/13.50s/ZERO tools). Cargo's real offline resolution exactly matches
+  reviewed SHA256 `f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`:
+  144 removals/zero additions, retained versions/sources/checksums equal, and optional-inclusive168-package
+  LARA closure equal. Six obsolete optional-edge reductions and morph-dict's current manifest edge are
+  explicitly recorded. Original lock/evidence/measurements remain historical; no handwritten schema,
+  cargo update, manifest edit or unlocked build is used.
+- **Validation:** Locked real target metadata passes (5.07s), the original locked Wasm build passes
+  (128.76s), and all four fresh BEFORE controls pass with19997/20000 export-name bytes. Exact current
+  source/lock/Wasm/CSV/native evidence is `W/geometry-copy-composition/mode-footprint-p3-lock/
+  {application,locked-target-metadata-receipt,semantic-lock-delta,lara-lock-closure,before-wasm,before-results}.json`.
+  Old715 identities pass with only the reproduced deliberate RED excluded; no all-tests GREEN.
+  Repository saved results/index and all Rust/manifests are unchanged. The obsolete runner's125 lock
+  guard and archive receipt-key failure stay failed; the current runner uses only the reviewed real lock.
+- **Subsequent resolution:**0396 closes the mode/count/range/tree boundary above with723 native,
+  restored mutants, fresh AFTER and independent implementation/cost approval. Its commit retains the
+  reviewed lock;0394 still requires a fresh baseline before its separate geometry implementation.
 
 ### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
 

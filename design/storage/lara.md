@@ -141,6 +141,47 @@ run folding is a separate notification-bearing compaction operation.
 
 This is the **rope**: the leaf physical interval, not individual vertex rows.
 
+**Mode footprint handoff: implemented and validated (0396).** `EdgeStore::prepare_vertex_span_counts`
+selects one prepared projection for compact, ordinary mode conversion and tree conversion. Assigned
+vertex-span changes retain the leaf's `total`; unassigned changes apply the exact old/new physical
+contribution. The count store owns checked arithmetic and backing-before-read admission. A retained
+zero-delta projection validates its source but emits no count write. Bypass→normal receives the
+initialized resident prefix, excluding retained spill; the reached prefix5/run64 case now keeps
+start256/total16/capacity272 and returns normal cover5. No metadata field or storage width changes.
+
+`SegmentRewritePlan` publishes the final bypass row and descriptor retirement without an intermediate
+empty row. Source/count admission precedes ordinary publication and tree target allocation. The tree
+transcriber prepares its live-degree exclusion and binds the exact header after allocator-driven
+capacity growth. Its standalone root allocation is not a pin resize. Both fallible publication
+callbacks are removed: transient prepared/ready sum types retain the existing normal-row image or
+bypass segment publisher until all storage admission finishes. One final transcriber witness check
+then precedes infallible publication. Rejection tests mutate counts during descriptor reservation,
+preserve a distinct source LTB block and check exact free target IDs/links, logical rows and allocator
+integrity on the existing restored reopen. The rejection postconditions are defined by
+[0396's Failure scope](../../plans/0396-mode-footprint-handoff.md#failure-scope).
+
+One checked assigned-range interpretation feeds the labeled getter, physical source and core row
+windows. Assigned nonpositive, overflowing or out-of-capacity ranges reject; no quota fallback, reader
+clamp or count reset is permitted. Direct scans remain independent of PMA metadata. The layout audit
+checks assigned intervals against allocation/free ownership and unassigned totals against independent
+physical contributions, while retaining exact `actual` checks. Stores carrying old corrupt mode deltas
+or covers require fresh state; there is no migration or decoder compatibility path.
+
+[The diagnosis](../evidence/adr0097-pin-extent-source-diagnosis.md) retains the original RED and owning
+sites. P4's native723 (all715 old plus8 new identities), strict lib/tests Clippy, format, three restored
+mutation witnesses and locked Wasm build pass. P4's packet-only REQUEST CHANGES remains immutable;
+P5 fixes both findings and its late-tree-admission mutant fails before byte-identical restoration/GREEN.
+Four fresh AFTER controls pass: slab/tree scans each -306 instructions, bypass unchanged, tiny promotion
++207223 (+0.1086%), all page growth0. Independent packet-only re-review approves the implementation
+and bounded safety-admission cost (45.80s, one completed turn/ZERO tools), without weakening fixture/
+scan contracts or borrowing0395 approval. `mode-footprint-p5/{pre-closure,closure}.json` binds reviewed
+code/runtime/cost and the pre-commit final plan/source/protection/index gates. The subsequently
+user-authorized scoped commit is bound by `mode-footprint-user-commit-c1/commit-receipt.json`; old
+no-stage/commit/push receipts retain their historical scope.0396 resolves this mode prerequisite;
+0394 geometry is not implemented and needs a fresh baseline.
+The [workspace lock prerequisite](../implementation-gaps.md#gap-workspace-lock-drift--locked-build-prerequisite-resolved)
+and four fresh BEFORE controls remain P3 evidence, not AFTER results.
+
 ### 4. Free-span contract (core LARA)
 
 **`FreeSpanStore` is a first-class LARA component**, not an IC-specific extension.
@@ -293,16 +334,18 @@ See `physical-layout-implementation/physical-implementation-i2-fix-checklist.jso
 I2 Wasm/control receipts and `physical-implementation-review-i2-{report.md,completion.json}` under its
 evidence root; earlier publisher/r4 evidence remains immutable. Approval-status updates do not change
 the reviewed source/execution contract.
-0395's physical prerequisite is CLOSED.0394 stays STOPPED IMPLEMENTATION awaiting separate
-allocation after completed post0395 Q1 review: APPROVE DRAFT BOUNDARY, exit0/101.35s, ZERO tools,
-no required P0/P1/P2 (`geometry-copy-composition/rescope-review-q1-{report.md,completion.json}`). That draft reuses desired resident-copy admission under one
+0395's physical prerequisite is CLOSED.0396 now resolves the mode-writer prerequisite;0394
+geometry remains STOPPED IMPLEMENTATION pending its fresh source/native/performance baseline.
+Completed post0395 Q1 review: APPROVE DRAFT BOUNDARY, exit0/101.35s, ZERO tools, no required P0/P1/P2
+(`geometry-copy-composition/rescope-review-q1-{report.md,completion.json}`). That draft reuses desired resident-copy admission under one
 source-bound logical geometry/header/count/pin/allocator unit and one surviving compact publisher;
 canonical physical-only factory restrictions and nonpublishable standalone copy components remain.
 Earlier-label scalar/current-caller success must now be proven with retained bytes moved into the
 unchanged descriptor-order cover rule, not converted into append-only rejection. Retained slab/
 combined-root scratch is accounted separately from four-target tiny transcription. First-pin remains
-CsrEdge-generic; live width and outer operations remain excluded. Baseline715/planned728 and the
-actual degree4→5 measurement correction belong to the separately reviewed0394 scope, not0395 approval.
+CsrEdge-generic; live width and outer operations remain excluded. Historical baseline715/planned728
+is not the post0396 inventory: current723 plus13 planned geometry identities implies736. The actual
+degree4→5 control is retained for prerequisite measurements, not geometry implementation approval.
 [GAP-LARA-TINY-GEOMETRY](../implementation-gaps.md#gap-lara-tiny-geometry--tiny-promotion-publishes-before-complete-geometry-admission)
 records exact failed receipts and restored diagnostic source. Tiny/logical geometry remains
 unchanged;0395 does change the physical-only copy/admission/publication paths.

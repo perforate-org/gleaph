@@ -179,7 +179,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // A retained run fixes the prefix extent and every existing run ordinal. Capacity
         // beyond that prefix is not permission to append another initialized slab row.
         let has_space = v.spill_run() == crate::traits::NO_SPILL_RUN
-            && self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout);
+            && self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout)?;
         let location = if has_space {
             let grown = v
                 .try_grow_packed_slab_by_one()

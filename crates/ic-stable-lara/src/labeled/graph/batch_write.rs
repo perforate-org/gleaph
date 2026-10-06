@@ -1226,14 +1226,14 @@ where
                 continue;
             }
             let start_vid = (*leaf).saturating_mul(seg);
-            let (leaf_start, _) = match self.labeled_leaf_physical_range(VertexId::from(start_vid))
-            {
-                Some(range) => range,
-                None => {
-                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
-                    return Err(OneOrientationBatchError::MissingPinnedLeafForExpansion);
-                }
-            };
+            let (leaf_start, _) =
+                match self.labeled_leaf_physical_range(VertexId::from(start_vid))? {
+                    Some(range) => range,
+                    None => {
+                        Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                        return Err(OneOrientationBatchError::MissingPinnedLeafForExpansion);
+                    }
+                };
             let mut grown = match self.try_expand_labeled_leaf_in_place(
                 leaf_start,
                 state.old_leaf_len,
@@ -2372,7 +2372,7 @@ where
         let header = self.edges.header();
         let leaf = Self::leaf_index_for_vid(run.owner_vertex_id, header.segment_size);
         let (_leaf_start, current_leaf_len) =
-            match self.labeled_leaf_physical_range(run.owner_vertex_id) {
+            match self.labeled_leaf_physical_range(run.owner_vertex_id)? {
                 Some(range) => range,
                 None => {
                     return Err(OneOrientationBatchError::MissingPinnedLeafForExpansion);
@@ -5163,6 +5163,7 @@ mod tests {
 
         let (old_start, old_len) = graph
             .labeled_leaf_physical_range(VertexId::from(0))
+            .unwrap()
             .expect("source leaf must be pinned before relocation");
         let relocation_target = graph
             .plan_labeled_leaf_relocation(VertexId::from(0))
@@ -5175,6 +5176,7 @@ mod tests {
             .expect("scalar relocation must succeed");
         let (new_start, new_len) = graph
             .labeled_leaf_physical_range(VertexId::from(0))
+            .unwrap()
             .expect("relocated leaf must remain pinned");
         assert_ne!(new_start, old_start);
         assert!(new_len >= old_len);

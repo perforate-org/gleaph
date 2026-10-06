@@ -56,20 +56,14 @@ where
     /// Returns `(physical_start, block_len)` when the leaf is pinned, else `None`.
     ///
     /// `block_len` tracks the leaf PMA `segment_edges_total` (grows on segment relocate).
-    pub(crate) fn labeled_leaf_physical_range(&self, vid: VertexId) -> Option<(u64, u64)> {
-        let header = self.edges.header();
-        let leaf = Self::leaf_index_for_vid(vid, header.segment_size);
-        let span_rec = self.edges.span_meta_store().get(u64::from(leaf));
-        if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-            return None;
-        }
-        let counts = self.leaf_segment_counts_for_vid(vid);
-        let block_len = if counts.total > 0 {
-            counts.total as u64
-        } else {
-            labeled_leaf_physical_block_len(header.segment_size)
-        };
-        Some((span_rec.physical_start, block_len))
+    pub(crate) fn labeled_leaf_physical_range(
+        &self,
+        vid: VertexId,
+    ) -> Result<Option<(u64, u64)>, LabeledOperationError> {
+        Ok(self
+            .edges
+            .assigned_physical_range(vid)?
+            .map(|range| (range.start_slot, range.len)))
     }
 
     /// Edge-slab spans `[base, base + stored_slots)` owned by other labeled vertices in
@@ -233,7 +227,7 @@ where
         let block_len = labeled_leaf_physical_block_len(seg);
 
         let span_rec = self.edges.span_meta_store().get(u64::from(leaf));
-        let physical_start = if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+        if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
             let start = self
                 .edges
                 .allocate_span(block_len)
@@ -242,16 +236,16 @@ where
                 .set_segment_physical_start(SegmentId::from(leaf), start)
                 .map_err(LabeledOperationError::from)?;
             self.edges
-                .bump_vertex_segment_counts(vid, 0, i64::try_from(block_len).unwrap_or(i64::MAX))
+                .bump_vertex_segment_counts(
+                    vid,
+                    0,
+                    i64::try_from(block_len)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                )
                 .map_err(LabeledOperationError::from)?;
-            start
-        } else {
-            span_rec.physical_start
-        };
-
-        Ok(self
-            .labeled_leaf_physical_range(vid)
-            .unwrap_or((physical_start, block_len)))
+        }
+        self.labeled_leaf_physical_range(vid)?
+            .ok_or_else(|| LaraOperationError::CollectAllocationOverflow.into())
     }
 
     /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block and
@@ -316,31 +310,34 @@ where
         &self,
         vid: VertexId,
         new_alloc: u32,
-    ) -> Option<u64> {
-        let (leaf_start, leaf_len) = self.labeled_leaf_physical_range(vid)?;
-        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)?;
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        let Some((leaf_start, leaf_len)) = self.labeled_leaf_physical_range(vid)? else {
+            return Ok(None);
+        };
+        let leaf_end = leaf_start + leaf_len;
         let vertex = self.vertices.get(vid);
         let base = if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             let header = self.edges.header();
             let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, header.segment_size.max(1));
-            checked_add_slot_index(leaf_start, vertex_offset)?
+            checked_add_slot_index(leaf_start, vertex_offset)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
         } else {
-            let buckets = self.read_vertex_label_buckets(&vertex).ok()?;
-            // ADR 0096 §5: anchor at the first non-tiny bucket (see above).
-            buckets
-                .iter()
-                .find(|bucket| !bucket.is_tiny_mode())?
-                .edge_start()
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            let Some(bucket) = buckets.iter().find(|bucket| !bucket.is_tiny_mode()) else {
+                return Ok(None);
+            };
+            bucket.edge_start()
         };
-        let end = checked_add_slot_index(base, u64::from(new_alloc))?;
+        let end = checked_add_slot_index(base, u64::from(new_alloc))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         if end > leaf_end {
-            return None;
+            return Ok(None);
         }
         let overlaps_leaf_mate = self
             .labeled_leaf_occupied_spans(vid, vid)
             .into_iter()
             .any(|(start, mate_end)| end > start && base < mate_end);
-        (!overlaps_leaf_mate).then_some(base)
+        Ok((!overlaps_leaf_mate).then_some(base))
     }
 
     /// Maximum `stored_slots` for `vid` from its first bucket base through leaf block end.
@@ -349,7 +346,7 @@ where
         vid: VertexId,
     ) -> Result<u32, LabeledOperationError> {
         let (leaf_start, leaf_len) = self
-            .labeled_leaf_physical_range(vid)
+            .labeled_leaf_physical_range(vid)?
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -415,20 +412,14 @@ where
         vid: VertexId,
         start: u64,
         len: u32,
-    ) -> bool {
-        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid) {
-            Some(range) => range,
-            None => return false,
+    ) -> Result<bool, LabeledOperationError> {
+        let Some((leaf_start, leaf_len)) = self.labeled_leaf_physical_range(vid)? else {
+            return Ok(false);
         };
-        let leaf_end = match checked_add_slot_index(leaf_start, leaf_len) {
-            Some(end) => end,
-            None => return false,
-        };
-        let end = match checked_add_slot_index(start, u64::from(len)) {
-            Some(end) => end,
-            None => return false,
-        };
-        start >= leaf_start && end <= leaf_end
+        let leaf_end = leaf_start + leaf_len;
+        let end = checked_add_slot_index(start, u64::from(len))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(start >= leaf_start && end <= leaf_end)
     }
 
     pub(crate) fn labeled_bucket_edge_end_exclusive(
@@ -502,7 +493,7 @@ where
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
         }
-        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid) {
+        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid)? {
             Some(range) => range,
             // Unpinned leaf: spanless (tiny-only) vertices are vacuously
             // within; slab spans without a pin are a genuine violation.
@@ -666,9 +657,10 @@ mod tests {
             .expect("relocate pins the leaf");
         let (leaf_start, leaf_len) = graph
             .labeled_leaf_physical_range(hub)
+            .unwrap()
             .expect("leaf pinned after labeled insert");
         assert_eq!(
-            graph.labeled_leaf_physical_range(neighbor),
+            graph.labeled_leaf_physical_range(neighbor).unwrap(),
             Some((leaf_start, leaf_len))
         );
         graph
@@ -778,7 +770,7 @@ mod tests {
         graph
             .relocate_labeled_leaf_physical_block(hub)
             .expect("relocate pins the leaf");
-        let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap();
+        let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap().unwrap();
 
         let reopened = LabeledLaraGraph::init(
             vertices,
@@ -802,7 +794,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            reopened.labeled_leaf_physical_range(hub),
+            reopened.labeled_leaf_physical_range(hub).unwrap(),
             Some((pin_start, pin_len))
         );
         reopened

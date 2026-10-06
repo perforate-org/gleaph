@@ -7,8 +7,9 @@ is **ACCEPTED WITH KNOWN REGRESSION** by the user's safety-first decision below;
 is ended. Later tiny/leaf/queue/Graph/width work remains planned;0394's native gate now requires the
 existing physical-layout prerequisite0395 before geometry implementation.0395 completes its physical-only
 implementation/review gates separately, with explicit user acceptance of its measured prefix +2.0167%
-and final structural/preservation evidence below.0394 remains STOPPED IMPLEMENTATION during its
-post0395 Q1 APPROVE DRAFT BOUNDARY, awaiting separate production allocation; no validation gate is waived.
+and final structural/preservation evidence below.0396 now closes the separately reviewed mode/count/
+range prerequisite;0394 geometry remains STOPPED pending a fresh723-native/performance baseline.
+Its Q1 approval remains draft-boundary approval only; no validation gate is waived.
 
 Normal segment rewrites and bypass conversion now use one `LabelBucketStore` preparation and
 consuming publisher. Layout V1, leaf geometry, outer graph/PMA retirement, queue ownership and
@@ -42,7 +43,7 @@ inline+step publication comes after those prerequisites, then the unchanged0383 
 
 ## Planned tiny/leaf geometry (0394)
 
-**Status: Planned;0394 STOPPED IMPLEMENTATION, completed post0395 Q1 APPROVE DRAFT BOUNDARY.**
+**Status: Planned;0396 mode prerequisite is closed, but0394 requires a fresh baseline. Q1 remains draft-boundary approval only.**
 [Plan0394](../../plans/0394-grouped-tiny-leaf-geometry.md) scopes one same-leaf tiny-promotion group
 or first-pin publication unit. It reuses the existing physical-residency, descriptor, vertex,
 slab, span-meta/count and allocator owners. Scalar promotion becomes a singleton of that unit;
@@ -312,6 +313,120 @@ four-path preservation checks pass; final approval-status checks preserve all Ru
 old RED/index/lock/saved artifacts. The original reviewed packet remains immutable. This approves
 only the draft composition boundary; separate production allocation and every implementation/runtime/
 performance/0383 gate remain required. No Rust command or code edit follows this review.
+
+### Mode footprint prerequisite draft P1
+
+[Plan0396](../../plans/0396-mode-footprint-handoff.md) has r3 independent draft-boundary approval:
+one completed assistant turn, zero tools, no remaining concrete P1/P2. It requires checked count
+backing before source reads, explicit zero-live prefix/run ownership, an allocator-driven tree
+capacity-growth witness and one Failure scope separating ordinary byte preservation from exact
+unpublished tree-target cleanup. No production repair, runtime/performance approval or0396 closure
+is implied;0394 remains stopped and0395's closure is unchanged.
+
+One new partial test, `mode_footprint_retained_roundtrip_preserves_assigned_pin`, is frozen before
+RED with one outer constructor/33 memories,0 reopen/PocketIC/install. Exact1 fails, exit101/10.91s:
+totals11→80→11 versus assigned16 throughout, normal cover69 versus physical5. Exact69 rows in
+ascending/descending order, prefix5/run64/actual69, edge header and free spans pass first. The test
+remains deliberately RED; the old715 identities pass with only that identity excluded. Scoped
+lib/tests Clippy and workspace formatting pass, not all-tests GREEN. Remaining seven identities,
+empty/mixed/unassigned/reopen/backing/tree/mutation/BEFORE/AFTER and implementation review are pending.
+
+`W/geometry-copy-composition/mode-footprint-p1/{entry-manifest,first-fixture}.json`,
+`first-fixture-{source.rs,patch}` and `draft-review-r3-{report.md,completion.json}` bind this partial
+entry. The unbound review startup's403 errors and failed fixture formatter-spelling check are
+recorded tooling failures, not reviews or runtime contracts; the source/read-order review was
+completed through explicit provider/model binding, and the fixture check normalizes Rust whitespace.
+No production bytes or saved benchmark results change in this phase; all protected receipts retain
+original hashes. This remains a test-first checkpoint, not implementation closure.
+
+### Historical mode prerequisite P2 locked preflight stop
+
+At P2, continuation0396 froze the P1 checkpoint, then failed the locked BEFORE Wasm build before
+compilation (exit101/1.08s); locked target metadata also fails (exit101/1.29s). A separate offline
+metadata mirror resolves a candidate1227→1083-package lock, exposing morph-dict's missing
+unicode-normalization dependency and obsolete/disambiguated explorer/GPUI rows. No changed
+canbench/ic/LARA package rows are observed. A separate candidate with only the morph-dict row
+updated still fails locked metadata (exit101/1.35s). These are diagnostic observations, not runtime,
+performance or lock-repair approval; the real lock retains its original hash and all Rust is unchanged.
+
+[The workspace lock gap](../implementation-gaps.md#gap-workspace-lock-drift--locked-build-prerequisite-resolved)
+required separate authorization/review outside0396's then-owned surface. Fresh BEFORE and further
+source implementation were blocked at P2. Do not remove `--locked`, silently
+refresh canonical dependencies or substitute the retained old Wasm/results. The existing partial
+RED is retained, all0396 criteria stay incomplete and0394 remains stopped. P1's715-pass/Clippy/format
+results are historical, not re-run P2 gates. `W/geometry-copy-composition/mode-footprint-p2/{baseline,
+lock-diagnostic,lock-delta-summary,minimal-lock-diagnostic}.json` and the bound terminal logs preserve
+source, diagnostics and stop scope. No stage/commit/push occurred.
+
+### Mode prerequisite P3 lock alignment and fresh BEFORE
+
+User `いいよ` separately authorizes lock-only alignment. The bounded r3 packet-only review approves
+its boundary (exit0/13.50s, one completed turn/ZERO tools); prior inventory/count objections are
+resolved by exact deterministic/indexed evidence, without changing the candidate or old reports.
+Real Cargo offline metadata reproduces the exact reviewed lock SHA256
+`f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`.
+The complete delta is144 removals/zero additions; retained versions/sources/checksums and LARA's
+optional-inclusive168-package closure are equal. Six obsolete optional-edge reductions and the
+current morph-dict manifest edge are explicit. No source/manifest/version upgrade is authorized.
+
+Locked target metadata passes (5.07s), and the original locked Wasm build passes (128.76s).
+Fresh BEFORE instruction controls pass: `vls64`1531031, `vlt64`1578135,
+`tiny_promote_d4_1024`190825723, `bench_l_def_bp_iter_128`18854; each0 heap/stable growth pages.
+Export-name bytes remain19997/20000. `W/geometry-copy-composition/mode-footprint-p3-lock/
+{before-source,before-wasm,before-results}.json` bind current source/lock/fresh binary/CSV commands.
+External evidence-only configs measure that frozen newly compiled binary; no repository benchmark
+results are persisted or historical measurements relabeled.
+
+The old runner's125 original-lock guard remains failed, not a successful application command.
+Its current0396 successor uses only the reviewed real lock, deleting executing old-lock borrowing;
+original runners/receipts remain immutable. A separate archive receipt-key failure is retained and
+its already-frozen outputs verified before completion. All Rust/manifests/index/protected evidence
+remain unchanged. Native715 original identities pass under the current lock (8.95s) only with the
+reproduced deliberate RED excluded; exact1 again reaches totals11→80→11/normal cover69 (1.52s).
+No all-tests GREEN, production mode/count/range/tree repair, AFTER, mutation, implementation review
+or0396 closure is claimed. All0396 TODOs/criteria stay pending,0394 stays stopped,0395 is not reopened.
+No stage/commit/push occurred.
+
+### Mode footprint prerequisite P4 native implementation
+
+[0396](../../plans/0396-mode-footprint-handoff.md) implements the admitted final bypass row directly
+through `SegmentRewritePlan`; descriptor retirement, vertex encoding and checked count/source
+admission precede ordinary publication. The former empty normal intermediate and late fallible bump
+are removed. Compact/ordinary/tree count selection and assigned-range interpretation live at the
+existing EdgeStore/count owners. Tree allocation keeps its separate owned-target cleanup contract
+and exact post-allocation header witness; it is not a pin resize. The
+[storage contract](../storage/lara.md#3-segment-physical-contract-rope) describes current behavior.
+
+All723 native identities (715 old plus8 new), strict lib/tests Clippy, format, three exact restored
+mutation witnesses and locked Wasm compilation pass. `W/geometry-copy-composition/mode-footprint-p4/
+{fixtures-r4,native-validated}.json` binds290 native memories/8 reopens and the source/test inventory.
+The zero-live prefix expectation now preserves its default descriptor and tombstones; the relocation
+fixture materializes a real prefix without weakening exact67 rows, both orders or sidecars. No saved
+benchmark results, protected0395 evidence, MemoryId or persisted layout is changed.
+
+Independent packet-only review returns REQUEST CHANGES (148.22s, one completed turn/ZERO tools).
+It identifies the late tree callback reservation (P1) and missing exact LTB cleanup/reopen observability
+(P2). `mode-footprint-p4/review-{report.md,completion.json}` binds that original candidate and result.
+P5 user-authorized continuation deletes both fallible callbacks and separates existing normal-image/
+bypass-segment preparation/ready from one final transcriber witness admission. The same tree fixture
+moves count injection to descriptor reserve, preserves active LTB0, checks exact free targets1/2/links
+and source bytes, and verifies exact logical rows/allocator integrity on its existing rejection reopen.
+The bypass layout audit uses initialized prefix, not logical spill-inclusive width. Budget stays290/8.
+Native723, strict lint/format and late-admission mutant/restored GREEN pass.
+
+The explicitly approved fresh current runner keeps the old real-lock execution contract immutable
+and admits four new evidence-only AFTER directories. Fresh locked Wasm/export inventory and CSV
+controls pass: slab1530725/tree1577829 (each-306), tiny191032946 (+207223/+0.1086%), bypass18854 (0),
+all page growth0. Independent re-review accepts the bounded tiny safety-admission cost without
+weakening sanity, persisting partial results or borrowing0395 approval. `mode-footprint-p5/{runner-permission,
+fixture-red-r2,native-validated,mutation-restored,after-results}.json` binds this continuation.
+Packet-only re-review returns APPROVE IMPLEMENTATION AND COST BOUNDARY (45.80s, one completed
+turn/ZERO tools), no remaining concrete P1/P2. `mode-footprint-p5/{review-completion,pre-closure,
+closure}.json` binds the unchanged reviewed code, all required gates and final real-plan/source/
+protection/index preservation at the pre-commit checkpoint. The subsequent user-authorized scoped
+commit and index-only validation are bound by `mode-footprint-user-commit-c1/commit-receipt.json`;
+no push is authorized.0394 geometry still requires a fresh723-native baseline. No0395 or original
+BEFORE/RED binding is rewritten.
 
 ## Validation closure (0393)
 

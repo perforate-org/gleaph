@@ -207,7 +207,7 @@ where
         let sole_active_labeled_vertex =
             !self.leaf_has_other_labeled_vertices_with_edges(leaf, seg, src);
 
-        if self.labeled_leaf_physical_range(src).is_some() {
+        if self.labeled_leaf_physical_range(src)?.is_some() {
             let counts = self.leaf_segment_counts_for_vid(src);
             if counts.total > 0 && counts.actual >= counts.total {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1443,7 +1443,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(graph.labeled_leaf_physical_range(vid).is_some());
+        assert!(graph.labeled_leaf_physical_range(vid).unwrap().is_some());
         let pma = graph.labeled_leaf_pma_density(vid);
         let geometry = graph.labeled_leaf_geometry_density(vid);
         let counts = graph.leaf_segment_counts_for_vid(vid);

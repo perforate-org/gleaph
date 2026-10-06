@@ -328,6 +328,396 @@ mod physical_layout_tests {
         assert_eq!(graph.edges.header().num_edges, 5);
     }
 
+    #[test]
+    fn mode_footprint_mixed_leaf_preserves_slack_and_peer() {
+        use super::super::test_support::TestEdge;
+        let (graph, m) = physical_fixture::<TestEdge>();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .vertices
+            .set(peer, &LabeledVertex::from_parts(2, 1, 8, 0));
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .buckets
+            .write_label_bucket_slot(2, LabelBucket::from_parts(label, 124, 1, 1))
+            .unwrap();
+        graph
+            .edges
+            .write_slot_bytes(124, &31u32.to_le_bytes())
+            .unwrap();
+        graph.edges.bump_vertex_segment_counts(peer, 1, 0).unwrap();
+        graph.edges.set_num_edges(6);
+        let header = graph.edges.header();
+        let free = graph.edges.free_byte_spans();
+        let slab = m[5].bytes.borrow().clone();
+        let count_writes = m[4].writes.get();
+        let counts = graph.leaf_segment_counts_for_vid(peer);
+        assert_eq!(
+            counts,
+            super::SegmentEdgeCounts {
+                actual: 6,
+                total: 64
+            }
+        );
+        for order in [[0, 1], [1, 0]] {
+            let peer_before = graph
+                .find_bucket(peer, &graph.vertices.get(peer), label)
+                .unwrap();
+            assert!(matches!(
+                peer_before,
+                super::super::BucketSearch::Found { .. }
+            ));
+            for owner in order {
+                graph
+                    .enable_default_edge_bypass(VertexId::from(owner))
+                    .unwrap();
+                assert_eq!(
+                    graph.leaf_segment_counts_for_vid(peer),
+                    counts,
+                    "a mode handoff must not subtract assigned cover"
+                );
+                assert_eq!(graph.edges.span_meta_store().get(0).physical_start, 64);
+                assert_eq!(
+                    m[4].writes.get(),
+                    count_writes,
+                    "unchanged assigned counts must not be rewritten"
+                );
+                assert_eq!(graph.edges.header(), header);
+                assert_eq!(graph.edges.free_byte_spans(), free);
+                assert_eq!(*m[5].bytes.borrow(), slab);
+                assert_eq!(
+                    graph.out_edges(peer).unwrap(),
+                    vec![TestEdge { target: 31 }]
+                );
+            }
+            for owner in order.into_iter().rev() {
+                graph
+                    .promote_bypass_to_bucket_mode(VertexId::from(owner))
+                    .unwrap();
+                assert_eq!(graph.leaf_segment_counts_for_vid(peer), counts);
+                assert_eq!(
+                    graph.vertices.get(VertexId::from(owner)).stored_slots,
+                    if owner == 0 { 4 } else { 3 }
+                );
+                assert_eq!(
+                    graph.out_edges(peer).unwrap(),
+                    vec![TestEdge { target: 31 }]
+                );
+                assert!(
+                    matches!(graph.find_bucket(peer, &graph.vertices.get(peer), label).unwrap(), super::super::BucketSearch::Found { bucket, .. } if bucket.edge_start() == 124)
+                );
+            }
+            assert_eq!(
+                graph.out_edges(VertexId::from(0)).unwrap(),
+                vec![
+                    TestEdge { target: 7 },
+                    TestEdge { target: 0 },
+                    TestEdge { target: 7 }
+                ]
+            );
+            assert_eq!(
+                graph.out_edges(VertexId::from(1)).unwrap(),
+                vec![TestEdge { target: 11 }, TestEdge { target: 11 }]
+            );
+        }
+    }
+
+    #[test]
+    fn mode_footprint_unassigned_counts_use_physical_prefix() {
+        use super::super::test_support::TestEdge;
+        use crate::{
+            labeled::spill_run_store::{ArenaRows, HEADER_SIZE, SpillRunStore},
+            traits::NO_SPILL_RUN,
+        };
+        for assigned in [false, true] {
+            for shape in 0..3 {
+                let (graph, m) =
+                    empty_physical_fixture::<TestEdge>(InitialCapacities::uniform(256), 16);
+                let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+                let prefix = if shape == 2 { 0 } else { 5 };
+                let used = if shape == 0 { 64 } else { 0 };
+                let live = if shape == 0 { 69 } else { 0 };
+                let arena = SpillRunStore::new(m[6].clone(), 4, ArenaRows::EDGE).unwrap();
+                let run = if shape == 2 {
+                    NO_SPILL_RUN
+                } else {
+                    let run = arena.allocate(used.max(1)).unwrap();
+                    if used == 0 {
+                        // Seed a still-owned empty minimum-class run; the canonical layout
+                        // constant belongs to the spill store, not a second test schema.
+                        m[6].write(HEADER_SIZE + u64::from(run.get()) * 4, &0u32.to_le_bytes());
+                    } else {
+                        for slot in 0..used {
+                            arena
+                                .write_row(run, slot, &(prefix + slot).to_le_bytes())
+                                .unwrap();
+                        }
+                    }
+                    run.get()
+                };
+                if prefix != 0 {
+                    let words: Vec<_> = (0..prefix)
+                        .flat_map(|slot| {
+                            if live == 0 {
+                                u32::MAX.to_le_bytes()
+                            } else {
+                                slot.to_le_bytes()
+                            }
+                        })
+                        .collect();
+                    graph
+                        .edges
+                        .write_slots_contiguous_bytes(64, &words)
+                        .unwrap();
+                }
+                graph
+                    .vertices
+                    .set(owner, &LabeledVertex::from_parts(0, 1, prefix, 0));
+                let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 64, live, prefix);
+                let bucket = if run == NO_SPILL_RUN {
+                    bucket
+                } else {
+                    bucket.with_edge_spill_run(run)
+                };
+                graph.buckets.write_label_bucket_slot(0, bucket).unwrap();
+                if assigned {
+                    graph
+                        .edges
+                        .set_segment_physical_start(crate::SegmentId::from(0), 64)
+                        .unwrap();
+                }
+                graph
+                    .edges
+                    .bump_vertex_segment_counts(
+                        owner,
+                        i64::from(live),
+                        if assigned { 16 } else { i64::from(prefix) },
+                    )
+                    .unwrap();
+                graph.edges.set_num_edges(u64::from(live));
+                let header = graph.edges.header();
+                let free = graph.edges.free_byte_spans();
+                let backing = [m[5].bytes.borrow().clone(), m[6].bytes.borrow().clone()];
+                graph.enable_default_edge_bypass(owner).unwrap();
+                assert_eq!(
+                    graph.vertices.get(owner).bypass_spill_run(),
+                    run,
+                    "run ownership is independent of used length"
+                );
+                assert_eq!(
+                    graph.leaf_segment_counts_for_vid(owner),
+                    super::SegmentEdgeCounts {
+                        actual: i64::from(live),
+                        total: if assigned { 16 } else { 0 }
+                    }
+                );
+                graph.promote_bypass_to_bucket_mode(owner).unwrap();
+                let vertex = graph.vertices.get(owner);
+                assert!(!vertex.is_default_edge_labeled());
+                assert_eq!(
+                    vertex.stored_slots, prefix,
+                    "normal cover excludes spill and spare quota"
+                );
+                if shape != 2 {
+                    let bucket = graph
+                        .buckets
+                        .read_label_bucket_slot(vertex.base_slot_start())
+                        .unwrap();
+                    assert_eq!(
+                        (
+                            bucket.edge_start(),
+                            bucket.stored_slots(),
+                            bucket.edge_spill_run()
+                        ),
+                        (64, prefix, run)
+                    );
+                    assert_eq!(
+                        vertex.degree(),
+                        1,
+                        "zero-live rows retain prefix and empty-run ownership"
+                    );
+                } else {
+                    assert_eq!(vertex.degree(), 0);
+                    assert_eq!(vertex.base_slot_start(), 0);
+                    assert_eq!(vertex.spill_run(), NO_SPILL_RUN);
+                }
+                assert_eq!(
+                    graph.leaf_segment_counts_for_vid(owner),
+                    super::SegmentEdgeCounts {
+                        actual: i64::from(live),
+                        total: if assigned { 16 } else { i64::from(prefix) }
+                    }
+                );
+                assert_eq!(graph.edges.header(), header);
+                assert_eq!(graph.edges.free_byte_spans(), free);
+                assert_eq!(*m[5].bytes.borrow(), backing[0]);
+                assert_eq!(*m[6].bytes.borrow(), backing[1]);
+                let expected: Vec<_> = (0..live).map(|target| TestEdge { target }).collect();
+                assert_eq!(graph.out_edges(owner).unwrap(), expected);
+                if shape == 0 {
+                    let reopened = reopen_physical::<TestEdge>(&m);
+                    assert_eq!(reopened.out_edges(owner).unwrap(), expected);
+                    assert_eq!(
+                        reopened.leaf_segment_counts_for_vid(owner),
+                        graph.leaf_segment_counts_for_vid(owner)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mode_footprint_count_index_rejects_both_directions() {
+        use super::super::test_support::TestEdge;
+        let (graph, m) = physical_fixture::<TestEdge>();
+        let owner = VertexId::from(0);
+        warm_physical_caches(&graph);
+        let count = graph.edges.counts_store().pop().unwrap();
+        let before = canonical_bytes(&m);
+        let cache = cache_snapshot(&graph);
+        assert!(matches!(
+            graph.enable_default_edge_bypass(owner),
+            Err(super::LabeledOperationError::Store(
+                crate::lara::operation_error::LaraOperationError::SegmentCountsTreeTooSmall
+            ))
+        ));
+        assert_canonical_bytes(&m, &before);
+        assert_eq!(cache_snapshot(&graph), cache);
+        graph.edges.counts_store().push(count).unwrap();
+        graph.enable_default_edge_bypass(owner).unwrap();
+        let count = graph.edges.counts_store().pop().unwrap();
+        let before = canonical_bytes(&m);
+        let cache = cache_snapshot(&graph);
+        assert!(matches!(
+            graph.promote_bypass_to_bucket_mode(owner),
+            Err(super::LabeledOperationError::Store(
+                crate::lara::operation_error::LaraOperationError::SegmentCountsTreeTooSmall
+            ))
+        ));
+        assert_canonical_bytes(&m, &before);
+        assert_eq!(cache_snapshot(&graph), cache);
+        graph.edges.counts_store().push(count).unwrap();
+        let reopened = reopen_physical::<TestEdge>(&m);
+        assert_eq!(reopened.vertices.get(owner), graph.vertices.get(owner));
+        assert_eq!(
+            reopened.out_edges(owner).unwrap(),
+            graph.out_edges(owner).unwrap()
+        );
+    }
+
+    #[test]
+    fn mode_footprint_source_witness_rejects_stale_assignment() {
+        use super::super::test_support::TestEdge;
+        let (graph, m) = physical_fixture::<TestEdge>();
+        warm_physical_caches(&graph);
+        let owner = VertexId::from(0);
+        for field in 0..4 {
+            let mut preparation = graph
+                .prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite {
+                    src: owner,
+                    placement: VertexPhysicalPlacement::new(100, 8, None, 0),
+                })
+                .unwrap();
+            let prior = canonical_bytes(&m);
+            match field {
+                0 => graph
+                    .edges
+                    .set_segment_physical_start(crate::SegmentId::from(0), 65)
+                    .unwrap(),
+                1 => graph.edges.bump_vertex_segment_counts(owner, 1, 0).unwrap(),
+                2 => {
+                    graph.edges.counts_store().pop().unwrap();
+                }
+                3 => {
+                    m[5].write(16, &17u32.to_le_bytes());
+                }
+                _ => unreachable!(),
+            }
+            let before = canonical_bytes(&m);
+            let cache = cache_snapshot(&graph);
+            take_events();
+            assert!(matches!(
+                preparation.ready(),
+                Err(super::LabeledOperationError::Store(
+                    crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow
+                ))
+            ));
+            assert_canonical_bytes(&m, &before);
+            assert_eq!(cache_snapshot(&graph), cache);
+            assert!(!take_events().contains(&PhysicalLayoutEvent::Publish));
+            drop(preparation);
+            match field {
+                0 => graph
+                    .edges
+                    .set_segment_physical_start(crate::SegmentId::from(0), 64)
+                    .unwrap(),
+                1 => graph
+                    .edges
+                    .bump_vertex_segment_counts(owner, -1, 0)
+                    .unwrap(),
+                2 => graph
+                    .edges
+                    .counts_store()
+                    .push(super::SegmentEdgeCounts {
+                        actual: 5,
+                        total: 64,
+                    })
+                    .unwrap(),
+                3 => {
+                    m[5].write(16, &16u32.to_le_bytes());
+                }
+                _ => unreachable!(),
+            }
+            assert_canonical_bytes(&m, &prior);
+        }
+    }
+
+    #[test]
+    fn mode_footprint_ineligible_sources_reject_before_write() {
+        use super::super::test_support::TestEdge;
+        let (graph, m) = physical_fixture::<TestEdge>();
+        let owner = VertexId::from(0);
+        let slab = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let tiny = slab
+            .try_enable_tiny_mode()
+            .unwrap()
+            .with_tiny_target(0, 7)
+            .with_tiny_target(1, 0)
+            .with_tiny_target(2, u32::MAX)
+            .with_tiny_target(3, 7)
+            .with_degree_field(3)
+            .with_tiny_used_width(4);
+        let tree = slab.with_tree_mode(true);
+        let property = LabelBucket::from_parts_with_inline_property(
+            slab.bucket_label_key(),
+            slab.edge_start(),
+            slab.degree(),
+            slab.stored_slots(),
+            1,
+            0,
+            3,
+            -1,
+            0,
+        );
+        for bucket in [tiny, tree, property] {
+            graph.buckets.write_label_bucket_slot(0, bucket).unwrap();
+            warm_physical_caches(&graph);
+            let before = canonical_bytes(&m);
+            let cache = cache_snapshot(&graph);
+            assert!(matches!(
+                graph.enable_default_edge_bypass(owner),
+                Err(super::LabeledOperationError::InvalidDefaultBypass)
+            ));
+            assert_canonical_bytes(&m, &before);
+            assert_eq!(cache_snapshot(&graph), cache);
+        }
+        graph.buckets.write_label_bucket_slot(0, slab).unwrap();
+        graph.enable_default_edge_bypass(owner).unwrap();
+        let before = canonical_bytes(&m);
+        graph.enable_default_edge_bypass(owner).unwrap();
+        assert_canonical_bytes(&m, &before);
+    }
+
     // Raw physical images must not require the logical tombstone trait.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct CopyOnlyEdge(u32);
@@ -362,10 +752,16 @@ mod physical_layout_tests {
         reads: std::rc::Rc<std::cell::Cell<u64>>,
         read_bytes: std::rc::Rc<std::cell::Cell<u64>>,
         header_writes: std::rc::Rc<std::cell::Cell<u64>>,
+        write_hook: std::rc::Rc<std::cell::RefCell<Option<Box<dyn FnOnce()>>>>,
+        size_hook: std::rc::Rc<std::cell::RefCell<Option<Box<dyn FnOnce()>>>>,
     }
 
     impl Memory for CopyAdmissionMemory {
         fn size(&self) -> u64 {
+            let hook = self.size_hook.borrow_mut().take();
+            if let Some(hook) = hook {
+                hook();
+            }
             self.bytes.size()
         }
 
@@ -393,6 +789,373 @@ mod physical_layout_tests {
                 self.header_writes.set(self.header_writes.get() + 1);
             }
             self.bytes.write(offset, bytes);
+            let hook = self.write_hook.borrow_mut().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
+    #[test]
+    fn mode_footprint_tree_append_preserves_pin_and_retirement() {
+        use super::super::test_support::TestEdge;
+        use crate::{
+            labeled::{
+                ltb_raw_block_store::{BlockHeader, BlockKind},
+                spill_run_store::{ArenaRows, MAX_ROWS, SpillRunStore},
+            },
+            traits::CsrEdge,
+        };
+        use std::{cell::RefCell, ops::ControlFlow, rc::Rc};
+        for fault in [0, 2, 1, 3, 4, 5] {
+            let (graph, m) =
+                empty_physical_fixture::<TestEdge>(InitialCapacities::uniform(256), 16);
+            let graph = Rc::new(graph);
+            let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+            let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+            let arena = SpillRunStore::new(m[6].clone(), 4, ArenaRows::EDGE).unwrap();
+            let run = arena.allocate(MAX_ROWS).unwrap();
+            let extent = 5 + MAX_ROWS;
+            let holes = [1, 7, extent - 1];
+            for slot in 0..extent {
+                let target = if holes.contains(&slot) {
+                    u32::MAX
+                } else {
+                    slot
+                };
+                if slot < 5 {
+                    graph
+                        .edges
+                        .write_slot_bytes(64 + u64::from(slot), &target.to_le_bytes())
+                        .unwrap();
+                } else {
+                    arena
+                        .write_row(run, slot - 5, &target.to_le_bytes())
+                        .unwrap();
+                }
+            }
+            let live = extent - holes.len() as u32;
+            graph.vertices.set(
+                owner,
+                &LabeledVertex::from_parts(64, live, extent, 0)
+                    .with_default_edge_labeled(true)
+                    .with_degree(live)
+                    .with_stored_slots(extent)
+                    .with_bypass_spill_run(run.get()),
+            );
+            let peer_label = BucketLabelKey::from_raw(2);
+            graph
+                .vertices
+                .set(peer, &LabeledVertex::from_parts(0, 1, 1, 0));
+            let source_free_head = graph.ltb.free_head();
+            assert_eq!(graph.ltb.free_count(), 0);
+            let source_id = graph.ltb.mint().unwrap();
+            assert_eq!(source_id, 0);
+            let source_ltb_header = BlockHeader {
+                kind: BlockKind::Edge,
+                bucket_label_key_wire: peer_label.raw(),
+                owner_or_next_free: u32::from(peer),
+                ordinal: 0,
+                level: 0,
+                tombstone_count: 0,
+                reserved: [0],
+            };
+            graph.ltb.write_block_header(source_id, &source_ltb_header);
+            let source_payload = 9999u32.to_le_bytes();
+            graph
+                .ltb
+                .write_payload_partial(source_id, 0, &source_payload)
+                .unwrap();
+            graph
+                .buckets
+                .write_label_bucket_slot(
+                    0,
+                    LabelBucket::from_parts(peer_label, 75, 1, 1).with_tree_mode(true),
+                )
+                .unwrap();
+            graph
+                .edges
+                .write_slot_bytes(75, &source_id.to_le_bytes())
+                .unwrap();
+            graph
+                .edges
+                .set_segment_physical_start(crate::SegmentId::from(0), 64)
+                .unwrap();
+            graph
+                .edges
+                .bump_vertex_segment_counts(owner, i64::from(live), 16)
+                .unwrap();
+            graph.edges.set_num_edges(u64::from(live + 1));
+            assert!(matches!(
+                graph
+                    .find_bucket(peer, &graph.vertices.get(peer), peer_label)
+                    .unwrap(),
+                super::super::BucketSearch::Found { .. }
+            ));
+            let source_vertex = graph.vertices.get(owner);
+            let source_peer = graph.vertices.get(peer);
+            let source_bucket = graph.buckets.read_label_bucket_slot(0).unwrap();
+            let source_counts = graph.leaf_segment_counts_for_vid(owner);
+            let source_header = graph.edges.header();
+            let source_backing = canonical_bytes(&m);
+            let snapshot = Rc::new(RefCell::new(None));
+            if fault != 0 {
+                let g = graph.clone();
+                let memories = m.clone();
+                let saved = snapshot.clone();
+                let inject = move || {
+                    match fault {
+                        1 => g
+                            .edges
+                            .set_segment_physical_start(crate::SegmentId::from(0), 65)
+                            .unwrap(),
+                        2 => g.edges.bump_vertex_segment_counts(owner, 1, 0).unwrap(),
+                        3 => {
+                            g.edges.counts_store().pop().unwrap();
+                        }
+                        4 => {
+                            memories[5].write(16, &17u32.to_le_bytes());
+                        }
+                        5 => g.edges.set_num_edges(source_header.num_edges + 10),
+                        _ => unreachable!(),
+                    }
+                    *saved.borrow_mut() = Some((
+                        canonical_bytes(&memories),
+                        cache_snapshot(&g),
+                        g.edges.header(),
+                    ));
+                };
+                if fault == 2 {
+                    // Arm only after target allocation. The descriptor backing check in
+                    // SegmentRewritePlan::reserve is later than the old tree witness check.
+                    let descriptor = m[1].clone();
+                    *m[15].write_hook.borrow_mut() = Some(Box::new(move || {
+                        *descriptor.size_hook.borrow_mut() = Some(Box::new(inject));
+                    }));
+                } else {
+                    *m[15].write_hook.borrow_mut() = Some(Box::new(inject));
+                }
+            }
+            let result = super::super::promote::promote_bypass_with_edge(
+                &graph,
+                owner,
+                &TestEdge { target: 4242 },
+            );
+            let allocated_capacity = source_header.elem_capacity + 2;
+            assert_eq!(
+                graph.edges.header().elem_capacity,
+                allocated_capacity,
+                "the standalone two-slot root allocation must actually grow capacity"
+            );
+            if fault == 0 {
+                result.unwrap();
+                let vertex = graph.vertices.get(owner);
+                assert!(!vertex.is_default_edge_labeled());
+                assert_eq!(
+                    vertex.stored_slots, 2,
+                    "normal tree cover is its physical root, not logical extent"
+                );
+                let bucket = graph
+                    .buckets
+                    .read_label_bucket_slot(vertex.base_slot_start())
+                    .unwrap();
+                assert!(bucket.is_tree_mode());
+                assert_eq!(
+                    (
+                        bucket.edge_start(),
+                        bucket.stored_slots(),
+                        bucket.degree(),
+                        bucket.edge_spill_run()
+                    ),
+                    (
+                        source_header.elem_capacity,
+                        extent + 1,
+                        live + 1,
+                        crate::traits::NO_SPILL_RUN
+                    )
+                );
+                assert_eq!(
+                    graph.leaf_segment_counts_for_vid(owner),
+                    super::SegmentEdgeCounts {
+                        actual: 0,
+                        total: 16
+                    }
+                );
+                assert_eq!(graph.edges.span_meta_store().get(0).physical_start, 64);
+                let expected: Vec<_> = (0..=extent)
+                    .map(|slot| {
+                        (
+                            slot,
+                            if slot == extent {
+                                4242
+                            } else if holes.contains(&slot) {
+                                u32::MAX
+                            } else {
+                                slot
+                            },
+                        )
+                    })
+                    .collect();
+                for order in [
+                    super::super::OutEdgeOrder::Ascending,
+                    super::super::OutEdgeOrder::Descending,
+                ] {
+                    let mut rows = Vec::new();
+                    let flow = graph
+                        .visit_edges_with_inline_property(
+                            owner,
+                            graph.default_label,
+                            order,
+                            |slot, item| {
+                                rows.push((slot.raw(), u32::from(item.edge.neighbor_vid())));
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )
+                        .unwrap();
+                    assert!(matches!(flow, ControlFlow::Continue(())));
+                    assert_eq!(
+                        rows,
+                        if matches!(order, super::super::OutEdgeOrder::Ascending) {
+                            expected.clone()
+                        } else {
+                            expected.iter().copied().rev().collect()
+                        }
+                    );
+                }
+                assert_eq!(
+                    graph.edges.spill_used_len(run),
+                    crate::traits::NO_SPILL_RUN,
+                    "source run is retired"
+                );
+                assert!(
+                    graph
+                        .edges
+                        .free_byte_spans()
+                        .iter()
+                        .all(|span| span.start_slot + span.len <= 64 || span.start_slot >= 80)
+                );
+                let reopened = reopen_physical::<TestEdge>(&m);
+                assert_eq!(
+                    reopened.leaf_segment_counts_for_vid(owner),
+                    super::SegmentEdgeCounts {
+                        actual: 0,
+                        total: 16
+                    }
+                );
+                assert_eq!(reopened.vertices.get(owner), vertex);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(super::LabeledOperationError::Store(
+                        crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow
+                    ))
+                ));
+                let snapshot = snapshot.borrow();
+                let (bytes, cache, header) = snapshot
+                    .as_ref()
+                    .expect("fault must reach target preparation after allocation");
+                assert_eq!(cache_snapshot(&graph), *cache);
+                assert_eq!(graph.edges.header(), *header);
+                for role in [0, 1, 4, 6, 7, 10, 13, 14] {
+                    assert_eq!(*m[role].bytes.borrow(), bytes[role], "source role {role}");
+                }
+                assert_eq!(graph.vertices.get(owner), source_vertex);
+                assert_eq!(graph.vertices.get(peer), source_peer);
+                assert_eq!(graph.buckets.read_label_bucket_slot(0), Some(source_bucket));
+                assert_eq!(graph.edges.spill_used_len(run), MAX_ROWS);
+                assert_eq!(&m[5].bytes.borrow()[320..340], &source_backing[5][320..340]);
+                assert_eq!(&m[5].bytes.borrow()[364..368], &source_backing[5][364..368]);
+                assert_eq!(graph.ltb.tail_next(), 3);
+                assert_eq!(
+                    graph.ltb.free_count(),
+                    2,
+                    "every target block must be released exactly once"
+                );
+                let mut free_ids = Vec::new();
+                let mut next = graph.ltb.free_head();
+                for _ in 0..graph.ltb.free_count() {
+                    assert!(next < graph.ltb.tail_next());
+                    assert!(!free_ids.contains(&next), "LTB free list must not cycle");
+                    let header = graph.ltb.read_block_header(next);
+                    assert_eq!(header.kind, BlockKind::Free);
+                    free_ids.push(next);
+                    next = header.owner_or_next_free;
+                }
+                assert_eq!(next, source_free_head, "exact free-list terminator");
+                free_ids.sort_unstable();
+                assert_eq!(free_ids, vec![1, 2], "exact attempt-owned target IDs");
+                assert_eq!(free_ids.len() as u32, graph.ltb.free_count());
+                assert_eq!(
+                    graph.edges.free_byte_spans(),
+                    vec![crate::lara::edge::free_span::FreeSpan {
+                        start_slot: source_header.elem_capacity,
+                        len: 2
+                    }]
+                );
+                if fault == 1 {
+                    graph
+                        .edges
+                        .set_segment_physical_start(crate::SegmentId::from(0), 64)
+                        .unwrap();
+                    let reopened = reopen_physical::<TestEdge>(&m);
+                    assert_eq!(reopened.vertices.get(owner), source_vertex);
+                    assert_eq!(reopened.leaf_segment_counts_for_vid(owner), source_counts);
+                    assert_eq!(reopened.edges.spill_used_len(run), MAX_ROWS);
+                    for order in [
+                        super::super::OutEdgeOrder::Ascending,
+                        super::super::OutEdgeOrder::Descending,
+                    ] {
+                        let mut rows = Vec::new();
+                        let flow = reopened
+                            .visit_edges_with_inline_property(
+                                owner,
+                                reopened.default_label,
+                                order,
+                                |slot, item| {
+                                    rows.push((slot.raw(), u32::from(item.edge.neighbor_vid())));
+                                    ControlFlow::<()>::Continue(())
+                                },
+                            )
+                            .unwrap();
+                        assert!(matches!(flow, ControlFlow::Continue(())));
+                        let expected: Vec<_> = (0..extent)
+                            .filter(|slot| !holes.contains(slot))
+                            .map(|slot| (slot, slot))
+                            .collect();
+                        assert_eq!(
+                            rows,
+                            if matches!(order, super::super::OutEdgeOrder::Ascending) {
+                                expected
+                            } else {
+                                expected.into_iter().rev().collect()
+                            }
+                        );
+                    }
+                    crate::labeled::invariants::assert_labeled_layout_invariants(
+                        reopened.vertices(),
+                        reopened.buckets(),
+                        reopened.edges(),
+                    );
+                    reopened.edges.free_span_store().validate().unwrap();
+                    assert_eq!(reopened.ltb.free_head(), graph.ltb.free_head());
+                    assert_eq!(reopened.ltb.free_count(), 2);
+                    assert_eq!(
+                        reopened.out_edges(peer).unwrap(),
+                        vec![TestEdge { target: 9999 }]
+                    );
+                }
+            }
+            assert_eq!(graph.ltb.read_block_header(source_id), source_ltb_header);
+            let mut payload = [0; 4];
+            graph
+                .ltb
+                .read_payload_partial(source_id, 0, &mut payload)
+                .unwrap();
+            assert_eq!(payload, source_payload, "old source LTB remains owned");
+            assert_eq!(
+                graph.out_edges(peer).unwrap(),
+                vec![TestEdge { target: 9999 }]
+            );
         }
     }
 
@@ -623,7 +1386,7 @@ mod physical_layout_tests {
                 assert_eq!(events.iter().filter(|actual| **actual == event).count(), 1);
             }
             assert!(!events.contains(&PhysicalLayoutEvent::Pin));
-            assert_eq!(graph.labeled_leaf_physical_range(src), None);
+            assert_eq!(graph.labeled_leaf_physical_range(src).unwrap(), None);
             let expected_bucket = source.with_edge_range(destination, 5).with_degree_field(8);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
@@ -658,7 +1421,7 @@ mod physical_layout_tests {
                     free_span_count: 1,
                 }
             );
-            assert_eq!(graph.labeled_leaf_physical_range(src), None);
+            assert_eq!(graph.labeled_leaf_physical_range(src).unwrap(), None);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
                 Some(expected_bucket)
@@ -1297,16 +2060,22 @@ mod physical_layout_tests {
             match branch {
                 0 => {
                     assert_physical_result(&graph, [98, 68], [12, 8], 20);
-                    assert_eq!(graph.labeled_leaf_physical_range(src), None);
+                    assert_eq!(graph.labeled_leaf_physical_range(src).unwrap(), None);
                 }
                 1 => {
                     assert_physical_result(&graph, [256, 301], [45, 35], 80);
-                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((256, 80)));
+                    assert_eq!(
+                        graph.labeled_leaf_physical_range(src).unwrap(),
+                        Some((256, 80))
+                    );
                     assert_eq!(graph.edges.header().elem_capacity, 336);
                 }
                 2 => {
                     assert_physical_result(&graph, [64, 100], [36, 28], 64);
-                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((64, 64)));
+                    assert_eq!(
+                        graph.labeled_leaf_physical_range(src).unwrap(),
+                        Some((64, 64))
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -1889,7 +2658,10 @@ mod physical_layout_tests {
                         _ => unreachable!(),
                     };
                     assert_physical_result(&graph, [start, start + 54], [54, 42], 96);
-                    assert_eq!(graph.labeled_leaf_physical_range(src), Some((start, 96)));
+                    assert_eq!(
+                        graph.labeled_leaf_physical_range(src).unwrap(),
+                        Some((start, 96))
+                    );
                     assert_eq!(graph.edges.free_byte_spans(), expected_free);
                     assert_eq!(graph.edges.allocator_stats(), expected_stats);
                     graph.edges.free_span_store().validate().unwrap();
@@ -2281,7 +3053,7 @@ use crate::{
             BackedPhysicalEdgeImage, BackedSlabImage, EdgeHeaderV1, EdgeStore, PhysicalSlabPayload,
             counts::{PhysicalCountProjection, PreparedPhysicalCounts, SegmentEdgeCounts},
             free_span::{FreeSpan, FreeSpanPreparation, PhysicalSpanSelection, PreparedFreeSpans},
-            span_meta::{PreparedSegmentPhysicalStart, SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta},
+            span_meta::{PreparedSegmentPhysicalStart, SegmentSpanMeta},
         },
         operation_error::LaraOperationError,
         vertex::PreparedVertexWrite,
@@ -2388,7 +3160,7 @@ enum PhysicalLayoutOperation {
     },
 }
 
-struct PhysicalLayoutSource<'a, E: CsrEdge, M: Memory> {
+pub(super) struct PhysicalLayoutSource<'a, E: CsrEdge, M: Memory> {
     owner: &'a LabeledLaraGraph<E, M>,
     header: EdgeHeaderV1,
     bucket_header: EdgeHeaderV1,
@@ -2409,7 +3181,7 @@ impl<E: CsrEdge, M: Memory> Clone for PhysicalLayoutSource<'_, E, M> {
 }
 
 impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
-    fn capture(
+    pub(super) fn capture(
         owner: &'a LabeledLaraGraph<E, M>,
         src: VertexId,
     ) -> Result<Self, LabeledOperationError> {
@@ -2422,21 +3194,37 @@ impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
         if u64::from(leaf) >= owner.edges.span_meta_store().len() {
             return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
-        Ok(Self {
+        let source = Self {
             owner,
             header,
             bucket_header: owner.buckets.header(),
             vertex_len: owner.vertices.len(),
             count_index,
             count_len: owner.edges.counts_store().len(),
-            counts: owner.edges.counts_store().get(count_index),
+            counts: owner.edges.counts_store().checked_get(count_index)?,
             leaf,
             pin_len: owner.edges.span_meta_store().len(),
             pin: owner.edges.span_meta_store().get(u64::from(leaf)),
-        })
+        };
+        source.pinned_range()?;
+        Ok(source)
     }
 
-    fn validate(&self) -> Result<(), LabeledOperationError> {
+    pub(super) fn bind_allocated_header(
+        self,
+        header: EdgeHeaderV1,
+    ) -> Result<Self, LabeledOperationError> {
+        let mut configuration = header;
+        configuration.elem_capacity = self.header.elem_capacity;
+        if header.elem_capacity < self.header.elem_capacity || configuration != self.header {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+        let source = Self { header, ..self };
+        source.validate()?;
+        Ok(source)
+    }
+
+    pub(super) fn validate(&self) -> Result<(), LabeledOperationError> {
         if !self.owner.edges.physical_header_matches(self.header)
             || self.owner.buckets.header() != self.bucket_header
             || self.owner.vertices.len() != self.vertex_len
@@ -2457,26 +3245,18 @@ impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
     }
 
     fn pinned_range(&self) -> Result<Option<FreeSpan>, LabeledOperationError> {
-        if self.pin.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-            return Ok(None);
-        }
-        let len = u64::try_from(self.counts.total)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        let end = crate::slab_index::checked_add_slot_exclusive_end(self.pin.physical_start, len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if end > self.header.elem_capacity {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
-        }
-        Ok(Some(FreeSpan {
-            start_slot: self.pin.physical_start,
-            len,
-        }))
+        EdgeStore::<E, M>::assigned_range_from_source(
+            self.pin,
+            self.counts,
+            self.header.elem_capacity,
+        )
+        .map_err(LabeledOperationError::from)
     }
 }
 
-struct CanonicalPhysicalVertex {
+pub(super) struct CanonicalPhysicalVertex {
     src: VertexId,
-    vertex: LabeledVertex,
+    pub(super) vertex: LabeledVertex,
     buckets: Vec<LabelBucket>,
 }
 
@@ -2494,7 +3274,7 @@ impl CanonicalPhysicalVertex {
         })
     }
 
-    fn capture<E: CsrEdge, M: Memory>(
+    pub(super) fn capture<E: CsrEdge, M: Memory>(
         owner: &LabeledLaraGraph<E, M>,
         src: VertexId,
     ) -> Result<Self, LabeledOperationError> {
@@ -2506,7 +3286,7 @@ impl CanonicalPhysicalVertex {
         })
     }
 
-    fn validate<E: CsrEdge, M: Memory>(
+    pub(super) fn validate<E: CsrEdge, M: Memory>(
         &self,
         owner: &LabeledLaraGraph<E, M>,
     ) -> Result<(), LabeledOperationError> {
@@ -2846,8 +3626,9 @@ impl<E: CsrEdge, M: Memory> ReadyPhysicalLayout<'_, E, M> {
             #[cfg(test)]
             physical_layout_event(PhysicalLayoutEvent::Pin);
         }
-        if let Some(counts) = self.counts {
-            counts.write();
+        if let Some(counts) = self.counts
+            && counts.write()
+        {
             #[cfg(test)]
             physical_layout_event(PhysicalLayoutEvent::Count);
         }
@@ -3193,7 +3974,7 @@ where
                             src,
                             old_base,
                             row.vertex.stored_slots,
-                        )
+                        )?
                     {
                         let live_end = crate::slab_index::checked_add_slot_exclusive_end(
                             placement.start,
@@ -3230,12 +4011,11 @@ where
                     .edges
                     .prepare_physical_span_edit(PhysicalSpanSelection::NoAllocation, &retired)?
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let projection = pinned
-                    .is_none()
-                    .then_some(PhysicalCountProjection::VertexSpan {
-                        old: row.vertex.stored_slots,
-                        new: placement.slots,
-                    });
+                let projection = Some(PhysicalCountProjection::VertexSpan {
+                    old: row.vertex.stored_slots,
+                    new: placement.slots,
+                    actual: 0,
+                });
                 (allocator, pinned, projection)
             }
             PhysicalLayoutOperation::LeafSlide { destination, .. } => match destination {
@@ -3786,13 +4566,13 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
             return Ok((base, new_alloc));
         }
         if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
             || LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.get())
         {
-            if self.labeled_leaf_physical_range(src).is_some() {
+            if self.labeled_leaf_physical_range(src)?.is_some() {
                 return self.finish_span_resolution(
                     src,
                     new_alloc,
@@ -3804,7 +4584,7 @@ where
                 "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating",
             );
             self.relocate_labeled_leaf_physical_block(src)?;
-            if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+            if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
                 return Ok((base, new_alloc));
             }
             return self.finish_span_resolution(
@@ -3815,10 +4595,10 @@ where
             );
         }
         let _resolve_guard = LabeledRebalanceResolveGuard::new();
-        if self.labeled_leaf_physical_range(src).is_some() {
+        if self.labeled_leaf_physical_range(src)?.is_some() {
             self.relocate_labeled_leaf_physical_block(src)?;
             LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(true));
-            if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+            if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
                 return Ok((base, new_alloc));
             }
             let base = self.labeled_edge_base_from_first_bucket(src)?;
@@ -3829,7 +4609,7 @@ where
         );
         self.relocate_labeled_leaf_physical_block(src)?;
         LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(true));
-        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
             return Ok((base, new_alloc));
         }
         self.finish_span_resolution(
@@ -3907,10 +4687,10 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
             return Ok((base, new_alloc));
         }
-        if self.labeled_leaf_physical_range(src).is_some() {
+        if self.labeled_leaf_physical_range(src)?.is_some() {
             if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
                 return self.finish_span_resolution(
                     src,
@@ -3920,7 +4700,8 @@ where
                 );
             }
             for _ in 0..4 {
-                if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+                if let Some(base) =
+                    self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)?
                 {
                     return Ok((base, new_alloc));
                 }
@@ -3936,7 +4717,7 @@ where
         // Leaf is not pinned yet. Pin it with a block-aligned leaf physical block
         // instead of tail-appending, per ADR 0001 new-bucket contract.
         self.relocate_labeled_leaf_physical_block(src)?;
-        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
             return Ok((base, new_alloc));
         }
         self.finish_span_resolution(src, new_alloc, SpanResolutionPolicy::Required, false)
@@ -4077,7 +4858,7 @@ where
             // second attempt through the resolver), and when it fails the span stays as it is:
             // slack never moves a leaf and never fails an insert. Only content that does not
             // fit may trigger a relocation.
-            match self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+            match self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)? {
                 Some(base) => (base, new_alloc),
                 None => (old_base, old_alloc),
             }
@@ -4265,7 +5046,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(src) {
+        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(src)? {
             Some(range) => range,
             None => return Ok(()),
         };
@@ -4317,7 +5098,7 @@ where
         &self,
         src: VertexId,
     ) -> Result<LabeledLeafRelocationTarget, LabeledOperationError> {
-        let pinned_range = self.labeled_leaf_physical_range(src);
+        let pinned_range = self.labeled_leaf_physical_range(src)?;
         let (old_start, old_len) = pinned_range.unwrap_or((0, 0));
         let header = self.edges.header();
         let seg = header.segment_size.max(1);
@@ -7091,7 +7872,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         let leaf_releases_before = labeled_leaf_physical_release_calls();
         let vertex_releases_before = labeled_vertex_footprint_release_calls();
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
@@ -7148,7 +7929,7 @@ mod tests {
                 .unwrap();
         }
         crate::labeled::graph::test_support::promote_bucket_to_slab(&graph, src, road);
-        assert!(graph.labeled_leaf_physical_range(src).is_some());
+        assert!(graph.labeled_leaf_physical_range(src).unwrap().is_some());
         graph
             .remove_edge_at_slot(src, road, 0)
             .unwrap()
@@ -7232,12 +8013,12 @@ mod tests {
                 )
                 .unwrap();
         }
-        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
         graph
             .assert_labeled_buckets_within_leaf_physical(vid)
             .unwrap();
-        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         assert_ne!(new_start, old_start);
         assert!(new_len > old_len);
         // Coverage, not exact entry: the old footprint may coalesce with
@@ -7340,7 +8121,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         let left_len = 6u64;
         let right_len = 5u64;
         assert!(
@@ -7386,7 +8167,7 @@ mod tests {
                 && spans[0].start_slot.saturating_add(spans[0].len) >= right_end,
             "coalesced span must cover [{left_start}, {right_end})"
         );
-        let (new_start, _) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (new_start, _) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         assert_ne!(new_start, old_start);
     }
 
@@ -7417,7 +8198,7 @@ mod tests {
             };
             graph.promote_tiny_to_slab(vid, slot, &bucket).unwrap();
         }
-        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         let adjacent = old_start.saturating_add(old_len);
         graph.edges().release_span(adjacent, old_len).unwrap();
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
@@ -7434,7 +8215,7 @@ mod tests {
                 .unwrap();
         }
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
-        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         assert_eq!(new_start, old_start);
         assert!(new_len > old_len);
         assert!(
@@ -7602,6 +8383,7 @@ mod tests {
             .expect("hub owns a slab span after the fold");
         let (leaf_start, leaf_len) = graph
             .labeled_leaf_physical_range(hub)
+            .unwrap()
             .expect("hub leaf stays pinned");
         let hub_end = hub_base + u64::from(hub_vertex.stored_slots);
         let leaf_end = leaf_start + leaf_len;

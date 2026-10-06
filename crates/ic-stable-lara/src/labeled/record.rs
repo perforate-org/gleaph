@@ -1333,21 +1333,22 @@ impl core::fmt::Display for LabeledVertexFieldError {
 
 impl std::error::Error for LabeledVertexFieldError {}
 
-/// Per-vertex locator for one labeled CSR orientation (21 bytes).
+/// Per-vertex locator for one labeled CSR orientation (25 bytes).
 ///
 /// - **Normal:** [`Self::degree`] is the live [`LabelBucket`] row count (≤ [`MAX_VERTEX_LABEL_BUCKETS`]);
 ///   locator bits 36–63 hold [`Self::bucket_slack_slots`] so the physical descriptor span is
 ///   `degree + slack`; [`Self::stored_slots`] is the separate VertexEdgeSpan width for edge bytes.
 /// - **Bypass:** [`Self::degree`] is the logical out-edge count (full `u32`); [`Self::stored_slots`]
-///   is the stored slab width (tombstones included). The bypass spill run id lives in its own
-///   field at bytes 21..25; metadata28 bits 3..27 are a named reserve in bypass mode (ADR 0097 §3).
+///   is the initialized prefix plus used spill rows, including tombstones, not an allocated cover.
+///   `EdgeStore::initialized_slab_slots` validates the run and derives the resident prefix. The
+///   bypass spill run id lives at bytes 21..25; metadata28 bits 3..27 are a named reserve (ADR 0097 §3).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabeledVertex {
     locator: u64,
     /// Logical out-degree or live label-bucket row count (mode-dependent).
     pub degree: u32,
-    /// Stored edge-slab width for this vertex's VertexEdgeSpan (tombstones included).
+    /// Normal: allocated vertex edge cover. Bypass: initialized prefix plus used spill rows.
     pub stored_slots: u32,
     /// Physical byte width of this vertex's value span in `EdgeInlinePropertyBytesStore` (slack included).
     inline_property_bytes_allocated_bytes: u64,
@@ -1779,7 +1780,7 @@ impl CsrVertex for LabeledVertex {
     }
 
     /// Layout width for [`crate::lara::edge::EdgeStore::insert_edge`]:
-    /// bypass physical slab slots ([`Self::stored_slots`]), or normal live bucket rows ([`Self::degree`]).
+    /// bypass initialized prefix plus used spill rows, or normal live bucket rows ([`Self::degree`]).
     ///
     /// Normal-mode edge bytes are *not* sized by this value; they use [`Self::stored_slots`] on the
     /// vertex row and per-[`LabelBucket`] spans instead.

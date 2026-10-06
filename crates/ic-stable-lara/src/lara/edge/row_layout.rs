@@ -24,7 +24,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         v_ord: u32,
         v: &V,
-    ) -> u64
+    ) -> Result<u64, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
@@ -51,19 +51,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             // authoritative slab-window end; consulting PMA span metadata would make clean
             // query scans depend on maintenance state.
             if v.trusts_neighbor_boundary() {
-                return Self::max_slab_window_for_vertex(v, base, next_base);
+                return Ok(Self::max_slab_window_for_vertex(v, base, next_base));
             }
             if base == next_base {
-                return Self::max_slab_window_for_vertex(v, base, next_base);
+                return Ok(Self::max_slab_window_for_vertex(v, base, next_base));
             }
-            let span_rec = self.span_meta_store().get(u64::from(leaf));
-            if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-                return Self::max_slab_window_for_vertex(v, base, next_base);
-            }
-            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
-            let cap = span_rec
-                .physical_start
-                .saturating_add(c.total.max(0) as u64);
+            let Some(range) =
+                self.assigned_physical_range_with_layout(VertexId::from(v_ord), edge_layout)?
+            else {
+                return Ok(Self::max_slab_window_for_vertex(v, base, next_base));
+            };
+            let cap = range.start_slot + range.len;
             // The leaf physical-block cap only bounds rows whose edges actually live
             // inside this leaf's block. A synthetic single-bucket access
             // (`LabelEdgeSpanAccess`) exposes `v_ord == 0` while its edge bytes may sit
@@ -76,21 +74,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             } else {
                 next_base
             };
-            return Self::max_slab_window_for_vertex(v, base, end);
+            return Ok(Self::max_slab_window_for_vertex(v, base, end));
         }
 
         let w = edge_layout.initial_vertex_edge_slots;
         if w > 0 && v_ord.saturating_add(1) < leaf_logical_end_exclusive {
             let tail = base.saturating_add(u64::from(w));
-            let span_rec = self.span_meta_store().get(u64::from(leaf));
-            if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-                return Self::max_slab_window_for_vertex(v, base, tail);
-            }
-            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
-            let cap = span_rec
-                .physical_start
-                .saturating_add(c.total.max(0) as u64);
-            return Self::max_slab_window_for_vertex(v, base, tail.min(cap));
+            let end = self
+                .assigned_physical_range_with_layout(VertexId::from(v_ord), edge_layout)?
+                .map_or(tail, |range| tail.min(range.start_slot + range.len));
+            return Ok(Self::max_slab_window_for_vertex(v, base, end));
         }
 
         if v_ord.saturating_add(1) < len {
@@ -98,13 +91,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .get(VertexId::from(v_ord.saturating_add(1)))
                 .base_slot_start();
             if next_base >= base {
-                let span_rec = self.span_meta_store().get(u64::from(leaf));
-                if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
-                    let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
-                    let cap = span_rec
-                        .physical_start
-                        .saturating_add(c.total.max(0) as u64);
-                    return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
+                if let Some(range) =
+                    self.assigned_physical_range_with_layout(VertexId::from(v_ord), edge_layout)?
+                {
+                    let cap = range.start_slot + range.len;
+                    return Ok(Self::max_slab_window_for_vertex(
+                        v,
+                        base,
+                        next_base.min(cap),
+                    ));
                 }
                 if leaf < edge_layout.segment_count {
                     let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
@@ -112,20 +107,25 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     if total_u > 0 {
                         let head = vertices.get(VertexId::from(leaf_start)).base_slot_start();
                         let cap = head.saturating_add(total_u);
-                        return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
+                        return Ok(Self::max_slab_window_for_vertex(
+                            v,
+                            base,
+                            next_base.min(cap),
+                        ));
                     }
                 }
-                return Self::max_slab_window_for_vertex(v, base, next_base);
+                return Ok(Self::max_slab_window_for_vertex(v, base, next_base));
             }
         }
 
-        let span_rec = self.span_meta_store().get(u64::from(leaf));
-        if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
-            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
-            let end = span_rec
-                .physical_start
-                .saturating_add(c.total.max(0) as u64);
-            return Self::max_slab_window_for_vertex(v, base, end);
+        if let Some(range) =
+            self.assigned_physical_range_with_layout(VertexId::from(v_ord), edge_layout)?
+        {
+            return Ok(Self::max_slab_window_for_vertex(
+                v,
+                base,
+                range.start_slot + range.len,
+            ));
         }
 
         let end = if leaf < edge_layout.segment_count {
@@ -134,7 +134,51 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         } else {
             edge_layout.elem_capacity
         };
-        Self::max_slab_window_for_vertex(v, base, end)
+        Ok(Self::max_slab_window_for_vertex(v, base, end))
+    }
+
+    pub(crate) fn assigned_range_from_source(
+        pin: SegmentSpanMeta,
+        counts: super::counts::SegmentEdgeCounts,
+        capacity: u64,
+    ) -> Result<Option<super::free_span::FreeSpan>, LaraOperationError> {
+        if pin.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+            return Ok(None);
+        }
+        let len = u64::try_from(counts.total)
+            .ok()
+            .filter(|len| *len > 0)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let end = crate::slab_index::checked_add_slot_exclusive_end(pin.physical_start, len)
+            .filter(|end| *end <= capacity)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(Some(super::free_span::FreeSpan {
+            start_slot: pin.physical_start,
+            len: end - pin.physical_start,
+        }))
+    }
+
+    pub(crate) fn assigned_physical_range(
+        &self,
+        vid: VertexId,
+    ) -> Result<Option<super::free_span::FreeSpan>, LaraOperationError> {
+        self.assigned_physical_range_with_layout(vid, &self.edge_layout())
+    }
+
+    fn assigned_physical_range_with_layout(
+        &self,
+        vid: VertexId,
+        layout: &EdgeLayout,
+    ) -> Result<Option<super::free_span::FreeSpan>, LaraOperationError> {
+        let leaf = u64::from(leaf_segment(vid, layout.segment_size));
+        let pin = self.span_meta.get(leaf);
+        if pin.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+            return Ok(None);
+        }
+        let counts = self
+            .counts
+            .checked_get(self.counts_leaf_index(layout, vid)?)?;
+        Self::assigned_range_from_source(pin, counts, layout.elem_capacity)
     }
 
     pub(crate) fn prepare_segment_physical_start(
@@ -151,6 +195,29 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
         projection: super::counts::PhysicalCountProjection,
     ) -> Result<super::counts::PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+        match projection {
+            super::counts::PhysicalCountProjection::VertexSpan { old, new, actual } => {
+                self.prepare_vertex_span_counts(vid, old, new, actual)
+            }
+            super::counts::PhysicalCountProjection::LeafBlock(_)
+            | super::counts::PhysicalCountProjection::RetainAssignment { .. } => self
+                .counts
+                .prepare_physical_counts(self.vertex_segment_counts_index(vid)?, projection),
+        }
+    }
+
+    pub(crate) fn prepare_vertex_span_counts(
+        &self,
+        vid: VertexId,
+        old: u32,
+        new: u32,
+        actual: i64,
+    ) -> Result<super::counts::PreparedPhysicalCounts<'_, E, M>, LaraOperationError> {
+        let projection = if self.assigned_physical_range(vid)?.is_some() {
+            super::counts::PhysicalCountProjection::RetainAssignment { actual }
+        } else {
+            super::counts::PhysicalCountProjection::VertexSpan { old, new, actual }
+        };
         self.counts
             .prepare_physical_counts(self.vertex_segment_counts_index(vid)?, projection)
     }
@@ -216,12 +283,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         v: &V,
         loc: u64,
         edge_layout: &EdgeLayout,
-    ) -> bool
+    ) -> Result<bool, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        loc < self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v)
+        Ok(loc < self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v)?)
     }
 
     pub(crate) fn bump_vertex_segment_counts(

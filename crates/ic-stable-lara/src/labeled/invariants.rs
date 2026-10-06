@@ -1,16 +1,11 @@
 //! Debug invariant helpers for labeled CSR layouts.
 
 use super::bucket_store::LabelBucketStore;
-use super::graph::leaf_pin::labeled_leaf_physical_block_len;
 use super::record::LabelBucket;
 use crate::{
     VertexId,
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
-    lara::{
-        edge::{EdgeStore, span_meta::SPAN_PHYSICAL_UNASSIGNED},
-        operation_error::LaraOperationError,
-        vertex::VertexStore,
-    },
+    lara::{edge::EdgeStore, operation_error::LaraOperationError, vertex::VertexStore},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -129,7 +124,9 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
         if vertex.is_default_edge_labeled() {
             let end = slot_end_exclusive(
                 vertex.base_slot_start(),
-                vertex.stored_degree(),
+                edges
+                    .initialized_slab_slots(&vertex)
+                    .expect("bypass prefix/run widths must be valid"),
                 &format!("vertex {vidx} default-edge bypass range"),
             );
             assert!(
@@ -418,6 +415,8 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
         per_leaf_actual[leaf] += a;
         per_leaf_total[leaf] += t;
     }
+    let free = edges.free_span_store().spans();
+    let mut assigned = Vec::new();
     for leaf in 0..header.segment_count {
         let idx = u64::from(leaf + header.segment_count);
         let got = edges.counts_store().get(idx);
@@ -426,24 +425,28 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
             "leaf {leaf}: PMA actual mismatch (store vs labeled geometry)"
         );
 
-        let start_vid = leaf.saturating_mul(seg) as usize;
-        let end_vid = ((leaf + 1).saturating_mul(seg) as usize).min(vertices.len() as usize);
-        let leaf_has_bypass = (start_vid..end_vid).any(|vidx| {
-            vertices
-                .get(VertexId::from(vidx as u32))
-                .is_default_edge_labeled()
-        });
-        if !leaf_has_bypass {
-            let span_rec = edges.span_meta_store().get(u64::from(leaf));
-            let expected_total = if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
-                per_leaf_total[leaf as usize]
-                    .max(i64::try_from(labeled_leaf_physical_block_len(seg)).unwrap_or(i64::MAX))
-            } else {
-                per_leaf_total[leaf as usize]
-            };
+        if let Some(range) = edges
+            .assigned_physical_range(VertexId::from(leaf.saturating_mul(seg)))
+            .expect("assigned leaf must have a positive backed interval within edge capacity")
+        {
+            let end = range.start_slot + range.len;
+            for span in &free {
+                assert!(
+                    span.start_slot + span.len <= range.start_slot || end <= span.start_slot,
+                    "leaf {leaf}: active pin overlaps free span {span:?}"
+                );
+            }
+            for &(start, previous_end) in &assigned {
+                assert!(
+                    previous_end <= range.start_slot || end <= start,
+                    "leaf {leaf}: active pins overlap"
+                );
+            }
+            assigned.push((range.start_slot, end));
+        } else {
             assert_eq!(
-                got.total, expected_total,
-                "leaf {leaf}: PMA total mismatch (store vs labeled geometry)"
+                got.total, per_leaf_total[leaf as usize],
+                "leaf {leaf}: unassigned PMA total must equal normal physical contribution"
             );
         }
     }
