@@ -4524,3 +4524,98 @@ fn vertex_layout_copy_slab_64() -> canbench_rs::BenchResult {
 fn vertex_layout_copy_tree_roots_64() -> canbench_rs::BenchResult {
     bench_physical_copy(PhysicalCopyFixture::TreeRoots)
 }
+
+/// Measure the shared admission/prepared publication on a real 4800-byte two-step fill.
+/// Setup and a distinct correctness control stay outside the measured closure.
+#[bench(raw)]
+fn materialize_owner_two_step_4800() -> canbench_rs::BenchResult {
+    let prepare = || {
+        let graph = inline_property_bench_graph(1024);
+        let src = graph
+            .push_vertex(crate::labeled::LabeledVertex::default())
+            .expect("source");
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 100..700 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyBenchEdge::with_inline_property(target, 0, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("seed");
+        }
+        let slot = match graph
+            .find_bucket(src, &graph.vertices().get(src), label)
+            .expect("canonical source")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => {
+                assert_eq!(bucket.degree(), 600);
+                assert_eq!(bucket.inline_property_byte_width(), 0);
+                slot
+            }
+            _ => panic!("missing source"),
+        };
+        (graph, src, slot)
+    };
+    let (control, src, slot) = prepare();
+    let mut cursor = control
+        .materialize_cursor(src, slot, 8, 0xA5)
+        .expect("admit control");
+    assert!(matches!(
+        control
+            .materialize_inline_property_stream_step(&mut cursor)
+            .expect("first chunk"),
+        crate::labeled::graph::values::MaterializeStep::Resumed
+    ));
+    assert!(matches!(
+        control
+            .materialize_inline_property_stream_step(&mut cursor)
+            .expect("publish"),
+        crate::labeled::graph::values::MaterializeStep::Finished
+    ));
+    let bucket = control
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("published row");
+    assert_eq!(bucket.inline_property_byte_width(), 8);
+    assert_eq!(bucket.inline_property_bytes_slab_slots(), 600);
+    let mut bytes = vec![0; 4800];
+    control
+        .values()
+        .read_bytes(bucket.inline_property_bytes_offset(), &mut bytes);
+    assert_eq!(bytes, vec![0xA5; 4800]);
+    assert_eq!(
+        control
+            .vertices()
+            .get(src)
+            .inline_property_bytes_allocated_bytes(),
+        4800
+    );
+    let (graph, src, slot) = prepare();
+    let mut cursor = graph
+        .materialize_cursor(src, slot, 8, 0xA5)
+        .expect("admit measured cursor");
+    let result = bench_fn(|| {
+        let first = graph
+            .materialize_inline_property_stream_step(&mut cursor)
+            .expect("first chunk");
+        let second = graph
+            .materialize_inline_property_stream_step(&mut cursor)
+            .expect("publish");
+        black_box((first, second));
+    });
+    let bucket = graph
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("measured row");
+    assert_eq!(bucket.inline_property_byte_width(), 8);
+    assert_eq!(
+        graph
+            .vertices()
+            .get(src)
+            .inline_property_bytes_allocated_bytes(),
+        4800
+    );
+    result
+}

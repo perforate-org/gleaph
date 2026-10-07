@@ -6,7 +6,7 @@
 
 use crate::{
     VertexCount, VertexId,
-    labeled::graph::values::MaterializeStep,
+    labeled::graph::values::{MaterializeCursor, MaterializeStep},
     labeled::{
         BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
@@ -153,12 +153,10 @@ pub enum Orientation {
 ///
 /// Each variant is a `{Tag}V{Version}` entry: the stable byte layout is
 /// `[magic 0x5A][tag][version][payload]` with the tag/version bytes derived from the
-/// enum variant (see [`Self::tag`] and [`Self::version`]), so the `(tag, version)`
-/// dispatch table is enforced by the compiler instead of hand-maintained bytes. A future
-/// change to one variant adds a `{Tag}V2` variant with a `(tag, version)` decode arm
-/// beside the V1 arm, without touching the other variants or re-activating the queue
-/// for them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// enum variant (see [`Self::tag`] and [`Self::version`]). Only the current format
+/// is decoded. Format changes require fresh state/reinstall, not legacy decoding.
+/// Work items move through the private queue; materialization capability is never cloned.
+#[derive(Debug, PartialEq, Eq)]
 pub enum MaintenanceWorkItem {
     /// v1: Compact the LabelBucketStore VertexSegment containing one vertex in one orientation.
     CompactLabelBucketVertexSegmentV1 {
@@ -233,34 +231,12 @@ pub enum MaintenanceWorkItem {
         /// Incident edges already removed (informational; threaded across steps).
         removed_edges: u32,
     },
-    /// v1: Materialize an inline property stream for one bucket in one
-    /// orientation (Plan 0320 §Step 2). The work item carries the bucket slot
-    /// (validates relevance), the target width, the fill byte, the
-    /// reserved slab offset (set on first step), the stream length
-    /// (S × width), and the resume cursor (Plan 0320 §0.7). The
-    /// worker pops, writes one step's worth of `fill_byte` to the
-    /// reserved slab region, advances `resume_position`, and
-    /// re-enqueues until finished; on the final step the descriptor
-    /// (width + offset + slab_slots + log reset) is published and
-    /// the vertex-level accounting is updated atomically (Plan 0320
-    /// §0.1, §0.6, §0.12).
-    MaterializeInlinePropertyStreamV1 {
-        /// Orientation whose bucket receives the materialized stream.
+    /// v2: Move one exclusively owned pending materialization capability.
+    MaterializeInlinePropertyStreamV2 {
+        /// Orientation owning the reservation and canonical source.
         orientation: Orientation,
-        /// Vertex whose bucket receives the materialized stream.
-        vid: VertexId,
-        /// Bucket slot used to validate that the work item is still relevant.
-        bucket_slot: u64,
-        /// Target width (always > 0; u16 representation bound).
-        width: u16,
-        /// Fill byte for every position in the stream.
-        fill_byte: u8,
-        /// Reserved slab byte offset (set on first step, `u64::MAX` until then).
-        reserved_offset: u64,
-        /// Total stream byte count (S × width).
-        total_bytes: u64,
-        /// Resume cursor: next byte position to write (0..total_bytes).
-        resume_position: u64,
+        /// Opaque values-owned cursor; only pending states are storable.
+        cursor: MaterializeCursor,
     },
 }
 
@@ -275,13 +251,12 @@ impl MaintenanceWorkItem {
             Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
             Self::DeleteVertexV1 { .. } => 5,
             Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
-            Self::MaterializeInlinePropertyStreamV1 { .. } => 7,
+            Self::MaterializeInlinePropertyStreamV2 { .. } => MATERIALIZE_WORK_TAG,
             Self::CompactDefaultBypassRowV1 { .. } => 8,
         }
     }
 
-    /// Stable variant version byte. All variants start at v1; a future version of one
-    /// variant is a new enum variant with its own (tag, version) decode arm.
+    /// Current version only; materialization uses opaque V2 capabilities.
     fn version(&self) -> u8 {
         match self {
             Self::CompactLabelBucketVertexSegmentV1 { .. }
@@ -291,8 +266,8 @@ impl MaintenanceWorkItem {
             | Self::CompactVertexEdgeAndValueSpanV1 { .. }
             | Self::DeleteVertexV1 { .. }
             | Self::CompactInlinePropertyBytesSlabV1 { .. }
-            | Self::MaterializeInlinePropertyStreamV1 { .. }
             | Self::CompactDefaultBypassRowV1 { .. } => 1,
+            Self::MaterializeInlinePropertyStreamV2 { .. } => 2,
         }
     }
 }
@@ -301,6 +276,7 @@ impl MaintenanceWorkItem {
 /// fixed-16-byte layout had the variant tag at byte 0 (values 0..=6), so any legacy item
 /// fails the magic check by construction and is rejected instead of mis-decoded.
 const MAINTENANCE_WORK_ITEM_MAGIC: u8 = 0x5A;
+const MATERIALIZE_WORK_TAG: u8 = 7;
 
 fn orientation_byte(orientation: Orientation) -> u8 {
     match orientation {
@@ -419,24 +395,12 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
         MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
             out.push(orientation_byte(*orientation));
         }
-        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
             orientation,
-            vid,
-            bucket_slot,
-            width,
-            fill_byte,
-            reserved_offset,
-            total_bytes,
-            resume_position,
+            cursor,
         } => {
             out.push(orientation_byte(*orientation));
-            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
-            out.extend_from_slice(&bucket_slot.to_le_bytes());
-            out.extend_from_slice(&width.to_le_bytes());
-            out.push(*fill_byte);
-            out.extend_from_slice(&reserved_offset.to_le_bytes());
-            out.extend_from_slice(&total_bytes.to_le_bytes());
-            out.extend_from_slice(&resume_position.to_le_bytes());
+            out.extend_from_slice(&cursor.to_bytes());
         }
     }
     out
@@ -507,15 +471,9 @@ impl Storable for MaintenanceWorkItem {
             (6, 1) => Self::CompactInlinePropertyBytesSlabV1 {
                 orientation: orientation_from_byte(payload[0]),
             },
-            (7, 1) => Self::MaterializeInlinePropertyStreamV1 {
+            (MATERIALIZE_WORK_TAG, 2) => Self::MaterializeInlinePropertyStreamV2 {
                 orientation: orientation_from_byte(payload[0]),
-                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
-                bucket_slot: u64::from_le_bytes(payload[5..13].try_into().unwrap()),
-                width: u16::from_le_bytes(payload[13..15].try_into().unwrap()),
-                fill_byte: payload[15],
-                reserved_offset: u64::from_le_bytes(payload[16..24].try_into().unwrap()),
-                total_bytes: u64::from_le_bytes(payload[24..32].try_into().unwrap()),
-                resume_position: u64::from_le_bytes(payload[32..40].try_into().unwrap()),
+                cursor: MaterializeCursor::from_bytes(Cow::Borrowed(&payload[1..])),
             },
             (unknown_tag, unknown_version) => panic!(
                 "maintenance work item: unsupported (tag, version) pair ({unknown_tag}, {unknown_version})"
@@ -535,88 +493,49 @@ mod priority {
     pub(super) const ROUTINE: u8 = 2;
 }
 
-/// Stable queue key: `(priority, tag, discriminator)`. The variant tag is part of the key,
-/// so a Dense-hash discriminator can never collide with a DeleteVertex key even when their
-/// `u32` discriminator ranges overlap (the pre-BTreeMap dirty-bitmap bypass hazard).
-/// Lexicographic key order is the pop order: DeleteVertex, then Retry, then Routine.
-type MaintenanceQueueKey = (u8, u8, u32);
-
-fn work_item_tag(item: &MaintenanceWorkItem) -> u8 {
-    item.tag()
+/// Exact owning identity. Priority orders execution but is not a dedup identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MaintenanceQueueKey {
+    priority: u8,
+    tag: u8,
+    orientation: u8,
+    vid: u32,
+    detail: u64,
 }
 
-/// Collision-free within one `(priority, tag)`: distinct work for the same tag must map to
-/// distinct discriminators (dedup is key presence).
-fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
-    match item {
-        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            u32::from(*vid).saturating_mul(2).saturating_add(orient)
-        }
-        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            ..
-        } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0x4000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1) ^ orient
-        }
-        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
-            orientation, vid, ..
-        } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0xC000_0000u32 ^ u32::from(*vid).wrapping_mul(2_654_435_761) ^ orient
-        }
-        MaintenanceWorkItem::CompactVertexValueSpanV1 { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0x8000_0000 | u32::from(*vid).wrapping_mul(2) ^ orient
-        }
-        MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0x9000_0000 | u32::from(*vid).wrapping_mul(2) ^ orient
-        }
-        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            ..
-        } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0xA000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1) ^ orient
-        }
-        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
-            match orientation {
-                Orientation::Forward => 0x6000_0000,
-                Orientation::Reverse => 0x6000_0001,
-            }
-        }
-        MaintenanceWorkItem::DeleteVertexV1 { vid, .. } => 0xE000_0000 | u32::from(*vid),
-        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
-            vid, bucket_slot, ..
-        } => {
-            // Same discriminator family as the single-orientation queue (Plan 0320
-            // Step 2): hash-spread `(vid, bucket_slot)` so concurrent signals for the
-            // same bucket collapse onto one key (dedup is key presence).
-            0xE000_0000u32 ^ (u32::from(*vid).wrapping_mul(2_654_435_761) ^ *bucket_slot as u32)
+impl MaintenanceQueueKey {
+    fn at_priority(self, priority: u8) -> Self {
+        Self { priority, ..self }
+    }
+}
+
+impl Storable for MaintenanceQueueKey {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 15,
+        is_fixed_size: true,
+    };
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut bytes = vec![self.priority, self.tag, self.orientation];
+        bytes.extend_from_slice(&self.vid.to_le_bytes());
+        bytes.extend_from_slice(&self.detail.to_le_bytes());
+        Cow::Owned(bytes)
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        let b = bytes.as_ref();
+        assert_eq!(b.len(), 15, "invalid maintenance queue key length");
+        assert!(
+            b[0] <= priority::ROUTINE && b[1] <= 8 && b[2] <= 1,
+            "invalid maintenance queue key"
+        );
+        Self {
+            priority: b[0],
+            tag: b[1],
+            orientation: b[2],
+            vid: u32::from_le_bytes(b[3..7].try_into().unwrap()),
+            detail: u64::from_le_bytes(b[7..15].try_into().unwrap()),
         }
     }
 }
@@ -629,20 +548,53 @@ fn work_item_priority(item: &MaintenanceWorkItem) -> u8 {
 }
 
 fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
-    (
-        work_item_priority(item),
-        work_item_tag(item),
-        work_item_discriminator(item),
-    )
+    let (orientation, vid, detail) = match item {
+        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid }
+        | MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+            orientation, vid, ..
+        }
+        | MaintenanceWorkItem::CompactVertexValueSpanV1 { orientation, vid }
+        | MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid } => {
+            (*orientation, *vid, 0)
+        }
+        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            ..
+        }
+        | MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            ..
+        } => (*orientation, *vid, u64::from(*anchor_bucket_index)),
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
+            (*orientation, VertexId::from(0), 0)
+        }
+        MaintenanceWorkItem::DeleteVertexV1 { vid, .. } => (Orientation::Forward, *vid, 0),
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation,
+            cursor,
+        } => {
+            let (vid, slot) = cursor.identity();
+            (*orientation, vid, slot)
+        }
+    };
+    MaintenanceQueueKey {
+        priority: work_item_priority(item),
+        tag: item.tag(),
+        orientation: orientation_byte(orientation),
+        vid: vid.into(),
+        detail,
+    }
 }
 
 /// Priority-ordered maintenance queue backed by a stable B-tree map.
 ///
-/// Replaces the FIFO `StableVecDeque` + dirty RoaringBitmap: key presence is the dedup
-/// promise (no bitmap bookkeeping), the variant tag in the key makes Dense-hash keys
-/// collision-free from the DeleteVertex range, and lexicographic key order yields the
-/// DeleteVertex > Retry > Routine pop order. The queue must be empty at the format switch
-/// (ADR 0052 activation resets stable data); work items are versioned per variant.
+/// Exact identity presence across priorities is the dedup promise. Lexicographic
+/// key order is DeleteVertex > Retry > Routine. New keys/V2 cursors require fresh state;
+/// no legacy key or cursor is decoded. The private queue exclusively moves pending jobs.
 struct BidirectionalMaintenanceQueue<M: Memory> {
     map: RefCell<StableBTreeMap<MaintenanceQueueKey, MaintenanceWorkItem, M>>,
 }
@@ -664,78 +616,68 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         self.map.borrow().len()
     }
 
-    /// Inserts a routine work item unless an identical key is already pending (dedup).
-    fn enqueue(&self, item: &MaintenanceWorkItem) {
-        let key = maintenance_queue_key(item);
+    fn identity_pending(
+        map: &StableBTreeMap<MaintenanceQueueKey, MaintenanceWorkItem, M>,
+        key: MaintenanceQueueKey,
+    ) -> bool {
+        (priority::DELETE_VERTEX..=priority::ROUTINE).any(|p| map.contains_key(&key.at_priority(p)))
+    }
+
+    /// Duplicate signals never replace progress, even after a priority change.
+    fn enqueue(&self, item: MaintenanceWorkItem) {
+        self.enqueue_at(work_item_priority(&item), item);
+    }
+
+    fn enqueue_at(&self, priority: u8, item: MaintenanceWorkItem) {
+        let key = maintenance_queue_key(&item).at_priority(priority);
         let mut map = self.map.borrow_mut();
-        if !map.contains_key(&key) {
-            map.insert(key, item.clone());
+        if !Self::identity_pending(&map, key) {
+            map.insert(key, item);
         }
     }
 
-    /// Inserts a `DeleteVertex` job at the preempting priority. A re-enqueue while one is
-    /// already pending is a no-op that preserves the in-flight phase/`removed_edges` cursor
-    /// (the facade's `mark_vertex_pending_purge` gate already prevents production re-deletes).
-    fn enqueue_delete_vertex(&self, item: &MaintenanceWorkItem) {
+    fn enqueue_delete_vertex(&self, item: MaintenanceWorkItem) {
         debug_assert!(matches!(item, MaintenanceWorkItem::DeleteVertexV1 { .. }));
-        let key = maintenance_queue_key(item);
-        let mut map = self.map.borrow_mut();
-        if !map.contains_key(&key) {
-            map.insert(key, item.clone());
-        }
+        self.enqueue(item);
     }
 
-    /// Pops the highest-priority pending item (first key), returning the exact key it was
-    /// stored under so `complete`/`requeue` can address the same `(tag, discriminator)` even
-    /// when the item was requeued at the Retry priority.
+    /// Move the capability out; no pending item owns this identity.
     fn pop_next(&self) -> Option<(MaintenanceQueueKey, MaintenanceWorkItem)> {
         self.map.borrow_mut().pop_first()
     }
 
-    /// Removes a completed item by the exact key it was stored under (the key returned by
-    /// [`Self::pop_next`] when the item was popped).
     fn complete(&self, key: &MaintenanceQueueKey) {
-        self.map.borrow_mut().remove(key);
+        debug_assert!(!Self::identity_pending(&self.map.borrow(), *key));
     }
 
-    /// Re-inserts a work item at `priority`. Used both for stalled-step retries (Retry) and
-    /// for step continuations (the item's natural priority). Re-insertion after a pop cannot
-    /// collide: the item's own key was removed by the pop and re-keying a popped item at
-    /// another priority keeps the `(tag, discriminator)` pair unique within that priority.
-    fn requeue(&self, key: &MaintenanceQueueKey, priority: u8, item: &MaintenanceWorkItem) {
-        self.map
-            .borrow_mut()
-            .insert((priority, key.1, key.2), item.clone());
+    /// Persist the SAME popped capability, not a clone or replacement signal.
+    fn requeue(&self, key: &MaintenanceQueueKey, priority: u8, item: MaintenanceWorkItem) {
+        let expected = maintenance_queue_key(&item).at_priority(key.priority);
+        assert_eq!(expected, *key, "requeue changed owning identity");
+        let mut map = self.map.borrow_mut();
+        assert!(
+            !Self::identity_pending(&map, *key),
+            "duplicate in-flight identity"
+        );
+        map.insert(key.at_priority(priority), item);
     }
 
-    /// Plan 0320 §F-1: does the queue contain a
-    /// `MaterializeInlinePropertyStreamV1` work item for
-    /// `(orientation, vid, bucket_slot)`? Linear scan; used by the
-    /// wrapper's drain helper to detect completion. The queue is bounded by
-    /// distinct `(vid, bucket_slot)` keys per plan, so the scan is
-    /// at most O(vertices × labels), not O(edges).
     fn contains_materialize(
         &self,
         orientation: Orientation,
         vid: VertexId,
         bucket_slot: u64,
     ) -> bool {
-        let target = u32::from(vid);
-        for entry in self.map.borrow().iter() {
-            if let MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
-                orientation: o,
-                vid: v,
-                bucket_slot: bs,
-                ..
-            } = entry.value()
-                && orientation_byte(o) == orientation_byte(orientation)
-                && u32::from(v) == target
-                && bs == bucket_slot
-            {
-                return true;
-            }
-        }
-        false
+        Self::identity_pending(
+            &self.map.borrow(),
+            MaintenanceQueueKey {
+                priority: priority::ROUTINE,
+                tag: MATERIALIZE_WORK_TAG,
+                orientation: orientation_byte(orientation),
+                vid: vid.into(),
+                detail: bucket_slot,
+            },
+        )
     }
 
     /// Any span or dense item pending for `vid` in `orientation` (coarse dedup scan;
@@ -821,7 +763,7 @@ pub enum DeferredBidirectionalLabeledError {
     /// Plan 0320 §F-1: the insert triggered a 0→w inline-property width
     /// addition above the materialize byte budget. The wrapper intercepted
     /// the inner `InlinePropertyMaterializeDeferredRequired` signal,
-    /// enqueued the stepped `MaterializeInlinePropertyStreamV1` work item,
+    /// enqueued the stepped `MaterializeInlinePropertyStreamV2` work item,
     /// and drained it: by the time this error is returned the materialize
     /// has completed and the descriptor is published. The caller must retry
     /// the same insert; the retry observes the published width and proceeds
@@ -918,8 +860,6 @@ struct MaterializeSignal {
     width: u16,
     /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
     fill_byte: u8,
-    /// Live-ordinal count at signal time; drives `total_bytes = degree * width`.
-    degree: u32,
 }
 
 impl MaterializeSignal {
@@ -932,13 +872,12 @@ impl MaterializeSignal {
                 bucket_slot,
                 width,
                 fill_byte,
-                degree,
+                degree: _,
             } => Ok(Self {
                 vid,
                 bucket_slot,
                 width,
                 fill_byte,
-                degree,
             }),
             other => Err(other),
         }
@@ -1565,7 +1504,7 @@ where
         vid: VertexId,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.maintenance
-            .enqueue(&MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid });
+            .enqueue(MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid });
         Ok(())
     }
 
@@ -1593,7 +1532,7 @@ where
             .vertex_bucket_policies(vid, policy_for_label)
             .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
         self.maintenance
-            .enqueue(&MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            .enqueue(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                 orientation,
                 vid,
                 anchor_bucket_index: bucket_index,
@@ -1730,7 +1669,7 @@ where
             return Ok(());
         }
         self.maintenance
-            .enqueue(&MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid });
+            .enqueue(MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid });
         Ok(())
     }
 
@@ -1757,7 +1696,7 @@ where
             .vertex_bucket_policies(vid, policy_for_label)
             .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
         self.maintenance.enqueue(
-            &MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
                 orientation,
                 vid,
                 policies,
@@ -1772,7 +1711,7 @@ where
         orientation: Orientation,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.maintenance
-            .enqueue(&MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation });
+            .enqueue(MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation });
         Ok(())
     }
 
@@ -1783,11 +1722,8 @@ where
         }
     }
 
-    /// Plan 0320 §F-1: enqueue a stepped `MaterializeInlinePropertyStreamV1`
-    /// work item for one orientation. The inner primitive has already validated
-    /// `(vid, bucket_slot, width, fill_byte, degree)`. Deduplicated by the
-    /// `0xE000_0000 ^ (vid * 2_654_435_761 ^ bucket_slot)` discriminator
-    /// (Plan 0320 Step 2) so concurrent signals collapse into one work item.
+    /// Enqueue a fresh values-admitted capability by exact identity; duplicate
+    /// signals preserve an already reserved cursor across every scheduling priority.
     ///
     /// Enqueued at `priority::RETRY` so it runs ahead of any routine
     /// compaction (dense leaf / value-span / edge-span) enqueued by the
@@ -1801,25 +1737,17 @@ where
         bucket_slot: u64,
         signal: &MaterializeSignal,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        let total_bytes = u64::from(signal.degree)
-            .checked_mul(u64::from(signal.width))
-            .ok_or(DeferredBidirectionalLabeledError::MaintenanceCapture(
-                LabeledOperationError::Store(
-                    crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
-                ),
-            ))?;
-        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
-            orientation,
-            vid: signal.vid,
-            bucket_slot,
-            width: signal.width,
-            fill_byte: signal.fill_byte,
-            reserved_offset: u64::MAX,
-            total_bytes,
-            resume_position: 0,
-        };
-        let key = maintenance_queue_key(&item);
-        self.maintenance.requeue(&key, priority::RETRY, &item);
+        let cursor = self
+            .graph_for(orientation)
+            .materialize_cursor(signal.vid, bucket_slot, signal.width, signal.fill_byte)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
+        self.maintenance.enqueue_at(
+            priority::RETRY,
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+                orientation,
+                cursor,
+            },
+        );
         Ok(())
     }
 
@@ -1934,7 +1862,39 @@ where
             signal.vid,
             current_bucket_slot,
         )?;
-        Ok(current_bucket_slot)
+        // Absence may mean cancellation, not publication. Verify the canonical row.
+        let graph = self.graph_for(orientation);
+        let invalid = || {
+            DeferredBidirectionalLabeledError::MaintenanceCapture(
+                LabeledOperationError::InlinePropertyMaterializationInvalidSource,
+            )
+        };
+        if u32::from(signal.vid) >= graph.vertices().len() {
+            return Err(invalid());
+        }
+        let vertex = graph.vertices().get(signal.vid);
+        if vertex.is_tombstone() || vertex.is_default_edge_labeled() {
+            return Err(invalid());
+        }
+        let (slot, bucket) = match graph
+            .find_bucket(signal.vid, &vertex, label_id)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => return Err(invalid()),
+        };
+        if bucket.is_tiny_mode() || bucket.is_tree_mode() {
+            return Err(invalid());
+        }
+        if bucket.inline_property_byte_width() != signal.width {
+            return Err(DeferredBidirectionalLabeledError::MaintenanceCapture(
+                LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: bucket.inline_property_byte_width(),
+                    edge_inline_property_width: signal.width,
+                },
+            ));
+        }
+        Ok(slot)
     }
 
     /// Wraps a one-orientation inner error into the wrapper error type.
@@ -3499,7 +3459,7 @@ where
                 break;
             }
 
-            let (item_key, item) = match in_flight.take() {
+            let (item_key, mut item) = match in_flight.take() {
                 Some(pair) => pair,
                 None => match self.maintenance.pop_next() {
                     Some(pair) => pair,
@@ -3513,7 +3473,8 @@ where
             // within a single tick; the next maintenance tick retries it with a fresh budget
             // (ADR 0020 retry-never-drop).
             let mut stalled = false;
-            let requeue = match &item {
+            let mut materialize_continuation = false;
+            let requeue = match &mut item {
                 MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
@@ -3678,49 +3639,32 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
                     orientation,
-                    vid,
-                    bucket_slot,
-                    width,
-                    fill_byte,
-                    reserved_offset,
-                    total_bytes,
-                    resume_position,
+                    cursor,
                 } => {
-                    let graph = self.graph_for(*orientation);
-                    match graph.materialize_inline_property_stream_step(
-                        *vid,
-                        *bucket_slot,
-                        *width,
-                        *fill_byte,
-                        *reserved_offset,
-                        *total_bytes,
-                        *resume_position,
-                    ) {
+                    match self
+                        .graph_for(*orientation)
+                        .materialize_inline_property_stream_step(cursor)
+                    {
                         Ok(MaterializeStep::Finished) => {
                             report.work.rebalanced_segments =
                                 report.work.rebalanced_segments.saturating_add(1);
-                            None
                         }
-                        Ok(MaterializeStep::Resumed {
-                            reserved_offset: next_reserved,
-                            resume_position: next_resume,
-                        }) => Some(MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
-                            orientation: *orientation,
-                            vid: *vid,
-                            bucket_slot: *bucket_slot,
-                            width: *width,
-                            fill_byte: *fill_byte,
-                            reserved_offset: next_reserved,
-                            total_bytes: *total_bytes,
-                            resume_position: next_resume,
-                        }),
+                        Ok(MaterializeStep::Resumed) => {
+                            materialize_continuation = true;
+                        }
+                        Ok(MaterializeStep::Cancelled(reason)) => {
+                            // Retirement consumed the capability; never encode it at Retry.
+                            return Err(DeferredBidirectionalLabeledError::MaintenanceCapture(
+                                reason,
+                            ));
+                        }
                         Err(_) => {
                             stalled = true;
-                            None
                         }
                     }
+                    None
                 }
                 MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
                     orientation,
@@ -3797,11 +3741,17 @@ where
                     next
                 }
             };
-            if stalled {
-                // Keep the failed item queued at the Retry priority (its key is unchanged)
-                // and stop the pass.
-                self.maintenance.requeue(&item_key, priority::RETRY, &item);
-                break;
+            if stalled || materialize_continuation {
+                let priority = if stalled {
+                    priority::RETRY
+                } else {
+                    work_item_priority(&item)
+                };
+                self.maintenance.requeue(&item_key, priority, item);
+                if stalled {
+                    break;
+                }
+                continue;
             }
             match requeue {
                 Some(next) if matches!(next, MaintenanceWorkItem::DeleteVertexV1 { .. }) => {
@@ -3810,8 +3760,9 @@ where
                     in_flight = Some((item_key, next));
                 }
                 Some(next) => {
-                    self.maintenance
-                        .requeue(&item_key, work_item_priority(&item), &next);
+                    // Dense completion can produce a different span variant. Derive
+                    // that continuation's own identity; never retain the old tag/key.
+                    self.maintenance.enqueue(next);
                 }
                 None => {
                     self.maintenance.complete(&item_key);
@@ -3822,7 +3773,7 @@ where
         // Persist any in-flight delete continuation before reporting the queue length.
         if let Some((item_key, next)) = in_flight {
             self.maintenance
-                .requeue(&item_key, priority::DELETE_VERTEX, &next);
+                .requeue(&item_key, priority::DELETE_VERTEX, next);
         }
         report.instructions_used = current_instruction_counter().saturating_sub(baseline);
         report.instruction_budget_exhausted |= budget.max_instructions > 0
@@ -4347,7 +4298,7 @@ where
             return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
         }
         self.maintenance
-            .enqueue_delete_vertex(&MaintenanceWorkItem::DeleteVertexV1 {
+            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertexV1 {
                 vid,
                 removed_edges: 0,
             });
@@ -4427,7 +4378,7 @@ where
                 .set(vid, &reverse_row.with_tombstone(true));
         }
         self.maintenance
-            .enqueue_delete_vertex(&MaintenanceWorkItem::DeleteVertexV1 {
+            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertexV1 {
                 vid,
                 removed_edges: 0,
             });
@@ -6446,7 +6397,7 @@ mod tests {
         let (src, label) = tombstoned_three_edge_bucket(&graph);
         graph
             .maintenance
-            .enqueue(&MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            .enqueue(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                 orientation: Orientation::Forward,
                 vid: src,
                 anchor_bucket_index: 0,
@@ -7912,7 +7863,582 @@ mod tests {
         );
     }
 
-    /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV1`
+    #[test]
+    fn materialize_owner_queue_identity_preserves_retry_progress_across_reopen() {
+        let owner =
+            crate::labeled::graph::test_support::inline_property_test_graph_with_capacity(256);
+        let src = owner
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::directed_from_index(2);
+        for i in 0..5 {
+            owner
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        100 + i,
+                        &[],
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let slot = match owner
+            .find_bucket(src, &owner.vertices().get(src), label)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("missing source"),
+        };
+        let mut cursor = owner.materialize_cursor(src, slot, 1000, 0x31).unwrap();
+        assert!(matches!(
+            owner
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Resumed
+        ));
+        let pending = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation: Orientation::Forward,
+            cursor,
+        };
+        let expected = pending.to_bytes().into_owned();
+        assert_eq!(expected.len(), 70);
+        let key = maintenance_queue_key(&pending);
+        assert_eq!(key.to_bytes().len(), 15);
+        assert_eq!(MaintenanceQueueKey::from_bytes(key.to_bytes()), key);
+        let memory = crate::VectorMemory::default();
+        let queue = BidirectionalMaintenanceQueue::new(memory.clone());
+        queue.enqueue_at(priority::RETRY, pending);
+        queue.enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation: Orientation::Forward,
+            cursor: owner.materialize_cursor(src, slot, 1000, 0xA5).unwrap(),
+        });
+        assert_eq!(
+            queue.len(),
+            1,
+            "dedup across Retry/Routine preserves real reservation progress"
+        );
+        let reverse = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation: Orientation::Reverse,
+            cursor: owner.materialize_cursor(src, slot, 1000, 0xB2).unwrap(),
+        };
+        let reverse_bytes = reverse.to_bytes().into_owned();
+        assert_ne!(
+            maintenance_queue_key(&reverse).at_priority(priority::RETRY),
+            key.at_priority(priority::RETRY)
+        );
+        queue.enqueue(reverse);
+        // Pure high-slot encoding/key case; not a backed graph-slot fixture.
+        let high_slot = slot + (1u64 << 32);
+        let mut high_bytes = owner
+            .materialize_cursor(src, slot, 1000, 0xC3)
+            .unwrap()
+            .into_bytes();
+        high_bytes[4..12].copy_from_slice(&high_slot.to_le_bytes());
+        let high = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation: Orientation::Forward,
+            cursor: MaterializeCursor::from_bytes(Cow::Owned(high_bytes)),
+        };
+        let high_bytes = high.to_bytes().into_owned();
+        assert_ne!(
+            maintenance_queue_key(&high).at_priority(priority::RETRY),
+            key.at_priority(priority::RETRY)
+        );
+        queue.enqueue(high);
+        assert_eq!(queue.len(), 3);
+        drop(queue);
+        let queue = BidirectionalMaintenanceQueue::init(memory);
+        assert_eq!(queue.len(), 3);
+        assert!(queue.contains_materialize(Orientation::Forward, src, slot));
+        assert!(queue.contains_materialize(Orientation::Reverse, src, slot));
+        let (popped_key, mut popped) = queue.pop_next().unwrap();
+        assert_eq!(popped_key, key.at_priority(priority::RETRY));
+        assert_eq!(popped.to_bytes().as_ref(), expected);
+        match &mut popped {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 { cursor, .. } => {
+                assert!(matches!(
+                    owner
+                        .materialize_inline_property_stream_step(cursor)
+                        .unwrap(),
+                    MaterializeStep::Finished
+                ))
+            }
+            _ => panic!("wrong pending variant"),
+        }
+        queue.complete(&popped_key);
+        let (_, high) = queue.pop_next().unwrap();
+        assert_eq!(high.to_bytes().as_ref(), high_bytes);
+        let (_, reverse) = queue.pop_next().unwrap();
+        assert_eq!(reverse.to_bytes().as_ref(), reverse_bytes);
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn materialize_owner_codec_rejects_terminal_and_malformed_pending_states() {
+        // Pure codec/source image: no reservation/allocation authority is claimed.
+        let mut cursor = Vec::new();
+        cursor.extend_from_slice(&1u32.to_le_bytes());
+        cursor.extend_from_slice(&7u64.to_le_bytes());
+        cursor.extend_from_slice(&1000u16.to_le_bytes());
+        cursor.push(0x31);
+        cursor.extend_from_slice(
+            &LabelBucket::from_parts(BucketLabelKey::directed_from_index(2), 0, 5, 5).to_bytes(),
+        );
+        cursor.push(0);
+        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            orientation: Orientation::Reverse,
+            cursor: MaterializeCursor::from_bytes(Cow::Owned(cursor.clone())),
+        };
+        let valid = item.into_bytes();
+        assert_eq!(valid.len(), 54);
+        assert_eq!(&valid[..4], &[0x5A, 7, 2, 1]);
+        assert_eq!(
+            MaintenanceWorkItem::from_bytes(Cow::Borrowed(&valid))
+                .to_bytes()
+                .as_ref(),
+            valid
+        );
+        let mut malformed = vec![Vec::new(), vec![0x5A, 7, 1]];
+        for (offset, byte) in [(2, 1), (3, 2), (16, 0), (17, 0), (53, 2)] {
+            let mut bytes = valid.clone();
+            bytes[offset] = byte;
+            if offset == 16 {
+                bytes[17] = 0;
+            }
+            if offset == 17 {
+                bytes[16] = 0;
+            }
+            malformed.push(bytes);
+        }
+        let mut filling = valid.clone();
+        filling[53] = 1;
+        filling.extend_from_slice(&0u64.to_le_bytes());
+        filling.extend_from_slice(&4096u64.to_le_bytes());
+        assert_eq!(
+            MaintenanceWorkItem::from_bytes(Cow::Borrowed(&filling))
+                .to_bytes()
+                .as_ref(),
+            filling
+        );
+        for (offset, number) in [(54, u64::MAX), (62, 5000), (62, 1)] {
+            let mut bytes = filling.clone();
+            bytes[offset..offset + 8].copy_from_slice(&number.to_le_bytes());
+            malformed.push(bytes);
+        }
+        malformed.push(filling[..69].to_vec());
+        for bytes in malformed {
+            assert!(
+                std::panic::catch_unwind(|| MaintenanceWorkItem::from_bytes(Cow::Owned(bytes)))
+                    .is_err()
+            );
+        }
+    }
+
+    fn materialize_owner_worker_retry_scenario(
+        graph: &DeferredBidirectionalLabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+        label: BucketLabelKey,
+    ) {
+        let src = graph.push_vertex().unwrap();
+        for target in 100..105 {
+            graph
+                .forward()
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let slot = match graph
+            .forward()
+            .find_bucket(src, &graph.forward().vertices().get(src), label)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("missing retry source"),
+        };
+        let original_tail = graph.forward().values().header().slab_occupied_tail;
+        let free = graph.forward().values().free_byte_spans();
+        let cursor = graph
+            .forward()
+            .materialize_cursor(src, slot, 1000, 0x31)
+            .unwrap();
+        graph.maintenance.enqueue_at(
+            priority::RETRY,
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+                orientation: Orientation::Forward,
+                cursor,
+            },
+        );
+        let one = MaintenanceBudget {
+            max_work_items: Some(1),
+            ..unbounded_budget()
+        };
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        assert_eq!(graph.maintenance(one).unwrap().remaining_queue_len(), 1);
+        let (key, pending) = graph
+            .maintenance
+            .pop_next()
+            .expect("failed first fill retained");
+        assert_eq!(key.priority, priority::RETRY);
+        assert_eq!(
+            key,
+            maintenance_queue_key(&pending).at_priority(priority::RETRY)
+        );
+        let bytes = pending.to_bytes().into_owned();
+        assert_eq!(bytes.len(), 70);
+        assert_eq!(bytes[53], 1);
+        assert_eq!(
+            u64::from_le_bytes(bytes[54..62].try_into().unwrap()),
+            original_tail
+        );
+        assert_eq!(u64::from_le_bytes(bytes[62..70].try_into().unwrap()), 0);
+        assert_eq!(
+            graph.forward().values().header().slab_occupied_tail,
+            original_tail + 5000
+        );
+        assert_eq!(graph.forward().values().free_byte_spans(), free);
+        assert_eq!(
+            graph
+                .forward()
+                .buckets()
+                .read_label_bucket_slot(slot)
+                .unwrap()
+                .inline_property_byte_width(),
+            0
+        );
+        assert_eq!(
+            graph
+                .forward()
+                .vertices()
+                .get(src)
+                .inline_property_bytes_allocated_bytes(),
+            0
+        );
+        graph.maintenance.requeue(&key, priority::RETRY, pending);
+        assert_eq!(graph.maintenance(one).unwrap().remaining_queue_len(), 1);
+        let (routine_key, resumed) = graph.maintenance.pop_next().unwrap();
+        assert_eq!(routine_key, key.at_priority(priority::ROUTINE));
+        let resumed_bytes = resumed.to_bytes().into_owned();
+        assert_eq!(
+            u64::from_le_bytes(resumed_bytes[54..62].try_into().unwrap()),
+            original_tail
+        );
+        assert_eq!(
+            u64::from_le_bytes(resumed_bytes[62..70].try_into().unwrap()),
+            4096
+        );
+        graph
+            .maintenance
+            .requeue(&routine_key, priority::ROUTINE, resumed);
+        let mut before = vec![0; 5000];
+        graph
+            .forward()
+            .values()
+            .read_bytes(original_tail, &mut before);
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        assert_eq!(graph.maintenance(one).unwrap().remaining_queue_len(), 1);
+        let (retry_key, retry) = graph
+            .maintenance
+            .pop_next()
+            .expect("failed resumed fill retained");
+        assert_eq!(retry_key, key);
+        assert_eq!(retry.to_bytes().as_ref(), resumed_bytes);
+        assert_eq!(graph.forward().values().free_byte_spans(), free);
+        let mut after = vec![0; 5000];
+        graph
+            .forward()
+            .values()
+            .read_bytes(original_tail, &mut after);
+        assert_eq!(after, before);
+        graph
+            .maintenance
+            .requeue(&retry_key, priority::RETRY, retry);
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert!(
+            !graph
+                .maintenance
+                .contains_materialize(Orientation::Forward, src, slot)
+        );
+        let bucket = graph
+            .forward()
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .unwrap();
+        assert_eq!(bucket.inline_property_byte_width(), 1000);
+        assert_eq!(bucket.inline_property_bytes_offset(), original_tail);
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 5);
+        assert_eq!(
+            graph
+                .forward()
+                .vertices()
+                .get(src)
+                .inline_property_bytes_allocated_bytes(),
+            5000
+        );
+        graph
+            .forward()
+            .values()
+            .read_bytes(original_tail, &mut after);
+        assert_eq!(after, vec![0x31; 5000]);
+        assert_eq!(graph.forward().values().free_byte_spans(), free);
+    }
+
+    fn materialize_owner_absence_rejects_wrong_published_width_scenario(
+        graph: &DeferredBidirectionalLabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+        label: BucketLabelKey,
+    ) {
+        let src = graph.push_vertex().unwrap();
+        for target in 100..105 {
+            graph
+                .forward()
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let slot = match graph
+            .forward()
+            .find_bucket(src, &graph.forward().vertices().get(src), label)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("missing differing-width source"),
+        };
+        let cursor = graph
+            .forward()
+            .materialize_cursor(src, slot, 1000, 0x31)
+            .unwrap();
+        graph.maintenance.enqueue_at(
+            priority::RETRY,
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+                orientation: Orientation::Forward,
+                cursor,
+            },
+        );
+        // A sibling-drain failure retains the old cursor so the fresh width8 signal
+        // deduplicates it. Only the post-drain canonical guard can reject width1000.
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        let signal = MaterializeSignal {
+            vid: src,
+            bucket_slot: slot,
+            width: 8,
+            fill_byte: 0xA5,
+        };
+        assert!(matches!(
+            graph.run_inline_property_materialize(Orientation::Forward, label, &signal),
+            Err(DeferredBidirectionalLabeledError::MaintenanceCapture(
+                LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: 1000,
+                    edge_inline_property_width: 8
+                }
+            ))
+        ));
+        assert!(
+            !graph
+                .maintenance
+                .contains_materialize(Orientation::Forward, src, slot)
+        );
+        let bucket = match graph
+            .forward()
+            .find_bucket(src, &graph.forward().vertices().get(src), label)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("published source missing"),
+        };
+        assert_eq!(bucket.inline_property_byte_width(), 1000);
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 5);
+        assert_eq!(
+            graph
+                .forward()
+                .vertices()
+                .get(src)
+                .inline_property_bytes_allocated_bytes(),
+            5000
+        );
+        let mut bytes = vec![0; 5000];
+        graph
+            .forward()
+            .values()
+            .read_bytes(bucket.inline_property_bytes_offset(), &mut bytes);
+        assert_eq!(
+            bytes,
+            vec![0x31; 5000],
+            "preserve the original cursor's publication, not the fresh fill"
+        );
+    }
+
+    #[test]
+    fn materialize_owner_wrapper_publishes_both_orientations_and_surfaces_cancellation() {
+        let graph = inline_property_bidi_graph();
+        let src = graph.push_vertex().unwrap();
+        let dst = graph.push_vertex().unwrap();
+        let label = BucketLabelKey::directed_from_index(2);
+        for _ in 0..600 {
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(u32::from(dst), &[]),
+                    InlinePropertyTestEdge::with_bytes(u32::from(src), &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            graph.insert_directed_edge(
+                src,
+                dst,
+                label,
+                InlinePropertyTestEdge::with_bytes(u32::from(dst), &[0xA5; 8]),
+                InlinePropertyTestEdge::with_bytes(u32::from(src), &[0xB2; 8]),
+                EdgePlacementPolicy::Insertion
+            ),
+            Err(DeferredBidirectionalLabeledError::InlinePropertyMaterializePending { .. })
+        ));
+        let pending_forward = match graph
+            .forward()
+            .find_bucket(src, &graph.forward().vertices().get(src), label)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("missing pending source"),
+        };
+        assert_eq!(pending_forward.inline_property_byte_width(), 8);
+        assert_eq!(pending_forward.inline_property_bytes_slab_slots(), 600);
+        let pending_reverse = match graph
+            .reverse()
+            .find_bucket(dst, &graph.reverse().vertices().get(dst), label)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("missing pending reverse"),
+        };
+        assert_eq!(pending_reverse.inline_property_byte_width(), 0);
+        graph
+            .insert_directed_edge(
+                src,
+                dst,
+                label,
+                InlinePropertyTestEdge::with_bytes(u32::from(dst), &[0xA5; 8]),
+                InlinePropertyTestEdge::with_bytes(u32::from(src), &[0xB2; 8]),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        for (owner, vertex_id, new_value) in
+            [(graph.forward(), src, 0xA5), (graph.reverse(), dst, 0xB2)]
+        {
+            let bucket = match owner
+                .find_bucket(vertex_id, &owner.vertices().get(vertex_id), label)
+                .unwrap()
+            {
+                BucketSearch::Found { bucket, .. } => bucket,
+                _ => panic!("missing published source"),
+            };
+            assert_eq!(bucket.inline_property_byte_width(), 8);
+            assert_eq!(bucket.degree(), 601);
+            assert_eq!(bucket.inline_property_bytes_slab_slots(), 601);
+            let mut new_bytes = vec![0; 8];
+            owner.values().read_value_slot(
+                bucket.inline_property_bytes_offset() + 600 * 8,
+                8,
+                &mut new_bytes,
+            );
+            assert_eq!(new_bytes, vec![new_value; 8]);
+            for ordinal in 0..600 {
+                let mut bytes = vec![0xFF; 8];
+                owner.values().read_value_slot(
+                    bucket.inline_property_bytes_offset() + ordinal * 8,
+                    8,
+                    &mut bytes,
+                );
+                assert_eq!(bytes, vec![0; 8]);
+            }
+        }
+        graph.maintenance(unbounded_budget()).unwrap();
+        materialize_owner_worker_retry_scenario(&graph, label);
+        materialize_owner_absence_rejects_wrong_published_width_scenario(&graph, label);
+        let fresh = graph.push_vertex().unwrap();
+        for i in 0..5 {
+            graph
+                .forward()
+                .insert_edge_skip_leaf_cascade(
+                    fresh,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(100 + i, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let slot = match graph
+            .forward()
+            .find_bucket(fresh, &graph.forward().vertices().get(fresh), label)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("missing cancel source"),
+        };
+        let cursor = graph
+            .forward()
+            .materialize_cursor(fresh, slot, 1000, 0x31)
+            .unwrap();
+        graph
+            .forward()
+            .materialize_inline_property_stream(fresh, slot, 2, 0x77)
+            .unwrap();
+        let bucket = graph
+            .forward()
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .unwrap();
+        graph.maintenance.enqueue_at(
+            priority::RETRY,
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+                orientation: Orientation::Forward,
+                cursor,
+            },
+        );
+        assert!(matches!(
+            graph.drain_materialize_inline_property_stream_for(Orientation::Forward, fresh, slot),
+            Err(DeferredBidirectionalLabeledError::MaintenanceCapture(
+                LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: 2,
+                    edge_inline_property_width: 1000
+                }
+            ))
+        ));
+        assert!(
+            !graph
+                .maintenance
+                .contains_materialize(Orientation::Forward, fresh, slot)
+        );
+        assert_eq!(
+            graph
+                .forward()
+                .buckets()
+                .read_label_bucket_slot(slot)
+                .unwrap(),
+            bucket
+        );
+        for ordinal in 0..5 {
+            let mut bytes = vec![0; 2];
+            graph.forward().values().read_value_slot(
+                bucket.inline_property_bytes_offset() + ordinal * 2,
+                2,
+                &mut bytes,
+            );
+            assert_eq!(bytes, vec![0x77; 2]);
+        }
+    }
+
+    /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV2`
     /// work item directly, drain the queue, and verify the bucket descriptor is
     /// published (width > 0, slab_slots == degree, log reset).
     #[test]
@@ -7941,15 +8467,12 @@ mod tests {
         };
         graph
             .maintenance
-            .enqueue(&MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            .enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
                 orientation: Orientation::Forward,
-                vid: src,
-                bucket_slot,
-                width: 4,
-                fill_byte: 0xAB,
-                reserved_offset: u64::MAX,
-                total_bytes: 12,
-                resume_position: 0,
+                cursor: graph
+                    .forward()
+                    .materialize_cursor(src, bucket_slot, 4, 0xAB)
+                    .expect("admit cursor"),
             });
         let budget = MaintenanceBudget {
             max_instructions: 0,

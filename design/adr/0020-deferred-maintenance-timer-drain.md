@@ -179,6 +179,27 @@ ADR bounds and schedules only the **physical reclamation queue**.
   This is already true transiently today and is visibility-neutral.
 - A new `#[post_upgrade]` hook is introduced on the graph canister.
 
+### Materialization reservation lifecycle
+
+The labeled bidirectional queue owns opaque, non-Clone materialization cursors. Its current
+fixed15-byte key is priority/tag/orientation/vid/full detail; logical identity excludes scheduling
+priority. Materialization detail is the full physical bucket slot. Dedup checks every priority,
+so a fresh signal cannot replace reserved progress or collapse Forward into Reverse. Dense→span
+continuations derive their own new variant key; retries move the same exact popped identity.
+
+Materialize tag7 uses V2 only. The values owner captures a checked canonical source image and
+owns shared source/schema/accounting admission plus prepared descriptor/vertex publication.
+Filling reservations retain exact offset/progress on transient failures at Retry. Successful
+publication consumes once. Source/schema invalidation retires only that cursor's unpublished
+range: retirement failure retains it; success returns terminal Cancelled with the original typed
+error, never requeues a consumed cursor. The wrapper surfaces cancellation as MaintenanceCapture
+and verifies actual canonical requested width before claiming its published Pending/retry result.
+
+Queue key/item/API changes require fresh state/reinstall. No legacy key/V1 decoder, new allocation
+catalog or MemoryId is provided. Native reopen and owning regressions do not certify actual timer,
+canister upgrade/rollback, root/cover/pin, selected codec, costs or adoption. Implementation validation
+is tracked by [0400](../../plans/0400-materialization-owner-implementation.md).
+
 ### Failure-mode contract: failed compaction steps are retried, never dropped (2026-06-20)
 
 A compaction step (`compact_vertex_edge_span_one_step`) can fail after partially

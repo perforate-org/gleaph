@@ -19,7 +19,8 @@ use crate::{
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-use ic_stable_structures::Memory;
+use ic_stable_structures::{Memory, Storable, storable::Bound};
+use std::borrow::Cow;
 
 pub(super) struct BucketInlinePropertyBytesDeletePlan {
     bucket: LabelBucket,
@@ -30,23 +31,140 @@ pub(super) struct BucketInlinePropertyBytesDeletePlan {
     updated_vertex: LabeledVertex,
 }
 
-/// Plan 0320 §Step 2: per-step return for
-/// `materialize_inline_property_stream_step`. The worker pops, calls
-/// the step, and either re-enqueues with the new reservation state
-/// (`Resumed`) or drops the work item after publishing the
-/// descriptor (`Finished`).
+/// Both canonical writes are admitted; publication has no recoverable failure.
+struct MaterializePublication<'a, M: Memory> {
+    bucket: crate::labeled::bucket_store::PreparedExistingBucketRow<'a, M>,
+    vertex: crate::lara::vertex::PreparedVertexWrite<'a, LabeledVertex>,
+}
+
+impl<M: Memory> MaterializePublication<'_, M> {
+    fn publish(self) {
+        self.bucket.write();
+        self.vertex.write();
+    }
+}
+
+/// Exclusive unpublished reservation. Only the values owner creates cursors; the
+/// private maintenance queue moves/decodes pending cursors. Never clone a capability.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MaterializeCursor {
+    src: VertexId,
+    bucket_slot: u64,
+    width: u16,
+    fill_byte: u8,
+    source: LabelBucket,
+    progress: MaterializeProgress,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MaterializeProgress {
+    Unreserved,
+    Filling { offset: u64, position: u64 },
+    Consumed,
+}
+
+impl MaterializeCursor {
+    const STEP_BYTES: u64 = 4096;
+
+    pub(crate) fn identity(&self) -> (VertexId, u64) {
+        (self.src, self.bucket_slot)
+    }
+
+    fn total_bytes(&self) -> u64 {
+        u64::from(self.source.degree()) * u64::from(self.width)
+    }
+
+    fn is_consumed(&self) -> bool {
+        matches!(self.progress, MaterializeProgress::Consumed)
+    }
+}
+
+// Trusted queue persistence, not an allocation-provenance check. There is no raw
+// resume API and no public constructor; only pending capabilities can be encoded.
+impl Storable for MaterializeCursor {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: (32 + LabelBucket::BYTES) as u32,
+        is_fixed_size: false,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        assert!(
+            !self.is_consumed(),
+            "cannot persist consumed materialization cursor"
+        );
+        let mut bytes = Vec::with_capacity(32 + LabelBucket::BYTES);
+        bytes.extend_from_slice(&u32::from(self.src).to_le_bytes());
+        bytes.extend_from_slice(&self.bucket_slot.to_le_bytes());
+        bytes.extend_from_slice(&self.width.to_le_bytes());
+        bytes.push(self.fill_byte);
+        bytes.extend_from_slice(&self.source.to_bytes());
+        match self.progress {
+            MaterializeProgress::Unreserved => bytes.push(0),
+            MaterializeProgress::Filling { offset, position } => {
+                bytes.push(1);
+                bytes.extend_from_slice(&offset.to_le_bytes());
+                bytes.extend_from_slice(&position.to_le_bytes());
+            }
+            MaterializeProgress::Consumed => unreachable!(),
+        }
+        Cow::Owned(bytes)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let base = 16 + LabelBucket::BYTES;
+        assert!(
+            bytes.len() == base || bytes.len() == base + 16,
+            "invalid materialization cursor length"
+        );
+        let source = LabelBucket::try_read_from(&bytes[15..base - 1])
+            .expect("invalid materialization source image");
+        let width = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
+        assert!(
+            width > 0
+                && !source.is_tiny_mode()
+                && !source.is_tree_mode()
+                && source.inline_property_byte_width() == 0
+                && source.degree() > 0,
+            "invalid materialization source schema"
+        );
+        let progress = match (bytes[base - 1], bytes.len()) {
+            (0, len) if len == base => MaterializeProgress::Unreserved,
+            (1, len) if len == base + 16 => {
+                let offset = u64::from_le_bytes(bytes[base..base + 8].try_into().unwrap());
+                let position = u64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap());
+                let total = u64::from(source.degree()) * u64::from(width);
+                assert!(
+                    position < total
+                        && position % Self::STEP_BYTES == 0
+                        && crate::slab_index::checked_add_byte_offset(offset, total).is_some(),
+                    "invalid materialization reservation extent"
+                );
+                MaterializeProgress::Filling { offset, position }
+            }
+            _ => panic!("invalid materialization cursor state"),
+        };
+        Self {
+            src: VertexId::from(u32::from_le_bytes(bytes[0..4].try_into().unwrap())),
+            bucket_slot: u64::from_le_bytes(bytes[4..12].try_into().unwrap()),
+            width,
+            fill_byte: bytes[14],
+            source,
+            progress,
+        }
+    }
+}
+
+/// Terminal cancellation is distinct from retryable errors: never queue Consumed.
+#[derive(Debug)]
 pub(crate) enum MaterializeStep {
-    /// Step wrote the final chunk; descriptor published; drop the
-    /// work item.
     Finished,
-    /// Step wrote a non-final chunk; the work item must be
-    /// re-enqueued with the advanced reservation state.
-    Resumed {
-        /// Slab offset of the reservation (unchanged across steps).
-        reserved_offset: u64,
-        /// Next byte position to write.
-        resume_position: u64,
-    },
+    Resumed,
+    Cancelled(LabeledOperationError),
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -692,275 +810,231 @@ where
     /// The constant matches one VirtualMemory page (4 KiB), aligning with
     /// `grow_byte_span_in_place` tail-extend granularity. Picked in the
     /// Plan 0320 Step 0 audit (0.7).
-    pub(crate) const INLINE_MATERIALIZE_BYTE_BUDGET: u64 = 4096;
+    pub(crate) const INLINE_MATERIALIZE_BYTE_BUDGET: u64 = MaterializeCursor::STEP_BYTES;
 
-    #[allow(clippy::needless_return)]
-    /// Plan 0320: materializes a dense, tombstone-inclusive w-byte-per-position
-    /// inline property stream for a non-empty slab bucket.
-    ///
-    /// The primitive is the first production consumer of stepped/resumable
-    /// maintenance (ADR 0021) outside the edge-slab world. After publish, the
-    /// bucket has `inline_property_byte_width = w`,
-    /// `inline_property_bytes_slab_slots = S`, `inline_property_bytes_offset`
-    /// pointing at the reserved span, and the log fields reset
-    /// (`log_head = -1` / `log_len = 0`). All S positions are filled with
-    /// `fill_byte`; live-position backfill happens above LARA per ADR 0008.
-    ///
-    /// Preconditions (fail-closed at the first failure, Plan 0320 §0.14):
-    /// 1. `w > 0` and `w <= u16::MAX` (u16 is the representation bound).
-    /// 2. Bucket is slab-mode (tree-mode property insert is LPB-in-tree).
-    /// 3. `bucket.inline_property_byte_width() == 0` (w1→w2 deferred).
-    /// 4. `bucket.stored_slots() > 0` (empty bucket is the schema_unset fast
-    ///    path; caller must use `ensure_bucket_inline_property_byte_width_on_slot`).
-    ///
-    /// Phases:
-    /// 1. RESERVE — `INLINE_MATERIALIZE_BYTE_BUDGET`-gated: inline (small)
-    ///    or deferred (large). The inline path reserves
-    ///    `inline_property_bytes_compaction_needed` + `append_byte_span` once,
-    ///    fills, publishes, updates vertex accounting, all in one call.
-    ///    The deferred path enqueues a `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1`
-    ///    cursor; the worker resumes the fill across queue pops.
-    /// 2. FILL (stepped) — write `fill_byte` to every position via `write_bytes`.
-    /// 3. PUBLISH — descriptor + log reset + vertex accounting in one window.
-    ///
-    /// Failure containment (Plan 0320 §0.1, §0.6): any error before publish
-    /// retires the reserved span and leaves the bucket at `width=0` untouched
-    /// (atomic; mirrors demotion's containment pattern).
+    /// Shared source/schema/accounting admission. Tiny payload is never read as schema.
+    fn materialize_source(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        width: u16,
+    ) -> Result<(LabeledVertex, LabelBucket), LabeledOperationError> {
+        if width == 0 {
+            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: 0,
+                edge_inline_property_width: width,
+            });
+        }
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_tombstone()
+            || vertex.is_default_edge_labeled()
+            || bucket_slot
+                .checked_sub(vertex.base_slot_start())
+                .is_none_or(|index| index >= u64::from(vertex.degree()))
+        {
+            return Err(LabeledOperationError::InlinePropertyMaterializationInvalidSource);
+        }
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(bucket_slot)
+            .ok_or(LabeledOperationError::InlinePropertyMaterializationInvalidSource)?;
+        match BucketMode::from_bucket(&bucket) {
+            BucketMode::Tiny => {}
+            BucketMode::Tree => {
+                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: bucket.inline_property_byte_width(),
+                    edge_inline_property_width: width,
+                });
+            }
+            BucketMode::Slab => {
+                if bucket.inline_property_byte_width() != 0 || bucket.degree() == 0 {
+                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                        bucket_width: bucket.inline_property_byte_width(),
+                        edge_inline_property_width: width,
+                    });
+                }
+            }
+        }
+        let total = u64::from(bucket.degree()) * u64::from(width);
+        let account = vertex
+            .inline_property_bytes_allocated_bytes()
+            .checked_add(total)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let updated_vertex = vertex.try_with_inline_property_bytes_allocated_bytes(account)?;
+        Ok((updated_vertex, bucket))
+    }
+
+    /// Values-owned constructor; normalization precedes the captured source image.
+    pub(crate) fn materialize_cursor(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        width: u16,
+        fill_byte: u8,
+    ) -> Result<MaterializeCursor, LabeledOperationError> {
+        let (_, source) = self.materialize_source(src, bucket_slot, width)?;
+        if source.is_tiny_mode() {
+            self.promote_tiny_to_slab(src, bucket_slot, &source)?;
+            return self.materialize_cursor(src, bucket_slot, width, fill_byte);
+        }
+        Ok(MaterializeCursor {
+            src,
+            bucket_slot,
+            width,
+            fill_byte,
+            source,
+            progress: MaterializeProgress::Unreserved,
+        })
+    }
+
+    fn prepare_materialize_publication(
+        &self,
+        cursor: &MaterializeCursor,
+        offset: u64,
+    ) -> Result<MaterializePublication<'_, M>, LabeledOperationError> {
+        let (vertex, bucket) =
+            self.materialize_source(cursor.src, cursor.bucket_slot, cursor.width)?;
+        if bucket != cursor.source {
+            return Err(LabeledOperationError::InlinePropertyMaterializationInvalidSource);
+        }
+        crate::slab_index::checked_add_byte_offset(offset, cursor.total_bytes())
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let updated = bucket
+            .with_inline_property_byte_width(cursor.width)
+            .with_inline_property_bytes_offset(offset)
+            .with_inline_property_bytes_slab_slots(bucket.degree())
+            .without_values_spill_run();
+        let bucket_write = self
+            .buckets
+            .prepare_existing_bucket_slot(cursor.bucket_slot, updated)?;
+        let vertex_write = self.vertices.prepare_set(cursor.src, &vertex)?;
+        Ok(MaterializePublication {
+            bucket: bucket_write,
+            vertex: vertex_write,
+        })
+    }
+
+    /// Materialize a live-ordinal stream inline, or request an exclusive queued cursor.
     pub(crate) fn materialize_inline_property_stream(
         &self,
         src: VertexId,
         bucket_slot: u64,
-        w: u16,
+        width: u16,
         fill_byte: u8,
     ) -> Result<(), LabeledOperationError> {
-        // Preconditions (fail-closed at the first violation).
-        if w == 0 {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: 0,
-                edge_inline_property_width: w,
-            });
+        let cursor = self.materialize_cursor(src, bucket_slot, width, fill_byte)?;
+        if cursor.total_bytes() > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
+            return Err(
+                LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                    vid: src,
+                    bucket_slot,
+                    width,
+                    fill_byte,
+                    degree: cursor.source.degree(),
+                },
+            );
         }
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(bucket_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read, so a future mode cannot silently inherit a path.
-        match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §4b capacity contract: value admission never serves tiny
-            // buckets. ADR 0096 §4: materialize on tiny promotes first (tiny
-            // holds no values); the width checks below would otherwise read
-            // payload bytes as schema.
-            BucketMode::Tiny => {
-                self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
-                self.materialize_inline_property_stream(src, bucket_slot, w, fill_byte)
-            }
-            BucketMode::Tree => {
-                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                    bucket_width: bucket.inline_property_byte_width(),
-                    edge_inline_property_width: w,
-                });
-            }
-            BucketMode::Slab => {
-                // Width check lives INSIDE the Slab arm (§7.1).
-                if bucket.inline_property_byte_width() != 0 {
-                    // w1→w2 re-encoding is deferred.
-                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                        bucket_width: bucket.inline_property_byte_width(),
-                        edge_inline_property_width: w,
-                    });
-                }
-                let s = bucket.degree();
-                if s == 0 {
-                    // Empty bucket: caller should use the schema_unset fast path.
-                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                        bucket_width: 0,
-                        edge_inline_property_width: w,
-                    });
-                }
-                let total_bytes = u64::from(s)
-                    .checked_mul(u64::from(w))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if total_bytes <= Self::INLINE_MATERIALIZE_BYTE_BUDGET {
-                    // Inline fast path: reserve, fill, publish, update accounting
-                    // in one synchronous call.
-                    self.materialize_inline_property_stream_inline(
-                        src,
-                        bucket_slot,
-                        w,
-                        fill_byte,
-                        s,
-                        total_bytes,
-                    )
-                } else {
-                    // Plan 0320 §F-1: the inner graph has no maintenance queue
-                    // (the queue is owned by the deferred-maintenance wrapper).
-                    // Surface the work-item payload as a typed signal so the
-                    // wrapper can intercept, enqueue, drain, and retry.
-                    Err(
-                        LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
-                            vid: src,
-                            bucket_slot,
-                            width: w,
-                            fill_byte,
-                            degree: s,
-                        },
-                    )
-                }
-            }
-        }
-    }
-
-    fn materialize_inline_property_stream_inline(
-        &self,
-        src: VertexId,
-        bucket_slot: u64,
-        w: u16,
-        fill_byte: u8,
-        s: u32,
-        total_bytes: u64,
-    ) -> Result<(), LabeledOperationError> {
-        // Compaction interplay (0.4): preflight compaction when the allocator
-        // is fragmented.
-        if !self.inline_property_bytes_compaction_deferred.get()
-            && self.inline_property_bytes_compaction_needed(total_bytes)?
-        {
-            let _ = self.compact_inline_property_bytes_slab()?;
-        }
-        // RESERVE: append_byte_span (first-span pattern, matches insert path).
-        let offset = self
+        self.materialize_compaction_before_reserve(cursor.total_bytes())?;
+        let offset = self.values.header().slab_occupied_tail;
+        let publication = self.prepare_materialize_publication(&cursor, offset)?;
+        let mut retirement = self
             .values
-            .append_byte_span(total_bytes)
-            .map_err(LabeledOperationError::from)?;
-        // FILL: write the fill byte to every position. On any error, retire
-        // the reserved span and surface the error (atomic containment).
-        let fill_buf = vec![
-            fill_byte;
-            usize::try_from(total_bytes)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-        ];
-        if let Err(err) = self.values.write_bytes(offset, &fill_buf) {
-            let _ = self.values.retire_byte_span(offset, total_bytes);
-            return Err(LabeledOperationError::from(err));
+            .prepare_retire_byte_span(offset, cursor.total_bytes())?;
+        let rollback = retirement
+            .ready()
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let fill = vec![fill_byte; cursor.total_bytes() as usize];
+        let reserved = self.values.append_byte_span(cursor.total_bytes())?;
+        assert_eq!(reserved, offset, "inline reservation moved after admission");
+        if let Err(error) = self.values.write_bytes(offset, &fill) {
+            rollback.publish();
+            return Err(error.into());
         }
-        // PUBLISH: descriptor (width + offset + slab_slots + log reset)
-        // + vertex accounting in one window.
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(bucket_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let updated = bucket
-            .with_inline_property_byte_width(w)
-            .with_inline_property_bytes_offset(offset)
-            .with_inline_property_bytes_slab_slots(s)
-            .without_values_spill_run();
-        self.buckets.write_label_bucket_slot(bucket_slot, updated)?;
-        // Vertex accounting: add `S * w` bytes.
-        let vertex = self.vertices.get(src);
-        let current = vertex.inline_property_bytes_allocated_bytes();
-        let new_alloc = current
-            .checked_add(total_bytes)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let updated_vertex = vertex
-            .try_with_inline_property_bytes_allocated_bytes(new_alloc)
-            .map_err(LabeledOperationError::from)?;
-        self.vertices.set(src, &updated_vertex);
+        // Both writers are admitted; there is no recoverable error after first publication.
+        publication.publish();
         Ok(())
     }
 
-    /// Plan 0320 §Step 2: stepped worker entry. Reserves the byte
-    /// span on first call (`reserved_offset == u64::MAX`), writes one
-    /// `STEP_BYTES` chunk per call, and publishes the descriptor on
-    /// the final step. Returns the next reservation state for
-    /// re-enqueue, or `Finished` once the descriptor is published.
+    fn materialize_compaction_before_reserve(
+        &self,
+        total: u64,
+    ) -> Result<(), LabeledOperationError> {
+        if !self.inline_property_bytes_compaction_deferred.get()
+            && self.inline_property_bytes_compaction_needed(total)?
+        {
+            self.compact_inline_property_bytes_slab()?;
+        }
+        Ok(())
+    }
+
+    fn cancel_materialize(
+        &self,
+        cursor: &mut MaterializeCursor,
+        reason: LabeledOperationError,
+    ) -> Result<MaterializeStep, LabeledOperationError> {
+        if let MaterializeProgress::Filling { offset, .. } = cursor.progress {
+            // Atomic allocator retirement: failure leaves this capability pending and owned.
+            self.values.retire_byte_span(offset, cursor.total_bytes())?;
+        }
+        cursor.progress = MaterializeProgress::Consumed;
+        Ok(MaterializeStep::Cancelled(reason))
+    }
+
+    /// Advance the same exclusive capability. Err retains it; Cancelled consumes it.
     pub(crate) fn materialize_inline_property_stream_step(
         &self,
-        src: VertexId,
-        bucket_slot: u64,
-        w: u16,
-        fill_byte: u8,
-        reserved_offset: u64,
-        total_bytes: u64,
-        resume_position: u64,
+        cursor: &mut MaterializeCursor,
     ) -> Result<MaterializeStep, LabeledOperationError> {
-        const STEP_BYTES: u64 = 4096;
-        // On first call, reserve the byte span.
-        let reserved_offset = if reserved_offset == u64::MAX {
-            // ADR 0096 §7: match-first dispatch — mode decides before any schema
-            // write. A tiny bucket holds inline targets in the very bytes the
-            // width/offset/slot fields would occupy, so the final publish would
-            // corrupt the payload (the reader then rejects the row). The
-            // non-stepped sibling promotes in its Tiny arm for the same reason;
-            // this worker (the deferred/large case of the same operation) must
-            // reach the same shape first. Checked on the reserving call only: a
-            // resumed call can only follow a completed reserve, which already
-            // promoted.
-            let bucket = self
-                .buckets
-                .read_label_bucket_slot(bucket_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.is_tiny_mode() {
-                self.promote_tiny_to_slab(src, bucket_slot, &bucket)?;
-            }
-            if !self.inline_property_bytes_compaction_deferred.get()
-                && self.inline_property_bytes_compaction_needed(total_bytes)?
-            {
-                let _ = self.compact_inline_property_bytes_slab()?;
-            }
-            self.values
-                .append_byte_span(total_bytes)
-                .map_err(LabeledOperationError::from)?
-        } else {
-            reserved_offset
-        };
-        // Write one step's worth of fill.
-        let write_end = (resume_position + STEP_BYTES).min(total_bytes);
-        let write_len = write_end - resume_position;
-        if write_len > 0 {
-            let fill_buf = vec![
-                fill_byte;
-                usize::try_from(write_len)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-            ];
-            if let Err(err) = self
-                .values
-                .write_bytes(reserved_offset + resume_position, &fill_buf)
-            {
-                // On any write error, retire the reserved span to keep
-                // the allocator consistent. The bucket descriptor is
-                // not yet published, so the bucket stays at w=0.
-                let _ = self.values.retire_byte_span(reserved_offset, total_bytes);
-                return Err(LabeledOperationError::from(err));
-            }
+        if cursor.is_consumed() {
+            return Err(LabeledOperationError::InlinePropertyMaterializationConsumed);
         }
-        if write_end >= total_bytes {
-            // Final step: publish descriptor + update accounting.
-            let bucket = self
-                .buckets
-                .read_label_bucket_slot(bucket_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let s = bucket.degree();
-            let updated = bucket
-                .with_inline_property_byte_width(w)
-                .with_inline_property_bytes_offset(reserved_offset)
-                .with_inline_property_bytes_slab_slots(s)
-                .without_values_spill_run();
-            self.buckets.write_label_bucket_slot(bucket_slot, updated)?;
-            let vertex = self.vertices.get(src);
-            let current = vertex.inline_property_bytes_allocated_bytes();
-            let new_alloc = current
-                .checked_add(total_bytes)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let updated_vertex = vertex
-                .try_with_inline_property_bytes_allocated_bytes(new_alloc)
-                .map_err(LabeledOperationError::from)?;
-            self.vertices.set(src, &updated_vertex);
+        match self.materialize_source(cursor.src, cursor.bucket_slot, cursor.width) {
+            Ok((_, source)) if source == cursor.source => {}
+            Ok(_) => {
+                return self.cancel_materialize(
+                    cursor,
+                    LabeledOperationError::InlinePropertyMaterializationInvalidSource,
+                );
+            }
+            Err(reason) => return self.cancel_materialize(cursor, reason),
+        }
+        let (offset, position) = match cursor.progress {
+            MaterializeProgress::Unreserved => {
+                self.materialize_compaction_before_reserve(cursor.total_bytes())?;
+                let offset = self.values.append_byte_span(cursor.total_bytes())?;
+                // Durable owner updates before every subsequent fallible operation.
+                cursor.progress = MaterializeProgress::Filling {
+                    offset,
+                    position: 0,
+                };
+                (offset, 0)
+            }
+            MaterializeProgress::Filling { offset, position } => (offset, position),
+            MaterializeProgress::Consumed => unreachable!(),
+        };
+        let publication = self.prepare_materialize_publication(cursor, offset)?;
+        let end = position
+            .checked_add(Self::INLINE_MATERIALIZE_BYTE_BUDGET)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .min(cursor.total_bytes());
+        let destination = offset
+            .checked_add(position)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.values.write_bytes(
+            destination,
+            &vec![cursor.fill_byte; (end - position) as usize],
+        )?;
+        cursor.progress = MaterializeProgress::Filling {
+            offset,
+            position: end,
+        };
+        if end == cursor.total_bytes() {
+            publication.publish();
+            cursor.progress = MaterializeProgress::Consumed;
             Ok(MaterializeStep::Finished)
         } else {
-            Ok(MaterializeStep::Resumed {
-                reserved_offset,
-                resume_position: write_end,
-            })
+            Ok(MaterializeStep::Resumed)
         }
     }
 
@@ -1648,7 +1722,9 @@ where
 mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
+    use super::{MaterializeCursor, MaterializeProgress, MaterializeStep};
     use crate::{VertexId, traverse::BucketEntryPosition};
+    use ic_stable_structures::Storable;
     use std::ops::ControlFlow;
 
     /// Move `road` off the inline-property-bytes-slab tail, then update its last edge.  The
@@ -4459,6 +4535,373 @@ mod tests {
             bucket_slots.push(slot);
         }
         bucket_slots
+    }
+
+    fn materialize_current_slot<E: CsrEdge, M: Memory>(
+        graph: &LabeledLaraGraph<E, M>,
+        src: VertexId,
+    ) -> u64 {
+        match graph
+            .find_bucket(
+                src,
+                &graph.vertices().get(src),
+                BucketLabelKey::directed_from_index(2),
+            )
+            .unwrap()
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            BucketSearch::Missing { .. } => panic!("fixture source missing"),
+        }
+    }
+
+    #[test]
+    fn materialize_owner_first_and_resumed_conflicts_preserve_published_values() {
+        let graph = materialize_setup(256);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let historical = materialize_insert_n(&graph, src, 5)[0];
+        materialize_insert_n(&graph, peer, 5);
+        let slot = materialize_current_slot(&graph, src);
+        let peer_slot = materialize_current_slot(&graph, peer);
+        assert_ne!(slot, historical, "fixture exercises segment relocation");
+        let header = graph.values.header();
+        assert!(matches!(
+            graph.materialize_cursor(src, peer_slot, 3, 0x31),
+            Err(LabeledOperationError::InlinePropertyMaterializationInvalidSource)
+        ));
+        assert!(matches!(
+            graph.materialize_cursor(src, historical, 3, 0x31),
+            Err(LabeledOperationError::InlinePropertyMaterializationInvalidSource)
+        ));
+        assert_eq!(graph.values.header(), header);
+        let mut first = graph.materialize_cursor(src, slot, 3, 0x31).unwrap();
+        graph
+            .materialize_inline_property_stream(src, slot, 2, 0xA5)
+            .unwrap();
+        let source = graph.buckets.read_label_bucket_slot(slot).unwrap();
+        let vertex = graph.vertices().get(src);
+        let header = graph.values.header();
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut first)
+                .unwrap(),
+            MaterializeStep::Cancelled(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: 2,
+                edge_inline_property_width: 3
+            })
+        ));
+        assert_eq!(graph.values.header(), header);
+        assert_eq!(graph.buckets.read_label_bucket_slot(slot).unwrap(), source);
+        assert_eq!(graph.vertices().get(src), vertex);
+        assert!(matches!(
+            graph.materialize_cursor(src, slot, 3, 0x31),
+            Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: 2,
+                edge_inline_property_width: 3
+            })
+        ));
+        for ordinal in 0..5 {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&source, ordinal, None)
+                    .unwrap(),
+                vec![0xA5; 2]
+            );
+        }
+
+        let mut resumed = graph
+            .materialize_cursor(peer, peer_slot, 1000, 0x31)
+            .unwrap();
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut resumed)
+                .unwrap(),
+            MaterializeStep::Resumed
+        ));
+        let (owned, position) = match resumed.progress {
+            MaterializeProgress::Filling { offset, position } => (offset, position),
+            _ => panic!("not reserved"),
+        };
+        assert_eq!(position, 4096);
+        graph
+            .materialize_inline_property_stream(peer, peer_slot, 2, 0xB2)
+            .unwrap();
+        let published = graph.buckets.read_label_bucket_slot(peer_slot).unwrap();
+        let vertex = graph.vertices().get(peer);
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut resumed)
+                .unwrap(),
+            MaterializeStep::Cancelled(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: 2,
+                edge_inline_property_width: 1000
+            })
+        ));
+        assert_eq!(
+            graph.buckets.read_label_bucket_slot(peer_slot).unwrap(),
+            published
+        );
+        assert_eq!(graph.vertices().get(peer), vertex);
+        assert!(
+            graph
+                .values
+                .free_byte_spans()
+                .iter()
+                .any(|span| span.start_slot <= owned && span.start_slot + span.len >= owned + 5000)
+        );
+        for ordinal in 0..5 {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&published, ordinal, None)
+                    .unwrap(),
+                vec![0xB2; 2]
+            );
+        }
+        let free = graph.values.free_byte_spans();
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut resumed),
+            Err(LabeledOperationError::InlinePropertyMaterializationConsumed)
+        ));
+        assert_eq!(graph.values.free_byte_spans(), free);
+        let overflow_src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        materialize_insert_n(&graph, overflow_src, 5);
+        let overflow_slot = materialize_current_slot(&graph, overflow_src);
+        let mut cursor = graph
+            .materialize_cursor(overflow_src, overflow_slot, 2, 0xC3)
+            .unwrap();
+        let vertex = graph
+            .vertices()
+            .get(overflow_src)
+            .try_with_inline_property_bytes_allocated_bytes(crate::slab_index::BYTE_OFFSET_MASK)
+            .unwrap();
+        graph.vertices().set(overflow_src, &vertex);
+        let bucket = graph.buckets.read_label_bucket_slot(overflow_slot).unwrap();
+        let header = graph.values.header();
+        let free = graph.values.free_byte_spans();
+        assert!(matches!(
+            graph.materialize_inline_property_stream(overflow_src, overflow_slot, 2, 0xC3),
+            Err(LabeledOperationError::InvalidVertexRow(
+                crate::labeled::record::LabeledVertexFieldError::ValueAllocatedBytesOverflow
+            ))
+        ));
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Cancelled(LabeledOperationError::InvalidVertexRow(
+                crate::labeled::record::LabeledVertexFieldError::ValueAllocatedBytesOverflow
+            ))
+        ));
+        assert_eq!(
+            graph.buckets.read_label_bucket_slot(overflow_slot).unwrap(),
+            bucket
+        );
+        assert_eq!(graph.vertices().get(overflow_src), vertex);
+        assert_eq!(graph.values.header(), header);
+        assert_eq!(graph.values.free_byte_spans(), free);
+    }
+
+    #[test]
+    fn materialize_owner_consumed_cursor_preserves_reused_peer() {
+        let graph = materialize_setup(256);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        materialize_insert_n(&graph, src, 5);
+        materialize_insert_n(&graph, peer, 5);
+        let slot = materialize_current_slot(&graph, src);
+        let peer_slot = materialize_current_slot(&graph, peer);
+        let mut cursor = graph.materialize_cursor(src, slot, 1000, 0x31).unwrap();
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Resumed
+        ));
+        let owned = match cursor.progress {
+            MaterializeProgress::Filling { offset, .. } => offset,
+            _ => panic!("not reserved"),
+        };
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Finished
+        ));
+        assert!(cursor.is_consumed());
+        for ordinal in (0..5).rev() {
+            graph
+                .remove_edge_at_slot(src, BucketLabelKey::directed_from_index(2), ordinal)
+                .unwrap();
+        }
+        assert_eq!(
+            graph
+                .vertices()
+                .get(src)
+                .inline_property_bytes_allocated_bytes(),
+            0
+        );
+        assert_eq!(
+            graph.buckets.read_label_bucket_slot(slot).unwrap().degree(),
+            0
+        );
+        let reissued = graph.values.allocate_byte_span(5000).unwrap();
+        assert_eq!(
+            reissued, owned,
+            "actual allocator reuse, not a guessed address"
+        );
+        graph
+            .values
+            .write_bytes(reissued, &vec![0xB2; 5000])
+            .unwrap();
+        let peer_row = graph
+            .buckets
+            .read_label_bucket_slot(peer_slot)
+            .unwrap()
+            .with_inline_property_byte_width(1000)
+            .with_inline_property_bytes_offset(reissued)
+            .with_inline_property_bytes_slab_slots(5);
+        graph
+            .buckets
+            .write_label_bucket_slot(peer_slot, peer_row)
+            .unwrap();
+        let peer_vertex = graph
+            .vertices()
+            .get(peer)
+            .try_with_inline_property_bytes_allocated_bytes(5000)
+            .unwrap();
+        graph.vertices().set(peer, &peer_vertex);
+        for ordinal in 0..5 {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&peer_row, ordinal, None)
+                    .unwrap(),
+                vec![0xB2; 1000]
+            );
+        }
+        let header = graph.values.header();
+        let free = graph.values.free_byte_spans();
+        let source_vertex = graph.vertices().get(src);
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut cursor),
+            Err(LabeledOperationError::InlinePropertyMaterializationConsumed)
+        ));
+        let mut bytes = vec![0; 5000];
+        graph.values.read_bytes(reissued, &mut bytes);
+        assert_eq!(bytes, vec![0xB2; 5000]);
+        assert_eq!(
+            graph.buckets.read_label_bucket_slot(peer_slot).unwrap(),
+            peer_row
+        );
+        assert_eq!(graph.vertices().get(peer), peer_vertex);
+        assert_eq!(graph.vertices().get(src), source_vertex);
+        assert_eq!(graph.values.header(), header);
+        assert_eq!(graph.values.free_byte_spans(), free);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cursor.to_bytes())).is_err()
+        );
+    }
+
+    #[test]
+    fn materialize_owner_fill_failure_retains_cursor_and_invalidation_consumes_once() {
+        let graph = materialize_setup(256);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        materialize_insert_n(&graph, src, 5);
+        let slot = materialize_current_slot(&graph, src);
+        let mut cursor = graph.materialize_cursor(src, slot, 1000, 0x31).unwrap();
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut cursor),
+            Err(LabeledOperationError::Store(
+                LaraOperationError::RebalanceFailed(_)
+            ))
+        ));
+        assert!(matches!(
+            cursor.progress,
+            MaterializeProgress::Filling {
+                offset: 0,
+                position: 0
+            }
+        ));
+        assert_eq!(graph.values.header().slab_occupied_tail, 5000);
+        assert!(graph.values.free_byte_spans().is_empty());
+        assert_eq!(MaterializeCursor::from_bytes(cursor.to_bytes()), cursor);
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Resumed
+        ));
+        let encoded = cursor.to_bytes().into_owned();
+        let mut before = vec![0; 5000];
+        graph.values.read_bytes(0, &mut before);
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut cursor),
+            Err(LabeledOperationError::Store(
+                LaraOperationError::RebalanceFailed(_)
+            ))
+        ));
+        assert_eq!(cursor.to_bytes().as_ref(), encoded);
+        assert_eq!(graph.values.header().slab_occupied_tail, 5000);
+        assert!(graph.values.free_byte_spans().is_empty());
+        let mut after = vec![0; 5000];
+        graph.values.read_bytes(0, &mut after);
+        assert_eq!(after, before);
+        graph
+            .remove_edge_at_slot(src, BucketLabelKey::directed_from_index(2), 0)
+            .unwrap();
+        let bucket = graph.buckets.read_label_bucket_slot(slot).unwrap();
+        let vertex = graph.vertices().get(src);
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_retire_error();
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut cursor),
+            Err(LabeledOperationError::Store(
+                LaraOperationError::RebalanceFailed(_)
+            ))
+        ));
+        assert_eq!(cursor.to_bytes().as_ref(), encoded);
+        assert!(graph.values.free_byte_spans().is_empty());
+        assert_eq!(graph.buckets.read_label_bucket_slot(slot).unwrap(), bucket);
+        assert_eq!(graph.vertices().get(src), vertex);
+        assert!(matches!(
+            graph
+                .materialize_inline_property_stream_step(&mut cursor)
+                .unwrap(),
+            MaterializeStep::Cancelled(
+                LabeledOperationError::InlinePropertyMaterializationInvalidSource
+            )
+        ));
+        assert_eq!(graph.buckets.read_label_bucket_slot(slot).unwrap(), bucket);
+        assert_eq!(graph.vertices().get(src), vertex);
+        let free = graph.values.free_byte_spans();
+        assert_eq!(
+            free,
+            vec![crate::lara::edge::free_span::FreeSpan {
+                start_slot: 0,
+                len: 5000
+            }]
+        );
+        assert!(matches!(
+            graph.materialize_inline_property_stream_step(&mut cursor),
+            Err(LabeledOperationError::InlinePropertyMaterializationConsumed)
+        ));
+        assert_eq!(graph.values.free_byte_spans(), free);
+        crate::lara::edge_inline_property::force_next_inline_property_bytes_write_error();
+        assert!(matches!(
+            graph.materialize_inline_property_stream(src, slot, 2, 0xAA),
+            Err(LabeledOperationError::Store(
+                LaraOperationError::RebalanceFailed(_)
+            ))
+        ));
+        assert_eq!(graph.buckets.read_label_bucket_slot(slot).unwrap(), bucket);
+        assert_eq!(graph.vertices().get(src), vertex);
+        assert!(
+            graph
+                .values
+                .free_byte_spans()
+                .iter()
+                .any(|span| span.start_slot <= 5000 && span.start_slot + span.len >= 5008)
+        );
     }
 
     /// (a) `materialize_zero_to_w_preserves_positions` — bucket with N

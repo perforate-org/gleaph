@@ -52,6 +52,10 @@ pub enum LabeledOperationError {
         /// Payload byte width carried by the edge.
         edge_inline_property_width: u16,
     },
+    /// A terminal materialization cursor cannot be used again.
+    InlinePropertyMaterializationConsumed,
+    /// The admitted bucket is no longer a live, canonical source for this cursor.
+    InlinePropertyMaterializationInvalidSource,
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
     /// `alloc_space = stored_slots + alloc_gap` reached the mode cap. The caller
@@ -159,7 +163,7 @@ pub enum LabeledOperationError {
     /// stepped resumable cursor. The inner graph has no maintenance queue
     /// (the queue is owned by the deferred-maintenance wrapper); the caller-facing
     /// `DeferredBidirectionalLabeledLaraGraph` funnel intercepts this signal, enqueues a
-    /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` (tag 6, v1),
+    /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV2` (tag 7, v2),
     /// drains, and re-runs the original operation. The variant is the
     /// *contract* between inner and outer: it carries the work-item payload
     /// plus the (already-bumped) `degree` so the wrapper can size the
@@ -203,6 +207,12 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "edge inline property byte width {edge_inline_property_width} does not match label bucket inline property byte width {bucket_width}"
             ),
+            Self::InlinePropertyMaterializationConsumed => {
+                write!(f, "materialization cursor already consumed")
+            }
+            Self::InlinePropertyMaterializationInvalidSource => {
+                write!(f, "materialization source is no longer canonical")
+            }
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
             Self::AllocSpaceCapReached {
                 current_alloc_space,
@@ -279,6 +289,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::EdgeSlotOutOfRange { .. }
             | Self::InvalidDefaultBypass
             | Self::InlinePropertyBytesWidthMismatch { .. }
+            | Self::InlinePropertyMaterializationConsumed
+            | Self::InlinePropertyMaterializationInvalidSource
             | Self::InvalidVertexRow(_)
             | Self::AllocSpaceCapReached { .. }
             | Self::VertexBucketCountCapReached { .. }

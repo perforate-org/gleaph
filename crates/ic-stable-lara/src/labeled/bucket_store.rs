@@ -621,6 +621,20 @@ impl<M: Memory> LabelBucketStore<M> {
             .map_err(LaraOperationError::ResizeFailed)
     }
 
+    /// Prepare one existing descriptor with the same checked codec/backing as a row image.
+    pub(crate) fn prepare_existing_bucket_slot(
+        &self,
+        slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<PreparedExistingBucketRow<'_, M>, LaraOperationError> {
+        let mut bytes = vec![0u8; LabelBucket::BYTES];
+        encode_checked_bucket(bucket, &mut bytes)?;
+        self.slab
+            .prepare_physical_image(self.header(), vec![(slot, bytes)])
+            .map(PreparedExistingBucketRow)
+            .map_err(LaraOperationError::ResizeFailed)
+    }
+
     /// Writes one bucket slab slot.
     pub(crate) fn write_label_bucket_slot(
         &self,

@@ -10,6 +10,25 @@
 
 Define the **agreed LARA storage model** for Gleaph: what LARA is, how it relates to DGAP, and which parts are LARA design vs implementation substrate.
 
+## Materialization reservation ownership
+
+The existing values owner admits live normal vertex/current bucket membership, width0 slab source,
+positive requested width, captured extent and checked value accounting. Tiny normalization stays
+at its existing promoter. Both inline and stepped fills share this admission and one prepared
+single-descriptor/vertex publication boundary; no recoverable error follows its first canonical write.
+Inline failed fill uses retirement admitted before append; stepped errors retain the exclusively
+owned unpublished cursor. Successful cancellation/publication consumes it once. A consumed cursor
+rejects before values, descriptors, accounting or free spans can change.
+
+The existing private maintenance queue persists/moves pending non-Clone cursors, not raw caller
+resume fields. Current exact key: priority/tag/orientation/vid/full detail (15 bytes); priority does
+not participate in logical dedup. Current materialize item: magic0x5A/tag7/version2, orientation plus
+vid/slot/width/fill/current checked LabelBucket image/progress state; only Filling has offset/position.
+The LabelBucket codec/width remains its own source of truth. Terminal cursors cannot be encoded.
+No reservation catalog, epoch or MemoryId is added. Queue key/V2 item switch requires fresh state/
+reinstall, never a V1/old-key fallback. [0400](../../plans/0400-materialization-owner-implementation.md)
+tracks validation; this does not accept root/cover/pin or the selected record/shared-header codec.
+
 ## Non-goals
 
 - Byte-level stable memory layouts (see crate module docs).

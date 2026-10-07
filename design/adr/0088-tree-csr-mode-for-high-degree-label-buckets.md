@@ -490,7 +490,7 @@ dense live prefix and the tree stream is the tombstone-inclusive
   2026-09-01, slab form)**: the byte-slab allocator is shared with
   inline property bytes, so the reservation is incremental and the
   descriptor publish is one atomic write. The stepped fill uses a
-  new `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` cursor
+  new `MaintenanceWorkItem::MaterializeInlinePropertyStreamV2` opaque cursor
   (ADR 0021) for reservations above `INLINE_MATERIALIZE_BYTE_BUDGET`
   (= 4 KiB, one VirtualMemory page). The tree form (property root
   + `ceil(S/K)` LPB blocks) reuses the fill/cursor machinery; it is
@@ -1091,7 +1091,7 @@ reclaim path for this slice.
 slab form.** The §5 primitive is now implemented: reserve `S × w`
 bytes through the byte-slab allocator, fill with `fill_byte` via a
 stepped resumable cursor (ADR 0021, `MaintenanceWorkItem::
-MaterializeInlinePropertyStreamV1`), publish the descriptor
+MaterializeInlinePropertyStreamV2`), publish the descriptor
 (`width + offset + slab_slots + log reset`) and update the
 vertex-level accounting in one atomic window. Width addition
 (0→w on non-empty buckets) is wired through the insert path

@@ -7,7 +7,7 @@ mod cell;
 mod values_spill;
 
 use crate::labeled::spill_run_store::SpillRunId;
-use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
+use crate::lara::edge::free_span::{FreeSpan, FreeSpanPreparation, FreeSpanStore};
 use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
 use crate::lara::edge_inline_property::cell::inline_property_bytes_log_uses_blob;
 use crate::lara::edge_inline_property::values_spill::{
@@ -44,6 +44,8 @@ thread_local! {
     /// batch-write reserve rollback tests to prove that a partially-grown tail
     /// is restored.
     static FORCE_PAYLOAD_ALLOC_ERROR_AFTER: Cell<u32> = const { Cell::new(u32::MAX) };
+    static FORCE_NEXT_WRITE_ERROR: Cell<bool> = const { Cell::new(false) };
+    static FORCE_NEXT_RETIRE_ERROR: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -51,6 +53,16 @@ thread_local! {
 /// calls to `append_byte_span` or `grow_byte_span_in_place`.
 pub(crate) fn force_inline_property_bytes_allocation_error_after(successful_allocations: u32) {
     FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| c.set(successful_allocations));
+}
+
+#[cfg(test)]
+pub(crate) fn force_next_inline_property_bytes_write_error() {
+    FORCE_NEXT_WRITE_ERROR.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn force_next_inline_property_bytes_retire_error() {
+    FORCE_NEXT_RETIRE_ERROR.with(|flag| flag.set(true));
 }
 
 #[cfg(test)]
@@ -713,6 +725,13 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
 
     /// Writes bytes to the inline property bytes slab.
     pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+        #[cfg(test)]
+        if FORCE_NEXT_WRITE_ERROR.with(|flag| flag.replace(false)) {
+            return Err(GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            });
+        }
         if bytes.is_empty() {
             return Ok(());
         }
@@ -870,11 +889,38 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
 
     /// Returns a retired byte range to the free list regardless of occupied tail.
     pub(crate) fn retire_byte_span(&self, offset: u64, len: u64) -> Result<(), GrowFailed> {
+        #[cfg(test)]
+        if FORCE_NEXT_RETIRE_ERROR.with(|flag| flag.replace(false)) {
+            return Err(GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            });
+        }
         if len == 0 {
             return Ok(());
         }
         self.free_spans
             .release_span(offset, len)
+            .map_err(|_| GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            })
+    }
+
+    /// Admit retirement before an inline reservation; publication is then infallible.
+    pub(crate) fn prepare_retire_byte_span(
+        &self,
+        offset: u64,
+        len: u64,
+    ) -> Result<FreeSpanPreparation<'_, M>, GrowFailed> {
+        self.free_spans
+            .prepare_replacement(
+                0,
+                &[FreeSpan {
+                    start_slot: offset,
+                    len,
+                }],
+            )
             .map_err(|_| GrowFailed {
                 current_size: self.byte_capacity(),
                 delta: 0,
