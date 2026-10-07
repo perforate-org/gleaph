@@ -1,20 +1,12 @@
-//! Plan 0337 tree-bucket tombstone header-count measurement benches.
+//! Production tree traversal, OFFSET attribution and churn measurements.
 //!
-//! Measures the first tree-regime OFFSET baseline (depth-2 tree bucket at
-//! 1M+1 stored slots, seeded through the production deepen path) and the
-//! bench-scoped Level-1 counting walk (root-entry walk + per-block header
-//! tombstone count, skipping fully-dead blocks without payload reads)
-//! against it, plus the slab-regime re-anchor at the post-ADR-0088 extent
-//! cap 4,096.
+//! OFFSET fixtures seed 1M+1 stored slots through the production deepen path
+//! and remove a contiguous dead prefix. The current production read path is
+//! measured separately from the S0/S1 attribution controls; in-window dead
+//! blocks supply the independent S2 fixture.
 //!
-//! Declared fixture decisions (before any run): tombstones are laid down as
-//! a contiguous dead prefix (oldest slots removed first) — the "aged runs"
-//! regime the Level-1 per-block count targets; the grid is reduced to
-//! densities {50%, 87.5%} × OFFSET {first live slot, first live + 65,536}
-//! (the 0% point exercises the tree dense fast path, not the sparse
-//! overshoot regime; the intermediate ~10K point is dropped for canbench
-//! budget). Production read paths are untouched: the counting walk lives
-//! only here.
+//! The older Level-1 counting walk remains a parity/header-count oracle for
+//! the surviving density/offset cases, not an exported cost measurement.
 
 use super::bench::OFFSET_WINDOW_LIMIT;
 use crate::labeled::graph::EdgePlacementPolicy;
@@ -520,33 +512,6 @@ fn assert_l1_parity(fixture: &TreeFixture, tombstones: u32, offset: u32, exact: 
     assert_eq!(total, u64::from(bucket.stored_slots() - bucket.degree));
 }
 
-/// Baseline exact-scan OFFSET at 87.5% tombstones, first live slot.
-#[bench(raw)]
-fn offset_tree_1m_d875_off_first() -> canbench_rs::BenchResult {
-    let fixture = build_tree_fixture(TREE_DENSITY_875);
-    let offset = TREE_DENSITY_875;
-    let exact = visit_exact(&fixture, offset);
-    assert_eq!(exact.0, OFFSET_WINDOW_LIMIT);
-    assert_l1_parity(&fixture, TREE_DENSITY_875, offset, exact);
-    bench_fn(|| {
-        let (count, checksum) = visit_exact(&fixture, offset);
-        black_box((count, checksum));
-    })
-}
-
-/// Level-1 counting walk at the same point.
-#[bench(raw)]
-fn offset_tree_1m_d875_off_first_l1() -> canbench_rs::BenchResult {
-    let fixture = build_tree_fixture(TREE_DENSITY_875);
-    let offset = TREE_DENSITY_875;
-    let exact = visit_exact(&fixture, offset);
-    assert_l1_parity(&fixture, TREE_DENSITY_875, offset, exact);
-    bench_fn(|| {
-        let (count, checksum, blocks_passed, blocks_total) = counting_walk_offset(&fixture, offset);
-        black_box((count, checksum, blocks_passed, blocks_total));
-    })
-}
-
 /// Baseline exact-scan OFFSET at 87.5%, deep into the live region.
 #[bench(raw)]
 fn offset_tree_1m_d875_off_deep() -> canbench_rs::BenchResult {
@@ -561,19 +526,6 @@ fn offset_tree_1m_d875_off_deep() -> canbench_rs::BenchResult {
     })
 }
 
-/// Level-1 counting walk at the same point.
-#[bench(raw)]
-fn offset_tree_1m_d875_off_deep_l1() -> canbench_rs::BenchResult {
-    let fixture = build_tree_fixture(TREE_DENSITY_875);
-    let offset = TREE_DENSITY_875 + OFFSET_STEP;
-    let exact = visit_exact(&fixture, offset);
-    assert_l1_parity(&fixture, TREE_DENSITY_875, offset, exact);
-    bench_fn(|| {
-        let (count, checksum, blocks_passed, blocks_total) = counting_walk_offset(&fixture, offset);
-        black_box((count, checksum, blocks_passed, blocks_total));
-    })
-}
-
 /// Baseline exact-scan OFFSET at 50% tombstones, first live slot.
 #[bench(raw)]
 fn offset_tree_1m_d50_off_first() -> canbench_rs::BenchResult {
@@ -585,19 +537,6 @@ fn offset_tree_1m_d50_off_first() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let (count, checksum) = visit_exact(&fixture, offset);
         black_box((count, checksum));
-    })
-}
-
-/// Level-1 counting walk at the same point.
-#[bench(raw)]
-fn offset_tree_1m_d50_off_first_l1() -> canbench_rs::BenchResult {
-    let fixture = build_tree_fixture(TREE_DENSITY_50);
-    let offset = TREE_DENSITY_50;
-    let exact = visit_exact(&fixture, offset);
-    assert_l1_parity(&fixture, TREE_DENSITY_50, offset, exact);
-    bench_fn(|| {
-        let (count, checksum, blocks_passed, blocks_total) = counting_walk_offset(&fixture, offset);
-        black_box((count, checksum, blocks_passed, blocks_total));
     })
 }
 

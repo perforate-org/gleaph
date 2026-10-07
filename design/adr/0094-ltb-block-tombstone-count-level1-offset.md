@@ -181,6 +181,18 @@ separate documentation gaps (research doc §5.4), to land with the adoption slic
   and the tree-mode tombstone reuse (Plan 0340, `8da0accc6`) both build on the header count;
   the bypass-row left-pack (Plan 0341, `8b0e0ec86`) completed GAP-2026-09-07-001.
 
+### Current benchmark registrations
+
+[Plan 0401](../../plans/0401-canbench-export-retirement.md) retires the three
+`offset_tree_1m_*_l1` cost exports for the old counting-walk prototype, and the duplicate
+`offset_tree_1m_d875_off_first` production measurement. The latter's fixture/window/visitor
+is retained by `offset_tree_d875_s1s2`. The counting walk and full header-count parity
+oracle still validate the surviving production density/offset cases; they are not deleted.
+S0/S1/S1+S2 attribution, both production density/offset cases, the in-window S2 fixture,
+slab re-anchor, churn fixtures and their assertions remain unchanged. The tables below
+remain historical adoption evidence. No new performance/adoption claim or complete current
+persisted-result refresh is implied by export retirement.
+
 ### Plan 0338 attribution (2026-09-07)
 
 The production read path (S1 window-restricted block resolution + S2 header-count dead-block

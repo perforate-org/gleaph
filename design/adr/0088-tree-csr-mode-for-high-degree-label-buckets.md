@@ -18,6 +18,18 @@ point-state/no-op admission, selected tree-property hydration and slab-compactio
 implemented. They do not establish live property-tree deletion, matching mutation or demotion
 safety. See the [deletion prerequisite](#property-bearing-deletion-prerequisite-2026-09-22).
 
+### Current benchmark registrations
+
+[Plan 0401](../../plans/0401-canbench-export-retirement.md) retires the six
+`tcsr_{4096,65536}_{full_scan_descending,random_ordinal_access,insert_grow}`
+exports that measured the bench-only `TreeCsrBucket` scaffold. Their gate tables below
+remain historical design evidence, not fresh production Graph measurements. Production
+Graph sweeps, the two scaffold promotion probes and LTB reopen measurements remain
+registered with unchanged fixtures and assertions. This retirement changes neither the
+layout/math implementation nor native tests or production performance requirements.
+Persisted benchmark results are preserved historical measurements; a complete current
+registry artifact requires a separately allocated unfiltered run.
+
 Supersedes the deferred Stage 2 direction of
 [ADR 0022](0022-degree-driven-hub-edge-storage.md): the dedicated-span tier (2a)
 is subsumed by this design's bounded-footprint invariants, and the B-tree tier
