@@ -3851,7 +3851,7 @@ fn tiny_scan_d2_1024() -> canbench_rs::BenchResult {
         let mut count = 0u64;
         for v in 0..helper::MEDIUM_N as u32 {
             let v = black_box(v);
-            graph
+            let _ = graph
                 .visit_edges(
                     VertexId::from(v),
                     label,
@@ -3981,7 +3981,7 @@ fn tiny_promote_d4_1024() -> canbench_rs::BenchResult {
 fn tiny_workload_4x1024() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(8192);
     let label = BucketLabelKey::from_raw(2);
-    for v in 0..helper::MEDIUM_N as u32 {
+    for _ in 0..helper::MEDIUM_N as u32 {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
     }
     bench_fn(|| {
@@ -4028,7 +4028,7 @@ fn tiny_delete_d2_1024() -> canbench_rs::BenchResult {
         for v in 0..helper::MEDIUM_N as u32 {
             let v = black_box(v);
             let mut first: Option<u32> = None;
-            graph
+            let _ = graph
                 .visit_edges(
                     VertexId::from(v),
                     label,
@@ -4333,7 +4333,7 @@ fn physical_copy_fixture(
                         },
                     );
                     let mut payload = [0u8; 4096];
-                    for (slot, bytes) in payload.chunks_exact_mut(4).enumerate() {
+                    for (slot, bytes) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         let value = if index < 4 {
                             ordinal * 4096 + index * 1024 + slot as u32
                         } else {
@@ -4464,13 +4464,13 @@ fn assert_physical_copy_fixture(
                         .ltb()
                         .read_payload(ordinal * 8 + index, &mut payload)
                         .expect("retained payload");
-                    for (slot, bytes) in payload.chunks_exact(4).enumerate() {
+                    for (slot, bytes) in payload.as_chunks::<4>().0.iter().enumerate() {
                         let expected = if index < 4 {
                             ordinal * 4096 + index * 1024 + slot as u32
                         } else {
                             0x4000_0000 + ordinal * 4096 + (index - 4) * 1024 + slot as u32
                         };
-                        assert_eq!(bytes, expected.to_le_bytes());
+                        assert_eq!(*bytes, expected.to_le_bytes());
                     }
                 }
             }

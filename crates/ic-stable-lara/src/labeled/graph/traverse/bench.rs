@@ -1053,7 +1053,9 @@ fn bounded_inline_bench(degree: u32, value_bytes: usize) -> canbench_rs::BenchRe
                 for (slot, value_lo) in batch.slot_indices.iter().zip(
                     batch
                         .values
-                        .chunks_exact(8)
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
                         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])),
                 ) {
                     check_rows.push((*slot, value_lo));
@@ -1536,9 +1538,13 @@ fn range_read_bench<const W: usize, M: ic_stable_structures::Memory>(
             OutEdgeOrder::Descending,
             &mut scratch,
             |batch| {
-                for (&slot, bytes) in batch.slot_indices.iter().zip(batch.values.chunks_exact(W)) {
+                for (&slot, bytes) in batch
+                    .slot_indices
+                    .iter()
+                    .zip(batch.values.as_chunks::<W>().0.iter())
+                {
                     assert_eq!(
-                        bytes,
+                        *bytes,
                         InlinePropertyBenchEdge::<W>::new(0, u64::from(slot)).inline_property
                     );
                     values_seen.push(slot);

@@ -255,7 +255,7 @@ fn bounded_topology_bench(stored: u32) -> canbench_rs::BenchResult {
     let fixture = dense_topology_fixture(stored);
     let read = || {
         let mut rows: Vec<(u32, u32)> = Vec::new();
-        fixture
+        let _ = fixture
             .graph
             .visit_edges(
                 fixture.vid,
