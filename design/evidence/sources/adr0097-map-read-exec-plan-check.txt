@@ -1,0 +1,10 @@
+command: python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase final
+exit: 1 (expected truthful refusal)
+errors_match: True
+plan_sha256: 02c9ddce0d8bc7f26b0ed87a4d29397f53fce6fddc2033264f39274a280b3434
+--- stdout ---
+
+--- stderr ---
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase

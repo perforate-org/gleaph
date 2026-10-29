@@ -1,0 +1,291 @@
+{
+  "schedule": [
+    {
+      "index": 0,
+      "name": "setup",
+      "cap": 20
+    },
+    {
+      "index": 1,
+      "name": "format",
+      "cap": 5
+    },
+    {
+      "index": 2,
+      "name": "map",
+      "cap": 30
+    },
+    {
+      "index": 3,
+      "name": "doc",
+      "cap": 10
+    },
+    {
+      "index": 4,
+      "name": "mutation-early",
+      "cap": 10
+    },
+    {
+      "index": 5,
+      "name": "mutation-resource",
+      "cap": 10
+    },
+    {
+      "index": 6,
+      "name": "mutation-disjoint",
+      "cap": 10
+    },
+    {
+      "index": 7,
+      "name": "mutation-backed",
+      "cap": 10
+    },
+    {
+      "index": 8,
+      "name": "audit",
+      "cap": 15
+    },
+    {
+      "index": 9,
+      "name": "scalar",
+      "cap": 75
+    },
+    {
+      "index": 10,
+      "name": "collect",
+      "cap": 20
+    },
+    {
+      "index": 11,
+      "name": "final-format",
+      "cap": 5
+    },
+    {
+      "index": 12,
+      "name": "final-clippy-map",
+      "cap": 10
+    },
+    {
+      "index": 13,
+      "name": "final-clippy-lara",
+      "cap": 15
+    },
+    {
+      "index": 14,
+      "name": "final-map",
+      "cap": 20
+    },
+    {
+      "index": 15,
+      "name": "final-free",
+      "cap": 25
+    },
+    {
+      "index": 16,
+      "name": "final-doc",
+      "cap": 15
+    },
+    {
+      "index": 17,
+      "name": "provenance",
+      "cap": 15
+    },
+    {
+      "index": 18,
+      "name": "evidence",
+      "cap": 15
+    }
+  ],
+  "entries": [
+    {
+      "name": "setup",
+      "cap_seconds": 20,
+      "charged_seconds": 20,
+      "actual_seconds": 0.005894166068173945,
+      "exit": null,
+      "failure": "FileNotFoundError(2, 'No such file or directory')",
+      "contract_passed": false,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "format",
+      "cap_seconds": 5,
+      "charged_seconds": 0.644743875018321,
+      "actual_seconds": 0.644743875018321,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "map",
+      "cap_seconds": 30,
+      "charged_seconds": 3.4161938750185072,
+      "actual_seconds": 3.4161938750185072,
+      "exit": 0,
+      "failure": "finally: AssertionError('target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e')",
+      "contract_passed": false,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "doc",
+      "cap_seconds": 10,
+      "charged_seconds": 3.630014832946472,
+      "actual_seconds": 3.630014832946472,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "mutation-early",
+      "cap_seconds": 10,
+      "charged_seconds": 2.768537166994065,
+      "actual_seconds": 2.768537166994065,
+      "exit": 101,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "mutation-resource",
+      "cap_seconds": 10,
+      "charged_seconds": 2.21062358294148,
+      "actual_seconds": 2.21062358294148,
+      "exit": 101,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "mutation-disjoint",
+      "cap_seconds": 10,
+      "charged_seconds": 3.3222716249292716,
+      "actual_seconds": 3.3222716249292716,
+      "exit": 101,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "mutation-backed",
+      "cap_seconds": 10,
+      "charged_seconds": 1.846265041967854,
+      "actual_seconds": 1.846265041967854,
+      "exit": 101,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "audit",
+      "cap_seconds": 15,
+      "charged_seconds": 15,
+      "actual_seconds": 0.35209991701412946,
+      "exit": null,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "scalar",
+      "cap_seconds": 75,
+      "charged_seconds": 11.896412041969597,
+      "actual_seconds": 11.896412041969597,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "collect",
+      "cap_seconds": 20,
+      "charged_seconds": 20,
+      "actual_seconds": 0.26863791700452566,
+      "exit": null,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-format",
+      "cap_seconds": 5,
+      "charged_seconds": 0.5106746249366552,
+      "actual_seconds": 0.5106746249366552,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-clippy-map",
+      "cap_seconds": 10,
+      "charged_seconds": 8.781401750049554,
+      "actual_seconds": 8.781401750049554,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-clippy-lara",
+      "cap_seconds": 15,
+      "charged_seconds": 2.662868084036745,
+      "actual_seconds": 2.662868084036745,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-map",
+      "cap_seconds": 20,
+      "charged_seconds": 1.7584587080636993,
+      "actual_seconds": 1.7584587080636993,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-free",
+      "cap_seconds": 25,
+      "charged_seconds": 5.681957208085805,
+      "actual_seconds": 5.681957208085805,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "final-doc",
+      "cap_seconds": 15,
+      "charged_seconds": 1.5689963339827955,
+      "actual_seconds": 1.5689963339827955,
+      "exit": 0,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "provenance",
+      "cap_seconds": 15,
+      "charged_seconds": 15,
+      "actual_seconds": 0.637993499985896,
+      "exit": null,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    },
+    {
+      "name": "evidence",
+      "cap_seconds": 15,
+      "charged_seconds": 15,
+      "actual_seconds": 0.29221345810219646,
+      "exit": null,
+      "failure": null,
+      "contract_passed": true,
+      "diagnostic_failure": null
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+--- W-lib.rs
++++ G-lib.rs
+@@ -508,6 +508,17 @@
+         {
+             let offset = r.offset + (address - r.address) as usize;
+             return offset;
++        }
++        // An untouched image has no packed bytes, even after reserving scratch.
++        if count != 0 && ranges.is_empty() {
++            self.bytes.resize_reserved(count);
++            fill_gap(address, self.bytes.as_mut_slice());
++            self.ranges.push_reserved(DirtyRange {
++                address,
++                offset: 0,
++                len: count,
++            });
++            return 0;
+         }
+         let last = first + ranges[first..].partition_point(|r| r.address <= end);
+         let start = ranges

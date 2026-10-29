@@ -1,0 +1,233 @@
+---
+name: "Non-destructive allocator admission"
+overview: "Repair existing exact-span/pair rejection and nonwriting index reservation without claiming complete A0 preparation or A1 cancellation."
+todos:
+  - id: "pin-owner"
+    content: "Obtain approval for this bounded two-file admission repair; retain the explicit public checked-edit and acquisition-cancellation blockers for complete A0."
+    status: pending
+  - id: "owning-witnesses"
+    content: "Add the four named admission tests on valid existing store types; distinguish candidate runtime reds from already-safe directory controls."
+    status: pending
+  - id: "prepare-publish"
+    content: "Unify exact-record admission, reject duplicate pair ownership/replacement keys before removal, and make index reservation nonwriting when no growth is needed."
+    status: pending
+  - id: "bounded-proof"
+    content: "Under separate authority, run the exact 600-second proposal, restore mutations/lock, and report only admission repair evidence and remaining A0/A1 gaps."
+    status: pending
+isProject: false
+---
+
+# Non-destructive allocator admission
+
+## Objective
+
+**Revise mode; prose only, no implementation or execution authorized.** Deliver one useful
+existing-owner repair: on valid initial backing, malformed exact-span/pair requests and
+zero/already-backed index reservation must not change canonical allocator/index state. It is independently useful without
+prepared release batches, native demotion or physical caller wiring.
+
+The [A0 interface checkpoint](../design/evidence/adr0097-demotion-design.md#stage-a-reslicing-and-interfaces)
+is the source of truth for proposed types, borrow authority, batch ordering, errors, heap bounds
+and cancellation limits. Complete A0 needs a public generic paged-map checked-edit capability and
+acquisition provenance/nonfailing cancellation at `lara/edge/span.rs`; release-page reservation
+cannot supply either. **This smaller slice does not implement or validate those capabilities.**
+Do not replace full-A0 acceptance criteria with these four admission tests.
+
+## Context
+
+- Source `f297706abf683c1e22622c193d34f06650305bee`, branch `spill-swap`; main remains
+  `9a64049f47fc07542446d651d4b09421636b73c5`, unmerged.
+- Interface anchor: 2026-09-22 14:40:03 UTC +0000. The 12:00:21 original and 13:17:45 r1
+  snapshots/checks remain immutable. The user accepted r1's bounded corrections and A0/A1 split
+  **for interface design only**, not policy, implementation or GAP001/003 closure.
+- `remove_span_exact` currently deletes from `by_start`, then validates the record and reinserts
+  on mismatch. Reinsertion can change page ownership even when logical entries are restored.
+- `replace_exact_pair_with` validates both spans independently. Identical operands can pass both
+  checks, lose the first span, then return `MissingSpan` for the second. A replacement at an
+  unrelated existing start can pass strict predecessor/successor checks, then hit `DuplicateStart`
+  in `release` after both inputs have been removed. These are source-derived candidates, not
+  executed runtime reds.
+- `reserve_for_inserts(0)` currently writes zero at the allocated page area's last byte. With
+  a full final page that byte is part of a value. Positive reservation uses saturating sizing and
+  `GrowFailed`; it covers physical page growth only, not directory admission or checked edits.
+- `split_page_and_insert` already rejects directory exhaustion and missing directory membership
+  before writes. Preserve those safe controls. Do not invent a late `Corrupt` red on that branch.
+- The saved real public 513→512 deletion failure is not rerun. Its assertion, native writer,
+  deletion/demotion, Graph/queue and all other gap boundaries remain untouched.
+
+## Scope
+
+One admission boundary in the existing two stores. Preserve public signatures, returned errors,
+wire layouts, allocation policy, 512/1024 thresholds and the fast prefix-restoration probes.
+No prepared token, mutation guard, public checked-edit API, allocator batch, heap redesign,
+transaction/undo layer, cache or persistent state belongs in this smaller implementation.
+
+Exact-record admission has one private owner:
+
+```rust
+fn exact_span_record(&self, span: FreeSpan)
+    -> Result<(SpanId, SpanRecord), FreeSpanError>;
+```
+
+It resolves the start key and checks active flag, stored start and length before any removal.
+Reuse it in `replace_existing_span`, `remove_span_exact` and pair admission; delete superseded
+`ensure_span_exact` and remove-then-reinsert compensation. No public visibility expansion.
+Pair rejection order remains: left exactness → right exactness → replacement empty/end checks →
+existing replacement-neighbor checks → identical input IDs (`MissingSpan { span: right }`) →
+unrelated replacement-key collision (`DuplicateStart { start_slot: replacement.start_slot }`).
+Ignore only the two proven input keys in the last check. These last two errors already occur in
+that order after destructive work; move their discovery before it. Do not reuse cached bin-link
+fields across pair removals: removing the first record can change the second record's links.
+This does not make valid pair replacement or later map/bin/heap failures atomic.
+
+In `reserve_for_inserts`, return immediately for zero and skip the sentinel write when existing
+backing already covers the computed need. Keep positive-request sizing and `GrowFailed` behavior
+unchanged; do not represent its current saturating arithmetic as a new checked-capacity proof.
+Clarify the existing method's rustdoc: no-growth reservation is nonwriting; directory exhaustion,
+corruption and heap allocation are not admitted by it. No executable doc example changes.
+
+## Expected Change Surface
+
+Only after separate approval:
+
+- `crates/ic-stable-lara/src/lara/edge/free_span.rs`: exact-record/pair admission and its unit tests.
+- `crates/ic-stable-paged-ordered-map/src/lib.rs`: nonwriting reservation and its unit tests.
+- This ignored plan and separately scoped evidence/status in the existing report, not a new broad
+  design document. Current checkpoint changes only plan/report and its provenance snapshots.
+
+No `compact.rs`, `span.rs`, leaf pin, bucket rows, native/value/deferred/Graph code, test-support
+module, manifest, dependency, configuration or benchmark source change. Stop rather than adding
+an accessor exposing map pages to LARA. The directory fixture belongs inside the map's unit module.
+
+Preserve the foreign `SPILL_SWAP_BRIEF.md` and `crates/ic-stable-lara/canbench_results.csv`, canonical
+benchmark artifacts, all original/r1 evidence and failed logs, accepted graph fixtures, main and
+references. Preserve `Cargo.lock`; future incidental churn requires as-used provenance followed by
+restoration. No stash/reset/clean, cold target, process enumeration/control, wrapper/GUI fallback,
+commit or merge. Existing unspent execution balances authorize nothing.
+
+## Steps
+
+1. Review this exact reduced source/error/test scope. Full-A0 signatures remain a proposal, not
+   dormant Rust code to add here. No additional architecture decision is needed to implement
+   **this repair** once authorized.
+2. Capture protected/source pins; run the two unchanged baseline controls before installing tests.
+   Add the four tests below. Run the two baseline filters; compile/setup failure is not runtime
+   evidence. The first invalid pair case may preempt its later collision case: report which ran.
+3. Make the admission changes above, sharing the exact-record invariant before patching callers.
+   Run scoped format and the two green filters. Restore validation-after-remove in the exact-span
+   owner as an ordering mutation; separately restore the zero-reservation write. Each must fail
+   its unchanged oracle. Restore both mutations before final checks/after controls.
+4. Execute only the separately authorized command proposal below, within one ledger. Inspect any
+   regression; do not waive it because correctness improved. Preserve failures, actual constructor
+   counts, source hashes, as-used/restored lock, raw commands/CSV and limitations. If required
+   evidence cannot finish within the ledger, stop incomplete rather than broaden or reset it.
+
+## Validation
+
+### Current prose-only check
+
+```sh
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0339-prepared-edge-span-publication.md --phase draft
+```
+
+Content/links/scope/hashes/whitespace may also be inspected. **No commands below are authorized now.**
+
+### Four next-slice tests
+
+Use the prefix `a0_admission_`; no new graph type, specialization, allocator or dependency.
+
+| Test / owner | Fixture and decisive oracle |
+| --- | --- |
+| `a0_admission_exact_span` / free-span | One store using the existing `test_paged_store` memory type and IDs 40/41, retaining both handles locally. Release 96 nonadjacent one-slot spans at `10*i`; take exact prefixes for `i=0..31` (exclusive). This leaves a singleton first index page and full second page under the existing split rule. Verify 65 construction-derived spans and a two-page directory, then request `remove_span_exact([310,312))`, whose actual span is `[310,311)`. Exact `MissingSpan`, all record/index backing, headers, bins, summaries and heap contents unchanged. Old delete/reinsert can split the full surviving page and change first/last page IDs despite restoring the logical key/value list. No raw map layout logic in LARA; use retained memory images and the map's public header/entries. |
+| `a0_admission_pair` / free-span | At most two stores using `test_store`, sequentially, each seeded with `[6,10)`, `[20,24)`, `[40,44)`. First: identical left/right `[6,10)`, same replacement; exact `MissingSpan { span: [6,10) }` and unchanged state. Second: left `[6,10)`, right `[20,24)`, replacement `[40,44)`; exact `DuplicateStart { start_slot: 40 }`, all three spans still owned. Include earlier empty/overflow/neighbor-error controls on these objects; they must keep their existing precedence. The separate existing missing-right test is a safe control. |
+| `a0_admission_zero_reservation` / map | One `DefaultMemoryImpl` map, 64 public inserts with `key=i`, `value=0xa500_0000_0000_0000 ^ i`. Final value has a nonzero high byte at the end of the full page. Zero reservation must preserve exact full values, header, all backing and memory size. Then reserve 64, set a nonzero sentinel at that reservation's final, still-unreferenced byte using map-owned offsets, snapshot, and repeat 64: exact backing/size unchanged. This distinguishes skipping an already-backed write from merely rewriting zero. Equality detects this overwrite, not arbitrary transient writes/heap allocations. |
+| `a0_admission_directory_reservation` / map | One `DefaultMemoryImpl` map with all 8192 linked/indexed pages fully backed via owner-local header/page/entry writers. Page 1 has keys `128..192` (exclusive); pages `2..=8192` each have key `128*page_id`; values use the same injective nonzero formula. Exactly 8255 entries; validate links/directory/counts. Reserve one entry, then insert key 192: reservation succeeds but split returns exact `DirectoryFull` before edits. Snapshot after reservation; only backing growth/unreferenced bytes may differ from before reservation. Remove the singleton key 256 (page 2), retry key 192, and validate the construction-derived ordered entries, 8255 total entries / 8192 directory entries, links, free-page ownership and split. This is an already-safe source-backed control and owner-level construction, not public-insertion reachability or a new atomic batch test. |
+
+Ceiling for these additions: **three free-span store constructions plus two map constructions** per
+full pass, sequential within the pair test; no reopen construction is needed. Existing helpers use
+`VirtualMemory<DefaultMemoryImpl>` through `MemoryManager` (pair IDs 10/11, exact-span IDs 40/41);
+do not add another memory specialization.
+Existing growth-fault tests reuse their `FailpointMemory` handles unchanged. Full affected filters
+also run their legacy fixtures, whose constructions must be counted separately rather than hidden
+inside this five-store ceiling. Zero LARA graphs, PocketIC constructors or canister installs.
+
+Source inventory at the checkpoint: 25 free-span tests and 10 map tests. Add two tests per library:
+focused filters expect **2 + 2**; final owning filters expect **27 + 12**. This is not a whole-LARA
+suite. The complete-A0 four witnesses, alias/token authority, mutual release batches and infallible
+heap consumption remain deferred; this slice cannot provide their test or benchmark evidence.
+
+### Proposed execution ledger — 600s total, including 120s final reserve
+
+After approval, read `rust-workflow` again. Use one serialized ledger for setup, every command,
+failed/aborted attempts, restoration and final evidence; no budget reset. Normal `target` and
+`target/canbench` only. Below, a cap means a foreground timeout and complete saved stdout/stderr,
+not a detached process or another terminal. Record exit status, wall time, compiler/runtime timing
+where emitted, and actual reached test count. Expected baseline/mutation reds are deliberate;
+other failures require diagnosis, not speculative retries.
+
+| Order / phase | Exact command (repo root unless noted) | Cap s / expected scope |
+| --- | --- | ---: |
+| Setup | Source/protected hashes, tool/version provenance, ledger admission and as-used-lock capture; no extra Rust check | 20 |
+| Baseline IC 1, cwd `crates/ic-stable-lara` | `canbench bench_r_fs_tkbfs_1024 --csv` | 130 / one named total |
+| Baseline IC 2, same cwd | `canbench bench_r_fs_lbin_4096 --csv` | 20 / one named total |
+| Baseline witnesses | `cargo test -p ic-stable-lara --lib a0_admission_ -- --nocapture --test-threads=1` | 40 / 2 tests, candidate reds |
+| Baseline witnesses | `cargo test -p ic-stable-paged-ordered-map --lib a0_admission_ -- --nocapture --test-threads=1` | 15 / 2 tests, zero-reserve candidate red and safe directory control |
+| Implementation format | `rustfmt --edition 2024 --config skip_children=true crates/ic-stable-lara/src/lara/edge/free_span.rs crates/ic-stable-paged-ordered-map/src/lib.rs` | 5 |
+| Green witnesses | `cargo test -p ic-stable-lara --lib a0_admission_ -- --nocapture --test-threads=1` | 25 / 2 |
+| Green witnesses | `cargo test -p ic-stable-paged-ordered-map --lib a0_admission_ -- --nocapture --test-threads=1` | 10 / 2 |
+| Ordering mutation | `cargo test -p ic-stable-lara --lib a0_admission_exact_span -- --nocapture --test-threads=1` | 15 / 1, must fail after index mutation |
+| Zero-write mutation | `cargo test -p ic-stable-paged-ordered-map --lib a0_admission_zero_reservation -- --nocapture --test-threads=1` | 10 / 1, must fail exact value/backing oracle |
+| Restore allowance | Remove only owned mutations, restore/record incidental lock changes, verify exact candidate sources and benchmark inputs | 20 |
+| Final IC 1, cwd `crates/ic-stable-lara` | `canbench bench_r_fs_tkbfs_1024 --csv` | 130 / same named total |
+| Final IC 2, same cwd | `canbench bench_r_fs_lbin_4096 --csv` | 20 / same named total |
+| **Final reserve: format** | `rustfmt --edition 2024 --config skip_children=true --check crates/ic-stable-lara/src/lara/edge/free_span.rs crates/ic-stable-paged-ordered-map/src/lib.rs` | **5** |
+| **Final reserve: clippy** | `cargo clippy -p ic-stable-lara -p ic-stable-paged-ordered-map --lib -- -D warnings` | **25** |
+| **Final reserve: allocator** | `cargo test -p ic-stable-lara --lib lara::edge::free_span::tests:: -- --nocapture --test-threads=1` | **25 / 27** |
+| **Final reserve: index** | `cargo test -p ic-stable-paged-ordered-map --lib tests:: -- --nocapture --test-threads=1` | **15 / 12** |
+| **Final reserve: closure** | `git diff --check` and `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0339-prepared-edge-span-publication.md --phase final`, plus exact source/evidence/lock/path verification | **20** |
+| **Final reserve: restoration/evidence contingency** | Only owned restoration and completion evidence; no extra benchmark/build/filter | **30** |
+
+Pre-final caps total **460s**, plus **20s** explicitly bounded diagnostic contingency = **480s**;
+final reserve is **120s**; cumulative ceiling **600s**. Contingency is not an extra long-command
+allowance: any proposed repeat needs evidence, must fit the remaining required caps, and may not
+consume final reserve. If a 130s benchmark cap expires, preserve it and stop this paired validation
+incomplete; no warm retry, wrapper, cold target or partial persistence. No code-change validation
+budget applies to this prose checkpoint.
+
+Controls remain byte-identical and non-persisted: split/restore and largest-bin recovery, not new
+batch or graph-publication pricing. Record exact per-control A/B instruction deltas and page growth;
+YAML-relative percentages are not paired deltas. Separate inclusive scopes rather than adding them.
+Record native fixture work/scratch where existing seams permit; neither these controls nor backing
+snapshots establish heap-allocation absence. No new benchmark, drain re-enable, survey, 16K/native
+replay, full suite, Wasm-only reassurance command or PocketIC campaign. Preserve a regression as
+unresolved if investigation cannot finish inside the same ledger.
+
+For **each** `--csv` invocation, save the original foreign CSV bytes before launch, harvest the
+actual generated `crates/ic-stable-lara/canbench_results.csv` into the raw run directory, and restore
+the original bytes on success, failure or timeout before another invocation. Verify its protected
+hash. Charge capture/restoration to the stated restoration allowances, not unmetered cleanup.
+Do not execute a historical pairing script that swaps unrelated source or carries an old ledger.
+No CSV capture/protection operation or benchmark is performed in this prose checkpoint.
+
+## Completion Criteria
+
+- [ ] The reduced two-file admission scope is approved without claiming approval of complete A0's public API or cancellation design.
+- [ ] One exact-record admission owner serves removal/replacement/pair checks; invalid pair ownership and replacement-key collision reject before removal with exact error precedence.
+- [ ] Zero/already-backed reservation does not write; positive reservation retains its growth-only/error contract and safe directory controls.
+- [ ] Four named tests, both required mutations, 27/12 affected tests, scoped formatting/library clippy and paired unchanged controls have source-qualified bounded evidence.
+- [ ] Mutations/lock are restored, protected/foreign files and unrelated source remain unchanged, and no public/layout/native/Graph change is bundled.
+- [ ] One cumulative ledger, exact artifacts and limitations support final structural validation; full A0, A1 and mutation/reclamation gates remain open.
+
+## Later Slices
+
+Complete A0 needs reviewed public checked edits, shared scalar/batch/prefix preparation, enforceable
+borrow authority and acquisition cancellation beyond this reduced scope; no implementation of
+those types is bundled. A1 separately prepares **all peers, pin and final requested rewrite**,
+removes nested publish/replan, proves late-peer rejection in disjoint/overlap arms, returns all
+unpublished ownership and measures the whole outer call. Admission repair is not that proof.
+
+Reclamation policy, aligned native conversion/deletion, complete/empty retirement and liveness
+remain undecided. The u32 extent estimates are analytical only. Graph counterpart/sidecar/index,
+requeue/reconciliation and PocketIC same-message trap evidence require independent authorization.
+Matching, metadata, obsolete maintenance, older directedness, performance/space/lifecycle and
+landing remain open. No permanent retention, cap, hidden movement or migration is authorized.

@@ -1,0 +1,373 @@
+{
+  "status": "source/contract/prose checks passed; final plan correctly refuses IC-gated completion",
+  "protected_paths": 117,
+  "historical_manifests": {
+    "/tmp/spill-map-f297-cecc5rw_/manifest.sha256": {
+      "sha256": "b01b761402ed66502120411fe6c4d869f4cfe633b2efead443b8855e361cd9ff",
+      "entries": 161
+    },
+    "/tmp/spill-scalar-design-f297-7_msi5x1/manifest.sha256": {
+      "sha256": "69276e32830fadd097219a65c02315587839daf1bdc7e7473485370c711dcfd3",
+      "entries": 29
+    },
+    "/tmp/spill-acquisition-decision-f297-mcworwje/manifest.sha256": {
+      "sha256": "97c8ca9e650cac0a29243b416b63e3e4eca10bdd1a85e02536042e24857d77b2",
+      "entries": 40
+    },
+    "/tmp/spill-admission-f297-6g1p_any/manifest.sha256": {
+      "sha256": "1cda006a9149beb7bdd1dad743bbb15755f1ccd4b2ab8cfb6527f424f66bc119",
+      "entries": 102
+    },
+    "/tmp/spill-a0-interface-f297-jtjersgv/manifest.sha256": {
+      "sha256": "9346b08cbe10911664ac6e72db4a5f2fb07504af09ad8d051c762d133d64b149",
+      "entries": 33
+    },
+    "/tmp/spill-demotion-revise-f297-32aisjkk/manifest.sha256": {
+      "sha256": "320779faee215bfec0def682e29d544abc48108acf9a504d0171b00314a4c32f",
+      "entries": 27
+    },
+    "/tmp/spill-demotion-design-f297-i2l1uy33/manifest.sha256": {
+      "sha256": "2d021491fe2cd3679c70f2fae482ac4c8cc0a5008ce9734cff8fe1f6cff0c53b",
+      "entries": 13
+    },
+    "/tmp/spill-selected-a80-va1dsp1i/manifest.sha256": {
+      "sha256": "4569886d0d56069a242c36e0194eb6f910962e2b149bcf3407e0519798cd4c3d",
+      "entries": 115
+    },
+    "/tmp/spill-point-e921-fhkzogkf/manifest.sha256": {
+      "sha256": "2835248575a359ba7dbbcdfb4bcebed2c8e2246ba44aec7167ef991dad34e2e4",
+      "entries": 150
+    },
+    "/tmp/spill-tree-delete-7ca-nrvy2ffs/SHA256SUMS": {
+      "sha256": "3294e1c0050e21e66cc77f188a4c871b73ada98cc73373803d8913ea01042087",
+      "entries": 53
+    },
+    "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/manifest.sha256": {
+      "sha256": "1f321c39ab52e56b60f0c7289f405972772942cd5e90b4ecb388e5f36d9c9b85",
+      "entries": 50
+    }
+  },
+  "historical_entries": 773,
+  "head": "f297706abf683c1e22622c193d34f06650305bee",
+  "shared_main": "not queried or modified",
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "plan_check": {
+    "argv": [
+      "python3",
+      "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+      "plans/0340-prepared-paged-map-edits.md",
+      "--phase",
+      "final"
+    ],
+    "exit": 1,
+    "elapsed": 0.08563491702079773,
+    "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+    "plan_sha256": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9"
+  },
+  "before_prose_hashes": {
+    "plans/0340-prepared-paged-map-edits.md": "c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "f433db7614b182e00b1039ecfd17e2e1365d7fad6bc740b227481d93a201028e",
+    "design/evidence/adr0097-demotion-design.md": "51832ed386d12faae98eb330892fe34e30a3478b5a87ef68213af60c70acd7ec"
+  },
+  "after_prose_hashes": {
+    "plans/0340-prepared-paged-map-edits.md": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "72a9aa26656fb248e4baf8c5dc7d6820ec8cb8c10e3fcdf54a1aa0bc591285df",
+    "design/evidence/adr0097-demotion-design.md": "e6fb06c7977b1bc3d301836c71025b14ccfe56a9f3dab0f0e00765f33ab689e0"
+  },
+  "valid_relative_links": 112,
+  "inherited_unavailable_links": [
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0313-adr0088-tree-csr-measurement-gates.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0315-adr0088-raw-block-ltb-revalidation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0314-canbench-name-rationalization.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0318-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "./0318-tree-csr-demotion-tree-to-slab.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented",
+      "missing fragment"
+    ]
+  ],
+  "diff_check_exit": 0,
+  "new_durable_paths": [
+    "design/evidence/sources/adr0097-map-correction-format.txt",
+    "design/evidence/sources/adr0097-map-correction-map.txt",
+    "design/evidence/sources/adr0097-map-correction-doc.txt",
+    "design/evidence/sources/adr0097-map-correction-mutation-early.txt",
+    "design/evidence/sources/adr0097-map-correction-mutation-resource.txt",
+    "design/evidence/sources/adr0097-map-correction-scalar.txt",
+    "design/evidence/sources/adr0097-map-correction-allocator.txt",
+    "design/evidence/sources/adr0097-map-correction-final-format.txt",
+    "design/evidence/sources/adr0097-map-correction-final-clippy.txt",
+    "design/evidence/sources/adr0097-map-correction-final-map.txt",
+    "design/evidence/sources/adr0097-map-correction-final-free.txt",
+    "design/evidence/sources/adr0097-map-correction-final-doc.txt",
+    "design/evidence/sources/adr0097-map-correction-scalar.csv",
+    "design/evidence/sources/adr0097-map-correction-allocator.csv",
+    "design/evidence/sources/adr0097-map-correction-source-audit.json",
+    "design/evidence/sources/adr0097-map-correction-measurements.json",
+    "design/evidence/sources/adr0097-map-correction-final-native.json",
+    "design/evidence/sources/adr0097-map-correction-lizard.json",
+    "design/evidence/sources/adr0097-map-correction-start.json",
+    "design/evidence/sources/adr0097-map-correction-versions.json",
+    "design/evidence/sources/adr0097-map-correction-wasm.txt",
+    "design/evidence/sources/adr0097-map-correction-runner.py",
+    "design/evidence/sources/adr0097-map-correction-mutate.py",
+    "design/evidence/sources/adr0097-map-correction-collector.py",
+    "design/evidence/sources/adr0097-map-correction-plan.txt",
+    "design/evidence/sources/adr0097-map-correction-plan-check.txt",
+    "design/evidence/sources/adr0097-map-correction-source.patch",
+    "design/evidence/sources/adr0097-map-correction-mutation-early.patch",
+    "design/evidence/sources/adr0097-map-correction-mutation-resource.patch",
+    "design/evidence/sources/adr0097-map-correction-verification.json",
+    "design/evidence/sources/adr0097-map-correction-ledger.json",
+    "design/evidence/sources/adr0097-map-correction-run.json"
+  ],
+  "presentations": [
+    {
+      "raw": "format.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable": "design/evidence/sources/adr0097-map-correction-format.txt",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "exact"
+    },
+    {
+      "raw": "map.log",
+      "raw_sha256": "e7b227af62553a4cfe7523a66eedd579fe9d0ca95551fb93d8d3bd35b645fbba",
+      "durable": "design/evidence/sources/adr0097-map-correction-map.txt",
+      "durable_sha256": "808be56b63a22f0bf995057e55057066922bd30ddd68cbb62422533a0c836d25",
+      "mode": "presentation whitespace; raw preserved"
+    },
+    {
+      "raw": "doc.log",
+      "raw_sha256": "e4b1b91ef8f9b9abcaca2c14ff76d23a307e21e7436806316cf88586c853dc4f",
+      "durable": "design/evidence/sources/adr0097-map-correction-doc.txt",
+      "durable_sha256": "b186501a0559fd90e06cee0eebead4e92ee0403efecc62acbcdea44791fcb3c7",
+      "mode": "presentation whitespace; raw preserved"
+    },
+    {
+      "raw": "mutation-early.log",
+      "raw_sha256": "6e3296668ca39ade239c0bc61b036ca16f138dcbc3d683f24592ef730a707193",
+      "durable": "design/evidence/sources/adr0097-map-correction-mutation-early.txt",
+      "durable_sha256": "6e3296668ca39ade239c0bc61b036ca16f138dcbc3d683f24592ef730a707193",
+      "mode": "exact"
+    },
+    {
+      "raw": "mutation-resource.log",
+      "raw_sha256": "1848601c0db0e3e5eb8950a590a60a347d425a83fd1248929241a0d082d841ee",
+      "durable": "design/evidence/sources/adr0097-map-correction-mutation-resource.txt",
+      "durable_sha256": "1848601c0db0e3e5eb8950a590a60a347d425a83fd1248929241a0d082d841ee",
+      "mode": "exact"
+    },
+    {
+      "raw": "scalar.log",
+      "raw_sha256": "8482967315313814d4eb9a7bcd66def8cd5b8f269209096e7a6abdbdebff817a",
+      "durable": "design/evidence/sources/adr0097-map-correction-scalar.txt",
+      "durable_sha256": "8482967315313814d4eb9a7bcd66def8cd5b8f269209096e7a6abdbdebff817a",
+      "mode": "exact"
+    },
+    {
+      "raw": "allocator.log",
+      "raw_sha256": "dd3ac1555372b5ed71b66a3a23fc7cdf30de985f0b04e98a0437c76be50ee4e0",
+      "durable": "design/evidence/sources/adr0097-map-correction-allocator.txt",
+      "durable_sha256": "dd3ac1555372b5ed71b66a3a23fc7cdf30de985f0b04e98a0437c76be50ee4e0",
+      "mode": "exact"
+    },
+    {
+      "raw": "final-format.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-format.txt",
+      "durable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "exact"
+    },
+    {
+      "raw": "final-clippy.log",
+      "raw_sha256": "8cb01987fc9cbb8f54ac62644dd2df3a295e57dfd775498c6862d044bad9afbf",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-clippy.txt",
+      "durable_sha256": "8cb01987fc9cbb8f54ac62644dd2df3a295e57dfd775498c6862d044bad9afbf",
+      "mode": "exact"
+    },
+    {
+      "raw": "final-map.log",
+      "raw_sha256": "78e89d25262f7944d4fda241a315e76a70c21b905d72fa70b800d9f6def985bb",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-map.txt",
+      "durable_sha256": "5f2f9a49755db6bf40e170963cfa22d3bb2881b3374b1c1ac4b5c4565287920c",
+      "mode": "presentation whitespace; raw preserved"
+    },
+    {
+      "raw": "final-free.log",
+      "raw_sha256": "a97f37c7f590072c0b76f6b05bd7b6b30957d3f02d4a3a2c1f6626723543f006",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-free.txt",
+      "durable_sha256": "632964830ffaee726e1c87a51f02e47b67134f54c11c65edfa6f804760ed0294",
+      "mode": "presentation whitespace; raw preserved"
+    },
+    {
+      "raw": "final-doc.log",
+      "raw_sha256": "95fd0d073affb37fe56f8939338e75df177c717016b65824061ef9c53aa56b7c",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-doc.txt",
+      "durable_sha256": "a45c5dc5574ff7737a1b123b0ed17b486f72001bde553c761461830fb06cf105",
+      "mode": "presentation whitespace; raw preserved"
+    },
+    {
+      "raw": "scalar.csv",
+      "raw_sha256": "6bf13b3a648bb39c5e8441fd65e35204cd7a3022390cc6a7940533a9b2579f89",
+      "durable": "design/evidence/sources/adr0097-map-correction-scalar.csv",
+      "durable_sha256": "6bf13b3a648bb39c5e8441fd65e35204cd7a3022390cc6a7940533a9b2579f89",
+      "mode": "exact"
+    },
+    {
+      "raw": "allocator.csv",
+      "raw_sha256": "c838d8bec251ee2058b82bda61dc3882d1d98be4fd0894dce6b08f24a95b6805",
+      "durable": "design/evidence/sources/adr0097-map-correction-allocator.csv",
+      "durable_sha256": "c838d8bec251ee2058b82bda61dc3882d1d98be4fd0894dce6b08f24a95b6805",
+      "mode": "exact"
+    },
+    {
+      "raw": "source-audit.json",
+      "raw_sha256": "683e9ebc36b4a5a918340300db300e8b5bba09158d27e34db79c758e002ee44b",
+      "durable": "design/evidence/sources/adr0097-map-correction-source-audit.json",
+      "durable_sha256": "683e9ebc36b4a5a918340300db300e8b5bba09158d27e34db79c758e002ee44b",
+      "mode": "exact"
+    },
+    {
+      "raw": "measurements.json",
+      "raw_sha256": "7831b8ccce5b4fc486f710c262937be03e6e526f158b36fbd1429ea03948c56a",
+      "durable": "design/evidence/sources/adr0097-map-correction-measurements.json",
+      "durable_sha256": "7831b8ccce5b4fc486f710c262937be03e6e526f158b36fbd1429ea03948c56a",
+      "mode": "exact"
+    },
+    {
+      "raw": "final-native.json",
+      "raw_sha256": "7865b49a827cde8b20a8f65e76a1234138962d99c57dd0a6d9b87373df778861",
+      "durable": "design/evidence/sources/adr0097-map-correction-final-native.json",
+      "durable_sha256": "7865b49a827cde8b20a8f65e76a1234138962d99c57dd0a6d9b87373df778861",
+      "mode": "exact"
+    },
+    {
+      "raw": "lizard.json",
+      "raw_sha256": "9ac6dbe3e14d599e9d692007df9490e5fb588e96ef2d3798a7b573ad47864544",
+      "durable": "design/evidence/sources/adr0097-map-correction-lizard.json",
+      "durable_sha256": "9ac6dbe3e14d599e9d692007df9490e5fb588e96ef2d3798a7b573ad47864544",
+      "mode": "exact"
+    },
+    {
+      "raw": "start.json",
+      "raw_sha256": "83d0d2113b9a813c70d6fb88cdcf4047a73f468a137f6162b2acf34f342192bd",
+      "durable": "design/evidence/sources/adr0097-map-correction-start.json",
+      "durable_sha256": "83d0d2113b9a813c70d6fb88cdcf4047a73f468a137f6162b2acf34f342192bd",
+      "mode": "exact"
+    },
+    {
+      "raw": "versions.json",
+      "raw_sha256": "723cd39537ff8b0f54248063fb05d200922634099baf071d09834db49e9f16ce",
+      "durable": "design/evidence/sources/adr0097-map-correction-versions.json",
+      "durable_sha256": "723cd39537ff8b0f54248063fb05d200922634099baf071d09834db49e9f16ce",
+      "mode": "exact"
+    },
+    {
+      "raw": "wasm-excerpts.txt",
+      "raw_sha256": "7aaf738e1baafbc6144ea31263e23f4867a5baf3b47742ef21f059786c1f2fb6",
+      "durable": "design/evidence/sources/adr0097-map-correction-wasm.txt",
+      "durable_sha256": "7aaf738e1baafbc6144ea31263e23f4867a5baf3b47742ef21f059786c1f2fb6",
+      "mode": "exact"
+    },
+    {
+      "raw": "run.py",
+      "raw_sha256": "5634ea888eeec083d005b5d3878c55f1a03086faa9f4f492c85dc2b9538f2897",
+      "durable": "design/evidence/sources/adr0097-map-correction-runner.py",
+      "durable_sha256": "5634ea888eeec083d005b5d3878c55f1a03086faa9f4f492c85dc2b9538f2897",
+      "mode": "exact"
+    },
+    {
+      "raw": "mutate.py",
+      "raw_sha256": "ef2216a3b6505c6005e38044d8dec77fa26e3f9659ae8ec1cc0d96188a59b2b6",
+      "durable": "design/evidence/sources/adr0097-map-correction-mutate.py",
+      "durable_sha256": "ef2216a3b6505c6005e38044d8dec77fa26e3f9659ae8ec1cc0d96188a59b2b6",
+      "mode": "exact"
+    },
+    {
+      "raw": "collect.py",
+      "raw_sha256": "d72eafced14e3fd558c39e85db74fac0fed382198e91d9acd0d0142091d4d05e",
+      "durable": "design/evidence/sources/adr0097-map-correction-collector.py",
+      "durable_sha256": "d72eafced14e3fd558c39e85db74fac0fed382198e91d9acd0d0142091d4d05e",
+      "mode": "exact"
+    },
+    {
+      "raw": "plan.md",
+      "raw_sha256": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9",
+      "durable": "design/evidence/sources/adr0097-map-correction-plan.txt",
+      "durable_sha256": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9",
+      "mode": "exact"
+    },
+    {
+      "raw": "plan-check.txt",
+      "raw_sha256": "21fd3e5edf45b73fbd4c1670010615038f6fa8d4147b82cdc01f6eae66627e4b",
+      "durable": "design/evidence/sources/adr0097-map-correction-plan-check.txt",
+      "durable_sha256": "21fd3e5edf45b73fbd4c1670010615038f6fa8d4147b82cdc01f6eae66627e4b",
+      "mode": "exact"
+    },
+    {
+      "raw": "correction.patch",
+      "durable": "design/evidence/sources/adr0097-map-correction-source.patch",
+      "durable_sha256": "813fd526da56fdecd609191157307687db2ec828820453721723b1f909870081",
+      "mode": "zero-context diff of archived exact sources; raw context diff retained"
+    },
+    {
+      "raw": "mutation-early.patch",
+      "durable": "design/evidence/sources/adr0097-map-correction-mutation-early.patch",
+      "durable_sha256": "c8f40671fa584193c6390688fa9d71dfacd2801daf7a01baf23ce125a43672e4",
+      "mode": "zero-context diff of archived exact sources; raw context diff retained"
+    },
+    {
+      "raw": "mutation-resource.patch",
+      "durable": "design/evidence/sources/adr0097-map-correction-mutation-resource.patch",
+      "durable_sha256": "e8a1e951880d797f50f1a0356ef1ce8f1434d85b45c5a47f9a487470f32b23ce",
+      "mode": "zero-context diff of archived exact sources; raw context diff retained"
+    }
+  ],
+  "scope_check": "scope-check.json closes exact new-path inventory after ledger/run metadata publication"
+}

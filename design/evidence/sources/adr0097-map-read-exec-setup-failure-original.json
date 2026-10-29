@@ -1,0 +1,43 @@
+{
+  "ledger_entry_verbatim": {
+    "name": "setup",
+    "cap_seconds": 20,
+    "command": null,
+    "cwd": null,
+    "exit": null,
+    "failure": "FileNotFoundError(2, 'No such file or directory')",
+    "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "artifacts": [],
+    "source_after": {
+      "lib": "62fd25085d22a776e743fdafc8fab54aaab63c65905844bf68cdff965949bde6",
+      "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+    },
+    "source_unchanged": true,
+    "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "restored_csv_state": "absent",
+    "map_csv_absent": true,
+    "actual_seconds": 0.005894166068173945,
+    "charged_seconds": 20,
+    "contract_passed": false
+  },
+  "stopped_json_verbatim": {
+    "at": "setup",
+    "failure": "FileNotFoundError(2, 'No such file or directory')",
+    "charged_total": 20,
+    "entries_so_far": [
+      "setup"
+    ],
+    "diagnostic_failures": []
+  },
+  "diagnosis": "FileNotFoundError in exec_run.py main(): pin loop json.loads(ROOT/start.json) runs before run_admin(\"setup\"), which is the step that CREATES start.json",
+  "enumerated_stop_categories_evaluated": {
+    "compiler_failure": false,
+    "test_failure": false,
+    "tool_failure": false,
+    "timeout": false,
+    "cap_breach": false,
+    "source_config_fixture_drift": false,
+    "evidence": "actual0.006s of20s cap; no subprocess invoked (versions loop not reached); source_unchanged=true; lock15d08391 restored; map CSV absent; no artifacts; no stdout"
+  },
+  "measurement_surface": "untouched: no Rust/build/test/benchmark/disassembly; no scheduled command consumed"
+}

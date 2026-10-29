@@ -1,0 +1,9 @@
+{
+  "pins": {
+    "rustc": "rustc 1.100.0-nightly (574ff7d98 2026-09-14)",
+    "cargo": "cargo 1.100.0-nightly (7941be6fb 2026-09-11)",
+    "canbench": "canbench 0.7.0",
+    "lizard": "1.24.0"
+  },
+  "wasm_dis": "unused; no new disassembly authorized"
+}

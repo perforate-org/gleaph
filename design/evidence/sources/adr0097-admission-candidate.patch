@@ -1,0 +1,415 @@
+--- a/crates/ic-stable-lara/src/lara/edge/free_span.rs
++++ b/crates/ic-stable-lara/src/lara/edge/free_span.rs
+@@ -793,2 +793,2 @@
+-        self.ensure_span_exact(left)?;
+-        self.ensure_span_exact(right)?;
++        let left_id = self.exact_span_record(left)?.0;
++        let right_id = self.exact_span_record(right)?.0;
+@@ -802,0 +803,11 @@
++        if left_id == right_id {
++            return Err(FreeSpanError::MissingSpan { span: right });
++        }
++        if replacement.start_slot != left.start_slot
++            && replacement.start_slot != right.start_slot
++            && self.by_start.borrow().get(replacement.start_slot).is_some()
++        {
++            return Err(FreeSpanError::DuplicateStart {
++                start_slot: replacement.start_slot,
++            });
++        }
+@@ -809,5 +820,11 @@
+-    fn ensure_span_exact(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
+-        match self.free_span_starting_at(span.start_slot) {
+-            Some(found) if found == span => Ok(()),
+-            _ => Err(FreeSpanError::MissingSpan { span }),
+-        }
++    fn exact_span_record(&self, span: FreeSpan) -> Result<(SpanId, SpanRecord), FreeSpanError> {
++        let id = self
++            .by_start
++            .borrow()
++            .get(span.start_slot)
++            .ok_or(FreeSpanError::MissingSpan { span })?;
++        let rec = self.read_record(id);
++        if rec.flags != FLAG_ACTIVE || rec.len != span.len || rec.start_slot != span.start_slot {
++            return Err(FreeSpanError::MissingSpan { span });
++        }
++        Ok((id, rec))
+@@ -1029,9 +1046 @@
+-        let id = self
+-            .by_start
+-            .borrow()
+-            .get(old.start_slot)
+-            .ok_or(FreeSpanError::MissingSpan { span: old })?;
+-        let rec = self.read_record(id);
+-        if rec.flags != FLAG_ACTIVE || rec.len != old.len || rec.start_slot != old.start_slot {
+-            return Err(FreeSpanError::MissingSpan { span: old });
+-        }
++        let (id, rec) = self.exact_span_record(old)?;
+@@ -1056,2 +1065,2 @@
+-        let id = self
+-            .by_start
++        let (id, rec) = self.exact_span_record(span)?;
++        self.by_start
+@@ -1060,10 +1069 @@
+-            .expect("paged by_start remove failed")
+-            .ok_or(FreeSpanError::MissingSpan { span })?;
+-        let rec = self.read_record(id);
+-        if rec.flags != FLAG_ACTIVE || rec.len != span.len || rec.start_slot != span.start_slot {
+-            self.by_start
+-                .borrow_mut()
+-                .insert(span.start_slot, id)
+-                .expect("paged by_start insert failed");
+-            return Err(FreeSpanError::MissingSpan { span });
+-        }
++            .expect("paged by_start remove failed");
+@@ -1494,0 +1495,185 @@
++    }
++
++    fn admission_snapshot(
++        store: &FreeSpanStore<VirtualMemory<DefaultMemoryImpl>>,
++        memories: &[VirtualMemory<DefaultMemoryImpl>; 2],
++    ) -> ([Vec<u8>; 2], bool, Vec<MaxSpanCandidate>) {
++        let backing = memories.each_ref().map(|memory| {
++            let mut bytes = vec![0; (memory.size() * crate::WASM_PAGE_SIZE) as usize];
++            memory.read(0, &mut bytes);
++            bytes
++        });
++        // Observe the cache as-is, without rebuilding or querying its maximum.
++        let heap = store.max_spans.borrow().as_slice().to_vec();
++        (backing, store.max_heap_ready.get(), heap)
++    }
++
++    #[test]
++    fn a0_admission_exact_span() {
++        let manager = MemoryManager::init(DefaultMemoryImpl::default());
++        let memories = [
++            manager.get(MemoryId::new(40)),
++            manager.get(MemoryId::new(41)),
++        ];
++        let store = FreeSpanStore::init(memories[0].clone(), memories[1].clone()).unwrap();
++        for i in 0..96 {
++            store.release_span(10 * i, 1).unwrap();
++        }
++        for i in 0..31 {
++            assert_eq!(
++                store.take_prefix_at(10 * i, 1).unwrap(),
++                Some(FreeSpan {
++                    start_slot: 10 * i,
++                    len: 1
++                })
++            );
++        }
++        let expected: Vec<_> = (31..96)
++            .map(|i| FreeSpan {
++                start_slot: 10 * i,
++                len: 1,
++            })
++            .collect();
++        assert_eq!(store.spans(), expected);
++        store.validate().unwrap();
++        store.by_start.borrow().validate().unwrap();
++        let index_before = store.by_start.borrow().header();
++        assert_eq!(index_before.len, 65);
++        assert_eq!(index_before.dir_len, 2);
++        assert_eq!(index_before.page_count, 2);
++        assert_eq!(index_before.first_page, 1);
++        assert_eq!(index_before.last_page, 2);
++        assert_eq!(store.by_start.borrow().first(), Some((310, 32)));
++        assert_eq!(store.by_start.borrow().last(), Some((950, 96)));
++        let before = admission_snapshot(&store, &memories);
++        let wrong = FreeSpan {
++            start_slot: 310,
++            len: 2,
++        };
++        let error = store.remove_span_exact(wrong).unwrap_err();
++        let after = admission_snapshot(&store, &memories);
++        let index_after = store.by_start.borrow().header();
++        eprintln!("ADMISSION_EXACT reached mismatch: {index_before:?} -> {index_after:?}");
++        assert_eq!(error, FreeSpanError::MissingSpan { span: wrong });
++        assert_eq!(store.spans(), expected);
++        assert!(
++            before == after,
++            "exact-span rejection changed backing or heap"
++        );
++        assert_eq!(index_after, index_before);
++        assert_allocator_stats_match_spans(&store);
++        store.validate().unwrap();
++    }
++
++    #[test]
++    fn a0_admission_pair() {
++        let left = FreeSpan {
++            start_slot: 6,
++            len: 4,
++        };
++        let middle = FreeSpan {
++            start_slot: 20,
++            len: 4,
++        };
++        let peer = FreeSpan {
++            start_slot: 40,
++            len: 4,
++        };
++        for (right, replacement, expected_error, phase) in [
++            (
++                left,
++                left,
++                FreeSpanError::MissingSpan { span: left },
++                "same-input",
++            ),
++            (
++                middle,
++                peer,
++                FreeSpanError::DuplicateStart { start_slot: 40 },
++                "replacement-key",
++            ),
++        ] {
++            let manager = MemoryManager::init(DefaultMemoryImpl::default());
++            let memories = [
++                manager.get(MemoryId::new(10)),
++                manager.get(MemoryId::new(11)),
++            ];
++            let store = FreeSpanStore::init(memories[0].clone(), memories[1].clone()).unwrap();
++            for span in [left, middle, peer] {
++                store.release(span).unwrap();
++            }
++            store.validate().unwrap();
++            let before = admission_snapshot(&store, &memories);
++            let empty = FreeSpan {
++                start_slot: 6,
++                len: 0,
++            };
++            let missing_left = FreeSpan {
++                start_slot: 6,
++                len: 5,
++            };
++            let missing_right = FreeSpan {
++                start_slot: 20,
++                len: 5,
++            };
++            let overflow = FreeSpan {
++                start_slot: u64::MAX,
++                len: 1,
++            };
++            let overlap = FreeSpan {
++                start_slot: 39,
++                len: 6,
++            };
++            for (a, b, target, expected) in [
++                (
++                    missing_left,
++                    missing_right,
++                    empty,
++                    FreeSpanError::MissingSpan { span: missing_left },
++                ),
++                (
++                    left,
++                    missing_right,
++                    empty,
++                    FreeSpanError::MissingSpan {
++                        span: missing_right,
++                    },
++                ),
++                (left, right, empty, FreeSpanError::EmptySpan),
++                (
++                    left,
++                    right,
++                    overflow,
++                    FreeSpanError::SpanOverflow { span: overflow },
++                ),
++                (
++                    left,
++                    right,
++                    overlap,
++                    FreeSpanError::OverlapNext {
++                        inserted: overlap,
++                        next: peer,
++                    },
++                ),
++            ] {
++                assert_eq!(store.replace_exact_pair_with(a, b, target), Err(expected));
++                assert!(
++                    admission_snapshot(&store, &memories) == before,
++                    "{phase}: precedence rejection changed state"
++                );
++            }
++            eprintln!("ADMISSION_PAIR {phase}: precedence passed; reached primary rejection");
++            assert_eq!(
++                store.replace_exact_pair_with(left, right, replacement),
++                Err(expected_error)
++            );
++            let after = admission_snapshot(&store, &memories);
++            assert!(
++                before == after,
++                "{phase}: pair rejection changed backing or heap"
++            );
++            assert_eq!(store.spans(), vec![left, middle, peer]);
++            assert_allocator_stats_match_spans(&store);
++            store.validate().unwrap();
++            eprintln!("ADMISSION_PAIR {phase}: unchanged ownership verified");
++        }
+--- a/crates/ic-stable-paged-ordered-map/src/lib.rs
++++ b/crates/ic-stable-paged-ordered-map/src/lib.rs
+@@ -370 +370,2 @@
+-    /// no other concurrent mutation interferes.
++    /// no other concurrent mutation interferes. Zero or already-backed reservations do not write.
++    /// This reserves backing only, not directory admission, corruption checks or heap allocation.
+@@ -371,0 +373,3 @@
++        if additional_entries == 0 {
++            return Ok(());
++        }
+@@ -378 +382 @@
+-        if need == 0 {
++        if need.div_ceil(WASM_PAGE_SIZE) <= self.memory.size() {
+@@ -1145,0 +1150,151 @@
++    }
++
++    #[test]
++    fn a0_admission_zero_reservation() {
++        let m = map();
++        let expected: Vec<_> = (0..PAGE_CAP)
++            .map(|key| (key, 0xa500_0000_0000_0000 ^ key))
++            .collect();
++        for &(key, value) in &expected {
++            assert_eq!(m.insert(key, value), Ok(None));
++        }
++        m.validate().unwrap();
++        let bytes = || {
++            let mut bytes = vec![0; (m.memory.size() * WASM_PAGE_SIZE) as usize];
++            m.memory.read(0, &mut bytes);
++            bytes
++        };
++        let header = m.header();
++        assert_eq!(m.read_page_header(header.last_page).len as u64, PAGE_CAP);
++        let before = bytes();
++        let size = m.memory.size();
++        m.reserve_for_inserts(0).unwrap();
++        let after = bytes();
++        eprintln!("ADMISSION_ZERO zero reached: last value {:?}", m.last());
++        assert!(before == after, "zero reservation changed backing");
++        assert_eq!(m.memory.size(), size);
++        assert_eq!(m.header(), header);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++
++        m.reserve_for_inserts(64).unwrap();
++        assert_eq!(m.header(), header);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        let last_reserved_byte = page_offset(header.page_count + 64) + PAGE_STRIDE - 1;
++        assert!(last_reserved_byte >= page_offset(header.page_count) + PAGE_STRIDE);
++        m.memory.write(last_reserved_byte, &[0x7d]);
++        let before = bytes();
++        let size = m.memory.size();
++        m.reserve_for_inserts(64).unwrap();
++        let after = bytes();
++        assert!(
++            before == after,
++            "already-backed reservation overwrote its sentinel"
++        );
++        assert_eq!(m.memory.size(), size);
++        assert_eq!(m.header(), header);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        m.validate().unwrap();
++        eprintln!("ADMISSION_ZERO zero and already-backed positive reservation passed");
++    }
++
++    #[test]
++    fn a0_admission_directory_reservation() {
++        let m = map();
++        m.reserve_for_inserts(DIR_CAP).unwrap();
++        let value = |key| 0xa500_0000_0000_0000 ^ key;
++        for page in 1..=DIR_CAP {
++            let len = if page == 1 { PAGE_CAP as u16 } else { 1 };
++            m.write_page_header(
++                page,
++                PageHeader {
++                    flags: PAGE_FLAG_ACTIVE,
++                    len,
++                    prev: page - 1,
++                    next: if page == DIR_CAP { 0 } else { page + 1 },
++                    free_next: 0,
++                },
++            );
++            m.write_dir_entry(
++                page - 1,
++                DirEntry {
++                    min_key: 128 * page,
++                    page_id: page,
++                },
++            );
++            for index in 0..len {
++                let key = 128 * page + u64::from(index);
++                m.write_entry(page, index, key, value(key));
++            }
++        }
++        let header = HeaderV1 {
++            len: DIR_CAP - 1 + PAGE_CAP,
++            page_count: DIR_CAP,
++            free_head: 0,
++            first_page: 1,
++            last_page: DIR_CAP,
++            dir_len: DIR_CAP,
++            ..m.header()
++        };
++        write_header(&m.memory, &header).unwrap();
++        let mut expected: Vec<_> = (128..192)
++            .chain((2..=DIR_CAP).map(|page| 128 * page))
++            .map(|key| (key, value(key)))
++            .collect();
++        assert_eq!(expected.len(), 8255);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        m.validate().unwrap();
++        m.reserve_for_inserts(1).unwrap();
++        assert_eq!(m.header(), header);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        let mut before = vec![0; (m.memory.size() * WASM_PAGE_SIZE) as usize];
++        m.memory.read(0, &mut before);
++        assert_eq!(m.insert(192, value(192)), Err(Error::DirectoryFull));
++        let mut after = vec![0; (m.memory.size() * WASM_PAGE_SIZE) as usize];
++        m.memory.read(0, &mut after);
++        assert!(before == after, "full-directory rejection changed backing");
++        assert_eq!(m.header(), header);
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        m.validate().unwrap();
++        eprintln!("ADMISSION_DIRECTORY valid 8255-entry rejection passed");
++
++        assert_eq!(m.remove(256), Ok(Some(value(256))));
++        assert_eq!(m.header().free_head, 2);
++        assert_eq!(m.header().dir_len, DIR_CAP - 1);
++        assert_eq!(m.len(), 8254);
++        assert_eq!(m.read_page_header(2).flags, PAGE_FLAG_FREE);
++        m.validate().unwrap();
++        assert_eq!(m.insert(192, value(192)), Ok(None));
++        expected.retain(|&(key, _)| key != 256);
++        expected.insert(PAGE_CAP as usize, (192, value(192)));
++        assert_eq!(m.iter().collect::<Vec<_>>(), expected);
++        assert_eq!(m.header(), header);
++        assert_eq!(
++            m.read_page_header(1),
++            PageHeader {
++                flags: PAGE_FLAG_ACTIVE,
++                len: 32,
++                prev: 0,
++                next: 2,
++                free_next: 0,
++            }
++        );
++        assert_eq!(
++            m.read_page_header(2),
++            PageHeader {
++                flags: PAGE_FLAG_ACTIVE,
++                len: 33,
++                prev: 1,
++                next: 3,
++                free_next: 0,
++            }
++        );
++        assert_eq!(m.read_page_header(3).prev, 2);
++        assert_eq!(
++            m.read_dir_entry(1),
++            DirEntry {
++                min_key: 160,
++                page_id: 2
++            }
++        );
++        m.validate().unwrap();
++        eprintln!("ADMISSION_DIRECTORY exact removal/retry reused page 2");

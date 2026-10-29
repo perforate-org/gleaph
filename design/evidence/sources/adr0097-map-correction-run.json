@@ -1,0 +1,768 @@
+{
+  "authorization": "098fb465: one caller-owned-image/PageHeader correction and exact proposed0340 validation; acceptance remains blocked until original gates pass",
+  "status": "correction implemented; functional/native gates passed; acceptance BLOCKED; no additional execution authorized",
+  "raw_root": "/private/tmp/spill-map-correction-be81-1611h8iy",
+  "manifest": "manifest.sha256",
+  "head": "f297706abf683c1e22622c193d34f06650305bee",
+  "shared_main": "not queried or modified",
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "benchmark_sha256": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+  "free_span_sha256": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+  "plan_sha256": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9",
+  "references": {
+    "admission-production": "ae76d90f63313870057d6f8d689c20d095c3115865ef4eb9174afaf92da46fd0",
+    "blocked-candidate": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+    "original_run": "/tmp/spill-map-f297-cecc5rw_",
+    "diagnosis": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n"
+  },
+  "ledger_sha256": "d7e635e8058fac5b697befe72906fa18d2642e1a1f1f42306ca881adc042060f",
+  "ledger_total": 230.66811929061078,
+  "final_use": 60.072337457793765,
+  "native_baseline_hash": "still absent; not rebuilt",
+  "commands": [
+    {
+      "name": "format",
+      "phase": "pre",
+      "cap": 5,
+      "argv": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "1a28a7e42f4d2d3a5573da39ac39d66c222aa57aead7bbdb4609bec6e22b91c6",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "observed_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.6112979999743402
+    },
+    {
+      "name": "map",
+      "phase": "pre",
+      "cap": 30,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/map/native-0",
+          "sha256": "6803d178cc00772bed86c4f7fc8be5e7e07b493e5b43a85c3bca69adfa74da8e",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 3.9194394999649376
+    },
+    {
+      "name": "doc",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 4.238974582985975
+    },
+    {
+      "name": "mutation-early",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_directory_rejection",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "80040293012a6711b9620d4ceccf89fa0b42f659b869580279b3a8687e789a74",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-early/native-0",
+          "sha256": "7f3e70567c275da30e3899e4b15f8745a5841909c7f098999b347065d15cf8af",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 101,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 3.199537582928315,
+      "mutation_extra_charge": 0.005886666011065245
+    },
+    {
+      "name": "mutation-resource",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_resources_and_retry",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "89afe85ccf729d3a3638a558619ca64e94f5c9f9e50126debcee8848cf9de0ac",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-resource/native-0",
+          "sha256": "ef75c712d4cd3d4c5cac7b8dd1d0851d1654b5e3f991cd831716146955807e89",
+          "bytes": 2103040
+        }
+      ],
+      "exit": 101,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.945746083976701,
+      "mutation_extra_charge": 0.005338000017218292
+    },
+    {
+      "name": "scalar",
+      "phase": "pre",
+      "cap": 75,
+      "argv": [
+        "canbench",
+        "bench_paged_scalar_edits_97",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "wasm",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_paged_ordered_map.wasm",
+          "archive": "artifacts/scalar/ic_stable_paged_ordered_map.wasm",
+          "sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+          "bytes": 698629
+        }
+      ],
+      "exit": 0,
+      "csv_sha256": "6bf13b3a648bb39c5e8441fd65e35204cd7a3022390cc6a7940533a9b2579f89",
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 12.116402750019915
+    },
+    {
+      "name": "allocator",
+      "phase": "pre",
+      "cap": 100,
+      "argv": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "wasm",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_lara.wasm",
+          "archive": "artifacts/allocator/ic_stable_lara.wasm",
+          "sha256": "17ac422d558198568b148a47ca59dd17246d45a0ac953816638d68f3b867d4c6",
+          "bytes": 5025931
+        }
+      ],
+      "exit": 0,
+      "csv_sha256": "c838d8bec251ee2058b82bda61dc3882d1d98be4fd0894dce6b08f24a95b6805",
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 83.56438333296683
+    },
+    {
+      "name": "final-format",
+      "phase": "final",
+      "cap": 5,
+      "argv": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "observed_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 0.4044257499044761
+    },
+    {
+      "name": "final-clippy",
+      "phase": "final",
+      "cap": 25,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 4.9414115420077
+    },
+    {
+      "name": "final-map",
+      "phase": "final",
+      "cap": 20,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/final-map/native-0",
+          "sha256": "33b050db59fc9bd18e5b6d9af85d6622ba5669ef079451ad5f5b4dffa66b5f06",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 2.475371874985285
+    },
+    {
+      "name": "final-free",
+      "phase": "final",
+      "cap": 25,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "lara::edge::free_span::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae",
+          "archive": "artifacts/final-free/native-0",
+          "sha256": "453860c2f5a77b3e6787718f095b2cdcef0a7de007cebd34ff8e23581d775621",
+          "bytes": 39392032
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 20.41186366591137
+    },
+    {
+      "name": "final-doc",
+      "phase": "final",
+      "cap": 15,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.839264624984935
+    }
+  ],
+  "mutations": {
+    "mutation-early": {
+      "candidate_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+      "mutation_sha256": "80040293012a6711b9620d4ceccf89fa0b42f659b869580279b3a8687e789a74",
+      "restored_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+      "preparation_seconds": 0.005141041008755565,
+      "restoration_seconds": 0.00074562500230968
+    },
+    "mutation-resource": {
+      "candidate_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+      "mutation_sha256": "89afe85ccf729d3a3638a558619ca64e94f5c9f9e50126debcee8848cf9de0ac",
+      "restored_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+      "preparation_seconds": 0.004197417059913278,
+      "restoration_seconds": 0.0011405829573050141
+    }
+  },
+  "static_inspection": {
+    "argv": [
+      "/opt/homebrew/Cellar/binaryen/132/bin/wasm-dis",
+      "/private/tmp/spill-map-correction-be81-1611h8iy/artifacts/scalar/ic_stable_paged_ordered_map.wasm",
+      "-o",
+      "/private/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat"
+    ],
+    "exit": 0,
+    "elapsed": 0.2188155420590192,
+    "tool_sha256": "644465f704a4d27e5bfae0d8914e83df73dc83e0516d1827086e57113f2f7bb5",
+    "tool_version": "132, identical verified existing binary",
+    "wasm_sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+    "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+    "wat_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+    "mode": "static inspection only; no Wasm execution probe"
+  },
+  "static_findings": {
+    "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+    "wasm_sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+    "wat_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+    "scalar_symbol": "(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+    "scalar_lines": [
+      49468,
+      52289
+    ],
+    "scalar_body_sha256": "81d180ff19b2948312a28f8119c1025accad69248ebc0c24b05713365f8e6d67",
+    "static_scalar_stack_adjustment": {
+      "blocked": 752,
+      "correction": 304
+    },
+    "identified_scalar_memory_copy_fill": {
+      "blocked": "two104B prelookup transfers; two104B+144B success-tail transfers;116B fill",
+      "correction": "no memory.copy or memory.fill instruction directly in complete scalar_edit body; initialization stores remain"
+    },
+    "remaining": "out-of-line image reads, checked arithmetic, range/storage dispatch, result/backing/publish/drop work and split normalizer remain",
+    "inference": "Transfers removed and missing phase158312<242856 support contribution. Joint patch; not isolated copy/codec pricing. All original IC gates still fail.",
+    "not_measured": [
+      "peak call-chain stack",
+      "Wasm EditImage layout",
+      "component instruction costs",
+      "all process/backend allocations"
+    ]
+  },
+  "metrics": {
+    "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+    "references": "retained immutable measurements; no new baseline campaign",
+    "ic": {
+      "bench_paged_scalar_edits_97": {
+        "admission": 497282,
+        "blocked": 1431979,
+        "correction": 1093879,
+        "delta_vs_admission": 596597,
+        "percent_vs_admission": 119.97156542967572,
+        "delta_vs_blocked": -338100,
+        "percent_vs_blocked": -23.610681441557453,
+        "original_gate_passed": false
+      },
+      "bench_paged_scalar_edits_97::scalar_missing_64": {
+        "admission": 85672,
+        "blocked": 242856,
+        "correction": 158312,
+        "delta_vs_admission": 72640,
+        "percent_vs_admission": 84.78849565785788,
+        "delta_vs_blocked": -84544,
+        "percent_vs_blocked": -34.81239911717232,
+        "original_gate_passed": false
+      },
+      "bench_paged_scalar_edits_97::scalar_replace_64": {
+        "admission": 77576,
+        "blocked": 251720,
+        "correction": 167624,
+        "delta_vs_admission": 90048,
+        "percent_vs_admission": 116.07713725894607,
+        "delta_vs_blocked": -84096,
+        "percent_vs_blocked": -33.408549181630384,
+        "original_gate_passed": false
+      },
+      "bench_paged_scalar_edits_97::scalar_split_directory": {
+        "admission": 30930,
+        "blocked": 155692,
+        "correction": 155448,
+        "delta_vs_admission": 124518,
+        "percent_vs_admission": 402.5800193986421,
+        "delta_vs_blocked": -244,
+        "percent_vs_blocked": -0.15671967731161524,
+        "original_gate_passed": false
+      },
+      "bench_paged_scalar_edits_97::scalar_tail_pairs_64": {
+        "admission": 298171,
+        "blocked": 776778,
+        "correction": 607562,
+        "delta_vs_admission": 309391,
+        "percent_vs_admission": 103.76294139939833,
+        "delta_vs_blocked": -169216,
+        "percent_vs_blocked": -21.784345076714324,
+        "original_gate_passed": false
+      },
+      "bench_r_fs_tkbfs_1024": {
+        "admission": 1527576,
+        "blocked": 2350463,
+        "correction": 2256530,
+        "delta_vs_admission": 728954,
+        "percent_vs_admission": 47.71965519227849,
+        "delta_vs_blocked": -93933,
+        "percent_vs_blocked": -3.9963615679123645,
+        "original_gate_passed": false
+      },
+      "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split": {
+        "admission": 1526615,
+        "blocked": 2349502,
+        "correction": 2255569,
+        "delta_vs_admission": 728954,
+        "percent_vs_admission": 47.7496945857338,
+        "delta_vs_blocked": -93933,
+        "percent_vs_blocked": -3.9979961711034933,
+        "original_gate_passed": false
+      }
+    },
+    "native": {
+      "replace": {
+        "traffic": {
+          "reads": 9,
+          "read_bytes": 112,
+          "writes": 1,
+          "write_bytes": 8,
+          "max_read": 32,
+          "max_write": 8,
+          "sizes": 1,
+          "grows": 0,
+          "grown_pages": 0
+        },
+        "scratch": {
+          "dirty_bytes": 8,
+          "ranges": 1,
+          "byte_capacity": 0,
+          "range_capacity": 0,
+          "result_capacity": 0,
+          "reserves": 0,
+          "grows": 0,
+          "grown_pages": 0,
+          "completed": 1
+        }
+      },
+      "missing": {
+        "traffic": {
+          "reads": 12,
+          "read_bytes": 128,
+          "writes": 0,
+          "write_bytes": 0,
+          "max_read": 32,
+          "max_write": 0,
+          "sizes": 1,
+          "grows": 0,
+          "grown_pages": 0
+        },
+        "scratch": {
+          "dirty_bytes": 0,
+          "ranges": 0,
+          "byte_capacity": 0,
+          "range_capacity": 0,
+          "result_capacity": 0,
+          "reserves": 0,
+          "grows": 0,
+          "grown_pages": 0,
+          "completed": 1
+        }
+      },
+      "tail_insert": {
+        "traffic": {
+          "reads": 12,
+          "read_bytes": 128,
+          "writes": 3,
+          "write_bytes": 26,
+          "max_read": 32,
+          "max_write": 16,
+          "sizes": 1,
+          "grows": 0,
+          "grown_pages": 0
+        },
+        "scratch": {
+          "dirty_bytes": 26,
+          "ranges": 3,
+          "byte_capacity": 0,
+          "range_capacity": 0,
+          "result_capacity": 0,
+          "reserves": 0,
+          "grows": 0,
+          "grown_pages": 0,
+          "completed": 1
+        }
+      },
+      "tail_remove": {
+        "traffic": {
+          "reads": 13,
+          "read_bytes": 136,
+          "writes": 2,
+          "write_bytes": 10,
+          "max_read": 32,
+          "max_write": 8,
+          "sizes": 1,
+          "grows": 0,
+          "grown_pages": 0
+        },
+        "scratch": {
+          "dirty_bytes": 10,
+          "ranges": 2,
+          "byte_capacity": 0,
+          "range_capacity": 0,
+          "result_capacity": 0,
+          "reserves": 0,
+          "grows": 0,
+          "grown_pages": 0,
+          "completed": 1
+        }
+      },
+      "split": {
+        "traffic": {
+          "reads": 94,
+          "read_bytes": 1368,
+          "writes": 8,
+          "write_bytes": 1146,
+          "max_read": 32,
+          "max_write": 560,
+          "sizes": 1,
+          "grows": 0,
+          "grown_pages": 0
+        },
+        "scratch": {
+          "dirty_bytes": 1146,
+          "ranges": 8,
+          "byte_capacity": 1168,
+          "range_capacity": 12,
+          "result_capacity": 0,
+          "reserves": 2,
+          "grows": 0,
+          "grown_pages": 0,
+          "completed": 1
+        }
+      }
+    },
+    "baseline_scratch": "unobserved, not zero",
+    "ic_page_growth": 0,
+    "not_claimed": "per-component IC pricing, noise waiver, global allocations or peak stack"
+  },
+  "lizard_summary": {
+    "blocked": {
+      "owner_all": {
+        "functions": 96,
+        "ccn": 313,
+        "nloc": 1226,
+        "tokens": 9804,
+        "max_ccn": 37
+      },
+      "owner_touched": {
+        "functions": 11,
+        "ccn": 30,
+        "nloc": 105,
+        "tokens": 1066,
+        "max_ccn": 9
+      }
+    },
+    "correction": {
+      "owner_all": {
+        "functions": 97,
+        "ccn": 314,
+        "nloc": 1249,
+        "tokens": 9840,
+        "max_ccn": 37
+      },
+      "owner_touched": {
+        "functions": 11,
+        "ccn": 30,
+        "nloc": 123,
+        "tokens": 1056,
+        "max_ccn": 9
+      }
+    }
+  },
+  "source_check": "source-audit.json",
+  "verification": "verification.json",
+  "scope_check": "scope-check.json",
+  "plan_state": "3 completed/1 pending TODO;4 checked/2 unchecked criteria; final refusal expected",
+  "not_run": [
+    "baseline restoration/build",
+    "second candidate",
+    "tuning retry",
+    "fixture/benchmark change",
+    "full suite",
+    "PocketIC",
+    "install",
+    "cold target",
+    "process control",
+    "old runner",
+    "commit",
+    "merge"
+  ]
+}

@@ -15,6 +15,9 @@ replacement. Width-8 hydrated scans favor both-plane folding, and the first appe
 retirement and failure to recover it through later compaction. [0371 repairs the shared publication
 boundary and remeasures these exports](adr0097-value-span-retirement.md). The measurements below are
 preserved pre-repair observations; neither experiment establishes a repeated-fold capacity policy.
+The later [0373 repeated-fold experiment](adr0097-repeated-fold-economics.md) measures alternating
+append/fold/read totals and allocator reuse on repaired source. Its different operation sequence
+is reported separately, without replacing these historical tables or choosing a policy threshold.
 
 This extends [0368 fold economics](adr0097-fold-economics.md). All three representations are measured
 on **one current Wasm**; old results are not used as a baseline. The original setup is unchanged,

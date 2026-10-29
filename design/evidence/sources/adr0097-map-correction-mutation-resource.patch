@@ -1,0 +1,7 @@
+--- before/lib.rs
++++ after/lib.rs
+@@ -1356 +1356 @@
+-        self.admit_image(plan.image)?;
++
+@@ -1412,0 +1413 @@
++        self.admit_image(image).expect("deferred backing reservation");

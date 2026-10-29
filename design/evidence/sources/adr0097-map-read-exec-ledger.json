@@ -1,0 +1,653 @@
+{
+  "status": "closed; one bounded diagnostic executed after two preserved administrative driver corrections (setup ENOENT pin-loop ordering, pre-Rust, zero commands consumed; map archive-path/finally-tail defect after the scheduled cargo test had already passed exit0, reach verified from saved streams, no re-run) \u2014 all original receipts/diffs preserved; acceptance remains BLOCKED (all original IC ceilings fail; bounded-proof pending; criteria5/6 unchecked)",
+  "limit": 600,
+  "pre_final_caps": 215,
+  "protected_final_caps": 120,
+  "unassigned_not_contingency": 265,
+  "entries": [
+    {
+      "name": "setup",
+      "cap_seconds": 20,
+      "command": null,
+      "cwd": null,
+      "exit": null,
+      "failure": "FileNotFoundError(2, 'No such file or directory')",
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "62fd25085d22a776e743fdafc8fab54aaab63c65905844bf68cdff965949bde6",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.005894166068173945,
+      "charged_seconds": 20,
+      "contract_passed": false,
+      "failure_original": "FileNotFoundError(2, 'No such file or directory')",
+      "driver_correction": {
+        "defect": "exec_run.py main() pin loop json.loads(ROOT/start.json) executed before run_admin('setup'), the step that creates start.json -> FileNotFoundError",
+        "enumerated_stop_categories": {
+          "compiler": false,
+          "test": false,
+          "tool": false,
+          "timeout": false,
+          "cap_breach": false,
+          "source_config_fixture_drift": false
+        },
+        "facts": {
+          "actual_seconds": 0.005894166068173945,
+          "cap": 20,
+          "subprocess_invoked": false,
+          "scheduled_commands_consumed": 0,
+          "source_unchanged": true,
+          "lock_restored": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+          "map_csv": "absent",
+          "artifacts": [],
+          "stdout": "absent"
+        },
+        "driver_fix_patch": "driver-fix.patch",
+        "setup_contract_satisfied_by": "admin_setup() outputs verified in this correction (authorization/versions/start/run-pins/cleanup/pre-format)",
+        "charge": "the original setup entry already charged its full20s cap; the correction is absorbed within that charge; no additional ledger charge",
+        "original_receipt": "setup-failure-original.json (entry + stopped.json verbatim)",
+        "measurement_integrity": "no Rust/build/test/benchmark/disassembly and no scheduled command ran before or during this correction; no outcome could be observed or tuned"
+      },
+      "contract_satisfied_by": "setup-correction (driver record-ordering fix; see failure_original)"
+    },
+    {
+      "name": "format",
+      "cap_seconds": 5,
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": false,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.644743875018321,
+      "charged_seconds": 0.644743875018321,
+      "contract_passed": true
+    },
+    {
+      "name": "map",
+      "cap_seconds": 30,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": "finally: AssertionError('target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e')",
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [],
+      "actual_seconds": 3.4161938750185072,
+      "charged_seconds": 3.4161938750185072,
+      "contract_passed": false,
+      "failure_original": "finally: AssertionError('target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e')",
+      "driver_correction": {
+        "defect": "archive block: relative emitted-binary path without REPO/ prefix; raising inside the finally tail skipped checkout-lock restore/source checks/log write; REACH cargo-result regexes lacked the space-tolerant form (\"ok. 18 passed; 0 failed;\")",
+        "scheduled_command_outcome": "cargo test PASSED (exit0,18 passed,33 oracle cases) \u2014 verified from the saved streams, NOT re-run",
+        "driver_fix_patch": "driver-fix3.patch",
+        "fixes": [
+          "absolute-or-REPO-prefixed archive paths (attempt-runner pattern restored)",
+          "archive failures deferred until after the finally tail so lock/csv/source restoration always completes",
+          "REACH result regexes made space-tolerant for all five cargo result lines"
+        ],
+        "lock_restored_to": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "original_receipt": "map-failure-original.json",
+        "reach_evidence_saved_streams": {
+          "exit": 0,
+          "result_lines": [
+            "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s"
+          ],
+          "image_read_cases": 33,
+          "tests_run": 18,
+          "passed_ok_line": true,
+          "source": "saved map.stdout/map.stderr from the successful exit0 invocation; cargo format is \"ok. 18 passed; 0 failed;\" (spaces)"
+        },
+        "measurement_integrity": "no benchmark/measurement step reached; the scheduled command succeeded; nothing observable could be tuned"
+      },
+      "contract_satisfied_by": "map correction: reach verified from saved exit0 streams (18 passed,33 cases)"
+    },
+    {
+      "name": "doc",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 3.630014832946472,
+      "charged_seconds": 3.630014832946472,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-early",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_directory_rejection",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 101,
+      "failure": null,
+      "restored_to_M": true,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-early/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "d1666fe7438a09fdcc38019fa1411adc684bc15bd1a2275f3a5db92b64f801a4",
+          "bytes": 2133888
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 2.768537166994065,
+      "charged_seconds": 2.768537166994065,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-resource",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_resources_and_retry",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 101,
+      "failure": null,
+      "restored_to_M": true,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-resource/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "0fcfe96054a52afae3620c66d150a8e0a71c187d9602af867a606b475cdbc1ff",
+          "bytes": 2134512
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 2.21062358294148,
+      "charged_seconds": 2.21062358294148,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-disjoint",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "edit_image_read_partition",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 101,
+      "failure": null,
+      "restored_to_M": true,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-disjoint/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "50a0b5b36aabebf778fcfeeb8db5947b09c5ed7974aa4ee5684975e1fcab51b0",
+          "bytes": 2132192
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 3.3222716249292716,
+      "charged_seconds": 3.3222716249292716,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-backed",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "edit_image_read_partition",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 101,
+      "failure": null,
+      "restored_to_M": true,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-backed/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "8e47d966a3a00ec7f09b141a6be5a0e70840a394b304ed528898d681977d219a",
+          "bytes": 2133888
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 1.846265041967854,
+      "charged_seconds": 1.846265041967854,
+      "contract_passed": true
+    },
+    {
+      "name": "audit",
+      "cap_seconds": 15,
+      "command": null,
+      "cwd": null,
+      "exit": null,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.35209991701412946,
+      "charged_seconds": 15,
+      "contract_passed": true
+    },
+    {
+      "name": "scalar",
+      "cap_seconds": 75,
+      "command": [
+        "canbench",
+        "bench_paged_scalar_edits_97",
+        "--csv",
+        "--show-canister-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_paged_ordered_map.wasm",
+          "archive": "artifacts/scalar/ic_stable_paged_ordered_map.wasm",
+          "sha256": "8eedcf435f8b7d803de97fc5d167d832dd06a9f95b7499cb161284f100e5008a",
+          "bytes": 707420
+        }
+      ],
+      "canister_output_captured": true,
+      "csv_sha256": "793902e15798b8c34b90cc54b8f891df44188899e41eac1bf46f0829db6bd956",
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 11.896412041969597,
+      "charged_seconds": 11.896412041969597,
+      "contract_passed": true
+    },
+    {
+      "name": "collect",
+      "cap_seconds": 20,
+      "command": null,
+      "cwd": null,
+      "exit": null,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.26863791700452566,
+      "charged_seconds": 20,
+      "contract_passed": true
+    },
+    {
+      "name": "final-format",
+      "cap_seconds": 5,
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.5106746249366552,
+      "charged_seconds": 0.5106746249366552,
+      "contract_passed": true
+    },
+    {
+      "name": "final-clippy-map",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "--tests",
+        "--features",
+        "canbench",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 8.781401750049554,
+      "charged_seconds": 8.781401750049554,
+      "contract_passed": true
+    },
+    {
+      "name": "final-clippy-lara",
+      "cap_seconds": 15,
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 2.662868084036745,
+      "charged_seconds": 2.662868084036745,
+      "contract_passed": true
+    },
+    {
+      "name": "final-map",
+      "cap_seconds": 20,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/final-map/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "663e4a8167de5101d38d31de959154e93204b72fb00dba27d0246e1acec3b133",
+          "bytes": 2133888
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 1.7584587080636993,
+      "charged_seconds": 1.7584587080636993,
+      "contract_passed": true
+    },
+    {
+      "name": "final-free",
+      "cap_seconds": 25,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "lara::edge::free_span::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [
+        {
+          "actual_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae",
+          "archive": "artifacts/final-free/ic_stable_lara-fac74afe6ffbffae",
+          "sha256": "7a78c2f61f0ed0ecf70daa4b6dafe347136a555012715c784b9112c8220e64fa",
+          "bytes": 39394560
+        }
+      ],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 5.681957208085805,
+      "charged_seconds": 5.681957208085805,
+      "contract_passed": true
+    },
+    {
+      "name": "final-doc",
+      "cap_seconds": 15,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "exit": 0,
+      "failure": null,
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 1.5689963339827955,
+      "charged_seconds": 1.5689963339827955,
+      "contract_passed": true
+    },
+    {
+      "name": "provenance",
+      "cap_seconds": 15,
+      "command": null,
+      "cwd": null,
+      "exit": null,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.637993499985896,
+      "charged_seconds": 15,
+      "contract_passed": true
+    },
+    {
+      "name": "evidence",
+      "cap_seconds": 15,
+      "command": null,
+      "cwd": null,
+      "exit": null,
+      "failure": null,
+      "actual_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "artifacts": [],
+      "source_after": {
+        "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+        "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+      },
+      "source_unchanged": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_state": "absent",
+      "map_csv_absent": true,
+      "actual_seconds": 0.29221345810219646,
+      "charged_seconds": 15,
+      "contract_passed": true
+    }
+  ],
+  "reactivations": [
+    {
+      "step": "setup",
+      "basis": "none of the four enumerated stop categories occurred; a failed administrative command is a charged-count item under the authority; smallest evidence-backed driver fix with the original failure, stopped receipt and driver diff preserved; zero measurement surface consumed, so no outcome could be re-observed",
+      "preserved_receipt": "setup-failure-original.json",
+      "driver_fix": "driver-fix.patch"
+    },
+    {
+      "step": "map",
+      "basis": "none of the four enumerated stop categories occurred (the scheduled command passed); failed administrative archive/restore tail corrected with the original failure, stopped receipt and driver diff preserved; reach evidence taken from saved streams, no command re-run; checkout lock restored from pinned HEAD bytes",
+      "preserved_receipt": "map-failure-original.json",
+      "driver_fix": "driver-fix3.patch"
+    }
+  ],
+  "maximum": 600,
+  "pre_final_charged": 84.73506204178557,
+  "final_charged": 50.964356709155254,
+  "charged_total": 135.69941875094082,
+  "corrected_failures": [
+    "setup",
+    "map"
+  ]
+}

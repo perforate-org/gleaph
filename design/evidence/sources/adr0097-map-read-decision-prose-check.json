@@ -1,0 +1,173 @@
+{
+  "kind": "prose/text/hash/scope checks for the decision+clarification pass; no Rust/build/test/benchmark/disassembly",
+  "plan_receipt": {
+    "sha256": "3fa7f229aec407dd29271a8e74f352062a64012c611b0e82e15278ed0d81f1f3",
+    "exit": 1,
+    "errors": [
+      "ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'",
+      "ERROR: Completion Criteria item 5 must be checked in final phase",
+      "ERROR: Completion Criteria item 6 must be checked in final phase"
+    ],
+    "expected_refusal": true,
+    "durable": "adr0097-map-read-decision-plan-check.txt"
+  },
+  "whitespace": {
+    "git_diff_check_exit": 0,
+    "trailing_whitespace_lines": {
+      "plans/0340-prepared-paged-map-edits.md": [],
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": [],
+      "design/evidence/adr0097-demotion-design.md": []
+    }
+  },
+  "links": {
+    "current": {
+      "mode": "current",
+      "distinct_targets": 156,
+      "missing_files": [
+        "design/adr/0318-tree-csr-demotion-tree-to-slab.md",
+        "design/investigations/2026-09-12-bounded-edge-membership-witnesses.md",
+        "design/plans/0317-adr0088-tree-csr-implementation.md",
+        "design/plans/0318-tree-csr-implementation.md",
+        "plans/0313-adr0088-tree-csr-measurement-gates.md",
+        "plans/0314-canbench-name-rationalization.md",
+        "plans/0315-adr0088-raw-block-ltb-revalidation.md",
+        "plans/0316-adr0088-per-write-payload-constant-fix.md"
+      ],
+      "missing_fragments": [
+        "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented"
+      ],
+      "attempt_links": [
+        "sources/adr0097-map-read-attempt-allocator.csv",
+        "sources/adr0097-map-read-attempt-authorization.json",
+        "sources/adr0097-map-read-attempt-final-doc.txt",
+        "sources/adr0097-map-read-attempt-final-free.txt",
+        "sources/adr0097-map-read-attempt-final-map.txt",
+        "sources/adr0097-map-read-attempt-final-native.json",
+        "sources/adr0097-map-read-attempt-ledger.json",
+        "sources/adr0097-map-read-attempt-lizard.json",
+        "sources/adr0097-map-read-attempt-measurements.json",
+        "sources/adr0097-map-read-attempt-mutation-backed.txt",
+        "sources/adr0097-map-read-attempt-mutation-disjoint.txt",
+        "sources/adr0097-map-read-attempt-mutation-early.txt",
+        "sources/adr0097-map-read-attempt-mutation-resource.txt",
+        "sources/adr0097-map-read-attempt-oracle-first.json",
+        "sources/adr0097-map-read-attempt-plan-check.txt",
+        "sources/adr0097-map-read-attempt-production.patch",
+        "sources/adr0097-map-read-attempt-run.json",
+        "sources/adr0097-map-read-attempt-scalar.csv",
+        "sources/adr0097-map-read-attempt-source-audit.json",
+        "sources/adr0097-map-read-attempt-source.patch",
+        "sources/adr0097-map-read-attempt-verification.json",
+        "sources/adr0097-map-read-attempt-wasm.txt"
+      ]
+    },
+    "inherited_pre_attempt": {
+      "mode": "inherited",
+      "distinct_targets": 124,
+      "missing_files": [
+        "design/adr/0318-tree-csr-demotion-tree-to-slab.md",
+        "design/investigations/2026-09-12-bounded-edge-membership-witnesses.md",
+        "design/plans/0317-adr0088-tree-csr-implementation.md",
+        "design/plans/0318-tree-csr-implementation.md",
+        "plans/0313-adr0088-tree-csr-measurement-gates.md",
+        "plans/0314-canbench-name-rationalization.md",
+        "plans/0315-adr0088-raw-block-ltb-revalidation.md",
+        "plans/0316-adr0088-per-write-payload-constant-fix.md"
+      ],
+      "missing_fragments": [
+        "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented"
+      ],
+      "attempt_links": []
+    },
+    "inherited_exceptions_unchanged": true,
+    "docs": [
+      "plans/0340-prepared-paged-map-edits.md",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "design/evidence/adr0097-demotion-design.md"
+    ],
+    "new_receipt_links_resolve": true
+  },
+  "pins": {
+    "total": 1528,
+    "allowed_changed": [
+      "crates/ic-stable-paged-ordered-map/src/lib.rs",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "design/evidence/adr0097-demotion-design.md",
+      "plans/0340-prepared-paged-map-edits.md"
+    ],
+    "mismatches": [],
+    "source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+    "benchmark_sha256": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+    "freespan_sha256": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "checkout_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "head": "f297706abf683c1e22622c193d34f06650305bee",
+    "staged": "none"
+  },
+  "closed_root_preservation": {
+    "files_checked": 181,
+    "changed": [],
+    "final_manifest_sha256": "c20b1fa154519e7d76aaa72b23889b0d8a02aa88e3496b66d235753b84c4828c",
+    "ledger_sha256": "07607cdb8a1a60aaef9d67711fd3ef5506291bd545365263631b69dc10541733",
+    "attempt_durables": 37
+  },
+  "scope_t1_before_this_receipt_export": {
+    "added": [
+      "?? design/evidence/sources/adr0097-map-read-attempt-allocator.csv",
+      "?? design/evidence/sources/adr0097-map-read-attempt-authorization.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-doc.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-driver-revisions.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-clippy-lara.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-clippy-map.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-doc.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-format.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-free.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-map.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-final-native.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-format.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-interruption.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-ledger-interrupted.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-ledger.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-lizard.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-map.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-measurements.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-backed.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-backed.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-disjoint.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-disjoint.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-early.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-early.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-resource.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-mutation-resource.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-oracle-first.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-plan-check.txt",
+      "?? design/evidence/sources/adr0097-map-read-attempt-production.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-run.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-scalar.csv",
+      "?? design/evidence/sources/adr0097-map-read-attempt-source-audit.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-source.patch",
+      "?? design/evidence/sources/adr0097-map-read-attempt-start.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-verification.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-versions.json",
+      "?? design/evidence/sources/adr0097-map-read-attempt-wasm.txt",
+      "?? design/evidence/sources/adr0097-map-read-clarification-coverage.json",
+      "?? design/evidence/sources/adr0097-map-read-clarification-execution.json",
+      "?? design/evidence/sources/adr0097-map-read-decision-analysis.json",
+      "?? design/evidence/sources/adr0097-map-read-decision-plan-check.txt"
+    ],
+    "removed": [],
+    "matches_expected_except_self": true
+  },
+  "failures": [],
+  "scope_t2_after_export": {
+    "added_count": 42,
+    "removed": [],
+    "exact_37_attempt_plus_5_new": true
+  },
+  "durable_sha256": {
+    "adr0097-map-read-clarification-execution.json": "9e9a3e118308fd8b06fd79dd27204797ec82f24694b7460b4088a981116f0077",
+    "adr0097-map-read-clarification-coverage.json": "e64e0d5e2ae060896cb16053321b7a0680586a3110b564b45b984fe90d7971b9",
+    "adr0097-map-read-decision-analysis.json": "317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+    "adr0097-map-read-decision-plan-check.txt": "bc6a98805f04cf113a4d503bcaa7680a32adc99112d1ff3864501ca844c73de3"
+  },
+  "self_hash_note": "this receipt hashes its four sibling durables; its own durable hash is recorded in the decision-root seal"
+}

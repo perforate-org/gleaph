@@ -11,6 +11,10 @@ allocator-operation and index alternatives on the0358 source.
 [section14](#14-compact-page-header-retained) records option B's retained layout. Sections15 and16
 retain shared scratch append and resize improvements without changing that layout. Option C remains
 a separate selection-policy decision.
+[Section17](#17-paired-edit-start-metadata-read-rejected) records the paired-header-read trial's
+rejection and full restoration. No part of that candidate changes the retained layout or source.
+[Section18](#18-shared-edit-pipeline-static-survey) inspects that retained source and frozen Wasm;
+it selects no implementation candidate and adds no performance measurement.
 
 ## 0. Gates, anchors, non-claims
 
@@ -1200,3 +1204,239 @@ current costs. LARA index replacement remains a separate policy decision.
 Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/scratch-resize-owner-0362/` contains input
 pins, all characterization/mutant sources and transcripts, final candidate checks, Cargo/source/lock
 bindings, frozen Wasm/rlib, original-filter CSVs, codegen/Lizard and the completion decision/receipt.
+
+## 17. Paired edit-start metadata read rejected
+
+**Status: measured/rejected; full restoration complete (Plan0363).** The paired read worked, but
+split regressed and the improvements did not close the two open ceilings. Retained source remains
+`47796acb` from section16. Replacement96072 and tail366090 still require reductions of18496
+(about19.3%) and67919 (about18.6%) to reach77576 and298171. Acceptance remains4/6.
+
+### One tested change
+
+Frozen0362 map Wasm `5fcff73d` reads page_count at offset16/length8 (call0x1f703) and initial
+dir_len at offset48/length8 (call0x1fb57). Both call verified import0, ic0.stable64_read.
+These are compiled call sites, not isolated prices; neither baseline Wasm nor IC benchmark was
+rebuilt or rerun.
+
+Candidate `98ecf8a1` swapped dir_len48→24 and free_head24→48, then read page_count and dir_len
+in one16B call. Existing EditPlan held one extra initial u64, reusable only while dirty ranges
+were empty. Its existing dir_len helper selected the snapshot or current probe and retained one
+DIR_CAP guard. All three callers—lookup, split_page and remove_page—used that owner. The initial
+planning inventory omitted the third caller; the complete source search included it before the
+candidate was implemented. No validation moved before result reservation.
+
+Header size, page/directory geometry, marker1 and public HeaderV1 were unchanged. The incompatible
+slot trial followed the approved fresh-owning-bundle policy, with no migration or old-format
+recognition. It introduced no public API, type, helper, persistent cache, flag, dependency or
+FreeSpan change. Full-page/first-key/header checks, exact priors and publication remained intact.
+Unlike rejected0356 prefetch, both words were mandatory initial metadata. No other candidate,
+check deletion, batching, prior-value redesign, rekey or index replacement was bundled.
+
+### Source-bound measurements and decision
+
+| Metric | Retained0362 | Candidate0363 | Difference | Change | Original ceiling | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Missing64 |84008|83432|-576|-0.6856%|85672|PASS|
+| Replace64 |96072|95368|-704|-0.7328%|77576|FAIL|
+| Split/directory |29123|29164|+41|+0.1408%|30930|PASS|
+| Tail pairs64 |366090|365002|-1088|-0.2972%|298171|FAIL|
+| LARA total |819559|812749|-6810|-0.8309%|1527576|PASS|
+| LARA named |818598|811788|-6810|-0.8319%|1526615|PASS|
+
+**Decision: reject the entire candidate.** Split violates the required non-increase control even
+though it stays below its original ceiling. Both target improvements and the other three controls
+do not override that failure. No tolerance, aggregate waiver or post-measurement tuning was used.
+Map total580226→577899 is context, not a seventh gate; the LARA scopes are overlapping, not additive.
+All reported heap/stable page increases are0. Original5/2 fourteen-column rows, exact names,
+named calls1, new status and empty deltas are verified; no results.yml was persisted.
+
+### Correctness, compiled path and limits
+
+Two semantic characterizations pass on unchanged production. A real staged2→1 directory shrink
+changes subsequent routing while canonical bytes stay unchanged; forced result-scratch failure
+precedes corrupt directory length. Independent constructor-traffic and64B-layout assertions then
+fail on the old read/slot contract and pass on the candidate. Four existing fixtures still use
+five native Memory/map constructions, with no new test function or IC fixture.
+
+The stale-snapshot mutant still calls its probe and passes the earlier routing checks, then fails
+at the real-shrink lookup with AddressOverflow. The early-validation mutant fails the exact
+Scratch-at-None precedence assertion. Each mutant is archived and the candidate restored before
+final validation. Candidate format, strict map lib/tests and LARA lib lint,30 map units,5 doctests
+(1+4),27 FreeSpan tests, both release builds and both original IC filters pass as executions.
+Existing GAP-LARA-TEST-CLIPPY remains open, not rerun or waived. LARA includes unchanged pending
+admission work, not clean-commit integration evidence.
+
+Candidate prepare_image starts0x1f6dd. Its call0x1f764 reads offset16/length16. The pristine
+backing path uses the cached word and branches at0x1fc3b past the8B reread at0x1fc4a to0x1fc57;
+bound8192 remains at0x1fc5a. The conditional reread is still emitted: the removed work is on the
+executed pristine path, not a global absence of read code. Prospective read0x1fb22 and bound
+0x1fb32 remain. Split keeps corruption/DirectoryFull bounds0x1d923/0x1d93e before scan0x1d988.
+No isolated instruction price, attribution of the41-instruction regression or peak-stack claim
+is inferred. Fewer native/stable-memory calls did not produce the required whole-operation result.
+
+Lizard1.24.0 (`--csv -i -1`) measures nine touched functions: CCN66→71/NLOC521→625, maximum21
+unchanged. Whole-file CCN478→483/NLOC3923→4027,148 functions and maximum32 unchanged. Production
+adds11 NLOC and one branch; tests add93 NLOC. Only private dir_len gains self; no new five-plus
+signature or abstraction appears. Candidate map/LARA Wasm grow182/363B to743412/5064795B. None of
+these complexity/size changes is a speed claim or a reason to relax the failed control.
+
+### Restoration
+
+The entire candidate, including Rustdoc and test additions, is removed. Live lib is byte-identical
+to HEAD0362:174449B/SHA256 `47796acb7e26ecdd138570922702d12968bd5c52983e89dfc745f436ff1b79e5`.
+The lib diff is empty; ADR0088 and all unrelated pending work remain unchanged. There is no0363
+layout adoption or new fresh-state requirement. Validation above belongs to the archived candidate;
+restoration is proved by exact bytes, not a relabeled or rerun baseline validation.
+
+Archived candidate lib178863B/SHA256 `98ecf8a104192afc7461e7d5e767747b2e6cc1d172b11639728b9f2287828d79`;
+map743412B/SHA256 `390097ef26b39c0e25163a424f32ca325498cdd29b4327a19d0862f18752e42d`;
+LARA5064795B/SHA256 `8cdd2f5c267eaf7892873e7149c1735be1c3639c3d68af4189492881b2de9a03`.
+Map Wasm was frozen before LARA rebuilt its default-only map dependency; that linked rlib is archived.
+
+Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/header-pair-read-0363/` contains planning/
+approved input pins, characterization/red/candidate/mutant sources and transcripts, source/lock/
+Cargo/Wasm bindings, original-filter CSVs, codegen/Lizard review, rejection and full-restoration proof.
+No second candidate, baseline Wasm rebuild/IC rerun, benchmark persistence, commit or push occurred.
+
+## 18. Shared edit-pipeline static survey
+
+**Status: research complete; no implementation candidate selected (Plan0364).** This is static
+inspection of retained0362, not an optimization trial, runtime profile or architectural rejection.
+The inspected source is `47796acb`; map Wasm is743230B/`5fcff73d`. Both original source bindings
+and map/LARA CSVs were checked without rebuilding or executing either artifact. Replacement still
+needs18496 fewer instructions (19.25% of96072); tail67919 (18.55% of366090). Acceptance remains4/6.
+Nothing here prices a helper, predicts19% savings, or establishes that further improvement is impossible.
+
+### Ownership and complete common path
+
+The [map source](../../crates/ic-stable-paged-ordered-map/src/lib.rs) has one scalar/batch engine:
+`prepare_edits`/`scalar_edit` (1512/1519) construct a caller-owned EditImage, `prepare_image` (1528)
+constructs EditPlan, reserves results, applies ordered intents, stores priors and admits backing.
+Only `publish_image` (1607) writes canonical bytes. Discard/drop releases private scratch.
+
+Scratch (339–428) owns representation, capacity, fallible growth and reserved writes for all three
+consumers: results, encoded bytes and descriptors. EditPlan::reserve (750) reserves bytes before
+ranges; EditImage::cover (512) owns interval composition, packed bytes and descriptor rebasing.
+EditPlan::lookup (1021) owns selected-page validation and position; apply_edit (1080) owns the
+operation-specific prior/length reads and mutations. These are different responsibilities, not
+multiple editors that should be merged. No duplicated domain-validation owner was found in this
+inspected common path. A capacity reservation, a checked live slice and selected-page geometry
+prove different facts; their proximity is not evidence that one can be deleted.
+
+On valid backing, nonempty preparations perform one backing-size query and one initial page-count
+read. Result reservation precedes lookup; the basic mutating scalars reserve bytes/ranges after
+their lookup/prior/length checks. They fit inline but still execute fitting-capacity decisions. Admission compares
+required_end with backed_end and skips growth. Publication and conditional scratch destruction
+remain in the scalar call; the public batch retains the same image across its ordered intents.
+
+### Which work the fixed shapes actually exercise
+
+Source: [original fixture](../../crates/ic-stable-paged-ordered-map/src/bench.rs),120–181;
+`scalar_edit_work_contract`,2346–2493; `apply_edit`,1080–1235. Counts below describe one fresh-image
+scalar call, not one64-operation scope. Existing native traffic assertions are inspected, not rerun.
+
+| Shape | Backing reads / bytes | Mutation-time image reads after lookup | Byte/range reservation request | Positive cover/write emissions | Published ranges / bytes | Previously staged payload relocated by cover |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| Replace64's one replacement |7 /96|Prior value|8 bytes,1 range|1, empty-image case|1 /8|0B|
+| Missing64's one absent remove |9 /104|None|None|0|0 /0|0B|
+| Tail insertion, page remains nonfull |10 /112|Map length|26 bytes,3 ranges|3: empty, then two disjoint insertions|3 /26|0B|
+| Tail removal, page remains nonempty |11 /120|Prior value and map length|10 bytes,2 ranges|2: empty, then one disjoint insertion|2 /10|2B|
+
+Replacement has no range merge, old-payload shift or normalization of an existing dirty region.
+Tail insertion writes map length, page length and the new entry in increasing address order. Its
+nonempty cover calls still run interval/bounds/descriptor work, but packed suffixes moved have
+length0. Tail removal writes page length before map length: its only old packed payload is the2B
+page length, moved behind the8B map length, with one descriptor shifted/rebased. Neither tail arm
+shifts map entries or clears the removed entry. Thus a copy/normalization redesign must not be sold
+as removing large payload movement from these two gates.
+
+The split control is different: one actual split of64 entries plus one insertion; overflowing
+byte/range scratch, a right-source snapshot, left/right covers, neighbor and directory changes.
+`split_page` (816) is already out of line and preserves DirectoryFull-before-scan. Its full-page
+admission rule is not interchangeable with the highest dirty address. Any shared-storage change
+must preserve this path and the LARA consumers, not optimize only the four small shapes.
+
+Missing is a useful zero-staging control, **not a subtractable fixed-cost calibration**. Its key129
+selects the second page and a different search trace from replacement key64 on the first page;
+even their read counts differ. `replace − missing` is not the cost of staging/publication and does
+not establish a lower bound on attainable replacement cost. Tail scope contains128 separate scalar
+calls, not one batch; amortizing them would change the original measured contract.
+
+### Frozen Wasm corroboration
+
+E=`/Users/yota/.local/share/gleaph/evidence/adr0097/edit-pipeline-survey-0364/`.
+`codegen/index.json` binds complete function excerpts to the frozen Wasm and reused disassembly
+SHA256 `ecdb2253a4e354fa38d1f966c3ac092c0ca78c63cd6553ca5625fddf11f83b5f`.
+Function identity/order is checked against the binary CODE entries; demangled names alone are not
+unique, and LLVM's CODE section heading is not a function. Imports0/1/2/3 decode to
+stable64_read/size/grow/write. Addresses below belong only to this artifact.
+
+| Phase | Emitted evidence | Consequence for the proposed simplifications |
+| --- | --- | --- |
+| Construct/enter | scalar0x17d5; initialization0x17ee–0x1851; one-element Edit copy0x1855–0x1868; call prepare0x1886 | Caller owns the image; the copied input is24B, not a returned whole EditImage. Initialization is real, but deferred materialization already failed0350 |
+| Plan/results | size0x1f6d2, page-count read0x1f703; inline result-fit branch0x1f7a5–0x1f7b2 | Setup exists once per call; fitting scalar results bypass allocation. Input specialization already failed0349 |
+| Selection | backing lookup read0x1fb57; prospective lookup read0x1fa55 | The two emitted reader paths are alternatives, not two lookups per intent; validation remains single-owned in source |
+| Mutation reads | replace prior0x20020; insertion length0x20060; removal prior/length0x2010d/0x2012d call EditImage::read | The adapter is still called on a fresh image. Its empty partition skips the search loop; disjoint backed read reaches import0 at0x139b |
+| Byte/range reserve | EditPlan::reserve0x1df07; inline fits0x1dfa0–0x1dfb3 and0x1e1bf–0x1e1d1 | Two independent buffers have fitting checks; allocator calls elsewhere in this function are skipped by the four inline scalar shapes |
+| First write | write0x1cb2a; empty-image branch0x1cbcd; byte resize0x1ccb4–0x1ccfa; inline descriptor append0x1cdc7–0x1cdfa | First-write fast case is already compiled. Replacement bypasses the general normalizer; its remaining representation checks are not evidence of relocation |
+| Priors/admission | inline prior store0x216ae–0x216ce; required/backed comparison0x21724–0x21732 | Results are stored before one final admission check; basic paths skip grow0x2174f |
+| Publish | call0x1981; range dispatch0x1c9ec–0x1ca1a; byte dispatch0x1ca30–0x1caa3 before loops0x1ca48/0x1caa5 | Byte Inline/Heap selection is already outside the range loops; there is no per-range representation match to hoist. Per-range slice bounds and writes remain |
+| Cleanup | inline success skips deallocations via0x1997/0x19be and the prior-state branch0x19e2 | Drop is conditional state inspection, not unconditional allocation/deallocation on the basic scalar paths |
+
+Lookup/apply/admission are already incorporated into prepare_image in this artifact; cover is
+incorporated into write. Merely merging source helpers does not remove a demonstrated call chain.
+The scalar/preparation stack adjustments are208/160B, respectively—not native object sizes,
+peak call-chain stack, runtime costs or an argument for another scalar implementation. Large
+functions contain mutually exclusive structural/error paths; their text size or opcode total
+cannot be assigned to every successful scalar call. The old observer-affected scopes remain
+ineligible for exclusive-cost subtraction or savings forecasts.
+
+### Alternatives screened, not implementation proposals
+
+| Scale / alternative | Work it could remove | Why it is not selected |
+| --- | --- | --- |
+| Minimum: carry the existing per-intent reader choice through prior/length reads | Some fresh-image adapter dispatch: one read for replace and three per tail pair | No stable-memory read disappears; empty-image search/overlay loops are already skipped. This is a small unpriced read-path change, not evidence for a structural19% opportunity. Dirty batches and unbacked-page behavior must still use current prospective bytes |
+| Internal storage redesign: one Inline/Heap state for dirty bytes and descriptors | Some independent representation selections in reserve/read/write/drop | Their mixed states are legitimate: inserting130 into the97-key fixture at second-page position1 requests538 bytes but only3 ranges, requiring heap bytes and inline descriptors. Promoting both introduces an additional buffer allocation; publish already hoists selection. No measured attribution justifies this new coupling |
+| Internal phase redesign: defer packing/coalescing until preparation ends | Repeated packed-byte relocation and intermediate descriptor maintenance | Replacement relocates0B; a tail pair relocates2B. Ordered prospective reads still need overlap composition, and an append history can grow with repeated writes rather than dirty bytes. No bounded replacement representation with a demonstrated common benefit has been established |
+| Internal control-flow split: outline cold normalization/structural paths | Possibly reduce common emitted code/local state | Split is already outlined; code size is not executed cost. Moving more functions has no current causal evidence, and0349 shows a smaller scalar frame can still regress all controls |
+| Larger persisted/index redesign, or FreeSpan grouping | Large-directory/interior movement or allocator operation counts | Fixed scalar directory has2 entries; those changes do not establish a benefit for value replacement and zero-entry-shift tail calls. Layout/policy/owner-integration decisions remain separate; they cannot waive the scalar gates |
+
+The first row is a real remaining source distinction, not a newly approved candidate or a proved
+bottleneck. This survey does not resume read-path micro-trials under a structural label. The joint
+storage and delayed-packing rows likewise are not specifications for new types, modes or logs.
+
+Architecture assessment:
+
+- **Encapsulation:** keep image storage, lookup and publication private to the generic map;
+  FreeSpan receives no geometry, raw buffers or unchecked addresses.
+- **Separation of concerns:** read selection, operation semantics, scratch capacity, interval
+  composition and publication have existing owners. No new phase/controller is needed merely
+  because these functions appear in a call graph.
+- **Invariants:** preserve exact prior values, result-scratch-before-edit failure order, the
+  selected-page checks, full-page admission, inline limits and no canonical write before ready.
+  Reservation fit and reserved-write bounds are not duplicate domain validation.
+- **Consistency:** staged bytes remain authoritative after prior intents; jointly tagged buffers
+  or deferred normalization would add transition/overlap obligations, not eliminate them for free.
+- **Fitness:** no inspected alternative yet ties a proportionate change to removable work common
+  to both failing shapes. A larger representation is not justified by the size of the desired gain.
+
+### Decision and missing evidence
+
+**Stop before implementation.** No0365 candidate is selected, no rejected trial is reopened, and
+there is no reason to change ADR0088 or the retained layout. The current result is narrower than
+“optimization exhausted”: it rules out several proposed explanations (large basic-path payload copies,
+per-range publication dispatch, unconditional map-owned scalar heap work, repeated execution of both lookup
+branches) and exposes the remaining adapter/representation bookkeeping without pricing it.
+
+Before another implementation experiment, require either a concrete contract-preserving design
+that removes substantive work on both target shapes, or current-source-bound cost evidence that
+makes one such change worth its complexity. A new diagnostic would need separate approval and an
+observer-effect argument; the old phase probes, unrelated workloads and baseline remeasurement are
+not substitutes. This slice does not select or run a diagnostic protocol.
+
+Only this research addition, its ignored plan and external evidence change. No Rust format/lint/
+test/build, PocketIC, canbench, runtime tracing or Lizard was run; there is no new performance result.
+GAP-LARA-TEST-CLIPPY stays open. All original fixtures, source/artifacts, layout and unrelated pending
+work remain fixed. Evidence contains input pins, binary-bound excerpts, CSV arithmetic, exact scope
+checks and draft/final plan validation. No benchmark persistence, staging, commit or push occurred.

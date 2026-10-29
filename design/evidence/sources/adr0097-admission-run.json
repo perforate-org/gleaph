@@ -1,0 +1,277 @@
+{
+  "base": "f297706abf683c1e22622c193d34f06650305bee",
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "raw_root": "/private/tmp/spill-admission-f297-6g1p_any",
+  "code_source_sha256": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+  },
+  "as_used_lock_sha256": [
+    "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+  ],
+  "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "shared_as_used_lock_patch": "design/evidence/sources/adr0097-crossover-as-used-lock.patch",
+  "prior_r2_manifest_sha256": "9346b08cbe10911664ac6e72db4a5f2fb07504af09ad8d051c762d133d64b149",
+  "commands": 17,
+  "command_seconds": 153.1087264593225,
+  "administrative_seconds": 80,
+  "budget_seconds": 600,
+  "artifacts": [
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-before-split.log",
+      "durable": "design/evidence/sources/adr0097-admission-ic-before-split.txt",
+      "raw_sha256": "d7b934dca33c09194af3bfa1fbdf76ae8e75c654f431c182728b27df119ca8a4",
+      "sha256": "d7b934dca33c09194af3bfa1fbdf76ae8e75c654f431c182728b27df119ca8a4",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-before-split.csv",
+      "durable": "design/evidence/sources/adr0097-admission-ic-before-split.csv",
+      "raw_sha256": "a6a1ae113faeb69fd5527a643e5e3f6e9495f0ee28f9f6d9e6c1f082780318f4",
+      "sha256": "a6a1ae113faeb69fd5527a643e5e3f6e9495f0ee28f9f6d9e6c1f082780318f4",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-before-bin.log",
+      "durable": "design/evidence/sources/adr0097-admission-ic-before-bin.txt",
+      "raw_sha256": "e2bdc794e7c080b1fbeca4b151dbbd4b5cac9c418e242a48b6fd6d01827d6337",
+      "sha256": "e2bdc794e7c080b1fbeca4b151dbbd4b5cac9c418e242a48b6fd6d01827d6337",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-before-bin.csv",
+      "durable": "design/evidence/sources/adr0097-admission-ic-before-bin.csv",
+      "raw_sha256": "9739b0b88bcc737c80319e0bf08e7c0dbcdd905f2da7098aa4dbdae31012b1ec",
+      "sha256": "9739b0b88bcc737c80319e0bf08e7c0dbcdd905f2da7098aa4dbdae31012b1ec",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/before-free.log",
+      "durable": "design/evidence/sources/adr0097-admission-before-free.txt",
+      "raw_sha256": "60274cfb3ca55912c679ac668568839426ab1eeab72a0ba0a1234fd555b75806",
+      "sha256": "60274cfb3ca55912c679ac668568839426ab1eeab72a0ba0a1234fd555b75806",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/before-map.log",
+      "durable": "design/evidence/sources/adr0097-admission-before-map.txt",
+      "raw_sha256": "153af3ac0d01e10290db6fc748a9060f7062b21828be4ad23e8637dace316d76",
+      "sha256": "153af3ac0d01e10290db6fc748a9060f7062b21828be4ad23e8637dace316d76",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/format.log",
+      "durable": "design/evidence/sources/adr0097-admission-format.txt",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/green-free.log",
+      "durable": "design/evidence/sources/adr0097-admission-green-free.txt",
+      "raw_sha256": "a84525f4a178372691cabb1846731e1729fa1d464eebacd02d8d2f6dc2d5cbc8",
+      "sha256": "3a95a2272fafeb27048a23d9528dd3323b7020c33314b0dec7ce93e322db6579",
+      "log_whitespace_normalized": true
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/green-map.log",
+      "durable": "design/evidence/sources/adr0097-admission-green-map.txt",
+      "raw_sha256": "3f318e3c7752a5a54f101db18e39ac4a88240a35c485adb44abe1d03a5148703",
+      "sha256": "11f7b37723f6d980edf17cf5b6e933bac8849431b14458f0c84bf9bf6dd07c42",
+      "log_whitespace_normalized": true
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/mutation-exact.log",
+      "durable": "design/evidence/sources/adr0097-admission-mutation-exact.txt",
+      "raw_sha256": "52d9fb953cf38e7f6be7fb2af297fb99fd8f5bbab01c8c9aceae493e1cb585f1",
+      "sha256": "52d9fb953cf38e7f6be7fb2af297fb99fd8f5bbab01c8c9aceae493e1cb585f1",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/mutation-zero.log",
+      "durable": "design/evidence/sources/adr0097-admission-mutation-zero.txt",
+      "raw_sha256": "ed34261201b9b8c73cd355ca63358c01a83dfdb4cd08d7ebc701bc64a0e64f2d",
+      "sha256": "ed34261201b9b8c73cd355ca63358c01a83dfdb4cd08d7ebc701bc64a0e64f2d",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-after-split.log",
+      "durable": "design/evidence/sources/adr0097-admission-ic-after-split.txt",
+      "raw_sha256": "306282ae01502fe93c082be00e543eed0024f874808d1f249c0b37c7372f8dfe",
+      "sha256": "306282ae01502fe93c082be00e543eed0024f874808d1f249c0b37c7372f8dfe",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-after-split.csv",
+      "durable": "design/evidence/sources/adr0097-admission-ic-after-split.csv",
+      "raw_sha256": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d",
+      "sha256": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-after-bin.log",
+      "durable": "design/evidence/sources/adr0097-admission-ic-after-bin.txt",
+      "raw_sha256": "51661442fa986c569266e47bc17b30e8a3c2ca090c20323aa714687115be5476",
+      "sha256": "51661442fa986c569266e47bc17b30e8a3c2ca090c20323aa714687115be5476",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ic-after-bin.csv",
+      "durable": "design/evidence/sources/adr0097-admission-ic-after-bin.csv",
+      "raw_sha256": "eec684b918f168601ff9ac44e2cd2f2649b21abbe4750ef456989a9e26abcc1f",
+      "sha256": "eec684b918f168601ff9ac44e2cd2f2649b21abbe4750ef456989a9e26abcc1f",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-format.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-format.txt",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-clippy.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-clippy.txt",
+      "raw_sha256": "e5b0e5f811f90e6eddfa677ec3e0e0994365c289ea46fea3acac950145b3831e",
+      "sha256": "e5b0e5f811f90e6eddfa677ec3e0e0994365c289ea46fea3acac950145b3831e",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-free.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-free.txt",
+      "raw_sha256": "56b6377deb3ecd72f9567a6335766fb63e9f173d4fb25ed26b9c766f69f18811",
+      "sha256": "4780898d62f293162dee2ea9e023cc47ec692640702fe62e710c2258a85bee8f",
+      "log_whitespace_normalized": true
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-map.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-map.txt",
+      "raw_sha256": "d86979712560b6c39e45308e0b2ec8d143db6873d86a63b2a73011c073a1c545",
+      "sha256": "582b9204c999f4daf563bd6ef3b583bc0fadf1c44ccde58a65bd464335a0c031",
+      "log_whitespace_normalized": true
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-whitespace.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-whitespace.txt",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/final-plan.log",
+      "durable": "design/evidence/sources/adr0097-admission-final-plan.txt",
+      "raw_sha256": "76b4d6e0d83852d8556155ac1084f20bdb7f39af16047e6c699e127e22e3009c",
+      "sha256": "76b4d6e0d83852d8556155ac1084f20bdb7f39af16047e6c699e127e22e3009c",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/witness-zero.patch",
+      "durable": "design/evidence/sources/adr0097-admission-witness.patch",
+      "raw_sha256": "800a57037aba11e0cd2ee4df359d904259a79711ddae814b4c0c9c11e5e83cbb",
+      "sha256": "800a57037aba11e0cd2ee4df359d904259a79711ddae814b4c0c9c11e5e83cbb",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/candidate-zero.patch",
+      "durable": "design/evidence/sources/adr0097-admission-candidate.patch",
+      "raw_sha256": "a24cf2fd813adbb5b26c6d3a479ac7e5484d79f51cb375a96d248ea4ca87a7de",
+      "sha256": "a24cf2fd813adbb5b26c6d3a479ac7e5484d79f51cb375a96d248ea4ca87a7de",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/mutation-exact-zero.patch",
+      "durable": "design/evidence/sources/adr0097-admission-mutation-exact.patch",
+      "raw_sha256": "82eea7f9d9c4c355b4696969564a76f5e416276bfd6e734df24f6b7e02ee9da1",
+      "sha256": "82eea7f9d9c4c355b4696969564a76f5e416276bfd6e734df24f6b7e02ee9da1",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/mutation-zero-zero.patch",
+      "durable": "design/evidence/sources/adr0097-admission-mutation-zero.patch",
+      "raw_sha256": "b3da422d1487257b50d5bb9a83cc97abf12186406f501c71f3eb1d2bfe1bacf3",
+      "sha256": "b3da422d1487257b50d5bb9a83cc97abf12186406f501c71f3eb1d2bfe1bacf3",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/lizard.json",
+      "durable": "design/evidence/sources/adr0097-admission-lizard.json",
+      "raw_sha256": "4141a0f52541ee8148e00d3b76305b0830040c75bfa3badfe7ddf15fbec12b7c",
+      "sha256": "4141a0f52541ee8148e00d3b76305b0830040c75bfa3badfe7ddf15fbec12b7c",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/measurements.json",
+      "durable": "design/evidence/sources/adr0097-admission-measurements.json",
+      "raw_sha256": "bf4cf977e4af76a9784b1445b52f56351ee657d4075942f68d5e8ec9b5afaec2",
+      "sha256": "bf4cf977e4af76a9784b1445b52f56351ee657d4075942f68d5e8ec9b5afaec2",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/versions.json",
+      "durable": "design/evidence/sources/adr0097-admission-versions.json",
+      "raw_sha256": "d4f5572a60c5d1e571037f9281a71bed04a533d0229121175669b642ac0987e8",
+      "sha256": "d4f5572a60c5d1e571037f9281a71bed04a533d0229121175669b642ac0987e8",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/ledger.json",
+      "durable": "design/evidence/sources/adr0097-admission-ledger.json",
+      "raw_sha256": "3de2b9bbb14adae67d1058048c13176bc8bbbc64305a74c8b51e4fe1497f517e",
+      "sha256": "3de2b9bbb14adae67d1058048c13176bc8bbbc64305a74c8b51e4fe1497f517e",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/start.json",
+      "durable": "design/evidence/sources/adr0097-admission-start.json",
+      "raw_sha256": "fbcde87d94a1db0a7c4df610860a5af28c33c097338a3a3ac09deca2985a5d7b",
+      "sha256": "fbcde87d94a1db0a7c4df610860a5af28c33c097338a3a3ac09deca2985a5d7b",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/restoration.json",
+      "durable": "design/evidence/sources/adr0097-admission-restoration.json",
+      "raw_sha256": "f26b9aecc89f30764c3ad9b74adf0faf618bbb6a09476a2f3ee4847ba0a9ceb1",
+      "sha256": "f26b9aecc89f30764c3ad9b74adf0faf618bbb6a09476a2f3ee4847ba0a9ceb1",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/run.py",
+      "durable": "design/evidence/sources/adr0097-admission-runner.py",
+      "raw_sha256": "6a2078f26727d16809fc0fb5224d220d7050ac13ae5991bb1a840a6323bc2c74",
+      "sha256": "6a2078f26727d16809fc0fb5224d220d7050ac13ae5991bb1a840a6323bc2c74",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/collect.py",
+      "durable": "design/evidence/sources/adr0097-admission-collector.py",
+      "raw_sha256": "569f37df67831cea6f77d9772611444dc618ab8e7c67cbc22d5f25e131a16198",
+      "sha256": "569f37df67831cea6f77d9772611444dc618ab8e7c67cbc22d5f25e131a16198",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/witness-format-zero.diff",
+      "durable": "design/evidence/sources/adr0097-admission-witness-format.diff",
+      "raw_sha256": "1881a03543d2fcdaad6a4f40e4fdd5bd50ec88666570b77afcacaf1c8e5ccbdc",
+      "sha256": "1881a03543d2fcdaad6a4f40e4fdd5bd50ec88666570b77afcacaf1c8e5ccbdc",
+      "log_whitespace_normalized": false
+    },
+    {
+      "raw": "/private/tmp/spill-admission-f297-6g1p_any/plan-final.md",
+      "durable": "design/evidence/sources/adr0097-admission-plan-final.txt",
+      "raw_sha256": "b64ce26a3da069ced124533926d503689f6855ea7298e47fcadcede7199efae1",
+      "sha256": "b64ce26a3da069ced124533926d503689f6855ea7298e47fcadcede7199efae1",
+      "log_whitespace_normalized": false
+    }
+  ],
+  "coverage_limits": [
+    "malformed admission on valid backing only",
+    "no valid-pair late-failure or full A0/A1 atomicity",
+    "no native/Graph/PocketIC/lifecycle/landing approval",
+    "no global heap-allocation or transient-write instrumentation",
+    "baseline pair collision case preempted by identical-input failure",
+    "benchmark instruction deltas not isolated per read; no before-Wasm archive"
+  ],
+  "charged_seconds": 233.1087264593225,
+  "unused_seconds": 366.8912735406775
+}

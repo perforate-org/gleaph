@@ -1,0 +1,251 @@
+---
+name: "Prepared paged-map edits for span publication"
+overview: "Give the existing map owner one scalar/batch edit engine and a borrow-bound prepared image, without implementing span acquisition or A1."
+todos:
+  - id: "owner-contract"
+    content: "Pin the map edit/error/borrow contract and all existing scalar edit sites against the approved admission baseline."
+    status: pending
+  - id: "owner-witnesses"
+    content: "Add four bounded map witnesses and four compile-fail cases without weakening the twelve existing tests."
+    status: pending
+  - id: "shared-images"
+    content: "Unify scalar and batch mutation in the map-owned preparation/publication engine and delete superseded editing branches."
+    status: pending
+  - id: "bounded-proof"
+    content: "Complete the proposed scoped tests, sensitivities, paired controls and source/evidence closure within a newly authorized budget."
+    status: pending
+isProject: false
+---
+
+# Prepared Paged-Map Edits for Span Publication
+
+## Objective
+
+**Draft only; no implementation or execution authorization.** Establish the generic ordered-map
+boundary required by the selected nonpublishing acquisition/retirement protocol. A batch that cannot
+be prepared leaves canonical map bytes unchanged; a ready object excludes intervening map mutation,
+publishes once without expected errors/reservation/allocation, or explicitly discards without writes.
+Scalar insert/remove use the same rule. This is not full A0, acquisition cancellation or A1.
+
+## Context
+
+- Base/current checkout HEAD: `f297706abf683c1e22622c193d34f06650305bee`; initial comparison main:
+  `9a64049f47fc07542446d651d4b09421636b73c5`. During prose checking, shared main advanced to
+  `8b63042c68e5981e3c7afa04c2d3660485e5ce16` (reflog: lockfile reconciliation). This checkpoint
+  did not write that ref or merge/rebase; the original comparison pin is retained. Reconfirm
+  reference authority before any future execution, not by silently rebasing this Draft.
+- Independent approval covers the uncommitted admission candidate only: free-span SHA256
+  `35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd`;
+  map SHA256 `41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d`.
+  Both remain byte-frozen during this prose checkpoint. A later map edit needs fresh authorization.
+- Plan0339 is completed: four completed TODOs, six checked criteria, source-bound terminal check.
+  Its closed 233.108726/600s ledger and 49.628039/120s reserve use are not this plan's budget.
+- Numbering was inspected through 0339, with no 0340 entry, before creating this single Draft;
+  `plans/` is already ignored. Do not recycle 0339 or alter its executed snapshot/validator history.
+- [ADR0088](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-nonpublishing-acquisition-and-retirement)
+  owns the selected protocol and proposed API. The existing
+  [report](../design/evidence/adr0097-demotion-design.md#acquisition-decision-checkpoint) owns status
+  and evidence. This plan owns only the first implementation slice and its command proposal.
+- The map already owns split, directory, recycling and draining rules. The split path already checks
+  `DirectoryFull` and membership before writes. Do not present those controls as new late-failure reds.
+  The missing capability is complete ordered edit preparation, not another scalar admission patch.
+
+## Scope
+
+One map-owned prospective edit engine, shared by immediate scalar insert/remove and the proposed
+public `Edit` / `PrepareError` / opaque `PreparedEdits` API. Public preparation borrows `&mut self`;
+scalar `&self` calls prepare and consume privately within one synchronous method. The same map
+cannot be mutated or prepared twice while a public ready object remains live. Exclusive backing
+ownership remains required; independently reopened/raw-memory aliases are not a new supported mode.
+
+Ordered intents return one prior value each, preserve missing-remove `None`, and see previous intents'
+prospective changes. Support repeated keys, first/minimum changes, splitting, singleton removal,
+page reuse, complete drain/reset and insertion after drain. No sorting away caller order. A later
+remove cannot rescue an earlier `DirectoryFull`. Encountered corrupt geometry/membership/links and
+checked address overflow reject before publication; no whole-map validation on every edit.
+
+Use one private edit image with pre-addressed encoded changed pages/directory/header plus result
+values, not a whole-store snapshot or general undo/write-log framework. Its publisher is bound to
+its owner, has no destination argument, performs no validation, heap allocation, grow, split or
+fallible encoding, and has no recoverable result. `discard(self)` releases buffers/borrows only;
+no custom cleanup Drop. Growth during preparation may remain, but canonical bytes must not change.
+Do not claim global zero allocation from owner counters or zero stable-page growth.
+
+`PrepareError` keeps intent index and exact `Error`, `GrowFailed`, address-overflow or scratch cause.
+Scratch needed to represent an earlier intent may preempt an unvisited later error; do not promise
+all semantics before all scratch allocation. After image construction, reserve only backing needed
+for prepared writes using checked arithmetic. For a grow, record the intent establishing the highest
+required page. Reuse the map's layout constants/encoders; no layout arithmetic moves into LARA.
+
+Keep current scalar signatures and explicit projections: existing `DirectoryFull`/`Corrupt` remain
+exact; grow and scratch exhaustion use the scalar `OutOfMemory` surface. Retain only the already
+existing `alloc_page` overflow-to-`OutOfMemory` projection at that facade; new preparation reports
+`AddressOverflow` separately. Document this distinction rather than using the lossy facade in A0.
+All such scalar errors now occur before writes. Do not add enum variants, a fallback scalar editor
+or a second page/directory algorithm. Initialization remains a distinct fresh-region operation.
+
+### Non-goals
+
+No free-span/`span.rs`/capacity guard or heap frontier implementation, A1 caller wiring, new module,
+dependency, persistent state/schema/version, native-tree deletion/demotion, reclamation choice,
+Graph/deferred/value/matching change, broad benchmark, saved deletion witness, full suite,
+PocketIC/persistence campaign, commit or merge. No claim that the map API completes the ADR protocol.
+The accepted free-span source, its fast prefix-restoration body and both accepted reservation guards
+remain unchanged in this proposed slice.
+
+## Expected Change Surface
+
+- Future Rust: **only** `crates/ic-stable-paged-ordered-map/src/lib.rs`, including in-module tests
+  and four compile-fail API examples. No new source module or map benchmark source.
+- Existing ADR0088 and `design/evidence/adr0097-demotion-design.md` only if implementation refines
+  their described contract; this ignored plan, and a bounded evidence prefix in
+  `design/evidence/sources/` for actual future results.
+- Before any execution, capture the exact worktree baseline, source/lock hashes, benchmark sources,
+  config/YAML/foreign CSV and brief. Unrelated modified docs already include ADR0097, selected-read
+  evidence, implementation gaps and both LARA storage contracts. Existing admission and original/r1/
+  r2 evidence, all earlier source/evidence changes and plan0339 are not cleanup targets.
+
+## Steps
+
+1. Audit scalar insert/remove, in-page edits, split, unlink/free, directory shifts/minima, allocation,
+   drain/reset, header writes and growth. Name the invariant owner and all duplicate publishing
+   sites; implement one prospective rule rather than copying them into a new batch path.
+2. Add the four witnesses below and compile-fail cases. Preserve existing assertion strength and
+   fixture geometry. The new API does not exist in baseline Rust: its tests are not old-source
+   runtime reds. Baseline validation runs the existing tests/controls, not an intentionally
+   uncompilable new-API test suite.
+3. Implement the private image engine and public borrow-bound capability. Route scalar operations
+   through it and remove superseded mutation branches. Reuse validated typed page/directory images
+   and checked arithmetic; constructor/bootstrap and existing nonwriting reservation remain intact.
+   Do not optimize with a cache, eager whole-index clone, new dependency or extra public flags.
+4. Execute the bounded checks only after authorization. Required sensitivities: publish the first
+   valid batch edit early; move a real split-resource preparation into the publisher. Each must
+   reach and fail its unchanged oracle. Restore exact candidate bytes before final checks/IC;
+   retain mutation patches/logs. If a sensitivity cannot be made meaningful, report incomplete
+   rather than crediting an artificial unused allocation or a compile/setup failure.
+5. Record touched production Lizard metrics versus the exact baseline (including scalar paths),
+   owner scratch/read/write/grow observations, actual paired CSV totals and compiler/runtime times.
+   Investigate regressions; the admission approval is not a waiver. If a coherent shared engine
+   exceeds scope/budget or requires a second editor, stop and reslice rather than leave both paths.
+
+### Four owner witnesses and fixture cost
+
+| Proposed test | Required oracle and fixture |
+| --- | --- |
+| `prepared_edits_order_and_discard` | One `DefaultMemoryImpl` map, injective nonzero key-derived values. Repeated insert/update/remove/missing-remove intents with independently listed prior values; complete drain then insert, first/min changes, split/reuse. While ready inspect backing via a read-only test handle, then explicitly discard: canonical bytes/header/logical pairs unchanged. Reprepare/publish once and check exact ordered values, links/counts and `validate()`. |
+| `prepared_edits_directory_rejection` | Reuse the accepted owner-built 8192-page/8255-entry geometry. First update key128, then splitting insert192: exact `Edit { at: 1, source: DirectoryFull }`, unchanged first value and full backing/header/directory/links. Include a trailing remove256 to prove it cannot rescue the earlier error. Then order remove256 before that update/insert and check exact success, all pairs and page2 reuse. Extract only the existing setup into one test helper if needed; preserve its constants and every old admission assertion, with source comparison. No second page-layout fixture implementation. |
+| `prepared_edits_resources_and_retry` | One actual bounded `RestrictedMemory<DefaultMemoryImpl>` from the locked existing dependency, not a new Memory wrapper. Open a valid three-page map, publicly seed64 entries, prepare4000 more ascending inserts. Final126 data pages require five backing pages: exact grow failure from3 by2, canonical bytes unchanged. Drop that capped view and reopen the same backing with a larger range; repeat/discard/retry and verify all4064 independent pairs. Separately inject a labelled per-plan `try_reserve` error before ready, not system OOM. Record owner reserve sites/capacities and actual growth before/after ready publication/discard; no post-ready reserve/grow. |
+| `prepared_edits_corruption_and_scalar` | One reusable `DefaultMemoryImpl` map with at least two actual pages. Poison only an encountered page/link/membership after valid initialization, then batch a valid earlier update and an edit reaching that corruption: exact indexed `Corrupt`, complete poisoned entry image unchanged. Restore exact poison, compare scalar and batch results using independent expectations. Probe checked-address overflow through a labelled owner-local arithmetic seam, not an impossible enormous slice/backing or fake capacity failure. Do not require detection of untouched corruption. |
+
+New complete witness pass: **four fresh maps plus one reopen**, zero graphs/PocketIC/installs.
+Three use the existing default memory; one adds only the dependency's existing restricted view as
+a map specialization. No graph monomorphization. Full final owner run is expected to have16 tests
+(12 existing +4 new); record actual constructor totals, not just test counts. The old final map
+inventory used13 fresh maps +2 reopens, so this fixture design projects17 fresh +3 reopens for the
+16-test run. Each repeated execution multiplies construction cost. Do not count allocator-owned
+indexes as additional standalone maps in the separate LARA filter.
+
+Four compile-fail examples: live-ready alias mutation; second preparation; wrong-owner publication
+or private-field fabrication; second consume after publish/discard. Keep the ready value live across
+the offending line and check the intended diagnostic, not an import/type error. The existing
+successful doctest still runs its one map constructor. Thus each doc command expects **five cases**:
+one existing successful runtime example plus four compile failures, not five runtime fixtures.
+
+Resource instrumentation is per fixture/plan, compatible with normal scheduling. No process-global
+mutable failpoint or serial-only setup. Owner reserve counters do not observe arbitrary allocator
+activity; source review must exclude uninstrumented post-ready allocation. Native snapshots prove
+these owner rejections, not IC rollback or complete A1 cancellation.
+
+## Validation
+
+**One fresh proposed 600s ledger; nothing in this section has run.** Preconditions: explicit code and
+execution approval; reread rust-workflow; verify source/worktree pins and unused budget at admission.
+Use normal shared targets, default native features and unchanged canbench configuration. Serialize
+commands only; tests retain normal scheduling, with no thread-count flags/environment override.
+No cold target, wrapper/GUI fallback, process enumeration/control, shared cleanup or blanket retries.
+Every command, failure, timeout, restoration and evidence correction is charged. Admission requires
+room for the next cap **and** the untouched final reserve. Stop on exhausted caps or recurring failure;
+inspect diagnostics and the owner instead of speculative retries. Proposed contingency is not an
+extra benchmark/suite allowance. Existing runner scripts that swap other sources are not reusable.
+
+### Pre-final order: 460s caps +20s diagnostic contingency =480s
+
+| Order | Direct command or charged work | Cap s |
+| --- | --- | ---: |
+| 1 | Pins, inventory, snapshots and runner/CSV-restore setup; no Rust | 20 |
+| 2 | `canbench bench_r_fs_tkbfs_1024 --csv` (LARA crate cwd, approved working-tree baseline) | 130 |
+| 3 | `canbench bench_r_fs_lbin_4096 --csv` (same cwd) | 20 |
+| 4 | `cargo test -p ic-stable-paged-ordered-map --lib tests:: -- --nocapture` (baseline12 tests) | 15 |
+| 5 | `rustfmt --edition 2024 --config skip_children=true crates/ic-stable-paged-ordered-map/src/lib.rs` | 5 |
+| 6 | `cargo test -p ic-stable-paged-ordered-map --lib prepared_edits_ -- --nocapture` (four new tests) | 35 |
+| 7 | `cargo test -p ic-stable-paged-ordered-map --doc` (five cases) | 15 |
+| 8 | `cargo test -p ic-stable-lara --lib a0_admission_ -- --nocapture` (two unchanged admission tests) | 20 |
+| 9 | Early-publication mutation: `cargo test -p ic-stable-paged-ordered-map --lib prepared_edits_directory_rejection -- --nocapture` | 15 |
+| 10 | Late-resource mutation: `cargo test -p ic-stable-paged-ordered-map --lib prepared_edits_resources_and_retry -- --nocapture` | 15 |
+| 11 | Exact mutation/lock/foreign restoration and source verification | 20 |
+| 12 | `canbench bench_r_fs_tkbfs_1024 --csv` (LARA crate cwd, restored candidate) | 130 |
+| 13 | `canbench bench_r_fs_lbin_4096 --csv` (same cwd) | 20 |
+| — | One diagnosed scoped correction/check, only within remaining authority; no speculative work | 20 |
+
+All cargo/rustfmt commands use repository cwd. Canbench runs are unchanged existing controls, not
+new whole-batch or physical-publication benchmarks. They reach allocator split/restore and largest
+removal using the map, but do not isolate instruction cost per read, cover every new batch path or
+price warm/cold future allocator preparation. Compare actual paired totals/scopes separately;
+zero page growth is not zero allocation. Record scope limits rather than claiming absent coverage.
+No persisted YAML update, survey, drain benchmark re-enable, 16K or before-Wasm archive is assumed.
+
+**Per CSV invocation:** retain the actual generated CSV and source/as-used-lock hashes; restore and
+hash-check foreign CSV and original lock on success, failure or timeout **before the next invocation**.
+Use a finally path, not end-of-pair cleanup. Charge harvesting/restoration within the above caps.
+Retain the accepted fixtures/config/YAML and foreign brief unchanged. Do not replay historical
+pairing scripts which swap unrelated source or carry a closed ledger.
+
+### Protected final reserve:120s
+
+| Direct command or charged closure | Cap s |
+| --- | ---: |
+| `rustfmt --check --edition 2024 --config skip_children=true crates/ic-stable-paged-ordered-map/src/lib.rs` | 5 |
+| `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara --lib -- -D warnings` | 25 |
+| `cargo test -p ic-stable-paged-ordered-map --lib tests:: -- --nocapture` (expected16) | 20 |
+| `cargo test -p ic-stable-lara --lib lara::edge::free_span::tests:: -- --nocapture` (unchanged27) | 25 |
+| `cargo test -p ic-stable-paged-ordered-map --doc` (expected5) | 15 |
+| Lizard/content/provenance/path/hash checks, report/plan closure, `git diff --check`, and final structural command below | 15 |
+| Final diagnostic/evidence contingency; not broader execution | 15 |
+
+Final structural command, only if observable work and validation actually complete:
+
+```sh
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase final
+```
+
+If incomplete, leave TODOs/criteria truthful and report what is deferred; do not force a final pass.
+Formatting/prose normalization alone does not justify rerunning Rust on byte-identically restored
+source. Library clippy is not test-target linting or runtime coverage. No full LARA/workspace run.
+
+For this **prose checkpoint only**, use content/link/hash/whitespace checks and:
+
+```sh
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase draft
+```
+
+Save that receipt separately; it cannot replace plan0339's executed final receipt or approve this API.
+
+## Completion Criteria
+
+- [ ] One map-owned scalar/batch engine implements ordered edits and deletes superseded editing branches without layout/dependency/extra-owner changes.
+- [ ] The opaque ready capability is owner-bound, single-consume and borrow-exclusive; all four compile-fail cases reach their intended diagnostics and the existing doctest remains valid.
+- [ ] All four new runtime witnesses and twelve existing map tests pass with exact errors, independent values, unchanged rejection images and successful retry.
+- [ ] Both meaningful mutations fail unchanged oracles; candidate restoration is exact and publication/discard have no expected resource work after ready.
+- [ ] Scoped final checks and paired controls complete within the fresh600s/120s ledger, with scratch/work/growth and any regression or coverage limit explicitly reviewed rather than waived.
+- [ ] Exact source/evidence/path/reference/foreign checks and the source-bound final plan validator pass; report status agrees, historical plan0339/ledgers remain unchanged, and full A0/A1 remain explicitly unproved.
+
+## Later Slices
+
+Only after this owner's review: implement the selected span/free-store/capacity authority and
+prospective coalescing/heap obligations in ADR0088, including free-list plus grown-tail discard/retry
+and all alias/capacity-writer paths. That is the remainder of A0 and needs a separate execution scope.
+Then A1 must prepare every peer, pin/count transition and requested final rewrite, replace all three
+vertex publishers/nested replan, preserve the late-peer/early-pin/nested-replan sensitivities and
+measure both union-disjoint streaming (`Q`) and overlap (`P`) at the **whole outer call**.
+This Draft does not budget or prove those tests. Reclamation/empty retirement, native B/C, Graph D,
+PocketIC E, other gaps and ADR0097 landing remain independently gated in the existing ADR/report.

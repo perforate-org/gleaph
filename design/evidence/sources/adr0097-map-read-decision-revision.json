@@ -1,0 +1,42 @@
+{
+  "kind": "revision provenance after review515d9868: supersession + P3 count clarification; sealed artifacts preserved byte-unchanged",
+  "supersession": {
+    "superseded": "design/evidence/sources/adr0097-map-read-decision-analysis.json",
+    "superseded_sha256": "317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+    "superseding": "design/evidence/sources/adr0097-map-read-decision-analysis-v2.json",
+    "withdrawn_claim_ids": [
+      "W1-reader-bound",
+      "W2-byte-percentage",
+      "W3-cross-call-tail-trace",
+      "W4-write-floor",
+      "W5-no-counterfactual"
+    ],
+    "note": "v1 is preserved byte-unchanged; v2 carries corrected premises and the executable plan; active docs (report/ADR0088/plan0340) are corrected in place as instructed"
+  },
+  "p3_decision_root_counts": {
+    "artifacts_untouched": true,
+    "actual": {
+      "files_total": 12,
+      "files_excluding_seal": 11,
+      "manifest_entries": 10,
+      "manifest_sha256": "ba76c305f5dae6e7fc6652d781cfe78446b4876621ee988f84d0b9da4abbb9a5",
+      "seal_sha256": "a538304af062cdcc1f42915b7c4d5d2be88204e81e274c24826711a03cccf3f7",
+      "readme_sha256": "32a585cfb58d16da76855f8348ec45da8899bdfa43633cdf36929cafee45fecd"
+    },
+    "defects_clarified_not_altered": [
+      {
+        "where": "README.md lines38\u201339 orphan tail after the earlier sentence correction",
+        "quote": "explicitly here: 9 files currently, this README\nincluded; rule stated with full paths ...",
+        "meaning": "stale pre-write count of9 superseded by the same README's leading corrected sentence; actual final counts are files=12, excluding seal=11, listed=10"
+      },
+      {
+        "where": "seal-check.json fields",
+        "files_total": 11,
+        "files_final_excluding_seal": 12,
+        "actual": "12 files exist including seal;11 excluding seal; manifest lists10 (excludes exactly manifest.sha256 and seal-check.json)",
+        "meaning": "field labels overstate/miscount; left byte-unchanged because the reviewer cited this seal"
+      }
+    ],
+    "rule_of_record": "the decision root is covered exactly by:10 manifest entries + the2 full-path exclusions (manifest.sha256, seal-check.json), whose hashes are recorded here; README orphan line is cosmetic only"
+  }
+}

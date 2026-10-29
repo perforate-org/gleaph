@@ -1,0 +1,116 @@
+{
+  "status": "scoped source/prose/history/path/whitespace checks passed; acceptance remains blocked",
+  "protected_paths": 75,
+  "historical_manifests": 9,
+  "historical_entries": 562,
+  "valid_relative_links": 90,
+  "inherited_unavailable_links": [
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0313-adr0088-tree-csr-measurement-gates.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0315-adr0088-raw-block-ltb-revalidation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0314-canbench-name-rationalization.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0318-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "./0318-tree-csr-demotion-tree-to-slab.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented",
+      "missing fragment"
+    ]
+  ],
+  "new_durable_paths": [
+    "design/evidence/sources/adr0097-map-baseline-allocator.csv",
+    "design/evidence/sources/adr0097-map-baseline-allocator.txt",
+    "design/evidence/sources/adr0097-map-baseline-native.txt",
+    "design/evidence/sources/adr0097-map-baseline-scalar.csv",
+    "design/evidence/sources/adr0097-map-baseline-scalar.txt",
+    "design/evidence/sources/adr0097-map-candidate-allocator.csv",
+    "design/evidence/sources/adr0097-map-candidate-allocator.txt",
+    "design/evidence/sources/adr0097-map-candidate-doc.txt",
+    "design/evidence/sources/adr0097-map-candidate-native.txt",
+    "design/evidence/sources/adr0097-map-candidate-scalar.csv",
+    "design/evidence/sources/adr0097-map-candidate-scalar.txt",
+    "design/evidence/sources/adr0097-map-collection-initial-failure.txt",
+    "design/evidence/sources/adr0097-map-collector.py",
+    "design/evidence/sources/adr0097-map-final-clippy.txt",
+    "design/evidence/sources/adr0097-map-final-doc.txt",
+    "design/evidence/sources/adr0097-map-final-format.txt",
+    "design/evidence/sources/adr0097-map-final-free.txt",
+    "design/evidence/sources/adr0097-map-final-map.txt",
+    "design/evidence/sources/adr0097-map-format.txt",
+    "design/evidence/sources/adr0097-map-ledger.json",
+    "design/evidence/sources/adr0097-map-lizard.json",
+    "design/evidence/sources/adr0097-map-measurements.json",
+    "design/evidence/sources/adr0097-map-mutation-early.patch",
+    "design/evidence/sources/adr0097-map-mutation-early.txt",
+    "design/evidence/sources/adr0097-map-mutation-resource.patch",
+    "design/evidence/sources/adr0097-map-mutation-resource.txt",
+    "design/evidence/sources/adr0097-map-native-build.json",
+    "design/evidence/sources/adr0097-map-plan-check.txt",
+    "design/evidence/sources/adr0097-map-plan.txt",
+    "design/evidence/sources/adr0097-map-production-and-tests.patch",
+    "design/evidence/sources/adr0097-map-run.json",
+    "design/evidence/sources/adr0097-map-runner.py",
+    "design/evidence/sources/adr0097-map-source-verification.json",
+    "design/evidence/sources/adr0097-map-start.json",
+    "design/evidence/sources/adr0097-map-verification.json",
+    "design/evidence/sources/adr0097-map-versions.json"
+  ],
+  "source_hashes": {
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+    "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "plans/0340-prepared-paged-map-edits.md": "ab805914da6f643729a373422f91354bdfa6526bff7a1a8bd03c7637c547f0ed",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "702461025e9f519f3f69835e476cedf036e2155e3dccc8197459e63c13913d20",
+    "design/evidence/adr0097-demotion-design.md": "a5486ded64dfccc1c1de0d1eaed218eacfa2e60409d777a85679d12019d723e2"
+  },
+  "plan_gate": "refused incomplete plan",
+  "staging": "none",
+  "head": "f297706abf683c1e22622c193d34f06650305bee",
+  "shared_main": "not queried or repinned",
+  "total_charged": 237.22710166685283,
+  "final_reserve_used": 44.35115458385553
+}

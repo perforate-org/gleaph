@@ -1,0 +1,4 @@
+{
+  "format_driver_sha256": "12c937b8eea41f6faa05dd92d24b3aff9aa1da6b5143d906b5047978752eb689",
+  "reason": "Bind upcoming eligibility mutations to observed rustfmt single-line guard before invoking them; no Rust change or command retry."
+}

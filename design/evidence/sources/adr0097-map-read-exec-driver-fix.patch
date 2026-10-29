@@ -1,0 +1,12 @@
+--- exec_run.py.pre-fix
++++ exec_run.py.post-fix
+@@ -231,7 +231,8 @@
+     failure = None
+     mutated = name_.startswith('mutation')
+     try:
+-        start_pins = json.loads((ROOT / 'start.json').read_text())['pins']
++        _sf = ROOT / 'start.json'
++        start_pins = json.loads(_sf.read_text())['pins'] if _sf.exists() else {}
+         for path, want in start_pins.items():
+             if path in PROSE_PATHS | SOURCE_PATHS:
+                 continue

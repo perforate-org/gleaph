@@ -1,0 +1,19 @@
+Review a39678a4: source-bound documentary correction; engine/performance/plan completion remain BLOCKED.
+Prior docs closure protocol verdict: INCOMPLETE/non-compliant. Authorization79190daf -> provider error743adbbb (Connection error.) -> tools beginning da31b9e4 without intervening user authorization. The retry mechanism is not established.
+The previous checkpoint index remains immutable; its document hashes identify the pre-correction snapshots retained in /tmp/spill-C-doc-review-a39678a4. It is not a seal of the current three documents. Its15 earlier validation invocations retain their separately reviewed observations.
+Source/fixture/benchmark/binary/CSV histories were not repaired or regenerated. No overall600/120 timing, codegen identity, component price or cost waiver is established.
+validator_exit=1 (expected); complete validator output follows:
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase
+
+SHA256  bytes  path
+bcb7e35ea010347d52a07f6b6c167ff27e93f2945d2e5aa12c6ca2d0214984c5  61554  /Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md
+08ca9f027ec06b1fd073a300a3d6ecf944d4953ce7a9f9be611776c4f1dc3f85  128805  /Users/yota/dev/gleaph-spill/design/evidence/adr0097-demotion-design.md
+079e55ace7916f407704e6f29d2991eaecd8c5305070970742e8261279cb6153  160970  /Users/yota/dev/gleaph-spill/design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md
+5bf0b7f64f71101e47b8ab441612280fcfd58f3c81331217f052bd6f8bc641c5  38795  /Users/yota/dev/gleaph-spill/design/evidence/sources/adr0097-map-count-C-checkpoint.json
+12ead8b6b4c1f3d49137d8fcae25d6e400708d82ba8d827777119476e40740f9  61319  /tmp/spill-C-doc-review-a39678a4/plan.before
+424fecb217198d7bb28b09dafc4e40dd60663cde7f443142368bfb7c02689201  126938  /tmp/spill-C-doc-review-a39678a4/report.before
+0e7272649b90a541e9cbe030d89d564535be9a5ead7f26965715857ca27740ce  160913  /tmp/spill-C-doc-review-a39678a4/adr.before
+91699a6cc76e64a3899b3ee329e1ac5657d81140d59f634f6d4ab4afe1de90ea  214  /tmp/spill-C-doc-review-a39678a4/plan-final.txt
+b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639  429  /tmp/spill-C-doc-review-a39678a4/pins-after.txt

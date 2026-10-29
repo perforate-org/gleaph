@@ -1,0 +1,12 @@
+{
+  "final_test_binary": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+  "sha256": "772ed335f2603ea6a1b74e81b867d7d689c387f1c706751825628e48b9e3728c",
+  "source_sha256": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+  "baseline_native_binary_hash": "not captured; source/lock/compile/runtime transcript retained, no retrospective rerun",
+  "wasm_hashes": {
+    "baseline-scalar": "0f4741b8edfceb71e3af081c65bcb3644798d96c8d3b69bad6e26f84437cf8c5",
+    "baseline-allocator": "8c3cd39479f641397d0698638c4df4807174a6cae712c94727036d72c2d9c7ce",
+    "candidate-scalar": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64",
+    "candidate-allocator": "7d32ecc9cc7f323d2facbb1a2e2d55bf812c1e43027e530a097d267a7c958c0d"
+  }
+}

@@ -1,0 +1,2079 @@
+{
+  "mode": "explicit; frozen9436 production versus candidate5da4, plus only the appended test",
+  "version": "1.24.0",
+  "commands": [
+    {
+      "command": [
+        "lizard",
+        "--csv",
+        "-i",
+        "-1",
+        "/private/tmp/spill-map-read-9436-j1wy264j/lizard/before_9436/lib.rs"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "lizard",
+        "--csv",
+        "-i",
+        "-1",
+        "/private/tmp/spill-map-read-9436-j1wy264j/lizard/candidate_5da4/lib.rs"
+      ],
+      "exit": 0
+    },
+    {
+      "command": [
+        "lizard",
+        "--csv",
+        "-i",
+        "-1",
+        "/private/tmp/spill-map-read-9436-j1wy264j/lizard/new-test.rs"
+      ],
+      "exit": 0
+    }
+  ],
+  "metrics": {
+    "before_9436": {
+      "all": {
+        "functions": 97,
+        "ccn": 314,
+        "nloc": 1249,
+        "tokens": 9840,
+        "max_ccn": 37
+      },
+      "touched": [
+        {
+          "qualified": "EditImage::read",
+          "ccn": 7,
+          "nloc": 31,
+          "tokens": 317,
+          "parameters": 4,
+          "start": 450,
+          "end": 482
+        }
+      ],
+      "functions": [
+        {
+          "qualified": "fmt::Display for InitError::fmt",
+          "ccn": 2,
+          "nloc": 16,
+          "tokens": 100,
+          "parameters": 2,
+          "start": 121,
+          "end": 136
+        },
+        {
+          "qualified": "fmt::Display for Error::fmt",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 63,
+          "parameters": 2,
+          "start": 153,
+          "end": 159
+        },
+        {
+          "qualified": "fmt::Display for GrowFailed::fmt",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 38,
+          "parameters": 2,
+          "start": 173,
+          "end": 179
+        },
+        {
+          "qualified": "fmt::Display for PrepareError::fmt",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 93,
+          "parameters": 2,
+          "start": 212,
+          "end": 219
+        },
+        {
+          "qualified": "std::error::Error for PrepareError::source",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 82,
+          "parameters": 1,
+          "start": 223,
+          "end": 230
+        },
+        {
+          "qualified": "PreparedEdits::previous_values",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 25,
+          "parameters": 1,
+          "start": 280,
+          "end": 282
+        },
+        {
+          "qualified": "PreparedEdits::publish",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 284,
+          "end": 286
+        },
+        {
+          "qualified": "PreparedEdits::discard",
+          "ccn": 1,
+          "nloc": 1,
+          "tokens": 7,
+          "parameters": 1,
+          "start": 288,
+          "end": 288
+        },
+        {
+          "qualified": "FailedEdit::prepared",
+          "ccn": 3,
+          "nloc": 17,
+          "tokens": 116,
+          "parameters": 1,
+          "start": 309,
+          "end": 325
+        },
+        {
+          "qualified": "FailedEdit::scalar",
+          "ccn": 2,
+          "nloc": 9,
+          "tokens": 57,
+          "parameters": 1,
+          "start": 327,
+          "end": 335
+        },
+        {
+          "qualified": "Scratch::new",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 29,
+          "parameters": 0,
+          "start": 345,
+          "end": 350
+        },
+        {
+          "qualified": "Scratch::as_slice",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 44,
+          "parameters": 1,
+          "start": 352,
+          "end": 357
+        },
+        {
+          "qualified": "Scratch::as_mut_slice",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 47,
+          "parameters": 1,
+          "start": 359,
+          "end": 364
+        },
+        {
+          "qualified": "Scratch::capacity",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 37,
+          "parameters": 1,
+          "start": 366,
+          "end": 371
+        },
+        {
+          "qualified": "Scratch::reserve",
+          "ccn": 6,
+          "nloc": 18,
+          "tokens": 153,
+          "parameters": 2,
+          "start": 373,
+          "end": 390
+        },
+        {
+          "qualified": "Scratch::resize_reserved",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 66,
+          "parameters": 2,
+          "start": 392,
+          "end": 398
+        },
+        {
+          "qualified": "Scratch::push_reserved",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 46,
+          "parameters": 2,
+          "start": 400,
+          "end": 404
+        },
+        {
+          "qualified": "DirtyRange::end",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 18,
+          "parameters": 1,
+          "start": 423,
+          "end": 425
+        },
+        {
+          "qualified": "EditImage::new",
+          "ccn": 1,
+          "nloc": 10,
+          "tokens": 47,
+          "parameters": 0,
+          "start": 439,
+          "end": 448
+        },
+        {
+          "qualified": "EditImage::read",
+          "ccn": 7,
+          "nloc": 31,
+          "tokens": 317,
+          "parameters": 4,
+          "start": 450,
+          "end": 482
+        },
+        {
+          "qualified": "EditImage::write",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 69,
+          "parameters": 3,
+          "start": 484,
+          "end": 487
+        },
+        {
+          "qualified": "EditImage::cover",
+          "ccn": 12,
+          "nloc": 79,
+          "tokens": 656,
+          "parameters": 4,
+          "start": 489,
+          "end": 568
+        },
+        {
+          "qualified": "<free>::checked_page_offset",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 55,
+          "parameters": 1,
+          "start": 571,
+          "end": 576
+        },
+        {
+          "qualified": "EditPlan::new",
+          "ccn": 2,
+          "nloc": 15,
+          "tokens": 72,
+          "parameters": 2,
+          "start": 585,
+          "end": 599
+        },
+        {
+          "qualified": "EditPlan::read",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 55,
+          "parameters": 2,
+          "start": 601,
+          "end": 605
+        },
+        {
+          "qualified": "EditPlan::u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 25,
+          "parameters": 2,
+          "start": 607,
+          "end": 609
+        },
+        {
+          "qualified": "EditPlan::set_u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 33,
+          "parameters": 3,
+          "start": 611,
+          "end": 613
+        },
+        {
+          "qualified": "EditPlan::dir_len",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 48,
+          "parameters": 1,
+          "start": 615,
+          "end": 621
+        },
+        {
+          "qualified": "EditPlan::directory",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 78,
+          "parameters": 2,
+          "start": 623,
+          "end": 629
+        },
+        {
+          "qualified": "EditPlan::set_directory",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 37,
+          "parameters": 3,
+          "start": 631,
+          "end": 633
+        },
+        {
+          "qualified": "EditPlan::insert_directory",
+          "ccn": 2,
+          "nloc": 16,
+          "tokens": 168,
+          "parameters": 4,
+          "start": 635,
+          "end": 650
+        },
+        {
+          "qualified": "EditPlan::remove_directory",
+          "ccn": 1,
+          "nloc": 12,
+          "tokens": 127,
+          "parameters": 3,
+          "start": 652,
+          "end": 663
+        },
+        {
+          "qualified": "EditPlan::entry",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 74,
+          "parameters": 2,
+          "start": 665,
+          "end": 671
+        },
+        {
+          "qualified": "EditPlan::set_entry",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 81,
+          "parameters": 4,
+          "start": 673,
+          "end": 678
+        },
+        {
+          "qualified": "EditPlan::page",
+          "ccn": 9,
+          "nloc": 16,
+          "tokens": 165,
+          "parameters": 2,
+          "start": 680,
+          "end": 695
+        },
+        {
+          "qualified": "EditPlan::reserve",
+          "ccn": 3,
+          "nloc": 7,
+          "tokens": 70,
+          "parameters": 3,
+          "start": 697,
+          "end": 703
+        },
+        {
+          "qualified": "EditPlan::allocate_page",
+          "ccn": 11,
+          "nloc": 28,
+          "tokens": 196,
+          "parameters": 2,
+          "start": 705,
+          "end": 732
+        },
+        {
+          "qualified": "EditPlan::set_page",
+          "ccn": 2,
+          "nloc": 5,
+          "tokens": 55,
+          "parameters": 3,
+          "start": 734,
+          "end": 738
+        },
+        {
+          "qualified": "EditPlan::update_neighbor",
+          "ccn": 5,
+          "nloc": 19,
+          "tokens": 109,
+          "parameters": 5,
+          "start": 740,
+          "end": 758
+        },
+        {
+          "qualified": "EditPlan::split_page",
+          "ccn": 23,
+          "nloc": 89,
+          "tokens": 683,
+          "parameters": 5,
+          "start": 760,
+          "end": 850
+        },
+        {
+          "qualified": "EditPlan::insert_empty",
+          "ccn": 6,
+          "nloc": 34,
+          "tokens": 201,
+          "parameters": 4,
+          "start": 852,
+          "end": 885
+        },
+        {
+          "qualified": "EditPlan::remove_page",
+          "ccn": 10,
+          "nloc": 40,
+          "tokens": 248,
+          "parameters": 4,
+          "start": 887,
+          "end": 926
+        },
+        {
+          "qualified": "EditPlan::apply_edit",
+          "ccn": 37,
+          "nloc": 113,
+          "tokens": 1013,
+          "parameters": 3,
+          "start": 928,
+          "end": 1051
+        },
+        {
+          "qualified": "<free>::locate_directory",
+          "ccn": 3,
+          "nloc": 20,
+          "tokens": 110,
+          "parameters": 3,
+          "start": 1054,
+          "end": 1073
+        },
+        {
+          "qualified": "<free>::search_page",
+          "ccn": 3,
+          "nloc": 13,
+          "tokens": 119,
+          "parameters": 3,
+          "start": 1075,
+          "end": 1087
+        },
+        {
+          "qualified": "PageHeader::decode",
+          "ccn": 1,
+          "nloc": 25,
+          "tokens": 150,
+          "parameters": 1,
+          "start": 1105,
+          "end": 1129
+        },
+        {
+          "qualified": "PageHeader::encode",
+          "ccn": 1,
+          "nloc": 13,
+          "tokens": 143,
+          "parameters": 1,
+          "start": 1131,
+          "end": 1143
+        },
+        {
+          "qualified": "StablePagedOrderedMap::new",
+          "ccn": 3,
+          "nloc": 20,
+          "tokens": 89,
+          "parameters": 1,
+          "start": 1215,
+          "end": 1236
+        },
+        {
+          "qualified": "StablePagedOrderedMap::init",
+          "ccn": 3,
+          "nloc": 10,
+          "tokens": 71,
+          "parameters": 1,
+          "start": 1247,
+          "end": 1258
+        },
+        {
+          "qualified": "StablePagedOrderedMap::header",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1261,
+          "end": 1263
+        },
+        {
+          "qualified": "StablePagedOrderedMap::into_memory",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 12,
+          "parameters": 1,
+          "start": 1266,
+          "end": 1268
+        },
+        {
+          "qualified": "StablePagedOrderedMap::memory_size",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1274,
+          "end": 1276
+        },
+        {
+          "qualified": "StablePagedOrderedMap::len",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1279,
+          "end": 1281
+        },
+        {
+          "qualified": "StablePagedOrderedMap::is_empty",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1284,
+          "end": 1286
+        },
+        {
+          "qualified": "StablePagedOrderedMap::get",
+          "ccn": 3,
+          "nloc": 5,
+          "tokens": 58,
+          "parameters": 2,
+          "start": 1289,
+          "end": 1293
+        },
+        {
+          "qualified": "StablePagedOrderedMap::insert",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 39,
+          "parameters": 3,
+          "start": 1304,
+          "end": 1306
+        },
+        {
+          "qualified": "StablePagedOrderedMap::prepare_edits",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 68,
+          "parameters": 2,
+          "start": 1314,
+          "end": 1319
+        },
+        {
+          "qualified": "StablePagedOrderedMap::scalar_edit",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 80,
+          "parameters": 2,
+          "start": 1321,
+          "end": 1328
+        },
+        {
+          "qualified": "StablePagedOrderedMap::prepare_image",
+          "ccn": 7,
+          "nloc": 19,
+          "tokens": 195,
+          "parameters": 3,
+          "start": 1330,
+          "end": 1360
+        },
+        {
+          "qualified": "StablePagedOrderedMap::reserve_scratch",
+          "ccn": 2,
+          "nloc": 17,
+          "tokens": 102,
+          "parameters": 4,
+          "start": 1362,
+          "end": 1388
+        },
+        {
+          "qualified": "StablePagedOrderedMap::admit_image",
+          "ccn": 3,
+          "nloc": 17,
+          "tokens": 112,
+          "parameters": 2,
+          "start": 1390,
+          "end": 1410
+        },
+        {
+          "qualified": "StablePagedOrderedMap::publish_image",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 60,
+          "parameters": 2,
+          "start": 1412,
+          "end": 1421
+        },
+        {
+          "qualified": "StablePagedOrderedMap::reserve_for_inserts",
+          "ccn": 3,
+          "nloc": 12,
+          "tokens": 109,
+          "parameters": 2,
+          "start": 1463,
+          "end": 1476
+        },
+        {
+          "qualified": "StablePagedOrderedMap::remove",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 33,
+          "parameters": 2,
+          "start": 1483,
+          "end": 1485
+        },
+        {
+          "qualified": "StablePagedOrderedMap::predecessor",
+          "ccn": 4,
+          "nloc": 15,
+          "tokens": 110,
+          "parameters": 2,
+          "start": 1490,
+          "end": 1504
+        },
+        {
+          "qualified": "StablePagedOrderedMap::predecessor_or_equal",
+          "ccn": 6,
+          "nloc": 21,
+          "tokens": 156,
+          "parameters": 2,
+          "start": 1513,
+          "end": 1535
+        },
+        {
+          "qualified": "StablePagedOrderedMap::successor",
+          "ccn": 5,
+          "nloc": 18,
+          "tokens": 125,
+          "parameters": 2,
+          "start": 1540,
+          "end": 1557
+        },
+        {
+          "qualified": "StablePagedOrderedMap::first",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 47,
+          "parameters": 1,
+          "start": 1560,
+          "end": 1567
+        },
+        {
+          "qualified": "StablePagedOrderedMap::last",
+          "ccn": 2,
+          "nloc": 9,
+          "tokens": 61,
+          "parameters": 1,
+          "start": 1570,
+          "end": 1578
+        },
+        {
+          "qualified": "StablePagedOrderedMap::iter",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 34,
+          "parameters": 1,
+          "start": 1587,
+          "end": 1593
+        },
+        {
+          "qualified": "StablePagedOrderedMap::validate",
+          "ccn": 20,
+          "nloc": 58,
+          "tokens": 397,
+          "parameters": 1,
+          "start": 1599,
+          "end": 1657
+        },
+        {
+          "qualified": "StablePagedOrderedMap::find_page_for_key",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 51,
+          "parameters": 2,
+          "start": 1659,
+          "end": 1662
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_search",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 52,
+          "parameters": 3,
+          "start": 1664,
+          "end": 1668
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_lower_bound",
+          "ccn": 2,
+          "nloc": 5,
+          "tokens": 41,
+          "parameters": 3,
+          "start": 1670,
+          "end": 1674
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_upper_bound",
+          "ccn": 3,
+          "nloc": 14,
+          "tokens": 90,
+          "parameters": 3,
+          "start": 1676,
+          "end": 1689
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_entry",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 55,
+          "parameters": 3,
+          "start": 1691,
+          "end": 1694
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_entry",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 51,
+          "parameters": 2,
+          "start": 1703,
+          "end": 1709
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_page_header",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 49,
+          "parameters": 2,
+          "start": 1718,
+          "end": 1722
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_len",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1729,
+          "end": 1731
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_cap",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1738,
+          "end": 1740
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_page_count",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1742,
+          "end": 1744
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_free_head",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1746,
+          "end": 1748
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_first_page",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1750,
+          "end": 1752
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_last_page",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1754,
+          "end": 1756
+        },
+        {
+          "qualified": "Iterator for Iter::next",
+          "ccn": 3,
+          "nloc": 13,
+          "tokens": 93,
+          "parameters": 1,
+          "start": 1772,
+          "end": 1784
+        },
+        {
+          "qualified": "IntoIterator for &'a StablePagedOrderedMap::into_iter",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 16,
+          "parameters": 1,
+          "start": 1791,
+          "end": 1793
+        },
+        {
+          "qualified": "<free>::write_header",
+          "ccn": 4,
+          "nloc": 13,
+          "tokens": 153,
+          "parameters": 2,
+          "start": 1796,
+          "end": 1808
+        },
+        {
+          "qualified": "<free>::read_header",
+          "ccn": 1,
+          "nloc": 16,
+          "tokens": 118,
+          "parameters": 1,
+          "start": 1810,
+          "end": 1825
+        },
+        {
+          "qualified": "<free>::validate_header",
+          "ccn": 18,
+          "nloc": 42,
+          "tokens": 290,
+          "parameters": 2,
+          "start": 1827,
+          "end": 1868
+        },
+        {
+          "qualified": "<free>::dir_entry_offset",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 16,
+          "parameters": 1,
+          "start": 1871,
+          "end": 1873
+        },
+        {
+          "qualified": "<free>::page_offset",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 28,
+          "parameters": 1,
+          "start": 1876,
+          "end": 1879
+        },
+        {
+          "qualified": "<free>::page_entry_offset",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 30,
+          "parameters": 2,
+          "start": 1882,
+          "end": 1884
+        },
+        {
+          "qualified": "<free>::read_u8",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 46,
+          "parameters": 2,
+          "start": 1886,
+          "end": 1890
+        },
+        {
+          "qualified": "<free>::read_u64",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 48,
+          "parameters": 2,
+          "start": 1892,
+          "end": 1896
+        },
+        {
+          "qualified": "<free>::write_u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 37,
+          "parameters": 3,
+          "start": 1898,
+          "end": 1900
+        },
+        {
+          "qualified": "<free>::safe_write",
+          "ccn": 3,
+          "nloc": 23,
+          "tokens": 150,
+          "parameters": 3,
+          "start": 1902,
+          "end": 1924
+        },
+        {
+          "qualified": "<free>::write",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 40,
+          "parameters": 3,
+          "start": 1926,
+          "end": 1928
+        }
+      ]
+    },
+    "candidate_5da4": {
+      "all": {
+        "functions": 97,
+        "ccn": 318,
+        "nloc": 1256,
+        "tokens": 9891,
+        "max_ccn": 37
+      },
+      "touched": [
+        {
+          "qualified": "EditImage::read",
+          "ccn": 11,
+          "nloc": 38,
+          "tokens": 368,
+          "parameters": 4,
+          "start": 450,
+          "end": 489
+        }
+      ],
+      "functions": [
+        {
+          "qualified": "fmt::Display for InitError::fmt",
+          "ccn": 2,
+          "nloc": 16,
+          "tokens": 100,
+          "parameters": 2,
+          "start": 121,
+          "end": 136
+        },
+        {
+          "qualified": "fmt::Display for Error::fmt",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 63,
+          "parameters": 2,
+          "start": 153,
+          "end": 159
+        },
+        {
+          "qualified": "fmt::Display for GrowFailed::fmt",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 38,
+          "parameters": 2,
+          "start": 173,
+          "end": 179
+        },
+        {
+          "qualified": "fmt::Display for PrepareError::fmt",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 93,
+          "parameters": 2,
+          "start": 212,
+          "end": 219
+        },
+        {
+          "qualified": "std::error::Error for PrepareError::source",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 82,
+          "parameters": 1,
+          "start": 223,
+          "end": 230
+        },
+        {
+          "qualified": "PreparedEdits::previous_values",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 25,
+          "parameters": 1,
+          "start": 280,
+          "end": 282
+        },
+        {
+          "qualified": "PreparedEdits::publish",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 284,
+          "end": 286
+        },
+        {
+          "qualified": "PreparedEdits::discard",
+          "ccn": 1,
+          "nloc": 1,
+          "tokens": 7,
+          "parameters": 1,
+          "start": 288,
+          "end": 288
+        },
+        {
+          "qualified": "FailedEdit::prepared",
+          "ccn": 3,
+          "nloc": 17,
+          "tokens": 116,
+          "parameters": 1,
+          "start": 309,
+          "end": 325
+        },
+        {
+          "qualified": "FailedEdit::scalar",
+          "ccn": 2,
+          "nloc": 9,
+          "tokens": 57,
+          "parameters": 1,
+          "start": 327,
+          "end": 335
+        },
+        {
+          "qualified": "Scratch::new",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 29,
+          "parameters": 0,
+          "start": 345,
+          "end": 350
+        },
+        {
+          "qualified": "Scratch::as_slice",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 44,
+          "parameters": 1,
+          "start": 352,
+          "end": 357
+        },
+        {
+          "qualified": "Scratch::as_mut_slice",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 47,
+          "parameters": 1,
+          "start": 359,
+          "end": 364
+        },
+        {
+          "qualified": "Scratch::capacity",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 37,
+          "parameters": 1,
+          "start": 366,
+          "end": 371
+        },
+        {
+          "qualified": "Scratch::reserve",
+          "ccn": 6,
+          "nloc": 18,
+          "tokens": 153,
+          "parameters": 2,
+          "start": 373,
+          "end": 390
+        },
+        {
+          "qualified": "Scratch::resize_reserved",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 66,
+          "parameters": 2,
+          "start": 392,
+          "end": 398
+        },
+        {
+          "qualified": "Scratch::push_reserved",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 46,
+          "parameters": 2,
+          "start": 400,
+          "end": 404
+        },
+        {
+          "qualified": "DirtyRange::end",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 18,
+          "parameters": 1,
+          "start": 423,
+          "end": 425
+        },
+        {
+          "qualified": "EditImage::new",
+          "ccn": 1,
+          "nloc": 10,
+          "tokens": 47,
+          "parameters": 0,
+          "start": 439,
+          "end": 448
+        },
+        {
+          "qualified": "EditImage::read",
+          "ccn": 11,
+          "nloc": 38,
+          "tokens": 368,
+          "parameters": 4,
+          "start": 450,
+          "end": 489
+        },
+        {
+          "qualified": "EditImage::write",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 69,
+          "parameters": 3,
+          "start": 491,
+          "end": 494
+        },
+        {
+          "qualified": "EditImage::cover",
+          "ccn": 12,
+          "nloc": 79,
+          "tokens": 656,
+          "parameters": 4,
+          "start": 496,
+          "end": 575
+        },
+        {
+          "qualified": "<free>::checked_page_offset",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 55,
+          "parameters": 1,
+          "start": 578,
+          "end": 583
+        },
+        {
+          "qualified": "EditPlan::new",
+          "ccn": 2,
+          "nloc": 15,
+          "tokens": 72,
+          "parameters": 2,
+          "start": 592,
+          "end": 606
+        },
+        {
+          "qualified": "EditPlan::read",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 55,
+          "parameters": 2,
+          "start": 608,
+          "end": 612
+        },
+        {
+          "qualified": "EditPlan::u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 25,
+          "parameters": 2,
+          "start": 614,
+          "end": 616
+        },
+        {
+          "qualified": "EditPlan::set_u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 33,
+          "parameters": 3,
+          "start": 618,
+          "end": 620
+        },
+        {
+          "qualified": "EditPlan::dir_len",
+          "ccn": 2,
+          "nloc": 7,
+          "tokens": 48,
+          "parameters": 1,
+          "start": 622,
+          "end": 628
+        },
+        {
+          "qualified": "EditPlan::directory",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 78,
+          "parameters": 2,
+          "start": 630,
+          "end": 636
+        },
+        {
+          "qualified": "EditPlan::set_directory",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 37,
+          "parameters": 3,
+          "start": 638,
+          "end": 640
+        },
+        {
+          "qualified": "EditPlan::insert_directory",
+          "ccn": 2,
+          "nloc": 16,
+          "tokens": 168,
+          "parameters": 4,
+          "start": 642,
+          "end": 657
+        },
+        {
+          "qualified": "EditPlan::remove_directory",
+          "ccn": 1,
+          "nloc": 12,
+          "tokens": 127,
+          "parameters": 3,
+          "start": 659,
+          "end": 670
+        },
+        {
+          "qualified": "EditPlan::entry",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 74,
+          "parameters": 2,
+          "start": 672,
+          "end": 678
+        },
+        {
+          "qualified": "EditPlan::set_entry",
+          "ccn": 1,
+          "nloc": 6,
+          "tokens": 81,
+          "parameters": 4,
+          "start": 680,
+          "end": 685
+        },
+        {
+          "qualified": "EditPlan::page",
+          "ccn": 9,
+          "nloc": 16,
+          "tokens": 165,
+          "parameters": 2,
+          "start": 687,
+          "end": 702
+        },
+        {
+          "qualified": "EditPlan::reserve",
+          "ccn": 3,
+          "nloc": 7,
+          "tokens": 70,
+          "parameters": 3,
+          "start": 704,
+          "end": 710
+        },
+        {
+          "qualified": "EditPlan::allocate_page",
+          "ccn": 11,
+          "nloc": 28,
+          "tokens": 196,
+          "parameters": 2,
+          "start": 712,
+          "end": 739
+        },
+        {
+          "qualified": "EditPlan::set_page",
+          "ccn": 2,
+          "nloc": 5,
+          "tokens": 55,
+          "parameters": 3,
+          "start": 741,
+          "end": 745
+        },
+        {
+          "qualified": "EditPlan::update_neighbor",
+          "ccn": 5,
+          "nloc": 19,
+          "tokens": 109,
+          "parameters": 5,
+          "start": 747,
+          "end": 765
+        },
+        {
+          "qualified": "EditPlan::split_page",
+          "ccn": 23,
+          "nloc": 89,
+          "tokens": 683,
+          "parameters": 5,
+          "start": 767,
+          "end": 857
+        },
+        {
+          "qualified": "EditPlan::insert_empty",
+          "ccn": 6,
+          "nloc": 34,
+          "tokens": 201,
+          "parameters": 4,
+          "start": 859,
+          "end": 892
+        },
+        {
+          "qualified": "EditPlan::remove_page",
+          "ccn": 10,
+          "nloc": 40,
+          "tokens": 248,
+          "parameters": 4,
+          "start": 894,
+          "end": 933
+        },
+        {
+          "qualified": "EditPlan::apply_edit",
+          "ccn": 37,
+          "nloc": 113,
+          "tokens": 1013,
+          "parameters": 3,
+          "start": 935,
+          "end": 1058
+        },
+        {
+          "qualified": "<free>::locate_directory",
+          "ccn": 3,
+          "nloc": 20,
+          "tokens": 110,
+          "parameters": 3,
+          "start": 1061,
+          "end": 1080
+        },
+        {
+          "qualified": "<free>::search_page",
+          "ccn": 3,
+          "nloc": 13,
+          "tokens": 119,
+          "parameters": 3,
+          "start": 1082,
+          "end": 1094
+        },
+        {
+          "qualified": "PageHeader::decode",
+          "ccn": 1,
+          "nloc": 25,
+          "tokens": 150,
+          "parameters": 1,
+          "start": 1112,
+          "end": 1136
+        },
+        {
+          "qualified": "PageHeader::encode",
+          "ccn": 1,
+          "nloc": 13,
+          "tokens": 143,
+          "parameters": 1,
+          "start": 1138,
+          "end": 1150
+        },
+        {
+          "qualified": "StablePagedOrderedMap::new",
+          "ccn": 3,
+          "nloc": 20,
+          "tokens": 89,
+          "parameters": 1,
+          "start": 1222,
+          "end": 1243
+        },
+        {
+          "qualified": "StablePagedOrderedMap::init",
+          "ccn": 3,
+          "nloc": 10,
+          "tokens": 71,
+          "parameters": 1,
+          "start": 1254,
+          "end": 1265
+        },
+        {
+          "qualified": "StablePagedOrderedMap::header",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1268,
+          "end": 1270
+        },
+        {
+          "qualified": "StablePagedOrderedMap::into_memory",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 12,
+          "parameters": 1,
+          "start": 1273,
+          "end": 1275
+        },
+        {
+          "qualified": "StablePagedOrderedMap::memory_size",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1281,
+          "end": 1283
+        },
+        {
+          "qualified": "StablePagedOrderedMap::len",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1286,
+          "end": 1288
+        },
+        {
+          "qualified": "StablePagedOrderedMap::is_empty",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 17,
+          "parameters": 1,
+          "start": 1291,
+          "end": 1293
+        },
+        {
+          "qualified": "StablePagedOrderedMap::get",
+          "ccn": 3,
+          "nloc": 5,
+          "tokens": 58,
+          "parameters": 2,
+          "start": 1296,
+          "end": 1300
+        },
+        {
+          "qualified": "StablePagedOrderedMap::insert",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 39,
+          "parameters": 3,
+          "start": 1311,
+          "end": 1313
+        },
+        {
+          "qualified": "StablePagedOrderedMap::prepare_edits",
+          "ccn": 2,
+          "nloc": 6,
+          "tokens": 68,
+          "parameters": 2,
+          "start": 1321,
+          "end": 1326
+        },
+        {
+          "qualified": "StablePagedOrderedMap::scalar_edit",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 80,
+          "parameters": 2,
+          "start": 1328,
+          "end": 1335
+        },
+        {
+          "qualified": "StablePagedOrderedMap::prepare_image",
+          "ccn": 7,
+          "nloc": 19,
+          "tokens": 195,
+          "parameters": 3,
+          "start": 1337,
+          "end": 1367
+        },
+        {
+          "qualified": "StablePagedOrderedMap::reserve_scratch",
+          "ccn": 2,
+          "nloc": 17,
+          "tokens": 102,
+          "parameters": 4,
+          "start": 1369,
+          "end": 1395
+        },
+        {
+          "qualified": "StablePagedOrderedMap::admit_image",
+          "ccn": 3,
+          "nloc": 17,
+          "tokens": 112,
+          "parameters": 2,
+          "start": 1397,
+          "end": 1417
+        },
+        {
+          "qualified": "StablePagedOrderedMap::publish_image",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 60,
+          "parameters": 2,
+          "start": 1419,
+          "end": 1428
+        },
+        {
+          "qualified": "StablePagedOrderedMap::reserve_for_inserts",
+          "ccn": 3,
+          "nloc": 12,
+          "tokens": 109,
+          "parameters": 2,
+          "start": 1470,
+          "end": 1483
+        },
+        {
+          "qualified": "StablePagedOrderedMap::remove",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 33,
+          "parameters": 2,
+          "start": 1490,
+          "end": 1492
+        },
+        {
+          "qualified": "StablePagedOrderedMap::predecessor",
+          "ccn": 4,
+          "nloc": 15,
+          "tokens": 110,
+          "parameters": 2,
+          "start": 1497,
+          "end": 1511
+        },
+        {
+          "qualified": "StablePagedOrderedMap::predecessor_or_equal",
+          "ccn": 6,
+          "nloc": 21,
+          "tokens": 156,
+          "parameters": 2,
+          "start": 1520,
+          "end": 1542
+        },
+        {
+          "qualified": "StablePagedOrderedMap::successor",
+          "ccn": 5,
+          "nloc": 18,
+          "tokens": 125,
+          "parameters": 2,
+          "start": 1547,
+          "end": 1564
+        },
+        {
+          "qualified": "StablePagedOrderedMap::first",
+          "ccn": 2,
+          "nloc": 8,
+          "tokens": 47,
+          "parameters": 1,
+          "start": 1567,
+          "end": 1574
+        },
+        {
+          "qualified": "StablePagedOrderedMap::last",
+          "ccn": 2,
+          "nloc": 9,
+          "tokens": 61,
+          "parameters": 1,
+          "start": 1577,
+          "end": 1585
+        },
+        {
+          "qualified": "StablePagedOrderedMap::iter",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 34,
+          "parameters": 1,
+          "start": 1594,
+          "end": 1600
+        },
+        {
+          "qualified": "StablePagedOrderedMap::validate",
+          "ccn": 20,
+          "nloc": 58,
+          "tokens": 397,
+          "parameters": 1,
+          "start": 1606,
+          "end": 1664
+        },
+        {
+          "qualified": "StablePagedOrderedMap::find_page_for_key",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 51,
+          "parameters": 2,
+          "start": 1666,
+          "end": 1669
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_search",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 52,
+          "parameters": 3,
+          "start": 1671,
+          "end": 1675
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_lower_bound",
+          "ccn": 2,
+          "nloc": 5,
+          "tokens": 41,
+          "parameters": 3,
+          "start": 1677,
+          "end": 1681
+        },
+        {
+          "qualified": "StablePagedOrderedMap::page_upper_bound",
+          "ccn": 3,
+          "nloc": 14,
+          "tokens": 90,
+          "parameters": 3,
+          "start": 1683,
+          "end": 1696
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_entry",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 55,
+          "parameters": 3,
+          "start": 1698,
+          "end": 1701
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_entry",
+          "ccn": 1,
+          "nloc": 7,
+          "tokens": 51,
+          "parameters": 2,
+          "start": 1710,
+          "end": 1716
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_page_header",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 49,
+          "parameters": 2,
+          "start": 1725,
+          "end": 1729
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_len",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1736,
+          "end": 1738
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_dir_cap",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1745,
+          "end": 1747
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_page_count",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1749,
+          "end": 1751
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_free_head",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1753,
+          "end": 1755
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_first_page",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1757,
+          "end": 1759
+        },
+        {
+          "qualified": "StablePagedOrderedMap::read_last_page",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 19,
+          "parameters": 1,
+          "start": 1761,
+          "end": 1763
+        },
+        {
+          "qualified": "Iterator for Iter::next",
+          "ccn": 3,
+          "nloc": 13,
+          "tokens": 93,
+          "parameters": 1,
+          "start": 1779,
+          "end": 1791
+        },
+        {
+          "qualified": "IntoIterator for &'a StablePagedOrderedMap::into_iter",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 16,
+          "parameters": 1,
+          "start": 1798,
+          "end": 1800
+        },
+        {
+          "qualified": "<free>::write_header",
+          "ccn": 4,
+          "nloc": 13,
+          "tokens": 153,
+          "parameters": 2,
+          "start": 1803,
+          "end": 1815
+        },
+        {
+          "qualified": "<free>::read_header",
+          "ccn": 1,
+          "nloc": 16,
+          "tokens": 118,
+          "parameters": 1,
+          "start": 1817,
+          "end": 1832
+        },
+        {
+          "qualified": "<free>::validate_header",
+          "ccn": 18,
+          "nloc": 42,
+          "tokens": 290,
+          "parameters": 2,
+          "start": 1834,
+          "end": 1875
+        },
+        {
+          "qualified": "<free>::dir_entry_offset",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 16,
+          "parameters": 1,
+          "start": 1878,
+          "end": 1880
+        },
+        {
+          "qualified": "<free>::page_offset",
+          "ccn": 1,
+          "nloc": 4,
+          "tokens": 28,
+          "parameters": 1,
+          "start": 1883,
+          "end": 1886
+        },
+        {
+          "qualified": "<free>::page_entry_offset",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 30,
+          "parameters": 2,
+          "start": 1889,
+          "end": 1891
+        },
+        {
+          "qualified": "<free>::read_u8",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 46,
+          "parameters": 2,
+          "start": 1893,
+          "end": 1897
+        },
+        {
+          "qualified": "<free>::read_u64",
+          "ccn": 1,
+          "nloc": 5,
+          "tokens": 48,
+          "parameters": 2,
+          "start": 1899,
+          "end": 1903
+        },
+        {
+          "qualified": "<free>::write_u64",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 37,
+          "parameters": 3,
+          "start": 1905,
+          "end": 1907
+        },
+        {
+          "qualified": "<free>::safe_write",
+          "ccn": 3,
+          "nloc": 23,
+          "tokens": 150,
+          "parameters": 3,
+          "start": 1909,
+          "end": 1931
+        },
+        {
+          "qualified": "<free>::write",
+          "ccn": 1,
+          "nloc": 3,
+          "tokens": 40,
+          "parameters": 3,
+          "start": 1933,
+          "end": 1935
+        }
+      ]
+    }
+  },
+  "new_test": {
+    "name": "edit_image_read_partition",
+    "ccn": 5,
+    "nloc": 271,
+    "tokens": 2000,
+    "parameters": 0
+  },
+  "exclusions": {
+    "before_9436": [
+      [
+        68021,
+        103044,
+        "test module"
+      ],
+      [
+        62126,
+        62242,
+        "fn write_dir_len(&self, len: u64) {"
+      ],
+      [
+        61881,
+        62034,
+        "fn write_page_header(&self, page: u64, header: PageHeader) {"
+      ],
+      [
+        61430,
+        61666,
+        "fn write_dir_entry(&self, index: u64, entry: DirEntry) {"
+      ],
+      [
+        60953,
+        61190,
+        "fn write_entry(&self, page: u64, index: u16, key: u64, value: u64) {"
+      ],
+      [
+        51071,
+        51612,
+        "fn split_page_and_insert(&self, page: u64, key: u64, value: u64) -> Result<Option<u64>, Error> {"
+      ],
+      [
+        50487,
+        50907,
+        "fn observe_image(&self, image: &EditImage) {"
+      ],
+      [
+        50305,
+        50485,
+        "fn observe_work(&self, f: impl FnOnce(&mut WorkObservation)) {"
+      ],
+      [
+        49767,
+        49842,
+        "self.observe_work(|w| w.grown_pages += delta);"
+      ],
+      [
+        49416,
+        49481,
+        "self.observe_work(|w| w.grows += 1);"
+      ],
+      [
+        48731,
+        49038,
+        "{"
+      ],
+      [
+        48110,
+        48170,
+        "self.observe_image(plan.image);"
+      ],
+      [
+        47979,
+        48060,
+        "self.observe_work(|w| w.completed = at + 1);"
+      ],
+      [
+        47720,
+        47788,
+        "self.observe_image(plan.image);"
+      ],
+      [
+        47098,
+        47289,
+        "self.work.set(WorkObservation {"
+      ],
+      [
+        44093,
+        44163,
+        "work: std::cell::Cell::default(),"
+      ],
+      [
+        43282,
+        43352,
+        "work: std::cell::Cell::default(),"
+      ],
+      [
+        41366,
+        41817,
+        "#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]"
+      ],
+      [
+        41302,
+        41362,
+        "work: std::cell::Cell<WorkObservation>,"
+      ],
+      [
+        33892,
+        34257,
+        "if at == 0 {"
+      ],
+      [
+        32857,
+        32979,
+        "self.owner"
+      ],
+      [
+        14187,
+        14371,
+        "fn dynamic_capacity(&self) -> usize {"
+      ],
+      [
+        41819,
+        42213,
+        "shared fixture seeder"
+      ]
+    ],
+    "candidate_5da4": [
+      [
+        68276,
+        112401,
+        "test module"
+      ],
+      [
+        62381,
+        62497,
+        "fn write_dir_len(&self, len: u64) {"
+      ],
+      [
+        62136,
+        62289,
+        "fn write_page_header(&self, page: u64, header: PageHeader) {"
+      ],
+      [
+        61685,
+        61921,
+        "fn write_dir_entry(&self, index: u64, entry: DirEntry) {"
+      ],
+      [
+        61208,
+        61445,
+        "fn write_entry(&self, page: u64, index: u16, key: u64, value: u64) {"
+      ],
+      [
+        51326,
+        51867,
+        "fn split_page_and_insert(&self, page: u64, key: u64, value: u64) -> Result<Option<u64>, Error> {"
+      ],
+      [
+        50742,
+        51162,
+        "fn observe_image(&self, image: &EditImage) {"
+      ],
+      [
+        50560,
+        50740,
+        "fn observe_work(&self, f: impl FnOnce(&mut WorkObservation)) {"
+      ],
+      [
+        50022,
+        50097,
+        "self.observe_work(|w| w.grown_pages += delta);"
+      ],
+      [
+        49671,
+        49736,
+        "self.observe_work(|w| w.grows += 1);"
+      ],
+      [
+        48986,
+        49293,
+        "{"
+      ],
+      [
+        48365,
+        48425,
+        "self.observe_image(plan.image);"
+      ],
+      [
+        48234,
+        48315,
+        "self.observe_work(|w| w.completed = at + 1);"
+      ],
+      [
+        47975,
+        48043,
+        "self.observe_image(plan.image);"
+      ],
+      [
+        47353,
+        47544,
+        "self.work.set(WorkObservation {"
+      ],
+      [
+        44348,
+        44418,
+        "work: std::cell::Cell::default(),"
+      ],
+      [
+        43537,
+        43607,
+        "work: std::cell::Cell::default(),"
+      ],
+      [
+        41621,
+        42072,
+        "#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]"
+      ],
+      [
+        41557,
+        41617,
+        "work: std::cell::Cell<WorkObservation>,"
+      ],
+      [
+        34147,
+        34512,
+        "if at == 0 {"
+      ],
+      [
+        33112,
+        33234,
+        "self.owner"
+      ],
+      [
+        14187,
+        14371,
+        "fn dynamic_capacity(&self) -> usize {"
+      ],
+      [
+        42074,
+        42468,
+        "shared fixture seeder"
+      ]
+    ]
+  },
+  "helper_source_sha256": "dd6f06390c102013944f8fe0979f344095c294bc9b5fd73be216401cc9c722df",
+  "helpers_copied": [
+    "end_brace",
+    "mask",
+    "owner",
+    "production"
+  ],
+  "limitations": "Line-preserving text projection and Lizard parser, not compiler analysis. No suppressions/threshold changes. Receiver counts included; test table contributes source size, not production complexity or runtime pricing."
+}

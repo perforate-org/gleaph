@@ -1,0 +1,6 @@
+status,name,scope_calls,scope_calls Δ,scope_calls Δ%,instructions,instructions Δ,instructions Δ%,heap_increase,heap_increase Δ,heap_increase Δ%,stable_memory_increase,stable_memory_increase Δ,stable_memory_increase Δ%
+new,bench_paged_scalar_edits_97,,,,1093879,,,0,,,0,,
+new,bench_paged_scalar_edits_97::scalar_missing_64,1,,,158312,,,0,,,0,,
+new,bench_paged_scalar_edits_97::scalar_replace_64,1,,,167624,,,0,,,0,,
+new,bench_paged_scalar_edits_97::scalar_split_directory,1,,,155448,,,0,,,0,,
+new,bench_paged_scalar_edits_97::scalar_tail_pairs_64,1,,,607562,,,0,,,0,,

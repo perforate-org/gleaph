@@ -1,0 +1,149 @@
+{
+  "source": "review dfaed91c execution authority (fresh single ledger)",
+  "ledger": {
+    "maximum": 600,
+    "pre_final_caps": 215,
+    "protected_final_caps": 120,
+    "unassigned_not_contingency": 265,
+    "past_balances": "closed"
+  },
+  "ordered_schedule": [
+    "setup",
+    "format",
+    "map",
+    "doc",
+    "mutation-early",
+    "mutation-resource",
+    "mutation-disjoint",
+    "mutation-backed",
+    "audit",
+    "scalar",
+    "collect",
+    "final-format",
+    "final-clippy-map",
+    "final-clippy-lara",
+    "final-map",
+    "final-free",
+    "final-doc",
+    "provenance",
+    "evidence"
+  ],
+  "initial_mdraft_hashes": {
+    "lib.rs": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+    "bench.rs": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c"
+  },
+  "pre_format_hashes": {
+    "lib.sha256": "62fd25085d22a776e743fdafc8fab54aaab63c65905844bf68cdff965949bde6",
+    "bench.sha256": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+  },
+  "cleanup": {
+    "diff": "cleanup.diff",
+    "markers_and_event_sites_unchanged": true,
+    "single_count_sum_source": "DiagAgg; snapshot derives sum/count",
+    "diag_cats_in_bench_dims_and_loop": true
+  },
+  "clippy_feature_amendment": "cargo clippy -p ic-stable-paged-ordered-map --lib --tests --features canbench -- -D warnings (single row)",
+  "expected": {
+    "endpoints": [
+      1600,
+      1856,
+      4480,
+      343
+    ],
+    "read_pairs": [
+      512,
+      704,
+      1472,
+      94
+    ],
+    "cover_pairs": [
+      64,
+      0,
+      320,
+      74
+    ],
+    "sibling_admit_pairs": [
+      64,
+      64,
+      128,
+      1
+    ],
+    "cal_counts": [
+      64,
+      16,
+      32,
+      1
+    ]
+  },
+  "expected_negatives": [
+    "four mutations exit101 with exact reached messages",
+    "final plan validator exit1 with three known errors"
+  ],
+  "stop_rules": "first unexpected compiler/test/tool failure, timeout, cap breach or source/config/fixture drift -> preserve diagnostics, restore in finally, close INCOMPLETE, no repair/retry; diagnostic count/reconciliation failure -> preserve result, run scheduled finals only, close incomplete, no tune",
+  "interpretation_limits": [
+    "snapshot/reset work outside the four phase scopes but inside bench_fn total",
+    "raw read/cover/remaining-prepare observations include instrumentation and compiler perturbation",
+    "source projection != codegen equivalence; calibration != universal bias bound; saved-row delta is reject-only sanity",
+    "non-ranking/inconclusive endpoint valid; instrumented totals cannot meet/replace original acceptance ceilings or attribute per-component regressions versus admission",
+    "bounded-proof pending; criteria5/6 unchecked regardless of outcome"
+  ],
+  "versions": {
+    "rustc": "rustc 1.100.0-nightly (574ff7d98 2026-09-14)",
+    "cargo": "cargo 1.100.0-nightly (7941be6fb 2026-09-11)",
+    "canbench": "canbench 0.7.0",
+    "lizard": "1.24.0"
+  },
+  "helper_type_surface": {
+    "consts": [
+      "DIAG_CATS",
+      "DIAG_SLOTS",
+      "DIAG_INIT",
+      "DIAG_PREPARE",
+      "DIAG_RESULT",
+      "DIAG_PUBLISH",
+      "DIAG_READ",
+      "DIAG_COVER",
+      "DIAG_ADMIT",
+      "DIAG_CAL_STANDALONE",
+      "DIAG_CAL_NESTED_IN",
+      "DIAG_CAL_SHARED",
+      "DIAG_CAL_NESTED_OUT"
+    ],
+    "types": [
+      "DiagAgg{count,sum,min,max} (Clone,Copy)",
+      "DiagState{agg,endpoints}"
+    ],
+    "state": "std::thread_local! DIAG: RefCell<DiagState> (const-init); single count/sum source = DiagAgg",
+    "helpers": [
+      "diag_tick",
+      "diag_finish",
+      "diag_reset",
+      "diag_snapshot",
+      "diag_run_calibration",
+      "diag_cal_summary"
+    ],
+    "bench_wiring": [
+      "reset/calibration/reset before bench_fn",
+      "snapshot+reset between phase blocks",
+      "DIAG_* eprintln after final validate"
+    ],
+    "note": "actual surface:6 helpers +2 types +1 thread_local +14 consts, all cfg-gated in map lib root; bench additions are plain lines in the feature-gated module \u2014 this supersedes the \"two private cfg fns\" shorthand"
+  },
+  "cfg_off_projection": {
+    "lib": {
+      "added_lines": 157,
+      "removed_or_modified": 0,
+      "cfg_off_strip_byte_identical": true
+    },
+    "bench": {
+      "added_lines": 40,
+      "removed_or_modified": 0,
+      "cfg_off_strip_byte_identical": true
+    }
+  },
+  "no_lara_canbench": true,
+  "no_baseline_rebuild": true,
+  "no_new_disassembly": true,
+  "no_persist_yaml_update": true,
+  "no_optimization_or_second_measurement": true
+}

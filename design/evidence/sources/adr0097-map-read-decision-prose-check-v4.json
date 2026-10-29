@@ -1,0 +1,110 @@
+{
+  "kind": "M_draft source-only pass prose/text/hash/scope checks; NO Rust toolchain executed",
+  "plan_receipt": {
+    "sha256": "02c9ddce0d8bc7f26b0ed87a4d29397f53fce6fddc2033264f39274a280b3434",
+    "exit": 1,
+    "errors": [
+      "ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'",
+      "ERROR: Completion Criteria item 5 must be checked in final phase",
+      "ERROR: Completion Criteria item 6 must be checked in final phase"
+    ],
+    "expected_refusal": true,
+    "durable": "adr0097-map-read-decision-plan-check-v4.txt"
+  },
+  "whitespace": {
+    "git_diff_check_exit": 0,
+    "trailing": {
+      "plans/0340-prepared-paged-map-edits.md": [],
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": [],
+      "design/evidence/adr0097-demotion-design.md": []
+    }
+  },
+  "links": {
+    "receipt_links_resolve": true,
+    "inherited_unchanged": true,
+    "docs": [
+      "plans/0340-prepared-paged-map-edits.md",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "design/evidence/adr0097-demotion-design.md"
+    ]
+  },
+  "pins": {
+    "total": 1528,
+    "lifted_freeze_scope_only": [
+      "crates/ic-stable-paged-ordered-map/src/bench.rs",
+      "crates/ic-stable-paged-ordered-map/src/lib.rs",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "design/evidence/adr0097-demotion-design.md",
+      "plans/0340-prepared-paged-map-edits.md"
+    ],
+    "expected_after": {
+      "crates/ic-stable-paged-ordered-map/src/lib.rs": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+      "crates/ic-stable-paged-ordered-map/src/bench.rs": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c"
+    },
+    "mismatches_outside_scope": [],
+    "frozen_originals_preserved": {
+      "candidate_lib": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "pre_ic_lib": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "frozen_bench_snapshot": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7"
+    },
+    "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "head": "f297706abf683c1e22622c193d34f06650305bee",
+    "staged": "none"
+  },
+  "sealed_roots": [
+    {
+      "root": "/tmp/spill-map-read-9436-j1wy264j",
+      "files": 181,
+      "manifest": "c20b1fa154519e7d76aaa72b23889b0d8a02aa88e3496b66d235753b84c4828c"
+    },
+    {
+      "root": "/tmp/spill-map-measure-f297-csayhl_3",
+      "files": 12,
+      "manifest": "ba76c305f5dae6e7fc6652d781cfe78446b4876621ee988f84d0b9da4abbb9a5"
+    },
+    {
+      "root": "/tmp/spill-map-revision-f297-UG3YaZ",
+      "files": 11,
+      "manifest": "77728bd06a546ea2ab293fa65fd6f1dec0676c9e59c9a44a13d132bac598bf42"
+    }
+  ],
+  "prior_durables": {
+    "adr0097-map-read-clarification-execution.json": "9e9a3e118308fd8b06fd79dd27204797ec82f24694b7460b4088a981116f0077",
+    "adr0097-map-read-clarification-coverage.json": "e64e0d5e2ae060896cb16053321b7a0680586a3110b564b45b984fe90d7971b9",
+    "adr0097-map-read-decision-analysis.json": "317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+    "adr0097-map-read-decision-plan-check.txt": "bc6a98805f04cf113a4d503bcaa7680a32adc99112d1ff3864501ca844c73de3",
+    "adr0097-map-read-decision-prose-check.json": "547bdd73c71d4613b149dd3db8bd9affa0dd605118d60506085b5fcb1995d0fb",
+    "adr0097-map-read-decision-analysis-v2.json": "fb5de53962c69a641477aa5975753baffebe01dfd53967962986820cec60e0e7",
+    "adr0097-map-read-decision-revision.json": "ea8f6a388a7895f98c316deb8ee50a08bc04bbedf44cd1de9555ee70e681350c",
+    "adr0097-map-read-decision-plan-check-v2.txt": "3b0aab2c56daf934b35210fd75955ebd8079f7af72c76b210c9549abb1d63fdf",
+    "adr0097-map-read-decision-prose-check-v2.json": "d53cf5550e6c3bf921f2d3979fea26e95badfc5fd100422c4cfe1931ad8945c4",
+    "adr0097-map-read-decision-protocol-revision.json": "7c50e13a7f8f762f568d87c81ec8e4742464da156d3eca1d4184e142a54bead8",
+    "adr0097-map-read-decision-plan-check-v3.txt": "af2e6a88aac0265cae68578c4fc35a52b0b883055e1fd3544d5667e0955964c5",
+    "adr0097-map-read-decision-prose-check-v3.json": "66d8aea3f5af8d8f63c2973e945e903e98afbe09c471d97441dd9aefc3e2aca1"
+  },
+  "new_durables": {
+    "adr0097-map-read-decision-split-count-correction.json": "1e0208cd7d2824f44f89e41447a9c065920b23f766dd40aa6d53d6591751db26",
+    "adr0097-map-read-m-draft-preflight.json": "75c1caaaf4b827e2028bd6d7caf711306ba7c1fcb1ac5761ce365ae542150a9b",
+    "adr0097-map-read-m-draft.patch": "487070abc90607461517aada5899b880619e1552a0dfaf33799fefae51c8e3d2"
+  },
+  "preflight_failures": [],
+  "scope_t1": {
+    "added": 53,
+    "removed": [],
+    "matches_except_self": true
+  },
+  "failures": [],
+  "scope_t2": {
+    "added_count": 54,
+    "removed": [],
+    "exact_37+5+4+3+5=54": true
+  },
+  "sibling_durable_sha256": {
+    "adr0097-map-read-decision-split-count-correction.json": "1e0208cd7d2824f44f89e41447a9c065920b23f766dd40aa6d53d6591751db26",
+    "adr0097-map-read-m-draft-preflight.json": "75c1caaaf4b827e2028bd6d7caf711306ba7c1fcb1ac5761ce365ae542150a9b",
+    "adr0097-map-read-m-draft.patch": "487070abc90607461517aada5899b880619e1552a0dfaf33799fefae51c8e3d2",
+    "adr0097-map-read-decision-plan-check-v4.txt": "1667139677a8d5daf316086f4112f858b0440517f2d62bb7659b73f6c1f63ab3"
+  },
+  "self_hash_note": "own durable hash recorded in this pass seal"
+}

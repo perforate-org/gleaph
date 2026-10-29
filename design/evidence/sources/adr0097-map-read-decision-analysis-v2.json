@@ -1,0 +1,268 @@
+{
+  "kind": "corrected decision + ONE fully specified diagnostic plan (separate approval required); supersedes adr0097-map-read-decision-analysis.json, which is preserved byte-unchanged",
+  "review": {
+    "id": "515d9868",
+    "verdict": "REQUEST CHANGES; no execution authorization",
+    "clarifications_accepted": "prior two closed-root clarification requirements satisfied; this corrects the decision/measurement plan only"
+  },
+  "withdrawn_premises": [
+    {
+      "id": "W1-reader-bound",
+      "withdrawn": "split residual \"bounded out of split\": guard delta \u22124,908 as reader share upper bound; native reads94 vs186 as instruction bound",
+      "why_wrong": "9436\u21925da4 deltas (missing \u221219,712, replacement \u221214,336, tail \u221241,216, split \u22124,908, LARA \u221264,551) are the joint effect of ONE guard; they do not upper-bound remaining reader/canonical-routing cost, and fewer native reads do not bound IC instructions",
+      "replacement": "no reader-share bound exists; total remaining reader/routing cost is unpriced and stays an open component"
+    },
+    {
+      "id": "W2-byte-percentage",
+      "withdrawn": "\u22658,448 modeled copy bytes \u21d2 \u2264~5% of the516,425-instruction residual; identity-copy guard rejected on that basis",
+      "why_wrong": "bytes are not instructions; a byte lower bound is neither a cost upper bound nor a measured elimination benefit; codegen/control/normalization costs remain unpriced",
+      "replacement": "the identity-copy question is an unpriced open candidate, neither rejected nor favored"
+    },
+    {
+      "id": "W3-cross-call-tail-trace",
+      "withdrawn": "tail analysis crediting later pairs with an already-dirty slot (persistent-image assumption)",
+      "why_wrong": "lib.rs1328\u20131334: scalar_edit creates EditImage::new on EVERY insert/remove call; bench.rs149\u2013172 runs each phase as separate public calls (tail =64 insert +64 remove scalar calls). No staging persists across calls",
+      "replacement": "any source-only trace must live within ONE call image: every scalar call stages into a fresh image, so writes land in fresh-range creation (and, within a single call, only same-call insertion shifts); canonical (backing) bytes are distinct from staged image bytes; per-call staged movement for tail pairs is fresh-range work of tens of modeled bytes, unpriced; the +268,175 composition is not source-attributable"
+    },
+    {
+      "id": "W4-write-floor",
+      "withdrawn": "replace \u2212 missing =22,784 / \u2248356 per op as a write-cost lower bound; missing +52,928 as a cross-phase common floor",
+      "why_wrong": "replace and missing take different lookup/probe routes (key found vs absent probes, prior-value read), so their difference prices nothing about write cost; missing +52,928 is excess for that one no-write operation, not a floor shared by other phases",
+      "replacement": "missing: +52,928 excess for the no-write missing operation (established); replace-minus-missing and all cross-phase differences are uninterpretable as component costs"
+    },
+    {
+      "id": "W5-no-counterfactual",
+      "withdrawn": "\"no legal common-path counterfactual exists because all components are contract-required\"",
+      "why_wrong": "required semantics fix validation/arithmetic/error ordering, not every present zero-init/container/call implementation",
+      "replacement": "validation/arithmetic/error ordering remain unremovable; whether a legal reorganization of present implementation choices exists is UNDECIDED; sufficient and truthful: existing evidence cannot rank common-path components"
+    }
+  ],
+  "execution_flow_model_corrected": {
+    "scalar_edit": "lib.rs1328\u20131334: fresh EditImage::new per public insert/remove; prepare_image, result extraction, publish_image, image drop at call end",
+    "fixture": "bench.rs: init+seed (line125) and untimed sanity asserts+validate (through line146); bench_fn wraps four sequential phase scopes: replace64 (149), missing64 (156), tail pairs =64 insert+64 remove public calls (162), split1 (169); untimed final asserts+validate (through188); result returned",
+    "consequence": "component collection must reset after seeding/sanity and snapshot+reset between the four blocks; image drop and bench loop/call glue are outside any single-call interval and are reported as an explicit remainder"
+  },
+  "mechanism_chosen_now": {
+    "choice": "cfg(feature=\"canbench\") static accumulator counters in the map crate over ic_cdk::api::performance_counter(0), emitted after the run via ic_cdk::eprintln!",
+    "evidence_pinned_canbench_rs_0_7_0": {
+      "path": "/Users/yota/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/canbench-rs-0.7.0/src/lib.rs",
+      "sha256": "3ae25386f2cb1365844a8e70372718604df75eba0eaea36b85d9de9ced570fc3",
+      "facts": [
+        "bench_fn (line605) calls private reset() (line606/733) \u2014 canbench scope store is private and inaccessible per category",
+        "instruction_count() (line806\u2013811) is private and wraps ic_cdk::api::performance_counter(0) on wasm32",
+        "BenchScope::new (691\u2013711) reads instructions/stable/heap at entry; Drop (713\u2013736) borrows the global RefCell<BTreeMap<&str, Vec<..>>> and pushes \u2014 allocation and bookkeeping charged to the enclosing live interval",
+        "get_scopes_measurements (738\u2013801) unions intervals per name only; repeated names aggregate globally, not by enclosing phase; nesting across different names double-counts",
+        "ic_cdk::eprintln! output is retrieved with canbench --show-canister-output (docs lines424\u2013445)"
+      ],
+      "consequences": "bench_scope cannot give per-phase\u00d7category isolation (private reset, global per-name aggregation, enclosure-charged Drop bookkeeping/allocation, cross-name nesting double-count); one empty scope and a3\u00d7 factor bound none of these \u2014 replaced below by full-shape calibration, explicit bias terms, count pre-registration and a saved-row perturbation bound"
+    },
+    "icp_guidance": {
+      "index": "https://skills.internetcomputer.org/.well-known/skills/index.json fetched;31 skills enumerated: agent-web-identity, autosync-ic-skills, autoupgrade-icp-cli, caffeine-app, canhelp, canister-security, certified-variables, ckbtc, cloud-engine-canisters, custom-domains, cycles-management, deploy-to-cloud-engine, encrypted-maps, evm-rpc, https-outcalls, ic-dashboard, icp-cli, icrc-ledger, internet-identity, mops-cli, migrating-motoko-actors, multi-canister, reviewing-motoko, service-discoverability, sns-launch, stable-memory, static-site, troubleshooting-motoko-migrations, vetkeys, wallet-integration, writing-motoko",
+      "result": "no task-relevant performance/instruction-counter/system-API skill exists; none fetched",
+      "api_choice": "official CDK API ic_cdk::api::performance_counter(0) \u2014 the same pinned wrapper canbench-rs uses (its lines642/648/806\u2013811); ic-cdk0.20.1 is already enabled by the map canbench feature; no raw ic0 import and no new dependency"
+    },
+    "rejected_alternatives": [
+      "canbench_rs::bench_scope for categories (private reset, global per-name Vec aggregation, Drop enclosure charge, cross-name nesting double-count)",
+      "handwritten benchmark-only editing API or replacing public insert/remove (forbidden: fixture keeps real public calls)",
+      "profiling framework (forbidden): the instrument is8 static counters + pair counts + one reset + one snapshot + one calibration fn, all cfg-gated"
+    ]
+  },
+  "exact_owner_surface": {
+    "crate": "crates/ic-stable-paged-ordered-map only",
+    "lib_cfg_blocks": [
+      "static COMPONENT[9] u64 accumulators + PAIRS[9] counts (Cell), pub(crate) reset_components(), snapshot_components(), calibrate_components(K) \u2014 all #[cfg(feature=\"canbench\")]",
+      "scalar_edit (1328): marks M0 entry, M1 pre prepare_image, M2 post prepare, M3 pre publish_image, M4 post publish \u2192 categories init_head=M1\u2212M0, prepare_call=M2\u2212M1, result_head=M3\u2212M2, publish_call=M4\u2212M3 (sequential siblings, no mutual nesting)",
+      "EditPlan::read (608): marks entry, pre image.read, post image.read, exit \u2192 read_wrap_excl = (pre\u2212entry)+(exit\u2212post); the body interval lies strictly between pre/post",
+      "EditImage::read (450): entry/exit \u2192 read_body (nested inside read wrap segments)",
+      "EditImage::write (491): entry, pre cover, post cover, exit \u2192 write_excl = (pre\u2212entry)+(exit\u2212post); its cover interval lies strictly between pre/post",
+      "EditImage::cover (496): entry/exit \u2192 cover_body over ALL cover calls (via write AND via insert_directory/remove_directory/set_u64 direct callers)",
+      "admit_image (1397): entry/exit \u2192 admit (inside prepare_call)",
+      "every mark site records pair counts"
+    ],
+    "bench_rs_edits": [
+      "after line146 sanity validate: run calibrate_components(K=64) \u2192 record E; reset_components()",
+      "after each phase block (149/156/162/169): snapshot into a stack array [4][9] u64 + pair counts; reset_components() before the next block",
+      "after line188 final validate, before returning result: ic_cdk::eprintln! one COMPONENT/REMAINDER/CALIBRATION line set (outside bench_fn and all scopes)",
+      "phase scopes, fixture, repetitions, order, black_box result consumption and both untimed validation blocks stay byte-identical"
+    ],
+    "cfg_off_identity": "every added lib hunk is inside #[cfg(feature=\"canbench\")]; src/bench.rs compiles only under that feature (lib.rs54\u201355)"
+  },
+  "isolation_and_arithmetic": {
+    "per_phase_collection": "components accumulate only inside one phase block; snapshot+reset between blocks; seeding/sanity excluded by the reset after line146; post-run validation excluded because emission is after line188 and validation performs no marked calls",
+    "categories_and_equations": {
+      "sequential_leaf_intervals": [
+        "init_head",
+        "result_head",
+        "publish_call",
+        "prepare_call (inclusive)"
+      ],
+      "prepare_children_disjoint_sum": "sum(read_wrap_excl + read_body + write_excl + cover_body + admit) \u2014 disjoint by construction: wrap excludes its body, write excludes its cover, direct cover calls are outside write, admit has no nested marks",
+      "prepare_rest": "prepare_call \u2212 children_sum \u2014 DEFINITIONAL remainder (loop/search/geometry/EditPlan::new/result-push/Scratch glue), explicitly NOT independent validation",
+      "loop_call_image_drop_phase_overhead_rem": "phase_row(canbench) \u2212 sum_over_calls(init_head+prepare_call+result_head+publish_call) \u2014 DEFINITIONAL; contains bench loop/call glue, function return glue, image Drop, both instruments' entry-side/accumulation biases and the canbench scope-entry/Drop bookkeeping; explicitly NOT validation"
+    },
+    "bias_terms": "each interval value includes its exit pc-call but not its entry pc-call or the post-t1 accumulate/count updates (paid by the enclosing region); calibration runs the identical pair shape {t0; t1; acc+=t1\u2212t0; pairs+=1} K=64 times sequentially at bench top level \u2192 E=delta/K bounds, per pair, every such cost",
+    "bounds_rules": {
+      "non_negativity": "prepare_rest \u2265 \u2212(children_pairs\u00d7E); rem \u2265 \u2212(phase_pairs\u00d7E); otherwise instrument invalid",
+      "ranking": "component A > B only if A\u2212B > (pairsA+pairsB)\u00d7E; otherwise report \"unresolved at this resolution\"",
+      "perturbation": "per phase: Delta = instrumented canbench phase row \u2212 saved5da4 phase row (attempt CSV pins82974808\u2026 wasm / scalar.csv); require |Delta| \u22642\u00d7(phase_pairs\u00d7E); outside \u2192 discard the instrumented run fail-closed, no ranking"
+    },
+    "independent_checks": [
+      "count pre-registration: the scheduled source audit derives expected per-call category counts per phase from frozen source BEFORE the scalar run and writes them to its receipt; collect asserts emitted counts / call count equals them exactly (integral quotient for64/128-call phases); mismatch \u2192 fail-closed",
+      "the existing untimed fixture assertions and map.validate() execute inside the SAME instrumented wasm (bench.rs pre:127\u2013146, post:171\u2013188) \u2014 this is the cfg-on observable semantic check",
+      "saved-row perturbation bound above"
+    ],
+    "remainder_caveat": "category sums built from a defined remainder are definitional outputs, not independent validation"
+  },
+  "purity_and_source_audit": {
+    "cfg_off_preservation": "18/27/5 + four mutation oracles are PRESERVATION evidence for the cfg-off path only \u2014 not proof of the cfg-on instrumented path",
+    "cfg_on_proof": "the fixture assertions + validate() inside the instrumented wasm, count pre-registration match, non-negativity and perturbation bounds",
+    "source_audit_command_content": [
+      "every added lib hunk lies inside #[cfg(feature=\"canbench\")] blocks; bench.rs is feature-gated (lib.rs54\u201355)",
+      "strip the cfg-gate blocks from the instrumented source \u2192 result must equal frozen5da46e45 byte-for-byte",
+      "record the marks/pairs inventory and the expected per-call counts receipt",
+      "pins recheck: source5da46/benchmark2f95a494/FreeSpan35b7b008/lock15d083/foreign CSVs before execution"
+    ]
+  },
+  "claim_limits": {
+    "can": "rank CURRENT-source components within each phase (with E-bounds) to select which candidate to examine next",
+    "cannot": [
+      "identify per-component regressions versus the uninstrumented admission baseline (admission has no categories; instrumented\u2212uninstrumented subtraction is invalid)",
+      "reconstruct unperturbed cost (biases are bounded, not removed)",
+      "waive any original ceiling: all remain binding and failing (missing +61.78%, replacement +97.60%, tail +89.94%, split +386.71%, LARA +43.49%)"
+    ]
+  },
+  "lara_resolution": {
+    "map_cargo": "canbench = [\"dep:canbench-rs\", \"dep:candid\", \"dep:ic-cdk\"] (crates/ic-stable-paged-ordered-map/Cargo.toml line12)",
+    "lara_cargo": "canbench = [\"dep:canbench-rs\", \"dep:candid\"] (crates/ic-stable-lara/Cargo.toml line22); ic-stable-paged-ordered-map.workspace = true (line33) with NO feature forwarding",
+    "conclusion": "RESOLVED, not conditional: instrumented counters cannot compile into any LARA build; the schedule contains NO LARA command; no map feature is enabled in LARA; preservation is covered by cfg-off FreeSpan27 + clippy-lara finals; LARA YAML/CSV remain untouched"
+  },
+  "proposed_future_fresh_ledger": {
+    "status": "PROPOSAL ONLY \u2014 no budget granted by this document; no old balance",
+    "maximum": 600,
+    "pre_final_caps_total": 195,
+    "protected_final_caps_total": 120,
+    "explicitly_unassigned_and_unused": 285,
+    "unassigned_is_not_contingency_or_retry_authority": true,
+    "ordered_schedule": [
+      [
+        "1",
+        "fresh pins/tool/config/CSV-state checks + finally-restore setup",
+        20
+      ],
+      [
+        "2",
+        "rustfmt --edition 2024 --config skip_children=true crates/ic-stable-paged-ordered-map/src/lib.rs crates/ic-stable-paged-ordered-map/src/bench.rs",
+        5
+      ],
+      [
+        "3",
+        "cargo test -p ic-stable-paged-ordered-map --lib tests:: -- --nocapture (18, cfg-off preservation)",
+        30
+      ],
+      [
+        "4",
+        "cargo test -p ic-stable-paged-ordered-map --doc -- --show-output (5)",
+        10
+      ],
+      [
+        "5",
+        "early-publication mutation (prepared_edits_directory_rejection), expected exit101 exact message",
+        10
+      ],
+      [
+        "6",
+        "deferred-backing mutation (prepared_edits_resources_and_retry), expected exit101 exact message",
+        10
+      ],
+      [
+        "7",
+        "measurement source audit: cfg-gate + strip-equals-5da46 + marks/pairs inventory + expected per-call count pre-registration; freeze instrumented source hash M",
+        15
+      ],
+      [
+        "8",
+        "map cwd: canbench bench_paged_scalar_edits_97 --csv --show-canister-output (ONE instrumented run; components emitted post-run)",
+        75
+      ],
+      [
+        "9",
+        "collect: components.csv parse, E/calibration, count match, non-negativity, perturbation bound vs saved rows, archive wasm/M/lock/CSV/log, fail-closed ranking verdict",
+        20
+      ]
+    ],
+    "protected_final": [
+      [
+        "rustfmt --check (lib.rs + bench.rs)",
+        5
+      ],
+      [
+        "cargo clippy -p ic-stable-paged-ordered-map --lib --tests -- -D warnings",
+        10
+      ],
+      [
+        "cargo clippy -p ic-stable-lara --lib -- -D warnings",
+        15
+      ],
+      [
+        "map18 same command",
+        20
+      ],
+      [
+        "cargo test -p ic-stable-lara --lib lara::edge::free_span::tests:: -- --nocapture (27)",
+        25
+      ],
+      [
+        "doc5 same command",
+        15
+      ],
+      [
+        "Lizard/prose/provenance/path/hash/whitespace/plan closure",
+        15
+      ],
+      [
+        "final evidence contingency (not wider execution)",
+        15
+      ]
+    ],
+    "plan_structural_gate": "python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase final \u2014 expected truthful refusal exit1 with the same three errors (bounded-proof pending; criteria5/6 unchecked); a pass must not be forced",
+    "stop_rules": [
+      "pin drift before any command \u2192 stop, close incomplete, no repair",
+      "first unexpected exit/timeout/cap breach \u2192 capture diagnostics, restore in finally, stop; no retry or wrapper",
+      "intended negatives: mutations exit101 with their exact prior runtime messages; plan final exits1 with exactly the three known errors",
+      "any fail-closed reconciliation (count mismatch, non-negativity, perturbation, audit) \u2192 record the verdict, complete only scheduled unchanged-source finals, close incomplete; no tuning, no second run",
+      "performance outputs are diagnostic; no ceiling changes; serial commands, normal test scheduling, no thread override/cold target/process control/fallback runner"
+    ],
+    "restoration_and_artifacts_per_invocation": [
+      "before output-path reuse: archive actual-used Cargo.lock (expect as-used f5d323d0\u2026), emitted map wasm hash, scalar CSV state (prior state: absent) and eprintln log",
+      "finally on success/failure/timeout: restore checkout lock15d08391\u2026, prior map CSV bytes/absence, exact frozen/instrumented source as appropriate, before the next invocation",
+      "instrumented source hash M, components.csv, scalar.csv, wasm hash and calibration rows become durables under a separately named evidence prefix at execution time"
+    ]
+  },
+  "preserved_by_this_document": {
+    "v1_receipt": {
+      "path": "design/evidence/sources/adr0097-map-read-decision-analysis.json",
+      "sha256": "317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+      "state": "superseded, byte-preserved"
+    },
+    "closed_attempt_root_manifest": "c20b1fa154519e7d76aaa72b23889b0d8a02aa88e3496b66d235753b84c4828c",
+    "decision_root": {
+      "manifest_sha256": "ba76c305f5dae6e7fc6652d781cfe78446b4876621ee988f84d0b9da4abbb9a5",
+      "files": 12,
+      "untouched": true
+    },
+    "five_decision_durables": {
+      "adr0097-map-read-clarification-execution.json": "9e9a3e118308fd8b06fd79dd27204797ec82f24694b7460b4088a981116f0077",
+      "adr0097-map-read-clarification-coverage.json": "e64e0d5e2ae060896cb16053321b7a0680586a3110b564b45b984fe90d7971b9",
+      "adr0097-map-read-decision-analysis.json": "317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+      "adr0097-map-read-decision-plan-check.txt": "bc6a98805f04cf113a4d503bcaa7680a32adc99112d1ff3864501ca844c73de3",
+      "adr0097-map-read-decision-prose-check.json": "547bdd73c71d4613b149dd3db8bd9affa0dd605118d60506085b5fcb1995d0fb"
+    },
+    "frozen": {
+      "source": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "benchmark": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+      "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+      "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+    },
+    "execution": "none in this pass: no Rust/build/test/benchmark/disassembly; no candidate; no budget"
+  }
+}

@@ -1,0 +1,341 @@
+{
+  "kind": "diagnostic protocol revision (issues I1/I2/I3 only); no new performance hypothesis; supersedes the protocol details of decision-analysis-v2 (v2 record preserved); execution still unauthorized",
+  "review": {
+    "id": "f47b7605",
+    "verdict": "REQUEST CHANGES on protocol only; withdrawals/P3 accepted; no execution budget granted"
+  },
+  "I1_count_oracle_weighted": {
+    "definition_of_terms": {
+      "interval_pair": "one (entry timestamp, exit timestamp) producing one accumulated value",
+      "function_visit": "one dynamic invocation of a marked function; every marked read/cover/admit visit finalizes exactly one pair on every taken path",
+      "physical_counter_endpoint": "one executed performance_counter(0) call; M1/M2/M3 are SHARED (exit of one sibling interval is the entry of the next), so a successful scalar_edit executes5 endpoints for the4 sibling pairs",
+      "physical_stable_read": "an ic0 stable read observed by the native WorkObservation; not a counter and not a pair \u2014 used only as the cross-check column"
+    },
+    "oracle_rule": "pre-registered EXACT WEIGHTED TOTALS per operation kind (insert and remove differ); a homogeneous per-call quotient is FORBIDDEN (tail would be320/128=2.5 and fail a correct instrument). The scheduled source audit re-derives and byte-binds this table before the run; the collect step asserts exact equality of emitted pair counts AND endpoint totals against THIS table, mismatch = fail-closed.",
+    "fixture_context": "one frozen bench_paged_scalar_edits_97 run; dir_len=2 in every phase; page1 len64 even keys0..126; page2 keys128..252 step4 +1000; locate_directory returns the RIGHTMOST min<=key; search rules Less->lo=mid+1, Greater->hi=mid, Equal->done; cfg(test) observation reads are ABSENT under cfg(canbench)",
+    "per_operation_kind": [
+      {
+        "kind": "replace (Insert, Ok(pos)) \u2014 key64 page1",
+        "read_visits": {
+          "total": 8,
+          "breakdown": "dir_len1, locate_directory probes2, page(): page_count-field1 + header32B1, first-key1, search probe1 (m32 Equal), previous-value1"
+        },
+        "cover_visits": {
+          "total": 1,
+          "breakdown": "value-field set_u64"
+        },
+        "success_pairs_each": {
+          "init": 1,
+          "prepare": 1,
+          "result": 1,
+          "publish": 1,
+          "admit": 1
+        },
+        "physical_cross_check": "native reads9 =8 visits +1 direct initial page_count read; writes1/8B = cover1"
+      },
+      {
+        "kind": "missing (Remove, Err(pos)) \u2014 absent key129 page2",
+        "read_visits": {
+          "total": 11,
+          "breakdown": "dir_len1, locate probe1, page2, first-key1, search probes6, no map-len (arm returns before), no previous-value"
+        },
+        "cover_visits": {
+          "total": 0,
+          "breakdown": "no writes"
+        },
+        "success_pairs_each": {
+          "init": 1,
+          "prepare": 1,
+          "result": 1,
+          "publish": 1,
+          "admit": 1
+        },
+        "physical_cross_check": "native reads12 =11+1 direct; writes0; dirty0"
+      },
+      {
+        "kind": "tail insert (Insert, Err(pos), nonsplit, pos==len)",
+        "read_visits": {
+          "total": 11,
+          "breakdown": "dir_len1, locate probe1, page2, first-key1, search probes5, map-len1; shift loop empty (pos==len)"
+        },
+        "cover_visits": {
+          "total": 3,
+          "breakdown": "entry-slot set_entry, page-len image.write, map-len set_u64 (entry, page length, map length \u2014 matches reviewer)"
+        },
+        "success_pairs_each": {
+          "init": 1,
+          "prepare": 1,
+          "result": 1,
+          "publish": 1,
+          "admit": 1
+        },
+        "physical_cross_check": "native reads12 =11+1; writes3/26B"
+      },
+      {
+        "kind": "tail remove (Remove, Ok(pos), nonempty tail, header.len>1)",
+        "read_visits": {
+          "total": 12,
+          "breakdown": "dir_len1, locate probe1, page2, first-key1, search probes5, previous-value1, map-len1; shift loop empty (pos==len-1); no drain (len!=0)"
+        },
+        "cover_visits": {
+          "total": 2,
+          "breakdown": "page-len image.write, map-len set_u64 (page length, map length \u2014 matches reviewer); entry left stale"
+        },
+        "success_pairs_each": {
+          "init": 1,
+          "prepare": 1,
+          "result": 1,
+          "publish": 1,
+          "admit": 1
+        },
+        "physical_cross_check": "native reads13 =12+1; writes... tail-remove native2/10B = cover2"
+      },
+      {
+        "kind": "split insert (Insert, Err(pos), page1 full, key1, dir_pos0, pos1, split32)",
+        "read_visits": {
+          "total": 93,
+          "breakdown": "apply14 = dir_len1 + locate probes2 + page2 + first-key1 + search probes7 + map-len1; split_page header12 = dir_len1 + linear directory scan1 (i=0 matches) + page2 + search probes7 + map-len1; allocate2 = free-head1 (empty list) + page_count1; right-half entry reads33 (32..=64, pos1 not in range); left-half entry reads31 (32 iterations, index==pos skips the read); right-minimum u641 (staged hit:0 physical)"
+        },
+        "cover_visits": {
+          "total": 74,
+          "breakdown": "allocate page_count1 + right set_entry33 + left set_entry32 + page-len1 + page-next1 + set_page1 + neighbor-prev1 + insert_directory2 (suffix cover + set_directory) + dir-len1 + map-len1"
+        },
+        "success_pairs_each": {
+          "init": 1,
+          "prepare": 1,
+          "result": 1,
+          "publish": 1,
+          "admit": 1
+        },
+        "physical_cross_check": "native reads94 =93 visits -1 staged right-min +1 direct +1 insert_directory fill-closure backing read; native writes8/1146B (published ranges over74 cover visits)"
+      }
+    ],
+    "phase_weighted_totals": {
+      "scalar_replace_64": {
+        "calls": 64,
+        "read_pairs": 512,
+        "cover_pairs": 64,
+        "init": 64,
+        "prepare": 64,
+        "result": 64,
+        "publish": 64,
+        "admit": 64,
+        "physical_endpoints": "5*64 + 2*64 + 2*512 + 2*64 =1600"
+      },
+      "scalar_missing_64": {
+        "calls": 64,
+        "read_pairs": 704,
+        "cover_pairs": 0,
+        "init": 64,
+        "prepare": 64,
+        "result": 64,
+        "publish": 64,
+        "admit": 64,
+        "physical_endpoints": "5*64 + 2*64 + 2*704 =1856"
+      },
+      "scalar_tail_pairs_64": {
+        "calls": 128,
+        "read_pairs": "64*11 + 64*12 =1472",
+        "cover_pairs": "64*3 + 64*2 =320 (insert!=remove; quotient would be2.5 \u2014 forbidden)",
+        "init": 128,
+        "prepare": 128,
+        "result": 128,
+        "publish": 128,
+        "admit": 128,
+        "physical_endpoints": "5*128 + 2*128 + 2*1472 + 2*320 =4480"
+      },
+      "scalar_split_directory": {
+        "calls": 1,
+        "read_pairs": 93,
+        "cover_pairs": 74,
+        "init": 1,
+        "prepare": 1,
+        "result": 1,
+        "publish": 1,
+        "admit": 1,
+        "physical_endpoints": "5 + 2 + 2*93 + 2*74 =341"
+      }
+    },
+    "early_return_finalize_once": {
+      "rule": "every marked region finalizes exactly one pair on EVERY taken path, without changing errors, values, ordering or control flow",
+      "sites": {
+        "EditImage::read (line450)": "entry mark once; exit marks at all THREE exits: guard-return, contained-return, overlay fallthrough-end",
+        "EditImage::cover (line496)": "entry once; exit marks at BOTH exits: fast-path `return offset` and implicit end",
+        "admit_image (line1397)": "entry once; exit marks at BOTH exits: early `return Ok(())` and implicit end",
+        "scalar_edit prepare (line1328)": "capture the Result into a local, finalize the prepare interval, THEN apply map_err/? \u2014 prepare always finalizes once, errors unchanged",
+        "scalar_edit result/publish (M2..M4)": "exist only on the success path; fixture operations all succeed (expect()), so absence under error paths is outside the oracle; init always finalizes"
+      },
+      "prohibition": "no added early return, no reordering of validation/admission/error precedence, no changed error value, no reformatting beyond cfg-gated statements"
+    },
+    "source_of_table": "frozen source5da46e45 apply_edit (935..1060), split_page (767..860), allocate_page (712..740), set_page/update_neighbor (741..766), page/dir_len/directory/entry/set_* (608..703), locate_directory/search_page (1061..1108); every row cross-checked against preserved native WorkObservation rows (9/112,12/128,12/128,2/10\u2192tail remove,13/136,94/1368) \u2014 see physical_cross_check per row"
+  },
+  "I2_calibration_interpretation_contract": {
+    "chosen_option": "report RAW instrumented intervals plus matched-shape calibration observations with uncertainty; do NOT assert rigorous E-bounded rankings; \"the data cannot rank components\" is an acceptable terminal outcome",
+    "calibration_observations": [
+      {
+        "shape": "standalone_leaf",
+        "K": 64,
+        "topology": "K sequential pairs of the exact production shape {t0=pc; black_box(dummy); t1=pc; acc+=t1-t0; cnt+=1} executed at bench top level between the sanity validate (bench.rs146) and the first reset; outside bench_fn and every scope",
+        "output": "per-pair deltas kept in a fixed-size stack array[K]; emit K, min, mean, max"
+      },
+      {
+        "shape": "nested_one_level",
+        "K": 16,
+        "topology": "the same K pairs enclosed by one dummy outer interval {t_out0; ...pairs...; t_out1}; emits inner min/mean/max AND the outer-minus-inner delta = observed parent-charged recorder cost for this topology",
+        "output": "inner K/min/mean/max + outer delta"
+      },
+      {
+        "shape": "shared_endpoint",
+        "K": 32,
+        "topology": "K consecutive intervals sharing endpoints (t0,t1,...,tK) \u2014 the M1/M2/M3 sibling pattern; emit K, min, mean, max",
+        "output": "K/min/mean/max"
+      }
+    ],
+    "exact_definition": {
+      "outer_timestamps": "calibration runs after line146 sanity validate and before reset/components; result stored in locals; emitted with component rows AFTER line188 final validate (never inside bench_fn or any scope)",
+      "reset_order": "calibration -> snapshot calibration locals -> reset_components -> bench_fn { block; snapshot rows; reset ... }",
+      "accumulator_and_counters": "identical instructions to production marks (acc += t1-t0; cnt +=1) inside every pair shape",
+      "anti_elision": "ic_cdk::api::performance_counter(0) is an imported side-effecting canister API (same wrapper canbench-rs uses) and cannot be removed or hoisted; accumulator values are additionally forced live by the post-run eprintln emission",
+      "output": "CALIBRATION lines per shape via ic_cdk::eprintln alongside COMPONENT lines, collected into the components artifact"
+    },
+    "explicitly_not_claimed": [
+      "calibration means are empirical observations, NOT upper bounds for other mark sites, shapes, or compiler spill/inlining effects",
+      "no per-component certified ranking and no rigorous envelope; ordering visible in raw sums is a heuristic observation only, labeled as such",
+      "the whole-phase |instrumented - saved5da4 phase| check is retained ONLY as an EMPIRICAL REJECT-ONLY sanity check (gross perturbation detection); it can pass on cancellation of opposite perturbations and proves nothing about attribution",
+      "uninstrumented saved-row closeness alone cannot establish unchanged component codegen \u2014 component codegen under cfg-on is inherently instrumented code; the cfg-gate/strip-equality audit is the only codegen-equivalence argument, and only for cfg-OFF",
+      "category sums from a defined remainder remain definitional, not validation",
+      "coarse cut adopted: read_wrapper and write_excl sub-intervals of v2 are DROPPED (nine-way precision not claimed). Categories are the non-overlapping siblings init/prepare/result/publish plus three leaves read_body/cover_body/admit and two definitional remainders (prepare_rest = prepare - read - cover - admit; loop_call_image_drop_recorder = phase_row - sum of siblings)"
+    ],
+    "one_concrete_question": "per failing phase: are the raw image-read and raw cover/write-normalization components each larger than the raw remaining prepare work \u2014 reported with observations and uncertainty, with an explicit \"cannot rank\" fallback"
+  },
+  "I3_schedule_and_coverage_corrections": {
+    "four_mutation_oracles_exact": [
+      {
+        "order": "5",
+        "command": "cargo test -p ic-stable-paged-ordered-map --lib prepared_edits_directory_rejection -- --nocapture",
+        "cap_s": 10,
+        "expected_exit": 101,
+        "reached_failure": "late DirectoryFull changed backing",
+        "source": "M + early-publication mutation; finally restore and assert sha(source)==sha(M)"
+      },
+      {
+        "order": "6",
+        "command": "cargo test -p ic-stable-paged-ordered-map --lib prepared_edits_resources_and_retry -- --nocapture",
+        "cap_s": 10,
+        "expected_exit": 101,
+        "reached_failure": "expected actual restricted grow3/+2 before ready",
+        "source": "M + deferred-backing mutation; finally restore and assert sha(M)"
+      },
+      {
+        "order": "7",
+        "command": "cargo test -p ic-stable-paged-ordered-map --lib edit_image_read_partition -- --nocapture",
+        "cap_s": 10,
+        "expected_exit": 101,
+        "reached_failure": "IMAGE_READ inline-contained bytes: actual [19,20,21,22], expected [162,163,164,165] (omit only disjointness)",
+        "source": "M + disjointness-omission mutation; finally restore and assert sha(M)"
+      },
+      {
+        "order": "8",
+        "command": "cargo test -p ic-stable-paged-ordered-map --lib edit_image_read_partition -- --nocapture",
+        "cap_s": 10,
+        "expected_exit": 101,
+        "reached_failure": "IMAGE_READ_CASE unbacked-unstaged reaching vec_mem.rs out-of-bounds read: out of bounds; later unbacked-contained case must NOT run (omit only end<=backed_end)",
+        "source": "M + backing-guard-omission mutation; finally restore and assert sha(M)"
+      }
+    ],
+    "schedule_totals": {
+      "pre_final_rows": [
+        [
+          "1 pins/setup/finally setup",
+          20
+        ],
+        [
+          "2 rustfmt lib+bench",
+          5
+        ],
+        [
+          "3 map18 (cfg-off preservation)",
+          30
+        ],
+        [
+          "4 doc5",
+          10
+        ],
+        [
+          "5 mutation early",
+          10
+        ],
+        [
+          "6 mutation resource",
+          10
+        ],
+        [
+          "7 mutation disjoint-guard",
+          10
+        ],
+        [
+          "8 mutation backing-guard",
+          10
+        ],
+        [
+          "9 source audit: cfg-gates + strip(M)==5da46 + bind count table + pins",
+          15
+        ],
+        [
+          "10 ONE instrumented scalar run (--csv --show-canister-output)",
+          75
+        ],
+        [
+          "11 collect/reconciliation/calibration/fail-closed verdict",
+          20
+        ]
+      ],
+      "pre_final_total": 215,
+      "protected_final_total": 120,
+      "final_rows_unchanged": "fmt-check5 + clippy-map10 + clippy-lara15 + map18-20 + FreeSpan27-25 + doc5-15 + provenance/plan15 + contingency15 =120",
+      "maximum": 600,
+      "explicitly_unassigned_and_unused": 265,
+      "note": "four mutation rows now present (was two); no other reslicing; no old balance; no budget granted now"
+    },
+    "source_at_each_step": {
+      "pre_ledger": "future separately authorized implementation authors M =5da46 + cfg(canbench)-gated marks/accumulator/reset/snapshot/calibration + bench wiring; no cargo; freeze sha(M)",
+      "steps_1_4": "worktree = M (pins also re-verify frozen references5da46/2f95a494/35b7b008/15d083 and foreign CSV/config; fmt formats M)",
+      "steps_5_8": "worktree = M + exactly one mutation each; finally restores M and asserts sha==sha(M) before the next step (failure/timeout included)",
+      "steps_9_11": "worktree = M unchanged; step9 proves cfg-off semantic identity (strip(M) ==5da46 bytes) and freezes M before the run",
+      "protected_finals": "worktree = M unchanged; final endpoint after execution = M (uncommitted), with strip-audit tying cfg-off semantics to5da46;5da46 is NOT reinstalled in-worktree and M is NOT removed \u2014 keeping or dropping M is a later review decision"
+    },
+    "artifact_capture_per_invocation": "before any output-path reuse archive: actual-used Cargo.lock (as-used f5d323d0... for cargo/canbench), EVERY emitted native test binary (map ic_stable_paged_ordered_map-83525e... and FreeSpan ic_stable_lara-fac74a...) with hashes, the emitted map Wasm, scalar CSV state (prior: absent), and the eprintln/components log; finally restore checkout lock15d083..., prior CSV bytes/absence, and source as specified above",
+    "evidence_separation": {
+      "cfg_off_preservation": "map18 + doc5 + FreeSpan27 + all four mutations compile/run cfg-OFF semantics of M \u2014 preservation evidence only (identical to the approved historical evidence class, now against M)",
+      "cfg_on_diagnostic_coverage": "the instrumented wasm run itself: fixture pre/post asserts + map.validate() inside the same binary, exact count-table match, calibration observations, reject-only sanity",
+      "historical_evidence": "the closed attempt roots and their18/27/5 +4-mutation records remain separate and are not re-cited as cfg-on coverage"
+    },
+    "lara_claim_narrowed": "CONFIGURATION-SCOPED: in the scheduled feature set, LARA canbench = [dep:canbench-rs, dep:candid] does not feature-enable the map dependency and no LARA canbench build is scheduled, so instrumentation is absent from the scheduled outputs. Cargo feature unification or explicit ic-stable-paged-ordered-map/canbench forwarding COULD enable it in another build; the earlier absolute wording (\"cannot compile into any LARA build\") is withdrawn. Existing planned cfg-off FreeSpan/clippy checks remain."
+  },
+  "preserved": {
+    "v1": "adr0097-map-read-decision-analysis.json sha256317436b9c43f09092fce9cd5cb252711f1d0a3aa3edd7fd9238659f9af1f550c",
+    "v2": "adr0097-map-read-decision-analysis-v2.json sha256 fb5de53962c69a641477aa5975753baffebe01dfd53967962986820cec60e0e7",
+    "sealed_roots": {
+      "closed_attempt": {
+        "files": 181,
+        "manifest": "c20b1fa154519e7d76aaa72b23889b0d8a02aa88e3496b66d235753b84c4828c"
+      },
+      "decision": {
+        "files": 12,
+        "manifest": "ba76c305f5dae6e7fc6652d781cfe78446b4876621ee988f84d0b9da4abbb9a5"
+      },
+      "revision": {
+        "files": 11,
+        "manifest_entries": 9,
+        "manifest": "77728bd06a546ea2ab293fa65fd6f1dec0676c9e59c9a44a13d132bac598bf42"
+      }
+    },
+    "pins": {
+      "source": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "benchmark": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+      "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+      "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+    },
+    "execution": "none: no Rust/build/test/benchmark/new disassembly; no candidate; no process/main/commit work; no budget"
+  }
+}

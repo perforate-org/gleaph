@@ -1,0 +1,5 @@
+ERROR: TODO 'shared-images' status is 'pending'; phase 'final' requires 'completed'
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 1 must be checked in final phase
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase

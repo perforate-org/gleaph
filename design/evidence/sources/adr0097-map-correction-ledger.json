@@ -1,0 +1,849 @@
+{
+  "maximum": 600,
+  "pre_cap": 300,
+  "final_cap": 120,
+  "unassigned_not_contingency": 180,
+  "status": "closed-incomplete; every original IC acceptance ceiling remains exceeded",
+  "entries": [
+    {
+      "name": "setup",
+      "phase": "pre",
+      "cap": 20,
+      "charged": 20,
+      "actual": 0.9723407080164179,
+      "status": "passed"
+    },
+    {
+      "name": "format",
+      "phase": "pre",
+      "cap": 5,
+      "argv": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "1a28a7e42f4d2d3a5573da39ac39d66c222aa57aead7bbdb4609bec6e22b91c6",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "observed_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.6112979999743402
+    },
+    {
+      "name": "map",
+      "phase": "pre",
+      "cap": 30,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/map/native-0",
+          "sha256": "6803d178cc00772bed86c4f7fc8be5e7e07b493e5b43a85c3bca69adfa74da8e",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 3.9194394999649376
+    },
+    {
+      "name": "doc",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 4.238974582985975
+    },
+    {
+      "name": "mutation-early",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_directory_rejection",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "80040293012a6711b9620d4ceccf89fa0b42f659b869580279b3a8687e789a74",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-early/native-0",
+          "sha256": "7f3e70567c275da30e3899e4b15f8745a5841909c7f098999b347065d15cf8af",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 101,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 3.199537582928315,
+      "mutation_extra_charge": 0.005886666011065245
+    },
+    {
+      "name": "mutation-resource",
+      "phase": "pre",
+      "cap": 10,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_resources_and_retry",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "89afe85ccf729d3a3638a558619ca64e94f5c9f9e50126debcee8848cf9de0ac",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-resource/native-0",
+          "sha256": "ef75c712d4cd3d4c5cac7b8dd1d0851d1654b5e3f991cd831716146955807e89",
+          "bytes": 2103040
+        }
+      ],
+      "exit": 101,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.945746083976701,
+      "mutation_extra_charge": 0.005338000017218292
+    },
+    {
+      "name": "source-audit",
+      "phase": "pre",
+      "cap": 20,
+      "charged": 20,
+      "status": "passed",
+      "actual": 0.06268841703422368,
+      "result": {
+        "status": "source controls preserved; correction frozen for IC/final gates",
+        "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "baseline_sha256": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "tests_sha256": "2e0c788eed1ae1c552486537376855a8788b04f512607d5c88af7cbcbf4ca22d",
+        "tests": 17,
+        "doctests": "exact source unchanged;5 runtime/compiler cases already passed",
+        "controls": [
+          {
+            "begin": "// Three uses, one inline/overflow representation;",
+            "end": "struct EditPlan<'a",
+            "sha256": "4d03994625d3ce61b64a3447658d0fbc04f6b99e00a4656e4debc280651e9c6f"
+          },
+          {
+            "begin": "    fn read<const N: usize>",
+            "end": "    fn page(&self, page: u64)",
+            "sha256": "a8e3f9b186e65372d6e0d87daabff177a665ed0148069827c6f1881737285a45"
+          },
+          {
+            "begin": "    fn reserve(&mut self, bytes: usize, ranges: usize)",
+            "end": "    fn set_page(",
+            "sha256": "8bcf60dc38bb23884875b6fc9b7dc9eea792ec05610a04bfd1493648c0278d7a"
+          },
+          {
+            "begin": "    fn update_neighbor(",
+            "end": "\nfn locate_directory(",
+            "sha256": "72cc4b8eda4a64c29cd4202cfb0b94edfedf65835b38b8b2aac630ef65899f26"
+          },
+          {
+            "begin": "fn locate_directory(",
+            "end": "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\nstruct DirEntry",
+            "sha256": "ecfc13099d27e6b33105ae932aee42b4d43f2c23a33467de5f7fba2cc42b4c51"
+          },
+          {
+            "begin": "    fn reserve_scratch<",
+            "end": "    fn publish_image(",
+            "sha256": "016a12dd0bdfb577df472dd4ad25a87b3bcf7f818755ea223ba734b2ad214150"
+          },
+          {
+            "begin": "    fn observe_work(",
+            "end": "    // Retain the existing direct split-admission test",
+            "sha256": "5b86d4ff82811b005391a27e17e23b7f1312820190b85948114bb7c17b838a05"
+          },
+          {
+            "begin": "/// Owner-bound, single-use prepared changes.",
+            "end": "#[must_use =",
+            "sha256": "1debfca54a614421b1cb9a71778a1f0af839f506e28cd8f02e5ad4439ee89155"
+          },
+          {
+            "begin": "struct WorkObservation {",
+            "end": "\nimpl<M: Memory> StablePagedOrderedMap<M>",
+            "sha256": "f9ab1e08bebbe73078c2024bfd2b02266ab59f4c581d61e2ccdceb9c967b0382"
+          }
+        ],
+        "removed_helpers": [
+          "read_u16",
+          "write_u8",
+          "write_u16"
+        ],
+        "helper_caller_proof": "each helper had exactly definition + canonical header mapping caller before, zero occurrences after",
+        "mapping_sites": [
+          "EditPlan::page",
+          "EditPlan::set_page",
+          "read_page_header",
+          "test-only write_page_header"
+        ],
+        "canonical_header_traffic_source_delta": {
+          "before_calls": 5,
+          "before_bytes": 27,
+          "after_calls": 1,
+          "after_bytes": 32
+        },
+        "prospective_header_traffic": {
+          "calls": 1,
+          "bytes": 32
+        },
+        "new_types_modules_dependencies_public_flags": 0,
+        "checked_semantics": "No admission, ordering, split/shift, overlay/container, checked arithmetic or publish-loop change",
+        "source_diff_lines": {
+          "added": 76,
+          "removed": 64
+        }
+      }
+    },
+    {
+      "name": "scalar",
+      "phase": "pre",
+      "cap": 75,
+      "argv": [
+        "canbench",
+        "bench_paged_scalar_edits_97",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "wasm",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_paged_ordered_map.wasm",
+          "archive": "artifacts/scalar/ic_stable_paged_ordered_map.wasm",
+          "sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+          "bytes": 698629
+        }
+      ],
+      "exit": 0,
+      "csv_sha256": "6bf13b3a648bb39c5e8441fd65e35204cd7a3022390cc6a7940533a9b2579f89",
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 12.116402750019915
+    },
+    {
+      "name": "allocator",
+      "phase": "pre",
+      "cap": 100,
+      "argv": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "wasm",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_lara.wasm",
+          "archive": "artifacts/allocator/ic_stable_lara.wasm",
+          "sha256": "17ac422d558198568b148a47ca59dd17246d45a0ac953816638d68f3b867d4c6",
+          "bytes": 5025931
+        }
+      ],
+      "exit": 0,
+      "csv_sha256": "c838d8bec251ee2058b82bda61dc3882d1d98be4fd0894dce6b08f24a95b6805",
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 83.56438333296683
+    },
+    {
+      "name": "collect",
+      "phase": "pre",
+      "cap": 20,
+      "charged": 20,
+      "status": "passed",
+      "actual": 0.29577033303212374,
+      "result": {
+        "ic": {
+          "bench_paged_scalar_edits_97": {
+            "admission": 497282,
+            "blocked": 1431979,
+            "correction": 1093879,
+            "delta_vs_admission": 596597,
+            "percent_vs_admission": 119.97156542967572,
+            "delta_vs_blocked": -338100,
+            "percent_vs_blocked": -23.610681441557453,
+            "original_gate_passed": false
+          },
+          "bench_paged_scalar_edits_97::scalar_missing_64": {
+            "admission": 85672,
+            "blocked": 242856,
+            "correction": 158312,
+            "delta_vs_admission": 72640,
+            "percent_vs_admission": 84.78849565785788,
+            "delta_vs_blocked": -84544,
+            "percent_vs_blocked": -34.81239911717232,
+            "original_gate_passed": false
+          },
+          "bench_paged_scalar_edits_97::scalar_replace_64": {
+            "admission": 77576,
+            "blocked": 251720,
+            "correction": 167624,
+            "delta_vs_admission": 90048,
+            "percent_vs_admission": 116.07713725894607,
+            "delta_vs_blocked": -84096,
+            "percent_vs_blocked": -33.408549181630384,
+            "original_gate_passed": false
+          },
+          "bench_paged_scalar_edits_97::scalar_split_directory": {
+            "admission": 30930,
+            "blocked": 155692,
+            "correction": 155448,
+            "delta_vs_admission": 124518,
+            "percent_vs_admission": 402.5800193986421,
+            "delta_vs_blocked": -244,
+            "percent_vs_blocked": -0.15671967731161524,
+            "original_gate_passed": false
+          },
+          "bench_paged_scalar_edits_97::scalar_tail_pairs_64": {
+            "admission": 298171,
+            "blocked": 776778,
+            "correction": 607562,
+            "delta_vs_admission": 309391,
+            "percent_vs_admission": 103.76294139939833,
+            "delta_vs_blocked": -169216,
+            "percent_vs_blocked": -21.784345076714324,
+            "original_gate_passed": false
+          },
+          "bench_r_fs_tkbfs_1024": {
+            "admission": 1527576,
+            "blocked": 2350463,
+            "correction": 2256530,
+            "delta_vs_admission": 728954,
+            "percent_vs_admission": 47.71965519227849,
+            "delta_vs_blocked": -93933,
+            "percent_vs_blocked": -3.9963615679123645,
+            "original_gate_passed": false
+          },
+          "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split": {
+            "admission": 1526615,
+            "blocked": 2349502,
+            "correction": 2255569,
+            "delta_vs_admission": 728954,
+            "percent_vs_admission": 47.7496945857338,
+            "delta_vs_blocked": -93933,
+            "percent_vs_blocked": -3.9979961711034933,
+            "original_gate_passed": false
+          }
+        },
+        "function_index": [
+          {
+            "symbol": "(func $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32) (param $4 i32)",
+            "start": 285,
+            "end": 421,
+            "path": "wasm-functions/285.wat"
+          },
+          {
+            "symbol": "(func $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)",
+            "start": 422,
+            "end": 1256,
+            "path": "wasm-functions/422.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtCsbDPPsInctpH_4core5slice4sort6stable14driftsort_mainTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB14_5sliceSBZ_7sort_byNCINvXs1o_NtNtNtB14_11collections5btree3mapINtB2X_8BTreeMapB10_B1C_EINtNtNtNtB8_4iter6traits7collect12FromIteratorBZ_E9from_iterINtNtNtB40_8adapters3map3MapINtB2X_8IntoIterReB1C_ENCINvB1E_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0INtNtB14_3vec3VecBZ_EEB65_ (param $0 i32) (param $1 i32) (param $2 i32)",
+            "start": 29393,
+            "end": 29514,
+            "path": "wasm-functions/29393.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtNtCsbDPPsInctpH_4core5slice4sort6stable5drift4sortTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB11_5sliceSBW_7sort_byNCINvXs1o_NtNtNtB11_11collections5btree3mapINtB2U_8BTreeMapBX_B1z_EINtNtNtNtBa_4iter6traits7collect12FromIteratorBW_E9from_iterINtNtNtB3W_8adapters3map3MapINtB2U_8IntoIterReB1z_ENCINvB1B_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0EB61_ (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32) (param $4 i32) (param $5 i32)",
+            "start": 29515,
+            "end": 30797,
+            "path": "wasm-functions/29515.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtNtCsbDPPsInctpH_4core5slice4sort6shared5pivot11median3_recTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB19_5sliceSB14_7sort_byNCINvXs1o_NtNtNtB19_11collections5btree3mapINtB33_8BTreeMapB15_B1H_EINtNtNtNtBa_4iter6traits7collect12FromIteratorB14_E9from_iterINtNtNtB46_8adapters3map3MapINtB33_8IntoIterReB1H_ENCINvB1J_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0EB6c_ (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32) (result i32)",
+            "start": 36418,
+            "end": 36620,
+            "path": "wasm-functions/36418.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtNtCsbDPPsInctpH_4core5slice4sort6shared9smallsort12sort4_stableTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB1e_5sliceSB19_7sort_byNCINvXs1o_NtNtNtB1e_11collections5btree3mapINtB38_8BTreeMapB1a_B1M_EINtNtNtNtBa_4iter6traits7collect12FromIteratorB19_E9from_iterINtNtNtB4b_8adapters3map3MapINtB38_8IntoIterReB1M_ENCINvB1O_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0EB6h_ (param $0 i32) (param $1 i32)",
+            "start": 36621,
+            "end": 37037,
+            "path": "wasm-functions/36621.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtNtCsbDPPsInctpH_4core5slice4sort6shared9smallsort25insertion_sort_shift_leftTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB1r_5sliceSB1m_7sort_byNCINvXs1o_NtNtNtB1r_11collections5btree3mapINtB3l_8BTreeMapB1n_B1Z_EINtNtNtNtBa_4iter6traits7collect12FromIteratorB1m_E9from_iterINtNtNtB4o_8adapters3map3MapINtB3l_8IntoIterReB1Z_ENCINvB21_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0EB6u_ (param $0 i32) (param $1 i32)",
+            "start": 37038,
+            "end": 37377,
+            "path": "wasm-functions/37038.wat"
+          },
+          {
+            "symbol": "(func $_RINvNtNtNtNtCsbDPPsInctpH_4core5slice4sort6stable9quicksort9quicksortTNtNtCs9thsoahRUW0_5alloc6string6StringNtCselxLhvXuDLR_11canbench_rs11MeasurementENCINvMNtB1a_5sliceSB15_7sort_byNCINvXs1o_NtNtNtB1a_11collections5btree3mapINtB34_8BTreeMapB16_B1I_EINtNtNtNtBa_4iter6traits7collect12FromIteratorB15_E9from_iterINtNtNtB47_8adapters3map3MapINtB34_8IntoIterReB1I_ENCINvB1K_8bench_fnuNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0Es_0EE0E0EB6d_ (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32) (param $4 i32) (param $5 i32) (param $6 i32)",
+            "start": 37378,
+            "end": 39683,
+            "path": "wasm-functions/37378.wat"
+          },
+          {
+            "symbol": "(func $_RNCNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97s0_0B5_ (param $0 i32) (param $1 i32)",
+            "start": 48942,
+            "end": 49467,
+            "path": "wasm-functions/48942.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+            "start": 49468,
+            "end": 52289,
+            "path": "wasm-functions/49468.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB5_9EditImage5write (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)",
+            "start": 61872,
+            "end": 64204,
+            "path": "wasm-functions/61872.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10split_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i32)",
+            "start": 64205,
+            "end": 65288,
+            "path": "wasm-functions/64205.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE7reserveB5_ (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32)",
+            "start": 65289,
+            "end": 66237,
+            "path": "wasm-functions/65289.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE13allocate_pageB5_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)",
+            "start": 66238,
+            "end": 66625,
+            "path": "wasm-functions/66238.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE8set_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32)",
+            "start": 66626,
+            "end": 66732,
+            "path": "wasm-functions/66626.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE15update_neighborB5_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i64) (param $4 i64) (param $5 i64) (param $6 i64)",
+            "start": 66733,
+            "end": 66951,
+            "path": "wasm-functions/66733.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE16insert_directoryB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i64)",
+            "start": 66952,
+            "end": 69230,
+            "path": "wasm-functions/66952.wat"
+          },
+          {
+            "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11remove_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i64)",
+            "start": 69231,
+            "end": 71777,
+            "path": "wasm-functions/69231.wat"
+          },
+          {
+            "symbol": "(func $_RNvNtCs6VbpWyA87ck_27ic_stable_paged_ordered_map5bench27bench_paged_scalar_edits_97 (param $0 i32)",
+            "start": 76374,
+            "end": 80019,
+            "path": "wasm-functions/76374.wat"
+          }
+        ],
+        "disassembly": {
+          "argv": [
+            "/opt/homebrew/Cellar/binaryen/132/bin/wasm-dis",
+            "/private/tmp/spill-map-correction-be81-1611h8iy/artifacts/scalar/ic_stable_paged_ordered_map.wasm",
+            "-o",
+            "/private/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat"
+          ],
+          "exit": 0,
+          "elapsed": 0.2188155420590192,
+          "tool_sha256": "644465f704a4d27e5bfae0d8914e83df73dc83e0516d1827086e57113f2f7bb5",
+          "tool_version": "132, identical verified existing binary",
+          "wasm_sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+          "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+          "wat_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+          "mode": "static inspection only; no Wasm execution probe"
+        }
+      }
+    },
+    {
+      "name": "final-format",
+      "phase": "final",
+      "cap": 5,
+      "argv": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "observed_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 0.4044257499044761
+    },
+    {
+      "name": "final-clippy",
+      "phase": "final",
+      "cap": 25,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 4.9414115420077
+    },
+    {
+      "name": "final-map",
+      "phase": "final",
+      "cap": 20,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/final-map/native-0",
+          "sha256": "33b050db59fc9bd18e5b6d9af85d6622ba5669ef079451ad5f5b4dffa66b5f06",
+          "bytes": 2102256
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 2.475371874985285
+    },
+    {
+      "name": "final-free",
+      "phase": "final",
+      "cap": 25,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "lara::edge::free_span::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [
+        {
+          "kind": "native-test-executable",
+          "emitted_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-lara/fac74afe6ffbffae/out/ic_stable_lara-fac74afe6ffbffae",
+          "archive": "artifacts/final-free/native-0",
+          "sha256": "453860c2f5a77b3e6787718f095b2cdcef0a7de007cebd34ff8e23581d775621",
+          "bytes": 39392032
+        }
+      ],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 20.41186366591137
+    },
+    {
+      "name": "final-doc",
+      "phase": "final",
+      "cap": 15,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "status": "passed",
+      "source_hashes": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "artifacts": [],
+      "exit": 0,
+      "used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "observed_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored": {
+        "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+        "crates/ic-stable-paged-ordered-map/canbench_results.csv": null,
+        "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+      },
+      "charged": 1.839264624984935
+    },
+    {
+      "name": "closure",
+      "phase": "final",
+      "cap": 15,
+      "charged": 15,
+      "status": "passed",
+      "actual": 0.9304925421020016,
+      "result": {
+        "lizard_summary": {
+          "blocked": {
+            "owner_all": {
+              "functions": 96,
+              "ccn": 313,
+              "nloc": 1226,
+              "tokens": 9804,
+              "max_ccn": 37
+            },
+            "owner_touched": {
+              "functions": 11,
+              "ccn": 30,
+              "nloc": 105,
+              "tokens": 1066,
+              "max_ccn": 9
+            }
+          },
+          "correction": {
+            "owner_all": {
+              "functions": 97,
+              "ccn": 314,
+              "nloc": 1249,
+              "tokens": 9840,
+              "max_ccn": 37
+            },
+            "owner_touched": {
+              "functions": 11,
+              "ccn": 30,
+              "nloc": 123,
+              "tokens": 1056,
+              "max_ccn": 9
+            }
+          }
+        },
+        "static_findings": {
+          "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+          "wasm_sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+          "wat_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+          "scalar_symbol": "(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+          "scalar_lines": [
+            49468,
+            52289
+          ],
+          "scalar_body_sha256": "81d180ff19b2948312a28f8119c1025accad69248ebc0c24b05713365f8e6d67",
+          "static_scalar_stack_adjustment": {
+            "blocked": 752,
+            "correction": 304
+          },
+          "identified_scalar_memory_copy_fill": {
+            "blocked": "two104B prelookup transfers; two104B+144B success-tail transfers;116B fill",
+            "correction": "no memory.copy or memory.fill instruction directly in complete scalar_edit body; initialization stores remain"
+          },
+          "remaining": "out-of-line image reads, checked arithmetic, range/storage dispatch, result/backing/publish/drop work and split normalizer remain",
+          "inference": "Transfers removed and missing phase158312<242856 support contribution. Joint patch; not isolated copy/codec pricing. All original IC gates still fail.",
+          "not_measured": [
+            "peak call-chain stack",
+            "Wasm EditImage layout",
+            "component instruction costs",
+            "all process/backend allocations"
+          ]
+        },
+        "final_native": "identical initial/final correction observations",
+        "rust": "frozen; no further invocation authorized"
+      }
+    },
+    {
+      "name": "final-evidence-contingency",
+      "phase": "final",
+      "cap": 15,
+      "charged": 15,
+      "status": "passed",
+      "actual": 0.9075856250710785,
+      "result": {
+        "protected_paths": 117,
+        "historical_entries": 773,
+        "valid_links": 112,
+        "inherited_link_exceptions": 11,
+        "plan_hash": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9",
+        "plan_exit": 1,
+        "diff_check_exit": 0,
+        "durables": 32
+      }
+    }
+  ],
+  "charged_total": 230.66811929061078,
+  "final_charged": 60.072337457793765,
+  "unassigned_180": "not used; no authority for execution",
+  "unused_balance": "closed; no reuse or retry authority"
+}

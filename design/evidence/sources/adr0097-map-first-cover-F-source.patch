@@ -1,0 +1,20 @@
+--- W-lib.rs
++++ F-lib.rs
+@@ -500,6 +500,17 @@
+         mut fill_gap: impl FnMut(u64, &mut [u8]),
+     ) -> usize {
+         let end = address + count as u64;
++        // An untouched image has no packed bytes, even after reserving scratch.
++        if count != 0 && self.ranges.as_slice().is_empty() {
++            self.bytes.resize_reserved(count);
++            fill_gap(address, self.bytes.as_mut_slice());
++            self.ranges.push_reserved(DirtyRange {
++                address,
++                offset: 0,
++                len: count,
++            });
++            return 0;
++        }
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() < address);
+         if let Some(r) = ranges.get(first)

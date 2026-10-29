@@ -1,0 +1,9 @@
+{
+  "result": "pass",
+  "source_hashes": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+  },
+  "protected": 13,
+  "mutations_removed": true
+}

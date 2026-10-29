@@ -1,0 +1,62 @@
+--- exec_run.py.pre-fix3
++++ exec_run.py.post-fix3
+@@ -128,11 +128,11 @@
+ FIN_NAMES = set(NAMES[FINAL_PHASE_AT:])
+ EXPECT_EXIT = {n: 101 for n in NAMES if n.startswith('mutation')}
+ REACH = {
+-    'map': ('stdout', r'test result: ok\.\s*18 passed;0 failed'),
+-    'final-map': ('stdout', r'test result: ok\.\s*18 passed;0 failed'),
+-    'doc': ('stdout', r'test result: ok\.\s*5 passed;0 failed'),
+-    'final-doc': ('stdout', r'test result: ok\.\s*5 passed;0 failed'),
+-    'final-free': ('stdout', r'test result: ok\.\s*27 passed;0 failed'),
++    'map': ('stdout', r'test result: ok\.\s*18\s+passed;\s*0\s+failed'),
++    'final-map': ('stdout', r'test result: ok\.\s*18\s+passed;\s*0\s+failed'),
++    'doc': ('stdout', r'test result: ok\.\s*5\s+passed;\s*0\s+failed'),
++    'final-doc': ('stdout', r'test result: ok\.\s*5\s+passed;\s*0\s+failed'),
++    'final-free': ('stdout', r'test result: ok\.\s*27\s+passed;\s*0\s+failed'),
+     'mutation-early': ('both', 'late DirectoryFull changed backing'),
+     'mutation-resource': ('both', 'expected actual restricted grow3/+2 before ready'),
+     'mutation-disjoint': ('both', 'IMAGE_READ inline-contained bytes'),
+@@ -291,16 +291,24 @@
+                     if wasm.exists():
+                         bins = [wasm]
+                 else:
+-                    bins = [Path(p) for p in re.findall(
+-                        r'Running unittests [^\n]*\(([^\n()]+)\)', err_t)]
++                    bins = [(Path(p) if Path(p).is_absolute() else REPO / p)
++                            for p in re.findall(
++                                r'Running unittests [^\n]*\(([^\n()]+)\)', err_t)]
++                archive_err = None
+                 for b in bins:
+-                    assert b.is_file(), str(b)
+-                    dst = ROOT / 'artifacts' / name_ / b.name
+-                    dst.parent.mkdir(parents=True, exist_ok=True)
+-                    shutil.copyfile(b, dst)
+-                    meta['artifacts'].append({'actual_path': str(b),
+-                                              'archive': str(dst.relative_to(ROOT)),
+-                                              'sha256': sha(dst), 'bytes': dst.stat().st_size})
++                    try:
++                        if not b.is_file():
++                            raise AssertionError(f'emitted binary missing: {b}')
++                        dst = ROOT / 'artifacts' / name_ / b.name
++                        dst.parent.mkdir(parents=True, exist_ok=True)
++                        shutil.copyfile(b, dst)
++                        meta['artifacts'].append({'actual_path': str(b),
++                                                  'archive': str(dst.relative_to(ROOT)),
++                                                  'sha256': sha(dst), 'bytes': dst.stat().st_size})
++                    except Exception as arc_exc:
++                        archive_err = arc_exc
++                if archive_err is not None:
++                    meta['deferred_archive_failure'] = repr(archive_err)
+             if command and command[0] in ('cargo', 'canbench'):
+                 assert meta['actual_used_lock_sha256'] == USED_LOCK, 'as-used lock mismatch'
+             meta['source_after'] = {'lib': sha(LIB), 'bench': sha(BENCH)}
+@@ -319,6 +327,8 @@
+             meta['map_csv_absent'] = not (MAPDIR / 'canbench_results.csv').exists()
+         except Exception as exc:
+             failure = (failure + '; ' if failure else '') + 'finally: ' + repr(exc)
++    if failure is None and meta.get('deferred_archive_failure'):
++        failure = meta['deferred_archive_failure']
+     if failure is None and command is not None:
+         try:
+             if meta['exit'] != EXPECT_EXIT.get(name_, 0):

@@ -1,0 +1,67 @@
+--- Q-lib.rs
++++ R-lib.rs
+@@ -766,7 +766,13 @@
+         Ok(())
+     }
+ 
+-    fn split_page(&mut self, page: u64, entry: (u64, u64), at: usize) -> Result<(), EditFailure> {
++    fn split_page(
++        &mut self,
++        page: u64,
++        entry: (u64, u64),
++        at: usize,
++        pos: u16,
++    ) -> Result<(), EditFailure> {
+         let dir_len = self.dir_len()?;
+         if dir_len >= DIR_CAP {
+             return Err(EditFailure::Map(Error::DirectoryFull));
+@@ -779,11 +785,6 @@
+             return Err(EditFailure::Map(Error::Corrupt));
+         }
+         let start = offset + PAGE_OFFSET_ENTRIES;
+-        let pos = search_page(header.len, entry.0, |i| {
+-            self.u64(start + u64::from(i) * PAGE_ENTRY_SIZE)
+-        })
+-        .err()
+-        .ok_or(EditFailure::Map(Error::Corrupt))?;
+         let next_len = self
+             .u64(OFFSET_LEN)
+             .checked_add(1)
+@@ -1006,7 +1007,7 @@
+             (Edit::Remove { .. }, Err(_)) => Ok(None),
+             (Edit::Insert { value, .. }, Err(pos)) => {
+                 if u64::from(header.len) == PAGE_CAP {
+-                    self.split_page(dir.page_id, (key, value), at)?;
++                    self.split_page(dir.page_id, (key, value), at, pos)?;
+                     return Ok(None);
+                 }
+                 let len = self
+@@ -1476,11 +1477,17 @@
+     // Retain the existing direct split-admission test at its owning seam, not a
+     // second editor. Its deliberately full directory must reject before lookup.
+     #[cfg(test)]
+-    fn split_page_and_insert(&self, page: u64, key: u64, value: u64) -> Result<Option<u64>, Error> {
++    fn split_page_and_insert(
++        &self,
++        page: u64,
++        key: u64,
++        value: u64,
++        pos: u16,
++    ) -> Result<Option<u64>, Error> {
+         let mut image = EditImage::new();
+         let mut plan = EditPlan::new(self, &mut image)
+             .map_err(|cause| FailedEdit { at: Some(0), cause }.scalar())?;
+-        plan.split_page(page, (key, value), 0)
++        plan.split_page(page, (key, value), 0, pos)
+             .map_err(|cause| FailedEdit { at: Some(0), cause }.scalar())?;
+         self.admit_image(plan.image).map_err(FailedEdit::scalar)?;
+         self.publish_image(plan.image);
+@@ -2903,7 +2910,7 @@
+             .collect::<Vec<_>>();
+ 
+         assert_eq!(
+-            m.split_page_and_insert(page, PAGE_CAP, PAGE_CAP + 1),
++            m.split_page_and_insert(page, PAGE_CAP, PAGE_CAP + 1, PAGE_CAP as u16),
+             Err(Error::DirectoryFull)
+         );
+ 

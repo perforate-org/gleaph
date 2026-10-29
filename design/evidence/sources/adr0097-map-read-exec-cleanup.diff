@@ -1,0 +1,86 @@
+--- M_draft/lib.rs
++++ pre-format/lib.rs
+@@ -609,9 +609,12 @@
+ #[cfg(feature = "canbench")]
+ const DIAG_CAL_NESTED_OUT: usize = 10;
+ // Fixed-size observational recorder for the one authorized cfg-gated diagnostic.
+-// A pair value is exit-counter minus entry-counter; bookkeeping runs before the entry
+-// read or after the exit read, so it is charged to the enclosing region and never
+-// inside an interval value. Calibration uses the identical tick/finish paths.
++// A pair value is exit-counter minus entry-counter. Bookkeeping after a finish's
++// timestamp (or before a tick's) is outside that call's own sample, but a shared
++// endpoint places the preceding finish's bookkeeping inside the following sibling's
++// sample, and nested samples make inner recorder work parent-charged. Calibration
++// uses the identical tick/finish paths; outputs are observational only, not certified
++// cost or ranking bounds.
+ #[cfg(feature = "canbench")]
+ #[derive(Clone, Copy)]
+ struct DiagAgg {
+@@ -632,15 +635,13 @@
+ }
+ #[cfg(feature = "canbench")]
+ struct DiagState {
+-    acc: [u64; DIAG_SLOTS],
+-    pairs: [u64; DIAG_SLOTS],
+     agg: [DiagAgg; DIAG_SLOTS],
+     endpoints: u64,
+ }
+ #[cfg(feature = "canbench")]
+ impl DiagState {
+     const ZERO: Self =
+-        Self { acc: [0; DIAG_SLOTS], pairs: [0; DIAG_SLOTS], agg: [DiagAgg::ZERO; DIAG_SLOTS], endpoints: 0 };
++        Self { agg: [DiagAgg::ZERO; DIAG_SLOTS], endpoints: 0 };
+ }
+ #[cfg(feature = "canbench")]
+ std::thread_local! {
+@@ -658,8 +659,6 @@
+     DIAG.with(|d| {
+         let mut d = d.borrow_mut();
+         d.endpoints += 1;
+-        d.acc[slot] += t - t0;
+-        d.pairs[slot] += 1;
+         d.agg[slot].update(t - t0);
+     });
+     t
+@@ -668,8 +667,6 @@
+ fn diag_reset() {
+     DIAG.with(|d| {
+         let mut d = d.borrow_mut();
+-        d.acc[..DIAG_CATS].fill(0);
+-        d.pairs[..DIAG_CATS].fill(0);
+         d.endpoints = 0;
+         for slot in d.agg.iter_mut().take(DIAG_CATS) {
+             *slot = DiagAgg::ZERO;
+@@ -685,8 +682,8 @@
+     DIAG.with(|d| {
+         let d = d.borrow();
+         for slot in 0..DIAG_CATS {
+-            acc[slot] = d.acc[slot];
+-            pairs[slot] = d.pairs[slot];
++            acc[slot] = d.agg[slot].sum;
++            pairs[slot] = d.agg[slot].count;
+         }
+         *endpoints = d.endpoints;
+     });
+--- M_draft/bench.rs
++++ pre-format/bench.rs
+@@ -147,8 +147,8 @@
+     crate::diag_reset();
+     crate::diag_run_calibration();
+     crate::diag_reset();
+-    let mut diag_acc = [[0u64; 7]; 4];
+-    let mut diag_pairs = [[0u64; 7]; 4];
++    let mut diag_acc = [[0u64; crate::DIAG_CATS]; 4];
++    let mut diag_pairs = [[0u64; crate::DIAG_CATS]; 4];
+     let mut diag_ends = [0u64; 4];
+     let result = canbench_rs::bench_fn(|| {
+         {
+@@ -215,7 +215,7 @@
+         diag_cal[3][1] - diag_cal[1][1]
+     );
+     for phase in 0..4 {
+-        for cat in 0..7 {
++        for cat in 0..crate::DIAG_CATS {
+             ic_cdk::eprintln!(
+                 "DIAG_CAT phase={} cat={} acc={} pairs={}",
+                 phase,

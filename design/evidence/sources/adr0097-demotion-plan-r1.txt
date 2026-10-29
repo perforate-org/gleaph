@@ -1,0 +1,205 @@
+---
+name: "Allocator preparation prerequisite for physical publication"
+overview: "Reslice Stage A to its allocator-owned validation/reservation prerequisite before whole-unit physical publication; no demotion policy or deletion is authorized."
+todos:
+  - id: "pin-owner"
+    content: "Review the exact private prepared-release API, shared scalar/batch owner, index and heap obligations, error causes and two-file scope before implementation."
+    status: pending
+  - id: "owning-witnesses"
+    content: "Add four bounded allocator preparation witnesses, with valid backing, late-interval rejection, capacity/retry, shared paths and directory/split proof."
+    status: pending
+  - id: "prepare-publish"
+    content: "Unify allocator-owned release preparation/publication and reserve index/heap work without a second allocator, public transaction API or persistent state."
+    status: pending
+  - id: "bounded-proof"
+    content: "Run only separately authorized scoped checks and paired controls, prove ordering sensitivity, and record source, costs, limitations and pending A1 obligations."
+    status: pending
+isProject: false
+---
+
+# Allocator preparation prerequisite for physical publication
+
+## Objective
+
+**Revised Draft after REQUEST CHANGES; no implementation or Rust validation authority.**
+This reslices Stage A into **A0 allocator preparation**, covered here, and later **A1 whole-unit
+physical publication**. A0 must make its existing allocator's release preparation contract real
+before `compact.rs` can claim an infallible retirement phase. It is independently useful without
+any native conversion or deletion. A0 is not itself whole-leaf or rewrite atomicity.
+
+The [ADR-owned proposal](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+and [revision interfaces/proof map](../design/evidence/adr0097-demotion-design.md#stage-a-reslicing-and-interfaces)
+define the boundaries. Permanent nonempty retention for `S > 1024` is **not approved**. Neither A0
+nor A1 changes the shrink policy, 512/1024 thresholds, no-move contract or empty-retirement gate.
+
+## Context
+
+- Source: `f297706abf683c1e22622c193d34f06650305bee`, branch `spill-swap`; main stays unmerged.
+- Revision anchor: 2026-09-22 13:17:45 UTC +0000. The reviewed 12:00:21 plan is preserved, not
+  rewritten as though its scope or structural check had approved this revision.
+- GAP006's read approval does not cover mutation, general atomicity/performance or landing.
+- Existing `FreeSpanStore::reserve_for_releases` covers record/index backing growth, not the
+  complete release set, directory exhaustion/corruption, split vectors or lazy max-heap work.
+- The paged-map owner has `DIR_CAP=8192`, `PAGE_CAP=64`; current splitting allocates vectors.
+  Free-span release still probes/coalesces and updates record/bin/index/heap state. Capacity and
+  corrupt-interval/directory failures must not be collapsed into one generic retained outcome.
+- Outer physical calls currently publish before later work: disjoint relocation updates the pin
+  before peer loops; rewrite can publish nested relocation and restart. Per-vertex preparation is
+  not the A1 contract. A0 does not edit those callers or claim to fix those failures.
+- The saved real-public-deletion 513→512 witness is reused as history, never rerun here. The stale
+  assertion remains. Local plan number 0339 is unrelated to old source-comment plan numbers.
+
+## Scope
+
+A0 only: allocator-owned preparation of a complete release set and its publication resources.
+Use the same coalescing/edit rule for batch and scalar releases and prefix restoration; do not
+copy allocator logic into `compact.rs` or leave a second "safe" implementation beside the old one.
+Directory/page preconditions and split scratch remain at the existing paged-map owner. Record,
+bin, free-interval and max-heap invariants remain at `FreeSpanStore`.
+
+The proposed private shape is a fallible prepare operation returning one non-Clone, nonpersisted
+allocator-owned prepared-release value, and a consuming publish operation with no recoverable
+result. The value owns validated coalesced interval/edit data and reserved bookkeeping. It is not
+fabricable by callers and is invalid after intervening allocator mutation; the prepare/publish
+sequence permits no re-entry, callback or await. Native Drop/unwind is not cleanup or rollback.
+
+**Interface review gate before coding:** pin exact Rust signatures/visibility, reservation cause
+representation, all affected scalar/symmetric paths and the infallible remainder. Do not widen a
+public API/error contract or escape the two-file source surface without stopping for review. A
+whole release batch must account for mutual adjacency/coalescing and index edits, not merely run
+independent preflights against a stale initial free list. Expected failures stay typed pre-write
+errors; converting them to post-write panics does not satisfy this plan.
+
+A0 does not acquire graph edge/value targets. A1 will reserve cancellation bookkeeping before
+acquisitions, then prepare retirement against the resulting allocator state; it cannot reuse a
+pre-acquisition release plan. Allocation growth/unreferenced bytes may remain after failed
+preparation, but canonical free ownership/counts must not be partially published.
+
+Non-goals: physical caller wiring; native LTB/root or value retirement; logical movement/cursors;
+deletion/assertion removal; matching/header/tag005/GAP007 changes; Graph/queue/PocketIC integration;
+new allocator/module/dependency/cache/persisted state; new benchmark, survey/persistence, 16K
+replay, full-suite reassurance, threshold/layout/compatibility changes, commits or merging.
+
+## Expected Change Surface
+
+Only upon later authorization:
+
+- `crates/ic-stable-lara/src/lara/edge/free_span.rs`: shared release preparation/publication,
+  record/bin/index/heap reservation and existing unit-test module.
+- `crates/ic-stable-paged-ordered-map/src/lib.rs`: its own directory/edit preconditions and bounded
+  split scratch, and existing unit-test module. No LARA/Gleaph rule belongs in this general store.
+- This ignored plan, separately scoped evidence and minimal proved-subpart status in the existing
+  ADR/storage/gap/report documents. No broad documentation expansion.
+
+Do not touch `compact.rs`, leaf pin, bucket rows, row-layout, span allocation, native writers,
+values, deferred/Graph code, benchmark sources/config/results or accepted graph fixtures in A0.
+If the private API cannot be implemented inside this surface, stop before expanding it. Review the
+smallest owner-level seam; do not hide broader work in a helper or claim it is already authorized.
+
+Preserve `SPILL_SWAP_BRIEF.md`, `crates/ic-stable-lara/canbench_results.csv`, `Cargo.lock`, all
+historical evidence and failed logs, main/reference worktrees and protected sources. No cleanup,
+new/cold targets or reuse of old execution budgets. Later lock churn needs as-used provenance and
+restoration; no Rust run is needed for this prose revision.
+
+## Steps
+
+1. Complete the interface gate above. Audit `release`, `release_span`, `restore_allocated_prefix`,
+   reservation, record/bin/index mutation and lazy heap paths, and paged insert/remove/split
+   symmetry. Name anticipated errors before the first write and what is proven nonfailing after
+   it. Establish source/range/index preconditions rather than assuming stable-page reservation
+   validates corruption. Record any missing evidence as a stop, not an implementation guess.
+2. Add the four witnesses below only after implementation authority. Initial backing must be
+   valid and expectations independent. Force a late invalid interval after valid earlier intents,
+   not only a prepare-entry failure. Test actual growth limits; label owner-local heap faults as
+   injected rather than actual system OOM. No source/witness reconstruction from final output.
+3. Implement one coalescing/edit owner and prepared resource boundary. Validate the entire batch,
+   reserve record/index/heap/scratch capacity and consume the preparation once. Keep index rules
+   in the index store. No expected validation, heap allocation, split allocation, memory growth
+   or recoverable error remains during prepared publication. Do not duplicate the scalar rules,
+   suppress release errors, use a Drop transaction or broaden this to native/Graph atomicity.
+4. After separate scoped execution authorization, prove exact rejection/retry and success,
+   run ordering sensitivity and affected checks, measure the agreed existing controls, and restore
+   every injected change. Report source, constructors, compile/runtime, scratch and traffic costs,
+   failures and limitations. A0 completion leaves A1 late-peer and rewrite/pin proof pending.
+
+## Validation
+
+**Now, prose only:** content/link/scope/whitespace and the Draft structural validator:
+
+```sh
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0339-prepared-edge-span-publication.md --phase draft
+```
+
+**Proposed A0 witnesses, not execution authority:**
+
+| Test | Decisive oracle and construction ceiling per full witness pass |
+| --- | --- |
+| `prepared_release_rejects_late_interval` | One free-span store, earlier valid intents followed by an invalid overlap/duplicate. Exact error, complete canonical interval/count/bin/index equality; moving preparation inside the publication loop must change earlier state and fail the oracle. |
+| `prepared_release_capacity_and_retry` | One reusable capped free-span store; sequential record/index growth limits and a separately labelled owner-local heap-reservation fault. Exact causes, no partial free ownership, retry after relaxing only the fault. |
+| `prepared_release_success_and_shared_paths` | One free-span store reused across scalar/batch/prefix restoration, two-sided and inter-intent coalescing, exact summaries/ownership and one-time consumption. No independent alternate coalescer. |
+| `prepared_release_directory_and_split_contract` | One paged-map store. Valid full-directory backing, one full target page; reject before any entry/header edit, then retry after making directory capacity available. Split image/capacity checked at its real owner. |
+
+Total ceiling: **three free-span stores plus one paged-map store, zero native LARA graphs and zero
+PocketIC instances/installs** per complete witness pass. Repeated runs multiply those counts.
+Pin actual existing memory types/setup helpers at the interface gate; no new generic graph fixture.
+
+For full-directory coverage, use 8192 linked/indexed pages with 8191 single-entry pages and one
+64-entry target page: **8255 valid ordered entries**, not millions of inserts or a forged directory
+length over one backed page. Canonical store-level construction plus validation proves a format
+boundary, not public-insertion reachability. Reuse it for success/retry. If existing helpers cannot
+support this valid bounded construction, stop for fixture review, not a larger unbudgeted setup.
+
+The index's format limit is 524288 active entries; the split entry image is 65 pairs/1040 bytes.
+A0 must disclose touched-record metadata and any `O(F)` lazy-heap warm-up/rebuild. Do not describe
+that as constant or `O(R)` release work, take a whole-map snapshot, or add routine full-index scans
+without measured justification. Track owner buffers/capacities separately from process heap/RSS.
+
+Required later performance controls: paired unchanged `bench_r_fs_tkbfs_1024` and
+`bench_r_fs_lbin_4096`, plus native prepared-batch traffic/scratch and cold/warm heap paths. Controls
+measure existing split/restore and largest-bin recovery, not whole-graph publication or the new
+batch operation. Do not re-enable the de-benched drain fixture. Correctness does not waive a
+regression. No canbench command, persistence, survey or new benchmark is authorized now.
+
+Future test filters would target the named witnesses in the two owning crates, then affected
+allocator/index tests, strict library clippy and scoped formatting. This is **not** a command
+allowlist or execution budget: read `rust-workflow`, agree exact commands and one serialized budget
+with final reserve after interface approval. Preserve failures and stop recurring speculative
+retries. No unchanged-source, historical 16K, native deletion or full-suite replay.
+
+Before any eventual final validator, require exact code/evidence/lock/scope and cost provenance,
+restored mutations, effective ordering sensitivity and truthful outstanding gates. The Draft
+validator cannot mark implementation complete or authorize A1.
+
+## Completion Criteria
+
+- [ ] Exact private allocator API, error causes, shared paths and two-file scope are reviewed before implementation.
+- [ ] Whole-batch prepare rejection preserves canonical free ownership/counts and handles typed capacity without partial publication.
+- [ ] Prepared publication has one coalescing/edit owner and no expected fallible index, heap, scratch or growth work remaining.
+- [ ] Four owning witnesses, ordering sensitivity, affected checks and agreed controls have bounded source-qualified evidence.
+- [ ] No physical/native/delete, unrelated gap, threshold/layout, public-API expansion or protected/foreign change is bundled without review.
+- [ ] Source, lock, cost, scratch/performance, documentation and limitations are truthful; final validator passes while A1 and mutation gates remain open.
+
+## Later Slices
+
+1. **A1, separately authorized after A0:** the whole outer rewrite/leaf-slide/relocation, not
+   independent vertex commits. One private prepared layout owns all peers, raw source/destination
+   ranges, old/new pin/counts, opaque descriptor/releases and scratch. Remove nested
+   relocate→publish→replan; replace the 12-argument helper and all three callers together.
+   Disjoint streaming uses one pre-reserved `max_v(P_v)` buffer after all-peer metadata validation;
+   overlap buffers endangered bytes, at most `sum_v(P_v)`. No second physical owner.
+2. A1 must force late-peer failure in both relocation arms and late final-rewrite failure after
+   peer planning. Assert unchanged earlier peers, raw initialized bytes, combined roots, pin,
+   counters and returned unpublished ownership; require mutations restoring per-peer publication
+   and nested publish/replan to fail. Four witness families / at most six reused graphs per pass.
+   Measure the whole outer unit and its scratch/traffic, plus separately budgeted unchanged
+   `tiny_relocate_mixed_leaf` and `bench_l_ins_mv_l32_2048` controls. Confirm reached paths; report
+   any IC coverage gap. A0 is not this proof or a performance waiver.
+3. **Policy/B:** decide prefix/run conversion versus movement-bearing reclamation, timing and
+   progress without approving permanent `S>1024` retention. Then native aligned selection and
+   complete roots/interiors/empty retirement; prove a bounded work envelope or separately review
+   bounded retirement. Finite u32 format limits and native Drop do not establish IC liveness.
+4. **C:** public forward/reverse live deletion only after those gates, with existing return types,
+   exact occurrences/values/counts, events and no-move consumers. Assertion removal remains gated.
+5. **D/E:** separately authorized Graph counterpart/sidecar/index/reconciliation/requeue and
+   PocketIC same-message trap evidence. Matching remains GAP004; header/tag005/GAP007, performance,
+   space/lifecycle and landing remain independent.

@@ -1,0 +1,12 @@
+--- exec_run.py.pre-fix4
++++ exec_run.py.post-fix4
+@@ -742,7 +742,8 @@
+         'final-clippy-map.log', 'final-clippy-lara.log', 'final-map.log', 'final-free.log',
+         'final-doc.log', 'provenance.json', 'plan-check.txt',
+         'setup-failure-original.json', 'setup-correction.json',
+-        'driver-fix.patch', 'driver-fix2.patch',
++        'driver-fix.patch', 'driver-fix2.patch', 'driver-fix3.patch', 'driver-fix4.patch',
++        'map-failure-original.json', 'stopped.json',
+     ]
+     for src in exports:
+         sp = ROOT / src

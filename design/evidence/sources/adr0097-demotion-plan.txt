@@ -1,0 +1,188 @@
+---
+name: "Prepared physical edge-span publication prerequisite"
+overview: "Separate validation and reservation from canonical physical publication at the existing owner, without enabling native deletion or demotion."
+todos:
+  - id: "pin-owner"
+    content: "Pin the three shared commit callers, old ownership and target-image inputs, and precise first-write/error boundary."
+    status: pending
+  - id: "owning-witnesses"
+    content: "Add four bounded prepared-edge-span publication witnesses using existing backed fixtures and independent oracles."
+    status: pending
+  - id: "prepare-publish"
+    content: "Unify normal/bypass preparation and publication at the existing physical owner, preserving relocation and cleanup contracts."
+    status: pending
+  - id: "bounded-proof"
+    content: "Run only subsequently authorized affected checks and sensitivity tests, record exact source, cost and limitations, and update contract status truthfully."
+    status: pending
+isProject: false
+---
+
+# Prepared physical edge-span publication prerequisite
+
+## Objective
+
+**Draft for review; implementation and validation are not authorized.** Stage A of the
+[demotion/deletion proof map](../design/evidence/adr0097-demotion-design.md#staged-implementation-and-tests--all-planned-none-run)
+prepares the physical write boundary needed by native conversion. A recoverable rejection must
+precede the first canonical row/prefix/root/count write. Successful physical relocation must retain
+logical positions, initialized holes, independent runs, root IDs and peer ownership.
+
+This slice does not close GAP001/003, enable live property deletion, or introduce a second placement
+algorithm. If later native-conversion slices never happen, its standalone result is a stronger
+existing physical publication owner with unchanged public behavior and precise failure semantics.
+
+## Context
+
+- Base inspected: `f297706abf683c1e22622c193d34f06650305bee`, branch `spill-swap`.
+- GAP006 read-only approval through that base is bounded; main remains unmerged.
+- The [Planned ADR0088 contract](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+  is the proposed architecture, not an implemented or approved mutation guarantee.
+- `compact.rs::commit_vertex_edge_span_layout` has three call sites in the same file and a distinct
+  bypass arm. Existing materialization/placement helpers own raw physical rows; mode geometry is
+  centralized in `bucket_resident_region`/`combined_span_region_len`.
+- Current commit does placement/serialization/allocation and counter/release work around canonical
+  writes; `rewrite_vertex_edge_span_with_policy` may already relocate during base resolution.
+  Returning a prepared object after an observable rewrite would not satisfy the proposed boundary.
+- The saved public 513→512 failure is already evidence; do not rerun or modify it for this slice.
+- Plan numbers are independent of ADRs. This local 0339 file is not an older source-comment plan.
+
+## Scope
+
+In scope: the existing physical preparation/commit execution flow, its three callers and bypass
+path, checked geometry/descriptor/counter serialization, nonpublishing reservations, cleanup
+ownership and focused tests. No semantic compaction or tree deletion. Explicitly distinguish old
+physical ownership from destination descriptors/images so a later replacement cannot free a target
+as if it were a source. Use the existing allocators, not an exclusion map or new store.
+
+A single private prepared-layout value may own the already validated publication inputs and cleanup
+obligation. It is not public/persisted/clonable; do not add mode flags, a generic transaction layer,
+a new module/dependency or a longer argument list. Delete superseded planning paths rather than
+leaving parallel safe/unsafe entry points. Ordinary rewrite and both relocation call sites must
+consume the same preparation invariant; a demotion-only alternate commit is not acceptable.
+
+Non-goals: native selection/retirement or assertion removal; matching mutation; GAP002/005/007;
+threshold/header/layout changes; logical movement/cursor changes; Graph API or sidecar redesign;
+new benchmarks, 16K replay, full suite, persistent benchmark campaign, PocketIC or merging.
+The physical owner does not promise IC rollback or generic native panic recovery.
+
+## Expected Change Surface
+
+For later approved implementation only:
+
+- `crates/ic-stable-lara/src/labeled/graph/compact.rs`: owning implementation and tests.
+- `crates/ic-stable-lara/src/labeled/graph/test_support.rs`: only if a minimal shared access point to
+  an existing fixture is necessary; do not change accepted fixture shape/assertions or introduce a
+  generic graph specialization.
+- `crates/ic-stable-lara/src/labeled/bucket_store.rs`: canonical descriptor encoding/write
+  preparation if required. Its adaptive row writer currently allocates/serializes during publish;
+  prepare through that owner rather than copy its wire rules into `compact.rs`.
+- `crates/ic-stable-lara/src/lara/edge/row_layout.rs`,
+  `crates/ic-stable-lara/src/lara/edge/free_span.rs` and
+  `crates/ic-stable-lara/src/lara/edge/span.rs`: only if existing count/reservation/release owners need
+  a preparable checked boundary; inspect/review those signatures before editing. Not alternate
+  count projections, free lists or whole-module rewrites.
+- ADR0088, ADR0097, `design/storage/lara.md`, `design/storage/lara-dgap-contract.md`,
+  `design/implementation-gaps.md` and the demotion design report: status only for the proved subpart.
+- This ignored plan and separately scoped evidence artifacts.
+
+Known foreign files: `SPILL_SWAP_BRIEF.md`, `crates/ic-stable-lara/canbench_results.csv`.
+Protect `Cargo.lock`, benchmark sources/config/results, prior raw/durable evidence, accepted
+fixtures, main and reference worktrees. Restore incidental lock churn while retaining as-used-lock
+provenance if execution is later authorized. Any required source outside this surface is a review
+stop, not permission to broaden scope.
+
+## Steps
+
+1. Record all three commit callers, bypass symmetry, first possible canonical write in each outer
+   flow, old owner extents and allocator release ownership. Specify the private preparation value
+   and how destination reservation avoids publishing peers. Check typed errors by failure site,
+   not outer enum name. Source audit is not runtime proof. Resolve signature/ownership review
+   before expanding the 12-argument helper or touching allocator APIs.
+2. Add four tests named below against existing execution entry points, not a parallel test-only
+   demoter. Use canonical backed fixtures and distinct outside/neighbor bytes. Run the smallest
+   baseline only after separate authorization; setup/compile failures are not runtime reds. Do not
+   reapply the saved assertion-only deletion diagnostic.
+3. Prepare checked positions, byte images, encoded bucket/vertex rows, prospective counters,
+   ownership inventory and cleanup reservations before any canonical write. Keep old pinned leaf
+   ownership distinct from bucket subspans and replacement images. Acquire disjoint unpublished
+   targets without driving an observable peer rewrite; route every current caller through the one
+   owner. Publication consumes prepared data without new allocation/source discovery or recoverable
+   checks. Preserve the existing one-move slab compaction/cursor/fallback and observer contracts.
+4. Prove each rejection releases unpublished targets while preserving canonical source/peers;
+   monotonic memory growth is allowed, not free/active overlap. Do not use `let _ =`, a debug
+   assertion or `catch_unwind` as cleanup. A post-publication violation aborts native execution;
+   it is not recoverable rollback. Run the scoped checks/sensitivity cases under the later agreed
+   budget, restore all mutations/probes, review source/complexity and update status only for A.
+
+## Validation
+
+**Now: prose only.** Content/link/scope/whitespace checks and:
+
+```sh
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0339-prepared-edge-span-publication.md --phase draft
+```
+
+**Future native witness proposal, not execution authority:**
+
+| Test | Contract / construction budget per execution |
+| --- | --- |
+| `prepared_edge_span_publication_rejects_before_write` | One existing property-tree/sibling graph. Would-be late descriptor, count and address failures; exact error and unchanged canonical images, requested paths actually reached. |
+| `prepared_edge_span_publication_keeps_normal_and_bypass` | Two existing retained-plane graphs, widths8/33; normal/bypass physical paths, holes/runs, independent values and exact peer identities. |
+| `prepared_edge_span_publication_keeps_tree_and_pin_ownership` | Two existing tree-compaction graphs, widths0/33; combined roots, shifted physical origin only, complete root/payload equality, pinned/free disjointness and later allocation. |
+| `prepared_edge_span_publication_returns_unpublished_reservations` | One existing capped-backing graph, sequential restored fault sites; early/late reservation and cleanup, no leaked span, retry exact. Prefer existing store-level cap control over a new graph specialization. |
+
+Expected new filter total: 4 tests, at most 6 native LARA graphs per full new-filter execution.
+No new `PocketIc` constructor/canister/federation install. Overlapping runs multiply constructors;
+record actual totals rather than treating this ceiling as measured cost. Do not duplicate all
+native deletion widths/policies/orientations here; those are later stage C.
+
+Candidate command allowlist **only upon a subsequent bounded implementation authorization**:
+
+```sh
+cargo test -p ic-stable-lara --lib prepared_edge_span_publication_ -- --nocapture
+cargo test -p ic-stable-lara --lib relocat -- --nocapture
+cargo test -p ic-stable-lara --lib retained_compaction -- --nocapture
+cargo test -p ic-stable-lara --lib compact -- --nocapture
+cargo clippy -p ic-stable-lara --lib -- -D warnings
+rustfmt --edition 2024 --config skip_children=true --check crates/ic-stable-lara/src/labeled/graph/compact.rs
+python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0339-prepared-edge-span-publication.md --phase final
+```
+
+Read `rust-workflow` before that authorization's execution and bind the list to one serialized
+cumulative budget with its final reserve; no budget or unused prior balance is granted here.
+Scope formatting to actually changed Rust files, never global formatting. Enumerate affected test
+names/results; filters overlap and do not imply a full-suite pass. Admit sensitivity mutations only
+with enough reserve for restoration and final affected checks: late validation must be detected,
+loss of initialized holes/runs or double retirement must be detected by the relevant owning test.
+If either mutation passes, inspect reachability/oracle instead of claiming sensitivity.
+
+Physical placement is performance-sensitive. Preserve existing algorithm/fixture shapes; record
+source/complexity growth and native traffic only when authorized. No benchmark command is authorized
+or required for this design-only turn. A later implementation review must decide its exact existing
+control measurement within a separate explicit budget; passing correctness is not a regression
+waiver and this plan does not grant a canbench survey or persistence.
+
+Before any final candidate, compare exact changed paths against this scope, preserve tested source
+and as-used-lock evidence, record compilation versus runtime and failed/timed-out checks, and run
+the final structural validator above. Do not close future work from this Draft validation result.
+
+## Completion Criteria
+
+- [ ] All existing physical commit callers use one prepared invariant, including bypass symmetry.
+- [ ] Typed prepare rejection preserves canonical source/peers and returns unpublished ownership.
+- [ ] Successful physical publication preserves logical positions, holes/runs, combined roots and pinned cover.
+- [ ] Four named owning witnesses and relevant existing contracts pass with exact bounded evidence and effective sensitivity checks.
+- [ ] No mutation/demotion/assertion, unrelated gap, threshold/layout or protected/foreign change is bundled.
+- [ ] Executed source, lock, cost, complexity, documentation scope and independent-review limitations are truthful; final validator passes.
+
+## Later Slices
+
+1. B: native aligned selection and complete combined-root/empty retirement against the prepared
+   physical owner, with explicit retained outcomes. Separate code/evidence/review checkpoint.
+2. C: public forward/reverse live deletion using B; only then consider removing the stale assertion.
+   Prove six width/policy cases, sparse high-water, exact values/positions, capacity/corruption/retry
+   and observer-only identities. No matching fix is included.
+3. D: Graph public handles, counterparts, postings/sidecars and reverse-reconciliation integration;
+   queued vertex purge remains gated on separately repaired matching GAP004 and proven requeue.
+4. E: separately approved PocketIC message-fence/trap/queue rollback evidence. Performance, broad
+   space/lifecycle and landing approval remain distinct.

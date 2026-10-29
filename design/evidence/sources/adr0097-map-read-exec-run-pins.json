@@ -1,0 +1,18 @@
+{
+  "frozen": {
+    "lib": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+    "bench": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7"
+  },
+  "mdraft": {
+    "lib": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+    "bench": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c"
+  },
+  "pre_format": {
+    "lib": "62fd25085d22a776e743fdafc8fab54aaab63c65905844bf68cdff965949bde6",
+    "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+  },
+  "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+  "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+  "lara_csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+  "map_csv": "absent"
+}

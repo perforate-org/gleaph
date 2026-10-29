@@ -1,0 +1,28 @@
+{
+  "source": "current user authorization after review of report01b6d0dd",
+  "reviewed_plan_sha256": "ecb7968ebbc66536dc8ea212d10c0990cb7dc1f6a287cc059318474a9e9fc17c",
+  "allowed_rust": [
+    "crates/ic-stable-paged-ordered-map/src/lib.rs"
+  ],
+  "changes": [
+    "one EditImage::read fully-backed/disjoint branch reusing existing partition/candidate",
+    "one appended edit_image_read_partition test before production change"
+  ],
+  "preserved": "all17 existing tests/helpers,5 doctests,observer,seeder,scalar oracle,benchmark,FreeSpan,caller/admission/arithmetic/error order,codec,ownership and publication",
+  "schedule": "ONLY new ordered read-case tables in the reviewed plan",
+  "budget": {
+    "total": 600,
+    "pre_final_caps": 320,
+    "protected_final_caps": 120,
+    "unassigned": 160
+  },
+  "stopping": "unexpected command/semantic/cap/provenance failure stops without retry; intended mutation reds and truthful final-plan refusal expected; performance failure permits scheduled unchanged control/final only",
+  "acceptance": "not granted; every original phase/control ceiling independently binding",
+  "prose_scope": [
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+    "design/evidence/adr0097-demotion-design.md",
+    "plans/0340-prepared-paged-map-edits.md"
+  ],
+  "new_evidence_prefix": "design/evidence/sources/adr0097-map-read-attempt-",
+  "prohibited": "baseline rebuild/restoration,second candidate,tuning,broader suite/survey/PocketIC/persist,fallback/cold target/process work/main chase/rebase/commit/merge"
+}

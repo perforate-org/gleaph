@@ -1,0 +1,162 @@
+--- before/lib.rs
++++ after/lib.rs
+@@ -285 +285 @@
+-        self.owner.publish_image(self.image);
++        self.owner.publish_image(&self.image);
+@@ -580 +580 @@
+-    image: EditImage,
++    image: &'a mut EditImage,
+@@ -585,2 +585,4 @@
+-    fn new(owner: &'a StablePagedOrderedMap<M>) -> Result<Self, EditFailure> {
+-        let mut image = EditImage::new();
++    fn new(
++        owner: &'a StablePagedOrderedMap<M>,
++        image: &'a mut EditImage,
++    ) -> Result<Self, EditFailure> {
+@@ -687,8 +689,2 @@
+-        let bytes = self.read::<32>(offset);
+-        let header = PageHeader {
+-            flags: bytes[PAGE_OFFSET_FLAGS as usize],
+-            len: u16::from_le_bytes(bytes[2..4].try_into().unwrap()),
+-            prev: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+-            next: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+-            free_next: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+-        };
++        let bytes = self.read::<{ PAGE_HEADER_SIZE as usize }>(offset);
++        let header = PageHeader::decode(&bytes);
+@@ -740,7 +736 @@
+-        let mut bytes = [0; PAGE_HEADER_SIZE as usize];
+-        bytes[0] = header.flags;
+-        bytes[2..4].copy_from_slice(&header.len.to_le_bytes());
+-        bytes[8..16].copy_from_slice(&header.prev.to_le_bytes());
+-        bytes[16..24].copy_from_slice(&header.next.to_le_bytes());
+-        bytes[24..32].copy_from_slice(&header.free_next.to_le_bytes());
+-        self.image.write(offset, &bytes);
++        self.image.write(offset, &header.encode());
+@@ -1113,0 +1104,42 @@
++impl PageHeader {
++    fn decode(bytes: &[u8; PAGE_HEADER_SIZE as usize]) -> Self {
++        Self {
++            flags: bytes[PAGE_OFFSET_FLAGS as usize],
++            len: u16::from_le_bytes(
++                bytes[PAGE_OFFSET_LEN as usize..PAGE_OFFSET_LEN as usize + 2]
++                    .try_into()
++                    .unwrap(),
++            ),
++            prev: u64::from_le_bytes(
++                bytes[PAGE_OFFSET_PREV as usize..PAGE_OFFSET_PREV as usize + 8]
++                    .try_into()
++                    .unwrap(),
++            ),
++            next: u64::from_le_bytes(
++                bytes[PAGE_OFFSET_NEXT as usize..PAGE_OFFSET_NEXT as usize + 8]
++                    .try_into()
++                    .unwrap(),
++            ),
++            free_next: u64::from_le_bytes(
++                bytes[PAGE_OFFSET_FREE_NEXT as usize..PAGE_OFFSET_FREE_NEXT as usize + 8]
++                    .try_into()
++                    .unwrap(),
++            ),
++        }
++    }
++
++    fn encode(self) -> [u8; PAGE_HEADER_SIZE as usize] {
++        let mut bytes = [0; PAGE_HEADER_SIZE as usize];
++        bytes[PAGE_OFFSET_FLAGS as usize] = self.flags;
++        bytes[PAGE_OFFSET_LEN as usize..PAGE_OFFSET_LEN as usize + 2]
++            .copy_from_slice(&self.len.to_le_bytes());
++        bytes[PAGE_OFFSET_PREV as usize..PAGE_OFFSET_PREV as usize + 8]
++            .copy_from_slice(&self.prev.to_le_bytes());
++        bytes[PAGE_OFFSET_NEXT as usize..PAGE_OFFSET_NEXT as usize + 8]
++            .copy_from_slice(&self.next.to_le_bytes());
++        bytes[PAGE_OFFSET_FREE_NEXT as usize..PAGE_OFFSET_FREE_NEXT as usize + 8]
++            .copy_from_slice(&self.free_next.to_le_bytes());
++        bytes
++    }
++}
++
+@@ -1283 +1315,3 @@
+-        let image = self.prepare_image(edits).map_err(FailedEdit::prepared)?;
++        let mut image = EditImage::new();
++        self.prepare_image(edits, &mut image)
++            .map_err(FailedEdit::prepared)?;
+@@ -1288 +1322,3 @@
+-        let image = self.prepare_image(&[edit]).map_err(FailedEdit::scalar)?;
++        let mut image = EditImage::new();
++        self.prepare_image(&[edit], &mut image)
++            .map_err(FailedEdit::scalar)?;
+@@ -1290 +1326 @@
+-        self.publish_image(image);
++        self.publish_image(&image);
+@@ -1294 +1330 @@
+-    fn prepare_image(&self, edits: &[Edit]) -> Result<EditImage, FailedEdit> {
++    fn prepare_image(&self, edits: &[Edit], image: &mut EditImage) -> Result<(), FailedEdit> {
+@@ -1302,3 +1338,4 @@
+-            return Ok(EditImage::new());
+-        }
+-        let mut plan = EditPlan::new(self).map_err(|cause| FailedEdit { at: Some(0), cause })?;
++            return Ok(());
++        }
++        let mut plan =
++            EditPlan::new(self, image).map_err(|cause| FailedEdit { at: Some(0), cause })?;
+@@ -1310 +1347 @@
+-            self.observe_image(&plan.image);
++            self.observe_image(plan.image);
+@@ -1319 +1356 @@
+-        self.admit_image(&plan.image)?;
++        self.admit_image(plan.image)?;
+@@ -1321,2 +1358,2 @@
+-        self.observe_image(&plan.image);
+-        Ok(plan.image)
++        self.observe_image(plan.image);
++        Ok(())
+@@ -1375 +1412 @@
+-    fn publish_image(&self, image: EditImage) {
++    fn publish_image(&self, image: &EditImage) {
+@@ -1408,2 +1445,3 @@
+-        let mut plan =
+-            EditPlan::new(self).map_err(|cause| FailedEdit { at: Some(0), cause }.scalar())?;
++        let mut image = EditImage::new();
++        let mut plan = EditPlan::new(self, &mut image)
++            .map_err(|cause| FailedEdit { at: Some(0), cause }.scalar())?;
+@@ -1412 +1450 @@
+-        self.admit_image(&plan.image).map_err(FailedEdit::scalar)?;
++        self.admit_image(plan.image).map_err(FailedEdit::scalar)?;
+@@ -1681,8 +1719,3 @@
+-        let off = page_offset(page);
+-        PageHeader {
+-            flags: read_u8(&self.memory, off + PAGE_OFFSET_FLAGS),
+-            len: read_u16(&self.memory, off + PAGE_OFFSET_LEN),
+-            prev: read_u64(&self.memory, off + PAGE_OFFSET_PREV),
+-            next: read_u64(&self.memory, off + PAGE_OFFSET_NEXT),
+-            free_next: read_u64(&self.memory, off + PAGE_OFFSET_FREE_NEXT),
+-        }
++        let mut bytes = [0; PAGE_HEADER_SIZE as usize];
++        self.memory.read(page_offset(page), &mut bytes);
++        PageHeader::decode(&bytes)
+@@ -1693,6 +1726 @@
+-        let off = page_offset(page);
+-        write_u8(&self.memory, off + PAGE_OFFSET_FLAGS, header.flags);
+-        write_u16(&self.memory, off + PAGE_OFFSET_LEN, header.len);
+-        write_u64(&self.memory, off + PAGE_OFFSET_PREV, header.prev);
+-        write_u64(&self.memory, off + PAGE_OFFSET_NEXT, header.next);
+-        write_u64(&self.memory, off + PAGE_OFFSET_FREE_NEXT, header.free_next);
++        write(&self.memory, page_offset(page), &header.encode());
+@@ -1862,16 +1889,0 @@
+-}
+-
+-#[cfg(test)]
+-fn write_u8<M: Memory>(memory: &M, offset: u64, value: u8) {
+-    write(memory, offset, &[value]);
+-}
+-
+-fn read_u16<M: Memory>(memory: &M, offset: u64) -> u16 {
+-    let mut b = [0u8; 2];
+-    memory.read(offset, &mut b);
+-    u16::from_le_bytes(b)
+-}
+-
+-#[cfg(test)]
+-fn write_u16<M: Memory>(memory: &M, offset: u64, value: u16) {
+-    write(memory, offset, &value.to_le_bytes());

@@ -1,0 +1,344 @@
+{
+  "schedule": [
+    {
+      "index": 0,
+      "name": "setup",
+      "cap_seconds": 20
+    },
+    {
+      "index": 1,
+      "name": "format",
+      "cap_seconds": 5
+    },
+    {
+      "index": 2,
+      "name": "map",
+      "cap_seconds": 30
+    },
+    {
+      "index": 3,
+      "name": "doc",
+      "cap_seconds": 10
+    },
+    {
+      "index": 4,
+      "name": "mutation-early",
+      "cap_seconds": 10
+    },
+    {
+      "index": 5,
+      "name": "mutation-resource",
+      "cap_seconds": 10
+    },
+    {
+      "index": 6,
+      "name": "mutation-disjoint",
+      "cap_seconds": 10
+    },
+    {
+      "index": 7,
+      "name": "mutation-backed",
+      "cap_seconds": 10
+    },
+    {
+      "index": 8,
+      "name": "source-audit",
+      "cap_seconds": 20
+    },
+    {
+      "index": 9,
+      "name": "scalar",
+      "cap_seconds": 75
+    },
+    {
+      "index": 10,
+      "name": "allocator",
+      "cap_seconds": 100
+    },
+    {
+      "index": 11,
+      "name": "collect",
+      "cap_seconds": 20
+    },
+    {
+      "index": 12,
+      "name": "final-format",
+      "cap_seconds": 5
+    },
+    {
+      "index": 13,
+      "name": "final-clippy-map",
+      "cap_seconds": 10
+    },
+    {
+      "index": 14,
+      "name": "final-clippy-lara",
+      "cap_seconds": 15
+    },
+    {
+      "index": 15,
+      "name": "final-map",
+      "cap_seconds": 20
+    },
+    {
+      "index": 16,
+      "name": "final-free",
+      "cap_seconds": 25
+    },
+    {
+      "index": 17,
+      "name": "final-doc",
+      "cap_seconds": 15
+    },
+    {
+      "index": 18,
+      "name": "closure",
+      "cap_seconds": 15
+    },
+    {
+      "index": 19,
+      "name": "final-evidence",
+      "cap_seconds": 15
+    }
+  ],
+  "entries": [
+    {
+      "name": "setup",
+      "cap_seconds": 20,
+      "charged_seconds": 20,
+      "actual_seconds": 1.8210741250077263,
+      "exit": 0,
+      "expected_exit": null,
+      "contract_passed": null,
+      "failure": null
+    },
+    {
+      "name": "format",
+      "cap_seconds": 5,
+      "charged_seconds": 0.3061359999701381,
+      "actual_seconds": 0.3061359999701381,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "map",
+      "cap_seconds": 30,
+      "charged_seconds": 4.210505416034721,
+      "actual_seconds": 4.210505416034721,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "doc",
+      "cap_seconds": 10,
+      "charged_seconds": 2.553929583984427,
+      "actual_seconds": 2.553929583984427,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "mutation-early",
+      "cap_seconds": 10,
+      "charged_seconds": 3.199888125061989,
+      "actual_seconds": 3.199888125061989,
+      "exit": 101,
+      "expected_exit": 101,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "mutation-resource",
+      "cap_seconds": 10,
+      "charged_seconds": 2.7187800420215353,
+      "actual_seconds": 2.7187800420215353,
+      "exit": 101,
+      "expected_exit": 101,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "mutation-disjoint",
+      "cap_seconds": 10,
+      "charged_seconds": 2.338686457951553,
+      "actual_seconds": 2.338686457951553,
+      "exit": 101,
+      "expected_exit": 101,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "mutation-backed",
+      "cap_seconds": 10,
+      "charged_seconds": 3.9445723328972235,
+      "actual_seconds": 3.9445723328972235,
+      "exit": 101,
+      "expected_exit": 101,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "source-audit",
+      "cap_seconds": 20,
+      "charged_seconds": 20,
+      "actual_seconds": 1.7511681250762194,
+      "exit": 0,
+      "expected_exit": null,
+      "contract_passed": null,
+      "failure": null
+    },
+    {
+      "name": "scalar",
+      "cap_seconds": 75,
+      "charged_seconds": 15.355091500096023,
+      "actual_seconds": 15.355091500096023,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "allocator",
+      "cap_seconds": 100,
+      "charged_seconds": 77.59318762505427,
+      "actual_seconds": 77.59318762505427,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "collect",
+      "cap_seconds": 20,
+      "charged_seconds": 20,
+      "actual_seconds": 0.2706826659850776,
+      "exit": 0,
+      "expected_exit": null,
+      "contract_passed": null,
+      "failure": null
+    },
+    {
+      "name": "final-format",
+      "cap_seconds": 5,
+      "charged_seconds": 0.40640933299437165,
+      "actual_seconds": 0.40640933299437165,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "final-clippy-map",
+      "cap_seconds": 10,
+      "charged_seconds": 2.711716957972385,
+      "actual_seconds": 2.711716957972385,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "final-clippy-lara",
+      "cap_seconds": 15,
+      "charged_seconds": 2.4062787500442937,
+      "actual_seconds": 2.4062787500442937,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "final-map",
+      "cap_seconds": 20,
+      "charged_seconds": 2.3288885420188308,
+      "actual_seconds": 2.3288885420188308,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "final-free",
+      "cap_seconds": 25,
+      "charged_seconds": 10.543324833968654,
+      "actual_seconds": 10.543324833968654,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "final-doc",
+      "cap_seconds": 15,
+      "charged_seconds": 1.9449121250072494,
+      "actual_seconds": 1.9449121250072494,
+      "exit": 0,
+      "expected_exit": 0,
+      "contract_passed": true,
+      "failure": null
+    },
+    {
+      "name": "closure",
+      "cap_seconds": 15,
+      "charged_seconds": 15,
+      "actual_seconds": 1.2334609579993412,
+      "exit": 0,
+      "expected_exit": null,
+      "contract_passed": null,
+      "failure": null
+    },
+    {
+      "name": "final-evidence",
+      "cap_seconds": 15,
+      "charged_seconds": 15,
+      "actual_seconds": 1.4183792499825358,
+      "exit": 1,
+      "expected_exit": null,
+      "contract_passed": false,
+      "failure": "status scope mismatch: added=['?? design/evidence/sources/adr0097-map-read-attempt-allocator.csv', '?? design/evidence/sources/adr0097-map-read-attempt-authorization.json', '?? design/evidence/sources/adr0097-map-read-attempt-doc.txt', '?? design/evidence/sources/adr0097-map-read-attempt-driver-revisions.json', '?? design/evidence/sources/adr0097-map-read-attempt-final-clippy-lara.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-clippy-map.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-doc.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-format.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-free.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-map.txt', '?? design/evidence/sources/adr0097-map-read-attempt-final-native.json', '?? design/evidence/sources/adr0097-map-read-attempt-format.txt', '?? design/evidence/sources/adr0097-map-read-attempt-interruption.json', '?? design/evidence/sources/adr0097-map-read-attempt-ledger-interrupted.json', '?? design/evidence/sources/adr0097-map-read-attempt-ledger.json', '?? design/evidence/sources/adr0097-map-read-attempt-lizard.json', '?? design/evidence/sources/adr0097-map-read-attempt-map.txt', '?? design/evidence/sources/adr0097-map-read-attempt-measurements.json', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-backed.patch', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-backed.txt', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-disjoint.patch', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-disjoint.txt', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-early.patch', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-early.txt', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-resource.patch', '?? design/evidence/sources/adr0097-map-read-attempt-mutation-resource.txt', '?? design/evidence/sources/adr0097-map-read-attempt-oracle-first.json', '?? design/evidence/sources/adr0097-map-read-attempt-plan-check.txt', '?? design/evidence/sources/adr0097-map-read-attempt-production.patch', '?? design/evidence/sources/adr0097-map-read-attempt-run.json', '?? design/evidence/sources/adr0097-map-read-attempt-scalar.csv', '?? design/evidence/sources/adr0097-map-read-attempt-source-audit.json', '?? design/evidence/sources/adr0097-map-read-attempt-source.patch', '?? design/evidence/sources/adr0097-map-read-attempt-start.json', '?? design/evidence/sources/adr0097-map-read-attempt-verification.json', '?? design/evidence/sources/adr0097-map-read-attempt-versions.json', '?? design/evidence/sources/adr0097-map-read-attempt-wasm.txt']",
+      "correction": {
+        "receipt": "scope-correction.json",
+        "defect": "expectation side of the status-scope comparison lacked the design/evidence/sources/ prefix",
+        "corrected_result": "added37 == expected37, removed [], non-durable additions []",
+        "note": "exit/contract_passed/failure fields on this entry are preserved exactly as run"
+      }
+    }
+  ],
+  "counts": {
+    "total_entries": 20,
+    "rust_format_ic_invocations": 15,
+    "administrative_steps": 5,
+    "intended_runtime_negatives": 4,
+    "scalar_disassembly": 1
+  },
+  "totals": {
+    "maximum": 600,
+    "pre_final_cap": 320,
+    "final_cap": 120,
+    "unassigned_not_contingency": 160,
+    "unassigned_unused": 160,
+    "pre_final_charged": 172.22077708307188,
+    "final_charged": 50.341530542005785,
+    "charged_total": 222.56230762507766
+  },
+  "status": "closed-incomplete; every original IC ceiling remains exceeded; scope-check expression corrected in scope-correction.json, original failed comparison preserved under as-run-closure/",
+  "observed_contract_results": {
+    "initial_map": "18 passed,33 IMAGE_READ_CASE reached (run.py contract, exit0)",
+    "initial_doc": "5 passed incl. E0502/E0499/E0061/E0382",
+    "mutations": {
+      "early": "late DirectoryFull changed backing",
+      "resource": "expected actual restricted grow3/+2 before ready",
+      "disjoint": "IMAGE_READ inline-contained bytes",
+      "backed": "unbacked-unstaged, read: out of bounds"
+    },
+    "final": "format, clippy map --lib --tests, clippy lara --lib, map18, freepan27, doc5 all exit0",
+    "ic": "all six measured scopes exceed their original independent ceilings; acceptance BLOCKED"
+  },
+  "final_evidence_step": "Rust/build/test/benchmark/disassembly count for this step:0; exports and checks only",
+  "correction_receipt": "scope-correction.json"
+}

@@ -1,0 +1,235 @@
+{
+  "source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+  "csv_sources": {
+    "admission": [
+      {
+        "path": "/tmp/spill-map-f297-cecc5rw_/baseline-scalar.csv",
+        "sha256": "3c56e741173b67a97ce32fa8dfb9635bbd9671491b9f3dc082d79b0a15c8e57b"
+      },
+      {
+        "path": "/tmp/spill-map-f297-cecc5rw_/baseline-allocator.csv",
+        "sha256": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d"
+      }
+    ],
+    "blocked_be81": [
+      {
+        "path": "/tmp/spill-map-f297-cecc5rw_/candidate-scalar.csv",
+        "sha256": "c0b6a1c1d3071522457bcd8de84c61d9d30c87556e3180c8e53bcd587aa45f78"
+      },
+      {
+        "path": "/tmp/spill-map-f297-cecc5rw_/candidate-allocator.csv",
+        "sha256": "2116409cd572621b457a2c088986755842b78de90d1866e53bb4d3a6b4b3ce99"
+      }
+    ],
+    "corrected_9436": [
+      {
+        "path": "/tmp/spill-map-correction-be81-1611h8iy/scalar.csv",
+        "sha256": "6bf13b3a648bb39c5e8441fd65e35204cd7a3022390cc6a7940533a9b2579f89"
+      },
+      {
+        "path": "/tmp/spill-map-correction-be81-1611h8iy/allocator.csv",
+        "sha256": "c838d8bec251ee2058b82bda61dc3882d1d98be4fd0894dce6b08f24a95b6805"
+      }
+    ],
+    "candidate_5da4": [
+      {
+        "path": "/private/tmp/spill-map-read-9436-j1wy264j/scalar.csv",
+        "sha256": "6adf3ac9901b66f71a3561f16742a1def38c92710090e9145c7b9204376b4adb"
+      },
+      {
+        "path": "/private/tmp/spill-map-read-9436-j1wy264j/allocator.csv",
+        "sha256": "8765aaa9d0823b4b6187e8711e872ec2b64a6dedcab787cee7ec96a31527c65b"
+      }
+    ]
+  },
+  "comparisons": {
+    "bench_paged_scalar_edits_97": {
+      "candidate": {
+        "instructions": 1013707,
+        "scope_calls": null,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 497282,
+          "delta": 516425,
+          "delta_percent": 103.84952602346355
+        },
+        "blocked_be81": {
+          "instructions": 1431979,
+          "delta": -418272,
+          "delta_percent": -29.209366897140253
+        },
+        "corrected_9436": {
+          "instructions": 1093879,
+          "delta": -80172,
+          "delta_percent": -7.329147008032881
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_missing_64": {
+      "candidate": {
+        "instructions": 138600,
+        "scope_calls": 1,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 85672,
+          "delta": 52928,
+          "delta_percent": 61.77981137361098
+        },
+        "blocked_be81": {
+          "instructions": 242856,
+          "delta": -104256,
+          "delta_percent": -42.92914319596798
+        },
+        "corrected_9436": {
+          "instructions": 158312,
+          "delta": -19712,
+          "delta_percent": -12.45136186770428
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_replace_64": {
+      "candidate": {
+        "instructions": 153288,
+        "scope_calls": 1,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 77576,
+          "delta": 75712,
+          "delta_percent": 97.5971950087656
+        },
+        "blocked_be81": {
+          "instructions": 251720,
+          "delta": -98432,
+          "delta_percent": -39.10376608930558
+        },
+        "corrected_9436": {
+          "instructions": 167624,
+          "delta": -14336,
+          "delta_percent": -8.55247458597814
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_split_directory": {
+      "candidate": {
+        "instructions": 150540,
+        "scope_calls": 1,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 30930,
+          "delta": 119610,
+          "delta_percent": 386.7119301648885
+        },
+        "blocked_be81": {
+          "instructions": 155692,
+          "delta": -5152,
+          "delta_percent": -3.3090974488091875
+        },
+        "corrected_9436": {
+          "instructions": 155448,
+          "delta": -4908,
+          "delta_percent": -3.1573259224949823
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_tail_pairs_64": {
+      "candidate": {
+        "instructions": 566346,
+        "scope_calls": 1,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 298171,
+          "delta": 268175,
+          "delta_percent": 89.94000087198286
+        },
+        "blocked_be81": {
+          "instructions": 776778,
+          "delta": -210432,
+          "delta_percent": -27.090365587078935
+        },
+        "corrected_9436": {
+          "instructions": 607562,
+          "delta": -41216,
+          "delta_percent": -6.78383440702348
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_r_fs_tkbfs_1024": {
+      "candidate": {
+        "instructions": 2191979,
+        "scope_calls": null,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 1527576,
+          "delta": 664403,
+          "delta_percent": 43.49394072700802
+        },
+        "blocked_be81": {
+          "instructions": 2350463,
+          "delta": -158484,
+          "delta_percent": -6.7426715502435055
+        },
+        "corrected_9436": {
+          "instructions": 2256530,
+          "delta": -64551,
+          "delta_percent": -2.860631146051681
+        }
+      },
+      "original_ceiling_passed": false
+    },
+    "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split": {
+      "candidate": {
+        "instructions": 2191018,
+        "scope_calls": 1,
+        "heap_increase": 0,
+        "stable_memory_increase": 0
+      },
+      "references": {
+        "admission": {
+          "instructions": 1526615,
+          "delta": 664403,
+          "delta_percent": 43.521320044674
+        },
+        "blocked_be81": {
+          "instructions": 2349502,
+          "delta": -158484,
+          "delta_percent": -6.745429456965774
+        },
+        "corrected_9436": {
+          "instructions": 2255569,
+          "delta": -64551,
+          "delta_percent": -2.8618499367565344
+        }
+      },
+      "original_ceiling_passed": false
+    }
+  },
+  "hypothesis_IC": {
+    "missing_improves": true,
+    "replacement_improves": true
+  },
+  "acceptance": "BLOCKED if any independent original phase/control ceiling fails; scalar total is diagnostic, not a waiver",
+  "limits": "retained references, not rebuilt; raw LARA CSV percentages are versus persisted YAML, not admission; zero page increases do not measure global allocation"
+}

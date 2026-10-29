@@ -1,0 +1,97 @@
+{
+  "mode": "read-only saved-source/WAT text inspection; no disassembly, build, runtime or probe",
+  "inputs": {
+    "/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+    "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+    "/tmp/spill-map-correction-be81-1611h8iy/artifacts/scalar/ic_stable_paged_ordered_map.wasm": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+    "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wasm": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64",
+    "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map/src/lib.rs": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71"
+  },
+  "functions": {
+    "corrected": {
+      "image-read": {
+        "source_path": "/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat",
+        "source_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+        "symbol": "(func $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)",
+        "first_line": 422,
+        "last_line": 1256,
+        "excerpt_sha256": "1d0e169c6bbff8b052e9fbb28a931af1db6d74e4dfae0822413d6d75886c3e9c",
+        "excerpt_path": "corrected-image-read.wat.txt"
+      },
+      "search-page": {
+        "source_path": "/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat",
+        "source_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+        "symbol": "(func $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32) (param $4 i32)",
+        "first_line": 285,
+        "last_line": 421,
+        "excerpt_sha256": "74e9b64e9c1162e28fed937599dee195faf89fb4501af43f4ad33bf2f5231240",
+        "excerpt_path": "corrected-search-page.wat.txt"
+      },
+      "scalar-edit": {
+        "source_path": "/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat",
+        "source_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+        "symbol": "(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+        "first_line": 49468,
+        "last_line": 52289,
+        "excerpt_sha256": "81d180ff19b2948312a28f8119c1025accad69248ebc0c24b05713365f8e6d67",
+        "excerpt_path": "corrected-scalar-edit.wat.txt"
+      },
+      "split-page": {
+        "source_path": "/tmp/spill-map-correction-be81-1611h8iy/corrected-scalar.wat",
+        "source_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+        "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10split_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i32)",
+        "first_line": 64205,
+        "last_line": 65288,
+        "excerpt_sha256": "734834a8447eb6c4381b60ac8410ccb56463794a66a64e33927e54bba20fbac5",
+        "excerpt_path": "corrected-split-page.wat.txt"
+      }
+    },
+    "blocked": {
+      "image-read": {
+        "source_path": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat",
+        "source_sha256": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+        "symbol": "(func $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)",
+        "first_line": 419,
+        "last_line": 1253,
+        "excerpt_sha256": "e12b454507b7def2982fe18f8e4de7953852fe2fdf868b1d3db771da7b7ff526",
+        "excerpt_path": "blocked-image-read.wat.txt"
+      },
+      "search-page": {
+        "source_path": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat",
+        "source_sha256": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+        "symbol": "(func $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32) (param $4 i32)",
+        "first_line": 284,
+        "last_line": 418,
+        "excerpt_sha256": "41cd0fed725f5ebbe460988759566d99cd613dccad934f27831c64ff486ac5f3",
+        "excerpt_path": "blocked-search-page.wat.txt"
+      },
+      "scalar-edit": {
+        "source_path": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat",
+        "source_sha256": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+        "symbol": "(func $_RNvMsc_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+        "first_line": 49550,
+        "last_line": 52360,
+        "excerpt_sha256": "9c3bf9e65f33054a74a6e8594ee0e79a48ac68495a5e8388d90a25fc5b306aed",
+        "excerpt_path": "blocked-scalar-edit.wat.txt"
+      },
+      "split-page": {
+        "source_path": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat",
+        "source_sha256": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+        "symbol": "(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10split_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i32)",
+        "first_line": 64471,
+        "last_line": 65539,
+        "excerpt_sha256": "97b7fd2b79731974a84972d81c5b7a4d42e0f3c3390d0835eabe99dc23f8e245",
+        "excerpt_path": "blocked-split-page.wat.txt"
+      }
+    }
+  },
+  "image_read_comparison": "Identical text after substituting only i32.const1063128 ->1063144 at three panic-location operands; all successful-path code is unchanged. Not a performance comparison.",
+  "changed_constant_occurrences": 3,
+  "not_measured": [
+    "dynamic Wasm per-helper call counts",
+    "component instruction prices",
+    "branch profiling",
+    "effect of proposed read guard",
+    "peak stack"
+  ]
+}

@@ -1,0 +1,536 @@
+Static corrected-source excerpts, not runtime profiling.
+{
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "wasm_sha256": "5b4264f12eeb271d679f55616b60f7b305190b7249749220ea2fc1fd79a74dc8",
+  "wat_sha256": "14ca515f6091ef144ca9ea0d7f8811478cc4dad06800a41f0482a775b77167e6",
+  "scalar_symbol": "(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)",
+  "scalar_lines": [
+    49468,
+    52289
+  ],
+  "scalar_body_sha256": "81d180ff19b2948312a28f8119c1025accad69248ebc0c24b05713365f8e6d67",
+  "static_scalar_stack_adjustment": {
+    "blocked": 752,
+    "correction": 304
+  },
+  "identified_scalar_memory_copy_fill": {
+    "blocked": "two104B prelookup transfers; two104B+144B success-tail transfers;116B fill",
+    "correction": "no memory.copy or memory.fill instruction directly in complete scalar_edit body; initialization stores remain"
+  },
+  "remaining": "out-of-line image reads, checked arithmetic, range/storage dispatch, result/backing/publish/drop work and split normalizer remain",
+  "inference": "Transfers removed and missing phase158312<242856 support contribution. Joint patch; not isolated copy/codec pricing. All original IC gates still fail.",
+  "not_measured": [
+    "peak call-chain stack",
+    "Wasm EditImage layout",
+    "component instruction costs",
+    "all process/backend allocations"
+  ]
+}
+
+--- measured missing129 calls scalar_edit; full WAT lines 49105-49175 ---
+49105:       (local.get $2)
+49106:       (i64.const 1)
+49107:      )
+49108:      (call $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_
+49109:       (i32.add
+49110:        (local.get $2)
+49111:        (i32.const 48)
+49112:       )
+49113:       (local.get $1)
+49114:       (i32.add
+49115:        (local.get $2)
+49116:        (i32.const 72)
+49117:       )
+49118:      )
+49119:      (block $block2
+49120:       (br_if $block2
+49121:        (i64.ne
+49122:         (local.tee $4
+49123:          (i64.load offset=48
+49124:           (local.get $2)
+49125:          )
+49126:         )
+49127:         (i64.const 2)
+49128:        )
+49129:       )
+49130:       (i32.store8 offset=72
+49131:        (local.get $2)
+49132:        (i32.load8_u offset=56
+49133:         (local.get $2)
+49134:        )
+49135:       )
+49136:       (call $_RNvNtCsbDPPsInctpH_4core6result13unwrap_failed
+49137:        (i32.const 1061536)
+49138:        (i32.const 7)
+49139:        (i32.add
+49140:         (local.get $2)
+49141:         (i32.const 72)
+49142:        )
+49143:        (i32.const 1058184)
+49144:        (i32.const 1061544)
+49145:       )
+49146:       (unreachable)
+49147:      )
+49148:      (i64.store offset=80
+49149:       (local.get $2)
+49150:       (i64.load offset=56
+49151:        (local.get $2)
+49152:       )
+49153:      )
+49154:      (i64.store offset=72
+49155:       (local.get $2)
+49156:       (local.get $4)
+49157:      )
+49158:      (local.set $5
+49159:       (i32.add
+49160:        (local.get $2)
+49161:        (i32.const 72)
+49162:       )
+49163:      )
+49164:      (br_if $label1
+49165:       (local.tee $3
+49166:        (i32.add
+49167:         (local.get $3)
+49168:         (i32.const -1)
+49169:        )
+49170:       )
+49171:      )
+49172:     )
+49173:     (call $_RNvXs1_CselxLhvXuDLR_11canbench_rsNtB5_10BenchScopeNtNtNtCsbDPPsInctpH_4core3ops4drop4Drop4drop
+49174:      (i32.add
+49175:       (local.get $2)
+
+--- scalar prologue and in-place initialization; full WAT lines 49468-49634 ---
+49468:  (func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+49469:   (local $3 i32)
+49470:   (local $4 v128)
+49471:   (local $5 i64)
+49472:   (local $6 i64)
+49473:   (local $7 i64)
+49474:   (local $8 i64)
+49475:   (local $9 i64)
+49476:   (local $10 i32)
+49477:   (local $11 i64)
+49478:   (local $12 i64)
+49479:   (local $13 i64)
+49480:   (local $14 i64)
+49481:   (local $15 i64)
+49482:   (local $16 i64)
+49483:   (local $17 i32)
+49484:   (local $18 i32)
+49485:   (local $19 i32)
+49486:   (local $20 i32)
+49487:   (global.set $__stack_pointer
+49488:    (local.tee $3
+49489:     (i32.sub
+49490:      (global.get $__stack_pointer)
+49491:      (i32.const 304)
+49492:     )
+49493:    )
+49494:   )
+49495:   (v128.store offset=112 align=8
+49496:    (local.get $3)
+49497:    (local.tee $4
+49498:     (v128.const i32x4 0x00000000 0x00000000 0x00000000 0x00000000)
+49499:    )
+49500:   )
+49501:   (v128.store offset=96 align=8
+49502:    (local.get $3)
+49503:    (local.get $4)
+49504:   )
+49505:   (v128.store offset=80 align=8
+49506:    (local.get $3)
+49507:    (local.get $4)
+49508:   )
+49509:   (i64.store offset=144
+49510:    (local.get $3)
+49511:    (i64.const 0)
+49512:   )
+49513:   (v128.store offset=152 align=8
+49514:    (local.get $3)
+49515:    (local.get $4)
+49516:   )
+49517:   (v128.store offset=128 align=8
+49518:    (local.get $3)
+49519:    (local.get $4)
+49520:   )
+49521:   (i64.store offset=72
+49522:    (local.get $3)
+49523:    (i64.const 0)
+49524:   )
+49525:   (i32.store offset=64
+49526:    (local.get $3)
+49527:    (i32.const 0)
+49528:   )
+49529:   (i64.store offset=48
+49530:    (local.get $3)
+49531:    (i64.const 0)
+49532:   )
+49533:   (v128.store offset=168 align=8
+49534:    (local.get $3)
+49535:    (local.get $4)
+49536:   )
+49537:   (i32.store offset=184
+49538:    (local.get $3)
+49539:    (i32.const 0)
+49540:   )
+49541:   (local.set $5
+49542:    (i64.load
+49543:     (local.get $2)
+49544:    )
+49545:   )
+49546:   (local.set $6
+49547:    (i64.load offset=8
+49548:     (local.get $2)
+49549:    )
+49550:   )
+49551:   (local.set $7
+49552:    (i64.load offset=16
+49553:     (local.get $2)
+49554:    )
+49555:   )
+49556:   (block $block47
+49557:    (block $block56
+49558:     (block $block57
+49559:      (block $block45
+49560:       (block $block64
+49561:        (block $block60
+49562:         (block $block51
+49563:          (block $block53
+49564:           (block $block43
+49565:            (block $block4
+49566:             (block $block12
+49567:              (block $block34
+49568:               (block $block9
+49569:                (block $block
+49570:                 (br_if $block
+49571:                  (i64.ge_u
+49572:                   (local.tee $8
+49573:                    (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_size)
+49574:                   )
+49575:                   (i64.const 281474976710656)
+49576:                  )
+49577:                 )
+49578:                 (i64.store offset=168
+49579:                  (local.get $3)
+49580:                  (i64.shl
+49581:                   (local.get $8)
+49582:                   (i64.const 16)
+49583:                  )
+49584:                 )
+49585:                 (i64.store offset=272
+49586:                  (local.get $3)
+49587:                  (i64.const 0)
+49588:                 )
+49589:                 (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_read
+49590:                  (i64.extend_i32_u
+49591:                   (i32.add
+49592:                    (local.get $3)
+49593:                    (i32.const 272)
+49594:                   )
+49595:                  )
+49596:                  (i64.const 16)
+49597:                  (i64.const 8)
+49598:                 )
+49599:                 (i32.store offset=200
+49600:                  (local.get $3)
+49601:                  (local.get $1)
+49602:                 )
+49603:                 (i64.store offset=192
+49604:                  (local.get $3)
+49605:                  (local.tee $9
+49606:                   (i64.load offset=272
+49607:                    (local.get $3)
+49608:                   )
+49609:                  )
+49610:                 )
+49611:                 (local.set $8
+49612:                  (i64.load offset=48
+49613:                   (local.get $3)
+49614:                  )
+49615:                 )
+49616:                 (i32.store offset=204
+49617:                  (local.get $3)
+49618:                  (i32.add
+49619:                   (local.get $3)
+49620:                   (i32.const 48)
+49621:                  )
+49622:                 )
+49623:                 (local.set $2
+49624:                  (i32.load offset=64
+49625:                   (local.get $3)
+49626:                  )
+49627:                 )
+49628:                 (block $block3
+49629:                  (block $block2
+49630:                   (block $block1
+49631:                    (br_if $block1
+49632:                     (i64.eq
+49633:                      (local.get $8)
+49634:                      (i64.const 2)
+
+--- result storage and backing admission; full WAT lines 51670-51790 ---
+51670:                 (local.get $3)
+51671:                 (local.tee $18
+51672:                  (i32.add
+51673:                   (local.get $17)
+51674:                   (i32.const 1)
+51675:                  )
+51676:                 )
+51677:                )
+51678:                (block $block50
+51679:                 (br_if $block50
+51680:                  (i64.ne
+51681:                   (i64.load offset=48
+51682:                    (local.get $3)
+51683:                   )
+51684:                   (i64.const 2)
+51685:                  )
+51686:                 )
+51687:                 (local.set $10
+51688:                  (local.get $18)
+51689:                 )
+51690:                 (br $block49)
+51691:                )
+51692:                (local.set $1
+51693:                 (i32.add
+51694:                  (local.get $3)
+51695:                  (i32.const 48)
+51696:                 )
+51697:                )
+51698:                (br_if $block51
+51699:                 (local.get $17)
+51700:                )
+51701:               )
+51702:               (br_if $block52
+51703:                (i32.lt_u
+51704:                 (local.get $2)
+51705:                 (local.get $10)
+51706:                )
+51707:               )
+51708:               (call $_RNvNtCsbDPPsInctpH_4core9panicking18panic_bounds_check
+51709:                (local.get $2)
+51710:                (local.get $10)
+51711:                (i32.const 1063072)
+51712:               )
+51713:               (unreachable)
+51714:              )
+51715:              (i32.store offset=64
+51716:               (local.get $3)
+51717:               (i32.const 1)
+51718:              )
+51719:              (local.set $1
+51720:               (i32.add
+51721:                (local.get $3)
+51722:                (i32.const 48)
+51723:               )
+51724:              )
+51725:             )
+51726:             (i64.store offset=8
+51727:              (local.tee $2
+51728:               (i32.add
+51729:                (local.get $1)
+51730:                (i32.shl
+51731:                 (local.get $2)
+51732:                 (i32.const 4)
+51733:                )
+51734:               )
+51735:              )
+51736:              (local.get $11)
+51737:             )
+51738:             (i64.store
+51739:              (local.get $2)
+51740:              (local.get $8)
+51741:             )
+51742:             (br_if $block53
+51743:              (i64.le_u
+51744:               (local.tee $8
+51745:                (i64.load offset=128
+51746:                 (local.tee $2
+51747:                  (i32.load offset=204
+51748:                   (local.get $3)
+51749:                  )
+51750:                 )
+51751:                )
+51752:               )
+51753:               (local.tee $11
+51754:                (i64.load offset=120
+51755:                 (local.get $2)
+51756:                )
+51757:               )
+51758:              )
+51759:             )
+51760:             (br_if $block53
+51761:              (i64.ne
+51762:               (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_grow
+51763:                (i64.add
+51764:                 (i64.sub
+51765:                  (i64.shr_u
+51766:                   (local.get $8)
+51767:                   (i64.const 16)
+51768:                  )
+51769:                  (i64.shr_u
+51770:                   (local.get $11)
+51771:                   (i64.const 16)
+51772:                  )
+51773:                 )
+51774:                 (i64.extend_i32_u
+51775:                  (i64.ne
+51776:                   (i64.and
+51777:                    (local.get $8)
+51778:                    (i64.const 65535)
+51779:                   )
+51780:                   (i64.const 0)
+51781:                  )
+51782:                 )
+51783:                )
+51784:               )
+51785:               (i64.const -1)
+51786:              )
+51787:             )
+51788:            )
+51789:            (local.set $1
+51790:             (i32.const 1)
+
+--- ready result and empty publication branch; full WAT lines 51865-52005 ---
+51865:           (block $block58
+51866:            (br_if $block58
+51867:             (i64.ne
+51868:              (i64.load offset=48
+51869:               (local.get $3)
+51870:              )
+51871:              (i64.const 2)
+51872:             )
+51873:            )
+51874:            (local.set $1
+51875:             (i32.load offset=64
+51876:              (local.get $3)
+51877:             )
+51878:            )
+51879:            (local.set $2
+51880:             (i32.load offset=60
+51881:              (local.get $3)
+51882:             )
+51883:            )
+51884:            (br $block59)
+51885:           )
+51886:           (local.set $2
+51887:            (i32.add
+51888:             (local.get $3)
+51889:             (i32.const 48)
+51890:            )
+51891:           )
+51892:           (br_if $block60
+51893:            (i32.ge_u
+51894:             (local.tee $1
+51895:              (i32.load offset=64
+51896:               (local.get $3)
+51897:              )
+51898:             )
+51899:             (i32.const 2)
+51900:            )
+51901:           )
+51902:          )
+51903:          (block $block61
+51904:           (br_if $block61
+51905:            (i32.eqz
+51906:             (local.get $1)
+51907:            )
+51908:           )
+51909:           (local.set $8
+51910:            (i64.load offset=8
+51911:             (local.get $2)
+51912:            )
+51913:           )
+51914:           (local.set $11
+51915:            (i64.load
+51916:             (local.get $2)
+51917:            )
+51918:           )
+51919:           (block $block63
+51920:            (block $block62
+51921:             (br_if $block62
+51922:              (i32.ne
+51923:               (i32.load offset=72
+51924:                (local.get $3)
+51925:               )
+51926:               (i32.const 1)
+51927:              )
+51928:             )
+51929:             (local.set $1
+51930:              (i32.load offset=84
+51931:               (local.get $3)
+51932:              )
+51933:             )
+51934:             (local.set $2
+51935:              (i32.load offset=80
+51936:               (local.get $3)
+51937:              )
+51938:             )
+51939:             (br $block63)
+51940:            )
+51941:            (br_if $block64
+51942:             (i32.ge_u
+51943:              (local.tee $1
+51944:               (i32.load offset=76
+51945:                (local.get $3)
+51946:               )
+51947:              )
+51948:              (i32.const 4)
+51949:             )
+51950:            )
+51951:            (local.set $2
+51952:             (i32.add
+51953:              (local.get $3)
+51954:              (i32.const 80)
+51955:             )
+51956:            )
+51957:           )
+51958:           (block $block67
+51959:            (block $block68
+51960:             (block $block65
+51961:              (br_if $block65
+51962:               (i32.eqz
+51963:                (local.get $1)
+51964:               )
+51965:              )
+51966:              (local.set $19
+51967:               (i32.add
+51968:                (local.get $2)
+51969:                (i32.shl
+51970:                 (local.get $1)
+51971:                 (i32.const 4)
+51972:                )
+51973:               )
+51974:              )
+51975:              (block $block66
+51976:               (br_if $block66
+51977:                (i32.ne
+51978:                 (i32.load offset=128
+51979:                  (local.get $3)
+51980:                 )
+51981:                 (i32.const 1)
+51982:                )
+51983:               )
+51984:               (local.set $18
+51985:                (i32.load offset=140
+51986:                 (local.get $3)
+51987:                )
+51988:               )
+51989:               (local.set $20
+51990:                (i32.load offset=136
+51991:                 (local.get $3)
+51992:                )
+51993:               )
+51994:               (loop $label3
+51995:                (br_if $block67
+51996:                 (i32.lt_u
+51997:                  (local.tee $1
+51998:                   (i32.add
+51999:                    (local.tee $17
+52000:                     (i32.load
+52001:                      (i32.add
+52002:                       (local.get $2)
+52003:                       (i32.const 12)
+52004:                      )
+52005:                     )

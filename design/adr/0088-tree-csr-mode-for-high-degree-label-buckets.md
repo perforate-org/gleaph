@@ -578,7 +578,7 @@ Execution model — bounded transitions are synchronous, O(S) work is stepped:
 | Promotion                           | O(T_promote) ≈ few M ins | synchronous, in the crossing call |
 | Deepen / flatten                    | O(R_max) = 4 KiB   | synchronous                     |
 | Block mint/release                  | O(1)               | synchronous                     |
-| Demotion                            | O(S)               | deferred maintenance (ADR 0020) |
+| Demotion | Current unsafe implementation: O(S), synchronous in deletion | [Unresolved reclamation proposal](#planned-position-preserving-demotion-and-deletion); no native demotion queue exists |
 | `materialize_inline_property_stream` | O(S × w)           | stepped/resumable (ADR 0021)    |
 | Full ordered compaction of a tree bucket | O(S)          | stepped maintenance             |
 
@@ -1459,14 +1459,334 @@ GAP-002 producer/header validation remains separate. The approved slab-compactio
 preserves tree siblings; it is not evidence of tree mutation or demotion safety. No threshold,
 wire layout or fresh-state requirement changed.
 
-### Experimental: prepared paged-map edits
+### Planned: position-preserving demotion and deletion
 
-**Status: Experimental, implemented checkpoint; performance acceptance remains blocked.**
-`ic-stable-paged-ordered-map` owns this generic map API, not LARA's allocation or publication
-policy. The compact page layout below is current; directory capacity, the existing version
-marker and public API are unchanged. This checkpoint does not implement prepared span
-acquisition, whole-unit LARA publication, tree
-demotion/deletion or Graph transaction handling, and does not accept ADR0097.
+**Status: Planned, revised after REQUEST CHANGES; reclamation policy remains unresolved.**
+Revision anchor: 2026-09-22 13:17:45 UTC +0000. The 12:00:21 draft is preserved as reviewed history
+in the [source audit and revision record](../evidence/adr0097-demotion-design.md). Neither draft
+supersedes the shrink contract or authorizes implementation. The recorded 513→512 failure and
+current assertion remain unchanged. Stage A's physical-publication safety work is independent of
+approval of any demotion policy.
+
+#### Reopened decision and representability
+
+A no-move deletion must remove exactly the selected occurrence, decrease degree/global accounting
+once, and preserve survivor positions and values. That safety constraint does **not** establish a
+new right to retain tree form permanently. Keep `T_DEMOTE = 512` and `T_PROMOTE = 1024`; for a pending
+delete let `D = degree - 1` and `S = original stored_slots`. Eligibility is evaluated before mutation.
+**Unchanged numeric thresholds do not mean unchanged shrink behavior.** In the rejected proposal,
+`S = 1025, D = 512` would never demote while nonempty even with ample capacity. That is an unapproved
+policy change, not merely error handling. The retained-extent rule is withdrawn, not implemented
+as a temporary suppression branch.
+
+The old target was specifically **spill-free**: `S` initialized prefix slots, no edge run, and `D`
+dense values. Its `S <= 1024` admission is not a limit on every slab representation. Existing slab
+prefix ownership and total initialized extent are different: a prefix of `P` and a used run of `R`
+represent `P + R` original positions; neither allocator capacity nor live degree substitutes for
+that sum. With the existing prefix cap and `MAX_ROWS = 1024`, `S = 1025` can, at the representation
+level, use `P = 1, R = 1024` without renumbering or raising a cap. This is an existing run format,
+not a fabricated sparse identity map. Source conversion, target acquisition, promotion admission,
+value placement and later reclamation for that shape still need proof. For targets constrained to
+`P <= 1024` and one run `R <= 1024`, the envelope is `S <= 2048`, not an arbitrary tree high-water.
+
+Consequently `S > 1024` alone is neither capacity failure nor a deletion disposition. The alternatives
+below compare a prefix/run target, movement-bearing explicit operations and existing resumable
+maintenance before considering any new progress mechanism. Reclamation timing, progress under idle
+or failing capacity, and behavior beyond the existing target envelope remain decision gates. A
+transient retained-capacity outcome is also a proposal whose retry/liveness contract needs approval;
+it is not licensed to become permanent retention. No cap, threshold, schema, compatibility path,
+new persistent state, hidden move vector or unsafe no-move wrapper is authorized.
+
+The last live deletion must not discard roots that still own resources. A synchronous implementation
+would prepare complete retirement or reject before the deletion; that is a safety condition, **not**
+a liveness solution. The historical-extent work bound below remains an unresolved gate. Repeating a
+successfully deleted slot returns `None`, not a reclamation retry receipt. Existing queued work may
+not be declared finished or dropped merely because a conversion was not performed.
+
+#### One aligned selection
+
+`tree_write.rs::tree_mode_demote_to_slab` remains the conversion owner. Use the existing native
+property-aware visitor (width zero has no property access), original positions and canonical
+liveness semantics. In one selection pass, account for the pending deletion and build:
+
+- For a position-preserving target, the edge at original slot `i`, with holes and the pending
+  deletion encoded as tombstones. Partitioning that image between prefix and run does not change
+  `i`. A separately approved packed operation instead needs the complete old→new mapping; selection
+  alone does not publish it. Never sort/deduplicate by target: parallel occurrences are distinct.
+- The live value sequence: append the full value at `i` if and only if that same edge is selected
+  as surviving. Live value ordinal `j` belongs to the `j`th surviving original position, not to
+  property slot `j` in the old tree. Validate exact survivor count and `D * w` bytes before writes.
+- The removed occurrence with its original slot, storage label and supported inline bytes for
+  existing delete observers. Retaining tree form leaves its dead property's bytes untouched;
+  converting to slab legitimately drops dead values because slab values are dense over live rows.
+
+Supply the pending deletion to this same selection without first tombstoning the source. A ready
+conversion publishes the new image directly; it does not commit an intermediate tree deletion.
+The existing explicit demotion/test entry has no pending deletion: use current degree as `D`,
+leave global count unchanged, and share this preparation/publication path rather than retaining
+a second demoter. Later native wiring prepares all accounting before writes: conversion adds `D`
+to slab-live; a pending deletion decreases global count once; explicit conversion does not. A
+retained-tree deletion, if its disposition is approved, does not change slab-live.
+
+Above-threshold deletion prepares the requested native row/value and marker/header/count changes;
+it is not required to scan every unvisited root. Encountered corruption still propagates. A retained
+path must not be advertised as full-tree validation. `EdgeRemoval<E>` is a committed result, not
+ownership of unpublished targets.
+
+Use fallible buffer reservation and checked lengths, not a post-write debug assertion. Raw native
+visitors remain tombstone-inclusive. The rule is owned here, not copied into remove wrappers,
+Graph observers or a property-only filter.
+
+#### Physical ownership and the outer publication unit
+
+Source `S` is **not** the source LEG allocation. `bucket_resident_region` / combined-root geometry
+owns `[edge roots | property roots]` using each physical depth marker; width zero has no property
+roots. Future conversion must inventory leaves and **every interior level** before retiring any
+root, rejecting duplicate/free/unminted IDs and invalid geometry. Root IDs remain addressing truth;
+this does not certify GAP002 headers or every plausible minted cross-bucket alias. Target constructors
+must describe actual initialized prefix/run extents and independently dense live values. A spill-free
+target uses `stored_slots = S`; a prefix/run target uses prefix `P` plus used run `R = S - P`. Neither
+constructor nor degree can stand in for old ownership. Pin-owned subspans are not individually free;
+standalone unpinned regions and the old leaf cover must each be retired exactly once.
+
+`compact.rs` remains the single physical publication owner. **The unit is one outer rewrite or
+whole-leaf slide/relocation call, including all peers it can change**, not one invocation of its
+12-argument vertex commit helper. This is not an entire insertion, maintenance pass, paired Graph
+delete or IC transaction. An insertion may have changed state before entering this unit.
+
+| Existing flow | Current earliest canonical publication | Required prepared unit |
+| --- | --- | --- |
+| Weighted slide / relocation expanded in place | First source-overlapping copy, otherwise first changed row/count write; expansion's free-prefix reservation is not adjacency publication | Every affected normal/bypass/tree peer, endangered source bytes, final rows, old/new cover/counts and cancellation of any acquired expansion |
+| Disjoint leaf relocation | `set_segment_physical_start` changes the pin **before** the peer loop; later peers can still fail | New reservation remains unpublished; every peer and the final pin/count transition are prepared before pin or row publication |
+| Rewrite with no relocation | First overlapping prefix/root write, or the first row/origin publication for a disjoint target | Requested vertex, complete destination layout, affected ownership/accounting and retirement |
+| Rewrite whose base resolution relocates peers | The nested relocation's pin write, not the later requested-vertex commit | Relocation **and** the requested final rewrite form one unit; compute the latter against the planned placement, never publish relocation and restart |
+
+Remove the nested publish/restart in `rewrite_vertex_edge_span_with_policy` and lift preparation
+outside both peer loops in `rebalance_labeled_leaf_weighted_slide_in_block`. A vector of independently
+committed vertices is not atomic preparation. Failure in the last peer must leave every earlier
+peer canonical at its old coordinates. Before the first canonical write, the owner must have:
+
+1. Captured canonical source rows, mode-specific physical regions, old pin, segment/count index and
+   all affected peers, including bypass projections. Plan the complete final layout with existing
+   placement/leaf geometry; preserve weights, headroom, thresholds and fallback semantics.
+2. Checked all slot/byte ranges, descriptor destinations/encodings, source/destination intersections,
+   and prospective counters for the whole unit. Physical-only work changes neither global nor slab
+   live counts; pinned leaf `total` follows the **cover**, not the sum of bucket replacements.
+3. Planned every destination without publishing free-list or element-capacity changes, under the
+   allocation authority described below. Prepare exact old-cover/unpinned releases against that
+   prospective post-acquisition state. Stable backing growth, serializer/copy scratch, index directory
+   space, heap bookkeeping and release validation are obligations, not just `reserve_for_releases(n)`.
+   Discard on rejection; do not acquire through today's bare-address facade and compensate afterward.
+4. Prepared final vertex/bucket bytes via `LabelBucketStore` and pin/count transitions via existing
+   edge/count owners. Keep old ownership separate from final images. No descriptor re-encoding,
+   checked count update, source-resource discovery or new reservation may reject after publication.
+
+Afterward, publication consumes the prepared unit once: copy safe payloads, publish all rows and the
+pin/count transition, then apply already prepared retirement. Intermediate rows need not be visible
+as one hardware write: there is no callback, observer, await, re-entry or recoverable return in that
+interval. Internal reads of proven immutable raw source ranges and prepared allocator bookkeeping
+are distinct from fresh fallible planning. An unexpected violation aborts; native unwind is not recovery.
+
+**Streaming and scratch:** disjoint means the union of final destination writes is disjoint from
+**every** still-needed source in the unit, not merely each peer's own source. After all peers' metadata
+and capacities are prepared, stream raw bytes through one reusable bounded buffer. No edge/value
+re-decoding or late per-peer allocation is required. Overlap retains the existing buffered strategy:
+materialize all endangered raw regions before the first write; buffering the whole affected payload
+is permitted there, not the default for a disjoint move. If rewrite uses a virtual relocated layout,
+copy directly from original canonical ranges to final ranges rather than exposing an intermediate pin.
+
+Let `V` be participating vertices, `K` their total descriptors, `P` the sum of copied physical bytes,
+`Q = max_v(P_v)` the largest participant's physical payload, `R` release intents and `F` allocator
+free records. Reserve one reusable `Q`-byte buffer for the disjoint arm, retaining per-vertex streaming
+rather than adding a new small-chunk optimization. Disjoint payload scratch is `Q`, plus
+`O(V + K + R)` prepared metadata and `34*K` encoded bucket bytes; overlapping payload scratch is
+at most `P` plus that metadata. `K <= 65536*V`; `V` comes from the configured segment,
+not an assumed 16. `P` counts initialized prefixes/combined roots, not unused capacity, retained-run
+payload or native LTB leaves. Allocator scratch is a separate term: its lazy heap can depend on `F`.
+All arithmetic and reservations are checked. Do not impose a new graph-size cap to hide a scratch
+problem. Record actual capacities, copied/read/written bytes and growth for both arms before/after;
+no unconditional whole-leaf buffer or extra full-payload validation scan is accepted without measurement.
+
+The minimal shape is **one private, non-Clone, nonpersisted prepared layout** at this owner, containing
+all participant final rows, validated copy ranges, old/new cover and count transition, planned
+reservations plus their owner-bound acquisition/retirement image, and the selected raw scratch strategy. A fallible
+prepare call returns it; one consuming publish call has no recoverable result. Child descriptor and
+release data remain opaque to `compact`; wire/index rules stay in their current stores. Replace the
+12-argument helper and its three call sites together; do not add flags, a demotion-only publisher,
+parallel safe/unsafe publication paths, or a generic transaction/undo framework.
+
+**Resource-closure gate:** existing reservations pre-grow backing; they do not prepare semantic
+index batches, split scratch or heap work. Plan0339 is completed and independently approved for its
+[bounded admission repair only](../evidence/adr0097-demotion-design.md#reduced-admission-implementation).
+It is not the implementation plan for full A0 or A1. The span acquisition/retirement decision below
+remains **planned and uncompiled**. Review `b9bd4e87` authorized only the generic map foundation's
+bounded implementation/validation; that candidate now exists but failed every direct IC phase and
+the retained LARA control. It is not accepted and does not authorize any later owner implementation.
+
+#### Planned nonpublishing acquisition and retirement
+
+**Selected for review: one prospective acquisition/retirement plan at the existing owners.**
+`span.rs` owns destination selection and element-capacity intent; `FreeSpanStore` owns the free
+records, coalescing, bins, index edits and heap; the paged map owns its page/directory rules.
+`compact.rs` supplies placement and actual retirement intervals, then owns whole-unit publication.
+No second allocator, persistent state, new module, undo framework or raw map geometry in LARA.
+This protocol covers LEG spans; it does not supply B's value-allocation or native LTB retirement proof.
+
+| Choice | Before final metadata is ready | Cancellation obligation | Decision |
+| --- | --- | --- | --- |
+| Nonpublishing acquisition/capacity plan | Only private free-record/index/heap images and proposed capacity change; backing may grow | Discard images under the still-held authority; no free-span release or capacity shrink | Selected: one forward preparation/publication path |
+| Owner-bound cancellation receipt | Free-list takes and capacity are already published | Reserve complete reverse record/bin/index/directory/heap edits **before** each take; retain free-list versus tail origin, old capacity, all receipts and authority; cancel in reverse order without failure | Not selected: subsequent retirement preparation and receipts need the same prospective index machinery, plus inverse publication |
+
+A receipt containing only `(start,len)` is insufficient. Restoring an exact earlier free-list image
+can require reversing a split/rekey, record recycling and heap changes; tail cancellation either
+restores published capacity or introduces a free range that did not previously exist. Both require
+an explicit contract. Reserving stable pages does not reserve inverse directory edits or heap work.
+The selected design avoids this additional state transition rather than hiding it in `Drop`.
+A minimal receipt would be one non-Clone batch bound to `&mut SpanWrite`, retaining each span's
+free-list/tail origin, old capacity and reserved inverse images, with consuming `cancel(self)` and
+commit. Independent receipts borrowing the same writer cannot coexist. Moreover, a reverse map
+ready token would already borrow the map needed for forward retirement preparation: supporting both
+outcomes requires map-owned alternate images under one authority, not two fabricated ready tokens
+or temporarily dropping the guard. That broader two-outcome API is another reason not to select it.
+
+**Backing, capacity and ownership:** physical `Memory::size()` is not persisted/cached
+`elem_capacity`, and neither describes initialized adjacency content. During preparation the latter
+capacity stays `C0`; destinations removed from a *private* free view are still free in canonical
+storage but unavailable to competing allocation because authority is held. A planned tail starts at
+prospective capacity `C*`, not physical backing's end. Retirement is applied to that same private
+post-acquisition view. On rejection, canonical free/index/record/header/bin bytes, heap contents and
+ready flag, both capacity copies, rows, pins and counts remain unchanged. Only unreferenced backing
+(including reserve sentinels) and buffer/heap **capacity**, not logical heap contents, may differ.
+No initialized source bytes may change. Default buffer deallocation is not allocator rollback.
+
+**Allocation authority:** `EdgeStore::span_write()` first obtains the existing free store's
+`by_start.try_borrow_mut()`, then `max_spans.try_borrow_mut()`. Failure releases any first borrow and
+returns `BorrowMutError` before writes or growth. No new lock is added. The free-store writer owns
+these `RefMut`s; its plan borrows their contents exclusively, and the span plan borrows that writer.
+All free-list, restoration, take/pair, reservation and heap-mutating entry points must acquire this
+same authority before mutation; private setters move behind the writer/ready image. Internal calls
+use held authority rather than recursively borrowing. A pure zero/no-op path need not acquire it.
+
+The barrier must also cover `set_elem_capacity` and every whole-header writer that could republish
+capacity. `edges.rs` retains growth/layout arithmetic; `init.rs` retains persisted/cache publication.
+A prepared capacity change writes only that field and updates its cached counterpart, never a stale
+whole-header snapshot. No unguarded capacity setter, raw slab accessor or alternate allocator writer
+may bypass the barrier. Scalar `&self` aliases reject conflicting mutation before their first write
+(existing borrow-panic facades may remain pre-write); checked entry returns the borrow error.
+A second plan/ready object from one writer is prevented by its `&mut` borrow; an independent writer
+conflicts with the held `RefMut`. A consuming ready publisher has no destination-store parameter.
+No post-publication epoch check, custom cleanup `Drop`, native unwind recovery or automatic release.
+As elsewhere, independently reopened stores/raw-memory writers aliasing the same backing are outside
+exclusive region ownership; this is not a new global alias registry.
+
+This authority protects allocation/capacity, not an arbitrary Graph transaction. A1's prepared
+physical object remains private to `compact.rs`: prepare and consume occur inside one closed
+synchronous outer call, with no caller callback, returned ready object, await or re-entry. Its helpers
+must not mutate rows/pins/counts while deriving final metadata. Exposing that object outside this
+flow would require additional row/count authority and is **not** licensed by the span guard.
+
+**Minimum surface:** the generic map signatures below exist in the blocked candidate; span/free-store
+signatures remain uncompiled sketches. These summaries are not executable examples or full-A0 proof:
+
+```text
+// Public, generic, in ic-stable-paged-ordered-map/src/lib.rs only:
+Edit = Insert { key: u64, value: u64 } | Remove { key: u64 }
+PrepareError = Edit { at: usize, source: Error }
+             | Grow { at: usize, source: GrowFailed }
+             | AddressOverflow { at: usize }
+             | Scratch { at: Option<usize>, source: TryReserveError }
+prepare_edits(&mut self, edits: &[Edit]) -> Result<PreparedEdits<'_, M>, PrepareError>
+PreparedEdits::previous_values(&self) -> &[Option<u64>]
+PreparedEdits::publish(self) -> ()
+PreparedEdits::discard(self) -> ()
+
+// crate-visible at EdgeStore/span.rs; all capability fields private:
+EdgeStore::span_write(&self) -> Result<SpanWrite<'_, E, M>, BorrowMutError>
+SpanWrite::plan(&mut self) -> Result<SpanPlan<'_, E, M>, SpanPrepareError>
+SpanPlan::acquire(self, len: u64, avoid: Option<FreeSpan>)
+    -> Result<(Self, FreeSpan), SpanPrepareError>
+SpanPlan::seal(self, retire: &[FreeSpan]) -> Result<PreparedSpans<'_, E, M>, SpanPrepareError>
+SpanPlan::discard(self) -> ()
+PreparedSpans::publish(self) -> ()
+PreparedSpans::discard(self) -> ()
+```
+
+`seal` preserves the input plan's borrow lifetime (the sketch's `'_` is that same lifetime).
+Consuming `acquire` means an error discards the entire draft; a caller cannot ignore an error and
+seal partially updated scratch. There is no poisoned-state flag or reusable cancellation receipt.
+Returning a `FreeSpan` supplies placement coordinates, not independent allocation authority.
+Only the bound plan can seal those changes; A1 must retain it until publication/discard.
+
+| Private object / owner | Minimum retained fields |
+| --- | --- |
+| Map `PreparedEdits` | `&mut StablePagedOrderedMap`, one opaque dirty-range image with inline small storage and fallible overflow storage as specified below; one previous value per intent, inline for zero/one intent |
+| Free-span writer | Bound store plus existing index and heap `RefMut`s; no second allocator |
+| Free-span draft/ready image | Borrowed writer parts; prospective header/bin/record overrides, ordered map intents and their caller-origin indices while drafting; sealed opaque map preparation, encoded record/bin/header writes and prepared heap update when ready |
+| Span writer/plan | Bound `EdgeStore` and free writer; plan borrows those parts, retains `C*`, acquired ranges and the free draft. Acquired ranges exclude accidental retirement of a destination; no origin/inverse-write log is needed |
+| `PreparedSpans` | Bound store, slab-owner-backed encoded capacity change, sealed free preparation. Acquired ranges can be discarded after seal validates retirement disjointness |
+
+The structs borrow writer **parts**, not themselves; do not put a guard and a token borrowing that
+guard into a self-referential struct. No `Clone`, public constructor, raw edit-image accessor or
+redirectable publisher. `FreeSpanStore` supplies prospective operations within its current file;
+LARA never decodes or predicts a paged-map split. Map scalar insert/remove and the new public batch
+use one private prepare-image/publish-image engine. Scalar `&self` calls prepare and consume
+immediately without exposing a token; public preparation retains `&mut self` across the caller's
+interval. Delete superseded immediate page/bin edit implementations, not merely wrap them.
+
+##### Scalar dirty-write and scratch contract
+
+**P2 contract; implementation acceptance blocked:** an image means pre-addressed **dirty fields/entry ranges**, not an
+obligatory 1048-byte page copy. One shared `apply_edit` rule reads the canonical-plus-pending view and
+emits these ranges for scalar and batch calls. Storage size does not select a different editor.
+Keep three output-range descriptors, 32 encoded bytes and zero/one prior result inline; retain
+fixed-size lookup/header/address locals, not a page payload array, on basic paths. Overflow of those
+bounds uses fallibly reserved byte/range buffers; only multi-result batches need a result vector.
+No `Vec` conversion merely to pass a scalar edit/result through the batch interface. The candidate's
+native image object measures192B. Hash-matched static inspection found a752-byte linear-memory
+stack adjustment in the original candidate's scalar function and304B after the authorized correction.
+Neither is peak call-chain stack or a Wasm object-size measurement. See the
+[correction evidence](../evidence/adr0097-demotion-design.md#caller-owned-image-correction-checkpoint).
+The32-byte/three-descriptor limits are encoded-storage bounds, not stack-size claims.
+
+| Operation on valid backing | Reads and retained image | Publication / allocation contract |
+| --- | --- | --- |
+| Existing-key replacement | Directory/key search, selected header and prior value; retain one encoded value, not the selected page payload | Write only its 8-byte value field, one write; no map/header/key rewrite, map-owned dynamic buffer/reserve or grow |
+| Absent remove | Directory/search evidence needed to establish absence; no payload image | Zero writes, map-owned dynamic buffer/reserve or grow; inline `None`. Do not inspect unrelated pages |
+| Non-splitting tail insertion into a nonempty page | Lookup and checked lengths; one new 16-byte entry, 2-byte page length, 8-byte map length | Exactly three ranges /26 bytes, inline; no whole-header or old payload rewrite, directory work, dynamic reserve or grow |
+| Tail removal leaving the page nonempty | Lookup/prior value and checked lengths; two length fields | Exactly two ranges /10 bytes, inline; do not clear the now-unused entry or rewrite other header fields; no dynamic reserve or grow |
+| Interior shift, actual split or directory shift | Read only the affected entry suffix; a split legitimately needs all64 old entries and one inserted entry (1040 encoded bytes). Directory work retains only affected minima/entries and shifted suffix | Reserve overflowing dirty bytes/range descriptors before building them; no second `split_off` payload vector. Reuse one encoded65-entry region for left/right split ranges. Write affected payload/metadata only, not both whole1048-byte pages; coalesce a contiguous directory suffix rather than create a buffer per entry |
+
+Value-only edits and unsuccessful searches do not traverse unchanged neighbor links; validate the
+selected page's ACTIVE flag when a page is selected, not every other page's header. This preserves
+the later corrupted-page witness without substituting an earlier whole-map guard.
+A split may allocate overflow scratch even for one scalar call; results still fit inline. Compute
+added byte/range needs per edit and reserve each overflowing collection before filling it; repeated
+batch edits may enlarge those collections during preparation, never after ready. Preserve existing
+split/directory admission order and all checked geometry. Newly minted pages require backing for
+the **full allocated page extent** even when the highest dirty byte is earlier; dirty bytes are not
+allocated capacity. These decisions add no persistent format, cache, public mode flag or dependency.
+
+For the same-source basic scalar fixture in Draft0340, candidate read calls/bytes must not exceed
+the baseline ceilings; changed-page cloning cannot be excused by functional parity. Map-owned
+scratch counters must show zero dynamic use/reserve on the four basic paths, and report dirty-byte/
+range high-water. Baseline scratch is a source audit where no observer exists, not a fabricated
+runtime zero. The direct IC scalar phases and native traffic oracle are separate gates: neither
+proves global allocator activity, compiled stack size or all population sizes. Any needed excess
+requires review of the concrete check/cost, not loosening the oracle or calling it unavoidable.
+
+**Historical map checkpoint R (Q earlier).** R `d2980db54ca03b4893b7f6031ec5a6147927e345074250fe3ed8ab733c21298d` = Q plus the bounded local-position contract. R meets its Q-relative controls but still fails **all six original ceilings**; no tolerance, aggregate or budget waiver applies. Full A0/A1, mutation, ownership, reclamation and ADR0097 movement/sidecars/demotion/deletion/matching/shrink/retirement and landing obligations remain open. E `172879d5…` remains the historical performance reference; F/G remain rejected; Q is historical. Evidence lives once in the report's [R checkpoint](../evidence/adr0097-demotion-design.md#frozen-r-execution-checkpoint); the [Q checkpoint](../evidence/adr0097-demotion-design.md#frozen-q-execution-checkpoint) and earlier anchors retain theirs.
+
+`DirEntry` owns directory decoding through its new private `decode` method. Canonical
+`read_dir_entry` performs one 16 B backing read; prepared `directory` retains its 16 B prospective
+`EditImage` request. `apply_edit` shifts encoded in-page entries without per-entry decoding;
+`set_entry` remains the pair-encoding owner. Locator/selected tuple and error guards are unchanged.
+`PageHeader` owns page-header mapping; `EditImage` owns dirty ranges and `cover` owns
+coalescing, packed-byte relocation and staged-byte preservation. `EditPlan` borrows that image;
+`PreparedEdits` retains exclusive consuming publication. Geometry, count, admission, split
+pre-covers and E's equality guard/local first-key reuse are unchanged. There is no new public API,
+layout, cache, editor, allocator or publication path.
+
+**Local-position contract:** `apply_edit` forwards the full-page absent-key insertion position (`0..=64`) computed in the same prospective view with no intervening write; `split_page` remains the real split owner, keeping `DirectoryFull`-before-directory-scan and active/full/header/count/admit/publish checks, deleting only its repeated search; the cfg adapter transparently forwards the fixture-supplied position `64`.
 
 **Current retained map checkpoint: reserved scratch writes (Plan0362, 4/6 original ceilings).**
 Private `Scratch::push_reserved` remains the single initialized-value append owner for dirty-range
@@ -1499,7 +1819,7 @@ refactoring, was restored; no part of that candidate remains. Acceptance was3/6 
 Scoped runtime tests pass; strict LARA test-target clippy remains blocked by unchanged test debt.
 [Trial and restoration](../evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected).
 
-#### Paged-map compact layout
+##### Paged-map compact layout
 
 **Implemented and retained: compact page header (Plan0360, 4/6 original ceilings).** The previous
 format made selected-page validation read a32B header and then its8B first key, although active and
@@ -1543,190 +1863,759 @@ restoring the unchanged version marker/type. Existing LARA test-target lint debt
 The initial trial's first-key guard bypass failed the corruption oracle; that guard is unchanged.
 [Decision, measurements and limits](../evidence/adr0097-performance-architecture-research.md#14-compact-page-header-retained).
 
-#### API and publication
+**Previous retained map checkpoint: single reservation owner (Plan0358, 3/6 original ceilings).**
+Source `4e5456e1` removes the production fit/early-success decision from `reserve_scratch` and
+always delegates normal requests to existing `Scratch::reserve`. Scratch alone decides whether
+capacity suffices and owns fallible growth and representation changes. Test-only observation still
+counts/injects faults for non-fitting requests, but no longer bypasses Scratch on fitting requests.
+Result, byte and range reservations share this path; reservation order, error ordinals, checked
+geometry, lookup validation, prior values, admission and publication remain unchanged. No helper,
+type, parameter, mode, API, layout or second editor is added; Scratch's implementation is unchanged.
 
-```text
-Edit = Insert { key: u64, value: u64 } | Remove { key: u64 }
-PrepareError = Edit { at: usize, source: Error }
-             | Grow { at: usize, source: GrowFailed }
-             | AddressOverflow { at: usize }
-             | Scratch { at: Option<usize>, source: TryReserveError }
-prepare_edits(&mut self, edits: &[Edit]) -> Result<PreparedEdits<'_, M>, PrepareError>
-PreparedEdits::previous_values(&self) -> &[Option<u64>]
-PreparedEdits::publish(self) -> ()
-PreparedEdits::discard(self) -> ()
-```
+Against0357, missing90152→88872 (−1.4198%), replacement105736→102792 (−2.7843%),
+split29609→29531 (−0.2634%) and tail386954→381066 (−1.5216%). LARA total/named
+832624/831663→831214/830253 (−1410 each, overlapping scopes). Every instruction control improves;
+missing remains3200 above its original ceiling, and acceptance remains3/6. Map Wasm shrinks230B;
+LARA Wasm grows966B, explicitly accepted for the measured improvement and simpler production path.
+All measured heap/stable page increases remain0, not a zero-global-allocation claim.
 
-Preparation applies intents in order to one private prospective image. Repeated keys and
-missing removals retain their ordered previous values; a later intent cannot rescue an
-earlier rejection. Errors and discard leave canonical bytes unchanged. Successful backing
-growth may remain, so discard is not memory rollback. Resource errors retain the responsible
-intent where available; result-storage reservation can fail before any intent and uses
-`Scratch { at: None, .. }`.
+The existing Scratch fixture now protects exact fitting reservation, overflow failure preservation
+and nonempty Inline-to-Heap prefix retention. It passes on old and new production; all28 units,
+5 doctests, scoped clippy and both original IC filters pass. A skipped multi-result reservation
+fails the existing ordered preparation after setup at the reserved-capacity assertion. Static
+scalar/preparation frames remain208/160B, locals2/41; exact component prices remain unisolated.
+LARA includes the unchanged pending admission work, not clean-commit integration. Full evidence and
+limits: [performance research, section11](../evidence/adr0097-performance-architecture-research.md#11-single-reservation-owner-retained).
 
-The ready value holds an exclusive map borrow, has no public constructor or image accessor,
-and is neither clonable nor redirectable to another map. Publication consumes it and writes
-only prepared ranges; no encoding, discovery, allocation, growth or recoverable result remains.
-The caller must exclusively own the backing region: independently reopened maps and raw
-mutable Memory aliases are outside this borrow contract. An unexpected publication failure
-is nonrecoverable; native unwind does not undo writes.
+**Previous retained map checkpoint: first-cover borrowed window (Plan0357, 3/6 original ceilings).**
+Source `d750b055` adds only a positive-empty case inside `EditImage::cover`: obtain the reserved byte
+view, fill its one gap, append one descriptor at packed offset0, and return that same borrowed view.
+An empty range set has no packed bytes to relocate or merge. `Scratch` retains capacity checks;
+callers retain no-op/full/live-prefix gap policies. Zero-count and nonempty normalization paths,
+page validation, reservations, error precedence, admission and publication remain unchanged. There
+is no new helper, type, mode, public API, persistent state or second editor. All28 tests are unchanged.
 
-Scalar `insert`/`remove` retain their `&self` facades and immediately prepare and publish
-through the same engine. The old immediate page/directory mutation paths are removed.
-Scalar resource failures project to `Error::OutOfMemory`; non-allocation address overflow
-remains a pre-write panic, while the prepared API reports indexed `AddressOverflow`.
+Replacement and tail improve9.5284%/4.7723%; both LARA rows improve about1.10%. Missing+256
+(4 instructions/call) and split+28 are explicitly accepted, together with map/LARA Wasm growth
+3130/6059B, for those benefits. This is a specific measured tradeoff, not a general tolerance or
+ceiling waiver. Split and both LARA gates remain passed; missing/replacement/tail remain unmet.
+The original source-bound filters, clippy,28 units and5 doctests pass; fresh-zero and Heap48
+callback faults are killed by the unchanged cover oracle. Historical F/G remain rejected in their
+older source/acceptance context. Full measurements, artifacts and static-frame limits are in
+[performance research, section10](../evidence/adr0097-performance-architecture-research.md#10-first-cover-borrowed-window-retained).
 
-#### Image ownership and work bounds
+**Previous retained map checkpoint: metadata-first bulk insertion (Plan0353, 3/6 original ceilings).**
+Source `073473e4` retains0352's bulk movement and changes only private staging order in the existing
+non-split insertion arm. After checked count and reservation, `apply_edit` records map length,
+directory minimum if needed, then page length before the unchanged payload window and new entry.
+The window uses the captured old location/header; it does not reread those staged metadata fields.
+Canonical gaps remain bounded by the old live end. No later duplicate metadata writes remain.
+`cover` still owns normalization, `set_entry` encoding and `publish_image` the first canonical write
+after preparation/admission. Public semantics, errors, dirty destinations and publication order stay.
+No new type, helper, signature, branch, allocation, layout or test fixture is introduced.
 
-`EditPlan::apply_edit` owns the mutation rules. `EditImage` owns sorted, coalesced dirty ranges
-and packed encoded bytes, not whole-page snapshots. Its private `Scratch` representation keeps
-three range descriptors, 32 encoded bytes and one previous value inline, with fallibly reserved
-overflow. Representation does not select another editor. These are encoded-storage bounds,
-not peak-stack or global-allocation claims.
+Against retained0352, tail449930→406346 (−9.6868%), LARA total874351→841909 (−3.7104%) and
+named873390→840948 (−3.7145%). Missing89896, replacement116872 and split29581 are unchanged.
+This candidate is retained without a regression tradeoff: the LARA increase seen in0351's per-entry
+implementation does not occur in this bulk combination. Split and both LARA rows still meet the
+original ceilings; missing/replacement/tail remain unmet. LARA total/named are overlapping scopes,
+not independent workloads. No absolute ceiling or general tolerance changes.
 
-`Scratch::reserve` alone owns the production capacity/growth decision. The map's `reserve_scratch`
-wrapper forwards normal requests and maps errors; it has no independent fitting-request return.
-Test-only observation counts and optionally injects faults for non-fitting requests, but fitting
-native requests also execute Scratch's reservation path. Result, byte and range reservations all
-use this wrapper, retaining their order and error ordinals. Scratch's checked allocation and
-representation updates are unchanged; no new helper, type, parameter or mode is introduced.
+The28 existing tests are byte-identical. Scalar and20-case non-split characterizations passed before
+editing; formatting, clippy,28 units and5 doctests pass afterward. A tail-key-only wrong map length
+fails the intended exact header assertion after setup/replace/missing, then is restored exactly.
+Source-bound builds and original IC filters pass; all heap/stable page deltas are zero. Map/LARA
+Wasm grows6/12B; scalar/preparation frames remain208/160B with2/40 locals. Fresh-tail packed-payload
+relocation34→0B is source-derived, not an isolated IC price or proof of the LARA gain's cause.
+LARA still includes unchanged pending admission work, not clean-commit integration. Source, raw
+streams, frozen compiler-output copies, CSVs and receipt are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/bulk-insert-order-0353/`.
 
-| Basic scalar operation on valid backing | Publication and resource contract |
+**Rejected experiment: lookup-local directory pairs (Plan0356).** An aligned32B directory buffer
+shared by binary search and the below-minimum insertion fallback preserved selected validation and
+prospective visibility, with16B reads at odd tails and no cross-intent reuse. The source-bound
+original map/LARA fixtures nevertheless regressed on every control, including replacement, so the
+candidate and its pair-specific assertions were restored exactly to0353. Scoped clippy,28 units,
+5 doctests and both IC filters passed correctness; no performance gain or new contract was adopted.
+The measured decision, retained ceilings and immutable artifacts are recorded in the
+[performance research, section9](../evidence/adr0097-performance-architecture-research.md#9-adjacent-directory-pair-experiment-rejected).
+
+**Previous retained map checkpoint: interior bulk movement (Plan0352, 3/6 original ceilings).**
+`apply_edit` replaced both non-split entry-shift loops with existing borrowed-window operations,
+retaining the original metadata order at that checkpoint. Insertion covers the affected suffix plus
+the new slot, reading canonical gaps only below the old live end. Removal saves the final prospective16B source and covers
+only its dirty destinations, never the unused old tail. Zero-shift paths skip the window. The unused
+per-entry decoder was deleted. Source `330260d1` and its tests were retained byte-for-byte from the
+measured candidate. Formatting, clippy,28 units and5 doctests passed after restoration. One independently
+seeded map covers20 position/source/direction cases with exact priors, dirty-address union, full bytes
+and discard. The resource fixture exercises remove/reinsert on unbacked page126 before the same
+admission failure. Both archived movement/tail mutants fail at their intended runtime assertions.
+
+Against prior baseline `7ea423ad`, LARA total2014198→874351 (−56.5906%) and named2013237→873390
+(−56.6176%) both pass their original ceilings. Tail450058→449930 also improves. Missing89768→89896
+(+0.1426%), replacement116744→116872 (+0.1096%) and split29579→29581 (+0.0068%) increase by128/128/2
+instructions. These small regressions are explicitly accepted in exchange for the measured LARA
+improvement; they are not a failed correctness contract or a reason to discard the optimization.
+The original zero-regression hypothesis still fails. Its initial rejection/restoration evidence is
+preserved, but the retention decision is superseded by this accepted tradeoff. No absolute ceiling
+is relaxed and no general regression tolerance is introduced: split and both LARA rows pass, while
+missing, replacement and tail remained open. Retained acceptance reached3/6 at0352.
+
+Source, bound Wasm/CSV, tests and the original rejection remain under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/interior-bulk-0352/`; `adoption/receipt.json` records
+the superseding decision. The unchanged source/input/artifact hashes permit reuse of those IC
+measurements, not a new run. Map/LARA Wasm grew6807/13260B; heap/stable page deltas stay zero. The map
+preparation frame grows144→160B while its40 locals and scalar208B frame stay unchanged. The three
+regressions are uniformly2 instructions per scalar invocation, but their exact cause is not isolated;
+static frame size is neither peak stack nor a per-instruction price. LARA still includes pending
+admission work, not clean-commit integration. No new variant, helper, API, layout or editor is added.
+
+The earlier checkpoint measurements below describe their recorded sources, not the current0360 source.
+
+**Rejected: insertion metadata ordering.** Plan0351 moved only the existing non-split insertion
+writes after their unchanged reservation: map length, optional directory minimum, page length,
+then the unchanged backward entry shift and new entry. The same editor, prospective reader,
+normalizer and publication boundary remained; no new type, branch, helper or test fixture.
+Candidate `925cdff5` passed clippy, all27 unchanged units and5 doctests. The scalar byte/traffic
+oracle also rejected a wrong moved map-length write at the tail header assertion. The first
+unconditional mutant instead broke fixture construction; that failed witness placement is preserved
+separately, not counted as tail coverage. The corrected mutant targets the existing tail key only.
+Against retained `7ea423ad`, tail improved450058→406538 (−9.6699%); missing89768,
+replacement116744 and split29579 were unchanged. LARA total2014198→2041282 and
+named2013237→2040321 regressed (+27084 each), so the non-regression requirement rejects this
+candidate. Both sources meet only the original split ceiling (1/6). Source-derived packed payload
+relocation for a fresh-image tail insertion falls34→0B, but that does not price individual copies
+or attribute the LARA regression. Map/LARA Wasm shrank21/54B; static scalar/preparation frames
+remained208/144B and heap/stable page deltas were zero. LARA retains the same pending admission
+work, not clean-commit integration. At the0351 close, the entire lib.rs was restored to `7ea423ad`;
+0352 also retained that order;0353 re-evaluates it with bulk movement. Sources, both mutants, raw
+streams, artifacts, CSVs and restoration are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/insert-address-order-0351/`.
+
+**Rejected: unmaterialized scratch.** Plan0350 tested a private `Scratch::Empty` state with
+logical inline capacity but no initialized payload. Empty/Inline shared one non-heap reservation
+path; first positive checked resize materialized inline values. Initialized storage was retained
+across shrink-to-zero. No unsafe, public/storage API or publication change was introduced.
+Candidatec73c1f64 passed clippy,27 units and5 doctests. A Default-counting extension to the existing
+scratch fixture rejected eager construction and covered cold access, zero capacity, materialization,
+reservation failure and prefix-preserving transitions. No Memory/map/PocketIC fixture was added.
+Against7ea423ad, missing89768→88040 and replacement116744→114696 improved, but
+split29579→29959, tail450058→455754, LARA total2014198→2046463 and named2013237→2045502
+regressed. The unchanged six-row requirement therefore rejects the candidate. It still met only
+split's original ceiling. Map/LARA Wasm grew2420/4248B; heap/stable page deltas remained zero.
+The scalar initialization prefix lost five vector payload-zero stores; its static frame remained208B.
+This confirms deferred initialization reached codegen, not an isolated per-store price or an
+attribution of the other regressions. At the0350 close, the entire lib.rs, including tests, was
+restored to7ea423ad (commit4062d5d50), with Inline/Heap only and original acceptance1/6.
+Candidate/red sources, bound artifacts, CSVs, restoration and review are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/empty-scratch-0350/`.
+
+**Rejected: preparation input-shape specialization.** Plan0349 tested a private borrowed
+`AsRef<[Edit]> + ?Sized` input so scalar `[Edit; 1]` and batch `[Edit]` retained their types
+until the same `prepare_image` body. Public APIs, callers, loop, reservation and publication
+were unchanged. Candidate7ccce649 passed clippy,27 units and5 doctests; truncating the loop to
+one intent failed the existing seven-prior oracle. No tests or fixtures were changed.
+Against7ea423ad, all six instruction counts increased: missing89768→90920,
+replacement116744→118152, split29579→29597, tail450058→452810,
+LARA total2014198→2014318 and named2013237→2013357. Map/LARA Wasm grew945/510B;
+heap/stable page deltas stayed zero. The unchanged non-regression requirement rejects this
+candidate despite functional success and split still meeting its original ceiling.
+In the map Wasm, preparation was folded into `scalar_edit`, with calls to `reserve_scratch`
+and `apply_edit`; the static scalar frame decreased208→192B. These codegen changes did not
+produce a net instruction reduction and do not isolate the cost of length handling.
+The candidate remains archived, not implemented. At the0349 close, lib.rs was restored byte-for-byte
+to7ea423ad (commit4062d5d50), including the slice-only signature; acceptance at that checkpoint was1/6.
+Source/artifact bindings, raw CSVs, mutant, restoration and inspection are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/prepare-input-0349/`.
+
+**Experimental: cover descriptor view reuse (0348 checkpoint; original acceptance then1/6).**
+`EditImage::cover` obtains its final descriptor view from the existing grow/non-grow
+conditional. Growth resizes before moving the suffix and reuses that returned view;
+equal/shrink moves the still-live suffix before resizing. Common descriptor assignment
+and offset rebasing remain single-owned. The unconditional second resize is removed;
+Scratch capacity checks, packed bytes, gap-fill order, zero-count/contained behavior,
+reservation and publication are unchanged. No helper, API, flag or storage change is added.
+Plan0348 extends the existing bridge fixture with an equal-count left extension, exact
+window/packed bytes and trailing rebase. It adds no constructor or test function. The
+characterization passes old and new production; omitting the shrink resize fails with
+four descriptors instead of two. Source7ea423ad passed clippy,27 units and5 doctests.
+The bound map Wasm confirms the growing descriptor move now proceeds directly to the
+final descriptor update rather than repeating capacity/resize dispatch. This is scoped
+codegen evidence, not an isolated dynamic instruction price.
+Against46dfcf02, replacement118664→116744 (−1.62%), tail459658→450058 (−2.09%),
+split29843→29579, LARA total2017834→2014198 and named2016873→2013237; missing stays89768.
+The improvement/non-regression hypothesis passes. Heap/stable page deltas remain zero;
+map/LARA Wasm sizes increase134/216B. Only split satisfies its original ceiling; the other
+five remain unmet. The LARA control retains the same pending admission changes and is
+not clean-commit integration evidence. Source/build bindings, CSVs, native logs, mutant
+and codegen evidence are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/cover-view-0348/`.
+
+**Experimental: split right bulk copy (measured46dfcf02 checkpoint; split ceiling met).**
+`EditPlan::split_page` replaces its right per-entry redistribution with one prospective
+source snapshot through `EditImage::read`. The split-local array holds at most528B,
+derived from page capacity and entry width; the read covers exactly32 or33 old entries.
+For a left insertion it writes one right chunk; for a right insertion it writes the
+prefix/suffix around a new pair encoded by `set_entry`. Earlier staged values and newly
+minted unbacked sources remain governed by the existing reader. No packed offsets or
+borrowed windows escape their owner, and the snapshot is consumed before the left move.
+Both pre-covers, reserve/admission, the non-inlined split boundary, metadata/link/directory
+updates, physical layout and consuming publication are unchanged. This adds no heap
+reservation, shared cache, codec or copy API. The528B temporary is not a peak-stack claim.
+Plan0347 extends the split matrix with right-interior positions33/63 and staged values
+on both sides of the insertion. Its14 cases passed old and new implementations; deliberately
+ignoring staged source bytes or omitting the right suffix both failed the contents oracle.
+Source46dfcf02 passed scoped clippy,27 unit tests,5 doctests and both source-bound IC runs.
+Against c2e5c751, split measured46538→29843 instructions (35.87% reduction), below its
+original30930 ceiling. Missing/replace/tail stayed89768/118664/459658; LARA total/named
+stayed2017834/2016873. Heap/stable page deltas remain zero. The split-improvement and
+non-regression hypothesis passes; **original acceptance is1/6, with five gates still unmet**.
+The first source38b1d7ae remains a failed non-regression attempt: its dynamic read-width
+expression caused a common-reader codegen regression. The final width selects the already
+validated array capacity or capacity minus one entry (528/512), preserving exact source
+bounds without changing the reader or its empty-read contract. Both attempts and bindings
+are under `/Users/yota/.local/share/gleaph/evidence/adr0097/split-right-bulk-0347/`.
+
+**Experimental: split left-window move (measured c2e5c751 checkpoint).**
+`EditPlan::split_page` retains both pre-covers and consumes right-half sources before
+changing the left half. If the insertion falls in the left half, it reacquires that
+covered byte window, shifts the affected encoded entries with `copy_within`, and uses
+`set_entry` for the new pair. A right-half insertion needs no left-entry rewrite. No
+borrowed window survives another image mutation; `cover` remains the owner of packed
+relocation and staged-byte preservation. Scratch admission, dirty-range publication,
+metadata checks and physical layout are unchanged. The existing split owner is marked
+`#[inline(never)]` to keep its temporaries out of the common preparation frame.
+Plan0346 covers positions0/1/31/32/64 with clean and previously edited images; the
+characterization passed the old implementation and rejected a deliberate no-shift mutant.
+Sourcec2e5c751 passed scoped clippy,27 unit tests,5 doctests and both source-bound IC runs.
+Against source85a3 below, missing/replace/split/tail measured89768/118664/46538/459658;
+LARA total/named measured2017834/2016873. All six improve; split falls31.21%. Heap/stable
+page deltas remain zero, but **all six original ceilings still fail**. This validates the
+slice's split-improvement/non-regression hypothesis, not promotion or a cost decomposition.
+The first source615fc80d result remains rejected: split46643 improved, but three basic
+rows regressed by2 instructions per scalar call. Its common preparation frame grew
+144→160B; the refined split call boundary restores144B. These are compiled-frame
+observations, not peak-stack measurements. Both epochs and source/artifact bindings are
+preserved under `/Users/yota/.local/share/gleaph/evidence/adr0097/split-left-window-0346/`.
+
+**Experimental: edit-scoped lookup readers (measured85a3d1a8 checkpoint).**
+`apply_edit` selects a byte-reader callback once per intent and delegates selection and validation
+to one private `EditPlan::lookup`. Direct backing reads require an empty staged range set and
+`backed_end >= PAGES_START`; otherwise reads use the existing `EditImage::read`. The same reader
+supplies directory length, full16-byte directory entries, selected-page metadata, first-key equality
+and in-page keys. `dir_len` still owns its cap check; `page` still owns checked offsets, extent/count
+checks and link bounds in their original order, using its initial count snapshot when no writes are
+staged. Mutation callers of these helpers always supply the prospective reader. Prior-value reads,
+observer points, mutation branches, scratch/admission and publication remain unchanged. There is
+no second metadata validator or new reader mode. The selection record is local to one dispatch,
+not a cache or another editor; its ordinal is test-only. Plan0345 adds native coverage for metadata
+requests in both an empty and a staged image. Source85a3d1a8 passed scoped clippy,26 unit tests
+and5 doctests after a test-callsite correction, then both source-bound Wasm builds and IC runs.
+With the unchanged fixtures, missing/replace/split/tail measured89896/119944/67657/464458
+instructions; LARA total/named measured2018134/2017173. All six improve against their controls
+(and cef3), but **all six original ceilings still fail**. The map control is830fc671 with the same
+bench e63a23bd; LARA retains its separately bound lib515b control. These results support this
+reader-routing change, not a component-cost decomposition or acceptance waiver. Raw CSVs and
+source/build bindings are under
+`/Users/yota/.local/share/gleaph/evidence/adr0097/lookup-metadata-0345/`.
+
+**Experimental interface: borrowed write windows (introduced in plan0343).** Private `Scratch::resize_reserved`
+returns the exact resized view and private `EditImage::cover` returns exactly the requested
+`&mut [u8]` window instead of a packed offset; `write`, `insert_directory` and `remove_directory` borrow that window for their
+existing copy work; the split pre-covers receive their window and discard it at the statement
+boundary, and every subsequent write takes a fresh window. P2's normative dirty-byte,
+reserve, safety and exclusive-publication contract above is unchanged: storage layout, packed
+representation, descriptor coalescing, gap-fill intervals/order, codec and lookup routes are
+untouched by that interface change, and private offsets are simply no longer the caller interface.
+Plan0343 originally deferred validation; later source-bound lookup/split epochs are reported
+separately above. Those measurements do not establish an isolated borrowed-window speedup.
+
+Historical cef3 host-native evidence, not the present candidate: source `cef3f01da605bb8955ef404018f66cd9673c4634e5cbf472e8ad713621fb01ff` passed default-feature
+host-native clippy (`--lib --tests`, warnings denied), all24 unit tests and5 doctests (one executable
+example plus four ownership compile-fail cases). The separately approved cold run used temporary
+archived-f5 lock bytes, restored original lock15, and preserved all125 input pins and absences;
+7.608s elapsed is native execution evidence, not IC instruction pricing. The source-bound receipt
+and full logs are in
+`/Users/yota/.local/share/gleaph/evidence/adr0097/lookup-native-cef3-seq288-user/`.
+The earlier022f attempt remains a separate, failed clippy epoch. cef3 candidate canbench-feature compilation, candidate Wasm and IC measurement HAVE run and are
+separately bound: `/Users/yota/.local/share/gleaph/evidence/adr0097/direct-canbench-cef3-seq426-user/`
+(receipt `8e04613c…`, six-row table `e0e840af…`) measured all six rows with **all six original
+ceilings FAIL**, and those IC results are historical cef3, not the present candidate. Retained e545 source and Wasm
+`835d503b…` are another IC-unmeasured epoch, not a build of cef3. All six original ceilings remain
+binding: they failed for historical R and subsequently for measured cef3; the normative contract
+above and acceptance block below are unchanged.
+
+**Map execution status: acceptance BLOCKED (historical `9436291c…` endpoint).** Corrected map SHA
+`9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71` uses one `apply_edit`, caller-owned
+image preparation and consuming public publication, with sorted/coalesced dirty ranges and fallible
+inline overflow. It reserves full minted-page backing before ready. The unchanged17 map tests,
+27 frozen FreeSpan tests and5 doctests pass; both meaningful mutations reach their intended runtime
+oracles and are restored exactly. The observer still verifies actual staged bytes before edit1's
+selected-page rejection. Both reservation guards, all fixtures and benchmark source remain intact.
+
+Every original IC gate still fails. Replacement is77,576→167,624 instructions, missing removal
+85,672→158,312, split/directory30,930→155,448 and LARA1,527,576→2,256,530. These improve against the
+blocked `be81cd30…` image but not against the approved-admission ceilings. Native traffic, zero page
+growth and an aggregate total cannot waive any phase. The full comparison against both immutable
+references, source/build provenance and closed budget belong in the
+[correction checkpoint](../evidence/adr0097-demotion-design.md#caller-owned-image-correction-checkpoint).
+No individual check/copy/allocation cost has been isolated and no necessary-cost waiver is established.
+
+`PageHeader::decode/encode` now owns the four former header mappings; no header-layout duplication
+remains at those sites. Draft0340 completes `shared-images` but leaves `bounded-proof` pending for
+the failed cost gates. The one authorized correction is frozen; no second patch, broader benchmark,
+commit, merge or further execution follows from its functional passes.
+
+##### Proposed correction within the map owner
+
+**Implemented and measured under authorization `098fb465`; acceptance still BLOCKED.** The
+proposal below was executed once from plan `c5288c39…`, following the user-conveyed REQUEST CHANGES
+review of `ca1c4b59`. Earlier snapshots, refusals and ledgers remain immutable. The
+[report](../evidence/adr0097-demotion-design.md#caller-owned-image-correction-checkpoint) distinguishes
+its actual improvement from the original acceptance ceilings that remain unmet.
+
+The correction uses **caller-owned image preparation plus canonical `PageHeader` encoding/decoding**.
+The existing `EditImage`, `EditPlan` and header type own the data; no type, module, cache, persistent
+state, dependency, mode flag, `Pin`, heap box or unsafe storage was added. It removes image-value
+transfers from the common call path, not through a scalar semantic fast path.
+
+- `scalar_edit` and `prepare_edits` each initialize one local image. Private `prepare_image`
+  fills `&mut EditImage` and returns `Result<(), FailedEdit>`; `EditPlan::new`/its image field
+  borrow that image for planning instead of owning and returning it. Keep one `apply_edit`, the
+  ordered loop, result reservation/push, test observer and final `admit_image`. On error the caller
+  drops private scratch; no ready value escapes. No partially prepared image becomes public.
+- Make private `publish_image` read `&EditImage`. `PreparedEdits::publish(self)` still consumes the
+  exclusive owner-bound capability and calls that publisher; scalar publication remains inside its
+  closed synchronous facade. Update the test-only direct split adapter to the same image lifetime.
+  Delete the `Result<EditImage, FailedEdit>` return, `Ok(plan.image)`, owned `EditPlan.image` and
+  by-value private publisher handoff. Public ready construction may still move the completed image;
+  Rust/compiler move elision or a fixed stack size is not a contract. No custom cleanup `Drop`.
+- Put `decode`/`encode` on the existing private `PageHeader`, using `PAGE_HEADER_SIZE` and the
+  existing `PAGE_OFFSET_*` constants. `EditPlan::page` retains its one32B overlay read and validation
+  order, then decodes; `set_page` encodes before staging. Canonical `read_page_header` reads one32B
+  header and uses the same decoder; test-only `write_page_header` uses the same encoder. Delete all
+  four independent field mappings and the now-unused `read_u16`/`write_u8`/`write_u16` helpers after
+  verifying their callers. Encoding keeps the existing zero padding; basic edits still write only
+  changed fields. This deliberately changes the canonical reader from5calls/27B to1call/32B,
+  not the prospective reader. Record that source-derived traffic delta and price the unchanged
+  LARA control; do not hide it as cost-free normalization or infer a component-level IC saving.
+
+Preserve exact typed errors and scalar projections; result scratch still precedes ordered intents.
+Keep selected-page corruption checks at their current point, including edit1 after edit0 staging;
+retain checked page arithmetic, free-page/link checks, DirectoryFull/membership precedence and full
+allocated-page backing admission with its responsible edit index. The public exclusive borrow,
+no-destination single consume, and nonfallible/nonallocating publication remain unchanged. Pure
+header decoding neither validates another page nor replaces admission. Independently reopened/raw
+backing aliases remain outside the exclusive-region contract.
+
+This is one private lifetime/codec correction, with no new public signatures and no new signature
+exceeding four meaningful parameters. Encapsulation and dependency direction stay in the map;
+header consistency improves by deleting duplicated knowledge. Fitness is deliberately bounded:
+`Scratch`, `EditImage::read/write/cover`, `apply_edit`, split loops and directory shifts retain their
+algorithms. Repeated split-range normalization and repeated admission/search work are separate
+hypotheses, **not** permission to pre-cover payloads, remove guards, add blanket inline attributes
+or tune container representation in this patch. The one unchanged scalar run and retained LARA
+control now measure the joint correction, without a rebuilt baseline. The matched scalar Wasm no
+longer contains the identified image-copy sequence; missing removal improves242856→158312. This
+supports a contribution, not isolated copy/codec/compiler pricing. All original IC ceilings remain
+binding and unmet. No second candidate, tuning campaign or use of unused ledger time is authorized.
+
+##### Proposed fully-backed disjoint reads
+
+**Experimental: implemented once; engine acceptance remains blocked.** Following approval of the
+source-only report `01b6d0dd`/plan `ecb7968e…`, the user authorized exactly one diagnostic candidate.
+Source `5da46e45…` implements this case inside existing **`EditImage::read`**, with no other production
+change. The [execution checkpoint](../evidence/adr0097-demotion-design.md#shared-reader-execution-checkpoint)
+records18/27/5 passing tests/docs, four restored runtime mutation failures and lower measured cost,
+but every original IC ceiling still fails. `shared-images` stays complete; `bounded-proof` stays
+pending. No further execution or tuning is authorized. The prior
+[read-path diagnosis](../evidence/adr0097-demotion-design.md#remaining-prospective-read-path) and
+reviewed plan snapshot remain preserved.
+
+**Invariant and exact surface.** That helper alone composes canonical backing with pending bytes.
+Retain its signature, `EditPlan::read` delegation/zero-initialized arrays, `Scratch` and all caller
+checks. After the existing one `partition_point(r.end() <= address)`, reuse its first candidate for
+both the new case and existing full-coverage case. For the existing request interval `[a,e)`:
+
+- Direct canonical read is eligible only when **`a <= e <= backed_end`** and the first candidate is
+  absent or starts **at/after `e`**. The nonwrapping comparison must not admit a wrapped end. Use
+  the existing interval calculation; do not introduce a different error/overflow projection.
+- In that case, read the entire nonempty destination once from `Memory`, then return. A zero-length
+  destination performs no `Memory` read. No `Memory::size` call, cached flag, scalar/batch discriminator
+  or use of `required_end` as backing. `backed_end` remains the actual backing snapshot.
+- Otherwise retain the existing contained-range copy and backing-prefix/zero-tail/overlay code,
+  unchanged. No second search, range list, helper, public API, parameter, unsafe code, `Box`, `Pin`,
+  inlining attribute or new state. Only eligible reads cease visiting the general clamp/tail path;
+  it remains the single implementation for reads that need it.
+
+This is valid for an empty image **and** a nonempty disjoint image. Every range skipped by the
+partition ends at/before `a`; if the first remaining range starts at/after `e`, sorted disjoint
+ranges guarantee that no later range intersects the request. Full backing makes the old clamped
+length equal `dst.len()` and its zero tail empty; disjointness makes every overlay copy unnecessary.
+Thus the bytes and backing traffic are identical, including zero-length no-read behavior. The test
+is about the entire interval, not just its first address. It applies equally during scalar and batch
+preparation.
+
+| Pending/backing relationship | Required result and routing |
 | --- | --- |
-| Existing-key replacement | One 8-byte value write; no header/key rewrite, dynamic scratch reservation or grow |
-| Absent remove | No writes, dynamic scratch reservation or grow; inline `None` |
-| Non-splitting tail insertion into a nonempty page | Three ranges / 26 bytes: entry and two length fields; no old payload or whole-header rewrite, dynamic reservation or grow |
-| Tail removal leaving a nonempty page | Two ranges / 10 bytes: length fields; no entry clearing, dynamic reservation or grow |
+| Fully backed, no overlap; including left/right adjacency and a gap between ranges | One unchanged canonical read; skip clamp, tail-fill checks and overlay-tail dispatch |
+| One staged range covers the whole request | Staged bytes, no canonical read, including when the address is beyond backing |
+| Partial overlap at either end or several separated overlaps | Existing backing-prefix/zero-tail initialization, then every intersecting staged range overrides it |
+| No overlap but partially/wholly beyond backing within planned new-page extent | Existing bounded prefix read and zero padding; never send the whole request to backing |
+| Staged bytes intersect that unbacked suffix | Zero only unstaged padding; staged bytes win, never substitute all zeros |
 
-Interior shifts, splits and directory shifts reserve their overflowing scratch before use.
-`EditImage::cover` alone owns coalescing, relocation and gap filling; it returns exactly the
-requested borrowed write window. A positive request on an empty range set obtains the reserved
-byte view, fills its one gap, appends one descriptor at packed offset zero and returns that same
-view. There are no existing bytes to relocate or ranges to merge, even after heap reservation.
-Zero-count and nonempty requests retain the general normalizer: growth reuses the descriptor view
-returned by its resize; equal/shrink moves the still-live suffix before resizing. Both join the
-same descriptor update and offset rebase, without a second resize on growth. Scratch retains
-capacity checks; callers retain no-op/full/live-prefix gap policies. Gap filling still precedes
-descriptor insertion. Fresh-empty zero count keeps one zero-length descriptor without a callback;
-contained zero count does not add a descriptor. No second editor or initialization API is added.
-No window survives another image mutation. `EditImage::read` alone composes staged bytes with
-backing and zero padding for admitted new-page extents.
-Fully backed disjoint requests use one canonical read; fully staged requests use staged bytes;
-partial requests retain backing-prefix/zero-tail/overlay composition. Empty reads do no backing I/O.
+Do not move or bypass `EditPlan::page`'s checked offset/full-page end, allocated-page/link bounds,
+old-page backing check, selected ACTIVE/length/self-link/free-link/minimum checks, or split/free-page
+admission. Keep ordered error precedence, result reservation, final full-allocated-extent grow and
+responsible index3968. Padding is an internal view for planned new pages, not permission to treat
+an invalid old page as empty. Public capability ownership/publication/discard do not change.
 
-Non-split entry movement uses one borrowed window instead of per-entry decoding and staging.
-Insertion covers the affected suffix plus its new slot, reads canonical gaps only below the old
-live end, shifts encoded entries right, then encodes the new pair through `set_entry`. Removal
-snapshots the last prospective 16-byte source before covering only its destination suffix; it
-shifts left and fills the final destination from that snapshot without dirtying the old tail.
-Zero-shift paths skip the window. The unused entry decoder is removed.
-Non-split insertion stages map length, optional directory minimum and page length after its checked
-count and reservation, before the payload window and new pair. Movement uses the captured old
-location/header rather than rereading staged metadata; canonical gaps remain bounded by the old
-live end. Each metadata field is staged once. This avoids relocating freshly staged payload to
-insert lower-address metadata. Reservation, dirty destinations, admission and canonical publication
-order remain unchanged. No page clone or new helper is added.
+**Implemented additional oracle.** `edit_image_read_partition` was appended before the production
+change; every existing17 test body/helper, five doctests and benchmark remains byte-identical.
+Its33 named cases share one existing `WorkMemory` with real three-page backing (`B=196608`), five
+private images and no map/Graph/PocketIC constructor or new Memory type. Page63 starts at `B` by
+owner geometry; its planned end is `B + PAGE_STRIDE`. This is a helper-contract fixture, not a public
+map/admission witness or a formerly failing correctness case. Seed each checked short window with position-distinct nonzero backing bytes and
+a distinct staged pattern; poison output buffers before reading. Expected bytes come from those
+inputs, not this reader's output or range classifier. Assert bytes first, then exact read calls/bytes,
+no writes/grows and unchanged backing, excluding setup/snapshot traffic. Stage through existing
+reservation/write operations.
 
-One edit-scoped lookup chooses canonical reads only with an empty image and sufficient directory
-backing; otherwise it uses the prospective reader. Directory metadata, page metadata and keys
-share that reader and the same validation owners. `DirEntry` and `PageHeader` own decoding;
-checked geometry, selected-page flags/minimum/link checks and error precedence remain enforced.
-The split owner receives the already computed local insertion position rather than searching again.
+Cover an empty inline image, then nonempty disjoint reads on both inline and heap storage, both
+boundary adjacencies, full staged containment, partial overlap from each side and multiple overlaps
+with canonical gaps.
+Force actual heap use with four disjoint staged ranges and more than32 encoded bytes; assert both
+storage representations before their cases. Include a contained subread of a larger staged range
+(nonzero packed source offset). Full containment must issue zero backing reads; fully-backed partial
+reads retain one full-length backing read. Zero-length reads issue none.
 
-The non-inlined split snapshots the prospective right sources into a bounded 528-byte array,
-then writes one chunk or a prefix/new pair/suffix. The exact source extent is 33 or 32 old entries,
-expressed by array capacity or capacity minus one entry. Right sources are consumed before the
-left covered window shifts with `copy_within`. Both pre-covers, metadata updates and the existing
-publisher remain. This introduces no shared cache, second overlay reader or copy API.
+For unbacked cases, a fresh empty image reading `[B+16,B+24)` must replace poison with eight zeros
+without a backing read; fully staging that interval must instead return staged bytes, also without
+a read. A straddling `[B-4,B+8)` request must read only four backed bytes. With backed prefix
+`21 22 23 24` and staged `[B-2,B+2)=a1 a2 a3 a4`, `[B+4,B+6)=b1 b2`, expect exactly
+`21 22 a1 a2 a3 a4 00 00 b1 b2 00 00` (hex). Also check the same straddle with no staged ranges.
+These byte intervals deliberately exercise the private helper; they are not claimed as an observed
+public aligned8/16/32-byte request. Existing growth tests do not assert this padding matrix.
 
-Backing admission covers the full extent of every allocated page, not merely its highest dirty
-byte, before ready can escape. `reserve_for_inserts` reserves backing only: zero or already-backed
-requests do not write, but reservation does not guarantee directory admission, semantic validation
-or scratch allocation.
+Both existing mutation oracles still fail: early publication changes backing on late `DirectoryFull`,
+and deferred backing violates the actual grow-before-ready assertion. The two additional, separate
+mutations also fail at runtime: omitting disjointness reaches `inline-contained`, returning
+`[19,20,21,22]` instead of `[162,163,164,165]`; omitting only `end <= backed_end` reaches
+`unbacked-unstaged` and `vec_mem.rs:36`'s **`read: out of bounds`**. Its later byte/traffic assertions
+and subsequent cases are not credited. All four restore exactly to `5da46e45…`. The resource
+mutation likewise does not reach its deferred publisher or later assertions.
 
-#### Previous reservation-owner checkpoint
+**Fitness and risk.** One interval relationship stays encapsulated at its existing owner; canonical
+and prospective layout/admission definitions are not duplicated. Dependency direction and public
+states do not change; no migration is needed. The branch adds eligibility work to overlapping reads
+and might not lower IC cost. Keep call boundaries, caller initialization and all admission as
+controls. More invasive helper extraction/const-generic specialization or call-boundary inlining
+would add a second experimental variable and is not selected. A scalar-only reader/cache is rejected.
+The measured diagnostic predictions hold: missing158312→138600 and replacement167624→153288,
+with identical native traffic/scratch. Saved Wasm shows the eligible route reaching a full-length
+stable read and return without the general clamp/tail path. Search, scalar and split caller bodies
+are byte-identical to9436; scalar adjustment remains304B, not peak stack. This prices only the joint
+compiled guard, not individual checks/reads. Missing still exceeds85672 by61.780%; replacement
+exceeds77576 by97.597%. Tail pairs, split and both LARA scopes also fail their original ceilings.
+The [closed schedule](../../plans/0340-prepared-paged-map-edits.md#proposed-read-case-validation--not-authorized)
+used222.562308/600s, including50.341531/120s final use;160s was unassigned and unused. Split's
+per-entry write/cover normalization remains a separate, unpriced hypothesis; this correction neither
+repairs nor explains its residual. Full A0/A1 and landing remain unapproved.
 
-The following source, validation and measurements describe Plan0358 before the compact layout.
-The retained checkpoint is described in [Paged-map compact layout](#paged-map-compact-layout).
+##### Bounded component measurement — revised decision after review515d9868
 
-Map source SHA256: `4e5456e152e8ddba352fd52d86f721bdf91aa234c01c42c429d2bc90d7f0c434`.
-The source-bound validation passed scoped formatting, clippy, 28 unit tests and five doctests.
-Coverage includes ordered edits, discard, corruption and resource rejection, retry, page recycling,
-reopen, exact dirty-byte traffic, and the 14-case clean/staged split matrix. Four compile-fail
-doctests protect the exclusive, nonredirectable, single-use capability. The existing cover fixture
-now also checks equal-count extension, exact bytes, gap filling and trailing descriptor rebasing;
-omitting the shrink resize is rejected by its bridge descriptor oracle. Canonical-only right reads
-and omitted suffix writes were separately rejected in the preceding split checkpoint.
-The non-split test checks 20 direction/position/source cases on one independently seeded map,
-including exact dirty destinations, full backing bytes, priors and discard. The resource fixture
-also exercises remove/reinsert on unbacked page126 before the unchanged admission failure.
-Wrong insertion movement and a lost removal tail were rejected in the preceding movement checkpoint.
-The preceding metadata-first checkpoint's tail-key-only wrong map length was rejected at the
-exact header assertion after setup, replacement and missing removal. The preceding first-cover
-checkpoint preserved all 28 tests byte-for-byte. Its unchanged cover oracle passed before and after
-the change; removing the positive-count guard failed the empty-zero callback assertion after three
-positive cases. Suppressing the 48-byte callback separately failed heap-first after two inline cases
-and the heap representation/capacity checks. Later assertions in each failing case were unreached.
-Both mutant sources and streams remain preserved with the exact restored candidate.
+**Superseded draft preserved; four premises withdrawn.** (i) The single guard's joint phase
+deltas (split −4,908 among them) do not upper-bound remaining reader/canonical-routing cost,
+and native read counts do not bound instructions — the reader share is unpriced, not ≤4,908;
+(ii) ≥8,448 modeled copy bytes cannot yield a ≤~5% share of a516,425-instruction residual — a
+byte lower bound is no cost bound; codegen/control/normalization stay unpriced and the
+identity-copy question stays open, not rejected; (iii) `scalar_edit` creates a fresh
+`EditImage` per public call (lib.rs1328–1334) and the fixture performs separate scalar calls
+(bench.rs phases149/156/162/169), so no cross-call dirty-slot staging story survives —
+per-call fresh-range traces only, canonical bytes distinct from staged bytes, tail's +268,175
+unattributable; replace−missing/≈356 (different lookup routes) and missing+52,928 (one
+no-write operation's excess) are not write-cost bounds or cross-phase floors; (iv) present
+zero-init/container/call implementations are not proven mandatory — only
+validation/arithmetic/error ordering are fixed; the evidence simply cannot rank components.
 
-The current reservation checkpoint extends the existing two-instance Scratch fixture with fitting
-reservation, overflow-failure preservation and nonempty Inline-to-Heap prefix checks. It passes on
-old and new production. The ordered-edit test rejects a skipped multi-result reservation after
-scalar setup, at the reserved-capacity assertion for the second prior in its first seven-intent
-batch. Later prior/backing/discard assertions are unreached in that mutant. Its source and streams
-are preserved and the candidate restored exactly. Test count remains 28; no Memory/map constructor
-or PocketIC installation is added.
+**One fully specified diagnostic measurement** — mechanism chosen now from pinned
+canbench-rs0.7.0: cfg-static accumulators over `ic_cdk::api::performance_counter(0)` (ic-cdk
+enabled by the map's `canbench` feature; canbench-rs BenchScope rejected for categories:
+private reset, global per-name aggregation, Drop bookkeeping charged to enclosing intervals,
+cross-name nesting double-count). Marks at `scalar_edit` (M0–M4, M1–M3 shared)/`EditImage::read`/`EditImage::cover`/`admit_image`
+only — v2 read-wrap/write-excl sub-intervals dropped; snapshot+reset between the four phase
+blocks excluding seeding/sanity; calibration is observation-only (three matched shapes,
+K=64/16/32, min/mean/max with defined timestamps/reset/accumulator/anti-elision) —
+empirical, NOT bounds: raw intervals with no certified E-bounded ranking ('cannot rank'
+acceptable), the saved-row Δ kept only as reject-only empirical sanity (cancellation
+possible), remainders definitional; fail-closed = exact match of the pre-registered WEIGHTED
+per-kind count table (tail cover=64×3+64×2=320; quotients forbidden; pairs/visits/physical
+endpoints distinct with M1–M3 shared; finalize-once at every early-return site without
+changing errors/control flow) in the
+[protocol revision](../evidence/sources/adr0097-map-read-decision-protocol-revision.json);
+cfg-on semantic check = the fixture's own pre/post asserts + `validate()` in the
+same instrumented wasm; source audit = all added hunks cfg-gated and cfg-stripped source
+equal to `5da46e45…`. LARA exclusion is configuration-scoped: the scheduled feature set does
+not feature-enable the map dependency and no LARA canbench build is scheduled — Cargo feature
+unification or explicit forwarding could enable it in another build, so no absolute claim; no
+LARA run. The corrected protocol — weighted count table, early-return finalize-once contract,
+observation-only calibration, and fresh ledger (maximum600 = pre-final215 including all FOUR
+mutation oracles + protected final120 + explicitly unassigned265, source-at-step and
+native+Wasm capture rules) — is in the
+[protocol revision](../evidence/sources/adr0097-map-read-decision-protocol-revision.json),
+superseding those details of the
+[v2 receipt](../evidence/sources/adr0097-map-read-decision-analysis-v2.json); withdrawals and
+the P3 count clarification are in
+[revision provenance](../evidence/sources/adr0097-map-read-decision-revision.json).
+Instrumented components rank current-source candidates only — no per-component
+admission-regression attribution, no unperturbed-cost reconstruction, no ceiling, no budget,
+no execution.
 
-The unchanged scalar IC fixture retains all four named phases; the separate missing-grouping
-benchmark compares complete scalar calls with a prepared batch and does not replace those gates.
-The prior bulk checkpoint (`330260d1` against `7ea423ad`) reduced LARA total/named by
-56.5906%/56.6176% and tail by 128 instructions. Its missing/replacement increases of 128 each
-(0.1426%/0.1096%) and split increase of two (0.0068%) were explicitly accepted for that benefit.
-The initial zero-regression hypothesis failed; its rejection remains recorded separately.
+**Execution endpoint and protocol/evidence refusal (review739d119d).** The schedule executed
+under review dfaed91c, but its protocol outcome is **INCOMPLETE/non-compliant**: two driver
+gate failures (setup `FileNotFoundError`; map archive/finally tail) were followed by
+unauthorized repair/reactivation contrary to the stop rule — the "none of the enumerated stop
+categories occurred" justification is withdrawn; restoration and spare capacity never
+authorized continuation, and no later allowance retroactively validates the overrun. Real
+observations retained: initial+final **18** map tests (**33** cases), **5** doctests (×2),
+**27** FreeSpan, four runtime-red mutations with exact messages and M-restoration, cfg-on
+fixture assertions passing (canbench exit0), `clippy --features canbench` exit0, and the
+exact count/calibration oracle (endpoints1600/1856/4480/343; read512/704/1472/94;
+cover64/0/320/74; siblings64/64/128/1; calibration64/16/32/1, delta4542). Endpoint:
+formatted **M = lib `2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89` /
+bench `363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378`** (frozen originals
+`5da46e45…`/`2f95a494…` preserved; M_draft receipts byte-preserved). Evidence gaps bound the
+verdict: the sealed manifest does not bind final `ledger.json` (`35247b4b…` recorded vs
+`e42fcc94…` actual; external coverage issued, old manifest/seal untouched); the initial map
+executable lacks a contemporaneous archive (only final-map's `663e4a81…` is contemporaneous
+for its own invocation; no rebuild offered); the saved-row sanity gate was never implemented
+(observation-only, no post-hoc cutoff); `components.csv` is3-vs4-column (rectangular
+re-export issued). Definitional remainders (replace154624/35648/246592;
+missing211136/0/277952; tail441280/246592/735616; split33706/128248/65451;
+loop/call/drop/recorder26626/25251/49697/893) are arithmetic on instrumented intervals, not
+independent validation; with the200-instruction standalone calibration and saved-row deltas
+up to +1,951,474, no calibration subtraction and no uninstrumented component ranking is
+claimed. Recorded charges exactly **135.69941875094082**; correction/resealing work has no
+recorded timing and is not asserted cap-compliant. Verdict/coverage/table:
+[reconciliation](../evidence/sources/adr0097-map-read-reconcile-reconciliation.json),
+[coverage](../evidence/sources/adr0097-map-read-reconcile-coverage.json),
+[table](../evidence/sources/adr0097-map-read-reconcile-components.json). `bounded-proof`
+pending; criteria5/6 unchecked; acceptance BLOCKED.
 
-The previous metadata-first checkpoint (`073473e4` against `330260d1`) reduced tail
-449,930→406,346 (9.6868%), LARA total 874,351→841,909 (3.7104%) and named
-873,390→840,948 (3.7145%), with missing, replacement and split unchanged.
+The complete later A0 source surface is `lara/edge/{span,free_span,edges,init}.rs`, minimal type
+visibility in `lara/edge.rs`, and the map owner. It must include capacity/whole-header caller audit,
+not just two new facade methods. No native tree, Graph, count-owner or A1 publisher is implemented
+by the map slice. The [report](../evidence/adr0097-demotion-design.md#map-owner-execution-checkpoint)
+identifies its blocked execution; the later owner work remains separately gated.
 
-Against that source, the preceding first-cover checkpoint (`d750b055`) reduced replacement
-116,872→105,736 (9.5284%), tail 406,346→386,954 (4.7723%) and LARA total/named to
-832,624/831,663 (1.1029%/1.1041%). Missing increased by 256 and split by 28. Those small
-regressions and map/LARA Wasm growth of 3,130/6,059 bytes were explicitly accepted for the benefits.
-Historical F/G first-cover candidates remain rejected in their older source/acceptance context.
+**Precise protocol trace** — analytical four-byte slab example, not a runtime witness or a claim
+that today's placement selects these ranges. Start with 5 backing pages, published/cached
+`C0=(5*65536-64)/4=81904`, canonical free `[16,32)`, and old owned ranges `[64,80)` and `[96,104)`.
+The rest of the existing capacity retains its prior ownership. Metadata/placement owners determine
+which old ranges can actually retire; free-space absence alone is not proof of ownership.
 
-Against retained `d750b055`, reservation delegation improves every instruction control: missing
-90,152→88,872 (1.4198%), replacement 105,736→102,792 (2.7843%), split 29,609→29,531
-(0.2634%) and tail 386,954→381,066 (1.5216%). LARA total/named decrease by 1,410 each to
-831,214/830,253 (0.1693%/0.1695%); these overlapping scopes are not added together. Missing
-remains 3,200 above its ceiling. Map Wasm shrinks 230 bytes; LARA grows 966 bytes, explicitly
-accepted for the measured benefit and simpler production path. All heap/stable page deltas are
-zero, not zero-global-allocation evidence. Static scalar/preparation frames remain 208/160 bytes
-with 2/41 locals. Exact component instruction prices remain unisolated; frames are not peak-stack
-bounds. [Full source-bound measurements](../evidence/adr0097-performance-architecture-research.md#11-single-reservation-owner-retained).
+1. Enter `span_write`; begin a draft. Consume `acquire(12,None)`: choose `[16,28)` and retain
+   `[28,32)` in the private free view. Canonical free bytes/records still describe `[16,32)`.
+2. Consume `acquire(32,None)`: no fitting private free span; plan `[81904,81936)` and `C*=81936`.
+   Neither capacity copy changes. The plan records both destinations and retains authority.
+3. Consume `seal([64,80),[96,104))`: run all retirement/coalescing/index work against the view from
+   steps 1–2, excluding both destinations. Prepare record/index backing, split scratch and final heap
+   work. The slab owner ensures backing for `C*` using its unchanged four-page reserve policy:
+   required 6 pages, reserve to 10, actual grow **5→10** in this example. That is not a capacity write.
+   Final free view is `[28,32)`, `[64,80)`, `[96,104)` (28 slots). No canonical retirement yet.
+4. A1 finishes every peer's encoded rows, pin/count transition, final requested rewrite and raw
+   scratch. Force a rejection here, **after both destinations and complete retirement are ready**.
+   Explicitly `ready.discard()`, then end the writer scope. It performs no release, growth, discovery
+   or fallible cleanup. Capacity stays 81904, canonical free remains `[16,32)`, both old ranges stay
+   owned and every row/count/pin is unchanged. Backing may remain 10 pages. Neither destination was
+   canonically acquired, so no tail interval is inserted into the free list on cancellation.
+5. Relax only that final-metadata fault. Re-enter the scope and repeat: same two starts, same free
+   view and `C*`; existing backing suffices. Once the whole A1 object is ready, publish safe copies,
+   all rows/pin/counts, then consume its `PreparedSpans` (capacity field/cache followed by final
+   free/index/bin/header/heap image), retaining the outer authority through the remainder. Final
+   capacity is 81936; both destinations are allocated, both old regions retired once and free is
+   exactly the 28-slot set above. No compensation or second acquisition occurs at publication.
 
-| Original acceptance gate | Recorded instructions | Ceiling | Result |
-| --- | ---: | ---: | --- |
-| Missing64 | 88,872 | 85,672 | FAIL |
-| Replace64 | 102,792 | 77,576 | FAIL |
-| Split/directory | 29,531 | 30,930 | PASS |
-| Tail pairs64 | 381,066 | 298,171 | FAIL |
-| LARA total | 831,214 | 1,527,576 | PASS |
-| LARA named | 830,253 | 1,526,615 | PASS |
+If any acquisition/seal step fails, its consuming error path discards the private draft instead;
+logical postconditions are the same, although an earlier successful backing reservation may remain.
+If a tentative placement is abandoned, discard the entire draft and plan anew under the same writer;
+do not publish an intermediate acquisition or add per-destination undo. The zero-length request
+returns `C*` without ownership or allocation. Positive avoid ranges are checked within `C*`; preserve
+today's best-fit selection and tail fallback if that candidate overlaps the avoid range, but discard
+its tentative edit rather than take/release canonically. Do not introduce an unreviewed alternate
+free-span search. Best-fit's requested-bin scan is not unconditionally bounded by eight entries.
 
-**Three of six original gates pass; missing, replacement and tail remain unmet.** No absolute
-ceiling is relaxed and no general regression tolerance is introduced. These are measurements of
-the bound development worktree, not a clean-checkout LARA validation of this map-only checkpoint.
-That worktree also contained FreeSpanStore admission changes excluded from this checkpoint.
-Current source, dependency and frozen Wasm bindings, command logs, CSVs and mutation evidence are
-under `/Users/yota/.local/share/gleaph/evidence/adr0097/reservation-owner-0358/`; its
-`completion/receipt.json` records the source-bound checks and original five/two CSV rows.
-The first-cover baseline remains under `first-cover-0357/`, reused without rebuilding or
-remeasurement. The preceding metadata-first checkpoint remains under `bulk-insert-order-0353/`.
-Benchmark fixtures remain unchanged; no results were persisted.
-The prior bulk checkpoint remains under `interior-bulk-0352/`: its initial rejection/restoration
-is in `completion/receipt.json`, and the approved tradeoff and exact candidate reinstatement are
-in `adoption/receipt.json`. Earlier `cover-view-0348/` and `split-right-bulk-0347/` evidence remains
-preserved separately.
+**Error order and first canonical write:** validate request/avoid slot bounds, then selected free
+record and prospective edits in call order; check each retirement's range/destination exclusion and
+existing duplicate/previous/next rules in order. Missing/overlap/corruption and address overflow stay
+exact errors, tagged with acquisition or retirement index. Map errors retain their own edit index
+and the free draft's corresponding caller-origin tag; unindexed batch scratch remains unindexed.
+`SpanPrepareError` distinguishes these from slab growth, record growth, indexed map `PrepareError`
+and scratch reservation. In particular
+A1 must not route them through today's `GrowFailed { current_size: 0, delta: 0 }` facade projection.
+Existing facade projections are a separate source-audited surface, not prepared-error semantics.
+
+Map intents preserve order, repeated keys, missing-remove `None`, page recycling/drain/reset and
+split/minimum/link rules. Earlier `DirectoryFull` cannot be rescued by a later remove. Preserve the
+already-early split `DirectoryFull` then membership checks. Validate encountered geometry only;
+no unrelated whole-tree/map validation promise. Scratch needed to represent an earlier intent can
+fail before an unvisited later semantic error: the old r2 promise that *all* semantics precede *all*
+resource reservation is superseded. Complete free-record planning and heap-image/maximum discovery,
+then call the map's combined semantic/resource preparation. Remaining resource order is fixed:
+**map → records → slab → warm-heap append capacity**, stopping with the actual site's error.
+No map reads are needed after its ready image holds the exclusive borrow. Cold replacement-heap
+and other scratch construction happen before seal completes. No error is reclassified as an
+optional-capacity outcome by this protocol.
+
+The first canonical write in an isolated `PreparedSpans::publish` is its changed capacity field, or
+first encoded free-store write when capacity is unchanged. In A1 it is earlier: the first
+source-overlapping payload copy, otherwise first row/pin/count publication (disjoint unused target
+copies are not canonical). After that write, only prepared writes/copies and reserved heap operations
+remain; no fallible metadata discovery, encoding, allocation, growth, coalescing, callback or fresh
+planner invocation. Unexpected backing/alias/invariant failure is still a **nonrecoverable** boundary;
+there is no native rollback or IC/Graph transaction claim. A bare address plus `release().expect`,
+late epoch rejection or caught unwind does not meet this contract.
+
+**Scratch and heap obligations:** let `A` be acquisitions, `R` retirements, `T` distinct changed
+free records, `F/F'` initial/final active records, `H` actual old heap length and `C<=T` final changed
+active candidates. The acquired-range list costs `O(A)`; record/bin/header images cost `48*T` plus
+up to 128 bin heads and fixed headers. Map-owned encoded scratch is the actual dirty-range byte
+count, plus range descriptors, result storage and actual overflow capacities. `1048*U + 16*J`
+(`J<=8192`) is a coarse touched-page/directory envelope, **not** a per-edit allocation requirement;
+fixed header fields are additional. The scalar inline and split bounds above govern materialization.
+Do not snapshot untouched pages or all free records for routine planning. Streaming the canonical index with sorted overrides for a cold heap
+costs `O(F log(T+1)+T)` plus heap construction; it is not `O(A+R)`.
+
+A release-only batch can retain `max(old_largest, merged_lengths)`. A mixed acquisition/retirement
+batch **cannot**: taking the largest span may shrink it. When warm and `H+C<=2*F'+64`, reserve append
+capacity for `C` final candidates without changing old heap contents. Determine the final maximum
+from changed candidates and a read-only best-first traversal of the existing heap's array, checking
+candidate validity against prospective records. A temporary frontier uses the existing standard
+`BinaryHeap` within this owner; it is not another allocator/cache. If `W` candidates are popped,
+frontier work is `O((W+1) log(W+2))`, storage up to `min(H,W+1)` candidate/index pairs; `W<=H`, **not**
+bounded by `A+R`. Prospective validity lookups add `O(W log(T+1))` work and up to `W` record reads;
+a new candidate dominating the frontier permits early stop. Publication only appends into reserved
+capacity and writes the precomputed summary; stale candidates remain subject to the
+existing validity rule. No post-ready record validation or heap rebuilding is permitted.
+
+When cold or beyond that stale threshold, prepare a replacement heap from final active records and
+publish by swap. Account both old capacity and replacement `F'` capacity while preparing, plus the
+warm frontier or `C` candidates as applicable (candidate is 16 bytes; frontier also stores an index).
+Do not eagerly clone all `H`, rebuild on every warm scalar operation, or claim zero allocation from
+zero page growth. Scalar release, take, pair and known-successor prefix restoration must share these
+prospective rules; the prefix fast path retains its lookup advantage. Full-A0 review must measure
+warm/cold visits, heap capacities and split scratch. The first map-only slice cannot certify this
+heap algorithm, span authority, cancellation trace or A1's separate `Q`/`P` payload-scratch bounds.
+
+#### Failure and state table
+
+The boundary below is the **first canonical adjacency write**, not allocator reservation writes.
+No-op results assume valid rows; encountered corruption must not become `Missing` or `None`.
+Preparation may grow backing capacity; a rejected attempt need not shrink memory or erase unused
+target bytes. It must preserve canonical roots/rows/counts/peers and return every newly owned span.
+
+| Phase/outcome | Returned behavior | Canonical/ownership postcondition |
+| --- | --- | --- |
+| Missing/dead/wrong label | `Ok(None)` | No writes, allocation, conversion or events |
+| Unsupported width, bad root, impossible count/length/address, or inconsistent source during preparation | Exact typed `Err` | Requested edge still live; source and peers unchanged; unpublished targets cleaned up |
+| `S > 1024`, or an optional conversion reservation cannot be made | Policy unresolved; not an implemented success/retention rule | A spill-free target's limit is not proof of general unrepresentability; corruption never becomes capacity |
+| Empty-retirement resources or bounded-work proof unavailable | Deletion remains gated; a synchronous candidate must reject pre-write | Last edge and every root/block remain owned; repeated rejection alone does not establish liveness |
+| All preparation succeeds | Publish prepared deletion/conversion, then account/retire | Complete descriptor and physical cover; no partial value plane; each old resource retired once |
+| Failure after first canonical write or failure of pre-reserved cleanup | No recoverable `Err`/best-effort success | Broken prepared invariant: abort execution; native unwind is **not** rollback |
+
+Only failures **at known capacity acquisition sites** may be considered for a future approved
+capacity disposition. Do not classify `CollectAllocationOverflow`, `LtbBlock`, invalid free spans or
+malformed descriptors wholesale as capacity. The same outer error type can carry arithmetic or
+corruption evidence. Expected failures must be handled before publication, not recast as invariant
+panics. Post-publication operations require prepared ranges/resources, not debug assertions.
+
+#### Empty-retirement liveness and work gate
+
+`D = 0` does not bound retirement. Let `L_e = ceil(S/1024)` and, for a valid nonzero width `w <= 4096`,
+`L_p = ceil(S/floor(4096/w))`. For a stream of depth `d <= 3`, its rooted block inventory is
+`L + ceil(L/1024) + ... + ceil(L/1024^(d-1))`, subject to root cap 1024, u32 fields and available
+minted blocks. Add edge/property inventories as `N`. Preparation must visit those `N` blocks and
+retirement requires `N` releases; a flat u32 ID inventory alone needs `4*N` bytes, before
+validation/scratch overhead. Block stride is 4112 bytes. A full value-selection scan can additionally
+read `S*w` bytes; an empty-only inventory must not materialize dead values unnecessarily.
+
+For `S = u32::MAX`, the width-0/8/33 format envelopes respectively give `N = 4,198,404`,
+`12,595,212`, `38,869,098` blocks and minimum ID vectors of `16,793,616`, `50,380,848`,
+`155,476,392` bytes. These are **source-bound arithmetic**, not constructible-fixture, platform-memory
+or execution-limit claims; actual root-depth/pool/address limits also apply. Even the finite wire
+limits are not a synchronous IC budget. The recorded 1024-position witness says nothing about them.
+
+Before enabling last deletion, separately establish a bounded synchronous envelope under existing
+limits, or approve bounded retirement using a reachable ownership/progress mechanism. No new cap,
+leaked empty descriptor, permanent last-delete rejection, or new work/state format is authorized here.
+A traversal stack bounded by depth/root fanout may reduce discovery scratch, but does not by itself
+preserve a complete post-publication retirement inventory or detect duplicate ownership. Native
+`Drop`/`catch_unwind` cannot prove cleanup after an IC trap. This gate remains open even if A0/A1 pass.
+
+#### Results, counterpart resolution and events
+
+The existing four public orientation wrappers keep their
+`Result<Option<E>, DeferredBidirectionalLabeledError>` and
+`Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>` return types. A no-move native
+delete/conversion must actually preserve positions; it may not internally produce and discard a move
+list. Physical root/prefix relocation produces no logical movement. A future movement-bearing explicit
+operation must use a reviewed delivery surface rather than silently widening the overflow-shift result
+or relying on final traversal. Descending queued requests and reverse reconciliation are affected consumers.
+
+Existing **slab maintenance**, or separately approved native maintenance, may move survivors. Each `EdgeMoved` or
+entry of `OverflowRewrite` is delivered once to the existing observer before continuation; Graph
+uses `apply_edge_slot_moves` for removal results and `GraphSidecarMoveObserver` for maintenance,
+not both for the same event. Forward movements rekey sidecars and inline/sidecar postings through
+`relocate_edge_properties_for_move`; reverse movements have no canonical sidecars. Tests replay
+only these events over independently seeded identities; `Finished` never resets the expected map.
+
+Counterpart `PairOrdinal` is a temporary equal-neighbor live rank, not a stable identity. Resolve
+the selected counterpart before changing either half; never recompute that rank from the already
+deleted half. Current `with_graph_mut` only borrows `GRAPH`: there is no mate-cache invalidation
+hook on this path, and `counterpart.rs` persists no mate index. Do not add one. Re-derive future
+lookups from the changed rows; preserving positions prevents an already-resolved other-half handle
+from being renumbered by conversion. Public one-orientation calls are not atomic paired deletes.
+
+`DeleteVertexV1` has an existing in-flight operation/queue key. Its current `?` propagation after
+pop is not a retry guarantee. Before exposing new recoverable pre-write rejections to that driver,
+retain/requeue the original item and unchanged `removed_edges`, then stop the pass. A failure after
+an earlier half committed must not be requeued as an untouched operation; the Graph message must
+abort. Its matching-removal dependency remains GAP004, not implicitly repaired by this contract.
+No new work tag, persistent progress index or GAP005 handler reuse is proposed.
+
+#### Native versus IC containment
+
+Native `VectorMemory` writes survive `catch_unwind`; the saved 513→512 panic demonstrates this,
+not transactional rollback. Native tests prove typed pre-write rejection/cleanup and successful
+state transitions. They must not catch a post-publication panic and keep using the graph as though
+it were restored. Expected allocation failures are handled during preparation, not by panicking.
+
+Graph's first stable write can precede LARA: index-build admission/sidecar removal happens before
+`remove_*_with_move`. Its existing `trap_post_fence_commit` boundary must not return a recoverable
+error after that fence. The IC [entry-point trap rule](https://docs.internetcomputer.org/references/ic-interface-spec/canister-interface/#interpretation-of-numbers)
+discards that execution's state changes. This applies to one uninterrupted message, not earlier
+messages, earlier `await` segments or another canister. PocketIC must prove the actual Graph wiring
+rolls back adjacency, sidecars/postings/outbox and queue together; native unwind cannot establish it.
+No new asynchronous boundary is introduced. The inspected lock pins CDK 0.20.1 and stable-structures
+0.7.2; the official security skill's older CDK examples are not copied as version-specific evidence.
+
+#### Alternatives and review gate
+
+| Alternative | Benefit | Rejection/trade-off |
+| --- | --- | --- |
+| Permanent nonempty retention for `S > 1024` | Preserves positions with little conversion work | **Not selected or approved:** changes shrink behavior, fails `S=1025,D=512` despite a representable prefix/run target; idle reclamation absent |
+| Position-preserving prefix/run conversion | Can retire native blocks for extents beyond a spill-free prefix, without changing positions | Must prove target/prefix ownership, independent dense values, acquisition and promotion behavior; finite target envelope and retained holes still leave larger-high-water reclamation open |
+| Explicit `compact_vertex_edge_span_with_moves`-style operation | Existing result surface can carry real moves; at eligible degree at most `D` survivors need new positions | Current tree admission skips native trees and current wrapper without moves discards them; native packing, no-move caller exclusion, complete delivery on failure and `O(S)` scan work need separate approval |
+| Extend existing one-step maintenance and observer delivery | Already has bucket/slot cursors, captured policy, persisted queue items and per-step `EdgeMoved`/bounded `OverflowRewrite` delivery; may reuse canonical progress without staged targets | Current producers/selectors are slab-oriented and tree admission skips; prove native mutation, enqueue/idle progress, cursor semantics/invalidation, source-scan bounds and sidecar delivery. A cursor alone does not bound an expanding tombstone scan |
+| Stage an unpublished conversion across messages | Could bound individual preparation messages | Existing cursors do not own durable target reservations or a staged conversion; new progress/ownership state would need separate design, not an assumed prerequisite for every reclaiming alternative |
+| Filter values only / ignore errors / hide moves in deletion | Small diff | Rejected: leaves mismatched values, unsafe cleanup or stale identities |
+
+No reclaiming alternative is approved here. Existing movement surfaces do **not** prove native
+reclamation, but they also prevent the claim that every safe reclamation design inherently requires
+new persistent state. The smallest next candidate is A0's allocator preparation prerequisite, subject
+to its interface/scope review; A1 whole-unit publication follows independently. Native conversion,
+delete wiring, bounded empty retirement, Graph/PocketIC integration and the shrink-policy decision
+remain separate gates. No layout/version, threshold, compatibility or migration change is authorized.
 
 ### Canonical point-state read prerequisite (2026-09-22)
 
@@ -1749,4 +2638,6 @@ The [selected-read contract](0050-lara-traverse-read-api.md#7-selected-slot-read
 and [source-pinned evidence](../evidence/adr0097-selected-tree-properties.md) distinguish live-only
 selected output from tombstone-inclusive native bulk traversal. Read-only width8/33 boundaries,
 partial edge leaf, exact root errors and no-property/slab/run controls are covered. No header,
-threshold, layout, writer or demotion contract changed; independent review of this slice is pending.
+threshold, layout, writer or demotion contract changed in that read slice. Independent review
+approved its bounded read-only repair through `f297706ab`, not deletion, demotion, matching,
+general atomicity/performance or landing.

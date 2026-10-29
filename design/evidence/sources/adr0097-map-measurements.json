@@ -1,0 +1,279 @@
+{
+  "native_before": {
+    "replace": {
+      "traffic": {
+        "reads": 17,
+        "read_bytes": 123,
+        "writes": 2,
+        "write_bytes": 16,
+        "max_read": 8,
+        "max_write": 8,
+        "sizes": 2,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": "unobserved",
+      "observed": false
+    },
+    "missing": {
+      "traffic": {
+        "reads": 22,
+        "read_bytes": 163,
+        "writes": 0,
+        "write_bytes": 0,
+        "max_read": 8,
+        "max_write": 0,
+        "sizes": 0,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": "unobserved",
+      "observed": false
+    },
+    "tail_insert": {
+      "traffic": {
+        "reads": 32,
+        "read_bytes": 217,
+        "writes": 8,
+        "write_bytes": 51,
+        "max_read": 8,
+        "max_write": 8,
+        "sizes": 8,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": "unobserved",
+      "observed": false
+    },
+    "tail_remove": {
+      "traffic": {
+        "reads": 29,
+        "read_bytes": 206,
+        "writes": 6,
+        "write_bytes": 35,
+        "max_read": 8,
+        "max_write": 8,
+        "sizes": 6,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": "unobserved",
+      "observed": false
+    },
+    "split": {
+      "traffic": {
+        "reads": 186,
+        "read_bytes": 1423,
+        "writes": 160,
+        "write_bytes": 1221,
+        "max_read": 8,
+        "max_write": 8,
+        "sizes": 160,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": "unobserved",
+      "observed": false
+    }
+  },
+  "native_after": {
+    "replace": {
+      "traffic": {
+        "reads": 9,
+        "read_bytes": 112,
+        "writes": 1,
+        "write_bytes": 8,
+        "max_read": 32,
+        "max_write": 8,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 8,
+        "ranges": 1,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      },
+      "observed": true
+    },
+    "missing": {
+      "traffic": {
+        "reads": 12,
+        "read_bytes": 128,
+        "writes": 0,
+        "write_bytes": 0,
+        "max_read": 32,
+        "max_write": 0,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 0,
+        "ranges": 0,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      },
+      "observed": true
+    },
+    "tail_insert": {
+      "traffic": {
+        "reads": 12,
+        "read_bytes": 128,
+        "writes": 3,
+        "write_bytes": 26,
+        "max_read": 32,
+        "max_write": 16,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 26,
+        "ranges": 3,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      },
+      "observed": true
+    },
+    "tail_remove": {
+      "traffic": {
+        "reads": 13,
+        "read_bytes": 136,
+        "writes": 2,
+        "write_bytes": 10,
+        "max_read": 32,
+        "max_write": 8,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 10,
+        "ranges": 2,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      },
+      "observed": true
+    },
+    "split": {
+      "traffic": {
+        "reads": 94,
+        "read_bytes": 1368,
+        "writes": 8,
+        "write_bytes": 1146,
+        "max_read": 32,
+        "max_write": 560,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 1146,
+        "ranges": 8,
+        "byte_capacity": 1168,
+        "range_capacity": 12,
+        "result_capacity": 0,
+        "reserves": 2,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      },
+      "observed": true
+    }
+  },
+  "ic_pairs": [
+    {
+      "name": "bench_paged_scalar_edits_97",
+      "before": 497282,
+      "after": 1431979,
+      "delta": 934697,
+      "percent": 187.96115684862914,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_paged_scalar_edits_97::scalar_missing_64",
+      "before": 85672,
+      "after": 242856,
+      "delta": 157184,
+      "percent": 183.47184611074798,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_paged_scalar_edits_97::scalar_replace_64",
+      "before": 77576,
+      "after": 251720,
+      "delta": 174144,
+      "percent": 224.48179849437972,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_paged_scalar_edits_97::scalar_split_directory",
+      "before": 30930,
+      "after": 155692,
+      "delta": 124762,
+      "percent": 403.3688975105076,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_paged_scalar_edits_97::scalar_tail_pairs_64",
+      "before": 298171,
+      "after": 776778,
+      "delta": 478607,
+      "percent": 160.51426865791777,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_r_fs_tkbfs_1024",
+      "before": 1527576,
+      "after": 2350463,
+      "delta": 822887,
+      "percent": 53.86880914599339,
+      "gate": "regressed; no waiver"
+    },
+    {
+      "name": "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split",
+      "before": 1526615,
+      "after": 2349502,
+      "delta": 822887,
+      "percent": 53.90271941517671,
+      "gate": "regressed; no waiver"
+    }
+  ],
+  "native_object_sizes": {
+    "image": 192,
+    "range": 24,
+    "result": 16,
+    "inline_bytes": 48,
+    "inline_ranges": 88,
+    "inline_results": 32
+  },
+  "limitations": [
+    "Native object sizes are not compiler frame sizes or Wasm object/frame sizes.",
+    "Owner reserve counters do not observe all process/backend allocations.",
+    "Zero canbench page growth is not zero allocation.",
+    "Traffic and instruction deltas are separate gates; no component-level instruction attribution."
+  ],
+  "status": "native traffic/scratch gates pass; every IC phase and retained control regressed"
+}

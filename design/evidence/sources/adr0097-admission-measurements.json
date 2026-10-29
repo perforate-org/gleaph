@@ -1,0 +1,259 @@
+{
+  "commands": [
+    {
+      "name": "ic-before-split",
+      "exit": 0,
+      "seconds": 55.722999250050634,
+      "compile": [
+        "45.97s"
+      ],
+      "tests": []
+    },
+    {
+      "name": "ic-before-bin",
+      "exit": 0,
+      "seconds": 3.5611120000248775,
+      "compile": [
+        "0.91s"
+      ],
+      "tests": []
+    },
+    {
+      "name": "before-free",
+      "exit": 101,
+      "seconds": 8.607822958030738,
+      "compile": [
+        "7.24s"
+      ],
+      "tests": [
+        [
+          "0",
+          "2",
+          "0.06"
+        ]
+      ]
+    },
+    {
+      "name": "before-map",
+      "exit": 101,
+      "seconds": 2.6053853750927374,
+      "compile": [
+        "2.15s"
+      ],
+      "tests": [
+        [
+          "1",
+          "1",
+          "0.05"
+        ]
+      ]
+    },
+    {
+      "name": "format",
+      "exit": 0,
+      "seconds": 0.2143481250386685,
+      "compile": [],
+      "tests": []
+    },
+    {
+      "name": "green-free",
+      "exit": 0,
+      "seconds": 6.626952749909833,
+      "compile": [
+        "5.35s"
+      ],
+      "tests": [
+        [
+          "2",
+          "0",
+          "0.10"
+        ]
+      ]
+    },
+    {
+      "name": "green-map",
+      "exit": 0,
+      "seconds": 2.102794750011526,
+      "compile": [
+        "1.65s"
+      ],
+      "tests": [
+        [
+          "2",
+          "0",
+          "0.05"
+        ]
+      ]
+    },
+    {
+      "name": "mutation-exact",
+      "exit": 101,
+      "seconds": 6.364586750045419,
+      "compile": [
+        "5.04s"
+      ],
+      "tests": [
+        [
+          "0",
+          "1",
+          "0.06"
+        ]
+      ]
+    },
+    {
+      "name": "mutation-zero",
+      "exit": 101,
+      "seconds": 4.272788083995692,
+      "compile": [
+        "3.77s"
+      ],
+      "tests": [
+        [
+          "0",
+          "1",
+          "0.00"
+        ]
+      ]
+    },
+    {
+      "name": "ic-after-split",
+      "exit": 0,
+      "seconds": 50.08355766697787,
+      "compile": [
+        "45.39s"
+      ],
+      "tests": []
+    },
+    {
+      "name": "ic-after-bin",
+      "exit": 0,
+      "seconds": 3.318340125028044,
+      "compile": [
+        "0.80s"
+      ],
+      "tests": []
+    },
+    {
+      "name": "final-format",
+      "exit": 0,
+      "seconds": 0.2159218330634758,
+      "compile": [],
+      "tests": []
+    },
+    {
+      "name": "final-clippy",
+      "exit": 0,
+      "seconds": 2.415175542002544,
+      "compile": [
+        "2.27s"
+      ],
+      "tests": []
+    },
+    {
+      "name": "final-free",
+      "exit": 0,
+      "seconds": 5.401315000024624,
+      "compile": [
+        "4.01s"
+      ],
+      "tests": [
+        [
+          "27",
+          "0",
+          "0.20"
+        ]
+      ]
+    },
+    {
+      "name": "final-map",
+      "exit": 0,
+      "seconds": 1.4589525000192225,
+      "compile": [
+        "1.00s"
+      ],
+      "tests": [
+        [
+          "12",
+          "0",
+          "0.08"
+        ]
+      ]
+    },
+    {
+      "name": "final-whitespace",
+      "exit": 0,
+      "seconds": 0.06850520800799131,
+      "compile": [],
+      "tests": []
+    },
+    {
+      "name": "final-plan",
+      "exit": 0,
+      "seconds": 0.06816854199860245,
+      "compile": [],
+      "tests": []
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "bench_r_fs_tkbfs_1024",
+      "before": 1519282,
+      "after": 1527576,
+      "delta": 8294,
+      "percent": 0.5459157681062502,
+      "heap_pages_before_after": [
+        0,
+        0
+      ],
+      "stable_pages_before_after": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split",
+      "before": 1518321,
+      "after": 1526615,
+      "delta": 8294,
+      "percent": 0.5462612978414972,
+      "heap_pages_before_after": [
+        0,
+        0
+      ],
+      "stable_pages_before_after": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "bench_r_fs_lbin_4096",
+      "before": 5084163,
+      "after": 5171235,
+      "delta": 87072,
+      "percent": 1.7126122824936967,
+      "heap_pages_before_after": [
+        0,
+        0
+      ],
+      "stable_pages_before_after": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "bench_r_fs_lbin_4096::lara_free_span_largest_bin_recovery",
+      "before": 5083118,
+      "after": 5170190,
+      "delta": 87072,
+      "percent": 1.7129643655724696,
+      "heap_pages_before_after": [
+        0,
+        0
+      ],
+      "stable_pages_before_after": [
+        0,
+        0
+      ]
+    }
+  ]
+}

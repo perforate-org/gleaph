@@ -1,0 +1,22 @@
+--- frozen-C/lib.rs
++++ candidate-D/lib.rs
+@@ -803,6 +803,19 @@
+         }
+         let right_offset = checked_page_offset(right)?;
+         let split = header.len.div_ceil(2);
++        // Cover the right destination once; its entries are written before any read.
++        self.image.cover(
++            right_offset + PAGE_OFFSET_ENTRIES,
++            usize::from(header.len + 1 - split) * PAGE_ENTRY_SIZE as usize,
++            |_, _| {},
++        );
++        // Unstaged source entries are backed; unbacked initialized entries are staged.
++        let memory = &self.owner.memory;
++        self.image.cover(
++            start,
++            usize::from(split) * PAGE_ENTRY_SIZE as usize,
++            |address, bytes| memory.read(address, bytes),
++        );
+         // Copy the right half first, then the left half backwards. This preserves
+         // every still-needed source even when previous intents already dirtied it.
+         for index in split..=header.len {

@@ -1,0 +1,152 @@
+{
+  "kind": "source-only preflight receipt for M_draft \u2014 UNCOMPILED/UNTESTED; no Rust toolchain invoked",
+  "m_draft_hashes": {
+    "lib.rs": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+    "bench.rs": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c",
+    "pre_format": true,
+    "note": "pre-format hashes; the future authorized format step defines formatted frozen M"
+  },
+  "frozen_originals": {
+    "lib.rs": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+    "bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+    "frozen_bench_snapshot": "/tmp/spill-map-read-9436-j1wy264j/before/crates/ic-stable-paged-ordered-map/src/bench.rs"
+  },
+  "cfg_off_projection": {
+    "lib.rs": {
+      "frozen_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "draft_sha256": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+      "added_lines": 160,
+      "removed_or_modified_lines": 0,
+      "insert_runs": 17,
+      "strip_roundtrip_byte_identical": true,
+      "all_additions_carry_cfg_or_feature_gate": true,
+      "classification": [
+        {
+          "kind": "cfg-gated statements/items (full-text depth + attribute-pending analysis)",
+          "added_lines_attributed_or_separator": 24,
+          "total_added_lines": 160
+        }
+      ]
+    },
+    "bench.rs": {
+      "frozen_sha256": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+      "draft_sha256": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c",
+      "added_lines": 40,
+      "removed_or_modified_lines": 0,
+      "insert_runs": 6,
+      "strip_roundtrip_byte_identical": true,
+      "all_additions_carry_cfg_or_feature_gate": true,
+      "classification": [
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 6
+        },
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 2
+        },
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 2
+        },
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 2
+        },
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 1
+        },
+        {
+          "kind": "feature-gated-file (lib.rs mod-bench gate verified unchanged)",
+          "lines": 27
+        }
+      ]
+    }
+  },
+  "preservation_regions": {
+    "lib_tests_module_to_eof_byte_identical": true,
+    "seeder_fn_bytes_contained": true,
+    "prepare_statement_byte_unchanged": true,
+    "mod_bench_gate_present": true,
+    "bench_prefix_through_sanity_validate_contained": true,
+    "phase_scope_blocks_byte_identical_and_ordered": true,
+    "final_assertion_group_through_validate_contained": true,
+    "all_black_box_op_lines_preserved": true,
+    "all_assert_eq_lines_preserved": true,
+    "fixture_order_and_repetitions_untouched": true
+  },
+  "mark_and_return_sites": {
+    "diagnostic_tick_call_lines": 8,
+    "diagnostic_finish_call_lines": 16,
+    "scalar_edit": {
+      "tick_site": true,
+      "init_finish_after_image_new_before_prepare": true,
+      "prepare_finish_AFTER_byte_unchanged_question_statement": true,
+      "result_and_publish_finish_sites": true
+    },
+    "read_exit_sites": 3,
+    "cover_exit_sites": 2,
+    "admit_exit_sites": 3,
+    "admit_three_ordinary_returns_each_finalizes": true
+  },
+  "corrected_weighted_table": {
+    "replace": {
+      "read_visits": "1+2+2+1+1+1=8",
+      "cover_visits": "1",
+      "phase": "read512 cover64 endpoints5*64+2*(512+64+64)=1600",
+      "native": "8+1 direct=9 reads,1 write/8B"
+    },
+    "missing": {
+      "read_visits": "1+1+2+1+6=11",
+      "cover_visits": "0",
+      "phase": "read704 cover0 endpoints5*64+2*(704+0+64)=1856",
+      "native": "11+1=12 reads,0 writes"
+    },
+    "tail_insert": {
+      "read_visits": "1+1+2+1+5+1=11",
+      "cover_visits": "entry+page-len+map-len=3",
+      "native": "11+1=12 reads,3/26B"
+    },
+    "tail_remove": {
+      "read_visits": "1+1+2+1+5+1+1=12",
+      "cover_visits": "page-len+map-len=2",
+      "native": "12+1=13 reads,2/10B"
+    },
+    "tail_phase": "read64*11+64*12=1472 cover64*3+64*2=320 endpoints5*128+2*(1472+320+128)=4480",
+    "split_corrected_per_review_43594012": {
+      "apply_edit_reads": "13 = dir_len1 + locate2 + page2 + first-key1 + search7 \u2014 the full-page Insert arm calls split_page and returns BEFORE the nonsplit map-len read",
+      "split_page_header_reads": "12 = dir_len1 + directory-scan1 + page2 + search7 + map-len1",
+      "allocate_reads": "2 = free-head1 + page-count1",
+      "right_half_entry_reads": "33 (index32..=64; pos1 outside range)",
+      "left_half_entry_reads": "31 (32 iterations; index==pos skips its read)",
+      "update_neighbor_reads": "2 via page(): page-count field + neighbor page2 header (omitted in the superseded row)",
+      "right_minimum_reads": "1 (staged hit)",
+      "read_visits_total": "13+12+2+33+31+2+1=94",
+      "cover_visits_total": "74 (allocate page-count1 + right set_entry33 + left set_entry32 + page-len1 + page-next1 + set_page1 + neighbor-prev1 + insert_directory2 + dir-len1 + map-len1)",
+      "endpoints": "5+2*(94+74+1)=343",
+      "native_cross_check_from_source": "94 image visits -2 staged hits (right-minimum; update_neighbor page-count already staged by allocate_page) +1 initial direct page_count +1 directory-fill backing read =94 native \u2014 derived from source, not fitted to the native total",
+      "superseded_row": "read93/endpoints341 (apply14 error + omitted update_neighbor); old protocol receipt byte-preserved, corrected in the separate correction record"
+    }
+  },
+  "flow": {
+    "sequence": "sanity validate (bench.rs146) -> diag_reset -> diag_run_calibration (K=64 standalone, K=16 one-level-nested inside one outer interval, K=32 shared-endpoint \u2014 all through the SAME diag_tick/diag_finish paths) -> diag_reset (wipes category slots+endpoints; calibration slots persist) -> bench_fn { replace block; snapshot[0]; reset; missing block; snapshot[1]; reset; tail block; snapshot[2]; reset; split block; snapshot[3] (no trailing reset) } -> untimed final asserts + validate -> DIAG_CAL (n/sum/min/max per shape) + DIAG_CAL_DELTA (outer-minus-inner) + DIAG_CAT (phase/cat/acc/pairs) + DIAG_ENDP emission via ic_cdk::eprintln outside bench_fn and every scope -> return result",
+    "calibration_storage_note": "per-shape K/min/max/sum come from fixed-size DiagAgg streaming aggregates; this supersedes the receipt wording \"fixed array[K]\" with identical emitted statistics (K, min, mean=sum/n, max); aggregate writes occur after the exit read and are parent-charged, disclosed for the nested outer-minus-inner observation",
+    "endpoint_counting_distinct_from_canbench": "DIAG_ENDP counts only diagnostic diag_tick/diag_finish calls (runtime-actual; shared M1-M3 intervals take one call serving two intervals); calibration endpoints are wiped by the post-calibration reset. canbench's own performance_counter reads (bench_fn start/end, per-phase BenchScope entry/exit) and its heap/stable_size reads are excluded from DIAG_ENDP and from all diagnostic endpoint totals. Analytic phase expectations: replace1600, missing1856, tail4480, split343; runtime DIAG_ENDP rows must equal them exactly",
+    "error_path_limits": [
+      "prepare keeps the byte-unchanged original statement `self.prepare_image(&[edit], &mut image).map_err(FailedEdit::scalar)?;`; M2/`diag_finish(DIAG_PREPARE)` is immediately AFTER it (finalizes only on success)",
+      "on prepare failure INIT is already finalized while PREPARE/RESULT/PUBLISH never finalize (no partial pair, no corrupted accumulator); any fixture error aborts the run through existing expect/assert and can never produce a successful measurement row; error paths are outside the success-path count oracle",
+      "admit finalizes at all THREE ordinary returns (already-backed Ok, grow-failure Err, final Ok) without altering statements or error values",
+      "read finalizes at all3 returns and cover at both returns; panic paths yield no completed measurement and are permitted",
+      "oracle = exact success-path pair counts AND DIAG_ENDP per phase; any mismatch discards the run fail-closed"
+    ],
+    "claims_not_made": [
+      "UNCOMPILED/UNTESTED: no cargo/rustc/rustfmt/clippy/tests/benchmarks/disassembly executed; M_draft is PRE-FORMAT \u2014 a future authorized format step will record the pre/post mapping and define formatted frozen M for tests/mutations/measurement/finals",
+      "strip projection is source-text evidence only; no codegen equivalence is claimed; the roundtrip alone was insufficient, so additions-only opcodes, per-run cfg attribution and contiguous preservation regions were checked independently",
+      "schedule215 pre-final +120 final +265 unassigned retained for later approval, NOT activated; no budget granted; no optimization, new module, dependency, public API or profiling framework \u2014 fixed-size thread_local state + two private cfg fns in the map crate only",
+      "future artifacts archived by actual emitted paths, not assumed filename suffixes"
+    ]
+  },
+  "failures": [],
+  "elapsed_seconds": 0.020745290908962488
+}

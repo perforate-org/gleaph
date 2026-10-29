@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/tmp/spill-map-f297-cecc5rw_/collect.py", line 17, in <module>
+    before=native('baseline-native.log');after=native('final-map.log')
+                                               ~~~~~~^^^^^^^^^^^^^^^^^
+  File "/tmp/spill-map-f297-cecc5rw_/collect.py", line 12, in native
+    assert set(t)=={'reads','read_bytes','writes','write_bytes','max_read','max_write','sizes','grows','grown_pages'},(op,t)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('tail_insert', {'reads': 12, 'read_bytes': 128, 'writes': 3, 'write_bytes': 26, 'max_read': 32, 'sizes': 1, 'grows': 0, 'grown_pages': 0})

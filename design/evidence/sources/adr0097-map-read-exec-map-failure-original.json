@@ -1,0 +1,46 @@
+{
+  "entry_verbatim": {
+    "name": "map",
+    "cap_seconds": 30,
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "ic-stable-paged-ordered-map",
+      "--lib",
+      "tests::",
+      "--",
+      "--nocapture"
+    ],
+    "cwd": "/Users/yota/dev/gleaph-spill",
+    "exit": 0,
+    "failure": "finally: AssertionError('target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e')",
+    "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+    "artifacts": [],
+    "actual_seconds": 3.4161938750185072,
+    "charged_seconds": 3.4161938750185072,
+    "contract_passed": false
+  },
+  "diagnosis": "archive block used the relative cargo path from the Running-unittests line without the REPO/ prefix (attempt-runner pattern used REPO/path); is_file() resolved against the driver cwd and raised; the raise skipped the finally tail (checkout-lock restore, source-unchanged checks, log write)",
+  "enumerated_stop_categories": {
+    "compiler": false,
+    "test_failure": false,
+    "tool_failure": false,
+    "timeout": false,
+    "cap_breach": false,
+    "source_config_fixture_drift": false,
+    "evidence": "cargo test EXIT0 in3.416s/30s: scheduled command SUCCEEDED; only the administrative archive/restore tail failed; no measurement step reached; lock drift was caused by the skipped tail and is restored here from HEAD bytes (sha15d08391, the recorded pin)"
+  },
+  "saved_stream_reach_evidence": {
+    "exit": 0,
+    "result_lines": [
+      "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s"
+    ],
+    "image_read_cases": 33,
+    "tests_run": 18,
+    "passed_ok_line": true,
+    "source": "saved map.stdout/map.stderr from the successful exit0 invocation; cargo format is \"ok. 18 passed; 0 failed;\" (spaces)"
+  },
+  "lock_state_after_bug": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+  "lock_restored_by_correction": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+}

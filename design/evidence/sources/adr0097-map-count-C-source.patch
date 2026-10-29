@@ -1,0 +1,16 @@
+--- saved-reader/lib.rs
++++ frozen-C/lib.rs
+@@ -689,7 +689,12 @@
+         let end = offset
+             .checked_add(PAGE_STRIDE)
+             .ok_or(EditFailure::AddressOverflow)?;
+-        let count = self.u64(OFFSET_PAGE_COUNT);
++        let count = if self.image.ranges.as_slice().is_empty() {
++            // No staged write this prepare: canonical count unchanged since EditPlan::new.
++            self.initial_pages
++        } else {
++            self.u64(OFFSET_PAGE_COUNT)
++        };
+         if page > count || (page <= self.initial_pages && end > self.image.backed_end) {
+             return Err(EditFailure::Map(Error::Corrupt));
+         }

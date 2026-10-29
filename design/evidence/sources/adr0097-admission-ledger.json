@@ -1,0 +1,482 @@
+{
+  "budget_seconds": 600,
+  "reserved_final_seconds": 120,
+  "administrative_charges": [
+    {
+      "phase": "setup",
+      "charged_seconds": 20,
+      "measured_setup_shell_seconds": 0.461805333965458,
+      "covers": "inspection, plan authority correction, runner setup, versions and pins"
+    },
+    {
+      "phase": "restoration",
+      "charged_seconds": 20,
+      "measured_verification_shell_seconds": 0.009513000026345253,
+      "covers": "owned mutation snapshots/restoration, foreign CSV and lock preservation, exact candidate/input hash verification"
+    },
+    {
+      "phase": "final-evidence",
+      "charged_seconds": 40,
+      "covers": "source/legacy-fixture review, complexity analysis, report/plan/evidence writing, all collection/hash/link/scope/manifest verification; 10s of closure plus 30s reserved evidence contingency; no extra Rust commands"
+    }
+  ],
+  "runs": [
+    {
+      "name": "ic-before-split",
+      "command": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap_seconds": 130,
+      "final": false,
+      "spent_before": 20,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "21b5176a6abc8d08faefb43a8a13606c87ad7b7218a0eeac0155a42018e327a2",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "47e1b511886cbccbe4e62b74b6bd27997b870e646b88c62e3b8a6e36c674c587"
+      },
+      "start_monotonic": 586443.0497485,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "csv_sha256": "a6a1ae113faeb69fd5527a643e5e3f6e9495f0ee28f9f6d9e6c1f082780318f4",
+      "csv_differs_from_foreign": true,
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 55.722999250050634,
+      "log_sha256": "d7b934dca33c09194af3bfa1fbdf76ae8e75c654f431c182728b27df119ca8a4"
+    },
+    {
+      "name": "ic-before-bin",
+      "command": [
+        "canbench",
+        "bench_r_fs_lbin_4096",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap_seconds": 20,
+      "final": false,
+      "spent_before": 75.72299925005063,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "21b5176a6abc8d08faefb43a8a13606c87ad7b7218a0eeac0155a42018e327a2",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "47e1b511886cbccbe4e62b74b6bd27997b870e646b88c62e3b8a6e36c674c587"
+      },
+      "start_monotonic": 586508.499836958,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "csv_sha256": "9739b0b88bcc737c80319e0bf08e7c0dbcdd905f2da7098aa4dbdae31012b1ec",
+      "csv_differs_from_foreign": true,
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 3.5611120000248775,
+      "log_sha256": "e2bdc794e7c080b1fbeca4b151dbbd4b5cac9c418e242a48b6fd6d01827d6337"
+    },
+    {
+      "name": "before-free",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "a0_admission_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 40,
+      "final": false,
+      "spent_before": 79.28411125007551,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "19067832ace00eb12eea716381fb45ab332186e6139c50e95f02aae5daf4c37f",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "47347832ad4cf72ad8dba7ef34f34e6ded26707d94cca95d73ad2311b5eae026"
+      },
+      "start_monotonic": 586829.736421,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 8.607822958030738,
+      "log_sha256": "60274cfb3ca55912c679ac668568839426ab1eeab72a0ba0a1234fd555b75806"
+    },
+    {
+      "name": "before-map",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "a0_admission_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 15,
+      "final": false,
+      "spent_before": 87.89193420810625,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "19067832ace00eb12eea716381fb45ab332186e6139c50e95f02aae5daf4c37f",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "47347832ad4cf72ad8dba7ef34f34e6ded26707d94cca95d73ad2311b5eae026"
+      },
+      "start_monotonic": 586859.122730166,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 2.6053853750927374,
+      "log_sha256": "153af3ac0d01e10290db6fc748a9060f7062b21828be4ad23e8637dace316d76"
+    },
+    {
+      "name": "format",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 5,
+      "final": false,
+      "spent_before": 90.49731958319899,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "1124857c0a161a38219be0349b3b6d258f8895f328bb28a9f1c53c52edef4070",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "2fe8797cafc6aa2257715119bb9e06560344316bf610e4422f125c764350ba6c"
+      },
+      "start_monotonic": 586956.149361333,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 0.2143481250386685,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "green-free",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "a0_admission_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 25,
+      "final": false,
+      "spent_before": 90.71166770823766,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 586960.872877291,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 6.626952749909833,
+      "log_sha256": "a84525f4a178372691cabb1846731e1729fa1d464eebacd02d8d2f6dc2d5cbc8"
+    },
+    {
+      "name": "green-map",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "a0_admission_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 10,
+      "final": false,
+      "spent_before": 97.33862045814749,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 586987.728745833,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 2.102794750011526,
+      "log_sha256": "3f318e3c7752a5a54f101db18e39ac4a88240a35c485adb44abe1d03a5148703"
+    },
+    {
+      "name": "mutation-exact",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "a0_admission_exact_span",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 15,
+      "final": false,
+      "spent_before": 99.44141520815901,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "5d53be5c56991031286f2ec769d15ebf5f3cec40497f2a95363639dc22045c35",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587052.127674166,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 6.364586750045419,
+      "log_sha256": "52d9fb953cf38e7f6be7fb2af297fb99fd8f5bbab01c8c9aceae493e1cb585f1"
+    },
+    {
+      "name": "mutation-zero",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "a0_admission_zero_reservation",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 10,
+      "final": false,
+      "spent_before": 105.80600195820443,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "b709110729ec27ce5bbcf8e826ac249459085cee927ef49b6f6e2e8d8960b1b8"
+      },
+      "start_monotonic": 587105.729985916,
+      "exit_code": 101,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 4.272788083995692,
+      "log_sha256": "ed34261201b9b8c73cd355ca63358c01a83dfdb4cd08d7ebc701bc64a0e64f2d"
+    },
+    {
+      "name": "ic-after-split",
+      "command": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap_seconds": 130,
+      "final": false,
+      "spent_before": 130.07879004220013,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587176.417373208,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "csv_sha256": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d",
+      "csv_differs_from_foreign": true,
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 50.08355766697787,
+      "log_sha256": "306282ae01502fe93c082be00e543eed0024f874808d1f249c0b37c7372f8dfe"
+    },
+    {
+      "name": "ic-after-bin",
+      "command": [
+        "canbench",
+        "bench_r_fs_lbin_4096",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap_seconds": 20,
+      "final": false,
+      "spent_before": 180.162347709178,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587233.706165875,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "csv_sha256": "eec684b918f168601ff9ac44e2cd2f2649b21abbe4750ef456989a9e26abcc1f",
+      "csv_differs_from_foreign": true,
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 3.318340125028044,
+      "log_sha256": "51661442fa986c569266e47bc17b30e8a3c2ca090c20323aa714687115be5476"
+    },
+    {
+      "name": "final-format",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 5,
+      "final": true,
+      "spent_before": 183.48068783420604,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587278.374659583,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 0.2159218330634758,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "final-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-lara",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 25,
+      "final": true,
+      "spent_before": 183.6966096672695,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587283.231378041,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 2.415175542002544,
+      "log_sha256": "e5b0e5f811f90e6eddfa677ec3e0e0994365c289ea46fea3acac950145b3831e"
+    },
+    {
+      "name": "final-free",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "lara::edge::free_span::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 25,
+      "final": true,
+      "spent_before": 186.11178520927206,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587291.352110208,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 5.401315000024624,
+      "log_sha256": "56b6377deb3ecd72f9567a6335766fb63e9f173d4fb25ed26b9c766f69f18811"
+    },
+    {
+      "name": "final-map",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 15,
+      "final": true,
+      "spent_before": 191.51310020929668,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 587302.881087958,
+      "exit_code": 0,
+      "as_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 1.4589525000192225,
+      "log_sha256": "d86979712560b6c39e45308e0b2ec8d143db6873d86a63b2a73011c073a1c545"
+    },
+    {
+      "name": "final-whitespace",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 5,
+      "final": true,
+      "spent_before": 232.9720527093159,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 590520.039973875,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 0.06850520800799131,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "final-plan",
+      "command": [
+        "python3",
+        "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+        "plans/0339-prepared-edge-span-publication.md",
+        "--phase",
+        "final"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap_seconds": 5,
+      "final": true,
+      "spent_before": 233.0405579173239,
+      "source_hashes": {
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+      },
+      "start_monotonic": 590602.119262166,
+      "exit_code": 0,
+      "as_used_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "foreign_csv_restored": true,
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "elapsed_seconds": 0.06816854199860245,
+      "log_sha256": "76b4d6e0d83852d8556155ac1084f20bdb7f39af16047e6c699e127e22e3009c"
+    }
+  ]
+}

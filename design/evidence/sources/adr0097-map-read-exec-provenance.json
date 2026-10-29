@@ -1,0 +1,45 @@
+{
+  "plan": {
+    "exit": 1,
+    "errors": [
+      "ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'",
+      "ERROR: Completion Criteria item 5 must be checked in final phase",
+      "ERROR: Completion Criteria item 6 must be checked in final phase"
+    ],
+    "expected_refusal": true,
+    "plan_sha256": "02c9ddce0d8bc7f26b0ed87a4d29397f53fce6fddc2033264f39274a280b3434",
+    "note": "third plan record; prior attempt and v4 records preserved byte-wise"
+  },
+  "lizard": {
+    "runs": {
+      "frozen5da46": {
+        "functions": 97,
+        "ccn": 318,
+        "nloc": 1256,
+        "tokens": 9891,
+        "max_ccn": 37
+      },
+      "formatted_M": {
+        "functions": 104,
+        "ccn": 331,
+        "nloc": 1363,
+        "tokens": 10588,
+        "max_ccn": 37
+      }
+    },
+    "note": "source-text metric; M source includes the gated recorder functions; not codegen equivalence"
+  },
+  "git_diff_check_exit": 0,
+  "trailing_whitespace": {
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": [],
+    "design/evidence/adr0097-demotion-design.md": [],
+    "plans/0340-prepared-paged-map-edits.md": []
+  },
+  "frozen_inputs": {
+    "lib": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+    "bench": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+    "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "lara_csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+  }
+}

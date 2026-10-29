@@ -1,0 +1,160 @@
+STDOUT (separate stream)
+
+running 18 tests
+test tests::empty_init ... ok
+test tests::insert_get_replace_remove ... ok
+test tests::drained_map_reopens_and_accepts_inserts ... ok
+test tests::a0_admission_zero_reservation ... ok
+test tests::directory_full_split_is_side_effect_free ... ok
+test tests::empty_new_equals_init_on_fresh_memory ... ok
+test tests::predecessor_successor_across_pages ... ok
+test tests::predecessor_or_equal_reports_exact_matches_across_pages ... ok
+test tests::inserts_out_of_order_and_splits ... ok
+test tests::edit_image_read_partition ... ok
+test tests::prepared_edits_corruption_and_scalar ... ok
+test tests::prepared_edits_order_and_discard ... ok
+test tests::iter_yields_ascending_across_pages ... ok
+test tests::remove_empty_page_and_reopen ... ok
+test tests::scalar_edit_work_contract ... ok
+test tests::prepared_edits_resources_and_retry ... ok
+test tests::prepared_edits_directory_rejection ... ok
+test tests::a0_admission_directory_reservation ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+
+STDERR (separate stream)
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-paged-ordered-map v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.55s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e)
+IMAGE_READ_CASE empty-backed
+IMAGE_READ_CASE empty-zero
+IMAGE_READ_CASE inline-contained
+IMAGE_READ_CASE inline-packed-offset
+IMAGE_READ_CASE inline-before
+IMAGE_READ_CASE inline-left-adjacent
+IMAGE_READ_CASE inline-right-adjacent
+ADMISSION_ZERO zero reached: last value Some((63, 11889503016258109503))
+IMAGE_READ_CASE inline-gap
+IMAGE_READ_CASE inline-after
+IMAGE_READ_CASE inline-left-overlap
+ADMISSION_ZERO zero and already-backed positive reservation passed
+IMAGE_READ_CASE inline-right-overlap
+IMAGE_READ_CASE inline-multiple
+IMAGE_READ_CASE inline-zero-staged
+IMAGE_READ_CASE heap-packed-offset
+IMAGE_READ_CASE heap-before
+IMAGE_READ_CASE heap-left-adjacent
+IMAGE_READ_CASE heap-right-adjacent
+IMAGE_READ_CASE heap-gap
+IMAGE_READ_CASE heap-after
+IMAGE_READ_CASE heap-left-overlap
+IMAGE_READ_CASE heap-right-overlap
+IMAGE_READ_CASE heap-multiple
+IMAGE_READ_CASE heap-zero-staged
+IMAGE_READ_CASE heap-zero-gap
+IMAGE_READ_CASE unbacked-unstaged
+IMAGE_READ_CASE unbacked-zero
+IMAGE_READ_CASE unbacked-contained
+IMAGE_READ_CASE unbacked-contained-offset
+IMAGE_READ_CASE unbacked-left-partial
+IMAGE_READ_CASE unbacked-right-partial
+IMAGE_READ_CASE straddle-unstaged
+PREPARED_LAYOUT image=192 range=24 result=16 inline_bytes=48 inline_ranges=88 inline_results=32
+IMAGE_READ_CASE straddle-overlay
+IMAGE_READ_CASE unbacked-gap-overlay
+PREPARED_CORRUPTION reached WorkObservation { observed: true, dirty_bytes: 8, ranges: 1, byte_capacity: 0, range_capacity: 0, result_capacity: 4, reserves: 1, grows: 0, grown_pages: 0, selected: Some((1, 2, 0)), first_staged: Some((Some(11889503016258109504), Some(11817445422220181568))), completed: 1, fail_site: None }
+SCALAR_WORK replace traffic=Traffic { reads: 9, read_bytes: 112, writes: 1, write_bytes: 8, max_read: 32, max_write: 8, sizes: 1, grows: 0, grown_pages: 0 } scratch=WorkObservation { observed: true, dirty_bytes: 8, ranges: 1, byte_capacity: 0, range_capacity: 0, result_capacity: 0, reserves: 0, grows: 0, grown_pages: 0, selected: Some((0, 1, 1)), first_staged: Some((Some(11889503016258109504), Some(11817445422220181568))), completed: 1, fail_site: None }
+SCALAR_WORK missing traffic=Traffic { reads: 12, read_bytes: 128, writes: 0, write_bytes: 0, max_read: 32, max_write: 0, sizes: 1, grows: 0, grown_pages: 0 } scratch=WorkObservation { observed: true, dirty_bytes: 0, ranges: 0, byte_capacity: 0, range_capacity: 0, result_capacity: 0, reserves: 0, grows: 0, grown_pages: 0, selected: Some((0, 2, 1)), first_staged: None, completed: 1, fail_site: None }
+SCALAR_WORK tail_insert traffic=Traffic { reads: 12, read_bytes: 128, writes: 3, write_bytes: 26, max_read: 32, max_write: 16, sizes: 1, grows: 0, grown_pages: 0 } scratch=WorkObservation { observed: true, dirty_bytes: 26, ranges: 3, byte_capacity: 0, range_capacity: 0, result_capacity: 0, reserves: 0, grows: 0, grown_pages: 0, selected: Some((0, 2, 1)), first_staged: None, completed: 1, fail_site: None }
+SCALAR_WORK tail_remove traffic=Traffic { reads: 13, read_bytes: 136, writes: 2, write_bytes: 10, max_read: 32, max_write: 8, sizes: 1, grows: 0, grown_pages: 0 } scratch=WorkObservation { observed: true, dirty_bytes: 10, ranges: 2, byte_capacity: 0, range_capacity: 0, result_capacity: 0, reserves: 0, grows: 0, grown_pages: 0, selected: Some((0, 2, 1)), first_staged: None, completed: 1, fail_site: None }
+SCALAR_WORK split traffic=Traffic { reads: 94, read_bytes: 1368, writes: 8, write_bytes: 1146, max_read: 32, max_write: 560, sizes: 1, grows: 0, grown_pages: 0 } scratch=WorkObservation { observed: true, dirty_bytes: 1146, ranges: 8, byte_capacity: 1168, range_capacity: 12, result_capacity: 0, reserves: 2, grows: 0, grown_pages: 0, selected: Some((0, 1, 1)), first_staged: None, completed: 1, fail_site: None }
+PREPARED_RESOURCE rejected WorkObservation { observed: true, dirty_bytes: 134554, ranges: 7, byte_capacity: 147456, range_capacity: 24, result_capacity: 4000, reserves: 11, grows: 1, grown_pages: 0, selected: Some((3999, 126, 1)), first_staged: None, completed: 4000, fail_site: None }
+PREPARED_RESOURCE labelled bytes reservation: memory allocation failed because the computed capacity exceeded the collection's maximum
+PREPARED_RESOURCE ready WorkObservation { observed: true, dirty_bytes: 134554, ranges: 7, byte_capacity: 147456, range_capacity: 24, result_capacity: 4000, reserves: 11, grows: 0, grown_pages: 0, selected: Some((3999, 126, 1)), first_staged: None, completed: 4000, fail_site: None }
+ADMISSION_DIRECTORY valid 8255-entry rejection passed
+ADMISSION_DIRECTORY exact removal/retry reused page 2

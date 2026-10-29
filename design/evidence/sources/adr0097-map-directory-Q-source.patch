@@ -1,0 +1,81 @@
+--- W-lib.rs
++++ Q-lib.rs
+@@ -629,10 +629,7 @@
+ 
+     fn directory(&self, index: u64) -> DirEntry {
+         let bytes = self.read::<16>(dir_entry_offset(index));
+-        DirEntry {
+-            min_key: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+-            page_id: u64::from_le_bytes(bytes[8..].try_into().unwrap()),
+-        }
++        DirEntry::decode(&bytes)
+     }
+ 
+     fn set_directory(&mut self, index: u64, entry: DirEntry) {
+@@ -1121,6 +1118,15 @@
+     page_id: u64,
+ }
+ 
++impl DirEntry {
++    fn decode(bytes: &[u8; DIR_ENTRY_SIZE as usize]) -> Self {
++        Self {
++            min_key: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
++            page_id: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
++        }
++    }
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ struct PageHeader {
+     flags: u8,
+@@ -1731,10 +1737,9 @@
+ 
+     fn read_dir_entry(&self, index: u64) -> DirEntry {
+         let off = dir_entry_offset(index);
+-        DirEntry {
+-            min_key: read_u64(&self.memory, off),
+-            page_id: read_u64(&self.memory, off + 8),
+-        }
++        let mut bytes = [0u8; DIR_ENTRY_SIZE as usize];
++        self.memory.read(off, &mut bytes);
++        DirEntry::decode(&bytes)
+     }
+ 
+     #[cfg(test)]
+@@ -2042,6 +2047,36 @@
+         let mut bytes = vec![0; (memory.size() * WASM_PAGE_SIZE) as usize];
+         memory.read(0, &mut bytes);
+         bytes
++    }
++
++    #[test]
++    fn canonical_dir_entry_single_read_contract() {
++        let m = StablePagedOrderedMap::init(WorkMemory::default()).unwrap();
++        let key = 0xa1b2_c3d4_e5f6_0718u64;
++        let value = key ^ 0x5a5a_0f0f_3c3c_1e1e;
++        assert_eq!(m.insert(key, value), Ok(None));
++        let before = backing(&m.memory.inner);
++        m.memory.traffic.set(Traffic::default());
++        let entry = m.read_dir_entry(0);
++        let traffic = m.memory.traffic.get();
++        assert_eq!(
++            entry,
++            DirEntry {
++                min_key: key,
++                page_id: 1,
++            }
++        );
++        assert_eq!(backing(&m.memory.inner), before);
++        assert_eq!(m.get(key), Some(value));
++        assert_eq!(
++            traffic,
++            Traffic {
++                reads: 1,
++                read_bytes: 16,
++                max_read: 16,
++                ..Traffic::default()
++            }
++        );
+     }
+ 
+     #[test]

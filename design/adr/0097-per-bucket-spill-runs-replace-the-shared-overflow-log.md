@@ -278,9 +278,14 @@ bucket.
    is shared by existence and direct point consumers; that bounded slice is independently approved
    through `a80d2e1ac`. Selected tree-property hydration (006) is implemented separately in
    `036649e67` at the existing selected-read owner, with [read-only evidence and limits](../evidence/adr0097-selected-tree-properties.md).
-   GAP-001/003, matching mutation (004), metadata (002) and obsolete maintenance (005) remain open.
-   Neither read repair establishes mutation, general performance/atomicity/space/lifecycle/PocketIC
-   or landing approval.
+   GAP006's bounded read-only repair is independently approved through `f297706ab`. GAP-001/003,
+   matching mutation (004), metadata (002) and obsolete maintenance (005) remain open. The
+   [Planned ADR0088 demotion/deletion contract](0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+   and [revised source audit/proof map](../evidence/adr0097-demotion-design.md) leave reclamation policy
+   open after REQUEST CHANGES: permanent `S>1024` retention is not approved. Allocator preparation and
+   whole-unit publication precede native wiring; empty-retirement work remains a gate. Neither read
+   repair nor this design establishes mutation, general
+   performance/atomicity/space/lifecycle/PocketIC or landing approval.
 
    **Retained-run append.** Once a run exists, an append uses that run even if a tail capacity
    window offers additional slab space. Increasing the initialized prefix would shift existing

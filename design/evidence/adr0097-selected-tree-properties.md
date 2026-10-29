@@ -1,6 +1,8 @@
 # ADR0097 — Selected tree inline-property reads
 
-**Status:** Bounded GAP006 read repair implemented in `036649e67`; independent review pending.\
+**Status:** Bounded GAP006 read repair in `036649e67` independently approved through `f297706ab`.\
+Approval covers selected reads only, not deletion/demotion, matching, general atomicity/performance
+or landing. Dated raw completion artifacts retain their original pending-review status.\
 **Anchor timestamp:** 2026-09-22 10:15:06 UTC +0000\
 **Base:** `a80d2e1acad7f282790218ba63f80674807d56e5`, branch `spill-swap`.\
 **Scope:** Selected topology/value hydration only, not tree mutation.

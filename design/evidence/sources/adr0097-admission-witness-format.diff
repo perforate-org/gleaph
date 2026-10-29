@@ -1,0 +1,204 @@
+--- witness/a0_admission_exact_span
++++ candidate/a0_admission_exact_span
+@@ -14 +14,4 @@
+-                Some(FreeSpan { start_slot: 10 * i, len: 1 })
++                Some(FreeSpan {
++                    start_slot: 10 * i,
++                    len: 1
++                })
+@@ -18 +21,4 @@
+-            .map(|i| FreeSpan { start_slot: 10 * i, len: 1 })
++            .map(|i| FreeSpan {
++                start_slot: 10 * i,
++                len: 1,
++            })
+@@ -32 +38,4 @@
+-        let wrong = FreeSpan { start_slot: 310, len: 2 };
++        let wrong = FreeSpan {
++            start_slot: 310,
++            len: 2,
++        };
+@@ -39 +48,4 @@
+-        assert!(before == after, "exact-span rejection changed backing or heap");
++        assert!(
++            before == after,
++            "exact-span rejection changed backing or heap"
++        );
+--- witness/a0_admission_pair
++++ candidate/a0_admission_pair
+@@ -2,3 +2,12 @@
+-        let left = FreeSpan { start_slot: 6, len: 4 };
+-        let middle = FreeSpan { start_slot: 20, len: 4 };
+-        let peer = FreeSpan { start_slot: 40, len: 4 };
++        let left = FreeSpan {
++            start_slot: 6,
++            len: 4,
++        };
++        let middle = FreeSpan {
++            start_slot: 20,
++            len: 4,
++        };
++        let peer = FreeSpan {
++            start_slot: 40,
++            len: 4,
++        };
+@@ -6,2 +15,12 @@
+-            (left, left, FreeSpanError::MissingSpan { span: left }, "same-input"),
+-            (middle, peer, FreeSpanError::DuplicateStart { start_slot: 40 }, "replacement-key"),
++            (
++                left,
++                left,
++                FreeSpanError::MissingSpan { span: left },
++                "same-input",
++            ),
++            (
++                middle,
++                peer,
++                FreeSpanError::DuplicateStart { start_slot: 40 },
++                "replacement-key",
++            ),
+@@ -20,5 +39,20 @@
+-            let empty = FreeSpan { start_slot: 6, len: 0 };
+-            let missing_left = FreeSpan { start_slot: 6, len: 5 };
+-            let missing_right = FreeSpan { start_slot: 20, len: 5 };
+-            let overflow = FreeSpan { start_slot: u64::MAX, len: 1 };
+-            let overlap = FreeSpan { start_slot: 39, len: 6 };
++            let empty = FreeSpan {
++                start_slot: 6,
++                len: 0,
++            };
++            let missing_left = FreeSpan {
++                start_slot: 6,
++                len: 5,
++            };
++            let missing_right = FreeSpan {
++                start_slot: 20,
++                len: 5,
++            };
++            let overflow = FreeSpan {
++                start_slot: u64::MAX,
++                len: 1,
++            };
++            let overlap = FreeSpan {
++                start_slot: 39,
++                len: 6,
++            };
+@@ -26,2 +60,14 @@
+-                (missing_left, missing_right, empty, FreeSpanError::MissingSpan { span: missing_left }),
+-                (left, missing_right, empty, FreeSpanError::MissingSpan { span: missing_right }),
++                (
++                    missing_left,
++                    missing_right,
++                    empty,
++                    FreeSpanError::MissingSpan { span: missing_left },
++                ),
++                (
++                    left,
++                    missing_right,
++                    empty,
++                    FreeSpanError::MissingSpan {
++                        span: missing_right,
++                    },
++                ),
+@@ -29,2 +75,15 @@
+-                (left, right, overflow, FreeSpanError::SpanOverflow { span: overflow }),
+-                (left, right, overlap, FreeSpanError::OverlapNext { inserted: overlap, next: peer }),
++                (
++                    left,
++                    right,
++                    overflow,
++                    FreeSpanError::SpanOverflow { span: overflow },
++                ),
++                (
++                    left,
++                    right,
++                    overlap,
++                    FreeSpanError::OverlapNext {
++                        inserted: overlap,
++                        next: peer,
++                    },
++                ),
+@@ -33 +92,4 @@
+-                assert!(admission_snapshot(&store, &memories) == before, "{phase}: precedence rejection changed state");
++                assert!(
++                    admission_snapshot(&store, &memories) == before,
++                    "{phase}: precedence rejection changed state"
++                );
+@@ -41 +103,4 @@
+-            assert!(before == after, "{phase}: pair rejection changed backing or heap");
++            assert!(
++                before == after,
++                "{phase}: pair rejection changed backing or heap"
++            );
+--- witness/a0_admission_zero_reservation
++++ candidate/a0_admission_zero_reservation
+@@ -37 +37,4 @@
+-        assert!(before == after, "already-backed reservation overwrote its sentinel");
++        assert!(
++            before == after,
++            "already-backed reservation overwrote its sentinel"
++        );
+--- witness/a0_admission_directory_reservation
++++ candidate/a0_admission_directory_reservation
+@@ -7,8 +7,17 @@
+-            m.write_page_header(page, PageHeader {
+-                flags: PAGE_FLAG_ACTIVE,
+-                len,
+-                prev: page - 1,
+-                next: if page == DIR_CAP { 0 } else { page + 1 },
+-                free_next: 0,
+-            });
+-            m.write_dir_entry(page - 1, DirEntry { min_key: 128 * page, page_id: page });
++            m.write_page_header(
++                page,
++                PageHeader {
++                    flags: PAGE_FLAG_ACTIVE,
++                    len,
++                    prev: page - 1,
++                    next: if page == DIR_CAP { 0 } else { page + 1 },
++                    free_next: 0,
++                },
++            );
++            m.write_dir_entry(
++                page - 1,
++                DirEntry {
++                    min_key: 128 * page,
++                    page_id: page,
++                },
++            );
+@@ -62,6 +71,20 @@
+-        assert_eq!(m.read_page_header(1), PageHeader {
+-            flags: PAGE_FLAG_ACTIVE, len: 32, prev: 0, next: 2, free_next: 0,
+-        });
+-        assert_eq!(m.read_page_header(2), PageHeader {
+-            flags: PAGE_FLAG_ACTIVE, len: 33, prev: 1, next: 3, free_next: 0,
+-        });
++        assert_eq!(
++            m.read_page_header(1),
++            PageHeader {
++                flags: PAGE_FLAG_ACTIVE,
++                len: 32,
++                prev: 0,
++                next: 2,
++                free_next: 0,
++            }
++        );
++        assert_eq!(
++            m.read_page_header(2),
++            PageHeader {
++                flags: PAGE_FLAG_ACTIVE,
++                len: 33,
++                prev: 1,
++                next: 3,
++                free_next: 0,
++            }
++        );
+@@ -69 +92,7 @@
+-        assert_eq!(m.read_dir_entry(1), DirEntry { min_key: 160, page_id: 2 });
++        assert_eq!(
++            m.read_dir_entry(1),
++            DirEntry {
++                min_key: 160,
++                page_id: 2
++            }
++        );

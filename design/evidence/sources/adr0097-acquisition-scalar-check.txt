@@ -1,0 +1,15 @@
+{
+  "command": [
+    "python3",
+    "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+    "plans/0340-prepared-paged-map-edits.md",
+    "--phase",
+    "draft"
+  ],
+  "source_sha256": "4c24d7af57c9c661132f2e5abb2e9668d110ae285e0d3b1595fa2a25e0d674ef",
+  "exit": 0,
+  "elapsed_seconds": 0.07023375004064292,
+  "mode": "prose-only structural validation; no implementation correctness or execution approval"
+}
+
+Plan is structurally valid for phase=draft: plans/0340-prepared-paged-map-edits.md

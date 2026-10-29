@@ -1,0 +1,7 @@
+--- candidate/lib.rs
++++ mutation/lib.rs
+@@ -1320 +1320 @@
+-        self.admit_image(&plan.image)?;
++
+@@ -1376,0 +1377 @@
++        self.admit_image(&image).expect("deferred backing reservation");

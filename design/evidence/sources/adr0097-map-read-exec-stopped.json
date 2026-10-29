@@ -1,0 +1,11 @@
+{
+  "at": "map",
+  "failure": "finally: AssertionError('target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e')",
+  "charged_total": 24.060937750036828,
+  "entries_so_far": [
+    "setup",
+    "format",
+    "map"
+  ],
+  "diagnostic_failures": []
+}

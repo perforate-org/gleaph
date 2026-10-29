@@ -1,0 +1,14 @@
+{
+  "pre_format": {
+    "lib": "62fd25085d22a776e743fdafc8fab54aaab63c65905844bf68cdff965949bde6",
+    "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+  },
+  "post_format": {
+    "lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+    "bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+  },
+  "lib_sha256": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+  "bench_sha256": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378",
+  "defines_frozen_M": true,
+  "mapping_diff": "format-mapping.diff"
+}

@@ -1,0 +1,348 @@
+--- frozen5da46/lib.rs
++++ M/lib.rs
+@@ -448,6 +448,8 @@
+     }
+ 
+     fn read<M: Memory>(&self, memory: &M, address: u64, dst: &mut [u8]) {
++        #[cfg(feature = "canbench")]
++        let t0 = diag_tick();
+         let end = address + dst.len() as u64;
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() <= address);
+@@ -456,6 +458,8 @@
+             if !dst.is_empty() {
+                 memory.read(address, dst);
+             }
++            #[cfg(feature = "canbench")]
++            let _ = diag_finish(DIAG_READ, t0);
+             return;
+         }
+         if let Some(r) = candidate
+@@ -464,6 +468,8 @@
+         {
+             let offset = r.offset + (address - r.address) as usize;
+             dst.copy_from_slice(&self.bytes.as_slice()[offset..offset + dst.len()]);
++            #[cfg(feature = "canbench")]
++            let _ = diag_finish(DIAG_READ, t0);
+             return;
+         }
+         // Only planned new pages may extend past current backing. Their missing
+@@ -486,6 +492,8 @@
+             dst[(lo - address) as usize..(hi - address) as usize]
+                 .copy_from_slice(&self.bytes.as_slice()[source..source + (hi - lo) as usize]);
+         }
++        #[cfg(feature = "canbench")]
++        let _ = diag_finish(DIAG_READ, t0);
+     }
+ 
+     fn write(&mut self, address: u64, value: &[u8]) {
+@@ -499,6 +507,8 @@
+         count: usize,
+         mut fill_gap: impl FnMut(u64, &mut [u8]),
+     ) -> usize {
++        #[cfg(feature = "canbench")]
++        let t0 = diag_tick();
+         let end = address + count as u64;
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() < address);
+@@ -507,6 +517,8 @@
+             && end <= r.end()
+         {
+             let offset = r.offset + (address - r.address) as usize;
++            #[cfg(feature = "canbench")]
++            let _ = diag_finish(DIAG_COVER, t0);
+             return offset;
+         }
+         let last = first + ranges[first..].partition_point(|r| r.address <= end);
+@@ -571,8 +583,159 @@
+         for r in &mut self.ranges.as_mut_slice()[first + 1..] {
+             r.offset += added;
+         }
++        #[cfg(feature = "canbench")]
++        let _ = diag_finish(DIAG_COVER, t0);
+         offset + (address - start) as usize
+     }
++}
++
++#[cfg(feature = "canbench")]
++const DIAG_CATS: usize = 7;
++#[cfg(feature = "canbench")]
++const DIAG_SLOTS: usize = 11;
++#[cfg(feature = "canbench")]
++const DIAG_INIT: usize = 0;
++#[cfg(feature = "canbench")]
++const DIAG_PREPARE: usize = 1;
++#[cfg(feature = "canbench")]
++const DIAG_RESULT: usize = 2;
++#[cfg(feature = "canbench")]
++const DIAG_PUBLISH: usize = 3;
++#[cfg(feature = "canbench")]
++const DIAG_READ: usize = 4;
++#[cfg(feature = "canbench")]
++const DIAG_COVER: usize = 5;
++#[cfg(feature = "canbench")]
++const DIAG_ADMIT: usize = 6;
++#[cfg(feature = "canbench")]
++const DIAG_CAL_STANDALONE: usize = 7;
++#[cfg(feature = "canbench")]
++const DIAG_CAL_NESTED_IN: usize = 8;
++#[cfg(feature = "canbench")]
++const DIAG_CAL_SHARED: usize = 9;
++#[cfg(feature = "canbench")]
++const DIAG_CAL_NESTED_OUT: usize = 10;
++// Fixed-size observational recorder for the one authorized cfg-gated diagnostic.
++// A pair value is exit-counter minus entry-counter. Bookkeeping after a finish's
++// timestamp (or before a tick's) is outside that call's own sample, but a shared
++// endpoint places the preceding finish's bookkeeping inside the following sibling's
++// sample, and nested samples make inner recorder work parent-charged. Calibration
++// uses the identical tick/finish paths; outputs are observational only, not certified
++// cost or ranking bounds.
++#[cfg(feature = "canbench")]
++#[derive(Clone, Copy)]
++struct DiagAgg {
++    count: u64,
++    sum: u64,
++    min: u64,
++    max: u64,
++}
++#[cfg(feature = "canbench")]
++impl DiagAgg {
++    const ZERO: Self = Self {
++        count: 0,
++        sum: 0,
++        min: u64::MAX,
++        max: 0,
++    };
++    fn update(&mut self, delta: u64) {
++        self.count += 1;
++        self.sum += delta;
++        self.min = self.min.min(delta);
++        self.max = self.max.max(delta);
++    }
++}
++#[cfg(feature = "canbench")]
++struct DiagState {
++    agg: [DiagAgg; DIAG_SLOTS],
++    endpoints: u64,
++}
++#[cfg(feature = "canbench")]
++impl DiagState {
++    const ZERO: Self = Self {
++        agg: [DiagAgg::ZERO; DIAG_SLOTS],
++        endpoints: 0,
++    };
++}
++#[cfg(feature = "canbench")]
++std::thread_local! {
++    static DIAG: std::cell::RefCell<DiagState> =
++        const { std::cell::RefCell::new(DiagState::ZERO) };
++}
++#[cfg(feature = "canbench")]
++fn diag_tick() -> u64 {
++    DIAG.with(|d| d.borrow_mut().endpoints += 1);
++    ic_cdk::api::performance_counter(0)
++}
++#[cfg(feature = "canbench")]
++fn diag_finish(slot: usize, t0: u64) -> u64 {
++    let t = ic_cdk::api::performance_counter(0);
++    DIAG.with(|d| {
++        let mut d = d.borrow_mut();
++        d.endpoints += 1;
++        d.agg[slot].update(t - t0);
++    });
++    t
++}
++#[cfg(feature = "canbench")]
++fn diag_reset() {
++    DIAG.with(|d| {
++        let mut d = d.borrow_mut();
++        d.endpoints = 0;
++        for slot in d.agg.iter_mut().take(DIAG_CATS) {
++            *slot = DiagAgg::ZERO;
++        }
++    });
++}
++#[cfg(feature = "canbench")]
++fn diag_snapshot(acc: &mut [u64; DIAG_CATS], pairs: &mut [u64; DIAG_CATS], endpoints: &mut u64) {
++    DIAG.with(|d| {
++        let d = d.borrow();
++        for slot in 0..DIAG_CATS {
++            acc[slot] = d.agg[slot].sum;
++            pairs[slot] = d.agg[slot].count;
++        }
++        *endpoints = d.endpoints;
++    });
++}
++#[cfg(feature = "canbench")]
++fn diag_run_calibration() {
++    for _ in 0..64 {
++        let t0 = diag_tick();
++        let _ = diag_finish(DIAG_CAL_STANDALONE, t0);
++    }
++    let outer0 = diag_tick();
++    for _ in 0..16 {
++        let t0 = diag_tick();
++        let _ = diag_finish(DIAG_CAL_NESTED_IN, t0);
++    }
++    let _ = diag_finish(DIAG_CAL_NESTED_OUT, outer0);
++    let mut shared = diag_tick();
++    for _ in 0..32 {
++        shared = diag_finish(DIAG_CAL_SHARED, shared);
++    }
++}
++#[cfg(feature = "canbench")]
++fn diag_cal_summary() -> [[u64; 4]; 4] {
++    DIAG.with(|d| {
++        let d = d.borrow();
++        let mut out = [[0u64; 4]; 4];
++        let slots = [
++            DIAG_CAL_STANDALONE,
++            DIAG_CAL_NESTED_IN,
++            DIAG_CAL_SHARED,
++            DIAG_CAL_NESTED_OUT,
++        ];
++        for (row, slot) in slots.into_iter().enumerate() {
++            out[row] = [
++                d.agg[slot].count,
++                d.agg[slot].sum,
++                d.agg[slot].min,
++                d.agg[slot].max,
++            ];
++        }
++        out
++    })
+ }
+ 
+ fn checked_page_offset(page: u64) -> Result<u64, EditFailure> {
+@@ -1326,11 +1489,21 @@
+     }
+ 
+     fn scalar_edit(&self, edit: Edit) -> Result<Option<u64>, Error> {
++        #[cfg(feature = "canbench")]
++        let t0 = diag_tick();
+         let mut image = EditImage::new();
++        #[cfg(feature = "canbench")]
++        let t1 = diag_finish(DIAG_INIT, t0);
+         self.prepare_image(&[edit], &mut image)
+             .map_err(FailedEdit::scalar)?;
++        #[cfg(feature = "canbench")]
++        let t2 = diag_finish(DIAG_PREPARE, t1);
+         let previous = image.previous.as_slice()[0];
++        #[cfg(feature = "canbench")]
++        let t3 = diag_finish(DIAG_RESULT, t2);
+         self.publish_image(&image);
++        #[cfg(feature = "canbench")]
++        let _ = diag_finish(DIAG_PUBLISH, t3);
+         Ok(previous)
+     }
+ 
+@@ -1395,7 +1568,11 @@
+     }
+ 
+     fn admit_image(&self, image: &EditImage) -> Result<(), FailedEdit> {
++        #[cfg(feature = "canbench")]
++        let t0 = diag_tick();
+         if image.required_end <= image.backed_end {
++            #[cfg(feature = "canbench")]
++            let _ = diag_finish(DIAG_ADMIT, t0);
+             return Ok(());
+         }
+         let current_size = image.backed_end / WASM_PAGE_SIZE;
+@@ -1403,6 +1580,8 @@
+         #[cfg(test)]
+         self.observe_work(|w| w.grows += 1);
+         if self.memory.grow(delta) == -1 {
++            #[cfg(feature = "canbench")]
++            let _ = diag_finish(DIAG_ADMIT, t0);
+             return Err(FailedEdit {
+                 at: Some(image.required_at),
+                 cause: EditFailure::Grow(GrowFailed {
+@@ -1413,6 +1592,8 @@
+         }
+         #[cfg(test)]
+         self.observe_work(|w| w.grown_pages += delta);
++        #[cfg(feature = "canbench")]
++        let _ = diag_finish(DIAG_ADMIT, t0);
+         Ok(())
+     }
+ 
+--- frozen2f95/bench.rs
++++ M/bench.rs
+@@ -144,6 +144,12 @@
+     assert_eq!(map.read_page_header(2).len, 33);
+     assert_eq!(map.read_dir_entry(1).min_key, 128);
+     map.validate().unwrap();
++    crate::diag_reset();
++    crate::diag_run_calibration();
++    crate::diag_reset();
++    let mut diag_acc = [[0u64; crate::DIAG_CATS]; 4];
++    let mut diag_pairs = [[0u64; crate::DIAG_CATS]; 4];
++    let mut diag_ends = [0u64; 4];
+     let result = canbench_rs::bench_fn(|| {
+         {
+             let _scope = canbench_rs::bench_scope("scalar_replace_64");
+@@ -152,12 +158,16 @@
+                 black_box(map.insert(black_box(64), black_box(next)).expect("replace"));
+             }
+         }
++        crate::diag_snapshot(&mut diag_acc[0], &mut diag_pairs[0], &mut diag_ends[0]);
++        crate::diag_reset();
+         {
+             let _scope = canbench_rs::bench_scope("scalar_missing_64");
+             for _ in 0..64 {
+                 black_box(map.remove(black_box(129)).expect("missing"));
+             }
+         }
++        crate::diag_snapshot(&mut diag_acc[1], &mut diag_pairs[1], &mut diag_ends[1]);
++        crate::diag_reset();
+         {
+             let _scope = canbench_rs::bench_scope("scalar_tail_pairs_64");
+             for _ in 0..64 {
+@@ -165,10 +175,13 @@
+                 black_box(map.remove(black_box(2000)).expect("remove"));
+             }
+         }
++        crate::diag_snapshot(&mut diag_acc[2], &mut diag_pairs[2], &mut diag_ends[2]);
++        crate::diag_reset();
+         {
+             let _scope = canbench_rs::bench_scope("scalar_split_directory");
+             black_box(map.insert(black_box(1), value(1)).expect("split"));
+         }
++        crate::diag_snapshot(&mut diag_acc[3], &mut diag_pairs[3], &mut diag_ends[3]);
+     });
+     let mut final_pairs = expected;
+     final_pairs.insert(1, (1, value(1)));
+@@ -186,6 +199,33 @@
+     assert_eq!(map.read_dir_entry(2).min_key, 128);
+     assert_eq!(map.read_dir_entry(2).page_id, 2);
+     map.validate().unwrap();
++    let diag_cal = crate::diag_cal_summary();
++    for (slot, row) in diag_cal.iter().enumerate() {
++        ic_cdk::eprintln!(
++            "DIAG_CAL slot={} n={} sum={} min={} max={}",
++            slot,
++            row[0],
++            row[1],
++            row[2],
++            row[3]
++        );
++    }
++    ic_cdk::eprintln!(
++        "DIAG_CAL_DELTA nested outer_minus_inner={}",
++        diag_cal[3][1] - diag_cal[1][1]
++    );
++    for phase in 0..4 {
++        for cat in 0..crate::DIAG_CATS {
++            ic_cdk::eprintln!(
++                "DIAG_CAT phase={} cat={} acc={} pairs={}",
++                phase,
++                cat,
++                diag_acc[phase][cat],
++                diag_pairs[phase][cat]
++            );
++        }
++        ic_cdk::eprintln!("DIAG_ENDP phase={} endpoints={}", phase, diag_ends[phase]);
++    }
+     result
+ }
+ 

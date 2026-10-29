@@ -1,0 +1,30 @@
+R_ACTUAL_SOURCE_VERIFIED before versions/build; exact correct R, unchanged benchmark/other pins/protected state.
+R/four sources/Q reference pinned; three metadata versions match saved reference
+[
+  {
+    "name": "bench_r_fs_tkbfs_1024",
+    "instructions": 2147387,
+    "Q_instructions": 2147387,
+    "R_minus_Q": 0,
+    "percent_vs_Q": 0.0,
+    "candidate_control_rule": "R <= Q nonregression",
+    "candidate_control_met": true,
+    "original_ceiling": 1527576,
+    "R_minus_original_ceiling": 619811,
+    "original_ceiling_met": false
+  },
+  {
+    "name": "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split",
+    "instructions": 2146426,
+    "Q_instructions": 2146426,
+    "R_minus_Q": 0,
+    "percent_vs_Q": 0.0,
+    "candidate_control_rule": "R <= Q nonregression",
+    "candidate_control_met": true,
+    "original_ceiling": 1526615,
+    "R_minus_original_ceiling": 619811,
+    "original_ceiling_met": false
+  }
+]
+R_LARA_MEASURED: numerical misses remain misses; no tuning/retry or R retention/ADR acceptance authorized
+ROOT=/tmp/spill-position-lara-62228f64 canbench_exit=0 primary_exit=0 cleanup_failed=0

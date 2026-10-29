@@ -1,0 +1,9 @@
+--- a/crates/ic-stable-paged-ordered-map/src/lib.rs
++++ b/crates/ic-stable-paged-ordered-map/src/lib.rs
+@@ -373,3 +372,0 @@
+-        if additional_entries == 0 {
+-            return Ok(());
+-        }
+@@ -382 +379 @@
+-        if need.div_ceil(WASM_PAGE_SIZE) <= self.memory.size() {
++        if need == 0 {

@@ -153,13 +153,151 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
 
-- **Status:** Planned;0394 STOPPED IMPLEMENTATION awaiting separate production allocation after
-  completed post0395 Q1 APPROVE DRAFT BOUNDARY (exit0/101.35s, ZERO tools, no required P0/P1/P2). Disposition **Prerequisite complete; geometry integration pending**:
-  [Plan0395](../plans/0395-pinned-vertex-physical-layout-preparation.md) closes the existing compact
-  physical-layout capability; [0394](../plans/0394-grouped-tiny-leaf-geometry.md) now scopes its
-  composition into one logical same-leaf ready unit. Three archived native RED/stop proofs and
-  prior approvals remain historical; the tiny geometry defect stays open until real grouped and
-  eight-case scalar/caller GREEN, measurement and independent implementation closure.
+- **Status:** Planned / STOP at tree-resident source contract; the shared-publisher probe is
+  rejected and restored, not implemented. The physical0395 and
+  [mode-footprint0396 prerequisite](#gap-lara-mode-footprint--normalbypass-handoff-corrupts-assigned-pin-width)
+  are closed. The post0396 baseline/four fresh BEFORE controls remain bound by
+  `W/geometry-copy-composition/restart-p2-post0396-baseline/{baseline,before-results}.json`.
+  Separately authorized restart P3 reproduces both owning REDs, then passes three candidate functions
+  but regresses eight existing successes (native726:718 pass/8 fail). Its actual written fixtures are
+  11 graphs/176 memories/two corrupt-index reopen attempts; the other ten functions, caller's eight
+  valid reopen checks and full13 fixture freeze remain pending. All eight changed Rust paths and
+  temporary contract/diagnostic suffixes are archived and restored exactly; native723, ordinary
+  lib/tests Clippy and workspace format pass after restoration. [0394](../plans/0394-grouped-tiny-leaf-geometry.md)
+  completes only freeze-and-prove-order; four TODOs/eight criteria, group integration, mutants, AFTER
+  and independent implementation/cost closure remain pending. Current723 plus13 planned still implies736.
+  Q1 draft approval and every prior RED/BEFORE/AFTER retain their original producer/scope.
+- **Tree-resident source blocker (restart P3):** An exact mixed-tree caller has pin=None,
+  leaf actual/total0/0 and vertex stored_slots0 despite an initialized one-slot root. A separate real
+  slab/run/property-tree promotion leaves slab[256,272), cover[256,273), pin[256,1280), but combined
+  root[1280,1290). `promote.rs::transcribe_and_publish_tree` allocates a standalone root; its normal
+  branch keeps new_alloc=old_alloc and publishes only `TreePublication::Existing` descriptors, not a
+  final vertex cover. The bypass branch has a distinct segment/vertex image. This is not0396's
+  repaired assigned-width drift. The normal root/cover/pin publication contract needs a bounded
+  prerequisite or reviewed0394 rescope before geometry can enforce containment and retain existing
+  success. That owner lies outside the20-path permission; no repair, guard relaxation, skipped mate,
+  sequential publishing rewrite, counter reset or test weakening is authorized. New
+  `W/geometry-copy-composition/restart-p3-geometry-implementation/{rejected-probe,source-restoration}.json`
+  and `tree-resident-source-diagnosis.md` preserve both exact reached states, eight failures, candidate
+  source and restoration; the other six individual failure sources are not independently diagnosed.
+  [0404's separate shared-leaf root repair draft](../plans/0404-shared-leaf-tree-root-ownership.md)
+  inventories the symmetric append/property-grow/deepen/flatten geometry and demotion retirement
+  consumers at the existing compact owner. Demotion's direct root-subrange releases cannot remain
+  unchanged if roots move into a live pin; its geometry handoff must be reviewed without silently
+  reopening GAP-2026-09-22-001/003's deletion/value/movement policy. The unpinned P3 batch witness
+  uses `force_tree_mode_for_test`, so it does not prove naturally produced run-only promotion.
+  0404's r1 independent draft review requested changes at the unpublished demotion value-span
+  handoff. The inspected immediate allocator publishes free-prefix removal or occupied-tail growth;
+  `release_byte_span` is deliberately a no-op within that tail, so allocation followed by that release
+  cannot prove discard. The revised draft explicitly selects a nonpublishing destination at the
+  existing byte-slab owner, reusing source-bound free-span preparation and composing its header,
+  bytes and acquisition into the compact unit. Prefix/append discard, changed-source rejection,
+  late root-admission failure and supported property conversion have owning proposed assertions.
+  This is a proposed extension, not an existing API or newly executed leak proof; r1 is retained and
+  r2's verdict/source binding is recorded separately. Existing ascending conversion positions and
+  movement behavior stay unchanged; property-tombstone selection, movement parity, deeper-property
+  retirement and deletion/liveness remain GAP-2026-09-22-001/003, not certified by this rescope.
+  Both natural RED obligations remain incomplete. The approved root-repair design remains planned;
+  the bounded Step2 source candidate below is not a root repair,0394 restart,codec,cost or adoption approval. Evidence is under
+  `shared-leaf-tree-root-ownership-0404` in the ADR0097 evidence root, including
+  `review-report-r1.md`, `demotion-handoff-stop.md` and the r2 revision queue; old P3 receipts are unchanged.
+  R2 approves the draft boundary only. The next bounded `implementation-freeze-p1` checkpoint
+  separately freezes dirty-entry bytes/identities and the first normal-promotion contract:4 natural
+  width0/33, target-before/after-retained-label fixtures,64 memories,4 conditional reopens. It does
+  not allocate production edits or infer the unassigned run-only case from a pinned/forced source;
+  both natural RED obligations must be established before the root publisher is changed. Runtime
+  reach/containment receipts and pending obligations are recorded under that checkpoint, not inferred
+  from its729/13 entry identity lists. The initial pre-compilation `--locked` failure remains immutable.
+  User-authorized config isolation moved the exact sole global `creusot-std` patch to Creusot-local
+  `.cargo/config.toml`; `implementation-freeze-p1/config-isolation/{permission,application}.json` binds
+  that move, unchanged manifests/locks/index and the same-command compilation reach. The original
+  external config was not frozen at entry, so its earlier change time is unknown. No unlocked retry,
+  home/target override or lock write; the earlier GAP-WORKSPACE-LOCK-DRIFT resolution is unchanged.
+  The remaining blocker is the normal fixture's source preparation: an initial owner-wide fold/peer
+  source lost retained rows; r2 without that fold reached both width0 promotions but then stopped on
+  width33's zero prefix. A unified seed helper at the existing run-to-prefix compactor again loses
+  retained rows to peer values before promotion. D1 now proves the earlier source violation, before
+  any peer insertion: cover[256,293), last start288/prefix4, four run rows need end296. Shared
+  `bucket.rs::bucket_successor_start_after_bucket` admits325 (last start + whole vertex width37);
+  `compact_label_bucket_overflow_to_slab` writes292..296 and publishes prefix8 without extending the
+  cover. The second copied row293 is already outside the reservation. This is a production source-tail
+  defect, not permission to resequence fixtures or label a setup failure as root RED.
+  `implementation-freeze-p1/source-diagnosis/finding.json` binds exact before/after canonical metadata,
+  probe/source hashes and audited wrapper/scalar/batch consumers. A subsequent complete `crates/`
+  call-site audit finds that the second, supplied-image contiguous-copy predicate has only its
+  declaration and no caller. The revised prerequisite deletes that unused duplicate instead of
+  extracting a helper to preserve dead code; one existing successor owner survives. The own-prefix
+  slab window and new-descriptor anchor have different contracts and stay unchanged. User `いいよ`
+  separately allocates the tail exception under `source-tail-prerequisite` (S). Independent draft
+  review approves that revised boundary, not completion. Entry730/13 identities are re-listed; one
+  written1-graph/16-memory/1-reopen candidate adds a731st native identity but fails before its owning
+  scalar assertion. At that previous checkpoint no production method was deleted/fixed and both
+  natural root RED obligations were incomplete. Root writers remain read-only. The authoritative boundary is0404's source-tail
+  subsection; no root repair/adoption permission is inferred.
+  **Additional position/admission prerequisite:** the candidate's retained leading Tiny label2 and
+  sole slab label3 fail the first growth at eight slab edges: prefix4/run4, reservation5,
+  cover[256,261), pin[256,1280), leaf counts8/1024. The existing helper returns exact
+  `Store(CollectAllocationOverflow)` with the observed vertex/pin/count fields unchanged; full
+  backing-byte preservation on this error was not proved. A30-second pre-runtime compiler timeout
+  is separate from that completed failure. Diagnostic source/terminal and the inspected model are
+  bound in `S/preparation-stop.json`; temporary PREP prints are archived/removed. The only non-tiny
+  is also the queried bucket, so old/proposed tail origins are identical: this is not the last-origin
+  RED. Do not resequence Tiny/growth or weaken the source guard to bypass it.
+  The then-current `compact.rs::calculate_label_edge_span_positions_by_resident_slots` gave[256,262]
+  for the captured growth request(base256,width37,preferred1,extra4): Tiny has zero resident width but
+  advances its weighted gap. This conflicts with `PreparedVertexPhysicalCopy::reserve` requiring
+  first non-tiny==placement.start256; the ready guard is correct and must remain. That static
+  incompatibility is established; the exact first runtime Err site was not separately instrumented.
+  The older calculator has no production caller; its only call is the existing init overflow test.
+  User `いいよ` now allocates the concrete compact position/first-origin amendment, preserving that
+  unchanged test via a test-only forwarding entry while deleting its duplicate algorithm. One pure
+  origin assertion in the same natural fixture must precede growth and production edits. The exact
+  amendment is in0404 and `S/position-{permission,freeze}.json`; it retains the cumulative590-second
+  ledger and requires its own independent review. All other compact/root/pin/count/value/codec
+  boundaries remain protected. Tail draft approval does not cover this amendment. At that earlier checkpoint neither intended
+  scalar RED nor GREEN/mutant/reopen/normal-matrix replay had been reached.
+  **Current allocated proof/status:** independent `APPROVE0404 POSITION DRAFT`, then pure origin
+  RED[256,262] vs[256,256], precedes the compact position change. The duplicate algorithm is deleted;
+  its unchanged init overflow test forwards through a test-only entry to the resident owner. Leading
+  Tiny anchors now preserve the first resident origin; ready/cover guards and other compact code
+  remain unchanged. The unchanged growth reaches scalar tail RED325 vs293. Deleting the unused
+  tail predicate and fixing the surviving tail owner passes exact rejection/rows/counts and writable
+  reopen. The old-tail mutation fails325 vs293; exact restoration passes. The unchanged overflow
+  control passes. The original four-case candidate now reaches all natural promotions and its final
+  root containment RED; root reopens remain unreached.730 native identities pass with only that
+  intentional root identity skipped, plus13 feature-tree identities. Source/terminal/restoration
+  bindings are `S/position-tail-runtime-facts.json` and associated logs.
+  At S's stop Clippy was blocked solely by the now-unused `graph.rs:235` facade re-export of
+  `bucket_resident_region`, whose former qualified consumer was the deleted algorithm. The actual
+  helper remains live in compact. At S's stop `graph.rs` was outside the allocated surface and unchanged;
+  removing only the obsolete export needed separate allocation/review. No artificial reference or
+  lint suppression is introduced. The implementation-review command times out(exit124), despite a
+  complete advisory `REQUEST CHANGES` response in its terminal; no approval/successful review gate
+  is accepted. Final formatting also times out(exit124); earlier formatting is not a final-source
+  pass. Neither was retried or used to reset S. User `いいよ` now allocates the one-item export cleanup
+  and remaining validation under `C=E/source-tail-export-cleanup`. S's552.9174312460236/590-second
+  ledger and receipts stay immutable. C owns only that graph.rs line and this status/0404 plan;
+  bucket/compact/root code and all test bodies stay byte-identical. The one-item cleanup has independent `APPROVE0404 EXPORT DRAFT`; the obsolete export is now
+  removed and every other graph.rs byte/implementation/test body stays unchanged. Final-source
+  Clippy/format and730 native successes(skip only the intentional normal-root RED)/13 feature
+  successes pass; the unchanged normal contract replays all four successful promotions and its
+  final containment RED. `C/pre-review-preservation.json` verifies81048 prior protected files plus
+  every S artifact, exact unowned repository bytes and HEAD/index/lock. Independent review exits0
+  and returns `APPROVE0404 EXPORT IMPLEMENTATION` with no P1/P2 findings; packet/report/source
+  bindings are in `C/implementation-review-binding.json`. This source-tail/position/export
+  prerequisite is CLOSED, with final status/preservation bound in `C/checkpoint.json`; whole0404
+  is not completed. No new test/graph/memory/reopen or runtime/public/persistence behavior is
+  introduced by the cleanup. Old failures/timeouts remain unchanged and are not credited as passes.
+  Natural unassigned run-only RED is still missing, and root production/0394/codec/cost/adoption
+  remain HOLD.
+  Temporary prints are archived/removed. Before the source fixes, the durable containment guard
+  reproduced resident[288,296) outside cover[256,293), before peer/bulk/removal/promotion/reopen.
+  Those failed sources/censuses and partial reaches stay separate. The earlier F attempts constructed
+  7 graphs/112 memories, with only r2's two partial width0 promotions and zero reopens; those compiled
+  730/13 identity lists were not runtime passes. The separate S/C receipts now establish the owning
+  GREEN/reopen and full four-case natural normal RED. Natural unassigned run-only RED and a separate
+  root-source checkpoint approval remain unachieved. No root repair or0394/codec/cost/adoption closure
+  is claimed.
 - **Observed behavior:** Source tracing of `insert.rs::promote_tiny_to_slab` shows publishing
   `set_elem_capacity`, first-pin allocation or a mate's reduced `stored_slots` before later
   checked transcription, descriptor writes and PMA count-index work. `leaf_pin.rs::ensure_labeled_leaf_block_pinned`
@@ -241,23 +379,35 @@ defect from being rediscovered without its prior reasoning.
   remain immutable with their historical scopes; no earlier receipt is rebound to current I2.
   Do not use sequential publishing rewrite, minimum-address cover or unsafe fallback.0395's
   physical-only prerequisite is CLOSED; this tiny-geometry gap and0394 stay STOPPED IMPLEMENTATION.
-  The historical Q1 draft required earlier-label copy success, real retained-prefix/root scratch, generic first
+  Q1 now drafts required earlier-label copy success, real retained-prefix/root scratch, generic first
   pin and one final logical geometry/header/count/pin/allocator unit through the existing compact
   admitted publisher. Physical-only factories stay restricted and desired copies alone cannot mint
-  ready. Its historical baseline715/planned728 preserved all0395 tests. The misleading fourth-inline-
-  insert control was corrected to same-length `tiny_promote_d4_1024` for prerequisite measurement;
-  BEFORE/export/install sanity retains its source binding, with no extra method or old-result rewrite. New
+  ready. Baseline715/planned728 preserves all0395 tests. Correct the misleading fourth-inline-insert
+  control into same-length `tiny_promote_d4_1024` before any production geometry change, freezing
+  new BEFORE/export/install sanity with no extra methods or old-result rewrite. New
   `W/geometry-copy-composition/rescope-q1-baseline.json` binds the four-path planning revision and
   immutable0395 closure; `rescope-review-q1-{report.md,completion.json}` in that directory now binds
-  completed draft approval, not implementation/runtime/performance/0383 approval.0394 subsequently
-  received production allocation but stopped on the mode prerequisite, now closed by0396. Its
-  mixed-mode/group order, real caller GREEN/mutation, cost and implementation closure remain
-  unproved. Queue/Graph/live width/0383 stay later gates.
-
-0396 separately resolves the diagnosed mode-writer count/range defect; see
-[GAP-LARA-MODE-FOOTPRINT](#gap-lara-mode-footprint--normalbypass-handoff-corrupts-assigned-pin-width).
-Current723 plus13 planned geometry identities implies736; the earlier715/728 is historical.
-0394 still requires a fresh baseline and its own geometry/runtime/cost/implementation gates.
+  completed draft approval, not implementation/runtime/performance/0383 approval. The subsequent
+  `0394を再開して`/`OK、進めて` explicitly allocated restart P1; its new baseline binds HEAD f25567bad,
+  native715 and the20-path surface. Both new REDs reproduce; corrected K4 BEFORE is190,825,723
+  instructions with physical controls1,531,031/1,578,135 and export bytes19997. `restart-p1/before-results.json`
+  binds those original sources/Wasm/CSVs; no AFTER/cost acceptance is implied.
+  P1 is now STOPPED: its first-pin shared-publisher probe greens the new count-rejection contract but
+  regresses the unchanged `public_capacity_bucket_reservation_failure_preserves_cached_peer`.
+  Original and candidate pin entry both reach start256/PMA actual69,total80/capacity272; original
+  exact1 passes, candidate infers end336 and rejects. `restart-p1/{rejected-pin-probe,baseline-pin-problem}.json`
+  bind source/terminal diagnostics. This is a baseline inference conflict, not a fabricated corrupt
+  fixture or permission to remove bounds. Leaf physical range, compact physical source and edge
+  row-window inference must share the checked assigned-range source. R1 now diagnoses the writer
+  equation `16−5+(5+64)=80`, with unchanged pin/capacity/prefix; see
+  [GAP-LARA-MODE-FOOTPRINT](#gap-lara-mode-footprint--normalbypass-handoff-corrupts-assigned-pin-width).
+  These mode-writer and outer-relocation decisions are outside Q1; current persisted fields can
+  represent the correct source and no additional pin metadata is selected. Do not reset counts, enlarge an unadmitted extent,
+  pass through unchecked geometry or weaken the existing success test. The production probe and
+  temporary RED/diagnostic suffix are archived/restored byte-for-byte; only the benchmark correction
+  is retained.0395's closure is not reopened;0394 needs reviewed source-owner prerequisite resolution,
+  not repeat implementation allocation. Its mixed-mode/group order, real caller GREEN/mutation,
+  cost and implementation closure remain unproved. Queue/Graph/live width/0383 stay later gates.
 
 ### GAP-LARA-MODE-FOOTPRINT — Normal/bypass handoff corrupts assigned pin width
 
@@ -266,7 +416,7 @@ Current723 plus13 planned geometry identities implies736; the earlier715/728 is 
   `fix(lara): preserve assigned pin width across mode changes`, parent f25567bad;
   `mode-footprint-user-commit-c1/commit-receipt.json` binds the exact commit and index-only validation.
   The owning regressions are `mode_footprint_retained_roundtrip_preserves_assigned_pin` and
-  `mode_footprint_tree_append_preserves_pin_and_retirement`.0394 still needs a fresh baseline.
+  `mode_footprint_tree_append_preserves_pin_and_retirement`.0394's fresh baseline is now frozen.
   Draft approval, original REDs and P3 BEFORE bindings remain immutable.
 - **Observed:** The existing retained-prefix/run fixture reaches physical prefix5 and assigned
   pin16 at256. Normal→bypass subtracts5; after spill reaches64, bypass→normal charges raw69 as
@@ -320,8 +470,11 @@ Current723 plus13 planned geometry identities implies736; the earlier715/728 is 
   remaining concrete P1/P2. `mode-footprint-p5/{review-completion,pre-closure,closure}.json` binds the
   verdict, unchanged reviewed code, all required gates and exact source/protected/index preservation.
   These are pre-commit receipts; subsequent user authorization permits the scoped commit, not push.
-  0394 may re-freeze its723-native source/performance baseline; this is not geometry/runtime approval
-  or reinterpretation of its historical715/728 estimates.
+  0394's separately authorized baseline-only restart now freezes native723 and fresh BEFORE in
+  `restart-p2-post0396-baseline/before-results.json`. The current full-worktree Wasm has19997
+  export-name bytes; a cached14657-byte C1 snapshot binary is rejected before measurement and the
+  owning compilation unit is rebuilt. Production source, all410 protected hashes and empty index
+  are preserved. No geometry/runtime approval or reinterpretation of historical715/728 follows.
 - **Preflight:** The historical P2 locked-build stop is resolved by P3's separate
   [workspace lock prerequisite](#gap-workspace-lock-drift--locked-build-prerequisite-resolved).
   P3's four fresh BEFORE controls are retained as BEFORE; P4 native/Wasm are not benchmark passes.
@@ -493,9 +646,11 @@ Current723 plus13 planned geometry identities implies736; the earlier715/728 is 
   Public repeated deletion nevertheless returns `Some(tombstone)`, and crossing the demotion
   floor panics after the deletion commit. All diagnostic Rust changes were removed; this is
   not a deletion fix. [Source-pinned evidence](evidence/adr0097-tree-deletion-prerequisites.md).
-- **Next decision:** Establish the coherent writer/demotion contract before enabling live
-  property-bearing deletion. The [point-state read repair](evidence/adr0097-point-state-reads.md)
-  covers no-op admission, not that mutation boundary. Preserve the accepted compaction fixture;
+- **Planned follow-up:** The [ADR0088 demotion/deletion proposal](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+  and [source audit/staged plan](evidence/adr0097-demotion-design.md) require prepared physical
+  publication, aligned native selection and complete retirement before enabling live property
+  deletion. This is design only, pending review; the assertion is unchanged. Approved point and
+  selected read repairs do not prove this boundary. Preserve the accepted compaction fixture;
   its pre-promotion source deletes do not validate tree deletion.
 
 ### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
@@ -545,10 +700,14 @@ Current723 plus13 planned geometry identities implies736; the earlier715/728 is 
   synthetic `demote_atomic_on_failure` fixture correction.
 - **Impact:** Removing the stale width assertion alone exposes an unsafe public deletion path.
   Filtering property values alone cannot establish movement publication or allocation safety.
-- **Next decision:** One bounded demotion-owner design must reconcile position preservation or
-  explicit movement, edge/value collection, combined-root reservation, publication and
-  retirement. Do not change thresholds, suppress demotion or silently bulk-remap survivors
-  as a workaround. Property-tree deletion remains paused until that contract is established.
+- **Planned decision (not implemented or independently approved):** The
+  [revised ADR0088 proposal](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+  leaves reclamation policy open after REQUEST CHANGES. Keeping thresholds 512/1024 does not
+  approve permanent nonempty `S>1024` retention; a spill-free cap is not the prefix/run envelope.
+  The [source audit and resliced plan](evidence/adr0097-demotion-design.md) require allocator
+  preparation before whole-unit peer/pin/rewrite publication, aligned native selection and a
+  separately proved empty-retirement work bound. No suppression, value-only filter or hidden
+  remapping is implemented. Property-tree deletion remains paused; the failure was not rerun.
 
 ### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
 
@@ -603,8 +762,9 @@ Current723 plus13 planned geometry identities implies736; the earlier715/728 is 
 
 ### GAP-2026-09-22-006 — Selected tree inline-property hydration used slab live ranks
 
-- **Status:** Resolved in `036649e67` for the bounded selected-read contract; independent review
-  pending. No mutation or general performance/atomicity/space/PocketIC/lifecycle/landing approval.
+- **Status:** Resolved in `036649e67` for the bounded selected-read contract; independently
+  approved through `f297706ab`. No mutation or general performance/atomicity/space/PocketIC/
+  lifecycle/landing approval.
 - **Historical behavior:** At `a80d2e1ac`, the direct selected-property path obtains canonical
   topology, then calls `bucket_live_ordinal_at_edge_slot` and slab/run value helpers for trees.
   Genuine 1025-position trees with four transcribed holes panic in the slab collector:

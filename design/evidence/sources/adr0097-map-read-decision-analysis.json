@@ -1,0 +1,126 @@
+{
+  "kind": "ONE next performance decision for0340/ADR0088/report; source/existing-artifact only; no budget, no implementation",
+  "assignment_branch": "measurement (existing evidence cannot rank common vs structural where it matters)",
+  "locked_residuals_vs_admission": {
+    "missing_64": {
+      "admission": 85672,
+      "candidate": 138600,
+      "delta": 52928,
+      "pct": 61.779811
+    },
+    "replace_64": {
+      "admission": 77576,
+      "candidate": 153288,
+      "delta": 75712,
+      "pct": 97.597195
+    },
+    "tail_pairs_64": {
+      "admission": 298171,
+      "candidate": 566346,
+      "delta": 268175,
+      "pct": 89.940001
+    },
+    "split_directory": {
+      "admission": 30930,
+      "candidate": 150540,
+      "delta": 119610,
+      "pct": 386.71193
+    },
+    "scalar_total": {
+      "admission": 497282,
+      "candidate": 1013707,
+      "delta": 516425
+    },
+    "lara_total": {
+      "admission": 1527576,
+      "candidate": 2191979,
+      "delta": 664403,
+      "pct": 43.493941
+    },
+    "all_original_ceilings_remain_binding": true
+  },
+  "ranking_from_existing_evidence": [
+    {
+      "finding": "common canonical-read routing is not the split residual",
+      "evidence": "guard experiment9436\u21925da46: split only \u22124,908 (4.1% of its residual); native split reads already94 vs admission186",
+      "bound": "reader-routing share of split \u22644,908"
+    },
+    {
+      "finding": "pure-common floor exists and is bounded",
+      "evidence": "missing has zero dirty ranges/writes/cover (native12/128 reads,0 writes, dirty0) so its entire +52,928 residual contains no structural write/cover work",
+      "bound": "common floor +52,928 over64 absent-key ops (~827/op), NOT decomposable internally"
+    },
+    {
+      "finding": "single contained write-side premium is cross-phase bounded only",
+      "evidence": "replace \u2212 missing = +22,784 for64 ops while replace performs3 fewer native reads (9/112 vs12/128)",
+      "bound": "write/prior/cover/publish side \u2248 \u2265356/op, assumption-flagged (search depth differs by3 reads); not a component price"
+    },
+    {
+      "finding": "common components cannot be ranked against each other",
+      "evidence": "reader wrapper/zero-init (EditPlan::read line608), scratch/result setup (prepare_image line1337), checked geometry/page admission (EditPlan::new, page(), admit_image line1397), publication (line1419)/drop are all contract-required; no legal counterfactual may delete validation/arithmetic/error ordering; static WAT/native counts do not price instructions",
+      "consequence": "NO common-path correction proposal; another reader micro-tune is explicitly rejected as small-branch tuning without discriminating rationale"
+    },
+    {
+      "finding": "structural identity-copy redundancy is provable but addresses almost none of the dominant residual",
+      "evidence": {
+        "cover_mechanics": "contained fast path returns before merging (lines\u2248498\u2013510); ascending-append merge computes to == r.offset (line538) so line537\u2013541 executes an identical-address memmove of the whole grown range; tail move line536 is identical when old_stop == offset+len",
+        "split_right_half_identity_model": "split_page lines803\u2013814: first write creates the range, subsequent32 extensions each self-copy: sum_{k=1..32}16k =8,448B modeled (unpriced)",
+        "split_left_half_real_moves_model": "lines815\u2013827 descending inserts: \u2248528B tail shift \u00d732 + growing merged bytes \u224825KB real movement (not removable by an identity guard)",
+        "tail_identity_model": "pair1 insert creates fresh ranges; every later re-insert of key2000 lands in the already-dirty slot (contained fast path), remove writes only len \u21d2 identity self-copies \u22480; therefore identity copies explain \u22480 of tail +268,175"
+      },
+      "consequence": "the smallest provably-legal identity-copy guard covers \u22488,448B (split) + \u22480 (tail) \u21d2 modeled \u2264~5% of the516,425 scalar residual \u2014 insufficient as THE next decision; rejected as another small-branch tune"
+    },
+    {
+      "finding": "split block-staging reorganization (insert_directory-style cover at lines642\u2013657) could address split real moves but is split-only, design-heavy (borrow/order/capacity) and leaves the largest residual (tail) unexplained",
+      "consequence": "not selected: not smallest-supported against the actual acceptance gap"
+    }
+  ],
+  "conclusion": "Existing evidence bounds but cannot decompose: common internally unrankable (all contract-required), tail (largest, +268,175) not source-attributable to provable-redundant work, split staging share unpriced. Per the assignment branch, the ONE decision is the exact bounded measurement below. Required validation/arithmetic/error ordering is NOT proposed for removal; split residual is NOT assigned to common reads by assumption (only the \u22644,908 reader bound is evidence-backed).",
+  "measurement_spec": {
+    "name": "cfg-gated component-interval measurement on the frozen scalar fixture",
+    "nature": "measurement-only, contract-preserving (precedent: measurement-only baseline ae76d90f preceded production editing); source stays semantically5da46",
+    "exact_owner_surface": [
+      "crates/ic-stable-paged-ordered-map/src/bench.rs::bench_paged_scalar_edits_97 (base pin2f95a494): keep all four existing scope names, fixture loops and repetitions byte-identical; ADD per-phase non-overlapping scopes `<phase>::prepare` (through prepare_image) and `<phase>::publish_drop` (through publish_image+drop), plus one empty `mark_calibration` scope",
+      "crates/ic-stable-paged-ordered-map/src/lib.rs under cfg(feature=\"canbench\") only, at exactly five existing owners: EditPlan::read wrapper body outside the image call (line608: caller zero-init/call glue), EditImage::read body (line450), EditImage::write body outside cover (line491: staged-byte copy), EditImage::cover body (lines496\u2013560: partition/fast/merge/resize/descriptor = write/cover normalization), admit_image (line1397); prepare-remainder derived as prepare_scope minus the interior categories",
+      "mechanism selection at authorization after reading pinned canbench0.7.0 source: accumulating canbench_rs::bench_scope per category if repeated-name accumulation is supported, else manual ic0.performance_counter(0) deltas with the calibration row; chosen form is part of future implementation review",
+      "nothing else: no fixture/seeder/observer/config/lock/YAML change, no non-canbench semantic change, FreeSpan untouched"
+    ],
+    "output_cut": {
+      "common_C": "read-wrapper-glue + read-body + prepare-remainder (search/validation/geometry/result push) + admit + publish_drop",
+      "structural_N": "cover-body + write-body-minus-cover",
+      "per_phase": [
+        "scalar_replace_64",
+        "scalar_missing_64",
+        "scalar_tail_pairs_64",
+        "scalar_split_directory"
+      ]
+    },
+    "purity_counterexamples_fail_closed": [
+      "all18 map tests +5 doctests +27 FreeSpan pass unchanged under cfg-off builds",
+      "four existing mutation oracles reach the same runtime errors with exact restoration",
+      "exact native WorkObservation numbers unchanged (0 dirty,9/112,12/128,3/26,2/10,8/1146, capacities0/basic and split reserves)",
+      "if any witness differs, the measurement is invalid and no interpretation is allowed"
+    ],
+    "falsifiable_outcome": [
+      "category sums must reconcile to each phase total within mark overhead (else instrument invalid)",
+      "a share is reportable only if it exceeds marks \u00d7 calibration cost by \u22653\u00d7; otherwise that component is \"unresolved at this resolution\" and returns to review \u2014 no tuning",
+      "ranking output feeds a SEPARATE review that chooses any correction; this measurement proposes none and grants no ceiling"
+    ],
+    "future_schedule_sketch_for_separate_review": "fresh serialized600/120 shape mirroring the closed read-case sequence: pins/setup, format, map18, doc5, four mutation oracles, cfg-gate/source audit, ONE instrumented scalar run, LARA control only if the canbench feature reaches the LARA canbench build (else stated omission with FreeSpan27 final), calibration reconciliation, final fmt/clippy(map --lib --tests + lara --lib)/map18/FreeSpan27/doc5/plan/prose; caps proposed anew at authorization; one run, no tuning loop; resolution failure closes incomplete and returns to review",
+    "budget": "none granted by this document"
+  },
+  "non_waivers": [
+    "acceptance remains BLOCKED: every original ceiling fails",
+    "instrumented totals are diagnostic and never compared to admission as acceptance",
+    "no A0/A1/reclamation/Graph/ADR0097-landing movement; no commit/merge; closed ledger totals unchanged"
+  ],
+  "closed_ledger_untouched": {
+    "entries": 20,
+    "charged_total": 222.56230762507766,
+    "final_charged": 50.341530542005785
+  },
+  "clarification_receipts": [
+    "adr0097-map-read-clarification-execution.json",
+    "adr0097-map-read-clarification-coverage.json"
+  ]
+}

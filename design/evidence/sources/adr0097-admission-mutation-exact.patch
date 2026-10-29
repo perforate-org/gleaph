@@ -1,0 +1,19 @@
+--- a/crates/ic-stable-lara/src/lara/edge/free_span.rs
++++ b/crates/ic-stable-lara/src/lara/edge/free_span.rs
+@@ -1065,2 +1065,2 @@
+-        let (id, rec) = self.exact_span_record(span)?;
+-        self.by_start
++        let id = self
++            .by_start
+@@ -1069 +1069,10 @@
+-            .expect("paged by_start remove failed");
++            .expect("paged by_start remove failed")
++            .ok_or(FreeSpanError::MissingSpan { span })?;
++        let rec = self.read_record(id);
++        if rec.flags != FLAG_ACTIVE || rec.len != span.len || rec.start_slot != span.start_slot {
++            self.by_start
++                .borrow_mut()
++                .insert(span.start_slot, id)
++                .expect("paged by_start insert failed");
++            return Err(FreeSpanError::MissingSpan { span });
++        }

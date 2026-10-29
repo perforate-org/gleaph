@@ -1,0 +1,195 @@
+STDOUT (separate stream)
+[2m2026-09-23T11:37:19.850462Z[0m [32m INFO[0m [2mpocket_ic_server[0m[2m:[0m The PocketIC server is listening on port 50621
+---------------------------------------------------
+
+Benchmark: bench_paged_scalar_edits_97 (new)
+  total:
+    instructions: 2.97 M (new)
+    heap_increase: 0 pages (new)
+    stable_memory_increase: 0 pages (new)
+
+  scalar_missing_64 (scope):
+    calls: 1 (new)
+    instructions: 576.03 K (new)
+    heap_increase: 0 pages (new)
+    stable_memory_increase: 0 pages (new)
+
+  scalar_replace_64 (scope):
+    calls: 1 (new)
+    instructions: 531.14 K (new)
+    heap_increase: 0 pages (new)
+    stable_memory_increase: 0 pages (new)
+
+  scalar_split_directory (scope):
+    calls: 1 (new)
+    instructions: 230.92 K (new)
+    heap_increase: 0 pages (new)
+    stable_memory_increase: 0 pages (new)
+
+  scalar_tail_pairs_64 (scope):
+    calls: 1 (new)
+    instructions: 1.62 M (new)
+    heap_increase: 0 pages (new)
+    stable_memory_increase: 0 pages (new)
+
+---------------------------------------------------
+
+Summary:
+  instructions:
+    status:   New benchmarks added ➕
+    counts:   [total 1 | regressed 0 | improved 0 | new 1 | unchanged 0]
+    change:   n/a
+    change %: n/a
+
+  heap_increase:
+    status:   New benchmarks added ➕
+    counts:   [total 1 | regressed 0 | improved 0 | new 1 | unchanged 0]
+    change:   n/a
+    change %: n/a
+
+  stable_memory_increase:
+    status:   New benchmarks added ➕
+    counts:   [total 1 | regressed 0 | improved 0 | new 1 | unchanged 0]
+    change:   n/a
+    change %: n/a
+
+---------------------------------------------------
+
+Only significant changes:
+| status | name                                                | calls |     ins |  ins Δ% | HI |  HI Δ% | SMI |  SMI Δ% |
+|--------|-----------------------------------------------------|-------|---------|---------|----|--------|-----|---------|
+|  new   | bench_paged_scalar_edits_97                         |       |   2.97M |         |  0 |        |   0 |         |
+|  new   | bench_paged_scalar_edits_97::scalar_missing_64      |     1 | 576.03K |         |  0 |        |   0 |         |
+|  new   | bench_paged_scalar_edits_97::scalar_replace_64      |     1 | 531.14K |         |  0 |        |   0 |         |
+|  new   | bench_paged_scalar_edits_97::scalar_split_directory |     1 | 230.92K |         |  0 |        |   0 |         |
+|  new   | bench_paged_scalar_edits_97::scalar_tail_pairs_64   |     1 |   1.62M |         |  0 |        |   0 |         |
+
+ins = instructions, HI = heap_increase, SMI = stable_memory_increase, Δ% = percent change
+
+---------------------------------------------------
+CSV results saved to canbench_results.csv
+
+STDERR (separate stream)
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-paged-ordered-map v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map)
+    Finished `release` profile [optimized] target(s) in 3.70s
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAL slot=0 n=64 sum=12800 min=200 max=200
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAL slot=1 n=16 sum=3200 min=200 max=200
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAL slot=2 n=32 sum=8271 min=211 max=260
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAL slot=3 n=1 sum=7742 min=7742 max=7742
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAL_DELTA nested outer_minus_inner=4542
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=0 acc=12800 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=1 acc=450432 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=2 acc=17856 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=3 acc=23424 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=4 acc=154624 pairs=512
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=5 acc=35648 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=0 cat=6 acc=13568 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_ENDP phase=0 endpoints=1600
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=0 acc=12800 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=1 acc=502656 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=2 acc=17856 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=3 acc=17472 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=4 acc=211136 pairs=704
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=5 acc=0 pairs=0
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=1 cat=6 acc=13568 pairs=64
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_ENDP phase=1 endpoints=1856
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=0 acc=25600 pairs=128
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=1 acc=1450624 pairs=128
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=2 acc=35712 pairs=128
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=3 acc=60032 pairs=128
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=4 acc=441280 pairs=1472
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=5 acc=246592 pairs=320
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=2 cat=6 acc=27136 pairs=128
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_ENDP phase=2 endpoints=4480
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=0 acc=200 pairs=1
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=1 acc=227617 pairs=1
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=2 acc=279 pairs=1
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=3 acc=1932 pairs=1
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=4 acc=33706 pairs=94
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=5 acc=128248 pairs=74
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_CAT phase=3 cat=6 acc=212 pairs=1
+2021-05-06 19:17:10.000000003 UTC: [Canister lxzze-o7777-77777-aaaaa-cai] DIAG_ENDP phase=3 endpoints=343

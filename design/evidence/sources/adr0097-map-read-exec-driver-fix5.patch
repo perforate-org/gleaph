@@ -1,0 +1,47 @@
+--- exec_run.py.pre-fix5
++++ exec_run.py.post-fix5
+@@ -743,6 +743,7 @@
+         'final-doc.log', 'provenance.json', 'plan-check.txt',
+         'setup-failure-original.json', 'setup-correction.json',
+         'driver-fix.patch', 'driver-fix2.patch', 'driver-fix3.patch', 'driver-fix4.patch',
++        'driver-fix5.patch',
+         'map-failure-original.json', 'stopped.json',
+     ]
+     for src in exports:
+@@ -784,11 +785,13 @@
+                                 + '; '.join(DIAG_FAILURE) + '; scheduled finals run unchanged; '
+                                 'acceptance BLOCKED')
+         elif corrected:
+-            ledger['status'] = ('closed; one bounded diagnostic executed after one preserved '
+-                                'administrative driver correction (setup ENOENT, pre-Rust, zero '
+-                                'measurement consumed, receipts driver-fix/setup-correction/'
+-                                'setup-failure-original); acceptance remains BLOCKED (all '
+-                                'original IC ceilings fail; bounded-proof pending; '
++            ledger['status'] = ('closed; one bounded diagnostic executed after two preserved '
++                                'administrative driver corrections (setup ENOENT pin-loop '
++                                'ordering, pre-Rust, zero commands consumed; map archive-path/'
++                                'finally-tail defect after the scheduled cargo test had already '
++                                'passed exit0, reach verified from saved streams, no re-run) — '
++                                'all original receipts/diffs preserved; acceptance remains '
++                                'BLOCKED (all original IC ceilings fail; bounded-proof pending; '
+                                 'criteria5/6 unchecked)')
+         else:
+             ledger['status'] = ('closed; one bounded diagnostic executed; acceptance remains '
+@@ -827,10 +830,13 @@
+ serialized; stop at first unexpected failure (no repair/retry); four intended mutation101s
+ and final-plan exit1 are expected negatives; all past balances closed.
+ 
+-One administrative driver correction is preserved verbatim (setup ENOENT before any Rust;
+-receipts: setup-failure-original.json, driver-fix.patch, driver-fix2.patch,
+-setup-correction.json). M = formatted diagnostic source (uncommitted endpoint); frozen
+-originals5da46/2f95 preserved.
++Two administrative driver corrections are preserved verbatim: setup ENOENT before any Rust
++(receipts: setup-failure-original.json, setup-correction.json, driver-fix.patch) and the map
++archive-path/finally-tail defect after the scheduled cargo test had already passed (receipt:
++map-failure-original.json, driver-fix3.patch; reach verified from saved streams, no re-run).
++Driver bookkeeping diffs: driver-fix.patch, driver-fix2.patch, driver-fix3.patch,
++driver-fix4.patch, driver-fix5.patch. M = formatted diagnostic source (uncommitted endpoint);
++frozen originals5da46/2f95 preserved.
+ No LARA canbench, no baseline rebuild, no new disassembly, no persist/YAML update, no
+ optimization, no second measurement, no process work, no commit/merge. DIAG_ENDP counts only
+ diagnostic tick/finish calls (canbench's own counters excluded); snapshot/reset work lies

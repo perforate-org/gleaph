@@ -1,0 +1,217 @@
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-paged-ordered-map v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map)
+   Compiling ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-lara)
+warning: unused variable: `v`
+    --> crates/ic-stable-lara/src/labeled/bench.rs:4054:9
+     |
+4054 |     for v in 0..helper::MEDIUM_N as u32 {
+     |         ^
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+help: you might have meant to pattern match on the similarly named constant `N`
+     |
+4054 -     for v in 0..helper::MEDIUM_N as u32 {
+4054 +     for labeled::bench::bench_l_bp_promo::N in 0..helper::MEDIUM_N as u32 {
+     |
+help: if this is intentional, prefix it with an underscore
+     |
+4054 |     for _v in 0..helper::MEDIUM_N as u32 {
+     |         +
+
+warning: unused `ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/bench.rs:3990:13
+     |
+3990 | /             graph
+3991 | |                 .visit_edges(
+3992 | |                     VertexId::from(v),
+3993 | |                     label,
+...    |
+4000 | |                 .expect("scan");
+     | |_______________________________^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+3990 |             let _ = graph
+     |             +++++++
+
+warning: unused `ControlFlow` that must be used
+    --> crates/ic-stable-lara/src/labeled/bench.rs:4101:13
+     |
+4101 | /             graph
+4102 | |                 .visit_edges(
+4103 | |                     VertexId::from(v),
+4104 | |                     label,
+...    |
+4113 | |                 .expect("locate");
+     | |_________________________________^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+4101 |             let _ = graph
+     |             +++++++
+
+warning: unused `ControlFlow` that must be used
+   --> crates/ic-stable-lara/src/labeled/graph/traverse/bench_tree.rs:266:9
+    |
+266 | /         fixture
+267 | |             .graph
+268 | |             .visit_edges(
+269 | |                 fixture.vid,
+...   |
+277 | |             .expect("complete topology");
+    | |________________________________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+266 |         let _ = fixture
+    |         +++++++
+
+warning: `ic-stable-lara` (lib) generated 4 warnings (run `cargo fix --lib -p ic-stable-lara` to apply 1 suggestion)
+warning: unused dependency `ic-stable-roaring`
+  --> crates/ic-stable-lara/Cargo.toml:34:1
+   |
+34 | ic-stable-roaring.workspace = true
+   | ^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `ic-stable-roaring`
+warning: unused dependency `ic-stable-vec-deque`
+  --> crates/ic-stable-lara/Cargo.toml:36:1
+   |
+36 | ic-stable-vec-deque.workspace = true
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the dependency on `ic-stable-vec-deque`
+warning: `ic-stable-lara` (manifest) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 1m 16s
+---------------------------------------------------
+
+Benchmark: bench_r_fs_tkbfs_1024
+  total:
+    instructions: 2.26 M (regressed by 48.53%)
+    heap_increase: 0 pages (no change)
+    stable_memory_increase: 0 pages (no change)
+
+  lara_free_span_store_take_best_fit_split (scope):
+    calls: 1 (no change)
+    instructions: 2.26 M (regressed by 48.56%)
+    heap_increase: 0 pages (no change)
+    stable_memory_increase: 0 pages (no change)
+
+---------------------------------------------------
+
+Summary:
+  instructions:
+    status:   Regressions detected 🔴
+    counts:   [total 1 | regressed 1 | improved 0 | new 0 | unchanged 0]
+    change:   [max +737.25K | p75 +737.25K | median +737.25K | p25 +737.25K | min +737.25K]
+    change %: [max +48.53% | p75 +48.53% | median +48.53% | p25 +48.53% | min +48.53%]
+
+  heap_increase:
+    status:   No significant changes 👍
+    counts:   [total 1 | regressed 0 | improved 0 | new 0 | unchanged 1]
+    change:   [max 0 | p75 0 | median 0 | p25 0 | min 0]
+    change %: [max 0.00% | p75 0.00% | median 0.00% | p25 0.00% | min 0.00%]
+
+  stable_memory_increase:
+    status:   No significant changes 👍
+    counts:   [total 1 | regressed 0 | improved 0 | new 0 | unchanged 1]
+    change:   [max 0 | p75 0 | median 0 | p25 0 | min 0]
+    change %: [max 0.00% | p75 0.00% | median 0.00% | p25 0.00% | min 0.00%]
+
+---------------------------------------------------
+
+Only significant changes:
+| status | name                                                            | calls |   ins |  ins Δ% | HI |  HI Δ% | SMI |  SMI Δ% |
+|--------|-----------------------------------------------------------------|-------|-------|---------|----|--------|-----|---------|
+|   +    | bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split |     1 | 2.26M | +48.56% |  0 |  0.00% |   0 |   0.00% |
+|   +    | bench_r_fs_tkbfs_1024                                           |       | 2.26M | +48.53% |  0 |  0.00% |   0 |   0.00% |
+
+ins = instructions, HI = heap_increase, SMI = stable_memory_increase, Δ% = percent change
+
+---------------------------------------------------
+CSV results saved to canbench_results.csv

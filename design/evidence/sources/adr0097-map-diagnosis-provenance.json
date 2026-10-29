@@ -1,0 +1,308 @@
+{
+  "status": "source/prose diagnosis closed; correction proposed only; implementation/performance acceptance BLOCKED",
+  "review": "User-conveyed review of ca1c4b59: REQUEST CHANGES; acceptance BLOCKED",
+  "head": "f297706abf683c1e22622c193d34f06650305bee",
+  "shared_main": "not queried or modified",
+  "raw_root": "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n",
+  "allowed_existing_edits": [
+    "plans/0340-prepared-paged-map-edits.md",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+    "design/evidence/adr0097-demotion-design.md"
+  ],
+  "new_durable_paths": [
+    "design/evidence/sources/adr0097-map-diagnosis-wasm.txt",
+    "design/evidence/sources/adr0097-map-diagnosis-plan.txt",
+    "design/evidence/sources/adr0097-map-diagnosis-plan-check.txt",
+    "design/evidence/sources/adr0097-map-diagnosis-provenance.json"
+  ],
+  "frozen_source_hashes": {
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/lara/edge.rs": "43bf3b757e8c832a9ae8544b4b6615fe7be0558ee96a03448e5ae5d5c67774ba",
+    "crates/ic-stable-lara/src/lara/edge/edges.rs": "3e5c55c1e20457b6f9668a8263a826e649055de14d23423f2d0601dc6d0d0db2",
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "crates/ic-stable-lara/src/lara/edge/free_span/bench.rs": "d4f2de85ca4cda643fc77a14168fa38ad198d1a22c6cf10fb028100dc54ea592",
+    "crates/ic-stable-lara/src/lara/edge/init.rs": "c068ce8d84847f41022fec155e5530df5251e78d2953ae97265fc58cbc718bcb",
+    "crates/ic-stable-lara/src/lara/edge/span.rs": "3c4462070325f7a49fa9ce6dd32ca2606a108da5953ef3b0cb1ebfd8bf35ad63",
+    "crates/ic-stable-lara/src/lara/operation_error.rs": "752128842de4b7e6d996e7a09501f39fdd0ee0babec07ac93e1ac4d7487af467",
+    "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460"
+  },
+  "protected_paths": 114,
+  "historical_manifests": {
+    "/tmp/spill-map-f297-cecc5rw_/manifest.sha256": {
+      "sha256": "b01b761402ed66502120411fe6c4d869f4cfe633b2efead443b8855e361cd9ff",
+      "entries": 161
+    },
+    "/tmp/spill-scalar-design-f297-7_msi5x1/manifest.sha256": {
+      "sha256": "69276e32830fadd097219a65c02315587839daf1bdc7e7473485370c711dcfd3",
+      "entries": 29
+    },
+    "/tmp/spill-acquisition-decision-f297-mcworwje/manifest.sha256": {
+      "sha256": "97c8ca9e650cac0a29243b416b63e3e4eca10bdd1a85e02536042e24857d77b2",
+      "entries": 40
+    },
+    "/tmp/spill-admission-f297-6g1p_any/manifest.sha256": {
+      "sha256": "1cda006a9149beb7bdd1dad743bbb15755f1ccd4b2ab8cfb6527f424f66bc119",
+      "entries": 102
+    },
+    "/tmp/spill-a0-interface-f297-jtjersgv/manifest.sha256": {
+      "sha256": "9346b08cbe10911664ac6e72db4a5f2fb07504af09ad8d051c762d133d64b149",
+      "entries": 33
+    },
+    "/tmp/spill-demotion-revise-f297-32aisjkk/manifest.sha256": {
+      "sha256": "320779faee215bfec0def682e29d544abc48108acf9a504d0171b00314a4c32f",
+      "entries": 27
+    },
+    "/tmp/spill-demotion-design-f297-i2l1uy33/manifest.sha256": {
+      "sha256": "2d021491fe2cd3679c70f2fae482ac4c8cc0a5008ce9734cff8fe1f6cff0c53b",
+      "entries": 13
+    },
+    "/tmp/spill-selected-a80-va1dsp1i/manifest.sha256": {
+      "sha256": "4569886d0d56069a242c36e0194eb6f910962e2b149bcf3407e0519798cd4c3d",
+      "entries": 115
+    },
+    "/tmp/spill-point-e921-fhkzogkf/manifest.sha256": {
+      "sha256": "2835248575a359ba7dbbcdfb4bcebed2c8e2246ba44aec7167ef991dad34e2e4",
+      "entries": 150
+    },
+    "/tmp/spill-tree-delete-7ca-nrvy2ffs/SHA256SUMS": {
+      "sha256": "3294e1c0050e21e66cc77f188a4c871b73ada98cc73373803d8913ea01042087",
+      "entries": 53
+    }
+  },
+  "historical_entries": 723,
+  "before_prose_hashes": {
+    "plans/0340-prepared-paged-map-edits.md": "ab805914da6f643729a373422f91354bdfa6526bff7a1a8bd03c7637c547f0ed",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "702461025e9f519f3f69835e476cedf036e2155e3dccc8197459e63c13913d20",
+    "design/evidence/adr0097-demotion-design.md": "a5486ded64dfccc1c1de0d1eaed218eacfa2e60409d777a85679d12019d723e2"
+  },
+  "after_prose_hashes": {
+    "plans/0340-prepared-paged-map-edits.md": "c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870",
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "f433db7614b182e00b1039ecfd17e2e1365d7fad6bc740b227481d93a201028e",
+    "design/evidence/adr0097-demotion-design.md": "51832ed386d12faae98eb330892fe34e30a3478b5a87ef68213af60c70acd7ec"
+  },
+  "diagnosis": {
+    "selected_patch": "caller-owned image preparation/publication and canonical PageHeader encode/decode; existing containers/read overlay/split algorithms unchanged",
+    "source_owner": "crates/ic-stable-paged-ordered-map/src/lib.rs",
+    "common_path": [
+      "remove",
+      "scalar_edit",
+      "prepare_image",
+      "EditPlan::new",
+      "EditPlan::apply_edit",
+      "EditImage::read",
+      "admit_image",
+      "publish_image"
+    ],
+    "split_path": [
+      "EditPlan::split_page",
+      "set_entry",
+      "EditImage::write",
+      "EditImage::cover",
+      "insert_directory"
+    ],
+    "header_mapping_sites": [
+      "EditPlan::page",
+      "EditPlan::set_page",
+      "StablePagedOrderedMap::read_page_header",
+      "test-only write_page_header"
+    ],
+    "baseline_source": "/tmp/spill-map-f297-cecc5rw_/before/crates/ic-stable-paged-ordered-map/src/lib.rs",
+    "baseline_source_sha256": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d",
+    "missing_evidence": "Runtime IC effect and emitted-code change for the single proposed correction; no component-level attribution or recovery established",
+    "minimal_experiment_proposed_not_run": "one unchanged canbench bench_paged_scalar_edits_97 --csv on corrected source, compared with retained baseline/candidate CSVs, plus one hash-matched static inspection",
+    "separate_acceptance_control_proposed_not_run": "one unchanged canbench bench_r_fs_tkbfs_1024 --csv",
+    "native_object_bytes": 192,
+    "static_scalar_stack_adjustment_bytes": 752,
+    "not_measured": [
+      "Wasm object layout",
+      "peak call-chain stack",
+      "IC cost per check/copy/enum",
+      "runtime effect of proposed patch"
+    ]
+  },
+  "artifact_inventory": {
+    "recorded_wasm_hashes": {
+      "baseline-scalar": "0f4741b8edfceb71e3af081c65bcb3644798d96c8d3b69bad6e26f84437cf8c5",
+      "baseline-allocator": "8c3cd39479f641397d0698638c4df4807174a6cae712c94727036d72c2d9c7ce",
+      "candidate-scalar": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64",
+      "candidate-allocator": "7d32ecc9cc7f323d2facbb1a2e2d55bf812c1e43027e530a097d267a7c958c0d"
+    },
+    "inspected_named_paths": {
+      "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_paged_ordered_map.wasm": {
+        "exists": true,
+        "sha256": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64",
+        "matches": [
+          "candidate-scalar"
+        ],
+        "bytes": 700310
+      },
+      "/Users/yota/dev/gleaph-spill/target/canbench/wasm32-unknown-unknown/release/ic_stable_lara.wasm": {
+        "exists": true,
+        "sha256": "7d32ecc9cc7f323d2facbb1a2e2d55bf812c1e43027e530a097d267a7c958c0d",
+        "matches": [
+          "candidate-allocator"
+        ],
+        "bytes": 5025086
+      }
+    },
+    "path_tools": {
+      "wasm-tools": null,
+      "wasm2wat": null,
+      "wasm-objdump": null,
+      "wasm-dis": "/Users/yota/.local/binaryen/bin/wasm-dis",
+      "llvm-objdump": null
+    },
+    "standard_local_tool_paths": {
+      "/opt/homebrew/opt/wabt/bin/wasm-objdump": false,
+      "/opt/homebrew/opt/binaryen/bin/wasm-dis": true,
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump": true,
+      "/Users/yota/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump": true
+    },
+    "inspection": "No disassembly yet; hashes are not artifact availability",
+    "closed_manifest_wasm_paths": []
+  },
+  "static_inspection": {
+    "mode": "static disassembly only; no module execution/build/probe",
+    "input_sha256": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64",
+    "tool": "/opt/homebrew/Cellar/binaryen/132/bin/wasm-dis",
+    "tool_sha256": "644465f704a4d27e5bfae0d8914e83df73dc83e0516d1827086e57113f2f7bb5",
+    "initial_tool_failure": "PATH wasm-dis --version returned nonzero with empty output; exact child exit was not saved; no input disassembly attempted. Distinct installed Homebrew 132 binary inspected next; no retry of failed binary.",
+    "commands": [
+      {
+        "argv": [
+          "/opt/homebrew/Cellar/binaryen/132/bin/wasm-dis",
+          "--version"
+        ],
+        "exit": 0,
+        "elapsed": 1.055830084020272
+      },
+      {
+        "argv": [
+          "/opt/homebrew/Cellar/binaryen/132/bin/wasm-dis",
+          "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wasm",
+          "-o",
+          "/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/spill-map-diagnosis-be81-ybqdnb2n/candidate-scalar.wat"
+        ],
+        "exit": 0,
+        "elapsed": 0.13923666602931917
+      }
+    ],
+    "version": "wasm-dis version 132\n",
+    "wat_sha256": "5e7d28a8c6cc675ce120334f9fe79812e051c4fe7ad6e16449623a7d4a4c202f",
+    "wat_bytes": 8494041
+  },
+  "administrative_limitations": "The initial static-tool command attempted:\n/Users/yota/.local/binaryen/bin/wasm-dis --version\n\nIt returned nonzero with empty stdout/stderr. The Python caller stopped with exit 1:\nAssertionError: ('version', '', '')\n\nThe exact child return code was not saved. No disassembly or module execution followed in that command.\nRead-only file/path/hash diagnostics identified a distinct installed Homebrew Binaryen 132 arm64 binary.\nIts --version and disassembly succeeded, as recorded in disassembly.json. No installation, binary\nrepair, retry of the failed executable, build or Wasm execution occurred. The first failure's cause\nis not established.\n\nThe first function-index extraction used an overbroad reserve-name match and overwrote its new\nreserve.wat scratch excerpt. That excerpt is not evidence. wasm-index-initial.json preserves the\noriginal index; the exact-name map-reserve.wat and wasm-index.json are the corrected extraction.\nNo disassembler or Rust command was repeated for that correction.\n",
+  "plan_checks": [
+    {
+      "argv": [
+        "python3",
+        "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+        "/Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md",
+        "--phase",
+        "draft"
+      ],
+      "exit": 1,
+      "elapsed": 0.10129212494939566,
+      "plan_sha256": "c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870"
+    },
+    {
+      "argv": [
+        "python3",
+        "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+        "/Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md",
+        "--phase",
+        "final"
+      ],
+      "exit": 1,
+      "elapsed": 0.2523436249466613,
+      "plan_sha256": "c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870"
+    }
+  ],
+  "plan_lifecycle": "two completed/two pending TODOs; three checked/three unchecked criteria; draft and final both refuse, as expected",
+  "valid_relative_links": 101,
+  "inherited_unavailable_links": [
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0313-adr0088-tree-csr-measurement-gates.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0315-adr0088-raw-block-ltb-revalidation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../../plans/0314-canbench-name-rationalization.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0317-adr0088-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../plans/0318-tree-csr-implementation.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "./0318-tree-csr-demotion-tree-to-slab.md",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "../investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting",
+      "missing file"
+    ],
+    [
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented",
+      "missing fragment"
+    ]
+  ],
+  "proposed_future_budget_not_authorized": {
+    "maximum": 600,
+    "pre_final_scheduled_caps": 300,
+    "protected_final": 120,
+    "unassigned_not_contingency": 180
+  },
+  "closed_ledgers": "admission and map byte-identical; no unused balance spent",
+  "not_run": [
+    "Rust edits",
+    "cargo",
+    "rustfmt",
+    "tests",
+    "builds",
+    "benchmarks",
+    "PocketIC",
+    "Wasm execution",
+    "new implementation experiment",
+    "baseline restoration",
+    "commit",
+    "merge"
+  ],
+  "durable_hashes": {
+    "design/evidence/sources/adr0097-map-diagnosis-wasm.txt": "12511683c81b32168458ac65a500b09c2dc9a4e1ad227272204e44fd6301c5bf",
+    "design/evidence/sources/adr0097-map-diagnosis-plan.txt": "c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870",
+    "design/evidence/sources/adr0097-map-diagnosis-plan-check.txt": "20f32d790fe0bb517baaaecff988b8da5a74ad2e8c8cb1f0ad3af0a0c6f7aab7"
+  }
+}

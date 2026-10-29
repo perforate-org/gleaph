@@ -1,0 +1,18 @@
+--- 9436291c/lib.rs
++++ candidate-production/lib.rs
+@@ -451,7 +451,14 @@
+         let end = address + dst.len() as u64;
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() <= address);
+-        if let Some(r) = ranges.get(first)
++        let candidate = ranges.get(first);
++        if address <= end && end <= self.backed_end && candidate.is_none_or(|r| r.address >= end) {
++            if !dst.is_empty() {
++                memory.read(address, dst);
++            }
++            return;
++        }
++        if let Some(r) = candidate
+             && r.address <= address
+             && end <= r.end()
+         {

@@ -1,0 +1,3 @@
+STDOUT (separate stream)
+
+STDERR (separate stream)

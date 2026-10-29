@@ -1,0 +1,11 @@
+--- candidate/lib.rs
++++ mutation/lib.rs
+@@ -452,7 +452,7 @@
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() <= address);
+         let candidate = ranges.get(first);
+-        if address <= end && end <= self.backed_end && candidate.is_none_or(|r| r.address >= end) {
++        if address <= end && candidate.is_none_or(|r| r.address >= end) {
+             if !dst.is_empty() {
+                 memory.read(address, dst);
+             }

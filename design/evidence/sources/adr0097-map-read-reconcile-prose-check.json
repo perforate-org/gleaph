@@ -1,0 +1,75 @@
+{
+  "kind": "reconciliation-pass prose/text/hash/scope checks; no Rust/build/test/benchmark/disassembly; single self-timed script under the separate15s allowance",
+  "plan": {
+    "exit": 1,
+    "errors": [
+      "ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'",
+      "ERROR: Completion Criteria item 5 must be checked in final phase",
+      "ERROR: Completion Criteria item 6 must be checked in final phase"
+    ],
+    "expected_refusal": true,
+    "plan_sha256": "b74c94a64098f9b451332cf9322584097de7423db170c53e334e712211c968ab",
+    "durable": "adr0097-map-read-reconcile-plan-check.txt"
+  },
+  "links": {
+    "receipt_links_resolve": true,
+    "inherited_exceptions_unchanged": true,
+    "docs": [
+      "plans/0340-prepared-paged-map-edits.md",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "design/evidence/adr0097-demotion-design.md"
+    ]
+  },
+  "doc_endpoint_markers": "M2c76e956/363d1d65 + INCOMPLETE/non-compliant + recorded charges present in all three active docs",
+  "frozen": {
+    "M_lib": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+    "M_bench": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378",
+    "frozen_lib": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+    "freespan": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "lara_csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "head": "f297706abf683c1e22622c193d34f06650305bee",
+    "staged": "none",
+    "pin_drift_outside_docs_and_map_sources": []
+  },
+  "execution_root_preservation": {
+    "manifest_sha256_unchanged": true,
+    "ledger_mismatch_still_exactly": [
+      "ledger.json"
+    ],
+    "execution_durables": 41,
+    "note": "the execution root was read-only in this pass"
+  },
+  "git_scope": {
+    "added": 98,
+    "removed": [],
+    "expected_all_read_durables": 103,
+    "exact": false
+  },
+  "git_diff_check_exit": 0,
+  "post_failures": [
+    {
+      "scope_mismatch": {
+        "added": 98,
+        "expected": 103,
+        "diff": [
+          "?? design/evidence/sources/adr0097-map-read-diagnosis-inspection.json",
+          "?? design/evidence/sources/adr0097-map-read-diagnosis-plan-check.txt",
+          "?? design/evidence/sources/adr0097-map-read-diagnosis-plan.txt",
+          "?? design/evidence/sources/adr0097-map-read-diagnosis-provenance.json",
+          "?? design/evidence/sources/adr0097-map-read-diagnosis-wasm.txt"
+        ]
+      }
+    },
+    {
+      "read_durables_total": 103,
+      "want": 100
+    }
+  ],
+  "timing": {
+    "allowance_seconds": 15,
+    "active_command_seconds_this_script": 0.767,
+    "other_commands_this_pass": "no-op true probe + one anchor grep (sub-second, unmetered \u2014 disclosed, not assumed)",
+    "within_allowance": true
+  }
+}

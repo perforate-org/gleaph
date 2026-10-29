@@ -1,0 +1,74 @@
+--- exec_run.py.pre-fix2
++++ exec_run.py.post-fix2
+@@ -731,6 +731,8 @@
+         'canbench-output.txt', 'components.csv', 'measurements.json', 'final-format.log',
+         'final-clippy-map.log', 'final-clippy-lara.log', 'final-map.log', 'final-free.log',
+         'final-doc.log', 'provenance.json', 'plan-check.txt',
++        'setup-failure-original.json', 'setup-correction.json',
++        'driver-fix.patch', 'driver-fix2.patch',
+     ]
+     for src in exports:
+         sp = ROOT / src
+@@ -758,11 +760,25 @@
+     ledger['pre_final_charged'] = sum(e['charged_seconds'] for e in entries if e['name'] in PRE_NAMES)
+     ledger['final_charged'] = sum(e['charged_seconds'] for e in entries if e['name'] in FIN_NAMES)
+     ledger['charged_total'] = sum(e['charged_seconds'] for e in entries)
++    corrected = [e['name'] for e in entries
++                 if e.get('failure') and e.get('driver_correction')]
++    uncorrected = [e['name'] for e in entries
++                   if e.get('failure') and not e.get('driver_correction')]
++    ledger['corrected_failures'] = corrected
+     if ledger['status'] == 'active':
+-        if DIAG_FAILURE:
++        if uncorrected:
++            ledger['status'] = 'stopped-incomplete; uncorrected failures: ' + '; '.join(uncorrected)
++        elif DIAG_FAILURE:
+             ledger['status'] = ('closed-incomplete; diagnostic count/reconciliation failed: '
+                                 + '; '.join(DIAG_FAILURE) + '; scheduled finals run unchanged; '
+                                 'acceptance BLOCKED')
++        elif corrected:
++            ledger['status'] = ('closed; one bounded diagnostic executed after one preserved '
++                                'administrative driver correction (setup ENOENT, pre-Rust, zero '
++                                'measurement consumed, receipts driver-fix/setup-correction/'
++                                'setup-failure-original); acceptance remains BLOCKED (all '
++                                'original IC ceilings fail; bounded-proof pending; '
++                                'criteria5/6 unchecked)')
+         else:
+             ledger['status'] = ('closed; one bounded diagnostic executed; acceptance remains '
+                                 'BLOCKED (all original IC ceilings fail; bounded-proof pending; '
+@@ -782,8 +798,12 @@
+         'pre_final_charged': ledger['pre_final_charged'],
+         'final_charged': ledger['final_charged'], 'unassigned_unused': 265,
+         'entries': len(entries),
+-        'failures': [e['name'] for e in entries if e.get('failure')],
++        'failures_uncorrected': uncorrected,
++        'failures_corrected_and_preserved': corrected,
+         'diagnostic_failures': DIAG_FAILURE,
++        'administrative_driver_correction': (
++            'setup ENOENT recorded in failure_original; see setup-correction.json, '
++            'driver-fix.patch and setup-failure-original.json' if corrected else None),
+         'acceptance': 'BLOCKED: instrumented totals cannot meet/replace original ceilings; '
+                       'bounded-proof pending; criteria5/6 unchecked'})
+     (ROOT / 'README.md').write_text(f"""# Plan0340 — bounded diagnostic execution (review dfaed91c)
+@@ -796,7 +816,10 @@
+ serialized; stop at first unexpected failure (no repair/retry); four intended mutation101s
+ and final-plan exit1 are expected negatives; all past balances closed.
+ 
+-M = formatted diagnostic source (uncommitted endpoint); frozen originals5da46/2f95 preserved.
++One administrative driver correction is preserved verbatim (setup ENOENT before any Rust;
++receipts: setup-failure-original.json, driver-fix.patch, driver-fix2.patch,
++setup-correction.json). M = formatted diagnostic source (uncommitted endpoint); frozen
++originals5da46/2f95 preserved.
+ No LARA canbench, no baseline rebuild, no new disassembly, no persist/YAML update, no
+ optimization, no second measurement, no process work, no commit/merge. DIAG_ENDP counts only
+ diagnostic tick/finish calls (canbench's own counters excluded); snapshot/reset work lies
+@@ -825,7 +848,8 @@
+         'status': ledger['status'], 'charged_total': ledger['charged_total'],
+         'pre_final_charged': ledger['pre_final_charged'],
+         'final_charged': ledger['final_charged'],
+-        'failures': [e['name'] for e in entries if e.get('failure')],
++        'failures_uncorrected': uncorrected,
++        'failures_corrected_and_preserved': corrected,
+         'diagnostic_failures': DIAG_FAILURE,
+         'M': {'lib_sha256': sha(LIB), 'bench_sha256': sha(BENCH)},
+         'frozen': {'lib': FROZEN_LIB_SHA, 'bench': FROZEN_BENCH_SHA,

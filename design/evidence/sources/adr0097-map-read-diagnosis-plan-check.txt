@@ -1,0 +1,20 @@
+Plan mode: Revise; source-bound completed items retained, no new completion.
+Plan SHA256: ecb7968ebbc66536dc8ea212d10c0990cb7dc1f6a287cc059318474a9e9fc17c
+
+$ python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase draft
+exit=1; elapsed_seconds=0.11330520792398602
+ERROR: TODO 'owner-contract' status is 'completed'; phase 'draft' requires 'pending'
+ERROR: TODO 'owner-witnesses' status is 'completed'; phase 'draft' requires 'pending'
+ERROR: TODO 'shared-images' status is 'completed'; phase 'draft' requires 'pending'
+ERROR: Completion Criteria item 1 must be unchecked in draft phase
+ERROR: Completion Criteria item 2 must be unchecked in draft phase
+ERROR: Completion Criteria item 3 must be unchecked in draft phase
+ERROR: Completion Criteria item 4 must be unchecked in draft phase
+
+$ python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase final
+exit=1; elapsed_seconds=0.0623004159424454
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase
+
+Expected mixed-lifecycle refusals, not schema defects or performance acceptance. No status was reset to force a pass.

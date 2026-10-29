@@ -7,14 +7,18 @@ is **ACCEPTED WITH KNOWN REGRESSION** by the user's safety-first decision below;
 is ended. Later tiny/leaf/queue/Graph/width work remains planned;0394's native gate now requires the
 existing physical-layout prerequisite0395 before geometry implementation.0395 completes its physical-only
 implementation/review gates separately, with explicit user acceptance of its measured prefix +2.0167%
-and final structural/preservation evidence below.0396 now closes the separately reviewed mode/count/
-range prerequisite;0394 geometry remains STOPPED pending a fresh723-native/performance baseline.
-Its Q1 approval remains draft-boundary approval only; no validation gate is waived.
+and final structural/preservation evidence below.0396 closes the mode-writer repair with native723,
+fresh AFTER and independent implementation/cost approval, followed by user-authorized commit
+a42ac5aa5.0394's separately authorized post0396 re-freeze and four fresh BEFORE controls pass.
+Its subsequent shared-publisher probe passes three candidate contracts but regresses eight existing
+successes, identifies a tree-resident source/cover conflict and is rejected/restored. Restored native723,
+lib/tests Clippy and format pass; geometry remains unimplemented. No later gate is waived.
 
-Normal segment rewrites and bypass conversion now use one `LabelBucketStore` preparation and
-consuming publisher. Layout V1, leaf geometry, outer graph/PMA retirement, queue ownership and
-width declaration are unchanged. No stage, commit or push was performed. The prerequisite 0385
-commit remains `9f42b4868fad635fe7423fcea07ad7af41699edb`, with its validation-partial status intact.
+Normal segment rewrites and bypass conversion use one `LabelBucketStore` preparation and consuming
+publisher. Layout V1, leaf geometry, outer graph/PMA retirement, queue ownership and width declaration
+are unchanged. The0386 closure performed no stage, commit or push;0396's subsequent scoped commit
+is recorded below. The0394 baseline and rejected/restored implementation phases perform no stage, commit or push. The0385
+prerequisite commit remains `9f42b4868fad635fe7423fcea07ad7af41699edb`, with its validation-partial status.
 
 ## Performance acceptance
 
@@ -43,7 +47,7 @@ inline+step publication comes after those prerequisites, then the unchanged0383 
 
 ## Planned tiny/leaf geometry (0394)
 
-**Status: Planned;0396 mode prerequisite is closed, but0394 requires a fresh baseline. Q1 remains draft-boundary approval only.**
+**Status: Planned / STOP at tree-resident source contract;0395/0396 and fresh0394 BEFORE are complete. The implementation probe is rejected/restored, not a retained checkpoint.**
 [Plan0394](../../plans/0394-grouped-tiny-leaf-geometry.md) scopes one same-leaf tiny-promotion group
 or first-pin publication unit. It reuses the existing physical-residency, descriptor, vertex,
 slab, span-meta/count and allocator owners. Scalar promotion becomes a singleton of that unit;
@@ -276,7 +280,7 @@ boundary; the subsequent user allocation and failed native stop proofs above do 
 
 ### Post0395 copy-composition draft revision (0394 Q1)
 
-The user's next `進めて` authorizes plan/document rescope and independent review only. The new
+During the historical Q1 revision, the user's `進めて` authorized plan/document rescope and independent review only. The new
 `W/geometry-copy-composition/rescope-q1-baseline.json` freezes current post0395 Rust/plan/closure/
 protected evidence and the exact four-path revision surface.0395's original18-path closure and
 user-cost decision remain immutable as-of closure. No Rust implementation or validation command
@@ -311,8 +315,69 @@ required P0/P1/P2 and APPROVE DRAFT BOUNDARY; `geometry-copy-composition/rescope
 binds reviewed sources/status changes and completed verdict. Draft structural/whitespace/exact
 four-path preservation checks pass; final approval-status checks preserve all Rust/0395 plan/closure/
 old RED/index/lock/saved artifacts. The original reviewed packet remains immutable. This approves
-only the draft composition boundary; separate production allocation and every implementation/runtime/
-performance/0383 gate remain required. No Rust command or code edit follows this review.
+only the draft composition boundary; at that checkpoint separate production allocation and every
+implementation/runtime/performance/0383 gate remained required. Those source/status bindings are historical,
+not rebound to the following restart.
+
+### Allocated restart P1: baseline pin-extent source conflict
+
+The subsequent `0394を再開して` and `OK、進めて` explicitly allocate Q1 implementation. New
+`W/geometry-copy-composition/restart-p1/baseline.json` freezes HEAD f25567bad, the20-path surface,
+native715, index/lock/old evidence and retained Wasm. Both new REDs reproduce the count-rejection
+publication and all four later-first caller cover failures. The corrected same-length K4 benchmark
+installs at19997 export-name bytes and freezes BEFORE190,825,723 instructions; retained physical
+controls remain slab1,531,031/tree1,578,135, growth0. `before-results.json` binds sources, archived Wasm,
+CSVs and receipts. It is not an AFTER, cost acceptance or full0394 completion.
+
+The first-pin shared-publisher probe greens its new late-count rejection test, but native717 reports
+715 pass/2 fail: one existing success regresses and the earlier-label RED remains. The unchanged
+`public_capacity_bucket_reservation_failure_preserves_cached_peer` reaches start256, PMA actual69/
+total80 and capacity272 on both the candidate and original pin paths. The original exact1 passes;
+the candidate derives end336 and rejects through the existing physical-source bounds. Thus this is
+not a newly fabricated corrupt fixture. `rejected-pin-probe.json` and `baseline-pin-problem.json`
+archive the source-bound candidate and original-path diagnostic/terminal evidence. The production
+probe and temporary test/diagnostic suffix are restored byte-for-byte; no geometry fix is retained.
+Only the corrected benchmark remains. Its old/new REDs stay pending, not relabeled green.
+
+`leaf_pin::labeled_leaf_physical_range`, `compact::PhysicalLayoutSource::pinned_range` and the edge
+row-layout window inference were identified as affected readers. P1 had not yet proved the exact
+counter transition. Subsequent R1 below establishes that existing mode writers corrupt assigned
+total and normal cover. Bypass conversion, core prefix growth, outer relocation and stable-layout
+decisions remain outside Q1.
+Do not remove bounds, reset counts, enlarge the pin without allocator admission, weaken the existing
+success test or add an unchecked pass-through.0394 is STOPPED pending bounded implementation planning,
+review and closure of the now-diagnosed mode-writer prerequisite.0395's physical-only closure and all original bindings remain unchanged;
+0394 native728, AFTER, mutation/implementation review and later queue/Graph/width/0383 gates remain unproved.
+Restored native715, ordinary strict lib/test Clippy and workspace format pass. Strict canbench-feature
+Clippy fixes its new unnecessary cast but still fails eight unchanged benchmark diagnostics, including
+unowned traversal fixtures; no lint suppression or unrelated repair is made. BEFORE keeps its original
+source binding, not a retrospectively relabeled final-source result. `restart-p1/stopped-p1.json` binds
+restoration, source/preservation and gate disposition; it is a stop receipt, not implementation closure.
+
+### Pin-extent source diagnosis R1
+
+[The diagnosis and proposed prerequisite](adr0097-pin-extent-source-diagnosis.md) record one reached
+ordinary retained-run roundtrip. Its exact1 temporary diagnostic fails at the inferred end/capacity
+assertion. Stages show normal cover5/prefix5/spill62/total16, bypass width67/total11, retained bypass
+width69/spill64/total11, then normal cover69/total80. Pin256 and capacity272 never change.
+`insert::enable_default_edge_bypass` subtracts5; `bypass::promote_bypass_to_bucket_mode` adds
+`max(segment16, raw stored_slots69)`. Thus `16−5+(5+64)=80`: the64 spill rows were charged as LEG
+cover, and a metadata conversion changed the assigned pin width. A missing physical expansion is
+excluded in this fixture. The current storage formats already represent valid total16/normal cover5.
+
+The source audit also finds a separate positive total update in `promote::promote_bypass_with_edge`
+and the correct pinned/unpinned distinction in compact physical rewrites. Proposed repair unifies
+footprint/count admission at existing owners, retains strict range checks and requires separate
+ordinary, unpinned, rejection and tree-sibling contracts. Tree placement/retirement is source-only
+here; this diagnosis does not approve a relocation or new schema.
+
+`W/geometry-copy-composition/pin-extent-source-r1/{baseline,stage-cause}.json`,
+`stage-red-source.rs` and `stage-red.patch` bind the probe and all four source states. It reuses one
+outer graph/33 memories with no new constructor or test identity, no PocketIC/install/reopen.
+The temporary test/helper is archived and restored exactly.0394 stays stopped pending a separately
+bounded prerequisite plan/review and writer repair; all its TODOs remain pending. R1 changes only
+source-analysis/status documents, keeps old runtime/BEFORE/0395 approvals immutable, and claims no
+production fix, new native715 run, all-mode GREEN or performance acceptance.
 
 ### Mode footprint prerequisite draft P1
 
@@ -425,8 +490,78 @@ turn/ZERO tools), no remaining concrete P1/P2. `mode-footprint-p5/{review-comple
 closure}.json` binds the unchanged reviewed code, all required gates and final real-plan/source/
 protection/index preservation at the pre-commit checkpoint. The subsequent user-authorized scoped
 commit and index-only validation are bound by `mode-footprint-user-commit-c1/commit-receipt.json`;
-no push is authorized.0394 geometry still requires a fresh723-native baseline. No0395 or original
-BEFORE/RED binding is rewritten.
+no push is authorized. No0395 or original BEFORE/RED binding is rewritten.
+
+### Fresh post0396 baseline (0394 restart P2)
+
+The user's subsequent `進めて` authorizes re-freeze and fresh BEFORE only. New
+`W/geometry-copy-composition/restart-p2-post0396-baseline/{baseline,native-inventory,before-wasm,before-results}.json`
+bind HEAD a42ac5aa5 plus current dirty source, unchanged20-path surface, all723 identities,
+410 protected artifacts, empty index and current root lock. Native723, scoped lib/tests Clippy,
+workspace format, whitespace and the locked full-worktree Wasm pass. Fresh CSV controls are
+slab1530725, tree1577829, tiny191032946 and bypass18854 instructions, all heap/stable growth0.
+
+The first artifact check rejects a cached C1 snapshot with14657 export-name bytes. Cargo's final
+path only copies its compilation-unit output; final-only deletion does not repair source binding.
+The owning-unit diagnostic identifies that duplicate. Invalidating only its hash-bound wasm output
+and repeating the same normal-target locked build recompiles current source in75.46s; the unit and
+final path agree, include current fold dependencies and export19997 name bytes. Source bytes/mtimes,
+flags and old receipts are preserved; no cargo clean or saved-result persistence. The rejected
+archive and failed diagnostic remain failures.
+
+These are fresh0394 BEFORE receipts; old0396 AFTER and D3 BEFORE keep their original producers.
+No geometry code/test, AFTER, mutation or implementation review is added. Baseline723 plus13 planned
+identities implies736. All five TODOs/eight criteria remain pending; actual new fixtures need their
+own budget freeze and the next implementation allocation. The eight known canbench-feature Clippy
+diagnostics remain failed/outside scope; the ordinary lib/tests pass does not clear them.
+
+### Rejected shared-publisher probe and tree source stop (0394 restart P3)
+
+The user's `OK、次に進めて` separately authorizes implementation under the unchanged20-path
+manifest. `W/geometry-copy-composition/restart-p3-geometry-implementation/{baseline,runner-permission,red-fixtures}.json`
+freezes the source/runner and actual first two fixtures (9 graphs/144 memories) before execution.
+Fresh pin/count RED reaches exact SegmentCountsTreeTooSmall then fails capacity preservation256→272.
+Fresh caller RED completes all eight real success/topology/schema/count cases, then detects four
+later-first invalid covers. No production geometry changes precede those proofs.
+
+The probe deepens the existing compact preparation/publisher, resolves canonical owner+label requests,
+prepares virtual rows/mates and copies, and makes scalar promotion/first pin consume it. Both proofs
+pass on the candidate. Initial native725 fails113 existing successes; the resident-copy owner rejects
+empty supplied bytes for zero-resident descriptors. Its directly required empty-payload correction
+removes that shared failure. The added scalar fixture initially seeds degree4/live3 through a helper
+that counts all supplied words; r2 explicitly seeds native-hole degree3/used4/global3 before the unit.
+Scalar full/empty/holed/zero/parallel transcription passes. Failed native/fixture receipts remain failed.
+
+Corrected candidate native726 passes718 and fails eight baseline identities; all three new functions
+pass. The actual written family is11 graphs/176 memories/two corrupt-index reopen attempts, not the
+full planned32/512/16 family. Ten other functions, caller valid reopen enhancements, full fixture audit,
+mutations, AFTER and independent implementation/cost review are not completed.
+
+Two exact source diagnostics reach the conflict, not a fabricated post-publication seam:
+
+- Mixed tree/slab caller: header257, pin=None, leaf0/0 and vertex stored_slots0 despite one initialized
+  root slot. It cannot satisfy the approved zero-resident fresh-block precondition.
+- Natural property-tree promotion: slab[256,272), vertex cover[256,273), assigned pin[256,1280),
+  counts16/1024 and combined root[1280,1290). The source root lies outside both cover and pin.
+
+`promote.rs::transcribe_and_publish_tree` allocates the standalone root and, for normal rows, retains
+new_alloc=old_alloc while publishing `TreePublication::Existing` descriptors only; its bypass path
+uses a separate segment/vertex image. The normal root/cover/pin publication contract is outside this
+permission. A bounded existing-owner prerequisite or independently reviewed geometry rescope is
+required. Do not drop containment/fresh-source guards, omit peers, add sequential publishing rewrite
+or relocation fallback, reset counts or weaken current success tests. The other six individual
+regression source shapes are not independently diagnosed.
+
+`{rejected-probe,source-restoration}.json`, `rejected-candidate-source/`, the exact patch and
+`tree-resident-source-diagnosis.md` preserve the candidate, three temporary tests and both diagnostic
+observers. All eight changed Rust paths are restored to the exact entry bytes; native723 (20.06s),
+ordinary lib/tests Clippy (6.43s) and workspace format (3.71s) pass after restoration. Current repository
+inventory is723, not a claimed736 or retained726 GREEN. Only freeze-and-prove-order is complete;
+four TODOs/all eight criteria remain pending. The status-update draft validator exits1 because the
+completed preparation item is not pending; its draft/final-only contract has no partial checkpoint
+phase. This failed check is retained, not re-labeled or repaired by changing the validator or TODO
+truthfulness. Final mode is not run. No stage/commit/push or geometry AFTER is performed.
+Old measurements, approvals and0396 closure retain their original scopes.
 
 ## Validation closure (0393)
 

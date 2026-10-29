@@ -1,0 +1,9 @@
+--- candidate/lib.rs
++++ mutation/lib.rs
+@@ -1306,0 +1307,6 @@
++            if at == 0 {
++                for range in plan.image.ranges.as_slice() {
++                    self.memory.write(range.address,
++                        &plan.image.bytes.as_slice()[range.offset..range.offset + range.len]);
++                }
++            }

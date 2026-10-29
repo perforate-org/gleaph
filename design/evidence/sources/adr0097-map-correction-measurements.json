@@ -1,0 +1,201 @@
+{
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "references": "retained immutable measurements; no new baseline campaign",
+  "ic": {
+    "bench_paged_scalar_edits_97": {
+      "admission": 497282,
+      "blocked": 1431979,
+      "correction": 1093879,
+      "delta_vs_admission": 596597,
+      "percent_vs_admission": 119.97156542967572,
+      "delta_vs_blocked": -338100,
+      "percent_vs_blocked": -23.610681441557453,
+      "original_gate_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_missing_64": {
+      "admission": 85672,
+      "blocked": 242856,
+      "correction": 158312,
+      "delta_vs_admission": 72640,
+      "percent_vs_admission": 84.78849565785788,
+      "delta_vs_blocked": -84544,
+      "percent_vs_blocked": -34.81239911717232,
+      "original_gate_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_replace_64": {
+      "admission": 77576,
+      "blocked": 251720,
+      "correction": 167624,
+      "delta_vs_admission": 90048,
+      "percent_vs_admission": 116.07713725894607,
+      "delta_vs_blocked": -84096,
+      "percent_vs_blocked": -33.408549181630384,
+      "original_gate_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_split_directory": {
+      "admission": 30930,
+      "blocked": 155692,
+      "correction": 155448,
+      "delta_vs_admission": 124518,
+      "percent_vs_admission": 402.5800193986421,
+      "delta_vs_blocked": -244,
+      "percent_vs_blocked": -0.15671967731161524,
+      "original_gate_passed": false
+    },
+    "bench_paged_scalar_edits_97::scalar_tail_pairs_64": {
+      "admission": 298171,
+      "blocked": 776778,
+      "correction": 607562,
+      "delta_vs_admission": 309391,
+      "percent_vs_admission": 103.76294139939833,
+      "delta_vs_blocked": -169216,
+      "percent_vs_blocked": -21.784345076714324,
+      "original_gate_passed": false
+    },
+    "bench_r_fs_tkbfs_1024": {
+      "admission": 1527576,
+      "blocked": 2350463,
+      "correction": 2256530,
+      "delta_vs_admission": 728954,
+      "percent_vs_admission": 47.71965519227849,
+      "delta_vs_blocked": -93933,
+      "percent_vs_blocked": -3.9963615679123645,
+      "original_gate_passed": false
+    },
+    "bench_r_fs_tkbfs_1024::lara_free_span_store_take_best_fit_split": {
+      "admission": 1526615,
+      "blocked": 2349502,
+      "correction": 2255569,
+      "delta_vs_admission": 728954,
+      "percent_vs_admission": 47.7496945857338,
+      "delta_vs_blocked": -93933,
+      "percent_vs_blocked": -3.9979961711034933,
+      "original_gate_passed": false
+    }
+  },
+  "native": {
+    "replace": {
+      "traffic": {
+        "reads": 9,
+        "read_bytes": 112,
+        "writes": 1,
+        "write_bytes": 8,
+        "max_read": 32,
+        "max_write": 8,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 8,
+        "ranges": 1,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      }
+    },
+    "missing": {
+      "traffic": {
+        "reads": 12,
+        "read_bytes": 128,
+        "writes": 0,
+        "write_bytes": 0,
+        "max_read": 32,
+        "max_write": 0,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 0,
+        "ranges": 0,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      }
+    },
+    "tail_insert": {
+      "traffic": {
+        "reads": 12,
+        "read_bytes": 128,
+        "writes": 3,
+        "write_bytes": 26,
+        "max_read": 32,
+        "max_write": 16,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 26,
+        "ranges": 3,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      }
+    },
+    "tail_remove": {
+      "traffic": {
+        "reads": 13,
+        "read_bytes": 136,
+        "writes": 2,
+        "write_bytes": 10,
+        "max_read": 32,
+        "max_write": 8,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 10,
+        "ranges": 2,
+        "byte_capacity": 0,
+        "range_capacity": 0,
+        "result_capacity": 0,
+        "reserves": 0,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      }
+    },
+    "split": {
+      "traffic": {
+        "reads": 94,
+        "read_bytes": 1368,
+        "writes": 8,
+        "write_bytes": 1146,
+        "max_read": 32,
+        "max_write": 560,
+        "sizes": 1,
+        "grows": 0,
+        "grown_pages": 0
+      },
+      "scratch": {
+        "dirty_bytes": 1146,
+        "ranges": 8,
+        "byte_capacity": 1168,
+        "range_capacity": 12,
+        "result_capacity": 0,
+        "reserves": 2,
+        "grows": 0,
+        "grown_pages": 0,
+        "completed": 1
+      }
+    }
+  },
+  "baseline_scratch": "unobserved, not zero",
+  "ic_page_growth": 0,
+  "not_claimed": "per-component IC pricing, noise waiver, global allocations or peak stack"
+}

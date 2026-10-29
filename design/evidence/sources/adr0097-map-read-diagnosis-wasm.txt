@@ -1,0 +1,2264 @@
+Saved-source/WAT inspection only. No new disassembly, runtime or build.
+Full source paths, function symbols and hashes: adr0097-map-read-diagnosis-inspection.json
+Numbers below are full original file line numbers. Paths are retained in that JSON.
+All runtime metrics in the prose are retained earlier observations, not this inspection.
+
+Blocked -> corrected complete image-read text difference:
+--- blocked-image-read
++++ corrected-image-read
+@@ -298,5 +298,5 @@
+       (local.get $4)
+       (i32.const 3)
+-      (i32.const 1063128)
++      (i32.const 1063144)
+      )
+      (unreachable)
+@@ -306,5 +306,5 @@
+      (local.get $8)
+      (i32.const 32)
+-     (i32.const 1063128)
++     (i32.const 1063144)
+     )
+     (unreachable)
+@@ -813,5 +813,5 @@
+       (local.get $4)
+       (i32.const 32)
+-      (i32.const 1063128)
++      (i32.const 1063144)
+      )
+      (unreachable)
+
+Only three panic-location constants differ. No successful-path difference or IC attribution.
+
+=== corrected image-read; local 1-835; original 422-1256 ===
+(func $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)
+   422:  (func $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_ (param $0 i32) (param $1 i64) (param $2 i32) (param $3 i32)
+   423:   (local $4 i32)
+   424:   (local $5 i32)
+   425:   (local $6 i64)
+   426:   (local $7 i32)
+   427:   (local $8 i32)
+   428:   (local $9 i32)
+   429:   (local $10 i32)
+   430:   (local $11 i64)
+   431:   (local $12 i64)
+   432:   (local $13 i64)
+   433:   (local $14 i32)
+   434:   (block $block11
+   435:    (block $block6
+   436:     (block $block9
+   437:      (block $block2
+   438:       (block $block1
+   439:        (block $block
+   440:         (br_if $block
+   441:          (i32.ne
+   442:           (i32.load offset=24
+   443:            (local.get $0)
+   444:           )
+   445:           (i32.const 1)
+   446:          )
+   447:         )
+   448:         (local.set $4
+   449:          (i32.load offset=36
+   450:           (local.get $0)
+   451:          )
+   452:         )
+   453:         (local.set $5
+   454:          (i32.load offset=32
+   455:           (local.get $0)
+   456:          )
+   457:         )
+   458:         (br $block1)
+   459:        )
+   460:        (br_if $block2
+   461:         (i32.ge_u
+   462:          (local.tee $4
+   463:           (i32.load offset=28
+   464:            (local.get $0)
+   465:           )
+   466:          )
+   467:          (i32.const 4)
+   468:         )
+   469:        )
+   470:        (local.set $5
+   471:         (i32.add
+   472:          (local.get $0)
+   473:          (i32.const 32)
+   474:         )
+   475:        )
+   476:       )
+   477:       (local.set $6
+   478:        (i64.extend_i32_u
+   479:         (local.get $3)
+   480:        )
+   481:       )
+   482:       (local.set $7
+   483:        (i32.const 0)
+   484:       )
+   485:       (local.set $8
+   486:        (local.get $4)
+   487:       )
+   488:       (block $block3
+   489:        (block $block4
+   490:         (block $block5
+   491:          (br_table $block3 $block4 $block5
+   492:           (local.get $4)
+   493:          )
+   494:         )
+   495:         (local.set $7
+   496:          (i32.const 0)
+   497:         )
+   498:         (local.set $8
+   499:          (local.get $4)
+   500:         )
+   501:         (loop $label
+   502:          (local.set $7
+   503:           (select
+   504:            (local.get $7)
+   505:            (local.tee $10
+   506:             (i32.add
+   507:              (local.tee $9
+   508:               (i32.shr_u
+   509:                (local.get $8)
+   510:                (i32.const 1)
+   511:               )
+   512:              )
+   513:              (local.get $7)
+   514:             )
+   515:            )
+   516:            (i64.gt_u
+   517:             (i64.add
+   518:              (i64.load
+   519:               (local.tee $10
+   520:                (i32.add
+   521:                 (local.get $5)
+   522:                 (i32.shl
+   523:                  (local.get $10)
+   524:                  (i32.const 4)
+   525:                 )
+   526:                )
+   527:               )
+   528:              )
+   529:              (i64.load32_u
+   530:               (i32.add
+   531:                (local.get $10)
+   532:                (i32.const 12)
+   533:               )
+   534:              )
+   535:             )
+   536:             (local.get $1)
+   537:            )
+   538:           )
+   539:          )
+   540:          (br_if $label
+   541:           (i32.gt_u
+   542:            (local.tee $8
+   543:             (i32.sub
+   544:              (local.get $8)
+   545:              (local.get $9)
+   546:             )
+   547:            )
+   548:            (i32.const 1)
+   549:           )
+   550:          )
+   551:         )
+   552:        )
+   553:        (local.set $8
+   554:         (i32.add
+   555:          (local.get $7)
+   556:          (i64.le_u
+   557:           (i64.add
+   558:            (i64.load
+   559:             (local.tee $8
+   560:              (i32.add
+   561:               (local.get $5)
+   562:               (i32.shl
+   563:                (local.get $7)
+   564:                (i32.const 4)
+   565:               )
+   566:              )
+   567:             )
+   568:            )
+   569:            (i64.load32_u
+   570:             (i32.add
+   571:              (local.get $8)
+   572:              (i32.const 12)
+   573:             )
+   574:            )
+   575:           )
+   576:           (local.get $1)
+   577:          )
+   578:         )
+   579:        )
+   580:       )
+   581:       (local.set $11
+   582:        (i64.add
+   583:         (local.get $1)
+   584:         (local.get $6)
+   585:        )
+   586:       )
+   587:       (br_if $block6
+   588:        (i32.ge_u
+   589:         (local.get $8)
+   590:         (local.get $4)
+   591:        )
+   592:       )
+   593:       (br_if $block6
+   594:        (i64.lt_u
+   595:         (local.get $1)
+   596:         (local.tee $12
+   597:          (i64.load
+   598:           (local.tee $7
+   599:            (i32.add
+   600:             (local.get $5)
+   601:             (i32.shl
+   602:              (local.get $8)
+   603:              (i32.const 4)
+   604:             )
+   605:            )
+   606:           )
+   607:          )
+   608:         )
+   609:        )
+   610:       )
+   611:       (br_if $block6
+   612:        (i64.gt_u
+   613:         (local.get $11)
+   614:         (i64.add
+   615:          (local.get $12)
+   616:          (i64.load32_u offset=12
+   617:           (local.get $7)
+   618:          )
+   619:         )
+   620:        )
+   621:       )
+   622:       (local.set $7
+   623:        (i32.load offset=8
+   624:         (local.get $7)
+   625:        )
+   626:       )
+   627:       (block $block8
+   628:        (block $block7
+   629:         (br_if $block7
+   630:          (i32.ne
+   631:           (i32.load offset=80
+   632:            (local.get $0)
+   633:           )
+   634:           (i32.const 1)
+   635:          )
+   636:         )
+   637:         (local.set $8
+   638:          (i32.load offset=92
+   639:           (local.get $0)
+   640:          )
+   641:         )
+   642:         (local.set $10
+   643:          (i32.load offset=88
+   644:           (local.get $0)
+   645:          )
+   646:         )
+   647:         (br $block8)
+   648:        )
+   649:        (br_if $block9
+   650:         (i32.ge_u
+   651:          (local.tee $8
+   652:           (i32.load offset=84
+   653:            (local.get $0)
+   654:           )
+   655:          )
+   656:          (i32.const 33)
+   657:         )
+   658:        )
+   659:        (local.set $10
+   660:         (i32.add
+   661:          (local.get $0)
+   662:          (i32.const 88)
+   663:         )
+   664:        )
+   665:       )
+   666:       (block $block10
+   667:        (br_if $block10
+   668:         (i32.lt_u
+   669:          (local.tee $9
+   670:           (i32.add
+   671:            (local.tee $7
+   672:             (i32.add
+   673:              (local.get $7)
+   674:              (i32.wrap_i64
+   675:               (i64.sub
+   676:                (local.get $1)
+   677:                (local.get $12)
+   678:               )
+   679:              )
+   680:             )
+   681:            )
+   682:            (local.get $3)
+   683:           )
+   684:          )
+   685:          (local.get $7)
+   686:         )
+   687:        )
+   688:        (br_if $block10
+   689:         (i32.gt_u
+   690:          (local.get $9)
+   691:          (local.get $8)
+   692:         )
+   693:        )
+   694:        (br_if $block11
+   695:         (i32.eqz
+   696:          (local.get $3)
+   697:         )
+   698:        )
+   699:        (memory.copy
+   700:         (local.get $2)
+   701:         (i32.add
+   702:          (local.get $10)
+   703:          (local.get $7)
+   704:         )
+   705:         (local.get $3)
+   706:        )
+   707:        (return)
+   708:       )
+   709:       (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+   710:        (local.get $7)
+   711:        (local.get $9)
+   712:        (local.get $8)
+   713:        (i32.const 1060296)
+   714:       )
+   715:       (unreachable)
+   716:      )
+   717:      (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+   718:       (i32.const 0)
+   719:       (local.get $4)
+   720:       (i32.const 3)
+   721:       (i32.const 1063144)
+   722:      )
+   723:      (unreachable)
+   724:     )
+   725:     (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+   726:      (i32.const 0)
+   727:      (local.get $8)
+   728:      (i32.const 32)
+   729:      (i32.const 1063144)
+   730:     )
+   731:     (unreachable)
+   732:    )
+   733:    (local.set $7
+   734:     (i32.wrap_i64
+   735:      (local.tee $6
+   736:       (select
+   737:        (local.tee $13
+   738:         (select
+   739:          (i64.const 0)
+   740:          (local.tee $13
+   741:           (i64.sub
+   742:            (local.tee $12
+   743:             (i64.load offset=120
+   744:              (local.get $0)
+   745:             )
+   746:            )
+   747:            (local.get $1)
+   748:           )
+   749:          )
+   750:          (i64.gt_u
+   751:           (local.get $13)
+   752:           (local.get $12)
+   753:          )
+   754:         )
+   755:        )
+   756:        (local.get $6)
+   757:        (i64.lt_u
+   758:         (local.get $13)
+   759:         (local.get $6)
+   760:        )
+   761:       )
+   762:      )
+   763:     )
+   764:    )
+   765:    (block $block12
+   766:     (br_if $block12
+   767:      (i64.le_u
+   768:       (local.get $12)
+   769:       (local.get $1)
+   770:      )
+   771:     )
+   772:     (block $block13
+   773:      (br_if $block13
+   774:       (i32.lt_u
+   775:        (local.get $3)
+   776:        (local.get $7)
+   777:       )
+   778:      )
+   779:      (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_read
+   780:       (i64.extend_i32_u
+   781:        (local.get $2)
+   782:       )
+   783:       (local.get $1)
+   784:       (local.get $6)
+   785:      )
+   786:      (br $block12)
+   787:     )
+   788:     (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+   789:      (i32.const 0)
+   790:      (local.get $7)
+   791:      (local.get $3)
+   792:      (i32.const 1060280)
+   793:     )
+   794:     (unreachable)
+   795:    )
+   796:    (block $block14
+   797:     (br_if $block14
+   798:      (i32.ge_u
+   799:       (local.get $3)
+   800:       (local.get $7)
+   801:      )
+   802:     )
+   803:     (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+   804:      (local.get $7)
+   805:      (local.get $3)
+   806:      (local.get $3)
+   807:      (i32.const 1060264)
+   808:     )
+   809:     (unreachable)
+   810:    )
+   811:    (block $block15
+   812:     (br_if $block15
+   813:      (i32.eqz
+   814:       (local.tee $9
+   815:        (i32.sub
+   816:         (local.get $3)
+   817:         (local.get $7)
+   818:        )
+   819:       )
+   820:      )
+   821:     )
+   822:     (memory.fill
+   823:      (i32.add
+   824:       (local.get $2)
+   825:       (local.get $7)
+   826:      )
+   827:      (i32.const 0)
+   828:      (local.get $9)
+   829:     )
+   830:    )
+   831:    (br_if $block11
+   832:     (i32.eq
+   833:      (local.get $8)
+   834:      (local.get $4)
+   835:     )
+   836:    )
+   837:    (local.set $14
+   838:     (i32.add
+   839:      (local.get $5)
+   840:      (i32.shl
+   841:       (local.get $4)
+   842:       (i32.const 4)
+   843:      )
+   844:     )
+   845:    )
+   846:    (local.set $7
+   847:     (i32.add
+   848:      (local.get $5)
+   849:      (i32.shl
+   850:       (local.get $8)
+   851:       (i32.const 4)
+   852:      )
+   853:     )
+   854:    )
+   855:    (block $block17
+   856:     (block $block18
+   857:      (block $block16
+   858:       (br_if $block16
+   859:        (i32.eqz
+   860:         (i32.and
+   861:          (i32.load offset=80
+   862:           (local.get $0)
+   863:          )
+   864:          (i32.const 1)
+   865:         )
+   866:        )
+   867:       )
+   868:       (local.set $4
+   869:        (i32.load offset=92
+   870:         (local.get $0)
+   871:        )
+   872:       )
+   873:       (local.set $0
+   874:        (i32.load offset=88
+   875:         (local.get $0)
+   876:        )
+   877:       )
+   878:       (loop $label1
+   879:        (br_if $block11
+   880:         (i64.ge_u
+   881:          (local.tee $6
+   882:           (i64.load
+   883:            (local.get $7)
+   884:           )
+   885:          )
+   886:          (local.get $11)
+   887:         )
+   888:        )
+   889:        (br_if $block17
+   890:         (i32.lt_u
+   891:          (local.tee $8
+   892:           (i32.wrap_i64
+   893:            (i64.sub
+   894:             (local.tee $13
+   895:              (select
+   896:               (local.get $11)
+   897:               (local.tee $12
+   898:                (i64.add
+   899:                 (local.get $6)
+   900:                 (i64.load32_u
+   901:                  (i32.add
+   902:                   (local.get $7)
+   903:                   (i32.const 12)
+   904:                  )
+   905:                 )
+   906:                )
+   907:               )
+   908:               (i64.lt_u
+   909:                (local.get $11)
+   910:                (local.get $12)
+   911:               )
+   912:              )
+   913:             )
+   914:             (local.get $1)
+   915:            )
+   916:           )
+   917:          )
+   918:          (local.tee $9
+   919:           (i32.wrap_i64
+   920:            (i64.sub
+   921:             (local.tee $12
+   922:              (select
+   923:               (local.get $1)
+   924:               (local.get $6)
+   925:               (i64.gt_u
+   926:                (local.get $1)
+   927:                (local.get $6)
+   928:               )
+   929:              )
+   930:             )
+   931:             (local.get $1)
+   932:            )
+   933:           )
+   934:          )
+   935:         )
+   936:        )
+   937:        (br_if $block17
+   938:         (i32.lt_u
+   939:          (local.get $3)
+   940:          (local.get $8)
+   941:         )
+   942:        )
+   943:        (br_if $block18
+   944:         (i32.lt_u
+   945:          (local.tee $5
+   946:           (i32.add
+   947:            (local.tee $10
+   948:             (i32.add
+   949:              (i32.load
+   950:               (i32.add
+   951:                (local.get $7)
+   952:                (i32.const 8)
+   953:               )
+   954:              )
+   955:              (i32.wrap_i64
+   956:               (i64.sub
+   957:                (local.get $12)
+   958:                (local.get $6)
+   959:               )
+   960:              )
+   961:             )
+   962:            )
+   963:            (i32.wrap_i64
+   964:             (i64.sub
+   965:              (local.get $13)
+   966:              (local.get $12)
+   967:             )
+   968:            )
+   969:           )
+   970:          )
+   971:          (local.get $10)
+   972:         )
+   973:        )
+   974:        (br_if $block18
+   975:         (i32.gt_u
+   976:          (local.get $5)
+   977:          (local.get $4)
+   978:         )
+   979:        )
+   980:        (block $block19
+   981:         (br_if $block19
+   982:          (i32.eqz
+   983:           (local.tee $8
+   984:            (i32.sub
+   985:             (local.get $8)
+   986:             (local.get $9)
+   987:            )
+   988:           )
+   989:          )
+   990:         )
+   991:         (memory.copy
+   992:          (i32.add
+   993:           (local.get $2)
+   994:           (local.get $9)
+   995:          )
+   996:          (i32.add
+   997:           (local.get $0)
+   998:           (local.get $10)
+   999:          )
+  1000:          (local.get $8)
+  1001:         )
+  1002:        )
+  1003:        (br_if $label1
+  1004:         (i32.ne
+  1005:          (local.tee $7
+  1006:           (i32.add
+  1007:            (local.get $7)
+  1008:            (i32.const 16)
+  1009:           )
+  1010:          )
+  1011:          (local.get $14)
+  1012:         )
+  1013:        )
+  1014:        (br $block11)
+  1015:       )
+  1016:      )
+  1017:      (block $block20
+  1018:       (br_if $block20
+  1019:        (i32.gt_u
+  1020:         (local.tee $4
+  1021:          (i32.load offset=84
+  1022:           (local.get $0)
+  1023:          )
+  1024:         )
+  1025:         (i32.const 32)
+  1026:        )
+  1027:       )
+  1028:       (local.set $0
+  1029:        (i32.add
+  1030:         (local.get $0)
+  1031:         (i32.const 88)
+  1032:        )
+  1033:       )
+  1034:       (loop $label2
+  1035:        (br_if $block11
+  1036:         (i64.ge_u
+  1037:          (local.tee $6
+  1038:           (i64.load
+  1039:            (local.get $7)
+  1040:           )
+  1041:          )
+  1042:          (local.get $11)
+  1043:         )
+  1044:        )
+  1045:        (br_if $block17
+  1046:         (i32.lt_u
+  1047:          (local.tee $8
+  1048:           (i32.wrap_i64
+  1049:            (i64.sub
+  1050:             (local.tee $13
+  1051:              (select
+  1052:               (local.get $11)
+  1053:               (local.tee $12
+  1054:                (i64.add
+  1055:                 (local.get $6)
+  1056:                 (i64.load32_u
+  1057:                  (i32.add
+  1058:                   (local.get $7)
+  1059:                   (i32.const 12)
+  1060:                  )
+  1061:                 )
+  1062:                )
+  1063:               )
+  1064:               (i64.lt_u
+  1065:                (local.get $11)
+  1066:                (local.get $12)
+  1067:               )
+  1068:              )
+  1069:             )
+  1070:             (local.get $1)
+  1071:            )
+  1072:           )
+  1073:          )
+  1074:          (local.tee $9
+  1075:           (i32.wrap_i64
+  1076:            (i64.sub
+  1077:             (local.tee $12
+  1078:              (select
+  1079:               (local.get $1)
+  1080:               (local.get $6)
+  1081:               (i64.gt_u
+  1082:                (local.get $1)
+  1083:                (local.get $6)
+  1084:               )
+  1085:              )
+  1086:             )
+  1087:             (local.get $1)
+  1088:            )
+  1089:           )
+  1090:          )
+  1091:         )
+  1092:        )
+  1093:        (br_if $block17
+  1094:         (i32.lt_u
+  1095:          (local.get $3)
+  1096:          (local.get $8)
+  1097:         )
+  1098:        )
+  1099:        (br_if $block18
+  1100:         (i32.lt_u
+  1101:          (local.tee $5
+  1102:           (i32.add
+  1103:            (local.tee $10
+  1104:             (i32.add
+  1105:              (i32.load
+  1106:               (i32.add
+  1107:                (local.get $7)
+  1108:                (i32.const 8)
+  1109:               )
+  1110:              )
+  1111:              (i32.wrap_i64
+  1112:               (i64.sub
+  1113:                (local.get $12)
+  1114:                (local.get $6)
+  1115:               )
+  1116:              )
+  1117:             )
+  1118:            )
+  1119:            (i32.wrap_i64
+  1120:             (i64.sub
+  1121:              (local.get $13)
+  1122:              (local.get $12)
+  1123:             )
+  1124:            )
+  1125:           )
+  1126:          )
+  1127:          (local.get $10)
+  1128:         )
+  1129:        )
+  1130:        (br_if $block18
+  1131:         (i32.gt_u
+  1132:          (local.get $5)
+  1133:          (local.get $4)
+  1134:         )
+  1135:        )
+  1136:        (block $block21
+  1137:         (br_if $block21
+  1138:          (i32.eqz
+  1139:           (local.tee $8
+  1140:            (i32.sub
+  1141:             (local.get $8)
+  1142:             (local.get $9)
+  1143:            )
+  1144:           )
+  1145:          )
+  1146:         )
+  1147:         (memory.copy
+  1148:          (i32.add
+  1149:           (local.get $2)
+  1150:           (local.get $9)
+  1151:          )
+  1152:          (i32.add
+  1153:           (local.get $0)
+  1154:           (local.get $10)
+  1155:          )
+  1156:          (local.get $8)
+  1157:         )
+  1158:        )
+  1159:        (br_if $block11
+  1160:         (i32.eq
+  1161:          (local.tee $7
+  1162:           (i32.add
+  1163:            (local.get $7)
+  1164:            (i32.const 16)
+  1165:           )
+  1166:          )
+  1167:          (local.get $14)
+  1168:         )
+  1169:        )
+  1170:        (br $label2)
+  1171:       )
+  1172:      )
+  1173:      (br_if $block11
+  1174:       (i64.ge_u
+  1175:        (local.tee $6
+  1176:         (i64.load
+  1177:          (local.get $7)
+  1178:         )
+  1179:        )
+  1180:        (local.get $11)
+  1181:       )
+  1182:      )
+  1183:      (br_if $block17
+  1184:       (i32.lt_u
+  1185:        (local.tee $8
+  1186:         (i32.wrap_i64
+  1187:          (i64.sub
+  1188:           (select
+  1189:            (local.get $11)
+  1190:            (local.tee $12
+  1191:             (i64.add
+  1192:              (local.get $6)
+  1193:              (i64.load32_u offset=12
+  1194:               (local.get $7)
+  1195:              )
+  1196:             )
+  1197:            )
+  1198:            (i64.lt_u
+  1199:             (local.get $11)
+  1200:             (local.get $12)
+  1201:            )
+  1202:           )
+  1203:           (local.get $1)
+  1204:          )
+  1205:         )
+  1206:        )
+  1207:        (local.tee $9
+  1208:         (i32.wrap_i64
+  1209:          (select
+  1210:           (i64.const 0)
+  1211:           (local.tee $1
+  1212:            (i64.sub
+  1213:             (local.get $6)
+  1214:             (local.get $1)
+  1215:            )
+  1216:           )
+  1217:           (i64.gt_u
+  1218:            (local.get $1)
+  1219:            (local.get $6)
+  1220:           )
+  1221:          )
+  1222:         )
+  1223:        )
+  1224:       )
+  1225:      )
+  1226:      (br_if $block17
+  1227:       (i32.lt_u
+  1228:        (local.get $3)
+  1229:        (local.get $8)
+  1230:       )
+  1231:      )
+  1232:      (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+  1233:       (i32.const 0)
+  1234:       (local.get $4)
+  1235:       (i32.const 32)
+  1236:       (i32.const 1063144)
+  1237:      )
+  1238:      (unreachable)
+  1239:     )
+  1240:     (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+  1241:      (local.get $10)
+  1242:      (local.get $5)
+  1243:      (local.get $4)
+  1244:      (i32.const 1060232)
+  1245:     )
+  1246:     (unreachable)
+  1247:    )
+  1248:    (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+  1249:     (local.get $9)
+  1250:     (local.get $8)
+  1251:     (local.get $3)
+  1252:     (i32.const 1060248)
+  1253:    )
+  1254:    (unreachable)
+  1255:   )
+  1256:  )
+
+=== corrected search-page; local 1-137; original 285-421 ===
+(func $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32) (param $4 i32)
+   285:  (func $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i32) (param $4 i32)
+   286:   (local $5 i32)
+   287:   (local $6 i32)
+   288:   (local $7 i32)
+   289:   (local $8 i64)
+   290:   (local $9 i32)
+   291:   (global.set $__stack_pointer
+   292:    (local.tee $5
+   293:     (i32.sub
+   294:      (global.get $__stack_pointer)
+   295:      (i32.const 16)
+   296:     )
+   297:    )
+   298:   )
+   299:   (local.set $6
+   300:    (i32.const 0)
+   301:   )
+   302:   (local.set $7
+   303:    (i32.const 0)
+   304:   )
+   305:   (block $block
+   306:    (loop $label
+   307:     (local.set $8
+   308:      (i64.load
+   309:       (local.get $4)
+   310:      )
+   311:     )
+   312:     (i64.store offset=8
+   313:      (local.get $5)
+   314:      (i64.const 0)
+   315:     )
+   316:     (call $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_
+   317:      (i32.load offset=12
+   318:       (local.get $3)
+   319:      )
+   320:      (i64.add
+   321:       (local.get $8)
+   322:       (i64.shl
+   323:        (i64.and
+   324:         (i64.extend_i32_u
+   325:          (local.tee $9
+   326:           (i32.add
+   327:            (i32.shr_u
+   328:             (i32.and
+   329:              (i32.sub
+   330:               (local.get $1)
+   331:               (local.get $7)
+   332:              )
+   333:              (i32.const 65534)
+   334:             )
+   335:             (i32.const 1)
+   336:            )
+   337:            (local.get $7)
+   338:           )
+   339:          )
+   340:         )
+   341:         (i64.const 65535)
+   342:        )
+   343:        (i64.const 4)
+   344:       )
+   345:      )
+   346:      (i32.add
+   347:       (local.get $5)
+   348:       (i32.const 8)
+   349:      )
+   350:      (i32.const 8)
+   351:     )
+   352:     (block $block1
+   353:      (block $block2
+   354:       (br_table $block $block1 $block2
+   355:        (i32.and
+   356:         (i32.sub
+   357:          (i64.gt_u
+   358:           (local.tee $8
+   359:            (i64.load offset=8
+   360:             (local.get $5)
+   361:            )
+   362:           )
+   363:           (local.get $2)
+   364:          )
+   365:          (i64.lt_u
+   366:           (local.get $8)
+   367:           (local.get $2)
+   368:          )
+   369:         )
+   370:         (i32.const 255)
+   371:        )
+   372:       )
+   373:      )
+   374:      (local.set $7
+   375:       (i32.add
+   376:        (local.get $9)
+   377:        (i32.const 1)
+   378:       )
+   379:      )
+   380:      (local.set $9
+   381:       (local.get $1)
+   382:      )
+   383:     )
+   384:     (local.set $1
+   385:      (local.get $9)
+   386:     )
+   387:     (br_if $label
+   388:      (i32.lt_u
+   389:       (i32.and
+   390:        (local.get $7)
+   391:        (i32.const 65535)
+   392:       )
+   393:       (i32.and
+   394:        (local.get $9)
+   395:        (i32.const 65535)
+   396:       )
+   397:      )
+   398:     )
+   399:    )
+   400:    (local.set $6
+   401:     (i32.const 1)
+   402:    )
+   403:    (local.set $9
+   404:     (local.get $7)
+   405:    )
+   406:   )
+   407:   (i32.store16 offset=2
+   408:    (local.get $0)
+   409:    (local.get $9)
+   410:   )
+   411:   (i32.store16
+   412:    (local.get $0)
+   413:    (local.get $6)
+   414:   )
+   415:   (global.set $__stack_pointer
+   416:    (i32.add
+   417:     (local.get $5)
+   418:     (i32.const 16)
+   419:    )
+   420:   )
+   421:  )
+
+=== corrected scalar-edit; local 1-150; original 49468-49617 ===
+(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 49468:  (func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 49469:   (local $3 i32)
+ 49470:   (local $4 v128)
+ 49471:   (local $5 i64)
+ 49472:   (local $6 i64)
+ 49473:   (local $7 i64)
+ 49474:   (local $8 i64)
+ 49475:   (local $9 i64)
+ 49476:   (local $10 i32)
+ 49477:   (local $11 i64)
+ 49478:   (local $12 i64)
+ 49479:   (local $13 i64)
+ 49480:   (local $14 i64)
+ 49481:   (local $15 i64)
+ 49482:   (local $16 i64)
+ 49483:   (local $17 i32)
+ 49484:   (local $18 i32)
+ 49485:   (local $19 i32)
+ 49486:   (local $20 i32)
+ 49487:   (global.set $__stack_pointer
+ 49488:    (local.tee $3
+ 49489:     (i32.sub
+ 49490:      (global.get $__stack_pointer)
+ 49491:      (i32.const 304)
+ 49492:     )
+ 49493:    )
+ 49494:   )
+ 49495:   (v128.store offset=112 align=8
+ 49496:    (local.get $3)
+ 49497:    (local.tee $4
+ 49498:     (v128.const i32x4 0x00000000 0x00000000 0x00000000 0x00000000)
+ 49499:    )
+ 49500:   )
+ 49501:   (v128.store offset=96 align=8
+ 49502:    (local.get $3)
+ 49503:    (local.get $4)
+ 49504:   )
+ 49505:   (v128.store offset=80 align=8
+ 49506:    (local.get $3)
+ 49507:    (local.get $4)
+ 49508:   )
+ 49509:   (i64.store offset=144
+ 49510:    (local.get $3)
+ 49511:    (i64.const 0)
+ 49512:   )
+ 49513:   (v128.store offset=152 align=8
+ 49514:    (local.get $3)
+ 49515:    (local.get $4)
+ 49516:   )
+ 49517:   (v128.store offset=128 align=8
+ 49518:    (local.get $3)
+ 49519:    (local.get $4)
+ 49520:   )
+ 49521:   (i64.store offset=72
+ 49522:    (local.get $3)
+ 49523:    (i64.const 0)
+ 49524:   )
+ 49525:   (i32.store offset=64
+ 49526:    (local.get $3)
+ 49527:    (i32.const 0)
+ 49528:   )
+ 49529:   (i64.store offset=48
+ 49530:    (local.get $3)
+ 49531:    (i64.const 0)
+ 49532:   )
+ 49533:   (v128.store offset=168 align=8
+ 49534:    (local.get $3)
+ 49535:    (local.get $4)
+ 49536:   )
+ 49537:   (i32.store offset=184
+ 49538:    (local.get $3)
+ 49539:    (i32.const 0)
+ 49540:   )
+ 49541:   (local.set $5
+ 49542:    (i64.load
+ 49543:     (local.get $2)
+ 49544:    )
+ 49545:   )
+ 49546:   (local.set $6
+ 49547:    (i64.load offset=8
+ 49548:     (local.get $2)
+ 49549:    )
+ 49550:   )
+ 49551:   (local.set $7
+ 49552:    (i64.load offset=16
+ 49553:     (local.get $2)
+ 49554:    )
+ 49555:   )
+ 49556:   (block $block47
+ 49557:    (block $block56
+ 49558:     (block $block57
+ 49559:      (block $block45
+ 49560:       (block $block64
+ 49561:        (block $block60
+ 49562:         (block $block51
+ 49563:          (block $block53
+ 49564:           (block $block43
+ 49565:            (block $block4
+ 49566:             (block $block12
+ 49567:              (block $block34
+ 49568:               (block $block9
+ 49569:                (block $block
+ 49570:                 (br_if $block
+ 49571:                  (i64.ge_u
+ 49572:                   (local.tee $8
+ 49573:                    (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_size)
+ 49574:                   )
+ 49575:                   (i64.const 281474976710656)
+ 49576:                  )
+ 49577:                 )
+ 49578:                 (i64.store offset=168
+ 49579:                  (local.get $3)
+ 49580:                  (i64.shl
+ 49581:                   (local.get $8)
+ 49582:                   (i64.const 16)
+ 49583:                  )
+ 49584:                 )
+ 49585:                 (i64.store offset=272
+ 49586:                  (local.get $3)
+ 49587:                  (i64.const 0)
+ 49588:                 )
+ 49589:                 (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_read
+ 49590:                  (i64.extend_i32_u
+ 49591:                   (i32.add
+ 49592:                    (local.get $3)
+ 49593:                    (i32.const 272)
+ 49594:                   )
+ 49595:                  )
+ 49596:                  (i64.const 16)
+ 49597:                  (i64.const 8)
+ 49598:                 )
+ 49599:                 (i32.store offset=200
+ 49600:                  (local.get $3)
+ 49601:                  (local.get $1)
+ 49602:                 )
+ 49603:                 (i64.store offset=192
+ 49604:                  (local.get $3)
+ 49605:                  (local.tee $9
+ 49606:                   (i64.load offset=272
+ 49607:                    (local.get $3)
+ 49608:                   )
+ 49609:                  )
+ 49610:                 )
+ 49611:                 (local.set $8
+ 49612:                  (i64.load offset=48
+ 49613:                   (local.get $3)
+ 49614:                  )
+ 49615:                 )
+ 49616:                 (i32.store offset=204
+ 49617:                  (local.get $3)
+
+=== corrected scalar-edit; local 330-420; original 49797-49887 ===
+(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 49797:                    )
+ 49798:                   )
+ 49799:                   (local.set $1
+ 49800:                    (i32.wrap_i64
+ 49801:                     (local.get $5)
+ 49802:                    )
+ 49803:                   )
+ 49804:                   (block $block28
+ 49805:                    (block $block25
+ 49806:                     (block $block33
+ 49807:                      (block $block22
+ 49808:                       (block $block30
+ 49809:                        (block $block32
+ 49810:                         (block $block31
+ 49811:                          (block $block21
+ 49812:                           (block $block15
+ 49813:                            (block $block8
+ 49814:                             (block $block7
+ 49815:                              (block $block6
+ 49816:                               (br_if $block6
+ 49817:                                (i64.eqz
+ 49818:                                 (local.get $11)
+ 49819:                                )
+ 49820:                               )
+ 49821:                               (local.set $2
+ 49822:                                (i32.const 0)
+ 49823:                               )
+ 49824:                               (local.set $12
+ 49825:                                (i64.const 0)
+ 49826:                               )
+ 49827:                               (br $block7)
+ 49828:                              )
+ 49829:                              (br_if $block8
+ 49830:                               (i32.eqz
+ 49831:                                (i32.and
+ 49832:                                 (local.get $1)
+ 49833:                                 (i32.const 1)
+ 49834:                                )
+ 49835:                               )
+ 49836:                              )
+ 49837:                              (br $block9)
+ 49838:                             )
+ 49839:                             (block $block11
+ 49840:                              (loop $label
+ 49841:                               (v128.store offset=272 align=8
+ 49842:                                (local.get $3)
+ 49843:                                (local.get $4)
+ 49844:                               )
+ 49845:                               (call $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_
+ 49846:                                (i32.add
+ 49847:                                 (local.get $3)
+ 49848:                                 (i32.const 48)
+ 49849:                                )
+ 49850:                                (i64.add
+ 49851:                                 (i64.shl
+ 49852:                                  (local.tee $8
+ 49853:                                   (i64.shr_u
+ 49854:                                    (i64.add
+ 49855:                                     (local.get $11)
+ 49856:                                     (local.get $12)
+ 49857:                                    )
+ 49858:                                    (i64.const 1)
+ 49859:                                   )
+ 49860:                                  )
+ 49861:                                  (i64.const 4)
+ 49862:                                 )
+ 49863:                                 (i64.const 64)
+ 49864:                                )
+ 49865:                                (i32.add
+ 49866:                                 (local.get $3)
+ 49867:                                 (i32.const 272)
+ 49868:                                )
+ 49869:                                (i32.const 16)
+ 49870:                               )
+ 49871:                               (block $block10
+ 49872:                                (br_if $block10
+ 49873:                                 (i64.gt_u
+ 49874:                                  (local.tee $13
+ 49875:                                   (i64.load offset=272
+ 49876:                                    (local.get $3)
+ 49877:                                   )
+ 49878:                                  )
+ 49879:                                  (local.get $6)
+ 49880:                                 )
+ 49881:                                )
+ 49882:                                (local.set $14
+ 49883:                                 (i64.load offset=280
+ 49884:                                  (local.get $3)
+ 49885:                                 )
+ 49886:                                )
+ 49887:                                (local.set $2
+
+=== corrected scalar-edit; local 857-985; original 50324-50452 ===
+(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 50324:                              (i32.const 255)
+ 50325:                             )
+ 50326:                            )
+ 50327:                            (local.set $10
+ 50328:                             (i32.load8_u offset=233
+ 50329:                              (local.get $3)
+ 50330:                             )
+ 50331:                            )
+ 50332:                            (br $block5)
+ 50333:                           )
+ 50334:                           (local.set $2
+ 50335:                            (i32.const 0)
+ 50336:                           )
+ 50337:                           (br_if $block5
+ 50338:                            (i32.ne
+ 50339:                             (i32.and
+ 50340:                              (i32.load8_u offset=272
+ 50341:                               (local.get $3)
+ 50342:                              )
+ 50343:                              (i32.const 255)
+ 50344:                             )
+ 50345:                             (i32.const 1)
+ 50346:                            )
+ 50347:                           )
+ 50348:                           (br_if $block5
+ 50349:                            (i32.lt_u
+ 50350:                             (i32.and
+ 50351:                              (i32.add
+ 50352:                               (local.tee $17
+ 50353:                                (i32.load16_u offset=274
+ 50354:                                 (local.get $3)
+ 50355:                                )
+ 50356:                               )
+ 50357:                               (i32.const -65)
+ 50358:                              )
+ 50359:                              (i32.const 65535)
+ 50360:                             )
+ 50361:                             (i32.const 65472)
+ 50362:                            )
+ 50363:                           )
+ 50364:                           (br_if $block5
+ 50365:                            (i64.eq
+ 50366:                             (local.get $9)
+ 50367:                             (local.get $14)
+ 50368:                            )
+ 50369:                           )
+ 50370:                           (br_if $block5
+ 50371:                            (i64.eq
+ 50372:                             (local.get $15)
+ 50373:                             (local.get $14)
+ 50374:                            )
+ 50375:                           )
+ 50376:                           (br_if $block5
+ 50377:                            (i64.ne
+ 50378:                             (local.get $16)
+ 50379:                             (i64.const 0)
+ 50380:                            )
+ 50381:                           )
+ 50382:                           (i64.store offset=232
+ 50383:                            (local.get $3)
+ 50384:                            (local.tee $11
+ 50385:                             (i64.add
+ 50386:                              (local.get $12)
+ 50387:                              (i64.const 131168)
+ 50388:                             )
+ 50389:                            )
+ 50390:                           )
+ 50391:                           (i64.store offset=272
+ 50392:                            (local.get $3)
+ 50393:                            (i64.const 0)
+ 50394:                           )
+ 50395:                           (call $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_
+ 50396:                            (i32.add
+ 50397:                             (local.get $3)
+ 50398:                             (i32.const 48)
+ 50399:                            )
+ 50400:                            (local.get $11)
+ 50401:                            (i32.add
+ 50402:                             (local.get $3)
+ 50403:                             (i32.const 272)
+ 50404:                            )
+ 50405:                            (i32.const 8)
+ 50406:                           )
+ 50407:                           (br_if $block22
+ 50408:                            (i64.ne
+ 50409:                             (i64.load offset=272
+ 50410:                              (local.get $3)
+ 50411:                             )
+ 50412:                             (local.get $13)
+ 50413:                            )
+ 50414:                           )
+ 50415:                           (call $_RINvCs6VbpWyA87ck_27ic_stable_paged_ordered_map11search_pageNCNvMsb_B2_INtB2_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10apply_edits_0EB2_
+ 50416:                            (i32.add
+ 50417:                             (local.get $3)
+ 50418:                             (i32.const 24)
+ 50419:                            )
+ 50420:                            (local.get $17)
+ 50421:                            (local.get $6)
+ 50422:                            (i32.add
+ 50423:                             (local.get $3)
+ 50424:                             (i32.const 192)
+ 50425:                            )
+ 50426:                            (i32.add
+ 50427:                             (local.get $3)
+ 50428:                             (i32.const 232)
+ 50429:                            )
+ 50430:                           )
+ 50431:                           (local.set $2
+ 50432:                            (i32.load16_u offset=26
+ 50433:                             (local.get $3)
+ 50434:                            )
+ 50435:                           )
+ 50436:                           (local.set $10
+ 50437:                            (i32.load16_u offset=24
+ 50438:                             (local.get $3)
+ 50439:                            )
+ 50440:                           )
+ 50441:                           (block $block27
+ 50442:                            (block $block24
+ 50443:                             (block $block23
+ 50444:                              (br_if $block23
+ 50445:                               (i32.eqz
+ 50446:                                (i32.and
+ 50447:                                 (local.get $1)
+ 50448:                                 (i32.const 1)
+ 50449:                                )
+ 50450:                               )
+ 50451:                              )
+ 50452:                              (br_if $block24
+
+=== corrected scalar-edit; local 2240-2530; original 51707-51997 ===
+(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 51707:               )
+ 51708:               (call $_RNvNtCsbDPPsInctpH_4core9panicking18panic_bounds_check
+ 51709:                (local.get $2)
+ 51710:                (local.get $10)
+ 51711:                (i32.const 1063072)
+ 51712:               )
+ 51713:               (unreachable)
+ 51714:              )
+ 51715:              (i32.store offset=64
+ 51716:               (local.get $3)
+ 51717:               (i32.const 1)
+ 51718:              )
+ 51719:              (local.set $1
+ 51720:               (i32.add
+ 51721:                (local.get $3)
+ 51722:                (i32.const 48)
+ 51723:               )
+ 51724:              )
+ 51725:             )
+ 51726:             (i64.store offset=8
+ 51727:              (local.tee $2
+ 51728:               (i32.add
+ 51729:                (local.get $1)
+ 51730:                (i32.shl
+ 51731:                 (local.get $2)
+ 51732:                 (i32.const 4)
+ 51733:                )
+ 51734:               )
+ 51735:              )
+ 51736:              (local.get $11)
+ 51737:             )
+ 51738:             (i64.store
+ 51739:              (local.get $2)
+ 51740:              (local.get $8)
+ 51741:             )
+ 51742:             (br_if $block53
+ 51743:              (i64.le_u
+ 51744:               (local.tee $8
+ 51745:                (i64.load offset=128
+ 51746:                 (local.tee $2
+ 51747:                  (i32.load offset=204
+ 51748:                   (local.get $3)
+ 51749:                  )
+ 51750:                 )
+ 51751:                )
+ 51752:               )
+ 51753:               (local.tee $11
+ 51754:                (i64.load offset=120
+ 51755:                 (local.get $2)
+ 51756:                )
+ 51757:               )
+ 51758:              )
+ 51759:             )
+ 51760:             (br_if $block53
+ 51761:              (i64.ne
+ 51762:               (call $_RNvNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory13stable64_grow
+ 51763:                (i64.add
+ 51764:                 (i64.sub
+ 51765:                  (i64.shr_u
+ 51766:                   (local.get $8)
+ 51767:                   (i64.const 16)
+ 51768:                  )
+ 51769:                  (i64.shr_u
+ 51770:                   (local.get $11)
+ 51771:                   (i64.const 16)
+ 51772:                  )
+ 51773:                 )
+ 51774:                 (i64.extend_i32_u
+ 51775:                  (i64.ne
+ 51776:                   (i64.and
+ 51777:                    (local.get $8)
+ 51778:                    (i64.const 65535)
+ 51779:                   )
+ 51780:                   (i64.const 0)
+ 51781:                  )
+ 51782:                 )
+ 51783:                )
+ 51784:               )
+ 51785:               (i64.const -1)
+ 51786:              )
+ 51787:             )
+ 51788:            )
+ 51789:            (local.set $1
+ 51790:             (i32.const 1)
+ 51791:            )
+ 51792:           )
+ 51793:           (i64.store
+ 51794:            (local.get $0)
+ 51795:            (i64.const 2)
+ 51796:           )
+ 51797:           (i32.store8 offset=8
+ 51798:            (local.get $0)
+ 51799:            (local.get $1)
+ 51800:           )
+ 51801:           (block $block54
+ 51802:            (br_if $block54
+ 51803:             (i32.eqz
+ 51804:              (i32.load offset=72
+ 51805:               (local.get $3)
+ 51806:              )
+ 51807:             )
+ 51808:            )
+ 51809:            (br_if $block54
+ 51810:             (i32.eqz
+ 51811:              (local.tee $2
+ 51812:               (i32.load offset=76
+ 51813:                (local.get $3)
+ 51814:               )
+ 51815:              )
+ 51816:             )
+ 51817:            )
+ 51818:            (call $_RNvCs6HbitnLHj0h_7___rustc14___rust_dealloc
+ 51819:             (i32.load offset=80
+ 51820:              (local.get $3)
+ 51821:             )
+ 51822:             (i32.shl
+ 51823:              (local.get $2)
+ 51824:              (i32.const 4)
+ 51825:             )
+ 51826:             (i32.const 8)
+ 51827:            )
+ 51828:           )
+ 51829:           (block $block55
+ 51830:            (br_if $block55
+ 51831:             (i32.eqz
+ 51832:              (i32.load offset=128
+ 51833:               (local.get $3)
+ 51834:              )
+ 51835:             )
+ 51836:            )
+ 51837:            (br_if $block55
+ 51838:             (i32.eqz
+ 51839:              (local.tee $2
+ 51840:               (i32.load offset=132
+ 51841:                (local.get $3)
+ 51842:               )
+ 51843:              )
+ 51844:             )
+ 51845:            )
+ 51846:            (call $_RNvCs6HbitnLHj0h_7___rustc14___rust_dealloc
+ 51847:             (i32.load offset=136
+ 51848:              (local.get $3)
+ 51849:             )
+ 51850:             (local.get $2)
+ 51851:             (i32.const 1)
+ 51852:            )
+ 51853:           )
+ 51854:           (br_if $block56
+ 51855:            (i64.ne
+ 51856:             (i64.load offset=48
+ 51857:              (local.get $3)
+ 51858:             )
+ 51859:             (i64.const 2)
+ 51860:            )
+ 51861:           )
+ 51862:           (br $block57)
+ 51863:          )
+ 51864:          (block $block59
+ 51865:           (block $block58
+ 51866:            (br_if $block58
+ 51867:             (i64.ne
+ 51868:              (i64.load offset=48
+ 51869:               (local.get $3)
+ 51870:              )
+ 51871:              (i64.const 2)
+ 51872:             )
+ 51873:            )
+ 51874:            (local.set $1
+ 51875:             (i32.load offset=64
+ 51876:              (local.get $3)
+ 51877:             )
+ 51878:            )
+ 51879:            (local.set $2
+ 51880:             (i32.load offset=60
+ 51881:              (local.get $3)
+ 51882:             )
+ 51883:            )
+ 51884:            (br $block59)
+ 51885:           )
+ 51886:           (local.set $2
+ 51887:            (i32.add
+ 51888:             (local.get $3)
+ 51889:             (i32.const 48)
+ 51890:            )
+ 51891:           )
+ 51892:           (br_if $block60
+ 51893:            (i32.ge_u
+ 51894:             (local.tee $1
+ 51895:              (i32.load offset=64
+ 51896:               (local.get $3)
+ 51897:              )
+ 51898:             )
+ 51899:             (i32.const 2)
+ 51900:            )
+ 51901:           )
+ 51902:          )
+ 51903:          (block $block61
+ 51904:           (br_if $block61
+ 51905:            (i32.eqz
+ 51906:             (local.get $1)
+ 51907:            )
+ 51908:           )
+ 51909:           (local.set $8
+ 51910:            (i64.load offset=8
+ 51911:             (local.get $2)
+ 51912:            )
+ 51913:           )
+ 51914:           (local.set $11
+ 51915:            (i64.load
+ 51916:             (local.get $2)
+ 51917:            )
+ 51918:           )
+ 51919:           (block $block63
+ 51920:            (block $block62
+ 51921:             (br_if $block62
+ 51922:              (i32.ne
+ 51923:               (i32.load offset=72
+ 51924:                (local.get $3)
+ 51925:               )
+ 51926:               (i32.const 1)
+ 51927:              )
+ 51928:             )
+ 51929:             (local.set $1
+ 51930:              (i32.load offset=84
+ 51931:               (local.get $3)
+ 51932:              )
+ 51933:             )
+ 51934:             (local.set $2
+ 51935:              (i32.load offset=80
+ 51936:               (local.get $3)
+ 51937:              )
+ 51938:             )
+ 51939:             (br $block63)
+ 51940:            )
+ 51941:            (br_if $block64
+ 51942:             (i32.ge_u
+ 51943:              (local.tee $1
+ 51944:               (i32.load offset=76
+ 51945:                (local.get $3)
+ 51946:               )
+ 51947:              )
+ 51948:              (i32.const 4)
+ 51949:             )
+ 51950:            )
+ 51951:            (local.set $2
+ 51952:             (i32.add
+ 51953:              (local.get $3)
+ 51954:              (i32.const 80)
+ 51955:             )
+ 51956:            )
+ 51957:           )
+ 51958:           (block $block67
+ 51959:            (block $block68
+ 51960:             (block $block65
+ 51961:              (br_if $block65
+ 51962:               (i32.eqz
+ 51963:                (local.get $1)
+ 51964:               )
+ 51965:              )
+ 51966:              (local.set $19
+ 51967:               (i32.add
+ 51968:                (local.get $2)
+ 51969:                (i32.shl
+ 51970:                 (local.get $1)
+ 51971:                 (i32.const 4)
+ 51972:                )
+ 51973:               )
+ 51974:              )
+ 51975:              (block $block66
+ 51976:               (br_if $block66
+ 51977:                (i32.ne
+ 51978:                 (i32.load offset=128
+ 51979:                  (local.get $3)
+ 51980:                 )
+ 51981:                 (i32.const 1)
+ 51982:                )
+ 51983:               )
+ 51984:               (local.set $18
+ 51985:                (i32.load offset=140
+ 51986:                 (local.get $3)
+ 51987:                )
+ 51988:               )
+ 51989:               (local.set $20
+ 51990:                (i32.load offset=136
+ 51991:                 (local.get $3)
+ 51992:                )
+ 51993:               )
+ 51994:               (loop $label3
+ 51995:                (br_if $block67
+ 51996:                 (i32.lt_u
+ 51997:                  (local.tee $1
+
+=== corrected scalar-edit; local 2650-2740; original 52117-52207 ===
+(func $_RNvMsd_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_21StablePagedOrderedMapNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE11scalar_editB5_ (param $0 i32) (param $1 i32) (param $2 i32)
+ 52117:                (i32.ne
+ 52118:                 (local.tee $2
+ 52119:                  (i32.add
+ 52120:                   (local.get $2)
+ 52121:                   (i32.const 16)
+ 52122:                  )
+ 52123:                 )
+ 52124:                 (local.get $19)
+ 52125:                )
+ 52126:               )
+ 52127:              )
+ 52128:             )
+ 52129:             (i64.store offset=8
+ 52130:              (local.get $0)
+ 52131:              (local.get $8)
+ 52132:             )
+ 52133:             (i64.store
+ 52134:              (local.get $0)
+ 52135:              (local.get $11)
+ 52136:             )
+ 52137:             (block $block69
+ 52138:              (br_if $block69
+ 52139:               (i32.eqz
+ 52140:                (i32.load offset=72
+ 52141:                 (local.get $3)
+ 52142:                )
+ 52143:               )
+ 52144:              )
+ 52145:              (br_if $block69
+ 52146:               (i32.eqz
+ 52147:                (local.tee $2
+ 52148:                 (i32.load offset=76
+ 52149:                  (local.get $3)
+ 52150:                 )
+ 52151:                )
+ 52152:               )
+ 52153:              )
+ 52154:              (call $_RNvCs6HbitnLHj0h_7___rustc14___rust_dealloc
+ 52155:               (i32.load offset=80
+ 52156:                (local.get $3)
+ 52157:               )
+ 52158:               (i32.shl
+ 52159:                (local.get $2)
+ 52160:                (i32.const 4)
+ 52161:               )
+ 52162:               (i32.const 8)
+ 52163:              )
+ 52164:             )
+ 52165:             (block $block70
+ 52166:              (br_if $block70
+ 52167:               (i32.eqz
+ 52168:                (i32.load offset=128
+ 52169:                 (local.get $3)
+ 52170:                )
+ 52171:               )
+ 52172:              )
+ 52173:              (br_if $block70
+ 52174:               (i32.eqz
+ 52175:                (local.tee $2
+ 52176:                 (i32.load offset=132
+ 52177:                  (local.get $3)
+ 52178:                 )
+ 52179:                )
+ 52180:               )
+ 52181:              )
+ 52182:              (call $_RNvCs6HbitnLHj0h_7___rustc14___rust_dealloc
+ 52183:               (i32.load offset=136
+ 52184:                (local.get $3)
+ 52185:               )
+ 52186:               (local.get $2)
+ 52187:               (i32.const 1)
+ 52188:              )
+ 52189:             )
+ 52190:             (br_if $block57
+ 52191:              (i64.eq
+ 52192:               (i64.load offset=48
+ 52193:                (local.get $3)
+ 52194:               )
+ 52195:               (i64.const 2)
+ 52196:              )
+ 52197:             )
+ 52198:             (br $block56)
+ 52199:            )
+ 52200:            (call $_RNvNtNtCsbDPPsInctpH_4core5slice5index16slice_index_fail
+ 52201:             (i32.const 0)
+ 52202:             (local.get $18)
+ 52203:             (i32.const 32)
+ 52204:             (i32.const 1063144)
+ 52205:            )
+ 52206:            (unreachable)
+ 52207:           )
+
+=== corrected split-page; local 610-810; original 64814-65014 ===
+(func $_RNvMsb_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapINtB5_8EditPlanNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryE10split_pageB5_ (param $0 i32) (param $1 i32) (param $2 i64) (param $3 i64) (param $4 i64) (param $5 i32)
+ 64814:           )
+ 64815:           (local.set $16
+ 64816:            (i64.add
+ 64817:             (i64.mul
+ 64818:              (local.get $24)
+ 64819:              (i64.const 1056)
+ 64820:             )
+ 64821:             (i64.const 130112)
+ 64822:            )
+ 64823:           )
+ 64824:           (local.set $17
+ 64825:            (i64.and
+ 64826:             (i64.extend_i32_u
+ 64827:              (local.get $21)
+ 64828:             )
+ 64829:             (i64.const 65535)
+ 64830:            )
+ 64831:           )
+ 64832:           (local.set $10
+ 64833:            (i64.const 32)
+ 64834:           )
+ 64835:           (loop $label2
+ 64836:            (local.set $26
+ 64837:             (local.get $3)
+ 64838:            )
+ 64839:            (local.set $27
+ 64840:             (local.get $4)
+ 64841:            )
+ 64842:            (block $block19
+ 64843:             (br_if $block19
+ 64844:              (i64.eq
+ 64845:               (local.get $17)
+ 64846:               (local.get $10)
+ 64847:              )
+ 64848:             )
+ 64849:             (v128.store offset=64 align=8
+ 64850:              (local.get $6)
+ 64851:              (local.get $12)
+ 64852:             )
+ 64853:             (call $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_
+ 64854:              (local.get $7)
+ 64855:              (i64.add
+ 64856:               (i64.and
+ 64857:                (i64.shl
+ 64858:                 (i64.sub
+ 64859:                  (local.get $10)
+ 64860:                  (i64.extend_i32_u
+ 64861:                   (i64.gt_u
+ 64862:                    (local.get $10)
+ 64863:                    (local.get $17)
+ 64864:                   )
+ 64865:                  )
+ 64866:                 )
+ 64867:                 (i64.const 4)
+ 64868:                )
+ 64869:                (i64.const 1048560)
+ 64870:               )
+ 64871:               (local.get $13)
+ 64872:              )
+ 64873:              (i32.add
+ 64874:               (local.get $6)
+ 64875:               (i32.const 64)
+ 64876:              )
+ 64877:              (i32.const 16)
+ 64878:             )
+ 64879:             (local.set $27
+ 64880:              (i64.load offset=72
+ 64881:               (local.get $6)
+ 64882:              )
+ 64883:             )
+ 64884:             (local.set $26
+ 64885:              (i64.load offset=64
+ 64886:               (local.get $6)
+ 64887:              )
+ 64888:             )
+ 64889:            )
+ 64890:            (i64.store offset=72
+ 64891:             (local.get $6)
+ 64892:             (local.get $27)
+ 64893:            )
+ 64894:            (i64.store offset=64
+ 64895:             (local.get $6)
+ 64896:             (local.get $26)
+ 64897:            )
+ 64898:            (call $_RNvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB5_9EditImage5write
+ 64899:             (local.get $7)
+ 64900:             (local.get $16)
+ 64901:             (i32.add
+ 64902:              (local.get $6)
+ 64903:              (i32.const 64)
+ 64904:             )
+ 64905:             (i32.const 16)
+ 64906:            )
+ 64907:            (local.set $16
+ 64908:             (i64.add
+ 64909:              (local.get $16)
+ 64910:              (i64.const 16)
+ 64911:             )
+ 64912:            )
+ 64913:            (br_if $label2
+ 64914:             (i64.ne
+ 64915:              (local.tee $10
+ 64916:               (i64.add
+ 64917:                (local.get $10)
+ 64918:                (i64.const 1)
+ 64919:               )
+ 64920:              )
+ 64921:              (i64.const 65)
+ 64922:             )
+ 64923:            )
+ 64924:           )
+ 64925:           (local.set $16
+ 64926:            (i64.add
+ 64927:             (i64.mul
+ 64928:              (local.get $2)
+ 64929:              (i64.const 1056)
+ 64930:             )
+ 64931:             (i64.const 130608)
+ 64932:            )
+ 64933:           )
+ 64934:           (local.set $10
+ 64935:            (i64.const 31)
+ 64936:           )
+ 64937:           (loop $label3
+ 64938:            (local.set $26
+ 64939:             (local.get $3)
+ 64940:            )
+ 64941:            (local.set $27
+ 64942:             (local.get $4)
+ 64943:            )
+ 64944:            (block $block20
+ 64945:             (br_if $block20
+ 64946:              (i64.eq
+ 64947:               (local.get $17)
+ 64948:               (local.get $10)
+ 64949:              )
+ 64950:             )
+ 64951:             (v128.store offset=64 align=8
+ 64952:              (local.get $6)
+ 64953:              (local.get $12)
+ 64954:             )
+ 64955:             (call $_RINvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB6_9EditImage4readNtNtCs9L1c5kY2cFB_20ic_stable_structures10ic0_memory15Ic0StableMemoryEB6_
+ 64956:              (local.get $7)
+ 64957:              (i64.add
+ 64958:               (i64.and
+ 64959:                (i64.shl
+ 64960:                 (i64.sub
+ 64961:                  (local.get $10)
+ 64962:                  (i64.extend_i32_u
+ 64963:                   (i64.gt_u
+ 64964:                    (local.get $10)
+ 64965:                    (local.get $17)
+ 64966:                   )
+ 64967:                  )
+ 64968:                 )
+ 64969:                 (i64.const 4)
+ 64970:                )
+ 64971:                (i64.const 1048560)
+ 64972:               )
+ 64973:               (local.get $13)
+ 64974:              )
+ 64975:              (i32.add
+ 64976:               (local.get $6)
+ 64977:               (i32.const 64)
+ 64978:              )
+ 64979:              (i32.const 16)
+ 64980:             )
+ 64981:             (local.set $27
+ 64982:              (i64.load offset=72
+ 64983:               (local.get $6)
+ 64984:              )
+ 64985:             )
+ 64986:             (local.set $26
+ 64987:              (i64.load offset=64
+ 64988:               (local.get $6)
+ 64989:              )
+ 64990:             )
+ 64991:            )
+ 64992:            (i64.store offset=72
+ 64993:             (local.get $6)
+ 64994:             (local.get $27)
+ 64995:            )
+ 64996:            (i64.store offset=64
+ 64997:             (local.get $6)
+ 64998:             (local.get $26)
+ 64999:            )
+ 65000:            (call $_RNvMsa_Cs6VbpWyA87ck_27ic_stable_paged_ordered_mapNtB5_9EditImage5write
+ 65001:             (local.get $7)
+ 65002:             (local.get $16)
+ 65003:             (i32.add
+ 65004:              (local.get $6)
+ 65005:              (i32.const 64)
+ 65006:             )
+ 65007:             (i32.const 16)
+ 65008:            )
+ 65009:            (local.set $16
+ 65010:             (i64.add
+ 65011:              (local.get $16)
+ 65012:              (i64.const -16)
+ 65013:             )
+ 65014:            )
+
+=== frozen map lib.rs lines 447-484; SHA9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71 ===
+ 447:         }
+ 448:     }
+ 449:
+ 450:     fn read<M: Memory>(&self, memory: &M, address: u64, dst: &mut [u8]) {
+ 451:         let end = address + dst.len() as u64;
+ 452:         let ranges = self.ranges.as_slice();
+ 453:         let first = ranges.partition_point(|r| r.end() <= address);
+ 454:         if let Some(r) = ranges.get(first)
+ 455:             && r.address <= address
+ 456:             && end <= r.end()
+ 457:         {
+ 458:             let offset = r.offset + (address - r.address) as usize;
+ 459:             dst.copy_from_slice(&self.bytes.as_slice()[offset..offset + dst.len()]);
+ 460:             return;
+ 461:         }
+ 462:         // Only planned new pages may extend past current backing. Their missing
+ 463:         // padding is zero; selected-page admission checks minted geometry first.
+ 464:         let backed = self
+ 465:             .backed_end
+ 466:             .saturating_sub(address)
+ 467:             .min(dst.len() as u64) as usize;
+ 468:         if backed != 0 {
+ 469:             memory.read(address, &mut dst[..backed]);
+ 470:         }
+ 471:         dst[backed..].fill(0);
+ 472:         for r in &ranges[first..] {
+ 473:             if r.address >= end {
+ 474:                 break;
+ 475:             }
+ 476:             let lo = address.max(r.address);
+ 477:             let hi = end.min(r.end());
+ 478:             let source = r.offset + (lo - r.address) as usize;
+ 479:             dst[(lo - address) as usize..(hi - address) as usize]
+ 480:                 .copy_from_slice(&self.bytes.as_slice()[source..source + (hi - lo) as usize]);
+ 481:         }
+ 482:     }
+ 483:
+ 484:     fn write(&mut self, address: u64, value: &[u8]) {
+
+=== frozen map lib.rs lines 586-610; SHA9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71 ===
+ 586:         owner: &'a StablePagedOrderedMap<M>,
+ 587:         image: &'a mut EditImage,
+ 588:     ) -> Result<Self, EditFailure> {
+ 589:         image.backed_end = owner
+ 590:             .memory
+ 591:             .size()
+ 592:             .checked_mul(WASM_PAGE_SIZE)
+ 593:             .ok_or(EditFailure::AddressOverflow)?;
+ 594:         Ok(Self {
+ 595:             owner,
+ 596:             image,
+ 597:             initial_pages: owner.read_page_count(),
+ 598:         })
+ 599:     }
+ 600:
+ 601:     fn read<const N: usize>(&self, address: u64) -> [u8; N] {
+ 602:         let mut bytes = [0; N];
+ 603:         self.image.read(&self.owner.memory, address, &mut bytes);
+ 604:         bytes
+ 605:     }
+ 606:
+ 607:     fn u64(&self, address: u64) -> u64 {
+ 608:         u64::from_le_bytes(self.read(address))
+ 609:     }
+ 610:
+
+=== frozen map lib.rs lines 680-732; SHA9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71 ===
+ 680:     fn page(&self, page: u64) -> Result<(u64, PageHeader), EditFailure> {
+ 681:         let offset = checked_page_offset(page)?;
+ 682:         let end = offset
+ 683:             .checked_add(PAGE_STRIDE)
+ 684:             .ok_or(EditFailure::AddressOverflow)?;
+ 685:         let count = self.u64(OFFSET_PAGE_COUNT);
+ 686:         if page > count || (page <= self.initial_pages && end > self.image.backed_end) {
+ 687:             return Err(EditFailure::Map(Error::Corrupt));
+ 688:         }
+ 689:         let bytes = self.read::<{ PAGE_HEADER_SIZE as usize }>(offset);
+ 690:         let header = PageHeader::decode(&bytes);
+ 691:         if header.prev > count || header.next > count || header.free_next > count {
+ 692:             return Err(EditFailure::Map(Error::Corrupt));
+ 693:         }
+ 694:         Ok((offset, header))
+ 695:     }
+ 696:
+ 697:     fn reserve(&mut self, bytes: usize, ranges: usize) -> Result<(), EditFailure> {
+ 698:         self.owner
+ 699:             .reserve_scratch(&mut self.image.bytes, bytes, "bytes")?;
+ 700:         self.owner
+ 701:             .reserve_scratch(&mut self.image.ranges, ranges, "ranges")?;
+ 702:         Ok(())
+ 703:     }
+ 704:
+ 705:     fn allocate_page(&mut self, at: usize) -> Result<u64, EditFailure> {
+ 706:         let free = self.u64(OFFSET_FREE_HEAD);
+ 707:         if free != 0 {
+ 708:             let (_, header) = self.page(free)?;
+ 709:             if header.flags != PAGE_FLAG_FREE
+ 710:                 || header.len != 0
+ 711:                 || header.free_next == free
+ 712:                 || header.free_next > self.u64(OFFSET_PAGE_COUNT)
+ 713:             {
+ 714:                 return Err(EditFailure::Map(Error::Corrupt));
+ 715:             }
+ 716:             self.set_u64(OFFSET_FREE_HEAD, header.free_next);
+ 717:             return Ok(free);
+ 718:         }
+ 719:         let page = self
+ 720:             .u64(OFFSET_PAGE_COUNT)
+ 721:             .checked_add(1)
+ 722:             .ok_or(EditFailure::AllocationOverflow)?;
+ 723:         let end = checked_page_offset(page)?
+ 724:             .checked_add(PAGE_STRIDE)
+ 725:             .ok_or(EditFailure::AllocationOverflow)?;
+ 726:         if end > self.image.required_end {
+ 727:             self.image.required_end = end;
+ 728:             self.image.required_at = at;
+ 729:         }
+ 730:         self.set_u64(OFFSET_PAGE_COUNT, page);
+ 731:         Ok(page)
+ 732:     }
+
+=== frozen map lib.rs lines 928-987; SHA9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71 ===
+ 928:     fn apply_edit(&mut self, edit: Edit, at: usize) -> Result<Option<u64>, EditFailure> {
+ 929:         let key = match edit {
+ 930:             Edit::Insert { key, .. } | Edit::Remove { key } => key,
+ 931:         };
+ 932:         let dir_len = self.dir_len()?;
+ 933:         if dir_len == 0 {
+ 934:             if let Edit::Insert { value, .. } = edit {
+ 935:                 self.insert_empty((key, value), at)?;
+ 936:             }
+ 937:             return Ok(None);
+ 938:         }
+ 939:         let (dir_pos, dir) = match locate_directory(dir_len, key, |i| self.directory(i)) {
+ 940:             Some(pair) => pair,
+ 941:             None if matches!(edit, Edit::Remove { .. }) => return Ok(None),
+ 942:             None => (0, self.directory(0)),
+ 943:         };
+ 944:         let (offset, header) = self.page(dir.page_id)?;
+ 945:         #[cfg(test)]
+ 946:         self.owner
+ 947:             .observe_work(|w| w.selected = Some((at, dir.page_id, header.flags)));
+ 948:         if header.flags != PAGE_FLAG_ACTIVE
+ 949:             || header.len == 0
+ 950:             || u64::from(header.len) > PAGE_CAP
+ 951:             || header.prev == dir.page_id
+ 952:             || header.next == dir.page_id
+ 953:             || header.free_next != 0
+ 954:         {
+ 955:             return Err(EditFailure::Map(Error::Corrupt));
+ 956:         }
+ 957:         let start = offset + PAGE_OFFSET_ENTRIES;
+ 958:         if self.u64(start) != dir.min_key {
+ 959:             return Err(EditFailure::Map(Error::Corrupt));
+ 960:         }
+ 961:         let position = search_page(header.len, key, |i| {
+ 962:             self.u64(start + u64::from(i) * PAGE_ENTRY_SIZE)
+ 963:         });
+ 964:         match (edit, position) {
+ 965:             (Edit::Insert { value, .. }, Ok(pos)) => {
+ 966:                 let address = start + u64::from(pos) * PAGE_ENTRY_SIZE + 8;
+ 967:                 let previous = self.u64(address);
+ 968:                 self.reserve(8, 1)?;
+ 969:                 self.set_u64(address, value);
+ 970:                 #[cfg(test)]
+ 971:                 if at == 0 {
+ 972:                     // Observe the staged bytes, not an echo of the requested value.
+ 973:                     let staged = self.u64(address);
+ 974:                     self.owner.observe_work(|w| {
+ 975:                         w.first_staged = Some((Some(previous), Some(staged)));
+ 976:                     });
+ 977:                 }
+ 978:                 Ok(Some(previous))
+ 979:             }
+ 980:             (Edit::Remove { .. }, Err(_)) => Ok(None),
+ 981:             (Edit::Insert { value, .. }, Err(pos)) => {
+ 982:                 if u64::from(header.len) == PAGE_CAP {
+ 983:                     self.split_page(dir.page_id, (key, value), at)?;
+ 984:                     return Ok(None);
+ 985:                 }
+ 986:                 let len = self
+ 987:                     .u64(OFFSET_LEN)
+
+=== frozen map lib.rs lines 1321-1418; SHA9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71 ===
+1321:     fn scalar_edit(&self, edit: Edit) -> Result<Option<u64>, Error> {
+1322:         let mut image = EditImage::new();
+1323:         self.prepare_image(&[edit], &mut image)
+1324:             .map_err(FailedEdit::scalar)?;
+1325:         let previous = image.previous.as_slice()[0];
+1326:         self.publish_image(&image);
+1327:         Ok(previous)
+1328:     }
+1329:
+1330:     fn prepare_image(&self, edits: &[Edit], image: &mut EditImage) -> Result<(), FailedEdit> {
+1331:         #[cfg(test)]
+1332:         self.work.set(WorkObservation {
+1333:             observed: true,
+1334:             fail_site: self.work.get().fail_site,
+1335:             ..WorkObservation::default()
+1336:         });
+1337:         if edits.is_empty() {
+1338:             return Ok(());
+1339:         }
+1340:         let mut plan =
+1341:             EditPlan::new(self, image).map_err(|cause| FailedEdit { at: Some(0), cause })?;
+1342:         self.reserve_scratch(&mut plan.image.previous, edits.len(), "results")
+1343:             .map_err(|cause| FailedEdit { at: None, cause })?;
+1344:         for (at, &edit) in edits.iter().enumerate() {
+1345:             let result = plan.apply_edit(edit, at);
+1346:             #[cfg(test)]
+1347:             self.observe_image(plan.image);
+1348:             let previous = result.map_err(|cause| FailedEdit {
+1349:                 at: Some(at),
+1350:                 cause,
+1351:             })?;
+1352:             plan.image.previous.push_reserved(previous);
+1353:             #[cfg(test)]
+1354:             self.observe_work(|w| w.completed = at + 1);
+1355:         }
+1356:         self.admit_image(plan.image)?;
+1357:         #[cfg(test)]
+1358:         self.observe_image(plan.image);
+1359:         Ok(())
+1360:     }
+1361:
+1362:     fn reserve_scratch<T: Copy + Default, const N: usize>(
+1363:         &self,
+1364:         scratch: &mut Scratch<T, N>,
+1365:         additional: usize,
+1366:         #[cfg(test)] site: &'static str,
+1367:         // The label is instrumentation only, not a production editing mode.
+1368:         #[cfg(not(test))] _: &'static str,
+1369:     ) -> Result<(), EditFailure> {
+1370:         if scratch
+1371:             .as_slice()
+1372:             .len()
+1373:             .checked_add(additional)
+1374:             .is_some_and(|len| len <= scratch.capacity())
+1375:         {
+1376:             return Ok(());
+1377:         }
+1378:         #[cfg(test)]
+1379:         {
+1380:             self.observe_work(|w| w.reserves += 1);
+1381:             if self.work.get().fail_site == Some(site) {
+1382:                 return Err(EditFailure::Scratch(
+1383:                     Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err(),
+1384:                 ));
+1385:             }
+1386:         }
+1387:         scratch.reserve(additional).map_err(EditFailure::Scratch)
+1388:     }
+1389:
+1390:     fn admit_image(&self, image: &EditImage) -> Result<(), FailedEdit> {
+1391:         if image.required_end <= image.backed_end {
+1392:             return Ok(());
+1393:         }
+1394:         let current_size = image.backed_end / WASM_PAGE_SIZE;
+1395:         let delta = image.required_end.div_ceil(WASM_PAGE_SIZE) - current_size;
+1396:         #[cfg(test)]
+1397:         self.observe_work(|w| w.grows += 1);
+1398:         if self.memory.grow(delta) == -1 {
+1399:             return Err(FailedEdit {
+1400:                 at: Some(image.required_at),
+1401:                 cause: EditFailure::Grow(GrowFailed {
+1402:                     current_size,
+1403:                     delta,
+1404:                 }),
+1405:             });
+1406:         }
+1407:         #[cfg(test)]
+1408:         self.observe_work(|w| w.grown_pages += delta);
+1409:         Ok(())
+1410:     }
+1411:
+1412:     fn publish_image(&self, image: &EditImage) {
+1413:         // All bounds, bytes and backing were prepared under the owning call/borrow.
+1414:         // No encoding, discovery, allocation, growth or recoverable error remains.
+1415:         for range in image.ranges.as_slice() {
+1416:             self.memory.write(
+1417:                 range.address,
+1418:                 &image.bytes.as_slice()[range.offset..range.offset + range.len],

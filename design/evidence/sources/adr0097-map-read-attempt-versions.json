@@ -1,0 +1,22 @@
+{
+  "rustc -vV": {
+    "exit": 0,
+    "stdout": "rustc 1.100.0-nightly (574ff7d98 2026-09-14)\nbinary: rustc\ncommit-hash: 574ff7d98bd6d037e5236a8453029173b32631fd\ncommit-date: 2026-09-14\nhost: aarch64-apple-darwin\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1\n",
+    "stderr": ""
+  },
+  "cargo --version": {
+    "exit": 0,
+    "stdout": "cargo 1.100.0-nightly (7941be6fb 2026-09-11)\n",
+    "stderr": "warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`\n"
+  },
+  "canbench --version": {
+    "exit": 0,
+    "stdout": "canbench 0.7.0\n",
+    "stderr": ""
+  },
+  "lizard --version": {
+    "exit": 0,
+    "stdout": "1.24.0\n",
+    "stderr": ""
+  }
+}

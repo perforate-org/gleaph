@@ -1,0 +1,40 @@
+{
+  "task": "plan0340 administrative evidence closure: the one scheduled final-evidence step",
+  "provider_api_errors": [
+    {
+      "id": "21b65878",
+      "note": "assistant record ended with a provider/API error; no completed report; last completed report remains 01b6d0dd"
+    },
+    {
+      "id": "03d7af89",
+      "note": "second provider/API error confirmed; no new completed report"
+    }
+  ],
+  "raw_payload": "not captured at failure time; the two identifiers and outcomes above are the user-conveyed checkpoints",
+  "resume_authority": "user explicitly requested continuation after a model change, limited to this bounded closure; no provider workaround, settings change or retry of the refused operation occurred",
+  "interrupted_ledger_state": {
+    "status": "active",
+    "entries": 19,
+    "charged_total": 207.56230762507766,
+    "final_charged": 35.341530542005785,
+    "snapshot": "adr0097-map-read-attempt-ledger-interrupted.json"
+  },
+  "premature_prose": {
+    "note": "plan0340 and the ADR0097 report already stated closure totals during the interrupted turn, before the final-evidence ledger entry existed",
+    "doc_sha256_at_closure": {
+      "plans/0340-prepared-paged-map-edits.md": "e327c6620b284b6dfeffbf024fea22d2c873a91ab6c42e6ca559a6a9629d08ab",
+      "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "9305f9442412d76a0eee36ee59b7c2959cea5f08e66637a6b094a9fe6db1e191",
+      "design/evidence/adr0097-demotion-design.md": "793469826b956579745b48b4a98b25df3be1b107759a6cc9248912800c50c402"
+    },
+    "anticipated_totals": {
+      "charged_total": 222.56230762507766,
+      "final_charged": 50.341530542005785
+    },
+    "reconciliation": "this step charges the original15s in the same ledger; after recording, actual totals equal the anticipated values (see ledger/run/verification durables)"
+  },
+  "docs_snapshot": [
+    "docs-at-closure/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+    "docs-at-closure/0340-prepared-paged-map-edits.md",
+    "docs-at-closure/adr0097-demotion-design.md"
+  ]
+}

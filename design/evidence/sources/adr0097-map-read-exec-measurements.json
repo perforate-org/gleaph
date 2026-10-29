@@ -1,0 +1,173 @@
+{
+  "expected": {
+    "endpoints": [
+      1600,
+      1856,
+      4480,
+      343
+    ],
+    "read_pairs": [
+      512,
+      704,
+      1472,
+      94
+    ],
+    "cover_pairs": [
+      64,
+      0,
+      320,
+      74
+    ],
+    "sibling_admit_pairs": [
+      64,
+      64,
+      128,
+      1
+    ],
+    "cal_counts": [
+      64,
+      16,
+      32,
+      1
+    ]
+  },
+  "observed_endpoints": {
+    "0": 1600,
+    "1": 1856,
+    "2": 4480,
+    "3": 343
+  },
+  "observed_pairs": {
+    "p0c0": 64,
+    "p0c1": 64,
+    "p0c2": 64,
+    "p0c3": 64,
+    "p0c4": 512,
+    "p0c5": 64,
+    "p0c6": 64,
+    "p1c0": 64,
+    "p1c1": 64,
+    "p1c2": 64,
+    "p1c3": 64,
+    "p1c4": 704,
+    "p1c5": 0,
+    "p1c6": 64,
+    "p2c0": 128,
+    "p2c1": 128,
+    "p2c2": 128,
+    "p2c3": 128,
+    "p2c4": 1472,
+    "p2c5": 320,
+    "p2c6": 128,
+    "p3c0": 1,
+    "p3c1": 1,
+    "p3c2": 1,
+    "p3c3": 1,
+    "p3c4": 94,
+    "p3c5": 74,
+    "p3c6": 1
+  },
+  "observed_sums": {
+    "p0c0": 12800,
+    "p0c1": 450432,
+    "p0c2": 17856,
+    "p0c3": 23424,
+    "p0c4": 154624,
+    "p0c5": 35648,
+    "p0c6": 13568,
+    "p1c0": 12800,
+    "p1c1": 502656,
+    "p1c2": 17856,
+    "p1c3": 17472,
+    "p1c4": 211136,
+    "p1c5": 0,
+    "p1c6": 13568,
+    "p2c0": 25600,
+    "p2c1": 1450624,
+    "p2c2": 35712,
+    "p2c3": 60032,
+    "p2c4": 441280,
+    "p2c5": 246592,
+    "p2c6": 27136,
+    "p3c0": 200,
+    "p3c1": 227617,
+    "p3c2": 279,
+    "p3c3": 1932,
+    "p3c4": 33706,
+    "p3c5": 128248,
+    "p3c6": 212
+  },
+  "calibration": {
+    "standalone64": {
+      "n": 64,
+      "sum": 12800,
+      "min": 200,
+      "max": 200
+    },
+    "nested_inner16": {
+      "n": 16,
+      "sum": 3200,
+      "min": 200,
+      "max": 200
+    },
+    "shared32": {
+      "n": 32,
+      "sum": 8271,
+      "min": 211,
+      "max": 260
+    },
+    "nested_outer1": {
+      "n": 1,
+      "sum": 7742,
+      "min": 7742,
+      "max": 7742
+    }
+  },
+  "calibration_delta": 4542,
+  "canbench_phase_rows": {
+    "bench_paged_scalar_edits_97": 2965181,
+    "bench_paged_scalar_edits_97::scalar_missing_64": 576035,
+    "bench_paged_scalar_edits_97::scalar_replace_64": 531138,
+    "bench_paged_scalar_edits_97::scalar_split_directory": 230921,
+    "bench_paged_scalar_edits_97::scalar_tail_pairs_64": 1621665
+  },
+  "reject_only_saved_delta": {
+    "bench_paged_scalar_edits_97": {
+      "saved5da4": 1013707,
+      "instrumented": 2965181,
+      "delta": 1951474,
+      "note": "reject-only sanity; instrumentation+compiler perturbation; no ceiling/attribution"
+    },
+    "bench_paged_scalar_edits_97::scalar_missing_64": {
+      "saved5da4": 138600,
+      "instrumented": 576035,
+      "delta": 437435,
+      "note": "reject-only sanity; instrumentation+compiler perturbation; no ceiling/attribution"
+    },
+    "bench_paged_scalar_edits_97::scalar_replace_64": {
+      "saved5da4": 153288,
+      "instrumented": 531138,
+      "delta": 377850,
+      "note": "reject-only sanity; instrumentation+compiler perturbation; no ceiling/attribution"
+    },
+    "bench_paged_scalar_edits_97::scalar_split_directory": {
+      "saved5da4": 150540,
+      "instrumented": 230921,
+      "delta": 80381,
+      "note": "reject-only sanity; instrumentation+compiler perturbation; no ceiling/attribution"
+    },
+    "bench_paged_scalar_edits_97::scalar_tail_pairs_64": {
+      "saved5da4": 566346,
+      "instrumented": 1621665,
+      "delta": 1055319,
+      "note": "reject-only sanity; instrumentation+compiler perturbation; no ceiling/attribution"
+    }
+  },
+  "count_validation_failures": [],
+  "interpretation": [
+    "snapshot/reset work outside the four phase scopes but inside bench_fn total",
+    "raw observations include instrumentation and compiler perturbation",
+    "source projection != codegen equivalence; calibration != universal bias bound",
+    "saved-row delta reject-only; non-ranking endpoint valid; no ceiling replacement; no per-component regression attribution versus admission"
+  ]
+}

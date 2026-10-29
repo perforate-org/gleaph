@@ -1,0 +1,161 @@
+{
+  "source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+  "only_production_change": "existing EditImage::read: one nonwrapping/full-backing/disjoint guard, one existing partition/candidate reused; contained and prefix-zero-overlay handling byte-identical",
+  "existing17_test_bodies_and_helpers": "byte-identical",
+  "existing_test_module_sha256": "da9b38bf2e67c8fae1cfef2716c2db5e8521b4cfdeb1dbef60022c0874090cac",
+  "doc_examples_codec_callers_arithmetic_admission_containers_split_cover_publication": "byte-identical",
+  "appended_test": {
+    "name": "edit_image_read_partition",
+    "named_cases": 33,
+    "WorkMemory_backings": 1,
+    "backing_pages": 3,
+    "private_images": 5,
+    "map_Graph_PocketIC_constructors": 0,
+    "nature": "helper-contract coverage; no formerly failing correctness or public reachability claim"
+  },
+  "oracle_appended_before_production": true,
+  "mutations": [
+    {
+      "name": "mutation-early",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_directory_rejection",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "driver_sha256": "dd0980f318f1e7065ef0b1bde3bfa765977ed41f71b7c3193dc86ec6cf569e0b",
+      "expected_exit": 101,
+      "exit": 101,
+      "artifacts": [
+        {
+          "output_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-early/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "4593cf5d8d312dac156a97cded0edac7a3a83ae01c1bfea2712bf0d084e49b0c",
+          "bytes": 2133888
+        }
+      ],
+      "source_sha256": "eedddfc48f3c883e504d5826b487de10c4a6354a614e031e8bc19a1ada0d7783",
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_sha256": null,
+      "restored_source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "actual_seconds": 3.199888125061989,
+      "charged_seconds": 3.199888125061989,
+      "failure": null,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-resource",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_resources_and_retry",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "driver_sha256": "dd0980f318f1e7065ef0b1bde3bfa765977ed41f71b7c3193dc86ec6cf569e0b",
+      "expected_exit": 101,
+      "exit": 101,
+      "artifacts": [
+        {
+          "output_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-resource/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "3a742bc6f4a2f414619a3d12fdc5914444d382a1fb2320b18e9bda56b11335f4",
+          "bytes": 2134512
+        }
+      ],
+      "source_sha256": "9f8251a57d39114b406ff2c3101bec102b58079b0cc7c1aa49d9fe1291642345",
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_sha256": null,
+      "restored_source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "actual_seconds": 2.7187800420215353,
+      "charged_seconds": 2.7187800420215353,
+      "failure": null,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-disjoint",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "edit_image_read_partition",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "driver_sha256": "dd0980f318f1e7065ef0b1bde3bfa765977ed41f71b7c3193dc86ec6cf569e0b",
+      "expected_exit": 101,
+      "exit": 101,
+      "artifacts": [
+        {
+          "output_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-disjoint/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "b92875f1841fb92db1e80c011a33b960b1b6dd39a1e32225e055adb6f7b804ba",
+          "bytes": 2132192
+        }
+      ],
+      "source_sha256": "e708d558c50c85c29f0ba31580791ddfd06d9601323f1754093a160e0b618a76",
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_sha256": null,
+      "restored_source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "actual_seconds": 2.338686457951553,
+      "charged_seconds": 2.338686457951553,
+      "failure": null,
+      "contract_passed": true
+    },
+    {
+      "name": "mutation-backed",
+      "cap_seconds": 10,
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "edit_image_read_partition",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "driver_sha256": "dd0980f318f1e7065ef0b1bde3bfa765977ed41f71b7c3193dc86ec6cf569e0b",
+      "expected_exit": 101,
+      "exit": 101,
+      "artifacts": [
+        {
+          "output_path": "/Users/yota/dev/gleaph-spill/target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "archive": "artifacts/mutation-backed/ic_stable_paged_ordered_map-83525e5195ff6d6e",
+          "sha256": "690ae1a99deb11a9c15bfdd6c198054515a9f0971825089f198fead83813be76",
+          "bytes": 2133888
+        }
+      ],
+      "source_sha256": "585b6b97ad9764bfb6d16330e7e02b83859e443ff9ffa10e8878c5ddccbe42eb",
+      "actual_used_lock_sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "restored_lock_sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "restored_csv_sha256": null,
+      "restored_source_sha256": "5da46e455eb5a321e3e2c7f4670c259e72f6a1d6c3d1f883554e1a4780ad456a",
+      "actual_seconds": 3.9445723328972235,
+      "charged_seconds": 3.9445723328972235,
+      "failure": null,
+      "contract_passed": true
+    }
+  ],
+  "scope": "only production reader and appended test; all other initial pins unchanged",
+  "source_frozen_before_IC": true
+}

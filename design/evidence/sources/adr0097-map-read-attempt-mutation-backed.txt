@@ -1,0 +1,131 @@
+STDOUT (separate stream)
+
+running 1 test
+test tests::edit_image_read_partition ... FAILED
+
+failures:
+
+failures:
+    tests::edit_image_read_partition
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+STDERR (separate stream)
+warning: unused config key `unstable.min-publish-age` in `/Users/yota/dev/gleaph-spill/.cargo/config.toml`
+warning: unused workspace dependency `gleaph-gql-keywords`
+  --> Cargo.toml:73:1
+   |
+73 | gleaph-gql-keywords = { path = "crates/gql-keywords" }
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `gleaph-gql-keywords`
+warning: unused workspace dependency `gleaph-graph-index`
+  --> Cargo.toml:80:1
+   |
+80 | gleaph-graph-index = { path = "crates/graph-index" }
+   | ^^^^^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-graph-index`
+warning: unused workspace dependency `gleaph-router`
+   --> Cargo.toml:101:1
+    |
+101 | gleaph-router = { path = "crates/router" }
+    | ^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-router`
+warning: unused workspace dependency `gleaph-theme`
+  --> Cargo.toml:84:1
+   |
+84 | gleaph-theme = { path = "crates/gleaph-theme" }
+   | ^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gleaph-theme`
+warning: unused workspace dependency `gleaph-vector-canister`
+   --> Cargo.toml:100:1
+    |
+100 | gleaph-vector-canister = { path = "crates/vector-canister" }
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the workspace dependency `gleaph-vector-canister`
+warning: unused workspace dependency `gpui-base`
+  --> Cargo.toml:93:1
+   |
+93 | gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-base`
+warning: unused workspace dependency `gpui-component`
+  --> Cargo.toml:92:1
+   |
+92 | gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+   | ^^^^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-component`
+warning: unused workspace dependency `gpui-macros`
+  --> Cargo.toml:91:1
+   |
+91 | gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac...
+   | ^^^^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-macros`
+warning: unused workspace dependency `gpui-web`
+  --> Cargo.toml:90:1
+   |
+90 | gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+   | ^^^^^^^^
+   |
+help: consider removing the workspace dependency `gpui-web`
+warning: workspace (manifest) generated 9 warnings
+warning: explicit `package.readme` can be inferred
+ --> crates/morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `morph-dict` (manifest) generated 1 warning
+warning: explicit `package.readme` can be inferred
+ --> crates/ic-morph-dict/Cargo.toml:9:1
+  |
+9 | readme = "README.md"
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `cargo::manual_readme` is set to `warn` by default
+help: consider removing `package.readme`
+warning: `ic-morph-dict` (manifest) generated 1 warning
+   Compiling ic-stable-paged-ordered-map v0.1.0 (/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.44s
+     Running unittests src/lib.rs (target/debug/build/ic-stable-paged-ordered-map/83525e5195ff6d6e/out/ic_stable_paged_ordered_map-83525e5195ff6d6e)
+IMAGE_READ_CASE empty-backed
+IMAGE_READ_CASE empty-zero
+IMAGE_READ_CASE inline-contained
+IMAGE_READ_CASE inline-packed-offset
+IMAGE_READ_CASE inline-before
+IMAGE_READ_CASE inline-left-adjacent
+IMAGE_READ_CASE inline-right-adjacent
+IMAGE_READ_CASE inline-gap
+IMAGE_READ_CASE inline-after
+IMAGE_READ_CASE inline-left-overlap
+IMAGE_READ_CASE inline-right-overlap
+IMAGE_READ_CASE inline-multiple
+IMAGE_READ_CASE inline-zero-staged
+IMAGE_READ_CASE heap-packed-offset
+IMAGE_READ_CASE heap-before
+IMAGE_READ_CASE heap-left-adjacent
+IMAGE_READ_CASE heap-right-adjacent
+IMAGE_READ_CASE heap-gap
+IMAGE_READ_CASE heap-after
+IMAGE_READ_CASE heap-left-overlap
+IMAGE_READ_CASE heap-right-overlap
+IMAGE_READ_CASE heap-multiple
+IMAGE_READ_CASE heap-zero-staged
+IMAGE_READ_CASE heap-zero-gap
+IMAGE_READ_CASE unbacked-unstaged
+
+thread 'tests::edit_image_read_partition' (22039953) panicked at /Users/yota/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ic-stable-structures-0.7.2/src/vec_mem.rs:36:13:
+read: out of bounds
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p ic-stable-paged-ordered-map --lib`

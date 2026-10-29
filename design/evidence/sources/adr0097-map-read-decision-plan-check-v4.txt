@@ -1,0 +1,13 @@
+command: python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0340-prepared-paged-map-edits.md --phase final
+cwd: /Users/yota/dev/gleaph-spill
+plan_sha256: 02c9ddce0d8bc7f26b0ed87a4d29397f53fce6fddc2033264f39274a280b3434
+exit: 1 (expected truthful refusal)
+expected_errors_match: True
+status: bounded-proof pending; criteria5/6 unchecked; acceptance BLOCKED
+note: M_draft status paragraph added to prose only; TODO/criteria unchanged
+--- stdout ---
+
+--- stderr ---
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase

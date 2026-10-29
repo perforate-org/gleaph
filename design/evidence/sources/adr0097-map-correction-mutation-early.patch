@@ -1,0 +1,9 @@
+--- before/lib.rs
++++ after/lib.rs
+@@ -1351,0 +1352,6 @@
++            if at == 0 {
++                for range in plan.image.ranges.as_slice() {
++                    self.memory.write(range.address,
++                        &plan.image.bytes.as_slice()[range.offset..range.offset + range.len]);
++                }
++            }

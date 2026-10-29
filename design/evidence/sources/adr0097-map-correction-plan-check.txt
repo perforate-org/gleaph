@@ -1,0 +1,17 @@
+Expected final refusal: IC cost gates unmet; no forced green.
+{
+  "argv": [
+    "python3",
+    "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+    "plans/0340-prepared-paged-map-edits.md",
+    "--phase",
+    "final"
+  ],
+  "exit": 1,
+  "elapsed": 0.08563491702079773,
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "plan_sha256": "bacf7b9d60bf453a8b09f4e20e635cad67b0780499664d21ed916f1fb38b72b9"
+}
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase

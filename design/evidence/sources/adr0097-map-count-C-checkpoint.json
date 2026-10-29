@@ -1,0 +1,1011 @@
+{
+  "status": "C evidence checkpoint; acceptance BLOCKED, not plan completion",
+  "review": "7b0279a3 plus reply",
+  "source_pins": {
+    "path": "/tmp/spill-C-lara.dK72g7/pins.sha256",
+    "bytes": 1111,
+    "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+  },
+  "documents": [
+    {
+      "path": "/Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md",
+      "bytes": 61319,
+      "sha256": "12ead8b6b4c1f3d49137d8fcae25d6e400708d82ba8d827777119476e40740f9"
+    },
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/evidence/adr0097-demotion-design.md",
+      "bytes": 126938,
+      "sha256": "424fecb217198d7bb28b09dafc4e40dd60663cde7f443142368bfb7c02689201"
+    },
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "bytes": 160913,
+      "sha256": "0e7272649b90a541e9cbe030d89d564535be9a5ead7f26965715857ca27740ce"
+    }
+  ],
+  "before_documents": [
+    {
+      "path": "/tmp/spill-C-close-7b0279a3/plan.before",
+      "bytes": 56671,
+      "sha256": "b74c94a64098f9b451332cf9322584097de7423db170c53e334e712211c968ab"
+    },
+    {
+      "path": "/tmp/spill-C-close-7b0279a3/report.before",
+      "bytes": 123880,
+      "sha256": "587f9850ef53f49c805f5b0a360dad04ba075a7089807ada1bce63e5c1742b6d"
+    },
+    {
+      "path": "/tmp/spill-C-close-7b0279a3/adr.before",
+      "bytes": 159576,
+      "sha256": "2f08953e3007d857187f16369a7162cdd3be52bbb4685668b3483e131b63f89b"
+    }
+  ],
+  "retained_invocations": [
+    {
+      "invocation": "initial-native",
+      "root": "/tmp/spill-map-direct.gLgByd",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/receipt.txt",
+          "bytes": 746,
+          "sha256": "d3f4d866f5cc4f59a37cf65ebe1184727f05a8be695e956b8cdbf685d24c49a1"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/cargo.stdout",
+          "bytes": 1057,
+          "sha256": "2bd3b6899f2f6fc027571084e26fdc94d2ed87cf76896ab5bcfd01b87f048a66"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/cargo.stderr",
+          "bytes": 7903,
+          "sha256": "dc50bc97a13d93e9e441fc185395510f78a6ea3b44a9566ffc33d2bfb7d01405"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/binary.json",
+          "bytes": 401,
+          "sha256": "ddc623590c03423c6107c46b515a85e4c7da94f1f590b68be38c8656079ce117"
+        },
+        {
+          "path": "/tmp/spill-map-direct.gLgByd/map-tests.bin",
+          "bytes": 2134080,
+          "sha256": "bdbc713a706ea1a0346b849ca5fadff07039d3c3950b63f639252d7d84c668fd"
+        }
+      ]
+    },
+    {
+      "invocation": "count",
+      "root": "/tmp/spill-count-sensitivity.Za2DlG",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/receipt.txt",
+          "bytes": 1175,
+          "sha256": "7d2ac575fba86e6a9ec6f5638ccfdd742e7aa295db76901fa5e79e564dfae9c8"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/cargo.stdout",
+          "bytes": 243,
+          "sha256": "99e5b3ab4cb4e18152b4b7fbbcd3776364b722d9bf03b42455d96e79609d6b94"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/cargo.stderr",
+          "bytes": 3885,
+          "sha256": "ee494fc943746f71281f9bd16824717652a9943c38fba3496e196d9c5b7b16b7"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/binary.json",
+          "bytes": 511,
+          "sha256": "ccf269b20145fae2226ab273f76be110ef506c9d9b9dcf96dc78871305311138"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/count-mutant-tests.bin",
+          "bytes": 2133888,
+          "sha256": "ec2659d848401e21d735882dfbdd56bd11f588d239bec91ab5e464a8445302af"
+        },
+        {
+          "path": "/tmp/spill-count-sensitivity.Za2DlG/mutation.patch",
+          "bytes": 638,
+          "sha256": "ef91d3cb3d0b2816b148cf525d1d8e29e664f172b430eab96ce380f96e12d56b"
+        }
+      ]
+    },
+    {
+      "invocation": "early",
+      "root": "/tmp/spill-four-early.XDz02k",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-four-early.XDz02k/receipt.txt",
+          "bytes": 1176,
+          "sha256": "54b0dff1750e0e94b9eb2797ec0469dbb8683da2f4cac1e54c3fe1fc9afefba8"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/cargo.stdout",
+          "bytes": 243,
+          "sha256": "4d212cacdc6fb79f4f07866a514881518486a8c67367b75ee9cd78a0bdfe19a7"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/cargo.stderr",
+          "bytes": 3775,
+          "sha256": "efcbf43eb8f3fad17dc3a11d79566eff2ab47877a79e693329d484dbf471e9e0"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/binary.json",
+          "bytes": 517,
+          "sha256": "49871ed092257b33033a9c847bef52c08a34deb86b539ee098582f373f25999d"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/mutant-tests.bin",
+          "bytes": 2134080,
+          "sha256": "8b5fcdb56a118572561fd3f6cbcd97e6421edbd76497a9bd14c34a7e2f4ee0a2"
+        },
+        {
+          "path": "/tmp/spill-four-early.XDz02k/mutation.patch",
+          "bytes": 546,
+          "sha256": "c0ac87694baad8beebe3f67709cf111779f11b665d1ba829cf40d78b6befdc1a"
+        }
+      ]
+    },
+    {
+      "invocation": "resource",
+      "root": "/tmp/spill-four-resource.LVwTlc",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/receipt.txt",
+          "bytes": 1211,
+          "sha256": "2f8746a62d99a3f7c709644e9b096507262c4a79c6fb755aae30324da6e949b8"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/cargo.stdout",
+          "bytes": 243,
+          "sha256": "ada778a737fcca2f53d921e145ee146e8c56843d60e0b05fedfe65cc2cb183e2"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/cargo.stderr",
+          "bytes": 3885,
+          "sha256": "e9a184d2841ea969a560375ca3fbde14c68541bec311fe5836696399b59ee23b"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/binary.json",
+          "bytes": 523,
+          "sha256": "23ecdb1ea5fd6b62eabc470e81df251e98d7964b10cbcfbe5522a83315064fce"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/mutant-tests.bin",
+          "bytes": 2134688,
+          "sha256": "04a06fa68c8631e34b0eff399a122d75a5023075c8fd5bf45657dbaff4e61a9d"
+        },
+        {
+          "path": "/tmp/spill-four-resource.LVwTlc/mutation.patch",
+          "bytes": 651,
+          "sha256": "fc42c34207089c4c0211270eb5d2ac4697f26fcf9ec63114d0f85b96e05fc87f"
+        }
+      ]
+    },
+    {
+      "invocation": "disjoint",
+      "root": "/tmp/spill-four-disjoint.FOFvGz",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/receipt.txt",
+          "bytes": 1187,
+          "sha256": "94cc17ebde3f57cb0f9b45363dac0adcf5dcd7469cb57840bef1c576e60e5581"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/cargo.stdout",
+          "bytes": 225,
+          "sha256": "aecf606b39d4c3bc0f23c486fd9fe691b609683194b2421ce1b9b7a882937835"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/cargo.stderr",
+          "bytes": 3942,
+          "sha256": "6162f4edac169107a481b7d86e5d2191245171174ca8422b0845c4f3e090515e"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/binary.json",
+          "bytes": 523,
+          "sha256": "d3471623f3765915da7765d8796f78cce20c59bb99e98d9e96366ca19f5956b7"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/mutant-tests.bin",
+          "bytes": 2132368,
+          "sha256": "5f6e103a14f84ec473ddb6e95ae50ec45787d1ed13906e5a5c0c9fc221a26caf"
+        },
+        {
+          "path": "/tmp/spill-four-disjoint.FOFvGz/mutation.patch",
+          "bytes": 468,
+          "sha256": "c9517e6c2c0b39424732041de256e947dcc4eb29ed7c4adff99dc3022a6476c7"
+        }
+      ]
+    },
+    {
+      "invocation": "backed",
+      "root": "/tmp/spill-four-backed.x7wCZ1",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/receipt.txt",
+          "bytes": 1159,
+          "sha256": "b30b2761c5d0c373b65146aa639c3e094ff990b87de64bc1705219668994e201"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/cargo.stdout",
+          "bytes": 225,
+          "sha256": "aecf606b39d4c3bc0f23c486fd9fe691b609683194b2421ce1b9b7a882937835"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/cargo.stderr",
+          "bytes": 4619,
+          "sha256": "838bad2a79d22231eccb5090c7c15d9e0eaa06e5f300642faebe2228f87768ef"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/binary.json",
+          "bytes": 519,
+          "sha256": "fc20ec2b9f9d3588e084dc7b5c7b7ccdd7f8ce571123b5407a7d62c06355c0dd"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/mutant-tests.bin",
+          "bytes": 2134080,
+          "sha256": "567cd6319089269fe308e93253c835c6e24df3fe959c9d8fc14870419542f1e4"
+        },
+        {
+          "path": "/tmp/spill-four-backed.x7wCZ1/mutation.patch",
+          "bytes": 486,
+          "sha256": "b9671debaf68534bb1b92ad767a2a010011c7145b8c25765e9b195d17aac7155"
+        }
+      ]
+    },
+    {
+      "invocation": "initial-doc",
+      "root": "/tmp/spill-C-doc.XixU8T",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/receipt.txt",
+          "bytes": 841,
+          "sha256": "faab32012263d0771d3dcb0412a66991f35b03da4e50ccf2160c721b2a439e32"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/cargo.stdout",
+          "bytes": 3903,
+          "sha256": "418f7ce9d56df966cdb064669176e3e9bb00200200e20a4f63c54c87e583d389"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/cargo.stderr",
+          "bytes": 3351,
+          "sha256": "dc02bf6a499a5df6d7ac7178653edf986298762f090e53a7594d09dbfd39be13"
+        },
+        {
+          "path": "/tmp/spill-C-doc.XixU8T/doc-check.json",
+          "bytes": 1077,
+          "sha256": "42de43d4a30b813e6dff652ec85c260e1b5ecc20fcd307f9df68b8107727196b"
+        }
+      ]
+    },
+    {
+      "invocation": "scalar",
+      "root": "/tmp/spill-C-scalar.Ifgd8W",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/receipt.txt",
+          "bytes": 2186,
+          "sha256": "4ece905a15e05bdd3acef0654e40f34f0e71a777b792ee701a1fcb65d93193ab"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/pins.sha256",
+          "bytes": 990,
+          "sha256": "16cfe934a10dfbc5d9dea95d6a8f5084059f61ec2cac12d1b4231a4890998e66"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/pins-after.txt",
+          "bytes": 370,
+          "sha256": "a9bdb17bf89fcf268d110a04b20161aaae885ddcc196402faadaca3a719e89aa"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/canbench.stdout",
+          "bytes": 2548,
+          "sha256": "1a13a686955f0488cbebc90b66340d7cfd5f774303cd2693de98a34d9f9aa7c6"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/canbench.stderr",
+          "bytes": 3299,
+          "sha256": "fcb2eea7ac837825df021522eb2c45a73d8976ef912d10e7681b8b3bd0ec4662"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/artifact.json",
+          "bytes": 780,
+          "sha256": "ede0c9ea557a9330514b7245a6cb88e3eddf4bc3573cd4820d0bcb5877dd517d"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/rows.json",
+          "bytes": 2382,
+          "sha256": "da77b39f0ff4deed81b043bc7a028b71f491720a63f82ccc72bb10f6512f0c93"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/scalar.csv",
+          "bytes": 575,
+          "sha256": "10fc6406865c82c0f1f5568c789e42a51db843cb10c624ceb90864ba3edf76ae"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/ic_stable_paged_ordered_map.wasm",
+          "bytes": 699011,
+          "sha256": "d537a1d92f2429ee546db11f6558db846d974b004c9f27109a44ca764848bb3b"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/lib.rs",
+          "bytes": 112645,
+          "sha256": "a9e1581d2b8630766ff8d39129f37c449adaa971b3345be6b43c9db2e8ae2855"
+        },
+        {
+          "path": "/tmp/spill-C-scalar.Ifgd8W/bench.rs",
+          "bytes": 7959,
+          "sha256": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7"
+        }
+      ]
+    },
+    {
+      "invocation": "lara",
+      "root": "/tmp/spill-C-lara.dK72g7",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/receipt.txt",
+          "bytes": 2352,
+          "sha256": "7a4b9a6d8dd276845fb195be48c2279347fde928a644b704a56976b66b2bd68f"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/canbench.stdout",
+          "bytes": 2157,
+          "sha256": "6f94f7631b43f6a60e0bfc5fe81cee954d0fa0d923937482405ed582783c7030"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/canbench.stderr",
+          "bytes": 6236,
+          "sha256": "23e2d30ad892550fb5e8d179562f9f5f01e7720b854dfe70be1f3640700daca7"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/artifact.json",
+          "bytes": 1098,
+          "sha256": "30b0aefcc1580fbbd2623e80d0165d896ff06d0dd21b5fcdad7e4903d5c3d955"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/rows.json",
+          "bytes": 1000,
+          "sha256": "b560e478d304b784d3850290a877cf1add36cc9c7fc4eef8f4845026c2f2ab38"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/allocator.csv",
+          "bytes": 411,
+          "sha256": "38e5333a68fe0a547fe17df09a72eced126ad9bc113f925a0e46f216b15bce8d"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/ic_stable_lara.wasm",
+          "bytes": 5026225,
+          "sha256": "924c707c1a35c018dd72fee992a8a23678db12d465e562adb6740bc76f7e314d"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/map-lib.rs",
+          "bytes": 112645,
+          "sha256": "a9e1581d2b8630766ff8d39129f37c449adaa971b3345be6b43c9db2e8ae2855"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/map-bench.rs",
+          "bytes": 7959,
+          "sha256": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/free-span.rs",
+          "bytes": 78962,
+          "sha256": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+        },
+        {
+          "path": "/tmp/spill-C-lara.dK72g7/free-span-bench.rs",
+          "bytes": 11964,
+          "sha256": "d4f2de85ca4cda643fc77a14168fa38ad198d1a22c6cf10fb028100dc54ea592"
+        }
+      ]
+    },
+    {
+      "invocation": "final-format",
+      "root": "/tmp/spill-C-final-format.9VPXfL",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/receipt.txt",
+          "bytes": 960,
+          "sha256": "0749e7c3c2dbae7e6ecff41a1789340452de5ffe959b61da3e810cafe900123f"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/lock-after-command.bytes",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/command.stdout",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/command.stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/argv.txt",
+          "bytes": 154,
+          "sha256": "52d057ce6e933af36c9b3f9276ede81a4cb01ae16b2243587f000bec7170dc42"
+        },
+        {
+          "path": "/tmp/spill-C-final-format.9VPXfL/checks.json",
+          "bytes": 120,
+          "sha256": "2f045845287d9b75461c69595d63233cbe887e82d7e5bdeedff0804b7f45d308"
+        }
+      ]
+    },
+    {
+      "invocation": "final-map-clippy",
+      "root": "/tmp/spill-C-final-map_clippy.Eh8RUX",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/receipt.txt",
+          "bytes": 985,
+          "sha256": "efa8713ad222073f9fa696d3a96b641bfec2f7d40a59e25d17d3731d6f56aa7f"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/command.stdout",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/command.stderr",
+          "bytes": 3416,
+          "sha256": "03a1fb6e263b840fe6988b578d0a95d08076e38d93666145b800433ad2c68c7d"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/argv.txt",
+          "bytes": 94,
+          "sha256": "2e711ad1af3df03d604ae12d99fe27e26909c443996c20222768fa3dd246be01"
+        },
+        {
+          "path": "/tmp/spill-C-final-map_clippy.Eh8RUX/checks.json",
+          "bytes": 124,
+          "sha256": "7b2a012fe839ebd824205d01c3fbe529db80aa347f73d95cbbcac3d242e9522d"
+        }
+      ]
+    },
+    {
+      "invocation": "final-lara-clippy",
+      "root": "/tmp/spill-C-final-lara_clippy.MFUUsy",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/receipt.txt",
+          "bytes": 991,
+          "sha256": "db24ac714670f4f23b3e0556fe588b8fec9ffdb615c924db10cc76b5bb4cd93c"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/command.stdout",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/command.stderr",
+          "bytes": 3504,
+          "sha256": "f9e5de732d7f47ba0f225cc6a338fc401b95b5ae9b1f3ce654a20114c48ff4e1"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/argv.txt",
+          "bytes": 53,
+          "sha256": "f38d43cbba4a13bcf2c02ce7280cf426f8543cd183a3f8c9a43e0ddbd1b82ccf"
+        },
+        {
+          "path": "/tmp/spill-C-final-lara_clippy.MFUUsy/checks.json",
+          "bytes": 125,
+          "sha256": "3f6d7ff188c51ebba0c63e4569d3d6d2459b02a3a9b53f60d8dbe5b81916075b"
+        }
+      ]
+    },
+    {
+      "invocation": "final-map",
+      "root": "/tmp/spill-C-final-map.raZaTq",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/receipt.txt",
+          "bytes": 1051,
+          "sha256": "12ce2692dc1e4eaf01054e9eea5b825fd5e73beac0bd9d0d2364e6a8e3ced083"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/command.stdout",
+          "bytes": 1057,
+          "sha256": "3ddfca1412ef24808113f78d05139d413c2abd30f7d4ebf503fff85df1a6b448"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/command.stderr",
+          "bytes": 8017,
+          "sha256": "f93af6ea72f139667ccc24b7ffb6b846fd5adfb2aeed0090e6167c77c3a51fae"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/argv.txt",
+          "bytes": 72,
+          "sha256": "3260f5677f0e62633dc34c01a85ba22dcd973f7423a23a7550ae328876cc4ae7"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/checks.json",
+          "bytes": 3982,
+          "sha256": "b303a979eacd65154a23b1bd0511554ff67c615f07616e3efe5766ee727be839"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/binary.json",
+          "bytes": 422,
+          "sha256": "5c477610c77184f35d38bc6a4427d2b52a226b89ba53615e613d05d2311fff5c"
+        },
+        {
+          "path": "/tmp/spill-C-final-map.raZaTq/native-tests.bin",
+          "bytes": 2134080,
+          "sha256": "04d43370b220e603783d7d0f23447a43b9415c3a7c815cc942cc08e97b493660"
+        }
+      ]
+    },
+    {
+      "invocation": "final-free",
+      "root": "/tmp/spill-C-final-free.aKiWyx",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/receipt.txt",
+          "bytes": 1058,
+          "sha256": "eecbc662ac5f1db0aed2a2a87e2053005111539a4e6c49b575af481303728612"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/command.stdout",
+          "bytes": 2343,
+          "sha256": "1af85d9f22226751ff0a93fc898dfcce0b4bc53f96f2c3742cd5bc5f9e1e28b3"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/command.stderr",
+          "bytes": 11525,
+          "sha256": "a380fc81d03a05a213b373b7bce083d0be98f787517d83707ca52c2c2c891826"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/argv.txt",
+          "bytes": 82,
+          "sha256": "3a51300d18f9459b9f2c456eecf8cfbb2b5ad483a569a177e0bb44887c1ae327"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/checks.json",
+          "bytes": 2242,
+          "sha256": "d80d6ad0fc4818e0aa816523520ae5d33c531d827d72ca249aa5bd992381bb98"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/binary.json",
+          "bytes": 399,
+          "sha256": "1554967cd62c8fd7ac4f10232b80da79ca237df81af509cbb0ab9430c13c0a25"
+        },
+        {
+          "path": "/tmp/spill-C-final-free.aKiWyx/native-tests.bin",
+          "bytes": 39394768,
+          "sha256": "9bc4033dfa44a61a3d63e1b1191dcc87545ece025355766efde8c392709d5c27"
+        }
+      ]
+    },
+    {
+      "invocation": "final-doc",
+      "root": "/tmp/spill-C-final-doc.ENFL3c",
+      "retained_files": [
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/receipt.txt",
+          "bytes": 943,
+          "sha256": "7c7657b96c14dd53a75e8d9976bcf235a6d8d3d70735f2439aefab0b63a8263d"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/pins.sha256",
+          "bytes": 1111,
+          "sha256": "6bba58d4f3fb4c01b472d34cf0d055f502ffd254efbe38517ec931418bf9ee04"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/pins-after.txt",
+          "bytes": 429,
+          "sha256": "b5ee271e5d74c023b780bb6c7f8dc86339339b0fe1cd4b49c2a29cffdb210639"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/checkout-lock.before",
+          "bytes": 326266,
+          "sha256": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/lara-csv.before",
+          "bytes": 75926,
+          "sha256": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/lock-after-command.bytes",
+          "bytes": 277669,
+          "sha256": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/command.stdout",
+          "bytes": 3903,
+          "sha256": "c4a76844346e4be23b25e175757b8a81d948440cbc60447bb319d60dc3d606ff"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/command.stderr",
+          "bytes": 3237,
+          "sha256": "6715bb3a025d288a2e9e822fa87acdff42b46421b5d966e9497c52d978fa9ed3"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/argv.txt",
+          "bytes": 66,
+          "sha256": "c8b40ba4acdda1f32413b777b69bfe21403a9c1a4feca5aa6f78547e9308c201"
+        },
+        {
+          "path": "/tmp/spill-C-final-doc.ENFL3c/checks.json",
+          "bytes": 679,
+          "sha256": "8507bec39e15f4d416dddf2e6da829a699cee20509b90eb0a37ce5e1460dcb19"
+        }
+      ]
+    }
+  ],
+  "new_artifacts": [
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/evidence/sources/adr0097-map-count-C-scalar.csv",
+      "bytes": 575,
+      "sha256": "10fc6406865c82c0f1f5568c789e42a51db843cb10c624ceb90864ba3edf76ae"
+    },
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/evidence/sources/adr0097-map-count-C-allocator.csv",
+      "bytes": 411,
+      "sha256": "38e5333a68fe0a547fe17df09a72eced126ad9bc113f925a0e46f216b15bce8d"
+    },
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/evidence/sources/adr0097-map-count-C-source.patch",
+      "bytes": 654,
+      "sha256": "49920d947b05d24f005ed36cbdd4975c124779e3aecab850a2a3f7f74eb28b9f"
+    },
+    {
+      "path": "/Users/yota/dev/gleaph-spill/design/evidence/sources/adr0097-map-count-C-plan-final.txt",
+      "bytes": 214,
+      "sha256": "91699a6cc76e64a3899b3ee329e1ac5657d81140d59f634f6d4ab4afe1de90ea"
+    }
+  ],
+  "validator": {
+    "exit": 1,
+    "expected_errors": [
+      "ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'",
+      "ERROR: Completion Criteria item 5 must be checked in final phase",
+      "ERROR: Completion Criteria item 6 must be checked in final phase"
+    ]
+  },
+  "limits": [
+    "This is an index of explicitly listed retained local artifacts, not a complete/durable archive of every root.",
+    "Raw streams and binaries remain in their existing /tmp roots; only the two CSVs, source delta and new validator output are copied here.",
+    "Historical failures, noncompliance, archive gaps and ledgers are not repaired or aggregated into600/120 compliance.",
+    "No binary identity, codegen equivalence, zero-allocation or component-price inference."
+  ]
+}

@@ -1,0 +1,555 @@
+{
+  "status": "scoped-content-passed; original-main-reference-gate-failed",
+  "root": "/private/tmp/spill-acquisition-decision-f297-mcworwje",
+  "anchor": "2026-09-22 17:46:18 UTC +0000",
+  "reference_gate": {
+    "expected_main": "9a64049f47fc07542446d651d4b09421636b73c5",
+    "observed_main": "8b63042c68e5981e3c7afa04c2d3660485e5ce16",
+    "passed": false
+  },
+  "reference_drift": {
+    "expected_main": "9a64049f47fc07542446d651d4b09421636b73c5",
+    "observed_main": "8b63042c68e5981e3c7afa04c2d3660485e5ce16",
+    "observed_head": "f297706abf683c1e22622c193d34f06650305bee",
+    "reflog": "8b63042c68e5981e3c7afa04c2d3660485e5ce16 main@{2026-09-23T03:23:06+09:00} commit: build(deps): reconcile lockfile with workspace manifests\n9a64049f47fc07542446d651d4b09421636b73c5 main@{2026-09-21T11:58:50+09:00} commit: docs(adr0097): edge arena shared with the unlabeled path, so 27-bit bound; values 32-bit; row 34 B\n40bbdb29b8933d703466a27a1ffcbbbbaab3103e main@{2026-09-21T11:54:03+09:00} commit: docs(adr0097): id encodes the header row index; 32-bit preferred subject to the store-ownership fact\n",
+    "action": "No reference restoration or commit. Preserve failure; report reference-pin exception separately from file/content checks."
+  },
+  "review_scope": "User-supplied independent APPROVE: bounded admission only; complete report bdae4ec2/watch log. Reviewer parser correction only, no repository writes/execution.",
+  "head": "f297706abf683c1e22622c193d34f06650305bee",
+  "initial_main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "approved_source": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d"
+  },
+  "changed_prose": {
+    "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md": "7aca800c0285c6a4151b9bcb94c1c341ad27b980f6b32373a1c5701a5033347a",
+    "design/evidence/adr0097-demotion-design.md": "823f377f9d1e881416baf8a12baf15c0ed56717ff72b9eb62d99e62b256295d9",
+    "plans/0340-prepared-paged-map-edits.md": "bafa96a4195d85ecdab335fba8ca05dda652fdc4ecdbe4e0a3d1010885dd6882"
+  },
+  "draft_snapshot_sha256": "bafa96a4195d85ecdab335fba8ca05dda652fdc4ecdbe4e0a3d1010885dd6882",
+  "draft_receipt_sha256": "a80b68acc08275c85f9bd243242b4ef542002ef38b96eba6957fd08b304c0fe7",
+  "draft_snapshot_context_path": "plans/0340-prepared-paged-map-edits.md",
+  "draft_check": {
+    "command": [
+      "python3",
+      "/Users/yota/.agents/skills/plan/scripts/validate_plan.py",
+      "plans/0340-prepared-paged-map-edits.md",
+      "--phase",
+      "draft"
+    ],
+    "cwd": "/Users/yota/dev/gleaph-spill",
+    "seconds": 0.0933514580829069,
+    "exit_code": 0,
+    "plan_sha256": "bafa96a4195d85ecdab335fba8ca05dda652fdc4ecdbe4e0a3d1010885dd6882",
+    "phase": "draft",
+    "rust_executed": false,
+    "prior_receipt": "initial-check/plan-draft-result.json",
+    "revision": "Disclose shared-main drift; no source or executable change."
+  },
+  "draft_state": {
+    "pending_todos": 4,
+    "unchecked_criteria": 6
+  },
+  "preserved_initial_paths": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "41873db32cd7fb056646fcac3d7ee42d8f6ea96c9d0d8701d45479fd15d80f6d",
+    "design/adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md": "f8f8d0eba2bd9b7416ff1bd76dde349a5a674a9ae1296d1dc4fac0b73fc201f4",
+    "design/evidence/adr0097-selected-tree-properties.md": "be43c7ebf9e57564c9e7c9f714405a8d0647500ef30b423e111367034a54ab8e",
+    "design/implementation-gaps.md": "20174752a45872127f409ec42452ca8abd9ed19785cd8771462721a0a5825b21",
+    "design/storage/lara-dgap-contract.md": "99b5bf5d832bafca28895ff3223c587ba8fef7675e9f774d54e2f10031ac60bb",
+    "design/storage/lara.md": "06943ddcdaf1393268fdf87fe7df20a32414cbda522e29ecd7a2759d0d393eea",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "design/evidence/sources/adr0097-admission-before-free.txt": "60274cfb3ca55912c679ac668568839426ab1eeab72a0ba0a1234fd555b75806",
+    "design/evidence/sources/adr0097-admission-before-map.txt": "153af3ac0d01e10290db6fc748a9060f7062b21828be4ad23e8637dace316d76",
+    "design/evidence/sources/adr0097-admission-candidate.patch": "a24cf2fd813adbb5b26c6d3a479ac7e5484d79f51cb375a96d248ea4ca87a7de",
+    "design/evidence/sources/adr0097-admission-collector.py": "569f37df67831cea6f77d9772611444dc618ab8e7c67cbc22d5f25e131a16198",
+    "design/evidence/sources/adr0097-admission-final-clippy.txt": "e5b0e5f811f90e6eddfa677ec3e0e0994365c289ea46fea3acac950145b3831e",
+    "design/evidence/sources/adr0097-admission-final-format.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "design/evidence/sources/adr0097-admission-final-free.txt": "4780898d62f293162dee2ea9e023cc47ec692640702fe62e710c2258a85bee8f",
+    "design/evidence/sources/adr0097-admission-final-map.txt": "582b9204c999f4daf563bd6ef3b583bc0fadf1c44ccde58a65bd464335a0c031",
+    "design/evidence/sources/adr0097-admission-final-plan.txt": "76b4d6e0d83852d8556155ac1084f20bdb7f39af16047e6c699e127e22e3009c",
+    "design/evidence/sources/adr0097-admission-final-whitespace.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "design/evidence/sources/adr0097-admission-format.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "design/evidence/sources/adr0097-admission-green-free.txt": "3a95a2272fafeb27048a23d9528dd3323b7020c33314b0dec7ce93e322db6579",
+    "design/evidence/sources/adr0097-admission-green-map.txt": "11f7b37723f6d980edf17cf5b6e933bac8849431b14458f0c84bf9bf6dd07c42",
+    "design/evidence/sources/adr0097-admission-ic-after-bin.csv": "eec684b918f168601ff9ac44e2cd2f2649b21abbe4750ef456989a9e26abcc1f",
+    "design/evidence/sources/adr0097-admission-ic-after-bin.txt": "51661442fa986c569266e47bc17b30e8a3c2ca090c20323aa714687115be5476",
+    "design/evidence/sources/adr0097-admission-ic-after-split.csv": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d",
+    "design/evidence/sources/adr0097-admission-ic-after-split.txt": "306282ae01502fe93c082be00e543eed0024f874808d1f249c0b37c7372f8dfe",
+    "design/evidence/sources/adr0097-admission-ic-before-bin.csv": "9739b0b88bcc737c80319e0bf08e7c0dbcdd905f2da7098aa4dbdae31012b1ec",
+    "design/evidence/sources/adr0097-admission-ic-before-bin.txt": "e2bdc794e7c080b1fbeca4b151dbbd4b5cac9c418e242a48b6fd6d01827d6337",
+    "design/evidence/sources/adr0097-admission-ic-before-split.csv": "a6a1ae113faeb69fd5527a643e5e3f6e9495f0ee28f9f6d9e6c1f082780318f4",
+    "design/evidence/sources/adr0097-admission-ic-before-split.txt": "d7b934dca33c09194af3bfa1fbdf76ae8e75c654f431c182728b27df119ca8a4",
+    "design/evidence/sources/adr0097-admission-ledger.json": "3de2b9bbb14adae67d1058048c13176bc8bbbc64305a74c8b51e4fe1497f517e",
+    "design/evidence/sources/adr0097-admission-lizard.json": "4141a0f52541ee8148e00d3b76305b0830040c75bfa3badfe7ddf15fbec12b7c",
+    "design/evidence/sources/adr0097-admission-measurements.json": "bf4cf977e4af76a9784b1445b52f56351ee657d4075942f68d5e8ec9b5afaec2",
+    "design/evidence/sources/adr0097-admission-mutation-exact.patch": "82eea7f9d9c4c355b4696969564a76f5e416276bfd6e734df24f6b7e02ee9da1",
+    "design/evidence/sources/adr0097-admission-mutation-exact.txt": "52d9fb953cf38e7f6be7fb2af297fb99fd8f5bbab01c8c9aceae493e1cb585f1",
+    "design/evidence/sources/adr0097-admission-mutation-zero.patch": "b3da422d1487257b50d5bb9a83cc97abf12186406f501c71f3eb1d2bfe1bacf3",
+    "design/evidence/sources/adr0097-admission-mutation-zero.txt": "ed34261201b9b8c73cd355ca63358c01a83dfdb4cd08d7ebc701bc64a0e64f2d",
+    "design/evidence/sources/adr0097-admission-plan-final.txt": "b64ce26a3da069ced124533926d503689f6855ea7298e47fcadcede7199efae1",
+    "design/evidence/sources/adr0097-admission-restoration.json": "f26b9aecc89f30764c3ad9b74adf0faf618bbb6a09476a2f3ee4847ba0a9ceb1",
+    "design/evidence/sources/adr0097-admission-run.json": "b7f587c5cf079471fb0554b6c5a36e6024cdb3185a30ebd31c1cfa41c123c6a0",
+    "design/evidence/sources/adr0097-admission-runner.py": "6a2078f26727d16809fc0fb5224d220d7050ac13ae5991bb1a840a6323bc2c74",
+    "design/evidence/sources/adr0097-admission-start.json": "fbcde87d94a1db0a7c4df610860a5af28c33c097338a3a3ac09deca2985a5d7b",
+    "design/evidence/sources/adr0097-admission-versions.json": "d4f5572a60c5d1e571037f9281a71bed04a533d0229121175669b642ac0987e8",
+    "design/evidence/sources/adr0097-admission-witness-format.diff": "1881a03543d2fcdaad6a4f40e4fdd5bd50ec88666570b77afcacaf1c8e5ccbdc",
+    "design/evidence/sources/adr0097-admission-witness.patch": "800a57037aba11e0cd2ee4df359d904259a79711ddae814b4c0c9c11e5e83cbb",
+    "design/evidence/sources/adr0097-demotion-plan-draft.txt": "111dd9263a3c3438b8f8d8f106585f18e97751e07a29bf66e8ec04b9f0a8bdeb",
+    "design/evidence/sources/adr0097-demotion-plan-r1-draft.txt": "111dd9263a3c3438b8f8d8f106585f18e97751e07a29bf66e8ec04b9f0a8bdeb",
+    "design/evidence/sources/adr0097-demotion-plan-r1.txt": "ca4d190751569f5a6b592883bd1af4ce8e70d03d67f30143d6f6ff6ca6a57ed8",
+    "design/evidence/sources/adr0097-demotion-plan-r2-draft.txt": "111dd9263a3c3438b8f8d8f106585f18e97751e07a29bf66e8ec04b9f0a8bdeb",
+    "design/evidence/sources/adr0097-demotion-plan-r2.txt": "df3d373470d8d1ef3fe3be0bd3cb99eabac54e22af911382970b75a18845199d",
+    "design/evidence/sources/adr0097-demotion-plan.txt": "9ee2979168a7f6cd73ebb137c1e2caa01c01c054e10f7b6cd441e39a0b333a1d",
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "plans/0339-prepared-edge-span-publication.md": "b64ce26a3da069ced124533926d503689f6855ea7298e47fcadcede7199efae1",
+    "crates/ic-stable-lara/src/lara/edge/span.rs": "3c4462070325f7a49fa9ce6dd32ca2606a108da5953ef3b0cb1ebfd8bf35ad63",
+    "crates/ic-stable-lara/src/lara/edge/init.rs": "c068ce8d84847f41022fec155e5530df5251e78d2953ae97265fc58cbc718bcb",
+    "crates/ic-stable-lara/src/lara/edge/edges.rs": "3e5c55c1e20457b6f9668a8263a826e649055de14d23423f2d0601dc6d0d0db2",
+    "crates/ic-stable-lara/src/lara/edge.rs": "43bf3b757e8c832a9ae8544b4b6615fe7be0558ee96a03448e5ae5d5c67774ba",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/lara/operation_error.rs": "752128842de4b7e6d996e7a09501f39fdd0ee0babec07ac93e1ac4d7487af467",
+    ".gitignore": "2d9ee87a9dd0bc594e8baabf2b20f5190e0406592665d3a6fa77eabb34b66c5b"
+  },
+  "history": [
+    {
+      "root": "/tmp/spill-admission-f297-6g1p_any",
+      "manifest": "manifest.sha256",
+      "sha256": "1cda006a9149beb7bdd1dad743bbb15755f1ccd4b2ab8cfb6527f424f66bc119",
+      "files": 102
+    },
+    {
+      "root": "/tmp/spill-a0-interface-f297-jtjersgv",
+      "manifest": "manifest.sha256",
+      "sha256": "9346b08cbe10911664ac6e72db4a5f2fb07504af09ad8d051c762d133d64b149",
+      "files": 33
+    },
+    {
+      "root": "/tmp/spill-demotion-revise-f297-32aisjkk",
+      "manifest": "manifest.sha256",
+      "sha256": "320779faee215bfec0def682e29d544abc48108acf9a504d0171b00314a4c32f",
+      "files": 27
+    },
+    {
+      "root": "/tmp/spill-demotion-design-f297-i2l1uy33",
+      "manifest": "manifest.sha256",
+      "sha256": "2d021491fe2cd3679c70f2fae482ac4c8cc0a5008ce9734cff8fe1f6cff0c53b",
+      "files": 13
+    },
+    {
+      "root": "/tmp/spill-selected-a80-va1dsp1i",
+      "manifest": "manifest.sha256",
+      "sha256": "4569886d0d56069a242c36e0194eb6f910962e2b149bcf3407e0519798cd4c3d",
+      "files": 115
+    },
+    {
+      "root": "/tmp/spill-point-e921-fhkzogkf",
+      "manifest": "manifest.sha256",
+      "sha256": "2835248575a359ba7dbbcdfb4bcebed2c8e2246ba44aec7167ef991dad34e2e4",
+      "files": 150
+    },
+    {
+      "root": "/tmp/spill-tree-delete-7ca-nrvy2ffs",
+      "manifest": "SHA256SUMS",
+      "sha256": "3294e1c0050e21e66cc77f188a4c871b73ada98cc73373803d8913ea01042087",
+      "files": 53
+    }
+  ],
+  "historical_review_pending_preserved": true,
+  "relative_links": [
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "#property-bearing-deletion-prerequisite-2026-09-22"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0022-degree-driven-hub-edge-storage.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../storage/lara.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "#planned-position-preserving-demotion-and-deletion"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "README.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../storage/lara.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0022-degree-driven-hub-edge-storage.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0007-stable-memory-layout.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0052-per-label-adjacency-order-and-tombstone-reuse.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "#property-bearing-deletion-prerequisite-2026-09-22"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../implementation-gaps.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../investigations/2026-09-17-lara-improvement-investigation.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-tree-deletion-prerequisites.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../implementation-gaps.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-demotion-design.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-demotion-design.md#reduced-admission-implementation"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-demotion-design.md#acquisition-decision-checkpoint"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../storage/lara.md#canonical-point-reads"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-point-state-reads.md"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability"
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../evidence/adr0097-selected-tree-properties.md"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-candidate.patch"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-run.json"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-ledger.json"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-witness.patch"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-before-free.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-before-map.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-run.json"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-final-free.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-final-map.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-final-clippy.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-final-plan.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-measurements.json"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-admission-lizard.json"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-crossover-as-used-lock.patch"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "adr0097-tree-deletion-prerequisites.md#reachable-demotion-failure"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/graph/remove.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/graph/tree_write.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/graph/compact.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/graph/leaf_pin.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge/row_layout.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/bucket_store.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/graph/promote.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge/span.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge/edges.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge/init.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge/free_span.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-paged-ordered-map/src/lib.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/lara/edge_inline_property.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/ltb_raw_block_store.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/ic-stable-lara/src/labeled/bidirectional/counterpart.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/store/lookup.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/store/adjacency.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/store/sidecar.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/store/helpers.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/derived_state/reverse_adjacency.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../../crates/graph/src/facade/store/maintenance.rs"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-nonpublishing-acquisition-and-retirement"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#physical-ownership-and-the-outer-publication-unit"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan-draft.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan-r1.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan-r1-draft.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan-r2.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-demotion-plan-r2-draft.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#empty-retirement-liveness-and-work-gate"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-acquisition-plan-draft.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-acquisition-plan-check.txt"
+    },
+    {
+      "from": "design/evidence/adr0097-demotion-design.md",
+      "to": "sources/adr0097-acquisition-prose.json"
+    },
+    {
+      "from": "plans/0340-prepared-paged-map-edits.md",
+      "to": "../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-nonpublishing-acquisition-and-retirement"
+    },
+    {
+      "from": "plans/0340-prepared-paged-map-edits.md",
+      "to": "../design/evidence/adr0097-demotion-design.md#acquisition-decision-checkpoint"
+    }
+  ],
+  "inherited_reference_debt": [
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../../plans/0313-adr0088-tree-csr-measurement-gates.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../../plans/0315-adr0088-raw-block-ltb-revalidation.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../../plans/0316-adr0088-per-write-payload-constant-fix.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../../plans/0314-canbench-name-rationalization.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../plans/0317-adr0088-tree-csr-implementation.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../plans/0317-adr0088-tree-csr-implementation.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../plans/0318-tree-csr-implementation.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "./0318-tree-csr-demotion-tree-to-slab.md",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "../investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting",
+      "issue": "unavailable target",
+      "unchanged_url_in_before": true
+    },
+    {
+      "from": "design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md",
+      "to": "0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented",
+      "issue": "unavailable fragment",
+      "unchanged_url_in_before": true
+    }
+  ],
+  "link_check_scope": "Changed URLs and targets must pass; unchanged unavailable references outside changed targets are recorded, not repaired or counted as valid.",
+  "preserved_check_failures": [
+    "initial-check/verification-failed.txt",
+    "link-check-failure/verification-failed.txt"
+  ],
+  "whitespace": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.041613791952840984,
+    "owned_untracked_checked_separately": true
+  },
+  "current_status": " M crates/ic-stable-lara/src/lara/edge/free_span.rs\n M crates/ic-stable-paged-ordered-map/src/lib.rs\n M design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md\n M design/adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md\n M design/evidence/adr0097-selected-tree-properties.md\n M design/implementation-gaps.md\n M design/storage/lara-dgap-contract.md\n M design/storage/lara.md\n?? SPILL_SWAP_BRIEF.md\n?? crates/ic-stable-lara/canbench_results.csv\n?? design/evidence/adr0097-demotion-design.md\n?? design/evidence/sources/adr0097-acquisition-plan-check.txt\n?? design/evidence/sources/adr0097-acquisition-plan-draft.txt\n?? design/evidence/sources/adr0097-acquisition-prose.json\n?? design/evidence/sources/adr0097-admission-before-free.txt\n?? design/evidence/sources/adr0097-admission-before-map.txt\n?? design/evidence/sources/adr0097-admission-candidate.patch\n?? design/evidence/sources/adr0097-admission-collector.py\n?? design/evidence/sources/adr0097-admission-final-clippy.txt\n?? design/evidence/sources/adr0097-admission-final-format.txt\n?? design/evidence/sources/adr0097-admission-final-free.txt\n?? design/evidence/sources/adr0097-admission-final-map.txt\n?? design/evidence/sources/adr0097-admission-final-plan.txt\n?? design/evidence/sources/adr0097-admission-final-whitespace.txt\n?? design/evidence/sources/adr0097-admission-format.txt\n?? design/evidence/sources/adr0097-admission-green-free.txt\n?? design/evidence/sources/adr0097-admission-green-map.txt\n?? design/evidence/sources/adr0097-admission-ic-after-bin.csv\n?? design/evidence/sources/adr0097-admission-ic-after-bin.txt\n?? design/evidence/sources/adr0097-admission-ic-after-split.csv\n?? design/evidence/sources/adr0097-admission-ic-after-split.txt\n?? design/evidence/sources/adr0097-admission-ic-before-bin.csv\n?? design/evidence/sources/adr0097-admission-ic-before-bin.txt\n?? design/evidence/sources/adr0097-admission-ic-before-split.csv\n?? design/evidence/sources/adr0097-admission-ic-before-split.txt\n?? design/evidence/sources/adr0097-admission-ledger.json\n?? design/evidence/sources/adr0097-admission-lizard.json\n?? design/evidence/sources/adr0097-admission-measurements.json\n?? design/evidence/sources/adr0097-admission-mutation-exact.patch\n?? design/evidence/sources/adr0097-admission-mutation-exact.txt\n?? design/evidence/sources/adr0097-admission-mutation-zero.patch\n?? design/evidence/sources/adr0097-admission-mutation-zero.txt\n?? design/evidence/sources/adr0097-admission-plan-final.txt\n?? design/evidence/sources/adr0097-admission-restoration.json\n?? design/evidence/sources/adr0097-admission-run.json\n?? design/evidence/sources/adr0097-admission-runner.py\n?? design/evidence/sources/adr0097-admission-start.json\n?? design/evidence/sources/adr0097-admission-versions.json\n?? design/evidence/sources/adr0097-admission-witness-format.diff\n?? design/evidence/sources/adr0097-admission-witness.patch\n?? design/evidence/sources/adr0097-demotion-plan-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r1-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r1.txt\n?? design/evidence/sources/adr0097-demotion-plan-r2-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r2.txt\n?? design/evidence/sources/adr0097-demotion-plan.txt\n",
+  "proposed_budget": {
+    "prefinal_caps": 460,
+    "diagnostic": 20,
+    "final_reserve": 120,
+    "total": 600,
+    "spent": 0
+  },
+  "rust_edits_during_checkpoint": false,
+  "rust_executed": false,
+  "benchmarks_executed": false,
+  "process_management": false,
+  "commits_or_merge_by_this_checkpoint": false,
+  "implementation_authorized": false,
+  "full_A0_A1": "planned only; not implemented or approved",
+  "raw_start_sha256": "74aa827b967ab81fab21a55c9ed44fd8e3bf85cef4c0ef3336cb5407d1be99ff",
+  "verifier_sha256": "6e897238828987e8841b8f42e0792af5c8be73384b9b8b996ffb906a889f72c7",
+  "verification_seconds": 0.5436434589792043
+}

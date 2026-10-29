@@ -1,0 +1,49 @@
+{
+  "kind": "SEPARATE correction record for review43594012 P2 + source-projection details A/B; the failed/old protocol receipt is preserved byte-unchanged",
+  "supersedes_in_place_only": {
+    "protocol_receipt": "design/evidence/sources/adr0097-map-read-decision-protocol-revision.json",
+    "protocol_receipt_sha256_unchanged": "7c50e13a7f8f762f568d87c81ec8e4742464da156d3eca1d4184e142a54bead8",
+    "superseded_fields": [
+      "I1_count_oracle_weighted.per_operation_kind[split].read_visits.total =93 (wrong)",
+      "I1_count_oracle_weighted.phase_weighted_totals.scalar_split_directory.read_pairs=93, physical_endpoints=341 (wrong)",
+      "I1...early_return_finalize_once.sites.admit_image: 'exit marks at BOTH exits' (wrong: THREE ordinary exits)",
+      "I1...early_return_finalize_once.sites.scalar_edit: 'capture the Result into a local, finalize prepare, THEN apply map_err/?' (AMENDED as unnecessary and incompatible with strip identity)"
+    ]
+  },
+  "corrected_split_row_from_frozen_source": {
+    "apply_edit_reads": "13 (NOT14): dir_len1 + locate2 + page2 + first-key1 + search7 \u2014 for a full page the (Insert, Err(pos)) arm calls split_page and returns BEFORE the nonsplit map-len read (~line991)",
+    "split_page_header_reads": "12: dir_len1 + directory-scan1 + page2 + search7 + map-len1",
+    "allocate_reads": "2: free-head1 + page-count1",
+    "right_half_reads": "33 (index32..=64; pos1 outside range)",
+    "left_half_reads": "31 (32 iterations; index==pos skips its read)",
+    "update_neighbor_reads": "2 via page(): page-count field + neighbor page2 header \u2014 omitted in the superseded row",
+    "right_minimum_reads": "1 (staged hit)",
+    "read_visits_total": "13+12+2+33+31+2+1=94",
+    "cover_visits_total": "74 (unchanged): allocate1 + right set_entry33 + left set_entry32 + page-len1 + page-next1 + set_page1 + neighbor-prev1 + insert_directory2 + dir-len1 + map-len1",
+    "physical_endpoints": "5 + 2*(94+74+1) =343 (NOT341)",
+    "native_cross_check_source_derived": "94 image visits -2 staged hits (right-minimum; update_neighbor page-count already staged by allocate_page) +1 initial direct page_count +1 directory-fill backing read =94 native \u2014 derived from source; counts were NOT fitted to the measured native total (the superseded decomposition coincidentally masked the +1/-1 pair of errors)",
+    "other_phase_rows_unchanged": "replace read512/cover64/endpoints1600; missing704/0/1856; tail1472/320/4480 (tail cover =64*3+64*2=320 weighting stands)"
+  },
+  "detail_A_admit_three_exits": {
+    "exits": [
+      "already-backed `return Ok(())`",
+      "grow-failure `return Err(FailedEdit { .. })`",
+      "final tail `Ok(())` (no return keyword)"
+    ],
+    "requirement_applied": "M_draft places a finalize at each of the three ordinary returns without altering statements or error values; panic paths need not yield completed measurement evidence",
+    "draft_evidence": "admit region: exactly3 diag_finish(DIAG_ADMIT sites, one per ordinary exit (verified in preflight)"
+  },
+  "detail_B_prepare_amendment": {
+    "withdrawn": "the finalize-before-`?` capture-local requirement \u2014 capturing prepare_image's Result into a new unconditional local would break strip(M)==5da46 byte identity",
+    "applied_instead": "the original statement `self.prepare_image(&[edit], &mut image).map_err(FailedEdit::scalar)?;` is BYTE-UNCHANGED; M2 (diag_finish(DIAG_PREPARE)) sits immediately AFTER it",
+    "semantics": "the prepare interval covers that statement on success only; on failure INIT is already finalized while PREPARE/RESULT/PUBLISH never finalize (no partial pair, no corrupted accumulator); a fixture error aborts the run via existing expect/assert and never becomes a successful measurement; error paths are outside the success-path count oracle",
+    "explicitly_not_authorized": "no duplicate scalar implementation and no benchmark-only editor"
+  },
+  "m_draft": {
+    "lib.rs": "482d6eed971e5b05a3aac23b1e4c9cfe103c616daca071a8e0ac7c52d2499db1",
+    "bench.rs": "cdb5ae628d77f39f04a3c2212fdf74083e78d602c387933f600c2717ec4bb79c",
+    "pre_format": true,
+    "note": "pre-format hashes; the future authorized format step defines formatted frozen M"
+  },
+  "execution": "source-only: no cargo/rustc/rustfmt/clippy/tests/benchmark/disassembly; schedule215+120+265 retained, not activated; no budget"
+}

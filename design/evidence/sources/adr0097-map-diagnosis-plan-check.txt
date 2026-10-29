@@ -1,0 +1,18 @@
+Source/prose-only revision; mixed historical/incomplete status intentionally retained.
+Plan SHA256: c5288c39bc997b137438890a4631eed3f76d7649ee6d3d5bef97c9dff853b870
+
+$ python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py /Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md --phase draft
+exit=1; elapsed=0.10129212494939566
+ERROR: TODO 'owner-contract' status is 'completed'; phase 'draft' requires 'pending'
+ERROR: TODO 'owner-witnesses' status is 'completed'; phase 'draft' requires 'pending'
+ERROR: Completion Criteria item 2 must be unchecked in draft phase
+ERROR: Completion Criteria item 3 must be unchecked in draft phase
+ERROR: Completion Criteria item 4 must be unchecked in draft phase
+
+$ python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py /Users/yota/dev/gleaph-spill/plans/0340-prepared-paged-map-edits.md --phase final
+exit=1; elapsed=0.2523436249466613
+ERROR: TODO 'shared-images' status is 'pending'; phase 'final' requires 'completed'
+ERROR: TODO 'bounded-proof' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 1 must be checked in final phase
+ERROR: Completion Criteria item 5 must be checked in final phase
+ERROR: Completion Criteria item 6 must be checked in final phase

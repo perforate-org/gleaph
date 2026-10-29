@@ -1,0 +1,206 @@
+{
+  "mode": "working tree, exact two-file scope",
+  "baseline": "f297706abf683c1e22622c193d34f06650305bee",
+  "lizard_version": "1.24.0",
+  "functions": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": {
+      "before": [
+        {
+          "name": "replace_exact_pair_with",
+          "long_name": "replace_exact_pair_with & self , left : FreeSpan , right : FreeSpan , replacement : FreeSpan ,",
+          "start": 787,
+          "end": 807,
+          "nloc": 21,
+          "ccn": 9,
+          "tokens": 126,
+          "parameters": 4,
+          "length": 21
+        },
+        {
+          "name": "ensure_span_exact",
+          "long_name": "ensure_span_exact & self , span : FreeSpan",
+          "start": 809,
+          "end": 814,
+          "nloc": 6,
+          "ccn": 3,
+          "tokens": 58,
+          "parameters": 2,
+          "length": 6
+        },
+        {
+          "name": "replace_existing_span",
+          "long_name": "replace_existing_span & self , old : FreeSpan , new : FreeSpan",
+          "start": 1028,
+          "end": 1053,
+          "nloc": 26,
+          "ccn": 8,
+          "tokens": 199,
+          "parameters": 3,
+          "length": 26
+        },
+        {
+          "name": "remove_span_exact",
+          "long_name": "remove_span_exact & self , span : FreeSpan",
+          "start": 1055,
+          "end": 1075,
+          "nloc": 21,
+          "ccn": 8,
+          "tokens": 162,
+          "parameters": 2,
+          "length": 21
+        }
+      ],
+      "candidate": [
+        {
+          "name": "replace_exact_pair_with",
+          "long_name": "replace_exact_pair_with & self , left : FreeSpan , right : FreeSpan , replacement : FreeSpan ,",
+          "start": 787,
+          "end": 818,
+          "nloc": 32,
+          "ccn": 13,
+          "tokens": 208,
+          "parameters": 4,
+          "length": 32
+        },
+        {
+          "name": "exact_span_record",
+          "long_name": "exact_span_record & self , span : FreeSpan",
+          "start": 820,
+          "end": 831,
+          "nloc": 12,
+          "ccn": 5,
+          "tokens": 105,
+          "parameters": 2,
+          "length": 12
+        },
+        {
+          "name": "replace_existing_span",
+          "long_name": "replace_existing_span & self , old : FreeSpan , new : FreeSpan",
+          "start": 1045,
+          "end": 1062,
+          "nloc": 18,
+          "ccn": 5,
+          "tokens": 136,
+          "parameters": 3,
+          "length": 18
+        },
+        {
+          "name": "remove_span_exact",
+          "long_name": "remove_span_exact & self , span : FreeSpan",
+          "start": 1064,
+          "end": 1075,
+          "nloc": 12,
+          "ccn": 5,
+          "tokens": 96,
+          "parameters": 2,
+          "length": 12
+        },
+        {
+          "name": "admission_snapshot",
+          "long_name": "admission_snapshot store : & FreeSpanStore < VirtualMemory < DefaultMemoryImpl > > , memories : & [ VirtualMemory < DefaultMemoryImpl > ; 2 ] ,",
+          "start": 1497,
+          "end": 1509,
+          "nloc": 12,
+          "ccn": 1,
+          "tokens": 133,
+          "parameters": 2,
+          "length": 13
+        },
+        {
+          "name": "a0_admission_exact_span",
+          "long_name": "a0_admission_exact_span",
+          "start": 1512,
+          "end": 1566,
+          "nloc": 55,
+          "ccn": 3,
+          "tokens": 475,
+          "parameters": 0,
+          "length": 55
+        },
+        {
+          "name": "a0_admission_pair",
+          "long_name": "a0_admission_pair",
+          "start": 1569,
+          "end": 1680,
+          "nloc": 112,
+          "ccn": 4,
+          "tokens": 530,
+          "parameters": 0,
+          "length": 112
+        }
+      ]
+    },
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": {
+      "before": [
+        {
+          "name": "reserve_for_inserts",
+          "long_name": "reserve_for_inserts & self , additional_entries : u64",
+          "start": 371,
+          "end": 382,
+          "nloc": 9,
+          "ccn": 2,
+          "tokens": 85,
+          "parameters": 2,
+          "length": 12
+        }
+      ],
+      "candidate": [
+        {
+          "name": "reserve_for_inserts",
+          "long_name": "reserve_for_inserts & self , additional_entries : u64",
+          "start": 372,
+          "end": 386,
+          "nloc": 12,
+          "ccn": 3,
+          "tokens": 109,
+          "parameters": 2,
+          "length": 15
+        },
+        {
+          "name": "a0_admission_zero_reservation",
+          "long_name": "a0_admission_zero_reservation",
+          "start": 1153,
+          "end": 1198,
+          "nloc": 45,
+          "ccn": 3,
+          "tokens": 468,
+          "parameters": 0,
+          "length": 46
+        },
+        {
+          "name": "a0_admission_directory_reservation",
+          "long_name": "a0_admission_directory_reservation",
+          "start": 1201,
+          "end": 1301,
+          "nloc": 100,
+          "ccn": 5,
+          "tokens": 833,
+          "parameters": 0,
+          "length": 101
+        }
+      ]
+    }
+  },
+  "inventory": {
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": {
+      "legacy": 25,
+      "added": [
+        "a0_admission_exact_span",
+        "a0_admission_pair"
+      ],
+      "current": 27,
+      "legacy_bodies_unchanged": true,
+      "added_oracles_unchanged_except_format": true
+    },
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": {
+      "legacy": 10,
+      "added": [
+        "a0_admission_zero_reservation",
+        "a0_admission_directory_reservation"
+      ],
+      "current": 12,
+      "legacy_bodies_unchanged": true,
+      "added_oracles_unchanged_except_format": true
+    }
+  }
+}

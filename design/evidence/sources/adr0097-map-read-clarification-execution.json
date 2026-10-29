@@ -1,0 +1,69 @@
+{
+  "kind": "evidence-accuracy clarification; separate provenance; no receipt below is edited or erased",
+  "addresses": [
+    "closed-root README wording",
+    "scope-correction.json not_re_executed list",
+    "chat closure report wording"
+  ],
+  "historical_wording_preserved_verbatim": {
+    "readme_lines": [
+      "`scope-correction.json`. No validator, export, hash or Rust command was re-executed;",
+      "`manifest.sha256` covers every file in this root except itself and `seal-check.json`."
+    ],
+    "scope_correction_not_re_executed": [
+      "plan validator (receipt preserved in adr0097-map-read-attempt-plan-check.txt)",
+      "durable exports (byte copies already on disk)",
+      "pins/history/artifact/lock/foreign hashing (results preserved in adr0097-map-read-attempt-verification.json)",
+      "Rust, build, test, benchmark, disassembly, baseline rebuild"
+    ],
+    "statement": "these remain byte-preserved inside the sealed closed root; this receipt narrows their interpretation and does not rewrite them"
+  },
+  "what_correct_scope_py_actually_did": [
+    "byte-copy snapshot of7 closure files into as-run-closure/ (writes)",
+    "one read-only `git status --porcelain` + start-status comparison (the corrected scope check)",
+    "precondition spot-hashes only: map source sha and `git rev-parse HEAD`",
+    "overwrite re-export of exactly three summary durables: attempt-ledger.json, attempt-run.json, attempt-verification.json",
+    "full rehash of then-current root files to regenerate the177-entry manifest and a new root seal (basename-exclusion rule)",
+    "reads of the preserved as-run verification fields (no rehash of pins/history/artifacts/locks)"
+  ],
+  "what_was_NOT_repeated": [
+    "plan validator: exactly one invocation produced adr0097-map-read-attempt-plan-check.txt; correct_scope did not run it",
+    "all Rust, build, test, benchmark, disassembly and baseline rebuild",
+    "the original full verification pass:1528 pins,1021 history entries across13 manifests,9 artifact hashes, per-invocation lock set, foreign CSV/config pins \u2014 results cited from the preserved as-run verification.json, not recomputed",
+    "the34 batch1 evidence exports: byte-untouched \u2014 all34 durables remain byte-equal to their closed-root raw sources, and the archived correct_scope.py contains export() calls only for the three summary durables (overwrite=True), listed below"
+  ],
+  "batch1_export_integrity": {
+    "paths": 34,
+    "all_durables_byte_equal_to_raw_sources": true,
+    "mismatches": [],
+    "correction_script_export_calls": [
+      [
+        "ledger.json",
+        "ledger.json"
+      ],
+      [
+        "run.json",
+        "run.json"
+      ],
+      [
+        "verification.json",
+        "verification.json"
+      ]
+    ],
+    "archived_correction_script_sha256": "527fe8fabcab77925bc8ab04834935790d6cc4f61c8c37d373bdefe6fdbc8b96",
+    "as_run_manifest_sha256": "637fc2e26d754a007d21589b23aed8472a5d5a98bce3cf5bf1cbca7ba26449ea",
+    "final_manifest_sha256": "c20b1fa154519e7d76aaa72b23889b0d8a02aa88e3496b66d235753b84c4828c"
+  },
+  "timing_saved_records_only": {
+    "final_evidence_entry_actual_seconds": 1.4183792499825358,
+    "final_evidence_charged_seconds": 15,
+    "final_evidence_full_step_wall_seconds": 1.639524208032526,
+    "correction_receipt_seconds": 0.5158909999299794,
+    "note": "these are the only saved timing records; no finer decomposition of the correction pass is asserted because none was recorded"
+  },
+  "closed_root_state": {
+    "files": 181,
+    "manifest_entries": 177,
+    "modified_by_this_pass": false
+  }
+}

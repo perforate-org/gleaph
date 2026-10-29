@@ -1,0 +1,197 @@
+{
+  "kind": "administrative/saved-result reconciliation only (review739d119d); separate15s active-command allowance; NOT ledger reactivation, NOT Rust, NOT use of the265s unassigned, and NOT retroactive validation of the stop-rule overrun",
+  "protocol_verdict": {
+    "outcome": "ATTEMPT PROTOCOL INCOMPLETE / NON-COMPLIANT",
+    "withdrawn_justification": "the prior \"none of the enumerated stop categories occurred\" basis for reactivation is WITHDRAWN: authorization.json required close-INCOMPLETE with no repair/retry on the first unexpected compiler/test/TOOL failure, and both a Python FileNotFoundError and a failed archive/finally tail are unexpected tool/administrative-gate failures",
+    "unauthorized_continuations": [
+      "setup reactivation (driver-fix/fix2 era)",
+      "map reactivation (driver-fix3/4/5 era)"
+    ],
+    "not_permitted_by": [
+      "restoration of lock/CSV (required cleanup, not permission)",
+      "spare charged capacity (charges are not authority)",
+      "absence of a cargo process at setup (still an unexpected tool failure)",
+      "cargo having passed at map (the gate/tail failure still stopped the run)",
+      "this reconciliation allowance (cannot retroactively validate)"
+    ],
+    "separate_from_observations": "the subsequent test/benchmark observations are real and retained, but do not cure the protocol violation and do not establish ADR0097/engine/A0/A1/landing acceptance"
+  },
+  "chronology": [
+    "1. first authorized stop: setup step raised FileNotFoundError (driver pin-loop read start.json before the step created it); ledger went stopped-incomplete \u2014 this was the correct stop-rule outcome",
+    "2. UNAUTHORIZED continuation: driver patched (fix1/fix2), setup outputs produced, ledger reactivated to active \u2014 not permitted by any authorization",
+    "3. second gate failure: map archive/finally tail raised after the scheduled cargo test had passed (exit0); checkout lock left at as-used f5d3\u2026; second UNAUTHORIZED reactivation (fix3/4/5; reach re-verified from saved streams; lock restored)",
+    "4. actual later observations (retained): doc5; four runtime-red mutations with exact messages and M-restoration; audit; the one instrumented canbench run (exit0, exact count/calibration oracle); collect; protected finals (fmt, clippy map --features canbench, clippy lara, final map18, FreeSpan27, doc5); provenance (plan refusal); evidence sealing",
+    "5. manifest ordering defect: close_ledger hashed the root BEFORE main saved the final ledger, so the sealed manifest records the pre-final ledger.json bytes (35247b4b\u2026) while the raw/durable ledger now hold e42fcc94\u2026 \u2014 seal never bound the final ledger bytes"
+  ],
+  "charges": {
+    "recorded_charges_only": 135.69941875094082,
+    "source": "execution ledger charged_total (19 entries; commands=actual, admin=cap)",
+    "recorded_pre_final": 84.73506204178557,
+    "recorded_final": 50.964356709155254,
+    "caps_structurally_present": {
+      "maximum": 600,
+      "pre_final": 215,
+      "final": 120,
+      "unassigned": 265
+    },
+    "work_without_recorded_timing": [
+      "setup repair + driver-fix/fix2 (executed under a reactivation that was not authorized)",
+      "map repair + driver-fix3/fix4/fix5",
+      "the original evidence/sealing work inside the evidence step",
+      "THIS reconciliation pass (separate allowance; only this script is self-timed)"
+    ],
+    "cap_compliance_note": "absorption into already-charged caps is NOT claimed; work without recorded timing is identified here rather than assumed compliant; no balance is reopened or altered"
+  },
+  "retained_observations": {
+    "initial_map": "exit0; saved streams show \"test result: ok. 18 passed; 0 failed;\" and33 IMAGE_READ_CASE (exec durable \u2026-exec-map.txt)",
+    "doc_and_finals": "doc5 and final-doc5 passed; final map18 passed (33 cases); final FreeSpan27 passed; final-format exit0; final clippy map --lib --tests --features canbench exit0; final clippy lara exit0",
+    "mutations": "four exit101 with exact reached messages (late DirectoryFull changed backing; expected actual restricted grow3/+2 before ready; IMAGE_READ inline-contained bytes; unbacked-unstaged -> out of bounds), each restored to M (patches/txt durables)",
+    "cfg_on": "the single canbench run exited0: fixture pre/post assertions and map.validate() passed inside the instrumented wasm; clippy with --features canbench type-checked/linted the gated code",
+    "oracle": {
+      "endpoints": {
+        "0": 1600,
+        "1": 1856,
+        "2": 4480,
+        "3": 343
+      },
+      "read_pairs": [
+        512,
+        704,
+        1472,
+        94
+      ],
+      "cover_pairs": [
+        64,
+        0,
+        320,
+        74
+      ],
+      "sibling_admit_pairs_per_phase": [
+        64,
+        64,
+        128,
+        1
+      ],
+      "calibration_counts": [
+        64,
+        16,
+        32,
+        1
+      ],
+      "calibration_delta": 4542,
+      "validation": "exact match, count_validation_failures=[] in the executed collect step"
+    }
+  },
+  "evidence_gaps": {
+    "initial_map_capture_gap": {
+      "fact": "the initial map entry has artifacts=[] because its archive step raised",
+      "consequence": "the executable behind that invocation was subsequently overwritten by four mutation builds and the final-map build; there is NO contemporaneous archive or hash of the initial map executable",
+      "contemporaneous_records_that_do_exist": [
+        "final-map native 663e4a8167de5101d38d31de959154e93204b72fb00dba27d0246e1acec3b133 (contemporaneous only for the final-map invocation)",
+        "four mutant natives",
+        "scalar wasm",
+        "final-free native"
+      ],
+      "no_rebuild_offered": true
+    },
+    "rejection_gate_not_implemented": {
+      "fact": "admin_collect wrote the saved-row deltas and labeled them \"reject-only sanity\" but contains no rejection predicate",
+      "status": "OBSERVATION-ONLY; the gate was never implemented; no cutoff is invented post-hoc",
+      "observed_deltas": {
+        "bench_paged_scalar_edits_97": 1951474,
+        "bench_paged_scalar_edits_97::scalar_missing_64": 437435,
+        "bench_paged_scalar_edits_97::scalar_replace_64": 377850,
+        "bench_paged_scalar_edits_97::scalar_split_directory": 80381,
+        "bench_paged_scalar_edits_97::scalar_tail_pairs_64": 1055319
+      }
+    },
+    "components_csv_flaw": {
+      "fact": "header is3 columns (\"section,key,value\") while category rows are4 comma-separated fields (cat name embeds a comma), leaving the pair count unnamed",
+      "disposition": "flawed original \u2026-exec-components.csv preserved byte-exact; rectangular re-export issued separately as adr0097-map-read-reconcile-components.json"
+    },
+    "manifest_ledger_binding": {
+      "manifest_recorded_ledger_sha": "35247b4ba078434b4e9c9361a927315b026cbc2a01a5865454f1b3b7a299e391",
+      "current_raw_and_durable_ledger_sha": "e42fcc9488d217083f5ef33b95b08a84ffd65f33a55f3584ffd17f6d57cbda2b",
+      "disposition": "old112-entry manifest and seal preserved byte-exact (not rewritten); external corrected coverage issued as adr0097-map-read-reconcile-coverage.json covering the frozen114-file root, including both excluded files"
+    }
+  },
+  "definitional_remainders": {
+    "status": "DEFINITIONAL arithmetic on instrumented intervals \u2014 not independent validation, not uninstrumented cost attribution",
+    "formulas": {
+      "read/cover": "sum of category pairs over each phase (observed_sums)",
+      "prepare_rest": "prepare_sum - read_body_sum - cover_sum - admit_sum",
+      "loop_call_drop_recorder_remainder": "phase canbench row - (init_sum + prepare_sum + result_sum + publish_sum)"
+    },
+    "raw_read_cover_prepare_rest": {
+      "replace": {
+        "read": 154624,
+        "cover": 35648,
+        "prepare_rest": 246592
+      },
+      "missing": {
+        "read": 211136,
+        "cover": 0,
+        "prepare_rest": 277952
+      },
+      "tail": {
+        "read": 441280,
+        "cover": 246592,
+        "prepare_rest": 735616
+      },
+      "split": {
+        "read": 33706,
+        "cover": 128248,
+        "prepare_rest": 65451
+      }
+    },
+    "loop_call_drop_recorder_remainders": {
+      "replace": 26626,
+      "missing": 25251,
+      "tail": 49697,
+      "split": 893
+    },
+    "reproduced_from_saved_sums": true
+  },
+  "uncertainty": {
+    "calibration": {
+      "standalone64": {
+        "n": 64,
+        "sum": 12800,
+        "min": 200,
+        "max": 200
+      },
+      "nested_inner16": {
+        "n": 16,
+        "sum": 3200,
+        "min": 200,
+        "max": 200
+      },
+      "shared32": {
+        "n": 32,
+        "sum": 8271,
+        "min": 211,
+        "max": 260
+      },
+      "nested_outer1": {
+        "n": 1,
+        "sum": 7742,
+        "min": 7742,
+        "max": 7742
+      }
+    },
+    "calibration_delta": 4542,
+    "standalone_pair_cost": "200 instructions (min=max) in the observed shape",
+    "phase_perturbation": "saved-row deltas up to +1,951,474 on the total row",
+    "no_calibration_subtraction": "calibration is NOT subtracted from raw components to manufacture a production-cost ranking",
+    "accepted_terminal": "CANNOT RANK UNINSTRUMENTED COMPONENTS",
+    "snapshot_reset_placement": "outside the four phase scopes, inside bench_fn total"
+  },
+  "resolution_verdict": "RESOLVED: the diagnostic endpoint is exact \u2014 count/calibration oracle matched with zero failures and the rectangular raw table is reproducible from saved output. NOT ESTABLISHED: any component ranking (rejection gate never implemented; remainders definitional; instrumentation/perturbation unremoved; uninstrumented ranking disclaimed). PROTOCOL: attempt INCOMPLETE/non-compliant (two unauthorized reactivations; sealed manifest never bound the final ledger; initial map executable uncaptured). STATUS: bounded-proof pending, criteria5/6 unchecked, acceptance BLOCKED.",
+  "authority": {
+    "this_pass": "administrative/saved-result reconciliation only; one self-timed script (includes one plan-structural subprocess);15s allowance; no driver repair/execution, no Rust/rustfmt/clippy/tests/canbench/disassembly, no source restoration, no process work, commit, merge or measurement",
+    "unmetered_commands_this_pass": [
+      "a no-op `true` shell probe and one grep for doc anchors, both sub-second and not instrumented \u2014 disclosed rather than assumed"
+    ],
+    "no_further_runtime_authority": true
+  }
+}

@@ -1,0 +1,300 @@
+--- 9436291c/lib.rs
++++ candidate/lib.rs
+@@ -451,7 +451,14 @@
+         let end = address + dst.len() as u64;
+         let ranges = self.ranges.as_slice();
+         let first = ranges.partition_point(|r| r.end() <= address);
+-        if let Some(r) = ranges.get(first)
++        let candidate = ranges.get(first);
++        if address <= end && end <= self.backed_end && candidate.is_none_or(|r| r.address >= end) {
++            if !dst.is_empty() {
++                memory.read(address, dst);
++            }
++            return;
++        }
++        if let Some(r) = candidate
+             && r.address <= address
+             && end <= r.end()
+         {
+@@ -2854,4 +2861,280 @@
+         m.write_dir_len(1);
+         m.validate().unwrap();
+     }
+-}
++
++    #[test]
++    fn edit_image_read_partition() {
++        // Byte-composition contract, not a public map or page-admission fixture.
++        let memory = WorkMemory::default();
++        assert_eq!(memory.grow(3), 0);
++        let b = 3 * WASM_PAGE_SIZE;
++        assert_eq!(memory.size() * WASM_PAGE_SIZE, b);
++        assert_eq!(checked_page_offset(63).unwrap(), b);
++        let planned_end = b.checked_add(PAGE_STRIDE).unwrap();
++        let a = 256;
++        let canonical: [u8; 128] = std::array::from_fn(|i| (i + 1) as u8);
++        memory.write(a, &canonical);
++        memory.write(b - 4, &[0x21, 0x22, 0x23, 0x24]);
++        let before = backing(&memory.inner);
++
++        let mut empty = EditImage::new();
++        let mut inline = EditImage::new();
++        let mut heap = EditImage::new();
++        let mut unbacked = EditImage::new();
++        let mut straddle = EditImage::new();
++        for image in [
++            &mut empty,
++            &mut inline,
++            &mut heap,
++            &mut unbacked,
++            &mut straddle,
++        ] {
++            image.backed_end = b;
++            image.required_end = planned_end;
++        }
++        let first = [
++            0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab,
++        ];
++        let second = [
++            0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb,
++        ];
++        let third = [
++            0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb,
++        ];
++        let fourth = [
++            0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb,
++        ];
++        for (image, chunks) in [
++            (
++                &mut inline,
++                &[(a + 16, first.as_slice()), (a + 40, second.as_slice())][..],
++            ),
++            (
++                &mut heap,
++                &[
++                    (a + 16, first.as_slice()),
++                    (a + 40, second.as_slice()),
++                    (a + 64, third.as_slice()),
++                    (a + 84, fourth.as_slice()),
++                ][..],
++            ),
++            (
++                &mut unbacked,
++                &[(
++                    b + 16,
++                    &[0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8][..],
++                )][..],
++            ),
++            (
++                &mut straddle,
++                &[
++                    (b - 2, &[0xa1, 0xa2, 0xa3, 0xa4][..]),
++                    (b + 4, &[0xb1, 0xb2][..]),
++                ][..],
++            ),
++        ] {
++            for &(address, bytes) in chunks {
++                image.ranges.reserve(1).unwrap();
++                image.bytes.reserve(bytes.len()).unwrap();
++                image.write(address, bytes);
++            }
++        }
++        assert!(matches!(&empty.ranges, Scratch::Inline { .. }));
++        assert!(matches!(&empty.bytes, Scratch::Inline { .. }));
++        assert!(matches!(&inline.ranges, Scratch::Inline { .. }));
++        assert!(matches!(&inline.bytes, Scratch::Inline { .. }));
++        assert_eq!(
++            (
++                inline.ranges.as_slice().len(),
++                inline.bytes.as_slice().len()
++            ),
++            (2, 24)
++        );
++        assert!(matches!(&heap.ranges, Scratch::Heap(_)));
++        assert!(matches!(&heap.bytes, Scratch::Heap(_)));
++        assert_eq!(
++            (heap.ranges.as_slice().len(), heap.bytes.as_slice().len()),
++            (4, 48)
++        );
++
++        for (name, image, address, expected, read_bytes) in [
++            ("empty-backed", &empty, a + 8, &[9, 10, 11, 12][..], 4),
++            ("empty-zero", &empty, a + 8, &[][..], 0),
++            (
++                "inline-contained",
++                &inline,
++                a + 18,
++                &[0xa2, 0xa3, 0xa4, 0xa5][..],
++                0,
++            ),
++            (
++                "inline-packed-offset",
++                &inline,
++                a + 42,
++                &[0xb2, 0xb3, 0xb4, 0xb5][..],
++                0,
++            ),
++            ("inline-before", &inline, a + 4, &[5, 6, 7, 8][..], 4),
++            (
++                "inline-left-adjacent",
++                &inline,
++                a + 12,
++                &[13, 14, 15, 16][..],
++                4,
++            ),
++            (
++                "inline-right-adjacent",
++                &inline,
++                a + 28,
++                &[29, 30, 31, 32][..],
++                4,
++            ),
++            ("inline-gap", &inline, a + 32, &[33, 34, 35, 36][..], 4),
++            ("inline-after", &inline, a + 60, &[61, 62, 63, 64][..], 4),
++            (
++                "inline-left-overlap",
++                &inline,
++                a + 14,
++                &[15, 16, 0xa0, 0xa1, 0xa2, 0xa3][..],
++                6,
++            ),
++            (
++                "inline-right-overlap",
++                &inline,
++                a + 26,
++                &[0xaa, 0xab, 29, 30, 31, 32][..],
++                6,
++            ),
++            (
++                "inline-multiple",
++                &inline,
++                a + 26,
++                &[
++                    0xaa, 0xab, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 0xb0, 0xb1, 0xb2,
++                    0xb3,
++                ][..],
++                18,
++            ),
++            ("inline-zero-staged", &inline, a + 20, &[][..], 0),
++            (
++                "heap-packed-offset",
++                &heap,
++                a + 86,
++                &[0xd2, 0xd3, 0xd4, 0xd5][..],
++                0,
++            ),
++            ("heap-before", &heap, a + 4, &[5, 6, 7, 8][..], 4),
++            (
++                "heap-left-adjacent",
++                &heap,
++                a + 60,
++                &[61, 62, 63, 64][..],
++                4,
++            ),
++            (
++                "heap-right-adjacent",
++                &heap,
++                a + 52,
++                &[53, 54, 55, 56][..],
++                4,
++            ),
++            ("heap-gap", &heap, a + 78, &[79, 80, 81, 82][..], 4),
++            ("heap-after", &heap, a + 100, &[101, 102, 103, 104][..], 4),
++            (
++                "heap-left-overlap",
++                &heap,
++                a + 62,
++                &[63, 64, 0xc0, 0xc1, 0xc2, 0xc3][..],
++                6,
++            ),
++            (
++                "heap-right-overlap",
++                &heap,
++                a + 74,
++                &[0xca, 0xcb, 77, 78, 79, 80][..],
++                6,
++            ),
++            (
++                "heap-multiple",
++                &heap,
++                a + 74,
++                &[
++                    0xca, 0xcb, 77, 78, 79, 80, 81, 82, 83, 84, 0xd0, 0xd1, 0xd2, 0xd3,
++                ][..],
++                14,
++            ),
++            ("heap-zero-staged", &heap, a + 70, &[][..], 0),
++            ("heap-zero-gap", &heap, a + 82, &[][..], 0),
++            ("unbacked-unstaged", &empty, b + 16, &[0; 8][..], 0),
++            ("unbacked-zero", &empty, b + 16, &[][..], 0),
++            (
++                "unbacked-contained",
++                &unbacked,
++                b + 16,
++                &[0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8][..],
++                0,
++            ),
++            (
++                "unbacked-contained-offset",
++                &unbacked,
++                b + 18,
++                &[0xe3, 0xe4, 0xe5, 0xe6][..],
++                0,
++            ),
++            (
++                "unbacked-left-partial",
++                &unbacked,
++                b + 14,
++                &[0, 0, 0xe1, 0xe2, 0xe3, 0xe4][..],
++                0,
++            ),
++            (
++                "unbacked-right-partial",
++                &unbacked,
++                b + 22,
++                &[0xe7, 0xe8, 0, 0, 0, 0][..],
++                0,
++            ),
++            (
++                "straddle-unstaged",
++                &empty,
++                b - 4,
++                &[0x21, 0x22, 0x23, 0x24, 0, 0, 0, 0, 0, 0, 0, 0][..],
++                4,
++            ),
++            (
++                "straddle-overlay",
++                &straddle,
++                b - 4,
++                &[0x21, 0x22, 0xa1, 0xa2, 0xa3, 0xa4, 0, 0, 0xb1, 0xb2, 0, 0][..],
++                4,
++            ),
++            (
++                "unbacked-gap-overlay",
++                &straddle,
++                b + 2,
++                &[0, 0, 0xb1, 0xb2, 0, 0][..],
++                0,
++            ),
++        ] {
++            assert!(address.checked_add(expected.len() as u64).unwrap() <= planned_end);
++            let mut actual = vec![0xee; expected.len()];
++            eprintln!("IMAGE_READ_CASE {name}");
++            memory.traffic.set(Traffic::default());
++            image.read(&memory, address, &mut actual);
++            let traffic = memory.traffic.get();
++            assert_eq!(actual, expected, "IMAGE_READ {name} bytes");
++            assert_eq!(
++                traffic,
++                Traffic {
++                    reads: usize::from(read_bytes != 0),
++                    read_bytes,
++                    max_read: read_bytes,
++                    ..Traffic::default()
++                },
++                "IMAGE_READ {name} traffic"
++            );
++            assert_eq!(backing(&memory.inner), before, "IMAGE_READ {name} backing");
++        }
++    }
++}

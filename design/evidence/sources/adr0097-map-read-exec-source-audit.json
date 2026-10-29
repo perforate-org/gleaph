@@ -1,0 +1,61 @@
+{
+  "M_frozen": {
+    "lib_sha256": "2c76e95637493bda72af9913cf237f5a0089bc9723731d440eb193f0e676cf89",
+    "bench_sha256": "363d1d65e70c94c673db1d71d415ad9f009a3e5713a014ce0192c9cd527c6378"
+  },
+  "projections": {
+    "lib": {
+      "added_lines": 181,
+      "removed_or_modified": 0,
+      "additions_only": true,
+      "cfg_off_strip_byte_identical": true,
+      "note": "source projection only; not codegen equivalence"
+    },
+    "bench": {
+      "added_lines": 40,
+      "removed_or_modified": 0,
+      "additions_only": true,
+      "cfg_off_strip_byte_identical": true,
+      "note": "source projection only; not codegen equivalence"
+    }
+  },
+  "marker_sites": {
+    "read_exits": 3,
+    "cover_exits": 2,
+    "admit_exits": 3,
+    "tick_call_lines": 8
+  },
+  "frozen_count_table_bound": {
+    "endpoints": [
+      1600,
+      1856,
+      4480,
+      343
+    ],
+    "read_pairs": [
+      512,
+      704,
+      1472,
+      94
+    ],
+    "cover_pairs": [
+      64,
+      0,
+      320,
+      74
+    ],
+    "sibling_admit_pairs": [
+      64,
+      64,
+      128,
+      1
+    ],
+    "cal_counts": [
+      64,
+      16,
+      32,
+      1
+    ]
+  },
+  "cfg_attribution": "all added lib lines cfg-attributed/derived/separator; mod bench gate unchanged"
+}

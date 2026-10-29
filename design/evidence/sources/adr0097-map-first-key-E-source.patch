@@ -1,0 +1,78 @@
+--- a/crates/ic-stable-paged-ordered-map/src/lib.rs
++++ b/crates/ic-stable-paged-ordered-map/src/lib.rs
+@@ -984,7 +984,11 @@
+             return Err(EditFailure::Map(Error::Corrupt));
+         }
+         let position = search_page(header.len, key, |i| {
+-            self.u64(start + u64::from(i) * PAGE_ENTRY_SIZE)
++            if i == 0 {
++                dir.min_key
++            } else {
++                self.u64(start + u64::from(i) * PAGE_ENTRY_SIZE)
++            }
+         });
+         match (edit, position) {
+             (Edit::Insert { value, .. }, Ok(pos)) => {
+@@ -2877,6 +2881,62 @@
+             entries_before
+         );
+         m.write_dir_len(1);
++        m.validate().unwrap();
++    }
++
++    #[test]
++    fn prepared_edits_reject_inconsistent_minimum() {
++        let mut m = map();
++        let memory = m.memory.clone();
++        let value = |key| 0xa500_0000_0000_0000 | key;
++        for key in [10, 20, 30] {
++            assert_eq!(m.insert(key, value(key)), Ok(None));
++        }
++        m.validate().unwrap();
++        let healthy = backing(&memory);
++        let original = m.read_dir_entry(0);
++        assert_eq!((original.min_key, original.page_id), (10, 1));
++        m.write_dir_entry(
++            0,
++            DirEntry {
++                min_key: 9,
++                ..original
++            },
++        );
++        let poisoned = backing(&memory);
++        let edits = [Edit::Remove { key: 20 }];
++        match m.prepare_edits(&edits) {
++            Err(PrepareError::Edit { at, source }) => {
++                assert_eq!((at, source), (0, Error::Corrupt));
++            }
++            Ok(ready) => {
++                ready.discard();
++                panic!("minimum mismatch unexpectedly reached ready");
++            }
++            Err(_) => panic!("expected minimum mismatch at edit0"),
++        }
++        assert!(
++            backing(&memory) == poisoned,
++            "minimum rejection wrote bytes"
++        );
++        assert_eq!(m.remove(20), Err(Error::Corrupt));
++        assert!(backing(&memory) == poisoned, "scalar rejection wrote bytes");
++        m.write_dir_entry(0, original);
++        assert!(backing(&memory) == healthy);
++        let ready = m.prepare_edits(&edits).unwrap();
++        assert_eq!(ready.previous_values(), [Some(value(20))]);
++        assert!(backing(&memory) == healthy, "prepare wrote canonical bytes");
++        ready.discard();
++        assert!(backing(&memory) == healthy, "discard wrote canonical bytes");
++        let ready = m.prepare_edits(&edits).unwrap();
++        assert_eq!(ready.previous_values(), [Some(value(20))]);
++        ready.publish();
++        assert_eq!(
++            m.iter().collect::<Vec<_>>(),
++            [(10, value(10)), (30, value(30))]
++        );
++        assert_eq!(m.len(), 2);
++        assert_eq!(m.read_dir_entry(0), original);
+         m.validate().unwrap();
+     }
+ 

@@ -1,0 +1,57 @@
+{
+  "base": "f297706abf683c1e22622c193d34f06650305bee",
+  "main": "9a64049f47fc07542446d651d4b09421636b73c5",
+  "prior_root": "/tmp/spill-a0-interface-f297-jtjersgv",
+  "prior_manifest_sha256": "9346b08cbe10911664ac6e72db4a5f2fb07504af09ad8d051c762d133d64b149",
+  "protected": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "cdb1a3e277ad1060b961b606fbcc9cd45a1d41902e9ede316423469d23863237",
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "4ab0e39c1a0b62dd6b5d74a7218ad823f441bc3f7e2eb156807e5a22692bd0cb",
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "c98b2068019f2bf60c9fae862b54d8678e3e0e396bba77f64d2bb2ede7e9ab05",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/graph/promote/spill_test.rs": "719514725a2214f67ee9e29c6e2f5b3e1b25bf9375340cc8a58395be7f16b875",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "b49ea5d44cd06e1c8a8ab7c5179591b2742cffb5301ebb913f4b90af641e6a67"
+  },
+  "before_hashes": {
+    "Cargo.lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+    "SPILL_SWAP_BRIEF.md": "8db79b22d39fde2f2f845f970183a91bbee4d5aa6e0dce298ae454251edf6bba",
+    "crates/ic-stable-lara/canbench_results.csv": "5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567",
+    "crates/ic-stable-lara/canbench_results.yml": "a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b",
+    "crates/ic-stable-lara/canbench.yml": "db70b2c797fa32bb2349573c3b8b45550034936fb9f3408bdbd2e483ba8d986e",
+    "crates/ic-stable-lara/src/labeled/bench.rs": "bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7",
+    "crates/ic-stable-lara/src/labeled/graph/compact.rs": "738c216673823402b3fd669e1841f18bf4c1b072d84f196924a83436321e35be",
+    "crates/ic-stable-lara/src/labeled/graph/tree_write.rs": "cdb1a3e277ad1060b961b606fbcc9cd45a1d41902e9ede316423469d23863237",
+    "crates/ic-stable-lara/src/labeled/graph/remove.rs": "4ab0e39c1a0b62dd6b5d74a7218ad823f441bc3f7e2eb156807e5a22692bd0cb",
+    "crates/ic-stable-lara/src/labeled/graph/traverse.rs": "c98b2068019f2bf60c9fae862b54d8678e3e0e396bba77f64d2bb2ede7e9ab05",
+    "crates/ic-stable-lara/src/labeled/graph/test_support.rs": "1fb7823d5d0a9a03f9c53f917dc9813086dc6fc624fcf449f027ec9d1d757822",
+    "crates/ic-stable-lara/src/labeled/graph/promote/spill_test.rs": "719514725a2214f67ee9e29c6e2f5b3e1b25bf9375340cc8a58395be7f16b875",
+    "crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs": "b49ea5d44cd06e1c8a8ab7c5179591b2742cffb5301ebb913f4b90af641e6a67",
+    "crates/ic-stable-lara/src/lara/edge/free_span.rs": "21b5176a6abc8d08faefb43a8a13606c87ad7b7218a0eeac0155a42018e327a2",
+    "crates/ic-stable-paged-ordered-map/src/lib.rs": "47e1b511886cbccbe4e62b74b6bd27997b870e646b88c62e3b8a6e36c674c587",
+    "plans/0339-prepared-edge-span-publication.md": "df3d373470d8d1ef3fe3be0bd3cb99eabac54e22af911382970b75a18845199d",
+    "design/evidence/adr0097-demotion-design.md": "90d51a456ff0c2727e6807a3af39cdb59c6df08f4332aeb619aa639d1dbd177f",
+    "design/evidence/sources/adr0097-demotion-plan-r2.txt": "df3d373470d8d1ef3fe3be0bd3cb99eabac54e22af911382970b75a18845199d",
+    "design/evidence/sources/adr0097-demotion-plan-r2-draft.txt": "111dd9263a3c3438b8f8d8f106585f18e97751e07a29bf66e8ec04b9f0a8bdeb"
+  },
+  "status": " M design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md\n M design/adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md\n M design/evidence/adr0097-selected-tree-properties.md\n M design/implementation-gaps.md\n M design/storage/lara-dgap-contract.md\n M design/storage/lara.md\n?? SPILL_SWAP_BRIEF.md\n?? crates/ic-stable-lara/canbench_results.csv\n?? design/evidence/adr0097-demotion-design.md\n?? design/evidence/sources/adr0097-demotion-plan-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r1-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r1.txt\n?? design/evidence/sources/adr0097-demotion-plan-r2-draft.txt\n?? design/evidence/sources/adr0097-demotion-plan-r2.txt\n?? design/evidence/sources/adr0097-demotion-plan.txt\n",
+  "authority": "Reduced two-file admission implementation and corrected ordered ledger authorized; remove all test-thread flags; no complete A0/A1/public API/Graph/native/commit/merge authority",
+  "environment": {
+    "CARGO_TARGET_DIR": null,
+    "RUSTFLAGS": null,
+    "RUST_TEST_THREADS": null
+  },
+  "checklist": [
+    "shared exact record owner; remove ensure and reinsertion",
+    "pair identity/collision admission after existing precedence; fresh bin links",
+    "zero and already-backed reservation nonwriting; overflow-safe comparison",
+    "four isolated owner tests and exact reached-path evidence",
+    "two authorized mutations, restore, paired controls and final27/12",
+    "protect CSV each exit and as-used/restored lock; no scope expansion"
+  ]
+}

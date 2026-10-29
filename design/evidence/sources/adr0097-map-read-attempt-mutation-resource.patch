@@ -1,0 +1,19 @@
+--- candidate/lib.rs
++++ mutation/lib.rs
+@@ -1360,7 +1360,7 @@
+             #[cfg(test)]
+             self.observe_work(|w| w.completed = at + 1);
+         }
+-        self.admit_image(plan.image)?;
++
+         #[cfg(test)]
+         self.observe_image(plan.image);
+         Ok(())
+@@ -1417,6 +1417,7 @@
+     }
+ 
+     fn publish_image(&self, image: &EditImage) {
++        self.admit_image(image).expect("deferred backing reservation");
+         // All bounds, bytes and backing were prepared under the owning call/borrow.
+         // No encoding, discovery, allocation, growth or recoverable error remains.
+         for range in image.ranges.as_slice() {

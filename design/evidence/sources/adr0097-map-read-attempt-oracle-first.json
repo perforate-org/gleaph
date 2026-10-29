@@ -1,0 +1,11 @@
+{
+  "source_sha256": "95ff6ee6ec4898a52e30b231674dc318c67d2c20af101cc4d37fc07841d2f4a8",
+  "production_unchanged": true,
+  "existing_tests_and_helpers_unchanged": true,
+  "new_test": "edit_image_read_partition",
+  "cases": 33,
+  "backings": 1,
+  "backing_pages": 3,
+  "map_Graph_PocketIC_constructors": 0,
+  "runtime": "not run against prior source; contract oracle appended before production branch"
+}

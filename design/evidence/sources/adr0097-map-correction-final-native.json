@@ -1,0 +1,122 @@
+{
+  "replace": {
+    "traffic": {
+      "reads": 9,
+      "read_bytes": 112,
+      "writes": 1,
+      "write_bytes": 8,
+      "max_read": 32,
+      "max_write": 8,
+      "sizes": 1,
+      "grows": 0,
+      "grown_pages": 0
+    },
+    "scratch": {
+      "dirty_bytes": 8,
+      "ranges": 1,
+      "byte_capacity": 0,
+      "range_capacity": 0,
+      "result_capacity": 0,
+      "reserves": 0,
+      "grows": 0,
+      "grown_pages": 0,
+      "completed": 1
+    }
+  },
+  "missing": {
+    "traffic": {
+      "reads": 12,
+      "read_bytes": 128,
+      "writes": 0,
+      "write_bytes": 0,
+      "max_read": 32,
+      "max_write": 0,
+      "sizes": 1,
+      "grows": 0,
+      "grown_pages": 0
+    },
+    "scratch": {
+      "dirty_bytes": 0,
+      "ranges": 0,
+      "byte_capacity": 0,
+      "range_capacity": 0,
+      "result_capacity": 0,
+      "reserves": 0,
+      "grows": 0,
+      "grown_pages": 0,
+      "completed": 1
+    }
+  },
+  "tail_insert": {
+    "traffic": {
+      "reads": 12,
+      "read_bytes": 128,
+      "writes": 3,
+      "write_bytes": 26,
+      "max_read": 32,
+      "max_write": 16,
+      "sizes": 1,
+      "grows": 0,
+      "grown_pages": 0
+    },
+    "scratch": {
+      "dirty_bytes": 26,
+      "ranges": 3,
+      "byte_capacity": 0,
+      "range_capacity": 0,
+      "result_capacity": 0,
+      "reserves": 0,
+      "grows": 0,
+      "grown_pages": 0,
+      "completed": 1
+    }
+  },
+  "tail_remove": {
+    "traffic": {
+      "reads": 13,
+      "read_bytes": 136,
+      "writes": 2,
+      "write_bytes": 10,
+      "max_read": 32,
+      "max_write": 8,
+      "sizes": 1,
+      "grows": 0,
+      "grown_pages": 0
+    },
+    "scratch": {
+      "dirty_bytes": 10,
+      "ranges": 2,
+      "byte_capacity": 0,
+      "range_capacity": 0,
+      "result_capacity": 0,
+      "reserves": 0,
+      "grows": 0,
+      "grown_pages": 0,
+      "completed": 1
+    }
+  },
+  "split": {
+    "traffic": {
+      "reads": 94,
+      "read_bytes": 1368,
+      "writes": 8,
+      "write_bytes": 1146,
+      "max_read": 32,
+      "max_write": 560,
+      "sizes": 1,
+      "grows": 0,
+      "grown_pages": 0
+    },
+    "scratch": {
+      "dirty_bytes": 1146,
+      "ranges": 8,
+      "byte_capacity": 1168,
+      "range_capacity": 12,
+      "result_capacity": 0,
+      "reserves": 2,
+      "grows": 0,
+      "grown_pages": 0,
+      "completed": 1
+    }
+  }
+}

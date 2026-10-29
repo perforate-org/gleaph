@@ -143,7 +143,23 @@ reusing canonical point state and `tree_read::read_property_value_at_slot`. No m
 mutation owner is added. Slab/run independent-plane and borrowed replay paths are unchanged.
 The [ADR0050 selected-read contract](../adr/0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability)
 defines ordering, liveness and borrowing; [bounded GAP006 evidence](../evidence/adr0097-selected-tree-properties.md)
-records `036649e67` and its tested limits. This is not deletion/demotion or landing approval.
+records `036649e67` and its tested limits. Independent review approved the bounded read repair
+through `f297706ab`, not deletion/demotion or landing.
+
+### Planned native deletion and demotion ownership
+
+The [Planned ADR0088 decision](../adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
+is the source of truth for GAP001/003's proposed replacement contract. It is not implemented:
+the writer assertion and recorded 513→512 failure remain unchanged. Native selection belongs to
+`tree_write`; physical placement, old/new ownership and pinned leaf cover belong to `compact` and
+the existing allocators. Graph owns counterpart orchestration, sidecars/postings and its message
+fence. The [revised source audit and plan](../evidence/adr0097-demotion-design.md) put allocator
+preparation before whole-outer-operation peer/pin/rewrite publication, not merely per-vertex commits.
+
+The reclaim policy is reopened: unchanged 512/1024 thresholds do not approve permanent `S>1024`
+retention, and the spill-free target cap is not the prefix/run envelope. Existing movement surfaces
+must be compared before assuming new persistent progress. Empty-retirement liveness/work remains
+unproved. No move-capability API, persistent state, threshold or layout change is authorized.
 
 ### 3. Segment physical contract (rope)
 
@@ -197,7 +213,23 @@ scan contracts or borrowing0395 approval. `mode-footprint-p5/{pre-closure,closur
 code/runtime/cost and the pre-commit final plan/source/protection/index gates. The subsequently
 user-authorized scoped commit is bound by `mode-footprint-user-commit-c1/commit-receipt.json`; old
 no-stage/commit/push receipts retain their historical scope.0396 resolves this mode prerequisite;
-0394 geometry is not implemented and needs a fresh baseline.
+0394 geometry remains unimplemented. Its fresh post0396 baseline and four BEFORE controls are now
+bound by `geometry-copy-composition/restart-p2-post0396-baseline/{baseline,before-results}.json`
+under the tiny-leaf evidence directory: native723, ordinary lib/tests Clippy, format and locked
+full-worktree Wasm pass. That baseline-only phase adds no geometry code/test or AFTER; thirteen
+planned identities imply736. The subsequent authorized0394 P3 shared-publisher probe passes three
+new candidate functions but fails eight existing successes (native726:718/8). Normal tree promotion
+can publish a standalone root without a matching vertex cover: an unpinned zero-count/zero-cover
+source already has a one-slot root, and a separate natural property-tree source has root[1280,1290)
+outside cover[256,273) and assigned pin[256,1280). The normal branch of
+`promote.rs::transcribe_and_publish_tree` keeps new_alloc=old_alloc and publishes an existing
+bucket-row image only. Its root/cover/pin source contract needs a separately reviewed prerequisite
+or explicit geometry rescope; it is outside0394's20-path permission. The candidate and temporary
+suffixes are archived/restored, with native723, lib/tests Clippy and format passing. No retained
+geometry implementation, AFTER or implementation approval is claimed. See
+`geometry-copy-composition/restart-p3-geometry-implementation/{rejected-probe,source-restoration}.json`
+and `tree-resident-source-diagnosis.md` under the same evidence root. Earlier0396 measurements and
+0394 fresh BEFORE retain their original producers.
 The [workspace lock prerequisite](../implementation-gaps.md#gap-workspace-lock-drift--locked-build-prerequisite-resolved)
 and four fresh BEFORE controls remain P3 evidence, not AFTER results.
 
@@ -353,10 +385,11 @@ See `physical-layout-implementation/physical-implementation-i2-fix-checklist.jso
 I2 Wasm/control receipts and `physical-implementation-review-i2-{report.md,completion.json}` under its
 evidence root; earlier publisher/r4 evidence remains immutable. Approval-status updates do not change
 the reviewed source/execution contract.
-0395's physical prerequisite is CLOSED.0396 now resolves the mode-writer prerequisite;0394
-geometry remains STOPPED IMPLEMENTATION pending its fresh source/native/performance baseline.
-Completed post0395 Q1 review: APPROVE DRAFT BOUNDARY, exit0/101.35s, ZERO tools, no required P0/P1/P2
-(`geometry-copy-composition/rescope-review-q1-{report.md,completion.json}`). That draft reuses desired resident-copy admission under one
+0395's physical prerequisite is CLOSED.0394 received explicit implementation allocation after
+completed post0395 Q1 review: APPROVE DRAFT BOUNDARY, exit0/101.35s, ZERO tools, no required P0/P1/P2
+(`geometry-copy-composition/rescope-review-q1-{report.md,completion.json}`). Its historical restart P1
+stopped on the mode-writer source defect, now resolved by0396. Fresh0394 source/native/performance
+baseline admission remains required before geometry work. That draft reuses desired resident-copy admission under one
 source-bound logical geometry/header/count/pin/allocator unit and one surviving compact publisher;
 canonical physical-only factory restrictions and nonpublishable standalone copy components remain.
 Earlier-label scalar/current-caller success must now be proven with retained bytes moved into the
@@ -365,6 +398,20 @@ combined-root scratch is accounted separately from four-target tiny transcriptio
 CsrEdge-generic; live width and outer operations remain excluded. Historical baseline715/planned728
 is not the post0396 inventory: current723 plus13 planned geometry identities implies736. The actual
 degree4→5 control is retained for prerequisite measurements, not geometry implementation approval.
+P1 retains that correction and BEFORE190,825,723 instructions (physical controls1,531,031/1,578,135;
+export-name bytes19997). Its first-pin probe passes the new count-rejection test but regresses an
+existing success: original pin entry already has start256/total80/capacity272, while compact's
+checked source would infer end336. `restart-p1/{rejected-pin-probe,baseline-pin-problem}.json` under
+`geometry-copy-composition` bind the candidate and exact original-path diagnostic. Subsequent R1
+now proves the producer defect, `16−5+(5+64)=80`, with no edge allocation or pin growth; see the
+[mode-transfer diagnosis](../evidence/adr0097-pin-extent-source-diagnosis.md) and
+`pin-extent-source-r1/stage-cause.json`. Readers must share the checked assigned-range source after
+writer repair. No bounds relaxation, counter reset, undeclared relocation/storage-layout fix or
+existing-test weakening is accepted.
+The geometry prototype and temporary RED/diagnostic suffix were restored; no0394 production geometry,
+AFTER or implementation approval is claimed.0396 separately implements the diagnosed mode-transfer
+prerequisite without changing persisted layout. Its tree-sibling cleanup/retirement is independently
+covered, not inferred from the ordinary roundtrip; its additional paths do not widen Q1's permission.
 [GAP-LARA-TINY-GEOMETRY](../implementation-gaps.md#gap-lara-tiny-geometry--tiny-promotion-publishes-before-complete-geometry-admission)
 records exact failed receipts and restored diagnostic source. Tiny/logical geometry remains
 unchanged;0395 does change the physical-only copy/admission/publication paths.

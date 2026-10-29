@@ -1,0 +1,87 @@
+--- E-lib.rs
++++ W-lib.rs
+@@ -2938,6 +2938,84 @@
+         assert_eq!(m.len(), 2);
+         assert_eq!(m.read_dir_entry(0), original);
+         m.validate().unwrap();
++    }
++
++    #[test]
++    fn edit_image_cover_empty_entry_and_zero_count_contract() {
++        let memory = DefaultMemoryImpl::default();
++        assert_eq!(memory.grow(1), 0);
++        let base = 256u64;
++        let canonical: [u8; 128] = std::array::from_fn(|i| (i + 1) as u8);
++        memory.write(base, &canonical);
++        let before = backing(&memory);
++        for (name, address, count, heap) in [
++            ("inline-first", base, 8, false),
++            ("heap-first", base + 64, 48, true),
++            ("empty-zero", base + 120, 0, false),
++        ] {
++            let mut image = EditImage::new();
++            image.backed_end = memory.size() * WASM_PAGE_SIZE;
++            if heap {
++                image.ranges.reserve(9).unwrap();
++                image.bytes.reserve(48).unwrap();
++            }
++            assert_eq!(matches!(&image.ranges, Scratch::Heap(_)), heap);
++            assert_eq!(matches!(&image.bytes, Scratch::Heap(_)), heap);
++            assert!(image.ranges.as_slice().is_empty());
++            assert!(image.bytes.as_slice().is_empty());
++            let capacity = (image.ranges.capacity(), image.bytes.capacity());
++            if heap {
++                assert!(capacity.0 >= 9 && capacity.1 >= 48);
++            } else {
++                assert_eq!(image.ranges.dynamic_capacity(), 0);
++                assert_eq!(image.bytes.dynamic_capacity(), 0);
++            }
++            let mut calls = Vec::new();
++            eprintln!("FIRST_COVER_CASE {name}");
++            let offset = image.cover(address, count, |at, dst| {
++                calls.push((at, dst.len()));
++                memory.read(at, dst);
++            });
++            let expected_calls = if count == 0 {
++                vec![]
++            } else {
++                vec![(address, count)]
++            };
++            assert_eq!(calls, expected_calls, "{name}: callback");
++            assert_eq!(offset, 0);
++            let ranges = image.ranges.as_slice();
++            assert_eq!(ranges.len(), 1);
++            assert_eq!(
++                (ranges[0].address, ranges[0].offset, ranges[0].len),
++                (address, 0, count)
++            );
++            let start = (address - base) as usize;
++            assert_eq!(image.bytes.as_slice(), &canonical[start..start + count]);
++            assert_eq!((image.ranges.capacity(), image.bytes.capacity()), capacity);
++            assert_eq!(backing(&memory), before);
++            if count == 8 {
++                let second = base + 32;
++                calls.clear();
++                eprintln!("FIRST_COVER_CASE inline-disjoint");
++                let offset = image.cover(second, 16, |at, dst| {
++                    calls.push((at, dst.len()));
++                    memory.read(at, dst);
++                });
++                assert_eq!(calls, vec![(second, 16)], "inline-disjoint: callback");
++                assert_eq!(offset, 8);
++                let shape: Vec<_> = image
++                    .ranges
++                    .as_slice()
++                    .iter()
++                    .map(|range| (range.address, range.offset, range.len))
++                    .collect();
++                assert_eq!(shape, vec![(base, 0, 8), (second, 8, 16)]);
++                assert_eq!(&image.bytes.as_slice()[..8], &canonical[..8]);
++                assert_eq!(&image.bytes.as_slice()[8..], &canonical[32..48]);
++                assert_eq!((image.ranges.capacity(), image.bytes.capacity()), capacity);
++                assert_eq!(backing(&memory), before);
++            }
++        }
+     }
+ 
+     #[test]

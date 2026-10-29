@@ -1,0 +1,436 @@
+{
+  "total": 600,
+  "protected_final": 120,
+  "entries": [
+    {
+      "step": "setup",
+      "cap": 20,
+      "charged": 20,
+      "status": "charged in full: skills/inspection, immutable pins, baseline snapshots and runner setup"
+    },
+    {
+      "step": "baseline-native",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 20,
+      "charged": 2.8325714159291238,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "ae76d90f63313870057d6f8d689c20d095c3115865ef4eb9174afaf92da46fd0",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "faea4ee407a4bdc9fdc3fc8d88ed14ec4c96781ff2904ea93684e9defb08337b"
+    },
+    {
+      "step": "baseline-scalar",
+      "command": [
+        "canbench",
+        "bench_paged_scalar_edits_97",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map",
+      "cap": 75,
+      "charged": 27.659518708009273,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "ae76d90f63313870057d6f8d689c20d095c3115865ef4eb9174afaf92da46fd0",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "50d1eef387c0f8a088d7e5191c2e7969a47c812240fc563edc06118f9209782f",
+      "csv_sha256": "3c56e741173b67a97ce32fa8dfb9635bbd9671491b9f3dc082d79b0a15c8e57b",
+      "wasm_sha256": "0f4741b8edfceb71e3af081c65bcb3644798d96c8d3b69bad6e26f84437cf8c5"
+    },
+    {
+      "step": "baseline-allocator",
+      "command": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap": 100,
+      "charged": 55.14073395810556,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "ae76d90f63313870057d6f8d689c20d095c3115865ef4eb9174afaf92da46fd0",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "3bb1412b22d6bcac081407a98f02e528e18a67287cdc7aaf359901c4971fffa1",
+      "csv_sha256": "addf4409f5198a7221bfe3a421aef40f62ad1b8c40e28f6f1d821565894b066d",
+      "wasm_sha256": "8c3cd39479f641397d0698638c4df4807174a6cae712c94727036d72c2d9c7ce"
+    },
+    {
+      "step": "format",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 5,
+      "charged": 0.32314037496689707,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "b449590a1c577caf70d50699a1cfc1f1237f497d5789f16881c679bf1e1dde41",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "step": "candidate-native",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 30,
+      "charged": 2.663552207988687,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "d5f8f9c57d2c714db66e51f44d6d1f3b1a0dd8de3f57cf6ab628304a06ea4e61",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "e22af2c385a3cebdf7b75b02f201745aa50dc184b4299d59d16906cd68c578ef"
+    },
+    {
+      "step": "candidate-doc",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 10,
+      "charged": 2.4719707920448855,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "d5f8f9c57d2c714db66e51f44d6d1f3b1a0dd8de3f57cf6ab628304a06ea4e61",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "810a442bcddc8c1e939fbe8a4811c4c3a918fc1c9c2078088bdd5de2a60d6fac"
+    },
+    {
+      "step": "mutation-early",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_directory_rejection",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 10,
+      "charged": 2.524908166960813,
+      "exit": 101,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "3ee99f0356c9b500c678790cbe8b69a4b97f53ce80928270f453da588afaef2c",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "f231374baea2dd8d73fea00fbc577fd6d8baf19ed337ae909c89ce12ce7a7d88"
+    },
+    {
+      "step": "mutation-resource",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "prepared_edits_resources_and_retry",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 10,
+      "charged": 1.1002142919460312,
+      "exit": 101,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "a41acee4477d4f612e3386d2d9e0f87b7143d3fe81f9d3553f0febcf5eae60ca",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "dd1d68a994017090d742e9254f8dbc97030629657807e955d8ee8f753cc0e496"
+    },
+    {
+      "step": "source-restoration",
+      "cap": 20,
+      "charged": 20,
+      "verification_elapsed": 0.610091165988706,
+      "exit": 0,
+      "covers": "mutation snapshot/patch/restoration, source/measurement/fixture/foreign identity audit, versions, bookkeeping"
+    },
+    {
+      "step": "candidate-scalar",
+      "command": [
+        "canbench",
+        "bench_paged_scalar_edits_97",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-paged-ordered-map",
+      "cap": 75,
+      "charged": 6.555528792086989,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "cbe6488d1856705e28812be81f2f35254a448c45abce2c7484fdc9819ffaea62",
+      "csv_sha256": "c0b6a1c1d3071522457bcd8de84c61d9d30c87556e3180c8e53bcd587aa45f78",
+      "wasm_sha256": "37842bd4cdd71ef3b8adca3282bfa928a05a54240b394ce52fb5a9d72d3d1f64"
+    },
+    {
+      "step": "candidate-allocator",
+      "command": [
+        "canbench",
+        "bench_r_fs_tkbfs_1024",
+        "--csv"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill/crates/ic-stable-lara",
+      "cap": 100,
+      "charged": 51.603808374959044,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "95ee8ed3e900a1cb451752e6fb9bad360a6f69917111226297c1b6a9e07a8f81",
+      "csv_sha256": "2116409cd572621b457a2c088986755842b78de90d1866e53bb4d3a6b4b3ce99",
+      "wasm_sha256": "7d32ecc9cc7f323d2facbb1a2e2d55bf812c1e43027e530a097d267a7c958c0d"
+    },
+    {
+      "step": "final-format",
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/ic-stable-paged-ordered-map/src/lib.rs",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 5,
+      "charged": 0.24581012490671128,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "step": "final-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 25,
+      "charged": 3.4587887920206413,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "7e6b459e7ad34d74e45086bce87800e8e7f7f2d4302778018d3882d53db15d09"
+    },
+    {
+      "step": "final-map",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--lib",
+        "tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 20,
+      "charged": 1.7476349170319736,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "4759b42686933c57f762f0e7e47805566b37b11421016ade14376c7433d82d22"
+    },
+    {
+      "step": "final-free",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-lara",
+        "--lib",
+        "lara::edge::free_span::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 25,
+      "charged": 11.970172000001185,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "dbf4cb18128b5d5551f2a4e3ae6e04cc92f39f614f083421b3830a2463bfeb97"
+    },
+    {
+      "step": "final-doc",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ic-stable-paged-ordered-map",
+        "--doc",
+        "--",
+        "--show-output"
+      ],
+      "cwd": "/Users/yota/dev/gleaph-spill",
+      "cap": 15,
+      "charged": 1.312496625003405,
+      "exit": 0,
+      "timed_out": false,
+      "restored": true,
+      "source_sha256": {
+        "crates/ic-stable-paged-ordered-map/src/lib.rs": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+        "crates/ic-stable-paged-ordered-map/src/bench.rs": "2f95a494f6c35e38f4480841210b7768c3c11d0afe7866bd3fa932150fc158e7",
+        "crates/ic-stable-lara/src/lara/edge/free_span.rs": "35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd"
+      },
+      "as_used_lock": "f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf",
+      "local_lock": "15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2",
+      "log_sha256": "52c8430f4bbcfeb106ef5f26394eb184bf8018b0df2dfd40b1298a704a8d32bd"
+    },
+    {
+      "step": "final-evidence",
+      "cap": 15,
+      "charged": 15,
+      "collection_elapsed": 0.14458779094275087,
+      "exit": 1,
+      "covers": "paired/native collection, Lizard snapshots/metrics, source/build evidence, report/plan preparation"
+    },
+    {
+      "step": "final-evidence-correction",
+      "cap": 5,
+      "charged": 0.6162521248916164,
+      "exit": 0,
+      "diagnosis": "Normal-scheduling libtest status ok was glued to max_write; normalize complete progress fragments and detached completion text in the one shared parser. Raw log and initial script/result preserved. No Rust rerun."
+    },
+    {
+      "step": "final-closure",
+      "cap": 10,
+      "charged": 10,
+      "exit": 0,
+      "covers": "remaining final evidence contingency: durable/prose/history/path/whitespace checks, truthful incomplete final-plan gate, closed manifest"
+    }
+  ],
+  "closed": true,
+  "completion": "blocked: IC regressions, header codec normalization and final-plan refusal; no further authority"
+}

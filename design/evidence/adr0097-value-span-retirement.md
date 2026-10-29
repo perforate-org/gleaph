@@ -6,11 +6,13 @@ The [independent review of 0371](adr0097-value-span-retirement-review.md) approv
 implementation/ownership axis and identified one P2 batch coverage gap. The
 [0372 batch witnesses and owning-layer repair](adr0097-batch-value-span-regressions.md) address the
 reachable paths and correct the review's admission/reservation assumptions. Final independent
-Standards and Spec re-reviews both approve with no findings. Repeated-fold performance work has not
-started. The subsequent commit authorization is limited to the reviewed 0372 slice.
+Standards and Spec re-reviews both approve with no findings. The subsequent
+[0373 repeated-fold experiment](adr0097-repeated-fold-economics.md) records alternating append/fold/read
+totals and reuse separately; it does not choose an automatic-fold threshold. Commit authorization
+for 0372 does not authorize committing that later experiment.
 
 The runtime results and numeric tables below remain the pinned 0371 measurements; they are not
-claimed as reruns of the uncommitted 0372 source.
+claimed as reruns of the 0372 or 0373 source.
 
 The [0370 missing-retirement defect](adr0097-value-prefix-reclamation.md) is repaired at the shared
 value-span publication boundary. A fold now returns its old 32-slot prefix to the existing allocator:

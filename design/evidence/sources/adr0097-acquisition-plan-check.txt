@@ -1,0 +1,1 @@
+Plan is structurally valid for phase=draft: plans/0340-prepared-paged-map-edits.md

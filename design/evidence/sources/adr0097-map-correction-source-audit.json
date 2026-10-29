@@ -1,0 +1,83 @@
+{
+  "status": "source controls preserved; correction frozen for IC/final gates",
+  "source_sha256": "9436291caf0d7c2e878839eecf986ac7246236ba3410d8a2dc1fa08ab43e6b71",
+  "baseline_sha256": "be81cd30103fda176a1d6517f12fc2f2b28f90960c11d7243bc8d0a40f209460",
+  "tests_sha256": "2e0c788eed1ae1c552486537376855a8788b04f512607d5c88af7cbcbf4ca22d",
+  "tests": 17,
+  "doctests": "exact source unchanged;5 runtime/compiler cases already passed",
+  "controls": [
+    {
+      "begin": "// Three uses, one inline/overflow representation;",
+      "end": "struct EditPlan<'a",
+      "sha256": "4d03994625d3ce61b64a3447658d0fbc04f6b99e00a4656e4debc280651e9c6f"
+    },
+    {
+      "begin": "    fn read<const N: usize>",
+      "end": "    fn page(&self, page: u64)",
+      "sha256": "a8e3f9b186e65372d6e0d87daabff177a665ed0148069827c6f1881737285a45"
+    },
+    {
+      "begin": "    fn reserve(&mut self, bytes: usize, ranges: usize)",
+      "end": "    fn set_page(",
+      "sha256": "8bcf60dc38bb23884875b6fc9b7dc9eea792ec05610a04bfd1493648c0278d7a"
+    },
+    {
+      "begin": "    fn update_neighbor(",
+      "end": "\nfn locate_directory(",
+      "sha256": "72cc4b8eda4a64c29cd4202cfb0b94edfedf65835b38b8b2aac630ef65899f26"
+    },
+    {
+      "begin": "fn locate_directory(",
+      "end": "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\nstruct DirEntry",
+      "sha256": "ecfc13099d27e6b33105ae932aee42b4d43f2c23a33467de5f7fba2cc42b4c51"
+    },
+    {
+      "begin": "    fn reserve_scratch<",
+      "end": "    fn publish_image(",
+      "sha256": "016a12dd0bdfb577df472dd4ad25a87b3bcf7f818755ea223ba734b2ad214150"
+    },
+    {
+      "begin": "    fn observe_work(",
+      "end": "    // Retain the existing direct split-admission test",
+      "sha256": "5b86d4ff82811b005391a27e17e23b7f1312820190b85948114bb7c17b838a05"
+    },
+    {
+      "begin": "/// Owner-bound, single-use prepared changes.",
+      "end": "#[must_use =",
+      "sha256": "1debfca54a614421b1cb9a71778a1f0af839f506e28cd8f02e5ad4439ee89155"
+    },
+    {
+      "begin": "struct WorkObservation {",
+      "end": "\nimpl<M: Memory> StablePagedOrderedMap<M>",
+      "sha256": "f9ab1e08bebbe73078c2024bfd2b02266ab59f4c581d61e2ccdceb9c967b0382"
+    }
+  ],
+  "removed_helpers": [
+    "read_u16",
+    "write_u8",
+    "write_u16"
+  ],
+  "helper_caller_proof": "each helper had exactly definition + canonical header mapping caller before, zero occurrences after",
+  "mapping_sites": [
+    "EditPlan::page",
+    "EditPlan::set_page",
+    "read_page_header",
+    "test-only write_page_header"
+  ],
+  "canonical_header_traffic_source_delta": {
+    "before_calls": 5,
+    "before_bytes": 27,
+    "after_calls": 1,
+    "after_bytes": 32
+  },
+  "prospective_header_traffic": {
+    "calls": 1,
+    "bytes": 32
+  },
+  "new_types_modules_dependencies_public_flags": 0,
+  "checked_semantics": "No admission, ordering, split/shift, overlay/container, checked arithmetic or publish-loop change",
+  "source_diff_lines": {
+    "added": 76,
+    "removed": 64
+  }
+}

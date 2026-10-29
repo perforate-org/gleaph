@@ -1,0 +1,64 @@
+R_ACTUAL_SOURCE_VERIFIED before versions/build; exact correct R, unchanged benchmark/other pins/protected state.
+R/benchmark/Q reference pinned; three tool-version outputs match saved reference;27 protected verified
+[
+  {
+    "name": "bench_paged_scalar_edits_97",
+    "instructions": 913027,
+    "Q_instructions": 914080,
+    "R_minus_Q": -1053,
+    "percent_vs_Q": -0.11519779450376334,
+    "original_aggregate_reference": 497282,
+    "R_minus_original_aggregate": 415745,
+    "aggregate_is_not_a_gate_waiver": true
+  },
+  {
+    "name": "bench_paged_scalar_edits_97::scalar_missing_64",
+    "instructions": 128296,
+    "Q_instructions": 128296,
+    "R_minus_Q": 0,
+    "percent_vs_Q": 0.0,
+    "original_ceiling": 85672,
+    "R_minus_original_ceiling": 42624,
+    "original_ceiling_met": false,
+    "candidate_rule": "R <= Q nonregression",
+    "candidate_rule_met": true
+  },
+  {
+    "name": "bench_paged_scalar_edits_97::scalar_replace_64",
+    "instructions": 149000,
+    "Q_instructions": 149000,
+    "R_minus_Q": 0,
+    "percent_vs_Q": 0.0,
+    "original_ceiling": 77576,
+    "R_minus_original_ceiling": 71424,
+    "original_ceiling_met": false,
+    "candidate_rule": "R <= Q nonregression",
+    "candidate_rule_met": true
+  },
+  {
+    "name": "bench_paged_scalar_edits_97::scalar_split_directory",
+    "instructions": 69444,
+    "Q_instructions": 70497,
+    "R_minus_Q": -1053,
+    "percent_vs_Q": -1.493680582152432,
+    "original_ceiling": 30930,
+    "R_minus_original_ceiling": 38514,
+    "original_ceiling_met": false,
+    "candidate_rule": "R < Q split",
+    "candidate_rule_met": true
+  },
+  {
+    "name": "bench_paged_scalar_edits_97::scalar_tail_pairs_64",
+    "instructions": 561354,
+    "Q_instructions": 561354,
+    "R_minus_Q": 0,
+    "percent_vs_Q": 0.0,
+    "original_ceiling": 298171,
+    "R_minus_original_ceiling": 263183,
+    "original_ceiling_met": false,
+    "candidate_rule": "R <= Q nonregression",
+    "candidate_rule_met": true
+  }
+]
+R_SCALAR_MEASURED: numeric misses remain misses; no retry, LARA run or retention authorized
+ROOT=/tmp/spill-position-scalar-fa2501ec canbench_exit=0 primary_exit=0 cleanup_failed=0

@@ -1,0 +1,265 @@
+{
+  "kind": "rectangular normalization from the SAVED raw canbench output; no rerun; the flawed original \u2026-exec-components.csv is preserved byte-exact",
+  "source": "adr0097-map-read-exec-canbench-output.txt (DIAG_* lines)",
+  "categories": [
+    {
+      "phase": 0,
+      "cat": 0,
+      "name": "init",
+      "sum": 12800,
+      "pairs": 64
+    },
+    {
+      "phase": 0,
+      "cat": 1,
+      "name": "prepare",
+      "sum": 450432,
+      "pairs": 64
+    },
+    {
+      "phase": 0,
+      "cat": 2,
+      "name": "result",
+      "sum": 17856,
+      "pairs": 64
+    },
+    {
+      "phase": 0,
+      "cat": 3,
+      "name": "publish",
+      "sum": 23424,
+      "pairs": 64
+    },
+    {
+      "phase": 0,
+      "cat": 4,
+      "name": "read",
+      "sum": 154624,
+      "pairs": 512
+    },
+    {
+      "phase": 0,
+      "cat": 5,
+      "name": "cover",
+      "sum": 35648,
+      "pairs": 64
+    },
+    {
+      "phase": 0,
+      "cat": 6,
+      "name": "admit",
+      "sum": 13568,
+      "pairs": 64
+    },
+    {
+      "phase": 1,
+      "cat": 0,
+      "name": "init",
+      "sum": 12800,
+      "pairs": 64
+    },
+    {
+      "phase": 1,
+      "cat": 1,
+      "name": "prepare",
+      "sum": 502656,
+      "pairs": 64
+    },
+    {
+      "phase": 1,
+      "cat": 2,
+      "name": "result",
+      "sum": 17856,
+      "pairs": 64
+    },
+    {
+      "phase": 1,
+      "cat": 3,
+      "name": "publish",
+      "sum": 17472,
+      "pairs": 64
+    },
+    {
+      "phase": 1,
+      "cat": 4,
+      "name": "read",
+      "sum": 211136,
+      "pairs": 704
+    },
+    {
+      "phase": 1,
+      "cat": 5,
+      "name": "cover",
+      "sum": 0,
+      "pairs": 0
+    },
+    {
+      "phase": 1,
+      "cat": 6,
+      "name": "admit",
+      "sum": 13568,
+      "pairs": 64
+    },
+    {
+      "phase": 2,
+      "cat": 0,
+      "name": "init",
+      "sum": 25600,
+      "pairs": 128
+    },
+    {
+      "phase": 2,
+      "cat": 1,
+      "name": "prepare",
+      "sum": 1450624,
+      "pairs": 128
+    },
+    {
+      "phase": 2,
+      "cat": 2,
+      "name": "result",
+      "sum": 35712,
+      "pairs": 128
+    },
+    {
+      "phase": 2,
+      "cat": 3,
+      "name": "publish",
+      "sum": 60032,
+      "pairs": 128
+    },
+    {
+      "phase": 2,
+      "cat": 4,
+      "name": "read",
+      "sum": 441280,
+      "pairs": 1472
+    },
+    {
+      "phase": 2,
+      "cat": 5,
+      "name": "cover",
+      "sum": 246592,
+      "pairs": 320
+    },
+    {
+      "phase": 2,
+      "cat": 6,
+      "name": "admit",
+      "sum": 27136,
+      "pairs": 128
+    },
+    {
+      "phase": 3,
+      "cat": 0,
+      "name": "init",
+      "sum": 200,
+      "pairs": 1
+    },
+    {
+      "phase": 3,
+      "cat": 1,
+      "name": "prepare",
+      "sum": 227617,
+      "pairs": 1
+    },
+    {
+      "phase": 3,
+      "cat": 2,
+      "name": "result",
+      "sum": 279,
+      "pairs": 1
+    },
+    {
+      "phase": 3,
+      "cat": 3,
+      "name": "publish",
+      "sum": 1932,
+      "pairs": 1
+    },
+    {
+      "phase": 3,
+      "cat": 4,
+      "name": "read",
+      "sum": 33706,
+      "pairs": 94
+    },
+    {
+      "phase": 3,
+      "cat": 5,
+      "name": "cover",
+      "sum": 128248,
+      "pairs": 74
+    },
+    {
+      "phase": 3,
+      "cat": 6,
+      "name": "admit",
+      "sum": 212,
+      "pairs": 1
+    }
+  ],
+  "endpoints": [
+    {
+      "phase": 0,
+      "diagnostic_endpoints": 1600
+    },
+    {
+      "phase": 1,
+      "diagnostic_endpoints": 1856
+    },
+    {
+      "phase": 2,
+      "diagnostic_endpoints": 4480
+    },
+    {
+      "phase": 3,
+      "diagnostic_endpoints": 343
+    }
+  ],
+  "calibration": [
+    {
+      "slot": 0,
+      "shape": "standalone64",
+      "n": 64,
+      "sum": 12800,
+      "min": 200,
+      "max": 200
+    },
+    {
+      "slot": 1,
+      "shape": "nested_inner16",
+      "n": 16,
+      "sum": 3200,
+      "min": 200,
+      "max": 200
+    },
+    {
+      "slot": 2,
+      "shape": "shared32",
+      "n": 32,
+      "sum": 8271,
+      "min": 211,
+      "max": 260
+    },
+    {
+      "slot": 3,
+      "shape": "nested_outer1",
+      "n": 1,
+      "sum": 7742,
+      "min": 7742,
+      "max": 7742
+    }
+  ],
+  "calibration_delta": {
+    "nested_outer_minus_inner": 4542
+  },
+  "column_definitions": {
+    "sum": "instructions summed over pairs (raw instrumented interval sum, includes exit-counter read; bookkeeping placement per shared-endpoint/nested rules)",
+    "pairs": "number of finalized interval samples",
+    "diagnostic_endpoints": "runtime tick/finish call count; canbench counters excluded"
+  },
+  "category_rows": 28,
+  "endpoint_rows": 4,
+  "calibration_rows": 4
+}
