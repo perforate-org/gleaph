@@ -3933,8 +3933,18 @@ where
         };
         #[cfg(test)]
         physical_layout_event(PhysicalLayoutEvent::Prepare(src));
+        let (source, canonical) = self.capture_physical_layout_source(src)?;
+        self.prepare_physical_layout_from(src, source, canonical, operation)
+    }
+
+    /// Capture one leaf's mutable sources once: the owner snapshot and every canonical row.
+    /// A caller that already captured (relocation sizing) hands the same rows to the preparation.
+    fn capture_physical_layout_source(
+        &self,
+        src: VertexId,
+    ) -> Result<(PhysicalLayoutSource<'_, E, M>, Vec<CanonicalPhysicalVertex>), LabeledOperationError>
+    {
         let source = PhysicalLayoutSource::capture(self, src)?;
-        let pinned = source.pinned_range()?;
         let seg = source.header.segment_size.max(1);
         let first = source
             .leaf
@@ -3954,6 +3964,17 @@ where
                 VertexId::from(ordinal),
             )?);
         }
+        Ok((source, canonical))
+    }
+
+    fn prepare_physical_layout_from<'a>(
+        &'a self,
+        src: VertexId,
+        source: PhysicalLayoutSource<'a, E, M>,
+        canonical: Vec<CanonicalPhysicalVertex>,
+        operation: PhysicalLayoutOperation,
+    ) -> Result<PhysicalLayoutPreparation<'a, E, M>, LabeledOperationError> {
+        let pinned = source.pinned_range()?;
         let mut header = source.header;
         let mut retired = Vec::new();
         retired
@@ -5069,13 +5090,23 @@ where
         E: CsrEdgeTombstone,
     {
         let _relocate_guard = LabeledLeafRelocateGuard::new();
-        let target = self.plan_labeled_leaf_relocation(src)?;
+        // One capture feeds both the target sizing and the preparation: the leaf's rows are read
+        // once, and every later stage works from this snapshot.
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Prepare(src));
+        let (source, canonical) = self.capture_physical_layout_source(src)?;
+        let target = self.plan_labeled_leaf_relocation_from(src, &source, &canonical)?;
         // Destination acquisition, pin/count and retirement now join one loan.
         // No allocator/header/pin mutation occurs between this freeze and ready.
-        let mut preparation = self.prepare_physical_layout(PhysicalLayoutOperation::LeafSlide {
+        let mut preparation = self.prepare_physical_layout_from(
             src,
-            destination: LeafPhysicalDestination::Relocate(target.new_len),
-        })?;
+            source,
+            canonical,
+            PhysicalLayoutOperation::LeafSlide {
+                src,
+                destination: LeafPhysicalDestination::Relocate(target.new_len),
+            },
+        )?;
         preparation.ready()?.publish();
         Ok(())
     }
@@ -5090,6 +5121,61 @@ where
         } else {
             self.read_vertex_label_buckets(vertex)
         }
+    }
+
+    /// Sizes one relocation from the rows a caller already captured, so a relocation does not
+    /// read the leaf twice. Same arithmetic as [`Self::plan_labeled_leaf_relocation`].
+    fn plan_labeled_leaf_relocation_from(
+        &self,
+        src: VertexId,
+        source: &PhysicalLayoutSource<'_, E, M>,
+        canonical: &[CanonicalPhysicalVertex],
+    ) -> Result<LabeledLeafRelocationTarget, LabeledOperationError> {
+        let _ = src;
+        let (old_start, old_len) = source
+            .pinned_range()?
+            .map_or((0, 0), |pin| (pin.start_slot, pin.len));
+        let leaf = source.leaf;
+        let counts = source.counts;
+        let used = counts.actual.max(0) as u64;
+        let active_vertices = canonical
+            .iter()
+            .filter(|row| row.vertex.degree() > 0 || row.vertex.stored_slots > 0)
+            .count() as u64;
+        let mut resident_geometry = 0u64;
+        for row in canonical {
+            if row.vertex.degree() == 0 && row.vertex.stored_slots == 0 {
+                continue;
+            }
+            let mut resident_slots = 0u32;
+            for bucket in &row.buckets {
+                if bucket.is_tiny_mode() {
+                    continue;
+                }
+                resident_slots = resident_slots
+                    .checked_add(self.bucket_resident_rows(bucket)?)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            }
+            resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
+        }
+        let seg = source.header.segment_size.max(1);
+        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
+        let raw_len = resident_geometry
+            .saturating_add(active_vertices)
+            .saturating_add(geometric_slack)
+            .max(used.saturating_add(active_vertices))
+            .max(old_len.saturating_add(1));
+        let new_len = raw_len
+            .div_ceil(block_len)
+            .saturating_mul(block_len)
+            .max(block_len);
+        Ok(LabeledLeafRelocationTarget {
+            leaf,
+            old_start,
+            old_len,
+            new_len,
+        })
     }
 
     /// Computes one relocation target from the leaf's current resident geometry.
