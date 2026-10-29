@@ -2194,7 +2194,7 @@ mod tests {
         assert_eq!(pre_prop_root_len, 1, "pre-deepen property root = 1");
         assert_eq!(pre_combined_len, 5, "pre-deepen combined = 5");
         // 4. Call `tree_mode_deepen` directly.
-        tree_mode_deepen::<TestEdge, VectorMemory>(&graph, slot, &bucket).expect("deepen");
+        tree_mode_deepen::<TestEdge, VectorMemory>(&graph, vid, slot, &bucket).expect("deepen");
         // 5. Verify post-deepen state.
         let bucket = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)

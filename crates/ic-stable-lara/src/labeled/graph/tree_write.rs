@@ -71,6 +71,7 @@ pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
 /// helper runs; this helper always appends (the reuse fallback).
 pub(crate) fn tree_mode_insert_edge<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     label: BucketLabelKey,
@@ -192,7 +193,7 @@ where
             // a new 1-entry (or short) root. After this call the
             // bucket's `edge_start` and `tree_mode_physical_depth`
             // have changed — the caller's `bucket` copy is stale.
-            tree_mode_deepen::<E, M>(graph, bucket_slot, bucket)?;
+            tree_mode_deepen::<E, M>(graph, vid, bucket_slot, bucket)?;
         }
         // RE-READ the bucket descriptor. The caller's `bucket`
         // was passed by `&LabelBucket`; after `tree_mode_deepen`
@@ -236,6 +237,7 @@ where
         if post_depth == 1 {
             return tree_mode_tail_append_depth1::<E, M>(
                 graph,
+                vid,
                 bucket_slot,
                 bucket,
                 &target_bytes,
@@ -248,6 +250,7 @@ where
         // depth ≥ 2: depth-aware interior append.
         tree_mode_tail_append_depth_ge2::<E, M>(
             graph,
+            vid,
             bucket_slot,
             bucket,
             &target_bytes,
@@ -320,8 +323,13 @@ where
                 // `slot`, and `needs_new_property_leaf` are unchanged;
                 // only lengths must be recomputed against the
                 // post-ensure bucket.
-                let ensured_bucket: LabelBucket =
-                    ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?;
+                let ensured_bucket: LabelBucket = ensure_property_tree_depth::<E, M>(
+                    graph,
+                    vid,
+                    bucket_slot,
+                    bucket,
+                    next_stored,
+                )?;
                 let bucket = &ensured_bucket;
                 property_depth_for_publish = bucket.tree_mode_property_depth();
                 let plan = plan_property_leaf_append::<E, M>(graph, bucket, next_stored)?;
@@ -339,10 +347,11 @@ where
                             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                         let old_combined_len = old_edge_root_len + old_prop_root_len;
                         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-                        let new_combined = match graph
-                            .edges()
-                            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-                        {
+                        let new_combined = match graph.allocate_resident_span_avoiding(
+                            vid,
+                            u64::from(new_combined_len),
+                            avoid,
+                        ) {
                             Ok(s) => s,
                             Err(e) => {
                                 release_property_plan::<E, M>(graph, &plan);
@@ -592,6 +601,7 @@ where
 ///    order and return `Err`.
 pub(crate) fn tree_mode_property_deepen<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
@@ -681,7 +691,8 @@ where
     }
     debug_assert_eq!(cursor, old_root_len as usize);
     // 4. Allocate the new combined span (avoiding the old one).
-    let new_combined_start = match graph.edges().allocate_span_avoiding(
+    let new_combined_start = match graph.allocate_resident_span_avoiding(
+        vid,
         u64::from(new_combined_len),
         Some((old_combined_start, u64::from(old_combined_len))),
     ) {
@@ -753,6 +764,7 @@ where
 /// returned unchanged (`LabelBucket` is `Copy`).
 pub(crate) fn ensure_property_tree_depth<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     next_stored: u32,
@@ -771,7 +783,7 @@ where
     let l_p_new = u64::from(next_stored.div_ceil(k));
     let d_required = property_depth_for_leaves(l_p_new, k, next_stored)?;
     if d_required > bucket.tree_mode_property_depth() {
-        tree_mode_property_deepen::<E, M>(graph, bucket_slot, bucket)?;
+        tree_mode_property_deepen::<E, M>(graph, vid, bucket_slot, bucket)?;
         // Re-read the canonical descriptor (stale-descriptor hazard).
         graph
             .buckets()
@@ -1168,6 +1180,7 @@ where
 /// `tree_mode_tail_append_depth_ge2` (the new interior path). The
 fn tree_mode_tail_append_depth1<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     target_bytes: &[u8; 4],
@@ -1200,7 +1213,7 @@ where
     // `d' -> d' + 1` (moving the combined span) and re-read the
     // canonical descriptor (stale-descriptor hazard).
     let ensured_bucket: LabelBucket =
-        ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?;
+        ensure_property_tree_depth::<E, M>(graph, vid, bucket_slot, bucket, next_stored)?;
     let bucket: &LabelBucket = &ensured_bucket;
     let property_depth = bucket.tree_mode_property_depth();
     // Mint + plan the property leaf (before the edge leaf so the LIFO
@@ -1222,6 +1235,11 @@ where
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    debug_assert_eq!(
+        new_edge_root_len,
+        physical_root_len_ceil(u64::from(next_stored), 1).expect("root len"),
+        "tail append grew the edge root, but next_stored does not imply a new leaf"
+    );
     let old_property_root_len: u32 = if w > 0 {
         super::compact::property_root_region_len(bucket)
     } else {
@@ -1247,10 +1265,7 @@ where
     let old_combined_start = bucket.edge_start();
     let new_combined_start = if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph
-            .edges()
-            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-        {
+        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1261,7 +1276,7 @@ where
             }
         }
     } else {
-        match graph.edges().allocate_span(u64::from(new_combined_len)) {
+        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1402,8 +1417,14 @@ where
     // it whole — identical behavior; when its head is already free only the
     // owned remainder is released. Best-effort (`let _ =`) preserved.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
-        let _ =
-            graph.release_vertex_edge_span_slab(old_combined_start, u64::from(old_combined_len));
+        let in_pin = matches!(
+            super::leaf_pin::LabeledLeafPin::capture(graph, vid),
+            Ok(Some(pin)) if pin.contains(old_combined_start, u64::from(old_combined_len))
+        );
+        if !in_pin {
+            let _ = graph
+                .release_vertex_edge_span_slab(old_combined_start, u64::from(old_combined_len));
+        }
     }
     // 8. Bump global accounting.
     let hdr = graph.edges().header();
@@ -1442,6 +1463,7 @@ where
 /// into the existing interior structure.
 fn tree_mode_tail_append_depth_ge2<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
     target_bytes: &[u8; 4],
@@ -1489,7 +1511,7 @@ where
         (1u32, false)
     };
     let ensured_bucket: LabelBucket = if needs_new_property_leaf {
-        ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?
+        ensure_property_tree_depth::<E, M>(graph, vid, bucket_slot, bucket, next_stored)?
     } else {
         *bucket
     };
@@ -1581,10 +1603,11 @@ where
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let old_combined_start = bucket.edge_start();
                     let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-                    let new_combined = match graph
-                        .edges()
-                        .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-                    {
+                    let new_combined = match graph.allocate_resident_span_avoiding(
+                        vid,
+                        u64::from(new_combined_len),
+                        avoid,
+                    ) {
                         Ok(s) => s,
                         Err(e) => {
                             let _ = graph.ltb().release(new_leaf_id);
@@ -1725,10 +1748,7 @@ where
     let old_combined_start = bucket.edge_start();
     let new_edge_start = if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph
-            .edges()
-            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-        {
+        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_interior_id);
@@ -1740,7 +1760,7 @@ where
             }
         }
     } else {
-        match graph.edges().allocate_span(u64::from(new_combined_len)) {
+        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_interior_id);
@@ -2306,6 +2326,7 @@ where
 /// silent-corruption vector).
 pub(crate) fn tree_mode_deepen<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
@@ -2364,7 +2385,7 @@ where
         let l_p_new = u64::from(next.div_ceil(kp));
         let d_required = property_depth_for_leaves(l_p_new, kp, stored_slots)?;
         if d_required > bucket.tree_mode_property_depth() {
-            tree_mode_property_deepen::<E, M>(graph, bucket_slot, bucket)?;
+            tree_mode_property_deepen::<E, M>(graph, vid, bucket_slot, bucket)?;
             post_property_deepen_bucket_storage = graph
                 .buckets()
                 .read_label_bucket_slot(bucket_slot)
@@ -2494,10 +2515,7 @@ where
     // 4. Allocate the new COMBINED span.
     let new_combined_start = if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph
-            .edges()
-            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-        {
+        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
             Ok(s) => s,
             Err(e) => {
                 for &id in interior_ids.iter().rev() {
@@ -2507,7 +2525,7 @@ where
             }
         }
     } else {
-        match graph.edges().allocate_span(u64::from(new_combined_len)) {
+        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
             Ok(s) => s,
             Err(e) => {
                 for &id in interior_ids.iter().rev() {
@@ -2603,6 +2621,7 @@ where
 /// from the descriptor, but interior block still owns child ids" window.
 pub(crate) fn tree_mode_flatten<E, M>(
     graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
@@ -2632,7 +2651,7 @@ where
     let new_root_len = leaf_ids.len() as u32;
     debug_assert!(new_root_len <= k, "depth 2 root_len must be <= R_MAX");
     // 2. Allocate the new root region span.
-    let new_edge_start = match graph.edges().allocate_span(u64::from(new_root_len)) {
+    let new_edge_start = match graph.allocate_resident_span(vid, u64::from(new_root_len)) {
         Ok(s) => s,
         Err(e) => return Err(LabeledOperationError::from(e)),
     };
@@ -2741,7 +2760,7 @@ where
 ///    `visit_tree_mode_label_bucket_edges`, filtering tombstones
 ///    (the visit yields ALL slot positions; tombstones are filtered
 ///    inside the visit closure using `E::is_tombstone_edge`).
-/// 2. **Reserve**: `graph.edges().allocate_span(degree as u64)`.
+/// 2. **Reserve**: `graph.allocate_resident_span(vid, degree as u64)`.
 /// 3. **Write**: copy the live edges contiguously into the new span.
 /// 4. **Publish**: write the new slab-mode descriptor
 ///    (`with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
@@ -2858,13 +2877,11 @@ where
 
     // Phase 2: Reserve new slab span of exactly `degree` slots,
     // avoiding the live root region (see comment above).
-    let new_edge_start = match graph
-        .edges()
-        .allocate_span_avoiding(u64::from(degree), avoid_range)
-    {
-        Ok(s) => s,
-        Err(e) => return Err(LabeledOperationError::from(e)),
-    };
+    let new_edge_start =
+        match graph.allocate_resident_span_avoiding(src, u64::from(degree), avoid_range) {
+            Ok(s) => s,
+            Err(e) => return Err(LabeledOperationError::from(e)),
+        };
 
     // Phase 3: Write the live edges contiguously.
     let write_bytes = {
@@ -3154,8 +3171,15 @@ mod tests {
             _ => panic!("bucket slot not found"),
         };
         let new_edge = TestEdge { target: 9999 };
-        let logical_slot = tree_mode_insert_edge(&graph, bucket_slot, &bucket, label, &new_edge)
-            .expect("tree_mode_insert_edge");
+        let logical_slot = tree_mode_insert_edge(
+            &graph,
+            VertexId::from(0),
+            bucket_slot,
+            &bucket,
+            label,
+            &new_edge,
+        )
+        .expect("tree_mode_insert_edge");
         assert_eq!(logical_slot, 4096);
 
         // Re-read the bucket: stored=4097, degree=4097, still tree mode.
@@ -3208,7 +3232,15 @@ mod tests {
                 _ => panic!("slot not found"),
             };
             let edge = TestEdge { target: 4096 + i };
-            tree_mode_insert_edge(&graph, bucket_slot, &bucket, label, &edge).expect("insert");
+            tree_mode_insert_edge(
+                &graph,
+                VertexId::from(0),
+                bucket_slot,
+                &bucket,
+                label,
+                &edge,
+            )
+            .expect("insert");
         }
         // Verify the final bucket state.
         let vertex = graph.vertices().get(vid);
@@ -3569,7 +3601,8 @@ mod tests {
         // Insert: stored_slots was 4096, append goes to slot 4096.
         let new_edge = TestEdge { target: 7777 };
         let logical_slot =
-            tree_mode_insert_edge(&graph, slot2, &bucket2, label, &new_edge).expect("insert");
+            tree_mode_insert_edge(&graph, VertexId::from(0), slot2, &bucket2, label, &new_edge)
+                .expect("insert");
         // 0-indexed: 0..=4095 were the original slots; slot 4096 is the
         // post-remove post-insert tail.
         assert_eq!(logical_slot, 4096);
@@ -4414,7 +4447,7 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, bucket)
             .expect("write_label_bucket_slot");
-        let result = tree_mode_deepen(&graph, bucket_slot, &bucket);
+        let result = tree_mode_deepen(&graph, VertexId::from(0), bucket_slot, &bucket);
         match result {
             Err(LabeledOperationError::TreeDepthLimitReached { depth, max_depth }) => {
                 assert_eq!(max_depth, 3);
@@ -4572,7 +4605,7 @@ mod tests {
             .expect("write_label_bucket_slot");
 
         // Deepen.
-        tree_mode_deepen(&graph, bucket_slot, &new_bucket).expect("deepen");
+        tree_mode_deepen(&graph, VertexId::from(0), bucket_slot, &new_bucket).expect("deepen");
 
         // Re-read the bucket.
         let vertex = graph.vertices().get(vid);
@@ -4638,7 +4671,7 @@ mod tests {
         }
 
         // Deepen.
-        tree_mode_deepen(&graph, bucket_slot, &bucket_before).expect("deepen");
+        tree_mode_deepen(&graph, VertexId::from(0), bucket_slot, &bucket_before).expect("deepen");
         let vertex = graph.vertices().get(vid);
         let bucket_deepened = match graph
             .find_bucket(vid, &vertex, label)
@@ -4668,7 +4701,8 @@ mod tests {
 
         // Flatten. The deepen-then-flatten cycle yields the original
         // root region with the original leaf block_ids.
-        tree_mode_flatten(&graph, bucket_slot, &bucket_deepened).expect("flatten");
+        tree_mode_flatten(&graph, VertexId::from(0), bucket_slot, &bucket_deepened)
+            .expect("flatten");
         let vertex = graph.vertices().get(vid);
         let bucket_flat = match graph.find_bucket(vid, &vertex, label).expect("find flat") {
             BucketSearch::Found { bucket, .. } => bucket,
@@ -4763,7 +4797,14 @@ mod tests {
             .expect("write descriptor");
         // The next insert must fail-closed.
         let new_edge = TestEdge { target: 0xCAFE };
-        let result = tree_mode_insert_edge(&graph, bucket_slot, &new_bucket, label, &new_edge);
+        let result = tree_mode_insert_edge(
+            &graph,
+            VertexId::from(0),
+            bucket_slot,
+            &new_bucket,
+            label,
+            &new_edge,
+        );
         match result {
             Err(LabeledOperationError::TreeRootCapacityReached {
                 stored_slots,
@@ -4896,8 +4937,15 @@ mod tests {
         assert_eq!(pre_bucket.tree_mode_physical_depth(), 1);
         // Insert one edge via the raw helper.
         let new_edge = TestEdge { target: 0xDEAD };
-        let logical_slot = tree_mode_insert_edge(&graph, pre_slot, &pre_bucket, label, &new_edge)
-            .expect("cascade insert must succeed");
+        let logical_slot = tree_mode_insert_edge(
+            &graph,
+            VertexId::from(0),
+            pre_slot,
+            &pre_bucket,
+            label,
+            &new_edge,
+        )
+        .expect("cascade insert must succeed");
         assert_eq!(logical_slot, target_stored);
         // Re-read: depth 2, stored 2^20 + 1.
         let vertex = graph.vertices().get(vid);
@@ -5013,9 +5061,15 @@ mod tests {
         // l % K = 1, so the interior-row append path fires:
         // root unchanged.
         let new_edge = TestEdge { target: 0xBEEF };
-        let logical_slot =
-            tree_mode_insert_edge(&graph, bucket_slot, &pre_bucket, label, &new_edge)
-                .expect("interior-row append must succeed");
+        let logical_slot = tree_mode_insert_edge(
+            &graph,
+            VertexId::from(0),
+            bucket_slot,
+            &pre_bucket,
+            label,
+            &new_edge,
+        )
+        .expect("interior-row append must succeed");
         assert_eq!(logical_slot, pre_stored);
         // Re-read: root unchanged, depth unchanged, stored 2^20+2.
         let post_bucket = graph
@@ -5118,9 +5172,15 @@ mod tests {
         // Insert one. l = ceil(2,097,152/1024) = 2048. l % K = 0
         // → new-interior mint, root grows from 2 to 3.
         let new_edge = TestEdge { target: 0xFEED };
-        let logical_slot =
-            tree_mode_insert_edge(&graph, bucket_slot, &pre_bucket, label, &new_edge)
-                .expect("new-interior mint must succeed");
+        let logical_slot = tree_mode_insert_edge(
+            &graph,
+            VertexId::from(0),
+            bucket_slot,
+            &pre_bucket,
+            label,
+            &new_edge,
+        )
+        .expect("new-interior mint must succeed");
         assert_eq!(logical_slot, pre_stored);
         let post_bucket = graph
             .buckets()
@@ -5740,7 +5800,7 @@ mod tests {
         // Deepen: from depth 1 (1 root region of 1024 leaf ids) to
         // depth 2 (1 root region of 1 interior id; the interior block
         // holds the 1024 leaf ids).
-        super::tree_mode_deepen(&graph, bucket_slot, &b).expect("deepen");
+        super::tree_mode_deepen(&graph, VertexId::from(0), bucket_slot, &b).expect("deepen");
         let b_d2 = graph
             .buckets()
             .read_label_bucket_slot(bucket_slot)
@@ -5949,8 +6009,9 @@ mod tests {
         prop_bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
         let edge = InlinePropertyTestEdge::with_bytes(0x1234, &new_value.to_le_bytes())
             .with_stored_inline_property_bytes(w, &prop_bytes);
-        let logical_slot = tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge)
-            .expect("insert at K boundary must deepen the property tree");
+        let logical_slot =
+            tree_mode_insert_edge(&graph, VertexId::from(0), bucket_slot, &pre, label, &edge)
+                .expect("insert at K boundary must deepen the property tree");
         assert_eq!(logical_slot, stored);
         let post = graph
             .buckets()
@@ -5994,7 +6055,8 @@ mod tests {
         prop_bytes[0..4].copy_from_slice(&0xABCD_1234u32.to_le_bytes());
         let edge = InlinePropertyTestEdge::with_bytes(1, &0u32.to_le_bytes())
             .with_stored_inline_property_bytes(w, &prop_bytes);
-        tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge).expect("insert must deepen");
+        tree_mode_insert_edge(&graph, VertexId::from(0), bucket_slot, &pre, label, &edge)
+            .expect("insert must deepen");
         let post = graph
             .buckets()
             .read_label_bucket_slot(bucket_slot)
@@ -6105,8 +6167,13 @@ mod tests {
         let pre = build_full_property_root_bucket(&graph, label, bucket_slot, stored, w, seed);
         assert_eq!(pre.tree_mode_physical_depth(), 1);
         assert_eq!(pre.tree_mode_property_depth(), 1);
-        tree_mode_deepen::<InlinePropertyTestEdge, VectorMemory>(&graph, bucket_slot, &pre)
-            .expect("deepen must property-deepen then edge-deepen");
+        tree_mode_deepen::<InlinePropertyTestEdge, VectorMemory>(
+            &graph,
+            VertexId::from(0),
+            bucket_slot,
+            &pre,
+        )
+        .expect("deepen must property-deepen then edge-deepen");
         let post = graph
             .buckets()
             .read_label_bucket_slot(bucket_slot)
@@ -6238,7 +6305,8 @@ mod tests {
         let new_value: u32 = 0x7E;
         let edge = InlinePropertyTestEdge::with_bytes(0x77, &[new_value as u8]);
         let logical_slot =
-            tree_mode_insert_edge(&graph, bucket_slot, &pre, label, &edge).expect("insert");
+            tree_mode_insert_edge(&graph, VertexId::from(0), bucket_slot, &pre, label, &edge)
+                .expect("insert");
         assert_eq!(logical_slot, stored);
         let post = graph
             .buckets()
@@ -6342,7 +6410,8 @@ mod tests {
         let new_value_b: u32 = 0x3C;
         let edge_b = InlinePropertyTestEdge::with_bytes(0x88, &[new_value_b as u8]);
         let logical_slot_b =
-            tree_mode_insert_edge(&graph_b, 0, &pre_b, label, &edge_b).expect("insert b");
+            tree_mode_insert_edge(&graph_b, VertexId::from(0), 0, &pre_b, label, &edge_b)
+                .expect("insert b");
         assert_eq!(logical_slot_b, stored_b);
         let post_b = graph_b
             .buckets()

@@ -108,6 +108,80 @@ where
         Some((base, end))
     }
 
+    /// Every resident span in this leaf, per bucket plus bypass rows (the vertex row owns those).
+    pub(crate) fn allocated(&self) -> Vec<(u64, u64)> {
+        let seg = self.graph.edges.header().segment_size.max(1);
+        let start_vid = self.leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.graph.vertices.len());
+        let mut spans = Vec::new();
+        for ordinal in start_vid..end_vid {
+            let vertex = self.graph.vertices.get(VertexId::from(ordinal));
+            if vertex.stored_slots == 0 {
+                continue;
+            }
+            if vertex.is_default_edge_labeled() {
+                let base = vertex.base_slot_start();
+                spans.push((base, base + u64::from(vertex.stored_slots)));
+                continue;
+            }
+            let Ok(buckets) = self.graph.read_vertex_label_buckets(&vertex) else {
+                continue;
+            };
+            // The declared cover (first non-tiny anchor + stored_slots) is the rule the leaf-mate
+            // overlap guard uses; the per-bucket regions are the rule relocation copies. Both are
+            // pushed so the heap never hands out a range either rule considers occupied.
+            if vertex.stored_slots > 0
+                && let Some(first) = buckets.iter().find(|bucket| !bucket.is_tiny_mode())
+            {
+                let base = first.edge_start();
+                spans.push((base, base + u64::from(vertex.stored_slots)));
+            }
+            for bucket in &buckets {
+                let Some((start, slots)) = super::compact::bucket_resident_region(bucket) else {
+                    continue;
+                };
+                if slots > 0 {
+                    spans.push((start, start + u64::from(slots)));
+                }
+            }
+        }
+        spans.sort_unstable();
+        spans
+    }
+
+    /// Leaf heap allocation: best fit over the per-bucket resident set, keeping `avoid` intact.
+    pub(crate) fn allocate(
+        &self,
+        vid: VertexId,
+        len: u64,
+        avoid: Option<(u64, u64)>,
+    ) -> Option<u64> {
+        self.free_base_avoiding(vid, len, avoid?)
+    }
+
+    /// Residents inside the block and pairwise disjoint.
+    pub(crate) fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let spans = self.allocated();
+        for (start, end) in &spans {
+            if !self.contains(*start, end.saturating_sub(*start)) {
+                errors.push(format!(
+                    "resident[{start},{end}) outside block {:?}",
+                    self.range
+                ));
+            }
+        }
+        for pair in spans.windows(2) {
+            if pair[0].1 > pair[1].0 {
+                errors.push(format!(
+                    "residents overlap: {:?} and {:?}",
+                    pair[0], pair[1]
+                ));
+            }
+        }
+        errors
+    }
+
     /// Lowest free base in this pin offering `need` slots, ignoring `vid`'s own span.
     pub(crate) fn free_base(&self, vid: VertexId, need: u64) -> Option<u64> {
         self.graph
@@ -119,7 +193,7 @@ where
     /// the caller still has to read it before it can be overwritten.
     pub(crate) fn free_base_avoiding(
         &self,
-        vid: VertexId,
+        _vid: VertexId,
         need: u64,
         avoid: (u64, u64),
     ) -> Option<u64> {
@@ -127,7 +201,7 @@ where
             return None;
         }
         let leaf_end = checked_add_slot_index(self.range.0, self.range.1)?;
-        let mut spans = self.occupied(vid);
+        let mut spans = self.allocated();
         spans.push(avoid);
         spans.sort_by_key(|(start, _)| *start);
         let mut cursor = self.range.0;
@@ -215,6 +289,31 @@ where
             .edges
             .assigned_physical_range(vid)?
             .map(|range| (range.start_slot, range.len)))
+    }
+
+    pub(super) fn allocate_resident_span(
+        &self,
+        vid: VertexId,
+        len: u64,
+    ) -> Result<u64, crate::GrowFailed> {
+        self.allocate_resident_span_avoiding(vid, len, None)
+    }
+
+    pub(super) fn allocate_resident_span_avoiding(
+        &self,
+        vid: VertexId,
+        len: u64,
+        avoid: Option<(u64, u64)>,
+    ) -> Result<u64, crate::GrowFailed> {
+        if let Ok(Some(pin)) = LabeledLeafPin::capture(self, vid)
+            && let Some(base) = pin.allocate(vid, len, avoid)
+        {
+            return Ok(base);
+        }
+        match avoid {
+            Some(avoid) => self.edges.allocate_span_avoiding(len, Some(avoid)),
+            None => self.edges.allocate_span(len),
+        }
     }
 
     /// Edge-slab spans `[base, base + stored_slots)` owned by other labeled vertices in

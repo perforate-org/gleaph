@@ -4083,6 +4083,12 @@ where
                                 (start_slot.max(live_end), old_end),
                             ] {
                                 if start < end {
+                                    if matches!(
+                                        super::leaf_pin::LabeledLeafPin::capture(self, src),
+                                        Ok(Some(pin)) if pin.contains(start, end - start)
+                                    ) {
+                                        continue;
+                                    }
                                     retired.try_reserve(1).map_err(|_| {
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;

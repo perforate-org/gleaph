@@ -366,6 +366,7 @@ where
                 }
                 let logical_slot = super::tree_write::tree_mode_insert_edge(
                     self,
+                    src,
                     bucket_slot,
                     &bucket,
                     label_id,
@@ -451,6 +452,7 @@ where
                         }
                         let logical_slot = super::tree_write::tree_mode_insert_edge(
                             self,
+                            src,
                             bucket_slot,
                             &bucket,
                             label_id,
