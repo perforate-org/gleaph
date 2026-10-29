@@ -3778,6 +3778,73 @@ fn next_vertex_edge_span_allocation(
 /// physical LEG span). Using `stored_slots` for a tree bucket would
 /// cause the rewrite to read past the root region into neighboring
 /// buckets and misread block ids as edge targets (corruption).
+/// One tree bucket's physical spans in the edge slab: the single owner of "where does the
+/// property root live".
+///
+/// The reader used to derive `edge_start + bucket_span_region_len` while writers recorded
+/// `inline_property_bytes_offset`; the two agreed only by allocator luck (see the round-trip test
+/// comment in `tree_read.rs`). Every tree reader and writer now takes the address from here, and
+/// `validate` states the invariant the two conventions must satisfy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeSpans {
+    edge_start: u64,
+    edge_root_len: u32,
+    property_root_len: u32,
+}
+
+impl TreeSpans {
+    /// `None` for non-tree buckets: they have no root regions.
+    pub(crate) fn of(bucket: &LabelBucket) -> Option<Self> {
+        if !bucket.is_tree_mode() {
+            return None;
+        }
+        Some(Self {
+            edge_start: bucket.edge_start(),
+            edge_root_len: bucket_span_region_len(bucket),
+            property_root_len: property_root_region_len(bucket),
+        })
+    }
+
+    pub(crate) fn edge_root(&self) -> (u64, u32) {
+        (self.edge_start, self.edge_root_len)
+    }
+
+    /// `(start, len)` of the property root. This is the only place the address is computed.
+    pub(crate) fn property_root(&self) -> (u64, u32) {
+        (
+            self.edge_start
+                .saturating_add(u64::from(self.edge_root_len)),
+            self.property_root_len,
+        )
+    }
+
+    /// `(start, len)` covering both roots (gap 0).
+    pub(crate) fn combined(&self) -> (u64, u32) {
+        (
+            self.edge_start,
+            self.edge_root_len.saturating_add(self.property_root_len),
+        )
+    }
+
+    /// The descriptor's recorded offset must agree with the derived address. A non-zero offset is
+    /// accepted only when it equals the derived one; anything else is the split-brain this type
+    /// exists to prevent.
+    pub(crate) fn validate(&self, bucket: &LabelBucket) -> Result<(), &'static str> {
+        let recorded = bucket.inline_property_bytes_offset();
+        let (derived, _) = self.property_root();
+        if recorded != 0 && recorded != derived {
+            return Err("property root offset disagrees with the derived address");
+        }
+        let (_, combined_len) = self.combined();
+        // Edge root and property root are each bounded by R_MAX (1024), so the combined region
+        // can never exceed 2048 slots.
+        if combined_len > 2048 {
+            return Err("combined root length out of range");
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots
     // (inline targets only); tree/slab keep their region rules.
@@ -8948,6 +9015,28 @@ mod tests {
     /// For a tree bucket at depth 2, stored=1,048,576: returns
     /// `ceil(1,048,576 / 1024) / 1024 = 1` (the root region length,
     /// a single block_id pointing to the interior).
+    #[test]
+    fn tree_spans_owns_the_property_root_address() {
+        let tree = crate::labeled::record::LabelBucket::default()
+            .with_edge_range(100, 4096)
+            .with_tree_mode(true)
+            .with_inline_property_byte_width(8)
+            .with_tree_mode_property_depth(1);
+        let spans = super::TreeSpans::of(&tree).expect("tree bucket");
+        let (edge_start, edge_len) = spans.edge_root();
+        let (property_start, property_len) = spans.property_root();
+        assert_eq!(edge_start, 100);
+        assert_eq!(property_start, 100 + u64::from(edge_len));
+        assert_eq!(spans.combined(), (100, edge_len + property_len));
+        assert!(spans.validate(&tree).is_ok());
+        // A recorded offset that disagrees with the derivation is the split-brain this type owns.
+        let wrong = tree.with_inline_property_bytes_offset(999);
+        assert!(spans.validate(&wrong).is_err());
+        // Non-tree buckets have no root regions.
+        let slab = crate::labeled::record::LabelBucket::default();
+        assert!(super::TreeSpans::of(&slab).is_none());
+    }
+
     #[test]
     fn bucket_span_region_len_returns_correct_region_per_mode() {
         use crate::labeled::bucket_label_key::BucketLabelKey;

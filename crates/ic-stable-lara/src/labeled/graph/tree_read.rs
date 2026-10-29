@@ -346,15 +346,11 @@ where
         return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
     }
     let property_leaf_index = u64::from(slot / k);
-    // Edge root length: same formula as bucket_span_region_len for
-    // the edge tree (physical depth).
-    let edge_root_len = crate::labeled::graph::compact::bucket_span_region_len(bucket);
-    let property_root_offset = bucket
-        .edge_start()
-        .checked_add(u64::from(edge_root_len))
-        .ok_or(LabeledOperationError::from(
-            LaraOperationError::CollectAllocationOverflow,
-        ))?;
+    // The property root's address has one owner: `TreeSpans`. Readers never re-derive it.
+    let spans = crate::labeled::graph::compact::TreeSpans::of(bucket).ok_or(
+        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
+    )?;
+    let (property_root_offset, _) = spans.property_root();
     // Depth-generic descent, mirroring `resolve_leaf_block_id` but
     // with interior radix B (block capacity) instead of the edge
     // tree's R_MAX hop radix and root offset after the edge root.
