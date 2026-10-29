@@ -31,6 +31,8 @@ mod handle;
 pub(crate) mod helpers;
 mod index_build_admission;
 mod index_pending_floor;
+#[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
+mod inline_update_fixture;
 mod label_stats_delta;
 mod labels;
 mod local_indexes;

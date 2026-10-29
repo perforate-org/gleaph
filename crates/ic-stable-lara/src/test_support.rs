@@ -2,21 +2,49 @@ use crate::traits::CsrEdgeTombstone;
 use crate::*;
 use std::{cell::RefCell, rc::Rc};
 
-/// Per-region read accounting over inspectable memory, shared by storage read-contract tests.
-#[cfg(test)]
+/// Per-region backing I/O accounting shared by storage tests and instruction probes.
+/// Clones share both backing and counters; `sibling` shares only byte counters.
 #[derive(Clone, Default)]
 pub(crate) struct CountMemory {
     pub(crate) inner: crate::VectorMemory,
     pub(crate) reads: Rc<std::cell::Cell<usize>>,
     pub(crate) bytes: Rc<std::cell::Cell<usize>>,
+    pub(crate) write_calls: Rc<std::cell::Cell<usize>>,
+    pub(crate) writes: Rc<std::cell::Cell<usize>>,
+    pub(crate) grow_calls: Rc<std::cell::Cell<usize>>,
+    pub(crate) grown_pages: Rc<std::cell::Cell<u64>>,
 }
-#[cfg(test)]
+
+impl CountMemory {
+    pub(crate) fn counted() -> (Self, Rc<std::cell::Cell<usize>>, Rc<std::cell::Cell<usize>>) {
+        let memory = Self::default();
+        (memory.clone(), memory.bytes.clone(), memory.writes.clone())
+    }
+
+    /// Fresh backing with shared read/write byte totals, preserving graph fixture accounting.
+    pub(crate) fn sibling(
+        reads: &Rc<std::cell::Cell<usize>>,
+        writes: &Rc<std::cell::Cell<usize>>,
+    ) -> Self {
+        Self {
+            bytes: reads.clone(),
+            writes: writes.clone(),
+            ..Self::default()
+        }
+    }
+}
+
 impl ic_stable_structures::Memory for CountMemory {
     fn size(&self) -> u64 {
         self.inner.size()
     }
     fn grow(&self, pages: u64) -> i64 {
-        self.inner.grow(pages)
+        self.grow_calls.set(self.grow_calls.get() + 1);
+        let previous = self.inner.grow(pages);
+        if previous >= 0 {
+            self.grown_pages.set(self.grown_pages.get() + pages);
+        }
+        previous
     }
     fn read(&self, offset: u64, bytes: &mut [u8]) {
         self.reads.set(self.reads.get() + 1);
@@ -29,7 +57,46 @@ impl ic_stable_structures::Memory for CountMemory {
         unsafe { self.inner.read_unsafe(offset, bytes, len) }
     }
     fn write(&self, offset: u64, bytes: &[u8]) {
+        self.write_calls.set(self.write_calls.get() + 1);
+        self.writes.set(self.writes.get() + bytes.len());
         self.inner.write(offset, bytes)
+    }
+}
+
+#[cfg(test)]
+mod count_memory_tests {
+    use super::CountMemory;
+    use ic_stable_structures::Memory;
+    use std::rc::Rc;
+
+    #[test]
+    fn backing_counters_distinguish_calls_bytes_and_shared_clones() {
+        let memory = CountMemory::default();
+        let clone = memory.clone();
+        assert!(Rc::ptr_eq(&memory.inner, &clone.inner));
+        assert_eq!(clone.grow(1), 0);
+        clone.write(7, &[1, 2, 3]);
+        let mut safe = [0; 3];
+        memory.read(7, &mut safe);
+        let mut raw = [0; 2];
+        unsafe { clone.read_unsafe(8, raw.as_mut_ptr(), raw.len()) };
+        assert_eq!(safe, [1, 2, 3]);
+        assert_eq!(raw, [2, 3]);
+        assert_eq!(
+            (
+                memory.reads.get(),
+                memory.bytes.get(),
+                memory.write_calls.get(),
+                memory.writes.get()
+            ),
+            (2, 5, 1, 3),
+        );
+        assert_eq!(memory.grow_calls.get(), 1);
+        assert_eq!(memory.grown_pages.get(), 1);
+        assert_eq!(memory.size(), 1);
+        assert_eq!(clone.grow(0), 1);
+        assert_eq!(memory.grow_calls.get(), 2);
+        assert_eq!(memory.grown_pages.get(), 1);
     }
 }
 

@@ -1353,3 +1353,361 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
         "standalone root allocation must not enlarge an assigned leaf pin"
     );
 }
+
+fn natural_root_graph(
+    memories: &[VectorMemory; 16],
+) -> LabeledLaraGraph<super::super::test_support::InlinePropertyTestEdge, VectorMemory> {
+    let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = memories.clone();
+    LabeledLaraGraph::new_with_segment_size(
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        g,
+        h,
+        i,
+        j,
+        k,
+        l,
+        m,
+        n,
+        o,
+        p,
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::from_raw(1),
+        32,
+    )
+    .unwrap()
+}
+
+fn root_source_value(slot: u32, width: u16) -> Vec<u8> {
+    if slot == 32 {
+        vec![0; usize::from(width)]
+    } else {
+        distinct_sidecar(1000 + slot, width)
+    }
+}
+
+fn seed_root_prefix(
+    graph: &LabeledLaraGraph<super::super::test_support::InlinePropertyTestEdge, VectorMemory>,
+    owner: VertexId,
+    label: BucketLabelKey,
+    seed_rows: &[(u32, u32, Vec<u8>)],
+) {
+    use super::super::test_support::InlinePropertyTestEdge;
+    assert!(seed_rows.len() >= 8);
+    let width = u16::try_from(seed_rows[0].2.len()).unwrap();
+    if width > 0 {
+        graph
+            .ensure_label_bucket_inline_property_byte_width(owner, label, width)
+            .unwrap();
+    }
+    for (logical_slot, neighbor, value) in seed_rows {
+        graph
+            .insert_edge(
+                owner,
+                label,
+                InlinePropertyTestEdge::with_bytes(*neighbor, value),
+                super::super::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        if *logical_slot == 7 {
+            // Explicit run-to-prefix preparation, before any tested tree promotion.
+            let vertex = graph.vertices().get(owner);
+            let BucketSearch::Found { slot, bucket } =
+                graph.find_bucket(owner, &vertex, label).unwrap()
+            else {
+                panic!("seed bucket missing");
+            };
+            let index = LabeledLaraGraph::<InlinePropertyTestEdge, VectorMemory>::labeled_bucket_descriptor_index(&vertex, slot).unwrap();
+            compact_run_into_prefix_with_growth_retry(graph, owner, index, bucket).unwrap();
+            let source_geometry = root_containment_errors(graph);
+            assert!(
+                source_geometry.is_empty(),
+                "seed prefix outside canonical cover: {source_geometry:?}"
+            );
+        }
+    }
+    assert_eq!(
+        rows_for_owner(graph, owner, label, super::super::OutEdgeOrder::Ascending).as_slice(),
+        seed_rows
+    );
+    let BucketSearch::Found { bucket, .. } = graph
+        .find_bucket(owner, &graph.vertices().get(owner), label)
+        .unwrap()
+    else {
+        panic!("seed bucket missing after insertion");
+    };
+    assert!(graph.edges().initialized_slab_slots(&bucket).unwrap() > 0);
+}
+
+fn initialized_prefix_bytes<E: CsrEdge, M: Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: LabelBucket,
+) -> Vec<u8> {
+    let slots = graph.edges().initialized_slab_slots(&bucket).unwrap();
+    let mut bytes = vec![0; slots as usize * E::BYTES];
+    graph
+        .edges()
+        .read_slots_contiguous_bytes(bucket.edge_start(), &mut bytes);
+    bytes
+}
+
+fn root_containment_errors<E: CsrEdge, M: Memory>(graph: &LabeledLaraGraph<E, M>) -> Vec<String> {
+    match super::super::leaf_pin::LabeledLeafPin::capture(graph, VertexId::from(0)) {
+        Ok(Some(pin)) => pin.containment_errors(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn root_geometry_normal_promotion_keeps_cover_and_pin() {
+    use super::super::EdgePlacementPolicy;
+    use super::super::OutEdgeOrder::{Ascending, Descending};
+    use super::super::test_support::InlinePropertyTestEdge;
+    use crate::lara::edge::counts::SegmentEdgeCounts;
+    const HOLES: [u32; 6] = [0, 3, 31, 127, 511, T_PROMOTE - 1];
+    let mut failures = Vec::new();
+    for (width, target_raw) in [(0u16, 2u16), (0, 3), (33, 2), (33, 3)] {
+        let memories: [VectorMemory; 16] =
+            std::array::from_fn(|_| crate::test_support::vector_memory());
+        let graph = natural_root_graph(&memories);
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        assert_eq!(owner, VertexId::from(0));
+        let target = BucketLabelKey::from_raw(target_raw);
+        let retained = BucketLabelKey::from_raw(5 - target_raw);
+        let target_seed: Vec<_> = (0..32)
+            .map(|slot| (slot, 1000 + slot % 1013, root_source_value(slot, width)))
+            .collect();
+        let retained_rows: Vec<_> = (0..16)
+            .map(|slot| (slot, 20_000 + slot, distinct_sidecar(20_000 + slot, width)))
+            .collect();
+        let peer_rows: Vec<_> = (0..8)
+            .map(|slot| (slot, 30_000 + slot, distinct_sidecar(30_000 + slot, width)))
+            .collect();
+        // All seed sites use the same owning prefix preparation; label order is canonical.
+        for raw in [2u16, 3] {
+            let label = BucketLabelKey::from_raw(raw);
+            let seed = if label == target {
+                &target_seed
+            } else {
+                &retained_rows
+            };
+            seed_root_prefix(&graph, owner, label, seed);
+        }
+        seed_root_prefix(&graph, peer, retained, &peer_rows);
+        for slot in 32..T_PROMOTE {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    owner,
+                    target,
+                    InlinePropertyTestEdge::with_bytes(
+                        1000 + slot % 1013,
+                        &root_source_value(slot, width),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        for slot in HOLES {
+            assert_eq!(
+                graph
+                    .remove_edge_at_slot(owner, target, slot)
+                    .unwrap()
+                    .unwrap()
+                    .target,
+                1000 + slot % 1013
+            );
+        }
+        let source = bucket(&graph, target);
+        assert!(!source.is_tiny_mode() && !source.is_tree_mode());
+        let prefix = graph.edges().initialized_slab_slots(&source).unwrap();
+        let run = graph.edges().spill_mint(source.edge_spill_run()).unwrap();
+        let used = graph.edges().spill_used_len(run);
+        assert!(prefix > 0 && used > 0);
+        assert_eq!(prefix + used, T_PROMOTE);
+        assert_eq!(source.degree(), T_PROMOTE - HOLES.len() as u32);
+        let expected: Vec<_> = (0..T_PROMOTE)
+            .filter(|slot| !HOLES.contains(slot))
+            .map(|slot| (slot, 1000 + slot % 1013, root_source_value(slot, width)))
+            .collect();
+        for order in [Ascending, Descending] {
+            let ordered = |rows: &Vec<_>| {
+                if order == Ascending {
+                    rows.clone()
+                } else {
+                    rows.iter().cloned().rev().collect()
+                }
+            };
+            assert_eq!(rows(&graph, target, order), ordered(&expected));
+            assert_eq!(rows(&graph, retained, order), ordered(&retained_rows));
+            assert_eq!(
+                rows_for_owner(&graph, peer, retained, order),
+                ordered(&peer_rows)
+            );
+        }
+        let source_geometry = root_containment_errors(&graph);
+        assert!(
+            source_geometry.is_empty(),
+            "invalid pre-promotion source: {source_geometry:?}"
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+        let retained_prefix = initialized_prefix_bytes(&graph, bucket(&graph, retained));
+        let peer_bucket = match graph
+            .find_bucket(peer, &graph.vertices().get(peer), retained)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("peer missing"),
+        };
+        let peer_prefix = initialized_prefix_bytes(&graph, peer_bucket);
+        let count = graph.edges().header().num_edges;
+        let counts = graph.leaf_segment_counts_for_vid(owner);
+        let source_assignment = graph.labeled_leaf_physical_range(owner).unwrap().unwrap();
+        assert_eq!(count, u64::from(source.degree()) + 24);
+        assert_eq!(counts.actual, i64::from(source.degree()) + 24);
+        assert_eq!(counts.total, source_assignment.1 as i64);
+        println!(
+            "ROOT0404 SOURCE width={width} target={target_raw} prefix={prefix} run={used} degree={} pin={:?}",
+            source.degree(),
+            graph.labeled_leaf_physical_range(owner).unwrap()
+        );
+        promote_bucket_to_tree_mode(&graph, owner, target).unwrap();
+        // Capture containment immediately; traversal/reopen may not normalize this output.
+        let geometry = root_containment_errors(&graph);
+        let tree = bucket(&graph, target);
+        assert!(tree.is_tree_mode());
+        assert_eq!(tree.stored_slots(), T_PROMOTE);
+        assert_eq!(tree.degree(), source.degree());
+        assert_eq!(tree.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        assert_eq!(tree.values_spill_run(), crate::traits::NO_SPILL_RUN);
+        let root_slots = T_PROMOTE.div_ceil(BLOCK_B as u32)
+            + if width == 0 {
+                0
+            } else {
+                T_PROMOTE.div_ceil(4096 / u32::from(width))
+            };
+        assert_eq!(
+            super::super::compact::bucket_resident_region(&tree),
+            Some((tree.edge_start(), root_slots))
+        );
+        assert_eq!(graph.edges().header().num_edges, count);
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner).actual,
+            counts.actual - i64::from(source.degree())
+        );
+        assert_eq!(graph.leaf_segment_counts_for_vid(owner).actual, 24);
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner).total,
+            source_assignment.1 as i64
+        );
+        assert_tree(&graph, target, T_PROMOTE, &expected);
+        for order in [Ascending, Descending] {
+            let ordered = |rows: &Vec<_>| {
+                if order == Ascending {
+                    rows.clone()
+                } else {
+                    rows.iter().cloned().rev().collect()
+                }
+            };
+            assert_eq!(rows(&graph, retained, order), ordered(&retained_rows));
+            assert_eq!(
+                rows_for_owner(&graph, peer, retained, order),
+                ordered(&peer_rows)
+            );
+        }
+        assert_eq!(
+            initialized_prefix_bytes(&graph, bucket(&graph, retained)),
+            retained_prefix
+        );
+        let peer_bucket = match graph
+            .find_bucket(peer, &graph.vertices().get(peer), retained)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("peer missing after promotion"),
+        };
+        assert_eq!(initialized_prefix_bytes(&graph, peer_bucket), peer_prefix);
+        graph.edges().free_span_store().validate().unwrap();
+        println!(
+            "ROOT0404 RESULT width={width} target={target_raw} root_start={} root_slots={root_slots} cover={} pin={:?} geometry_errors={geometry:?}",
+            tree.edge_start(),
+            graph.vertices().get(owner).stored_slots,
+            graph.labeled_leaf_physical_range(owner).unwrap()
+        );
+        if !geometry.is_empty() {
+            failures.push(format!(
+                "width={width} target={target_raw}: {}",
+                geometry.join("; ")
+            ));
+            continue;
+        }
+        let assignment = graph.labeled_leaf_physical_range(owner).unwrap().unwrap();
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner),
+            SegmentEdgeCounts {
+                actual: 24,
+                total: assignment.1 as i64
+            }
+        );
+        let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = memories.clone();
+        drop(graph);
+        let reopened = LabeledLaraGraph::<InlinePropertyTestEdge, _>::init(
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            h,
+            i,
+            j,
+            k,
+            l,
+            m,
+            n,
+            o,
+            p,
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        assert!(root_containment_errors(&reopened).is_empty());
+        assert_tree(&reopened, target, T_PROMOTE, &expected);
+        assert_eq!(rows(&reopened, retained, Ascending), retained_rows);
+        assert_eq!(
+            rows_for_owner(&reopened, peer, retained, Ascending),
+            peer_rows
+        );
+        reopened
+            .insert_edge(
+                peer,
+                retained,
+                InlinePropertyTestEdge::with_bytes(99_999, &distinct_sidecar(99_999, width)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let mut peer_after = peer_rows;
+        peer_after.push((8, 99_999, distinct_sidecar(99_999, width)));
+        assert_eq!(
+            rows_for_owner(&reopened, peer, retained, Ascending),
+            peer_after
+        );
+        assert_eq!(reopened.edges().header().num_edges, count + 1);
+        assert_tree(&reopened, target, T_PROMOTE, &expected);
+        assert!(root_containment_errors(&reopened).is_empty());
+        println!("ROOT0404 REOPEN width={width} target={target_raw} writable=true");
+    }
+    assert!(
+        failures.is_empty(),
+        "natural promotion containment: {failures:#?}"
+    );
+}

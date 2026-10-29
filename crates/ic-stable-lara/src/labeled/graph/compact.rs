@@ -5697,6 +5697,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(super) fn calculate_label_edge_span_positions(
         start_slot: u64,
         span_slots: u32,
@@ -5704,105 +5705,13 @@ where
         preferred: Option<usize>,
         preferred_extra: u32,
     ) -> Result<Vec<u64>, LabeledOperationError> {
-        let mut out = Vec::with_capacity(buckets.len());
-        if buckets.is_empty() {
-            return Ok(out);
-        }
-
-        let mut effective_live = 0u64;
-        let mut total_weight = buckets.len() as u64;
-        for (index, bucket) in buckets.iter().enumerate() {
-            let extra = if preferred == Some(index) {
-                preferred_extra
-            } else {
-                0
-            };
-            // ADR 0096 §5: tiny buckets occupy zero span slots (positions pack
-            // them at the running boundary). Weights below still count them
-            // (gap distribution only, intentionally unchanged).
-            // Span budget from the resident-region SSOT; the gap-distribution
-            // weight stays label-degree-based (existing policy).
-            let resident = u64::from(
-                crate::labeled::graph::bucket_resident_region(bucket)
-                    .map_or(0, |(_, len)| len)
-                    .checked_add(extra)
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
-            );
-            let weight = if bucket.is_tiny_mode() {
-                0u64
-            } else {
-                u64::from(
-                    bucket
-                        .degree()
-                        .checked_add(extra)
-                        .ok_or(LaraOperationError::RowDegreeOverflow)?,
-                )
-            };
-            effective_live = effective_live
-                .checked_add(resident)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            total_weight = total_weight
-                .checked_add(weight)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        }
-        let gaps = u64::from(span_slots)
-            .checked_sub(effective_live)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-
-        // Same layout as the historical `f64` implementation: one fixed-point step
-        // `floor((gaps/total_weight) * 1e8) / 1e8` per bucket weight `(deg+1)`.
-        const P: u128 = 100_000_000;
-        let gaps_u = u128::from(gaps);
-        let tw = total_weight as u128;
-        let step_fp = if tw == 0 {
-            0u128
-        } else {
-            gaps_u
-                .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                .checked_div(tw)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        };
-
-        let mut cursor_fp = u128::from(start_slot)
-            .checked_mul(P)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        for (index, bucket) in buckets.iter().enumerate() {
-            let start = u64::try_from(cursor_fp / P)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            out.push(start);
-            let extra = if preferred == Some(index) {
-                preferred_extra
-            } else {
-                0
-            };
-            // ADR 0096 §5: tiny buckets occupy zero span slots (see above).
-            let deg = if bucket.is_tiny_mode() {
-                0u128
-            } else {
-                u128::from(
-                    bucket
-                        .degree()
-                        .checked_add(extra)
-                        .ok_or(LaraOperationError::RowDegreeOverflow)?,
-                )
-            };
-            let start_fp = u128::from(start)
-                .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            cursor_fp = start_fp
-                .checked_add(
-                    deg.checked_mul(P)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
-                )
-                .and_then(|cursor| {
-                    let weight = deg.checked_add(1)?;
-                    let gap = step_fp.checked_mul(weight)?;
-                    cursor.checked_add(gap)
-                })
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        }
-        Ok(out)
+        Self::calculate_label_edge_span_positions_by_resident_slots(
+            start_slot,
+            span_slots,
+            buckets,
+            preferred,
+            preferred_extra,
+        )
     }
 
     pub(super) fn calculate_label_edge_span_positions_by_resident_slots(
@@ -5885,11 +5794,17 @@ where
             .checked_mul(P)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         // Place precisely the physical widths admitted above, not degree or run rows.
+        let mut leading_tiny = true;
         for (bucket, width_or_start) in buckets.iter().zip(out.iter_mut()) {
             let resident = u128::from(*width_or_start);
             let start = u64::try_from(cursor_fp / P)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             *width_or_start = start;
+            // Leading anchors own no slots or gap before the first resident origin.
+            if leading_tiny && bucket.is_tiny_mode() {
+                continue;
+            }
+            leading_tiny = false;
             let start_fp = u128::from(start)
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;

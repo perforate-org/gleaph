@@ -28,6 +28,13 @@ use super::{DeleteTarget, EdgeLayout, EdgeStore};
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     // ---------------------------------------------------------------- typed wrappers
 
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn spill_allocator_inventory(
+        &self,
+    ) -> (u32, [u32; crate::labeled::spill_run_store::CLASS_COUNT]) {
+        self.spill.allocator_inventory()
+    }
+
     /// Used length of a run: the number of rows `0..used_len` that exist.
     #[inline]
     pub(crate) fn spill_used_len(&self, run: SpillRunId) -> u32 {

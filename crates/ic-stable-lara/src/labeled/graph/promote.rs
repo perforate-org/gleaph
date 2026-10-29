@@ -257,7 +257,20 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     canonical.validate(graph)?;
     graph.edges().free_span_store().reserve_for_releases(2)?;
     graph.values().reserve_retired_byte_spans(1)?;
-    let new_start = graph.edges().allocate_span(u64::from(combined_len))?;
+    // Resident space belongs to the leaf pin: place the root inside it, keeping the source
+    // span (still live until the transcription reads it) intact. Only a leaf that cannot hold
+    // the root falls back to the global allocator.
+    let pin = super::leaf_pin::LabeledLeafPin::capture(graph, vid)?;
+    let avoid = pin.as_ref().and_then(|pin| pin.resident(vid));
+    let in_pin_start = match (pin.as_ref(), avoid) {
+        (Some(pin), Some(avoid)) => pin.free_base_avoiding(vid, u64::from(combined_len), avoid),
+        _ => None,
+    };
+    let allocated_in_pin = in_pin_start.is_some();
+    let new_start = match in_pin_start {
+        Some(base) => base,
+        None => graph.edges().allocate_span(u64::from(combined_len))?,
+    };
     let allocated_header = graph.edges().header();
     let mut allocated_blocks = Vec::new();
     let prepared = (|| -> Result<(), LabeledOperationError> {
@@ -465,10 +478,12 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                 .release(id)
                 .expect("unpublished promotion block must remain owned");
         }
-        graph
-            .edges()
-            .release_span(new_start, u64::from(combined_len))
-            .expect("promotion rollback capacity was reserved");
+        if !allocated_in_pin {
+            graph
+                .edges()
+                .release_span(new_start, u64::from(combined_len))
+                .expect("promotion rollback capacity was reserved");
+        }
         return Err(error);
     }
     // No recoverable errors after publication. Only old allocations are retired here.

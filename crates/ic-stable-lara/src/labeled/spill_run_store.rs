@@ -271,6 +271,29 @@ impl<M: Memory> SpillRunStore<M> {
         read_u32(&self.memory, Address::from(OFFSET_ARENA_ROWS))
     }
 
+    /// Read-only arena/class census for state proofs and instruction probes.
+    /// Free headers contain links, not used lengths; only this owner interprets them.
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn allocator_inventory(&self) -> (u32, [u32; CLASS_COUNT]) {
+        let arena_rows = self.arena_rows();
+        let free_runs = std::array::from_fn(|class| {
+            let rows = (MIN_ROWS << class) + RUN_HEADER_ROWS;
+            let mut count = 0;
+            let mut run = self.free_head(class);
+            while run != NO_SPILL_RUN {
+                assert!(
+                    run.checked_add(rows).is_some_and(|end| end <= arena_rows),
+                    "free spill run exceeds its arena"
+                );
+                count += 1;
+                assert!(count <= arena_rows / rows, "cyclic spill free list");
+                run = read_u32(&self.memory, Address::from(self.header_address(run)));
+            }
+            count
+        });
+        (arena_rows, free_runs)
+    }
+
     fn free_head(&self, class: usize) -> RunId {
         read_u32(
             &self.memory,

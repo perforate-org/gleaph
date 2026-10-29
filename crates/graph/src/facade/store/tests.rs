@@ -1,4 +1,7 @@
 use super::helpers::{edge_storage_label, lara_label};
+use super::inline_update_fixture::{
+    check_undirected_inline_update_reuse, install_w2_inline_property_profile,
+};
 use super::*;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
@@ -11,16 +14,6 @@ use ic_stable_lara::{
 };
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-
-fn install_w2_inline_property_profile(_store: &GraphStore, label_id: EdgeLabelId) {
-    crate::test_labels::install_test_edge_inline_property_profile(
-        label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
-        },
-    );
-}
 
 #[test]
 fn install_edge_label_inline_property_profile_stores_and_returns_profile() {
@@ -458,7 +451,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateDirectedValueBothRows");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
 
     let forward = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
@@ -519,33 +512,12 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
 
 #[test]
 fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
-    let store = GraphStore::new();
-    let low = store.insert_vertex().expect("low");
-    let high = store.insert_vertex().expect("high");
-    let label_id = crate::test_labels::edge_label_id_for_name("UpdateUndirectedValueBothRows");
-    install_w2_inline_property_profile(&store, label_id);
+    check_undirected_inline_update_reuse(32);
+}
 
-    let handle = store
-        .insert_undirected_edge_with_inline_property_bytes(low, high, Some(label_id), &[1, 0])
-        .expect("edge");
-    store
-        .update_edge_inline_property_at_handle(handle, &[8, 0])
-        .expect("update");
-
-    let low_edge = store
-        .undirected_edges(low)
-        .expect("low edges")
-        .into_iter()
-        .find(|edge| edge.neighbor_vid() == high)
-        .expect("low row");
-    let high_edge = store
-        .undirected_edges(high)
-        .expect("high edges")
-        .into_iter()
-        .find(|edge| edge.neighbor_vid() == low)
-        .expect("high row");
-    assert_eq!(low_edge.edge_inline_property_bytes(), &[8, 0]);
-    assert_eq!(high_edge.edge_inline_property_bytes(), &[8, 0]);
+#[test]
+fn updating_undirected_edge_inline_property_grows_when_retired_span_too_small() {
+    check_undirected_inline_update_reuse(8);
 }
 
 #[test]
@@ -553,7 +525,7 @@ fn updating_directed_self_loop_inline_property_updates_both_orientations() {
     let store = GraphStore::new();
     let vertex = store.insert_vertex().expect("vertex");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateDirectedSelfLoopInline");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
     let handle = store
         .insert_directed_edge_with_inline_property_bytes(vertex, vertex, Some(label_id), &[1, 0])
         .expect("self-loop");
@@ -577,7 +549,7 @@ fn updating_undirected_self_loop_inline_property_updates_one_row() {
     let store = GraphStore::new();
     let vertex = store.insert_vertex().expect("vertex");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateUndirectedSelfLoopInline");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
     let handle = store
         .insert_undirected_edge_with_inline_property_bytes(vertex, vertex, Some(label_id), &[1, 0])
         .expect("self-loop");
@@ -599,7 +571,7 @@ fn updating_parallel_directed_edge_uses_pair_ordinal() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateParallelInline");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
     let first = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
         .expect("first edge");
@@ -642,7 +614,7 @@ fn inline_property_update_fails_closed_on_missing_occurrence() {
     let store = GraphStore::new();
     let vertex = store.insert_vertex().expect("vertex");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateMissingInline");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let bogus = EdgeHandle::at_slot(vertex, wire_label, 99);
 
@@ -885,7 +857,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_counterpart() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedDirected");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
 
     let first = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
@@ -921,7 +893,7 @@ fn directed_reverse_counterpart_does_not_require_matching_slot_index() {
     let target = store.insert_vertex().expect("target");
     let other_source = store.insert_vertex().expect("other source");
     let label_id = crate::test_labels::edge_label_id_for_name("DirectedCounterpartSlotSkew");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
 
     store
         .insert_directed_edge_with_inline_property_bytes(
@@ -960,7 +932,7 @@ fn delete_valued_undirected_edge_by_handle_removes_counterpart_slot() {
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
     let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedUndirected");
-    install_w2_inline_property_profile(&store, label_id);
+    install_w2_inline_property_profile(label_id);
 
     let first = store
         .insert_undirected_edge_with_inline_property_bytes(low, high, Some(label_id), &[1, 0])
@@ -1502,7 +1474,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
     let label = crate::test_labels::edge_label_id_for_name("SwapSidecarFollows");
-    install_w2_inline_property_profile(&store, label);
+    install_w2_inline_property_profile(label);
     let property = store
         .get_or_insert_property_id("swap_marker")
         .expect("property");
@@ -1647,7 +1619,7 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
     let label = crate::test_labels::edge_label_id_for_name("InsertionMaintenanceOrder");
-    install_w2_inline_property_profile(&store, label);
+    install_w2_inline_property_profile(label);
 
     let _first_edge = store
         .insert_directed_edge_with_inline_property_bytes(
@@ -1786,7 +1758,7 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
     let label = crate::test_labels::edge_label_id_for_name("TimerScenarioSwap");
-    install_w2_inline_property_profile(&store, label);
+    install_w2_inline_property_profile(label);
     for (dst, bytes) in [(first, 1u16), (second, 2), (third, 3)] {
         store
             .insert_directed_edge_with_inline_property_bytes(
@@ -2144,7 +2116,7 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_properti
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let label = crate::test_labels::edge_label_id_for_name("PostInsertOverflowReclaim");
-    install_w2_inline_property_profile(&store, label);
+    install_w2_inline_property_profile(label);
 
     for i in 0..48u16 {
         let target = store.insert_vertex().expect("target");

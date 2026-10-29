@@ -902,60 +902,7 @@ pub(crate) fn force_tree_mode_for_test(
         .expect("promote");
 }
 
-/// Counting memory wrapper for the G6 zero-read proofs (ADR 0096 §6).
-///
-/// Wraps one backing memory and counts bytes moved through `read`/`write`
-/// separately. `Clone` shares the counters (all 16 graph memories share one
-/// pair), `Default` builds fresh counters over fresh backing memory. Mirrors
-/// the `ReadMemory` pattern in `lara/edge/log_mut.rs` tests.
-#[derive(Clone, Default)]
-pub struct CountingMemory {
-    inner: crate::VectorMemory,
-    pub reads: std::rc::Rc<std::cell::Cell<usize>>,
-    pub writes: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-impl CountingMemory {
-    pub fn counted() -> (
-        Self,
-        std::rc::Rc<std::cell::Cell<usize>>,
-        std::rc::Rc<std::cell::Cell<usize>>,
-    ) {
-        let mem = Self::default();
-        (mem.clone(), mem.reads.clone(), mem.writes.clone())
-    }
-
-    /// Fresh backing memory sharing the given counters (each graph store needs
-    /// its OWN backing memory — sharing one backing store corrupts every
-    /// header at offset 0; only the counters are shared).
-    pub fn sibling(
-        reads: &std::rc::Rc<std::cell::Cell<usize>>,
-        writes: &std::rc::Rc<std::cell::Cell<usize>>,
-    ) -> Self {
-        Self {
-            inner: crate::VectorMemory::default(),
-            reads: reads.clone(),
-            writes: writes.clone(),
-        }
-    }
-}
-
-impl ic_stable_structures::Memory for CountingMemory {
-    fn size(&self) -> u64 {
-        self.inner.size()
-    }
-    fn grow(&self, pages: u64) -> i64 {
-        self.inner.grow(pages)
-    }
-    fn read(&self, offset: u64, dst: &mut [u8]) {
-        self.reads.set(self.reads.get() + dst.len());
-        self.inner.read(offset, dst);
-    }
-    fn write(&self, offset: u64, src: &[u8]) {
-        self.writes.set(self.writes.get() + src.len());
-        self.inner.write(offset, src);
-    }
-}
+pub(crate) use crate::test_support::CountMemory as CountingMemory;
 
 /// Builds a fully counting-backed graph: all 16 memories share one
 /// read/write counter pair. Returns the graph plus the two counters.

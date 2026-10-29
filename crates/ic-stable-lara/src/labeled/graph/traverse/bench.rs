@@ -21,6 +21,8 @@ use crate::{
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
 
+mod fold;
+
 const DENSE_DEGREE: u32 = 256;
 const HYBRID_DEGREE: u32 = 256;
 const BYPASS_DEGREE: u32 = 64;

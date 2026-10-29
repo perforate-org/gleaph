@@ -5,7 +5,6 @@ use crate::{
     labeled::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
-        slot_index::checked_add_slot_index,
     },
     lara::operation_error::LaraOperationError,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -879,11 +878,9 @@ where
             return Ok(0);
         }
 
-        // ADR 0096 §5: the tail anchors at the first NON-TINY bucket (a tiny
-        // first bucket's anchor is a placeholder). Scan back from the queried
-        // bucket (itself slab in all caller paths, so this terminates there
-        // at the latest); fall back to its own start (fail-closed empty).
-        let mut base_ix = bucket_index;
+        // The descriptor-order first non-tiny owns the whole vertex cover.
+        // Tiny anchors own no slab slots; an all-tiny row keeps its empty anchor.
+        let mut base_ix = 0u32;
         let first_edge_start = loop {
             let slot = Self::labeled_vertex_bucket_slot(vertex, base_ix)?;
             let candidate = self
@@ -893,12 +890,12 @@ where
             if !candidate.is_tiny_mode() {
                 break candidate.edge_start();
             }
-            if base_ix == 0 {
+            base_ix = base_ix
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if base_ix == vertex.degree() {
                 break bucket.edge_start();
             }
-            base_ix = base_ix
-                .checked_sub(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         };
         crate::labeled::slot_index::checked_add_slot_index(
             first_edge_start,
@@ -995,41 +992,6 @@ where
             u64::from(prev.stored_slots_raw()),
         )
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
-    }
-
-    pub(super) fn label_buckets_allow_contiguous_slab_copy(
-        &self,
-        vertex: &LabeledVertex,
-        buckets: &[LabelBucket],
-    ) -> Result<bool, LabeledOperationError> {
-        // ADR 0096 §5: tiny buckets have no slab bytes to bulk-copy (their
-        // anchor spans would alias neighbor ranges in the contiguity check).
-        if buckets.iter().any(|b| b.is_tiny_mode()) {
-            return Ok(false);
-        }
-        if buckets
-            .iter()
-            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
-        {
-            return Ok(false);
-        }
-        if buckets.iter().any(|b| b.stored_slots_raw() != b.degree()) {
-            return Ok(false);
-        }
-        for (index, bucket) in buckets.iter().enumerate() {
-            let successor = match index.checked_add(1).and_then(|next_i| buckets.get(next_i)) {
-                Some(next) => next.edge_start().max(bucket.edge_start()),
-                None => {
-                    checked_add_slot_index(buckets[0].edge_start(), u64::from(vertex.stored_slots))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                }
-            };
-            let span_width = successor.saturating_sub(bucket.edge_start());
-            if span_width < u64::from(bucket.stored_slots_raw()) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     pub(super) fn vertex_bucket_descriptor_row_end(
@@ -1551,5 +1513,332 @@ mod tests {
             5,
             "log spill reserves no new slab geometry"
         );
+    }
+
+    #[test]
+    fn last_bucket_successor_respects_descriptor_order_cover() {
+        use super::super::promote::compact_run_into_prefix_with_growth_retry;
+        use crate::{
+            VectorMemory,
+            traits::{CsrEdge, NO_SPILL_RUN},
+        };
+        use std::ops::ControlFlow;
+
+        let memories: [VectorMemory; 16] =
+            std::array::from_fn(|_| crate::test_support::vector_memory());
+        let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = memories.clone();
+        let graph = LabeledLaraGraph::new_with_segment_size(
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            h,
+            i,
+            j,
+            k,
+            l,
+            m,
+            n,
+            o,
+            p,
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+            32,
+        )
+        .unwrap();
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let tiny = BucketLabelKey::from_raw(2);
+        let middle = BucketLabelKey::from_raw(3);
+        let last = BucketLabelKey::from_raw(4);
+        let assert_rows = |graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
+                           owner,
+                           label,
+                           expected: &[(u32, u32)]| {
+            for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                let mut actual = Vec::new();
+                assert_eq!(
+                    graph
+                        .visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                            assert!(item.inline_property.bytes().is_empty());
+                            actual.push((slot.raw(), item.edge.target));
+                            ControlFlow::<()>::Continue(())
+                        })
+                        .unwrap(),
+                    ControlFlow::Continue(())
+                );
+                let expected: Vec<_> = if order == OutEdgeOrder::Ascending {
+                    expected.to_vec()
+                } else {
+                    expected.iter().copied().rev().collect()
+                };
+                assert_eq!(actual, expected);
+            }
+        };
+        let assert_covers = |graph: &LabeledLaraGraph<TestEdge, VectorMemory>| {
+            let (pin_start, pin_len) = graph.labeled_leaf_physical_range(owner).unwrap().unwrap();
+            let mut covers = Vec::new();
+            for ordinal in 0..graph.vertices().len() {
+                let vertex = graph.vertices().get(VertexId::from(ordinal));
+                let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
+                let Some(first) = buckets.iter().find(|bucket| !bucket.is_tiny_mode()) else {
+                    continue;
+                };
+                let start = first.edge_start();
+                let end = start + u64::from(vertex.stored_slots);
+                assert!(pin_start <= start && end <= pin_start + pin_len);
+                for bucket in buckets.iter().filter(|bucket| !bucket.is_tiny_mode()) {
+                    assert!(!bucket.is_tree_mode());
+                    let initialized = graph.edges().initialized_slab_slots(bucket).unwrap();
+                    assert!(start <= bucket.edge_start());
+                    assert!(bucket.edge_start() + u64::from(initialized) <= end);
+                }
+                covers.push((start, end));
+            }
+            for (index, &(start, end)) in covers.iter().enumerate() {
+                for &(other_start, other_end) in &covers[index + 1..] {
+                    assert!(end <= other_start || other_end <= start);
+                }
+            }
+            for free in graph.edges().free_byte_spans() {
+                assert!(
+                    free.start_slot + free.len <= pin_start
+                        || pin_start + pin_len <= free.start_slot
+                );
+            }
+            crate::labeled::invariants::assert_labeled_layout_invariants(
+                graph.vertices(),
+                graph.buckets(),
+                graph.edges(),
+            );
+        };
+        let fold = |label| {
+            let vertex = graph.vertices().get(owner);
+            let BucketSearch::Found { slot, bucket } =
+                graph.find_bucket(owner, &vertex, label).unwrap()
+            else {
+                panic!("fold source missing");
+            };
+            let index =
+                LabeledLaraGraph::<TestEdge, VectorMemory>::labeled_bucket_descriptor_index(
+                    &vertex, slot,
+                )
+                .unwrap();
+            compact_run_into_prefix_with_growth_retry(&graph, owner, index, bucket).unwrap();
+        };
+        let tiny_rows: Vec<_> = (0..2).map(|slot| (slot, 2000 + slot)).collect();
+        let middle_rows: Vec<_> = (0..32).map(|slot| (slot, 1000 + slot)).collect();
+        let last_rows: Vec<_> = (0..8).map(|slot| (slot, 4000 + slot)).collect();
+        let peer_rows: Vec<_> = (0..8).map(|slot| (slot, 5000 + slot)).collect();
+        for &(_, target) in &tiny_rows {
+            graph
+                .insert_edge(
+                    owner,
+                    tiny,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        for &(slot, target) in &middle_rows {
+            graph
+                .insert_edge(
+                    owner,
+                    middle,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            if slot == 7 {
+                let vertex = graph.vertices().get(owner);
+                let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
+                assert_eq!(buckets.len(), 2);
+                assert!(buckets[0].is_tiny_mode());
+                assert_eq!(buckets[1].edge_start(), 256);
+                assert_eq!(buckets[1].stored_slots(), 4);
+                assert_eq!(vertex.stored_slots, 5);
+                assert_eq!(
+                    LabeledLaraGraph::<TestEdge, VectorMemory>::calculate_label_edge_span_positions_by_resident_slots(
+                        256, 37, &buckets, Some(1), 4,
+                    )
+                    .unwrap(),
+                    vec![256, 256],
+                    "leading tiny anchors must preserve the requested first resident origin"
+                );
+                fold(middle);
+            }
+        }
+        // Multi-label insertion retains later rows in the run; finish the middle prefix
+        // through the same owning compactor, so the last bucket has only true tail slack.
+        fold(middle);
+        for &(_, target) in &last_rows {
+            graph
+                .insert_edge(
+                    owner,
+                    last,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        assert_rows(&graph, owner, tiny, &tiny_rows);
+        assert_rows(&graph, owner, middle, &middle_rows);
+        assert_rows(&graph, owner, last, &last_rows);
+        assert_covers(&graph);
+        let vertex = graph.vertices().get(owner);
+        let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
+        assert_eq!(buckets.len(), 3);
+        assert!(buckets[0].is_tiny_mode());
+        assert!(!buckets[1].is_tiny_mode());
+        assert_eq!(buckets[1].stored_slots(), 32);
+        let source = buckets[2];
+        assert!(!source.is_tiny_mode() && !source.is_tree_mode());
+        assert_eq!(source.bucket_label_key(), last);
+        assert!(buckets[1].edge_start() < source.edge_start());
+        let run = graph.edges().spill_mint(source.edge_spill_run()).unwrap();
+        let used = graph.edges().spill_used_len(run);
+        let initialized = graph.edges().initialized_slab_slots(&source).unwrap();
+        assert!(initialized > 0 && used > 0);
+        assert_eq!(initialized + used, 8);
+        let end = buckets[1].edge_start() + u64::from(vertex.stored_slots);
+        assert!(source.edge_start() + u64::from(initialized + used) > end);
+        println!(
+            "TAIL0404 SOURCE first={} last={} reservation={} prefix={initialized} run={used} end={end}",
+            buckets[1].edge_start(),
+            source.edge_start(),
+            vertex.stored_slots
+        );
+        assert_eq!(
+            graph.bucket_successor_start(&vertex, 2).unwrap(),
+            end,
+            "last successor must end at descriptor-order cover"
+        );
+        let counts = graph.leaf_segment_counts_for_vid(owner);
+        assert_eq!(graph.edges().header().num_edges, 42);
+        assert_eq!(counts.actual, 40);
+        let pin = graph.labeled_leaf_physical_range(owner).unwrap().unwrap();
+        assert_eq!(counts.total, pin.1 as i64);
+        let free = graph.edges().free_byte_spans();
+        let run_rows: Vec<_> = graph
+            .edges()
+            .spill_asc_indices(run)
+            .into_iter()
+            .map(|index| graph.edges().spill_edge_at(run, index).unwrap())
+            .collect();
+        let mut pin_bytes = vec![0; pin.1 as usize * TestEdge::BYTES];
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(pin.0, &mut pin_bytes);
+        let error = graph
+            .compact_label_bucket_overflow_to_slab(owner, 2, source)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
+        assert_eq!(graph.vertices().get(owner), vertex);
+        assert_eq!(graph.read_vertex_label_buckets(&vertex).unwrap(), buckets);
+        assert_eq!(graph.edges().spill_used_len(run), used);
+        assert_eq!(
+            graph
+                .edges()
+                .spill_asc_indices(run)
+                .into_iter()
+                .map(|index| graph.edges().spill_edge_at(run, index).unwrap())
+                .collect::<Vec<_>>(),
+            run_rows
+        );
+        assert_eq!(graph.edges().header().num_edges, 42);
+        assert_eq!(graph.leaf_segment_counts_for_vid(owner), counts);
+        assert_eq!(graph.labeled_leaf_physical_range(owner).unwrap(), Some(pin));
+        assert_eq!(graph.edges().free_byte_spans(), free);
+        let mut after = vec![0; pin_bytes.len()];
+        graph.edges().read_slots_contiguous_bytes(pin.0, &mut after);
+        assert_eq!(
+            after, pin_bytes,
+            "rejected fold changed assigned payload bytes"
+        );
+        assert_rows(&graph, owner, last, &last_rows);
+        fold(last);
+        let grown = graph.vertices().get(owner);
+        let last_bucket = graph.read_vertex_label_buckets(&grown).unwrap()[2];
+        assert_eq!(last_bucket.stored_slots(), 8);
+        assert_eq!(last_bucket.edge_spill_run(), NO_SPILL_RUN);
+        assert_eq!(graph.edges().header().num_edges, 42);
+        assert_eq!(graph.leaf_segment_counts_for_vid(owner), counts);
+        assert_covers(&graph);
+        for &(_, target) in &peer_rows {
+            graph
+                .insert_edge(
+                    peer,
+                    last,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        assert_rows(&graph, owner, tiny, &tiny_rows);
+        assert_rows(&graph, owner, middle, &middle_rows);
+        assert_rows(&graph, owner, last, &last_rows);
+        assert_rows(&graph, peer, last, &peer_rows);
+        assert_eq!(graph.edges().header().num_edges, 50);
+        assert_eq!(graph.leaf_segment_counts_for_vid(owner).actual, 48);
+        assert_eq!(graph.leaf_segment_counts_for_vid(owner).total, counts.total);
+        assert_covers(&graph);
+        let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = memories.clone();
+        drop(graph);
+        let reopened = LabeledLaraGraph::<TestEdge, _>::init(
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            h,
+            i,
+            j,
+            k,
+            l,
+            m,
+            n,
+            o,
+            p,
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        assert_rows(&reopened, owner, tiny, &tiny_rows);
+        assert_rows(&reopened, owner, middle, &middle_rows);
+        assert_rows(&reopened, owner, last, &last_rows);
+        assert_rows(&reopened, peer, last, &peer_rows);
+        assert_covers(&reopened);
+        assert_eq!(reopened.edges().header().num_edges, 50);
+        assert_eq!(reopened.leaf_segment_counts_for_vid(owner).actual, 48);
+        reopened
+            .insert_edge(
+                peer,
+                last,
+                TestEdge { target: 9999 },
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let mut peer_after = peer_rows;
+        peer_after.push((8, 9999));
+        assert_rows(&reopened, peer, last, &peer_after);
+        assert_rows(&reopened, owner, tiny, &tiny_rows);
+        assert_rows(&reopened, owner, middle, &middle_rows);
+        assert_rows(&reopened, owner, last, &last_rows);
+        assert_eq!(reopened.edges().header().num_edges, 51);
+        assert_eq!(reopened.leaf_segment_counts_for_vid(owner).actual, 49);
+        assert_eq!(
+            reopened.leaf_segment_counts_for_vid(owner).total,
+            counts.total
+        );
+        assert_covers(&reopened);
+        println!("TAIL0404 REOPEN writable=true rows=51 actual=49");
     }
 }
