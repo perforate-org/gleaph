@@ -1145,7 +1145,7 @@ read went OOB.
 
 **Fix applied in this slice:** tree-mode `is_tree_mode()` branches
 added at all 3 sites, routing to `tree_mode_out_edges_collect` (LTB
-walker) or `single_bucket_span_iter` (LTB-aware slow path). The
+walker) or `visit_slab_bucket_span_edges` (LTB-aware, mode-dispatched slow path). The
 `FnMut(u32, E) -> FnMut(BucketEntryPosition, E) -> ControlFlow<B>`
 adapter is implemented as a `Vec<E>` collect + re-iterate (the LTB
 primitive's `FnMut(u32, E)` signature doesn't match the public API's

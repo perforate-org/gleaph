@@ -12,7 +12,6 @@
 use crate::{
     VertexId,
     labeled::{
-        access::LabelEdgeSpanAccess,
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
     },
@@ -626,129 +625,129 @@ where
         }
         Ok(ControlFlow::Continue(()))
     }
-    #[allow(clippy::needless_return)]
-    /// Visits every live edge for one label in the requested order.
-    /// Build a single-bucket [`LabeledSpanIter`] for the sparse / hybrid traversal paths.
-    fn single_bucket_span_iter<'a>(
-        &'a self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_slot: u64,
+    /// Visits one slab bucket's live edges in `order` from a single bulk read per plane, with
+    /// the label id attached and, when requested, the inline-property bytes attached by live
+    /// ordinal. This is the visitor form of the bucket span iterator: no decoded replay and no
+    /// per-edge iterator dispatch.
+    pub(crate) fn visit_slab_bucket_span_edges<B>(
+        &self,
         bucket: &LabelBucket,
         order: OutEdgeOrder,
         attach_inline_property_bytes: bool,
-    ) -> Result<super::iter::LabeledSpanIter<'a, E, M>, LabeledOperationError>
+        mut visit: impl FnMut(u32, E) -> Result<ControlFlow<B>, LabeledOperationError>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.degree() == 0 {
-            return Ok(super::iter::LabeledSpanIter::Empty);
-        }
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read, so a future mode cannot silently inherit a path.
-        match BucketMode::from_bucket(bucket) {
-            // ADR 0096 §5: tiny buckets scan inline (no slab/log/value reads).
-            // Tombstone-inclusive prefix (ordinals are slots; holes skipped via
-            // the layout predicate). Attach flag is
-            // irrelevant (width ≡ 0 → always empty values); property entries divert
-            // here and interpret the bare edges with empty values.
-            BucketMode::Tiny => {
-                let mut edges = Vec::with_capacity(bucket.degree() as usize);
-                let _ = self.visit_tiny_bucket_edges(
-                    bucket,
-                    OutEdgeOrder::Ascending,
-                    TraversalWindow::unbounded(),
-                    |slot, edge| {
-                        edges.push((slot.raw(), edge));
-                        ControlFlow::<()>::Continue(())
-                    },
-                )?;
-                return Ok(super::iter::LabeledSpanIter::inline(edges, order));
-            }
-            // Slow core iterators read LEG slab+log geometry, which misreads
-            // tree roots (GAP-2026-09-02-001). Tree+w>0 diverts upstream (LPB);
-            // tree+w=0 lands here: materialize topology via the tree
-            // collector. Attach is vacuous (no values reach slow path for
-            // tree buckets); Inline carries bare edges like the tiny arm.
-            BucketMode::Tree => {
-                debug_assert_eq!(
-                    bucket.inline_property_byte_width(),
-                    0,
-                    "tree buckets reaching slow scan carry no values (w>0 diverts upstream)"
-                );
-                let mut tree_edges = Vec::with_capacity(bucket.degree() as usize);
-                let flow: ControlFlow<()> = super::tree_read::visit_tree_mode_label_bucket_edges(
-                    self,
-                    bucket.bucket_label_key().raw(),
-                    bucket,
-                    bucket.degree(),
-                    OutEdgeOrder::Ascending,
-                    |slot, edge| {
-                        tree_edges.push((slot, edge));
-                        ControlFlow::<()>::Continue(())
-                    },
-                )?;
-                debug_assert!(
-                    matches!(flow, ControlFlow::Continue(())),
-                    "tree collector never breaks (Continue-only closure)"
-                );
-                return Ok(super::iter::LabeledSpanIter::inline(tree_edges, order));
-            }
-            // Slab arm: existing core-iterator construction below.
-            BucketMode::Slab => {
-                let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
-                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                let successor_start = self.bucket_slab_window_end_exclusive_after_bucket(
-                    vertex,
-                    bucket_index,
-                    bucket,
-                )?;
-                let acc = LabelEdgeSpanAccess::with_bucket(
-                    &self.buckets,
-                    slot,
-                    *bucket,
-                    successor_start,
-                    src,
-                );
-                let log_chains = if attach_inline_property_bytes {
-                    self.bucket_inline_property_bytes_log_chain_opt(bucket)
-                } else {
-                    None
-                };
-                match order {
-                    OutEdgeOrder::Descending => {
-                        let iter = self.edges.desc_out_edges_iter(&acc, VertexId::from(0))?;
-                        Ok(super::iter::LabeledSpanIter::desc(
-                            self,
-                            src,
-                            *vertex,
-                            bucket_index,
-                            *bucket,
-                            bucket.bucket_label_key(),
-                            log_chains,
-                            attach_inline_property_bytes,
-                            iter,
-                        ))
+        let log_chains = if attach_inline_property_bytes {
+            self.bucket_inline_property_bytes_log_chain_opt(bucket)
+        } else {
+            None
+        };
+        let descending = order == OutEdgeOrder::Descending;
+        let mut ordinal = if descending {
+            bucket.degree().saturating_sub(1)
+        } else {
+            0
+        };
+        let mut failure = None;
+        let mut breaking = None;
+        let label_id = bucket.bucket_label_key();
+        {
+            let mut emit = |slot: u32, edge: E| -> ControlFlow<()> {
+                let edge = edge.with_slot_index(slot).with_label_id(label_id.raw());
+                let edge = if attach_inline_property_bytes {
+                    match self.attach_edge_inline_property_at_ordinal(
+                        bucket,
+                        ordinal,
+                        edge,
+                        log_chains.as_ref(),
+                    ) {
+                        Ok(edge) => edge,
+                        Err(err) => {
+                            failure = Some(err);
+                            return ControlFlow::Break(());
+                        }
                     }
-                    OutEdgeOrder::Ascending => {
-                        let iter = self.edges.out_edges_iter(&acc, VertexId::from(0))?;
-                        Ok(super::iter::LabeledSpanIter::asc(
-                            self,
-                            src,
-                            *vertex,
-                            bucket_index,
-                            *bucket,
-                            bucket.bucket_label_key(),
-                            log_chains,
-                            attach_inline_property_bytes,
-                            iter,
-                        ))
+                } else {
+                    edge
+                };
+                if descending {
+                    ordinal = ordinal.saturating_sub(1);
+                } else {
+                    ordinal = ordinal.saturating_add(1);
+                }
+                match visit(slot, edge) {
+                    Ok(ControlFlow::Continue(())) => ControlFlow::Continue(()),
+                    Ok(other) => {
+                        breaking = Some(other);
+                        ControlFlow::Break(())
+                    }
+                    Err(err) => {
+                        failure = Some(err);
+                        ControlFlow::Break(())
+                    }
+                }
+            };
+            match BucketMode::from_bucket(bucket) {
+                BucketMode::Slab => {
+                    let _ = self.edges.visit_row_edges(
+                        bucket,
+                        order.into(),
+                        TraversalWindow::unbounded(),
+                        &mut emit,
+                    )?;
+                }
+                BucketMode::Tiny => {
+                    // Descriptor-resident inline targets: no slab, tree or spill read.
+                    let mut edges = Vec::with_capacity(bucket.degree() as usize);
+                    let _ = self.visit_tiny_bucket_edges(
+                        bucket,
+                        order,
+                        TraversalWindow::unbounded(),
+                        |slot, edge| {
+                            edges.push((slot.raw(), edge));
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )?;
+                    for (slot, edge) in edges {
+                        if emit(slot, edge).is_break() {
+                            break;
+                        }
+                    }
+                }
+                BucketMode::Tree => {
+                    // Tree roots are read through the LTB collector, never slab geometry.
+                    let mut edges = Vec::with_capacity(bucket.degree() as usize);
+                    let _ = super::tree_read::visit_tree_mode_label_bucket_edges(
+                        self,
+                        label_id.raw(),
+                        bucket,
+                        bucket.degree(),
+                        order,
+                        |slot, edge| {
+                            edges.push((slot, edge));
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )?;
+                    for (slot, edge) in edges {
+                        if emit(slot, edge).is_break() {
+                            break;
+                        }
                     }
                 }
             }
         }
+        if let Some(err) = failure {
+            return Err(err);
+        }
+        if let Some(flow) = breaking {
+            return Ok(flow);
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
+    /// Visits every live edge for one label in the requested order.
     #[allow(clippy::needless_return)]
     pub(crate) fn visit_edges<B>(
         &self,
@@ -1858,10 +1857,7 @@ where
                 .map_err(Into::into);
         }
 
-        let BucketSearch::Found {
-            slot: bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, vertex, label)?
+        let BucketSearch::Found { slot: _, bucket } = self.find_bucket(owner, vertex, label)?
         else {
             return Ok(ControlFlow::Continue(()));
         };
@@ -1986,14 +1982,6 @@ where
                         },
                     );
                 }
-                let mut iter = self.single_bucket_span_iter(
-                    owner,
-                    vertex,
-                    bucket_slot,
-                    &bucket,
-                    order,
-                    false,
-                )?;
                 let mut inline_property_bytes = Vec::new();
                 let mut value_range = 0..0;
                 let batch_rows = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES
@@ -2003,41 +1991,45 @@ where
                     OutEdgeOrder::Ascending => 0,
                     OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
                 };
-                while let Some(result) = iter.next_with_slot() {
-                    let (slot, edge) = result?;
-                    if width > 0 && !value_range.contains(&ordinal) {
-                        value_range = match order {
-                            OutEdgeOrder::Ascending => {
-                                ordinal..ordinal + batch_rows.min(bucket.degree() - ordinal)
-                            }
-                            OutEdgeOrder::Descending => {
-                                (ordinal + 1).saturating_sub(batch_rows)..ordinal + 1
-                            }
-                        };
-                        self.read_bucket_inline_property_bytes_range_into(
-                            &bucket,
-                            value_range.clone(),
-                            &mut inline_property_bytes,
-                        )?;
-                    }
-                    let start = (ordinal - value_range.start) as usize * usize::from(width);
-                    let flow = visit(
-                        BucketEntryPosition::new(slot),
-                        EdgeWithInlinePropertyRef {
-                            edge,
-                            inline_property: InlinePropertyBytesRef::from_parts(
-                                width,
-                                &inline_property_bytes[start..start + usize::from(width)],
-                            ),
-                        },
-                    );
-                    if let ControlFlow::Break(value) = flow {
-                        return Ok(ControlFlow::Break(value));
-                    }
-                    match order {
-                        OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                        OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
-                    }
+                let flow =
+                    self.visit_slab_bucket_span_edges(&bucket, order, false, |slot, edge| {
+                        if width > 0 && !value_range.contains(&ordinal) {
+                            value_range = match order {
+                                OutEdgeOrder::Ascending => {
+                                    ordinal..ordinal + batch_rows.min(bucket.degree() - ordinal)
+                                }
+                                OutEdgeOrder::Descending => {
+                                    (ordinal + 1).saturating_sub(batch_rows)..ordinal + 1
+                                }
+                            };
+                            self.read_bucket_inline_property_bytes_range_into(
+                                &bucket,
+                                value_range.clone(),
+                                &mut inline_property_bytes,
+                            )?;
+                        }
+                        let start = (ordinal - value_range.start) as usize * usize::from(width);
+                        let flow = visit(
+                            BucketEntryPosition::new(slot),
+                            EdgeWithInlinePropertyRef {
+                                edge,
+                                inline_property: InlinePropertyBytesRef::from_parts(
+                                    width,
+                                    &inline_property_bytes[start..start + usize::from(width)],
+                                ),
+                            },
+                        );
+                        if let ControlFlow::Break(value) = flow {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                        match order {
+                            OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
+                            OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
+                        }
+                        Ok(flow)
+                    })?;
+                if let ControlFlow::Break(value) = flow {
+                    return Ok(ControlFlow::Break(value));
                 }
                 Ok(ControlFlow::Continue(()))
             }
@@ -2115,7 +2107,8 @@ where
                 .map_err(Into::into);
         }
 
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(owner, vertex, label)? else {
+        let BucketSearch::Found { slot: _, bucket } = self.find_bucket(owner, vertex, label)?
+        else {
             return Ok(());
         };
         if bucket.degree() == 0 {
@@ -2177,12 +2170,10 @@ where
                         .map(|_| ());
                 }
 
-                let mut iter =
-                    self.single_bucket_span_iter(owner, vertex, slot, &bucket, order, true)?;
-                while let Some(result) = iter.next_with_slot() {
-                    let (_, edge) = result?;
+                let _ = self.visit_slab_bucket_span_edges(&bucket, order, true, |_, edge| {
                     visit(edge.with_label_id(label.raw()));
-                }
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
                 Ok(())
             }
             // Tree arm: LTB-backed reads (arm-guaranteed tree-only).
@@ -2717,39 +2708,47 @@ where
 
                 let width = usize::from(bucket.inline_property_byte_width());
                 let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-                let mut iter = self.single_bucket_span_iter(
-                    owner,
-                    &vertex,
-                    _bucket_slot,
-                    &bucket,
-                    order,
-                    true,
-                )?;
-                loop {
-                    scratch.clear();
-                    scratch.edges.reserve(batch_edges);
-                    scratch.inline_property_bytes.reserve(batch_edges * width);
-                    for _ in 0..batch_edges {
-                        let Some(result) = iter.next_with_slot() else {
-                            break;
+                let mut pending = 0usize;
+                let flow = self.visit_slab_bucket_span_edges(&bucket, order, true, |_, edge| {
+                    scratch
+                        .inline_property_bytes
+                        .extend_from_slice(edge.edge_inline_property_bytes());
+                    scratch.edges.push(edge.with_label_id(label.raw()));
+                    pending += 1;
+                    if pending < batch_edges {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+                    pending = 0;
+                    let flow = {
+                        let batch = LabeledEdgeInlinePropertyBatch {
+                            label_id: label,
+                            byte_width: bucket.inline_property_byte_width(),
+                            order,
+                            edges: &scratch.edges,
+                            inline_property_bytes: &scratch.inline_property_bytes,
+                            dense: false,
                         };
-                        let (_, edge) = result?;
-                        scratch
-                            .inline_property_bytes
-                            .extend_from_slice(edge.edge_inline_property_bytes());
-                        scratch.edges.push(edge.with_label_id(label.raw()));
-                    }
-                    if scratch.edges.is_empty() {
-                        break;
-                    }
-                    if let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
-                        label_id: label,
-                        byte_width: bucket.inline_property_byte_width(),
-                        order,
-                        edges: &scratch.edges,
-                        inline_property_bytes: &scratch.inline_property_bytes,
-                        dense: false,
-                    }) {
+                        visit(batch)
+                    };
+                    scratch.clear();
+                    Ok(flow)
+                })?;
+                if let ControlFlow::Break(value) = flow {
+                    return Ok(ControlFlow::Break(value));
+                }
+                if pending > 0 {
+                    let flow = {
+                        let batch = LabeledEdgeInlinePropertyBatch {
+                            label_id: label,
+                            byte_width: bucket.inline_property_byte_width(),
+                            order,
+                            edges: &scratch.edges,
+                            inline_property_bytes: &scratch.inline_property_bytes,
+                            dense: false,
+                        };
+                        visit(batch)
+                    };
+                    if let ControlFlow::Break(value) = flow {
                         return Ok(ControlFlow::Break(value));
                     }
                 }

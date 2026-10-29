@@ -98,5 +98,5 @@ All other memory-role read counts are zero during traversal. Main log reads are 
 
 This establishes descriptor traffic and physical read granularity as measurable differences, not their individual IC instruction costs.
 The inspected spill/slab iterator setup calls `bucket_slab_window_end_exclusive_after_bucket` from
-`single_bucket_span_iter`; following-bucket boundary reads are a concrete next investigation site.
+`visit_slab_bucket_span_edges` (at inspection time `single_bucket_span_iter`); following-bucket boundary reads are a concrete next investigation site.
 No boundary check was removed or replaced by an inferred extent to optimize these measurements. It is a fresh native comparison, not a fresh main canbench result. No new mixed-hub optimization, complete benchmark refresh, arena-exhaustion acceptance, PocketIC, or broader performance/space approval is claimed.

@@ -1003,7 +1003,7 @@ contradictory GAP-009 entries.
 
 `bench_l_s2_h_pt_d_1024` and `bench_l_s2_h_scn_d_1024` each seed 1024 live rows, then perform
 51 full descending callback scans, with no preceding deletes. They call
-`for_each_edges_for_label_ordered -> single_bucket_span_iter -> desc_out_edges_iter ->
+`for_each_edges_for_label_ordered -> visit_slab_bucket_span_edges -> desc_out_edges_iter ->
 spill_replay_entries -> spill_edge_at`. Replay retains decoded edges, not tags requiring a
 second payload read. Matching removal scans the prefix then calls `spill_edge_at` in an
 ordinal loop restarted for each target `0,2,...1022`.
@@ -5127,7 +5127,7 @@ typed-schema endpoint gate remains unchanged and fail-closed.
   |---|---|---|
   | `traverse.rs:790` | `visit_edges` | `tree_mode_out_edges_collect` + `ControlFlow` adapter |
   | `traverse.rs:1580` | `visit_edges_window` | `tree_mode_out_edges_collect` + window slice + `ControlFlow` adapter |
-  | `traverse.rs:1843` | `visit_edges_with_inline_property` | `!is_tree_mode()` guard on dense path; falls through to `single_bucket_span_iter` (LTB-aware) |
+  | `traverse.rs:1843` | `visit_edges_with_inline_property` | `!is_tree_mode()` guard on dense path; falls through to `visit_slab_bucket_span_edges` (LTB-aware) |
 
   `visit_edges_for_label_impl` (line 2000) and
   `visit_edges_for_label_with_inline_property` already had the
