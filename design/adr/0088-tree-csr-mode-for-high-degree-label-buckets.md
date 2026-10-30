@@ -437,10 +437,12 @@ span carries no slack, so it grows by exactly the slots the derived root needs
    the spill tier exists: **it avoids the copy that rebalance and relocation
    pay**, not merely a failure fallback.
 3. **Rebalance inside the leaf** — the leaf block has slack but not where the
-   span needs it: re-tile the block's vertices (`LeafSlide`/`VertexRewrite`: a
-   copy inside the block, no store edit).
+   span needs it: place the whole new root elsewhere in the block (the leaf
+   pin's first fit; `rebalance_vertex_edge_span` / `VertexRewrite` /
+   `LeafSlide { Current }`: a copy inside the block, no store edit).
 4. **Grow or move the leaf block** — the leaf has no slack: grow the block in
-   place, or relocate it (copy plus one or two store edits).
+   place, or relocate it (`LeafSlide { Relocate }`: copy plus one or two store
+   edits).
 
 Only the last step touches the global free-span store. Two properties bound it:
 the caps (`T_promote` per slab bucket, `R_max` root entries, the structural cap,
@@ -458,13 +460,50 @@ and reaches for 2 when the alternative is a copy (a multi-slot batch, or a leaf
 with no slack). Which rows a split keeps in the slab is the split-point contract,
 not an implementation detail.
 
-**Status (2026-10-30).** Steps 1, 3 and 4 exist. The root path currently jumps
-straight to step 4 (allocate a fresh span, release the old one) without trying 1
-or 3, which is the measured two-edit cost on `tcsr_1048576_deepen_beyond_r_max`
-(~39 K of one insert). Step 2 for a tree root is design-only: the descriptor
-forbids a run on a tree bucket (bytes 27..34 are the depth marker and zeros), and
-the split-point encoding is the open question recorded in
-`E/validation-spill-continuation/design.md`. This subsumes
+**Status (2026-10-30, Plan 0405 `p250`-`p253`).** Steps 1 and 3 are implemented.
+Step 4 is **not** implemented on the growth path: the only implemented rung for
+"the leaf has no slack" is leaving the leaf. Step 2 for a tree root is
+design-only.
+
+- **Step 1** is complete in both directions. Deepen writes the smaller root where
+  the old one was (`72c12a4c6`), which removed the measured two-edit ~39 K of
+  `tcsr_1048576_deepen_beyond_r_max`; a tail append takes the slot after the root
+  when that span is free (`7cc28fef7`). Only a span whose tail is occupied falls
+  through.
+- **Step 3** is the leaf block's own allocator: `allocate_resident_span_avoiding`
+  asks `LabeledLeafPin` for a first fit inside the pin before it touches the
+  global store, and the pin does serve span requests (a 512-slot request placed
+  inside a 1040-slot block, no store edit). It is not the default, for two
+  reasons. First, the pin is consulted only when the caller declares its live
+  source (`LabeledLeafPin::allocate` requires `avoid`), so
+  `allocate_resident_span` never sees it, and the depth-1 tail append passes
+  `avoid` only when the bucket has an inline-property stream (`w > 0`); a tree
+  bucket with no property stream (`w == 0`) therefore never asks the pin. The `w`
+  test is incidental (`avoid` protects the edge root, which exists whatever `w`
+  is), but closing it buys nothing measurable: the only leaf-pinned `w == 0`
+  append in the suite is *full* — `tree_mode_leaf_actual_counts_slab_edges_only`
+  has pin `(1050336, 1040)` covered end to end by its two residents, zero free
+  slots, so no in-block placement existed at all (not even after a re-tile) —
+  and the first fit itself costs a walk of the leaf's residents on every growth.
+  Second, there is no defragmentation, so a block whose free space is split into
+  runs shorter than the whole root falls through.
+- **Step 4 does not exist on this path.** A block's length is fixed when the pin
+  is created (`ensure_labeled_leaf_block_pinned` adds
+  `labeled_leaf_physical_block_len(seg)` to the leaf total) and is changed
+  elsewhere only by a batch write's leaf total delta; moving a block exists only
+  as a compaction operation (`prepare_physical_layout` /
+  `SegmentRewritePlan`), which the growth path never calls. What a growth does
+  when the block cannot hold the root is leave the leaf:
+  `allocate_span_avoiding` plus `release_span`, two store edits (16-35 K each per
+  `p248`). Keeping such a root inside the leaf is therefore an unimplemented
+  rung, not a tuning question — and for the measured full-block append it is the
+  only rung that could have kept it there.
+- **Step 2** for a tree root is design-only: the descriptor forbids a run on a
+  tree bucket (bytes 27..34 are the depth marker and zeros), and the split-point
+  encoding is the open question recorded in
+  `E/validation-spill-continuation/design.md`.
+
+This subsumes
 the remaining (fragmentation/locality) motivation of ADR 0022's dedicated-span
 tier. PMA leaf-level gaps (density invariant) and tombstone slack awaiting
 compaction remain and are owned by their existing contracts.

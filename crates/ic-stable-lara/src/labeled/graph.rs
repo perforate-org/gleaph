@@ -58,12 +58,12 @@ pub(crate) const T_PROMOTE: u32 = 1024;
 /// the updated `degree <= T_DEMOTE`, the remove path invokes
 /// `tree_mode_demote_to_slab` to rebuild the bucket as a fresh slab
 /// (release LTB leaves + interiors + old root region). Hysteresis
-/// pair: `T_PROMOTE = 4096` (promote at stored >= 4096) and
-/// `T_DEMOTE = 2048` (demote at degree <= 2048). The 2048-slot
-/// hysteresis band guarantees **no promote/demote oscillation**:
-/// after a demote the fresh slab has `stored = degree <= 2048`, so
-/// re-promotion requires 2048+ live inserts before `stored` can
-/// reach `T_PROMOTE = 4096` again.
+/// pair: `T_PROMOTE` (promote at `stored >= T_PROMOTE`) and
+/// `T_DEMOTE = T_PROMOTE / 2` (demote at `degree <= T_DEMOTE`). The
+/// half-band guarantees **no promote/demote oscillation**: after a
+/// demote the fresh slab has `stored = degree <= T_DEMOTE`, so
+/// re-promotion needs another `T_DEMOTE` live inserts before `stored`
+/// can reach `T_PROMOTE` again.
 ///
 /// **Invariant**: a tree-mode bucket always has `degree > T_DEMOTE`
 /// between operations. Degree only drops via removal, and the
