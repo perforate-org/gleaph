@@ -351,3 +351,77 @@ fn bench_r_sl_ps_1() -> canbench_rs::BenchResult {
         black_box(vertices.len());
     })
 }
+
+// ---------------------------------------------------------------------------
+// Free-span store: one `release` in a controlled state.
+//
+// The deepen probe (`tcsr_1048576_deepen_beyond_r_max`) spends ~39 K of a single
+// insert in `release_span(old root, ~1023)`; these benches isolate the store's
+// edit so the cost can be attributed without the tree path around it.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "canbench")]
+fn free_span_store_with(
+    state: &[(u64, u64)],
+) -> super::free_span::FreeSpanStore<crate::VectorMemory> {
+    let store = super::free_span::FreeSpanStore::new(
+        crate::test_support::vector_memory(),
+        crate::test_support::vector_memory(),
+    )
+    .expect("fresh free-span store");
+    for &(start_slot, len) in state {
+        store
+            .release(super::free_span::FreeSpan { start_slot, len })
+            .expect("fixture span release");
+    }
+    store
+}
+
+/// One 1024-slot release with no adjacent free span (no coalescing).
+#[bench(raw)]
+fn bench_r_fs_release_isolated_1024() -> canbench_rs::BenchResult {
+    let store = free_span_store_with(&[(0, 512)]);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("free_span_release_isolated_1024");
+        store
+            .release(super::free_span::FreeSpan {
+                start_slot: 1 << 19,
+                len: 1024,
+            })
+            .expect("release");
+        black_box(());
+    })
+}
+
+/// One 1024-slot release directly in front of a 1 MiB free span (coalescing).
+#[bench(raw)]
+fn bench_r_fs_release_coalescing_1024() -> canbench_rs::BenchResult {
+    let store = free_span_store_with(&[(1024, (1 << 20) - 1024)]);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("free_span_release_coalescing_1024");
+        store
+            .release(super::free_span::FreeSpan {
+                start_slot: 0,
+                len: 1024,
+            })
+            .expect("release");
+        black_box(());
+    })
+}
+
+/// Sixty-four 1-slot releases into a store holding one big free span: amortised
+/// cost of the edit plus whatever the best-fit heap does per release.
+#[bench(raw)]
+fn bench_r_fs_release_sixty_four_ones() -> canbench_rs::BenchResult {
+    let store = free_span_store_with(&[(1 << 20, 1 << 20)]);
+    let spans: Vec<(u64, u64)> = (0..64).map(|i| (2 * i, 1)).collect();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("free_span_release_sixty_four_ones");
+        for &(start_slot, len) in &spans {
+            store
+                .release(super::free_span::FreeSpan { start_slot, len })
+                .expect("release");
+        }
+        black_box(());
+    })
+}
