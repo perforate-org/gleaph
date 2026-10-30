@@ -79,6 +79,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(start)
     }
 
+    /// Extends the span `[start_slot, start_slot + old_len)` by `extension`
+    /// slots taken from the free span that starts right after it.
+    ///
+    /// One store edit, no copy, no move: the growth ladder's step 1 (ADR 0088
+    /// §3). Returns `false` when the slots right after the span are not free, so
+    /// the caller falls back to a fresh span.
+    pub(crate) fn try_extend_span(&self, start_slot: u64, old_len: u64, extension: u64) -> bool {
+        if extension == 0 {
+            return true;
+        }
+        let Some(base) = crate::slab_index::checked_add_slot_exclusive_end(start_slot, old_len)
+        else {
+            return false;
+        };
+        matches!(self.free_spans.take_prefix_at(base, extension), Ok(Some(_)))
+    }
+
     pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), GrowFailed> {
         if len > 0 {
             self.free_spans

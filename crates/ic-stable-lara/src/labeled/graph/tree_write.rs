@@ -1272,9 +1272,31 @@ where
         .expect("old combined span overflow");
     // 1. Mint the new edge LTB block.
     let new_block_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
-    // 2. Allocate the new combined span (edge root + property root).
+    // 2. Grow the combined span by `extension` slots. A tail append adds one
+    //    root entry per new edge leaf (plus one property-root entry when the
+    //    property root grows), so try the growth ladder's step 1 first: take the
+    //    extra slots from the free span that starts right after the current root
+    //    (one store edit, no copy, no move). Only when that span is not free does
+    //    the leaf heap / global allocator serve a fresh span.
     let old_combined_start = bucket.edge_start();
-    let new_combined_start = if w > 0 && old_combined_len > 0 {
+    let extension = new_combined_len.saturating_sub(old_combined_len);
+    let in_place = old_combined_len > 0
+        && graph.edges().try_extend_span(
+            old_combined_start,
+            u64::from(old_combined_len),
+            u64::from(extension),
+        );
+    // Bytes an in-place append overwrites; every failure path below restores them.
+    let overwritten = in_place.then(|| {
+        let mut bytes = vec![0u8; old_combined_len as usize * E::BYTES];
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(old_combined_start, &mut bytes);
+        bytes
+    });
+    let new_combined_start = if in_place {
+        old_combined_start
+    } else if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
         match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
             Ok(s) => s,
@@ -1322,17 +1344,39 @@ where
         push_root_entry::<E>(&mut combined_bytes, entry_id);
     }
 
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
-    {
+    // Undo hook for every failure after the span grew: an in-place append must
+    // restore the old root bytes and hand the extension back, a fresh span is
+    // simply released.
+    let undo_grown_root = || {
+        let mut zero_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+        let zero = edge_slot::<E>(&mut zero_scratch);
+        let _ = graph.ltb().write_payload_partial(new_block_id, 0, zero);
         let _ = graph.ltb().release(new_block_id);
         if let Some(p) = &plan {
             release_property_plan::<E, M>(graph, p);
         }
-        let _ = graph
-            .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
+        match &overwritten {
+            Some(bytes) => {
+                let _ = graph
+                    .edges()
+                    .write_slots_contiguous_bytes(new_combined_start, bytes);
+                let _ = graph.edges().release_span(
+                    new_combined_start + u64::from(old_combined_len),
+                    u64::from(new_combined_len - old_combined_len),
+                );
+            }
+            None => {
+                let _ = graph
+                    .edges()
+                    .release_span(new_combined_start, u64::from(new_combined_len));
+            }
+        }
+    };
+    if let Err(e) = graph
+        .edges()
+        .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
+    {
+        undo_grown_root();
         return Err(e.into());
     }
     // 4. Write the edge into the new (empty) leaf block at offset 0.
@@ -1340,13 +1384,7 @@ where
         .ltb()
         .write_payload_partial(new_block_id, 0, target_bytes)
     {
-        let _ = graph.ltb().release(new_block_id);
-        if let Some(p) = &plan {
-            release_property_plan::<E, M>(graph, p);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
+        undo_grown_root();
         return Err(LabeledOperationError::LtbBlock(e));
     }
     // 5. Write the property side.
@@ -1362,11 +1400,7 @@ where
                     .ltb()
                     .write_payload_partial(p.interior_id, 0, &p.leaf_id.to_le_bytes())
             {
-                let _ = graph.ltb().release(new_block_id);
-                release_property_plan::<E, M>(graph, p);
-                let _ = graph
-                    .edges()
-                    .release_span(new_combined_start, u64::from(new_combined_len));
+                undo_grown_root();
                 return Err(LabeledOperationError::LtbBlock(e));
             }
         }
@@ -1375,11 +1409,7 @@ where
             ((slot % k) as usize) * usize::from(w),
             property_value_bytes,
         ) {
-            let _ = graph.ltb().release(new_block_id);
-            release_property_plan::<E, M>(graph, p);
-            let _ = graph
-                .edges()
-                .release_span(new_combined_start, u64::from(new_combined_len));
+            undo_grown_root();
             return Err(LabeledOperationError::LtbBlock(e));
         }
     } else if w > 0 {
@@ -1404,16 +1434,7 @@ where
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
     {
-        let mut zero_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
-        let zero = edge_slot::<E>(&mut zero_scratch);
-        let _ = graph.ltb().write_payload_partial(new_block_id, 0, zero);
-        let _ = graph.ltb().release(new_block_id);
-        if let Some(p) = &plan {
-            release_property_plan::<E, M>(graph, p);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
+        undo_grown_root();
         return Err(e.into());
     }
     // 7. Release the old combined span — but only the owned remainder. At
