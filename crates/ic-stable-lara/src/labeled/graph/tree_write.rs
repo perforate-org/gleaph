@@ -2493,28 +2493,20 @@ where
     }
     debug_assert_eq!(cursor, old_root_len as usize);
     // 4. Allocate the new COMBINED span.
-    let new_combined_start = if w > 0 && old_combined_len > 0 {
-        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
-            Ok(s) => s,
-            Err(e) => {
-                for &id in interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                return Err(LabeledOperationError::from(e));
-            }
-        }
-    } else {
-        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
-            Ok(s) => s,
-            Err(e) => {
-                for &id in interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                return Err(LabeledOperationError::from(e));
-            }
-        }
-    };
+    // 4. Write the new root at the old base: deepen only shrinks the combined span
+    //    (`new_combined_len <= old_combined_len`), so it needs no allocation and
+    //    no relocation. The bytes it overwrites are saved first so every failure
+    //    below can leave the source root intact.
+    debug_assert!(
+        new_combined_len <= old_combined_len,
+        "deepen must not widen the combined span"
+    );
+    let new_combined_start = old_combined_start;
+    let overwritten_len = new_combined_len as usize * E::BYTES;
+    let mut overwritten = vec![0u8; overwritten_len];
+    graph
+        .edges()
+        .read_slots_contiguous_bytes(new_combined_start, &mut overwritten);
     // 5. Build new combined bytes: [new edge root (interior ids) | old property root].
     let mut new_combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     for &id in &interior_ids {
@@ -2537,7 +2529,7 @@ where
         }
         let _ = graph
             .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
+            .write_slots_contiguous_bytes(new_combined_start, &overwritten);
         return Err(LabeledOperationError::from(e));
     }
     // 6. Commit: build the new descriptor.
@@ -2561,14 +2553,22 @@ where
         }
         let _ = graph
             .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
+            .write_slots_contiguous_bytes(new_combined_start, &overwritten);
         return Err(e.into());
     }
-    // 8. After publish, release the old combined span.
-    if old_combined_start != new_combined_start && old_combined_len > 0 {
-        let _ = graph
-            .edges()
-            .release_span(old_combined_start, u64::from(old_combined_len));
+    // 8. After publish, return the tail the smaller root no longer uses. A
+    //    pin-sheltered tail is not released: the leaf's derived occupancy
+    //    reclaims it.
+    let tail = old_combined_len.saturating_sub(new_combined_len);
+    if tail > 0 {
+        let tail_start = old_combined_start + u64::from(new_combined_len);
+        let in_pin = matches!(
+            super::leaf_pin::LabeledLeafPin::capture(graph, vid),
+            Ok(Some(pin)) if pin.contains(tail_start, u64::from(tail))
+        );
+        if !in_pin {
+            let _ = graph.edges().release_span(tail_start, u64::from(tail));
+        }
     }
     Ok(())
 }
@@ -4650,7 +4650,13 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("bucket missing after deepen"),
         };
-        assert_ne!(bucket_deepened.edge_start(), original_edge_start);
+        // Deepen is a shrink, so the new root is written at the same base and the
+        // address does not move (no allocation, no relocation).
+        assert_eq!(
+            bucket_deepened.edge_start(),
+            original_edge_start,
+            "deepen keeps the root address"
+        );
         // After deepen, the structural root_len is still 1024 (depth 1
         // admits stored=1,048,576), but the physical root region has
         // been replaced with a 1-entry region pointing to the new
