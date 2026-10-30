@@ -16,7 +16,6 @@ use crate::VertexId;
 use crate::labeled::{
     bucket_label_key::BucketLabelKey,
     bucket_store::{PreparedExistingBucketRow, ReadySegmentRewrite, SegmentRewritePreparation},
-    ltb_raw_block_store::BLOCK_PAYLOAD_BYTES,
     record::{LabelBucket, LabeledVertex},
     tree_csr::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
 };
@@ -176,7 +175,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         .checked_add(added)
         .ok_or(LaraOperationError::RowDegreeOverflow)?;
     let width = bucket.inline_property_byte_width();
-    if usize::from(width) > BLOCK_PAYLOAD_BYTES {
+    if usize::from(width) > crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: width,
             edge_inline_property_width: 0,
@@ -199,7 +198,12 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     let property_slots_per_block = if width == 0 {
         0
     } else {
-        BLOCK_PAYLOAD_BYTES as u32 / u32::from(width)
+        graph.property_slots_per_block(width).ok_or(
+            LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: width,
+                edge_inline_property_width: 0,
+            },
+        )?
     };
     let property_leaves = if width == 0 {
         0
@@ -296,15 +300,16 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         };
         let mut edge_ids = Vec::new();
         let mut property_ids = Vec::new();
-        let mut edge_payload = [0u8; BLOCK_PAYLOAD_BYTES];
-        let mut property_payload = [0u8; BLOCK_PAYLOAD_BYTES];
+        let mut edge_payload = vec![0u8; graph.ltb().payload_bytes()];
+        let mut property_payload = vec![0u8; graph.ltb().payload_bytes()];
         let mut dead = 0u16;
         let tombstone = E::tombstone_edge();
         // Source slots are explicit; missing ordinals are emitted as native tree tombstones.
         // The source visitor resolves values through their own live-order prefix/run mapping.
         let mut emit = |slot: u32, edge: &E, value: &[u8]| -> Result<(), LabeledOperationError> {
             let epos = slot as usize % BLOCK_B;
-            edge.write_to(&mut edge_payload[epos * 4..epos * 4 + 4]);
+            let eoff = epos * E::BYTES;
+            edge.write_to(&mut edge_payload[eoff..eoff + E::BYTES]);
             dead += u16::from(edge.is_deleted_slot());
             if epos + 1 == BLOCK_B || slot + 1 == resident {
                 edge_ids.push(mint(
@@ -312,7 +317,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                         tombstone_count: dead,
                         ..base_header
                     },
-                    &edge_payload[..(epos + 1) * 4],
+                    &edge_payload[..(epos + 1) * E::BYTES],
                 )?);
                 dead = 0;
             }
@@ -967,7 +972,7 @@ pub mod tests {
         // Read the LTB blocks: `root_len` blocks × B edges == `stored` edges.
         let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
         for block_idx in 0..root_len {
-            let mut buf = [0u8; BLOCK_PAYLOAD_BYTES];
+            let mut buf = vec![0u8; graph.ltb().payload_bytes()];
             graph
                 .ltb()
                 .read_payload(block_idx, &mut buf)

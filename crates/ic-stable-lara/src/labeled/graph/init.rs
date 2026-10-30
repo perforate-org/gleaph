@@ -303,6 +303,11 @@ where
     /// Returns the per-orientation LTB (LARA Tree Block) store backing
     /// tree-mode buckets. Plan 0318 §Step 4 promotion reads from and writes
     /// to this store; slab-mode buckets leave it empty.
+    /// Inline-property values per block for width `w` (ADR 0088 §1 `K`).
+    pub(crate) fn property_slots_per_block(&self, w: u16) -> Option<u32> {
+        crate::labeled::tree_csr::property_slots_per_block(w)
+    }
+
     pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M, E> {
         &self.ltb
     }

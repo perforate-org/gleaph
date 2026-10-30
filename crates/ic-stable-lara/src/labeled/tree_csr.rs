@@ -65,6 +65,26 @@ use super::ltb_raw_block_store::{BLOCK_PAYLOAD_BYTES, EDGES_PER_BLOCK, LtbRawBlo
 /// Edge slots per block (ADR 0088 §1: one block holds 1024 edges).
 pub(crate) const B: usize = EDGES_PER_BLOCK;
 
+/// Block payload the inline-property stream is laid out on.
+///
+/// Property values live in their own LTB blocks (`BlockKind::InlineProperty`)
+/// and hold `PROPERTY_BLOCK_BYTES / w` values. That capacity is the 4-byte
+/// edge payload for every edge width, so the property tree geometry — and
+/// every LEG root-region length derived from it — stays independent of the
+/// edge record width; a wider record leaves the tail of a property block
+/// unused instead of changing root-region geometry.
+pub(crate) const PROPERTY_BLOCK_BYTES: usize = 4096;
+
+/// Inline-property values per block for width `w` (ADR 0088 §1 `K`).
+///
+/// Returns `None` when `w` is 0 (no property stream) or wider than a property
+/// block.
+pub(crate) fn property_slots_per_block(w: u16) -> Option<u32> {
+    let w = u32::from(w);
+    let payload = u32::try_from(PROPERTY_BLOCK_BYTES).ok()?;
+    (w != 0 && w <= payload).then(|| payload / w)
+}
+
 /// 4-byte target record of the bench-only [`TreeCsrBucket`] model.
 ///
 /// ADR 0088 §1 stores one raw 4-byte `target` per slot; this marker names that

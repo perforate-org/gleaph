@@ -3901,9 +3901,7 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
     if w == 0 {
         return 0;
     }
-    let k = match (u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).ok())
-        .map(|payload| payload / u32::from(w))
-    {
+    let k = match crate::labeled::tree_csr::property_slots_per_block(w) {
         Some(k) if k >= 1 => k,
         _ => return 0,
     };

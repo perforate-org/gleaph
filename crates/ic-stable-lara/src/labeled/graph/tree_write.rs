@@ -10,8 +10,8 @@
 //! - `LabelBucket::edge_start` = LEG slab offset; the slot range
 //!   `[edge_start, edge_start + root_len)` holds the **root region**, a
 //!   dense `u32` block_id array.
-//! - Each `block_id` indexes one 4 KiB block in the LTB store. A block's
-//!   payload is `B = 1024` 4-byte rows (edges) in insertion order.
+//! - Each `block_id` indexes one LTB block. A block's payload holds
+//!   `B = 1024` edge records of `E::BYTES` each, in insertion order.
 //! - `root_len = ceil(stored_slots / B^depth)`. The tail block may be
 //!   partial (gap-0 invariant): the valid byte count is
 //!   `(stored_slots - first_slot) * E::BYTES`.
@@ -53,10 +53,46 @@ use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
-/// Required LTB block payload alignment for tree-mode edges. The LTB
-/// store currently fixes `BLOCK_PAYLOAD_BYTES = 4096`, so tree mode
-/// requires `E::BYTES == 4` (one block = 1024 edges).
+/// Edge record width the tree append paths still require.
+///
+/// The store derives its payload from `E::BYTES` (`EDGES_PER_BLOCK` records per
+/// block), so this guard is the last piece of the old "one block is 4096 bytes"
+/// assumption; the follow-up commit deletes it along with the slab carve-out.
 pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
+
+/// Stack scratch for one encoded edge record.
+///
+/// The widest record in the workspace is the 24-byte bench `WideEdge`; a wider
+/// record trips the named limit in [`edge_slot`] instead of silently truncating
+/// the slot.
+const EDGE_SLOT_SCRATCH_BYTES: usize = 32;
+
+/// ADR 0088 §1 property fanout `K` for this store, failing closed when the
+/// bucket's inline-property width cannot fill a block.
+fn property_slots_per_block<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    w: u16,
+) -> Result<u32, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    graph.property_slots_per_block(w).ok_or(
+        LabeledOperationError::InlinePropertyBytesWidthMismatch {
+            bucket_width: w,
+            edge_inline_property_width: 0,
+        },
+    )
+}
+
+/// Splits `scratch` down to the `E::BYTES`-wide edge slot.
+#[inline]
+fn edge_slot<E: CsrEdge>(scratch: &mut [u8; EDGE_SLOT_SCRATCH_BYTES]) -> &mut [u8] {
+    let len = E::BYTES;
+    scratch
+        .get_mut(..len)
+        .expect("edge record is wider than EDGE_SLOT_SCRATCH_BYTES")
+}
 
 /// Tree-mode append for a single edge. Returns the logical slot index
 /// assigned to the new edge (`stored_slots` after the append).
@@ -96,9 +132,10 @@ where
     // minted at K boundaries (when the slot being written is
     // `slot % K == 0` and slot > 0).
     let w = bucket.inline_property_byte_width();
-    // 4-byte target buffer; LTB blocks hold one target per row.
-    let mut target_bytes = [0u8; 4];
-    edge.write_to(&mut target_bytes);
+    // One edge record per LTB slot: the slot is E::BYTES wide.
+    let mut target_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+    let target_bytes = edge_slot::<E>(&mut target_scratch);
+    edge.write_to(target_bytes);
     // Property value bytes for the new slot (empty slice for w == 0;
     // the edge's inline property bytes for w > 0).
     let property_value_bytes: &[u8] = if w > 0 {
@@ -240,7 +277,7 @@ where
                 vid,
                 bucket_slot,
                 bucket,
-                &target_bytes,
+                target_bytes,
                 property_value_bytes,
                 next_stored,
                 next_degree,
@@ -253,7 +290,7 @@ where
             vid,
             bucket_slot,
             bucket,
-            &target_bytes,
+            target_bytes,
             property_value_bytes,
             next_stored,
             next_degree,
@@ -292,7 +329,7 @@ where
         if let Err(e) =
             graph
                 .ltb()
-                .write_payload_partial(tail_block_id, tail_offset as usize, &target_bytes)
+                .write_payload_partial(tail_block_id, tail_offset as usize, target_bytes)
         {
             return Err(LabeledOperationError::LtbBlock(e));
         }
@@ -308,11 +345,7 @@ where
             // K boundary check: the slot being written is
             // `next_stored - 1` (0-indexed). It's a K boundary when
             // `(next_stored - 1) % K == 0` AND `next_stored - 1 > 0`.
-            let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-                .map_err(|_| {
-                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-            })?;
-            let kp = payload / u32::from(w);
+            let kp = property_slots_per_block(graph, w)?;
             let slot = next_stored - 1;
             let needs_new_property_leaf = slot > 0 && slot % kp == 0;
             if needs_new_property_leaf {
@@ -615,9 +648,7 @@ where
     let w = bucket.inline_property_byte_width();
     debug_assert!(w > 0, "property deepen requires w > 0");
     let stored_slots = bucket.stored_slots();
-    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    let k = payload / u32::from(w);
+    let k = property_slots_per_block(graph, w)?;
     let l_p = u64::from(stored_slots.div_ceil(k));
     let old_root_len_u64 = property_root_entry_count(l_p, d);
     let old_root_len = u32::try_from(old_root_len_u64)
@@ -777,9 +808,7 @@ where
     if w == 0 {
         return Ok(*bucket);
     }
-    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    let k = payload / u32::from(w);
+    let k = property_slots_per_block(graph, w)?;
     let l_p_new = u64::from(next_stored.div_ceil(k));
     let d_required = property_depth_for_leaves(l_p_new, k, next_stored)?;
     if d_required > bucket.tree_mode_property_depth() {
@@ -844,9 +873,7 @@ where
     debug_assert!(bucket.is_tree_mode());
     let w = bucket.inline_property_byte_width();
     debug_assert!(w > 0, "property leaf append requires w > 0");
-    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    let k = payload / u32::from(w);
+    let k = property_slots_per_block(graph, w)?;
     let l_p_new = u64::from(next_stored.div_ceil(k)) - 1; // 0-based new leaf index
     let d = bucket.tree_mode_property_depth();
     // 1. Mint the leaf (LIFO rollback on every later failure).
@@ -1030,10 +1057,12 @@ where
     // TREE_REUSE_WINDOW_BLOCKS - 1 preceding blocks.
     let last_block = (stored_slots - 1) / (BLOCK_B as u32);
     let first_block = last_block.saturating_sub(TREE_REUSE_WINDOW_BLOCKS - 1);
-    let mut target_bytes = [0u8; 4];
-    edge.write_to(&mut target_bytes);
-    let mut tombstone_bytes = [0u8; 4];
-    E::tombstone_edge().write_to(&mut tombstone_bytes);
+    let mut target_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+    let target_bytes = edge_slot::<E>(&mut target_scratch);
+    edge.write_to(target_bytes);
+    let mut tombstone_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+    let tombstone_bytes = edge_slot::<E>(&mut tombstone_scratch);
+    E::tombstone_edge().write_to(tombstone_bytes);
     for block_index in (first_block..=last_block).rev() {
         let block_id = resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
         let header = graph.ltb().read_block_header(block_id);
@@ -1047,10 +1076,11 @@ where
         let mut found_in_block = None;
         for in_block in 0..used {
             let offset = (in_block as usize) * E::BYTES;
-            let mut bytes = [0u8; 4];
+            let mut bytes_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+            let bytes = edge_slot::<E>(&mut bytes_scratch);
             graph
                 .ltb()
-                .read_payload_partial(block_id, offset, &mut bytes)
+                .read_payload_partial(block_id, offset, bytes)
                 .map_err(LabeledOperationError::LtbBlock)?;
             if bytes == tombstone_bytes {
                 found_in_block = Some(in_block);
@@ -1066,7 +1096,7 @@ where
         // 1. Write the live edge target into the reused slot.
         if let Err(e) = graph
             .ltb()
-            .write_payload_partial(block_id, payload_offset, &target_bytes)
+            .write_payload_partial(block_id, payload_offset, target_bytes)
         {
             return Err(LabeledOperationError::LtbBlock(e));
         }
@@ -1096,7 +1126,7 @@ where
                 let _ =
                     graph
                         .ltb()
-                        .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+                        .write_payload_partial(block_id, payload_offset, tombstone_bytes);
                 let mut rb = graph.ltb().read_block_header(block_id);
                 rb.tombstone_count = prev_count;
                 graph.ltb().write_block_header(block_id, &rb);
@@ -1113,7 +1143,7 @@ where
                 let _ =
                     graph
                         .ltb()
-                        .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+                        .write_payload_partial(block_id, payload_offset, tombstone_bytes);
                 let mut rb = graph.ltb().read_block_header(block_id);
                 rb.tombstone_count = prev_count;
                 graph.ltb().write_block_header(block_id, &rb);
@@ -1144,7 +1174,7 @@ where
             // Roll back payload + count (+ property).
             let _ = graph
                 .ltb()
-                .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+                .write_payload_partial(block_id, payload_offset, tombstone_bytes);
             let mut rb = graph.ltb().read_block_header(block_id);
             rb.tombstone_count = prev_count;
             graph.ltb().write_block_header(block_id, &rb);
@@ -1183,7 +1213,7 @@ fn tree_mode_tail_append_depth1<E, M>(
     vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
-    target_bytes: &[u8; 4],
+    target_bytes: &[u8],
     property_value_bytes: &[u8],
     next_stored: u32,
     next_degree: u32,
@@ -1199,9 +1229,7 @@ where
     // (0-indexed). A new property leaf is needed when the slot is a K
     // boundary (and slot > 0). For w == 0 there is no property stream.
     let k = if w > 0 {
-        u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(|_| {
-            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-        })? / u32::from(w)
+        property_slots_per_block(graph, w)?
     } else {
         1
     };
@@ -1393,8 +1421,9 @@ where
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
     {
-        let zero = [0u8; 4];
-        let _ = graph.ltb().write_payload_partial(new_block_id, 0, &zero);
+        let mut zero_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+        let zero = edge_slot::<E>(&mut zero_scratch);
+        let _ = graph.ltb().write_payload_partial(new_block_id, 0, zero);
         let _ = graph.ltb().release(new_block_id);
         if let Some(p) = &plan {
             release_property_plan::<E, M>(graph, p);
@@ -1466,7 +1495,7 @@ fn tree_mode_tail_append_depth_ge2<E, M>(
     vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
-    target_bytes: &[u8; 4],
+    target_bytes: &[u8],
     property_value_bytes: &[u8],
     next_stored: u32,
     next_degree: u32,
@@ -1501,11 +1530,7 @@ where
     let w = bucket.inline_property_byte_width();
     let slot = next_stored - 1;
     let (kp, needs_new_property_leaf) = if w > 0 {
-        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-            .map_err(|_| {
-                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-            })?;
-        let kp = payload / u32::from(w);
+        let kp = property_slots_per_block(graph, w)?;
         (kp, slot > 0 && slot.is_multiple_of(kp))
     } else {
         (1u32, false)
@@ -1952,18 +1977,20 @@ where
     //    For depth 1 this is a single-hop LEG read; for depth 2+ it
     //    descends the interior hop chain.
     let block_id = resolve_leaf_block_id::<E, M>(graph, bucket, block_root_index)?;
-    let mut current_bytes = [0u8; 4];
+    let mut current_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+    let current_bytes = edge_slot::<E>(&mut current_scratch);
     graph
         .ltb()
-        .read_payload_partial(block_id, in_block_offset as usize, &mut current_bytes)
+        .read_payload_partial(block_id, in_block_offset as usize, current_bytes)
         .map_err(LabeledOperationError::LtbBlock)?;
-    let current = E::read_from(&current_bytes);
+    let current = E::read_from(current_bytes);
     // 2. If already a tombstone, return the tombstone value (idempotent
     //    remove mirrors the slab path's "no live edge" early-return but
     //    still reports the tombstone to the caller). We compare raw
     //    bytes to avoid a `PartialEq` bound on `E`.
-    let mut tombstone_bytes = [0u8; 4];
-    E::tombstone_edge().write_to(&mut tombstone_bytes);
+    let mut tombstone_scratch = [0u8; EDGE_SLOT_SCRATCH_BYTES];
+    let tombstone_bytes = edge_slot::<E>(&mut tombstone_scratch);
+    E::tombstone_edge().write_to(tombstone_bytes);
     if current_bytes == tombstone_bytes {
         return Ok(Some(current));
     }
@@ -1971,7 +1998,7 @@ where
     if let Err(e) =
         graph
             .ltb()
-            .write_payload_partial(block_id, in_block_offset as usize, &tombstone_bytes)
+            .write_payload_partial(block_id, in_block_offset as usize, tombstone_bytes)
     {
         return Err(LabeledOperationError::LtbBlock(e));
     }
@@ -1979,9 +2006,8 @@ where
     //     count joins the existing compensation chain: if the bucket
     //     descriptor write below fails, both the marker payload and the
     //     header count are rolled back. A block holds at most
-    //     `BLOCK_PAYLOAD_BYTES / E::BYTES = 1024` slots, so the u16 count
-    //     cannot overflow in practice; the checked add keeps the path
-    //     fail-closed.
+    //     `EDGES_PER_BLOCK = 1024` slots, so the u16 count cannot overflow in
+    //     practice; the checked add keeps the path fail-closed.
     let mut header = graph.ltb().read_block_header(block_id);
     let prev_count = header.tombstone_count;
     header.tombstone_count = header
@@ -2009,7 +2035,7 @@ where
         let _ =
             graph
                 .ltb()
-                .write_payload_partial(block_id, in_block_offset as usize, &current_bytes);
+                .write_payload_partial(block_id, in_block_offset as usize, current_bytes);
         let mut rollback_header = graph.ltb().read_block_header(block_id);
         rollback_header.tombstone_count = prev_count;
         graph.ltb().write_block_header(block_id, &rollback_header);
@@ -2091,10 +2117,9 @@ pub(crate) fn grow_failed_to_labeled(e: GrowFailed) -> LabeledOperationError {
 /// **Invariants**:
 /// - `bucket.is_tree_mode()` is the caller's responsibility.
 /// - `block_index < ceil(stored_slots / B)`. Caller checks.
-/// - `E::BYTES == 4` (else the wire math breaks); the resolver uses
-///   `E::BYTES` for the interior-block payload offset, so a 4-byte edge
-///   works at every interior level. The typed guard at the dispatcher
-///   entry ensures this.
+/// - The record width is the slot width: the resolver addresses interior
+///   entries at `(level_idx % K) * E::BYTES` and leaf entries the same way, so
+///   one width works at every level.
 pub(crate) fn resolve_leaf_block_id<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     bucket: &LabelBucket,
@@ -2374,11 +2399,7 @@ where
     // property root holds interior ids — copied verbatim either way).
     let post_property_deepen_bucket_storage;
     let bucket: &LabelBucket = if w > 0 {
-        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-            .map_err(|_| {
-                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-            })?;
-        let kp = payload / u32::from(w);
+        let kp = property_slots_per_block(graph, w)?;
         let next = stored_slots
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -2408,11 +2429,7 @@ where
     // the imminent mint (S + 1). The old length must equal the compact
     // layout contract exactly.
     let (old_property_root_len, new_property_root_len) = if w > 0 {
-        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-            .map_err(|_| {
-                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-            })?;
-        let kp = payload / u32::from(w);
+        let kp = property_slots_per_block(graph, w)?;
         let old_len_u64 = property_root_entry_count(u64::from(stored_slots.div_ceil(kp)), d_prop);
         let next = stored_slots
             .checked_add(1)
@@ -2438,9 +2455,7 @@ where
     // guard, which fires first in production).
     if w > 0 {
         let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-        let kp = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(
-            |_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
-        )? / u32::from(w);
+        let kp = property_slots_per_block(graph, w)?;
         if new_property_root_len > k_max {
             return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
                 stored_slots,
@@ -2749,8 +2764,8 @@ where
 /// 1. `bucket.is_tree_mode()` (caller's responsibility; assert).
 /// 2. `E::BYTES == TREE_MODE_REQUIRED_EDGE_BYTES` (typed
 ///    `TreeModeEdgeWidthUnsupported`).
-/// 3. `bucket.inline_property_byte_width() <= BLOCK_PAYLOAD_BYTES`
-///    (Plan 0326 LPB-in-tree: `0 < w <= payload_bytes` rebuilds the
+/// 3. `bucket.inline_property_byte_width() <= tree_csr::PROPERTY_BLOCK_BYTES`
+///    (Plan 0326 LPB-in-tree: `0 < w <= property block bytes` rebuilds the
 ///    byte slab from the LPB; wider widths are the typed
 ///    `InlinePropertyBytesWidthMismatch` declared bound).
 ///

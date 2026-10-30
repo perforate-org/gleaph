@@ -10,15 +10,16 @@
 //! - `LabelBucket::edge_start` = LEG slab offset; the slot range
 //!   `[edge_start, edge_start + root_len)` holds the **root region**, a
 //!   dense `u32` block_id array.
-//! - Each `block_id` indexes one 4 KiB block in the LTB store. A block's
-//!   payload is `B = 1024` 4-byte rows (edges) in insertion order.
+//! - Each `block_id` indexes one LTB block. A block's payload holds
+//!   `B = 1024` edge records of `E::BYTES` each, in insertion order.
 //! - `root_len = ceil(stored_slots / B^depth)` where
 //!   `depth = derive_depth(stored_slots)`. The tail block may be
 //!   partial (gap-0 invariant): the valid byte count is
 //!   `(stored_slots - first_slot) * E::BYTES`.
 //! - Logical slot `i` → `(block_root_index = i / B, in_block_offset =
 //!   (i % B) * E::BYTES)`. Tombstone filtering is the upper layer's
-//!   job; this module yields raw 4-byte targets only.
+//!   job; this module yields the stored records only (property values live
+//!   in their own stream).
 //!
 //! Production read API:
 //! - [`super::traverse::LabeledLaraGraph::visit_edges_for_label_impl`]
@@ -36,13 +37,15 @@ use std::ops::ControlFlow;
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
 use crate::labeled::graph::error::LabeledOperationError;
-use crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES;
 use crate::labeled::record::LabelBucket;
 use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
-/// Read the 4-byte target at logical slot `slot` of a tree-mode bucket.
+/// Read the target at logical slot `slot` of a tree-mode bucket.
+///
+/// The slot holds one edge record of `E::BYTES`; the returned `u32` is its
+/// 4-byte target.
 ///
 /// The private mode dispatcher supplies the resolved tree descriptor. Native
 /// positions include tombstones; properties live in a separate stream. Bounds,
@@ -102,7 +105,7 @@ where
 ///
 /// `out_degree` is the live-edge count (the bucket's `degree()`); the
 /// `visit` callback receives the slot index (in iteration order, not
-/// physical order) and the 4-byte target. Tombstone filtering is the
+/// physical order) and the decoded edge record. Tombstone filtering is the
 /// caller's responsibility; this helper yields the raw targets. `Break` stops the
 /// walk immediately; the current edge leaf has already been read into a 4 KiB buffer.
 pub(crate) fn visit_tree_mode_label_bucket_edges<E, M, Visit, B>(
@@ -172,7 +175,7 @@ where
                 let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
-                let mut payload = [0u8; ltb_payload_bytes_const()];
+                let mut payload = vec![0u8; graph.ltb().payload_bytes()];
                 graph
                     .ltb()
                     .read_payload(block_id, &mut payload)
@@ -196,7 +199,7 @@ where
                 let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
-                let mut payload = [0u8; ltb_payload_bytes_const()];
+                let mut payload = vec![0u8; graph.ltb().payload_bytes()];
                 graph
                     .ltb()
                     .read_payload(block_id, &mut payload)
@@ -281,20 +284,22 @@ where
 // scope for this slice; the property root grows up to R_MAX = 1024
 // in-place via a simple root-region append (no interior).
 
-/// Compute the property leaf fan-out K = floor(payload_bytes / w).
-/// Returns `None` for w = 0 (no property stream) or w > payload (ADR
-/// declared bound; typed reject upstream).
-#[inline]
-pub(crate) fn property_leaf_fanout(w: u16) -> Option<u32> {
-    if w == 0 {
-        return None;
-    }
-    let payload = u32::try_from(BLOCK_PAYLOAD_BYTES).ok()?;
-    let w_u32 = u32::from(w);
-    if w_u32 > payload {
-        return None;
-    }
-    Some(payload / w_u32)
+/// ADR 0088 §1 property fanout `K` for this store, failing closed when the
+/// bucket's inline-property width cannot fill a property block.
+fn property_slots_per_block<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    w: u16,
+) -> Result<u32, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    graph.property_slots_per_block(w).ok_or(
+        LabeledOperationError::InlinePropertyBytesWidthMismatch {
+            bucket_width: w,
+            edge_inline_property_width: 0,
+        },
+    )
 }
 
 /// Resolve the LPB block_id that holds the property value for `slot`
@@ -332,15 +337,7 @@ where
     M: Memory,
 {
     let w = bucket.inline_property_byte_width();
-    let k = match property_leaf_fanout(w) {
-        Some(k) => k,
-        None => {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: w,
-                edge_inline_property_width: 0,
-            });
-        }
-    };
+    let k = property_slots_per_block(graph, w)?;
     let stored_slots = bucket.stored_slots();
     if slot > stored_slots {
         return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
@@ -399,15 +396,7 @@ where
             edge_inline_property_width: 0,
         });
     }
-    let k = match property_leaf_fanout(w) {
-        Some(k) => k,
-        None => {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: w,
-                edge_inline_property_width: 0,
-            });
-        }
-    };
+    let k = property_slots_per_block(graph, w)?;
     if out.len() != usize::from(w) {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: w,
@@ -451,15 +440,7 @@ where
             edge_inline_property_width: 0,
         });
     }
-    let k = match property_leaf_fanout(w) {
-        Some(k) => k,
-        None => {
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: w,
-                edge_inline_property_width: 0,
-            });
-        }
-    };
+    let k = property_slots_per_block(graph, w)?;
     if value.len() != usize::from(w) {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: w,
@@ -493,9 +474,9 @@ where
 /// Property-leaf block cache for sequential scans of a tree-mode bucket.
 ///
 /// The property walk asks for one value per slot. Resolving the property leaf
-/// and reading its 4-byte row per slot costs one LEG root read plus one LTB
+/// and reading one slot per value costs one LEG root read plus one LTB
 /// partial read per row, where the property leaf covers
-/// `K = floor(payload_bytes / w)` consecutive slots — `2 x rows` memory calls
+/// `K = floor(tree_csr::PROPERTY_BLOCK_BYTES / w)` consecutive slots — `2 x rows` memory calls
 /// where `2 x leaves` would do (GAP-2026-09-20-003).
 ///
 /// The cache resolves and reads the leaf's LTB block once and serves the
@@ -504,14 +485,15 @@ where
 struct PropertyLeafCache {
     /// First slot covered by the cached leaf, `None` before the first read.
     leaf_first_slot: Option<u32>,
-    block: [u8; ltb_payload_bytes_const()],
+    /// The cached leaf block (one store payload wide).
+    block: Vec<u8>,
 }
 
 impl PropertyLeafCache {
-    fn new() -> Self {
+    fn new(payload_bytes: usize) -> Self {
         Self {
             leaf_first_slot: None,
-            block: [0u8; ltb_payload_bytes_const()],
+            block: vec![0u8; payload_bytes],
         }
     }
 
@@ -529,12 +511,7 @@ impl PropertyLeafCache {
         M: Memory,
     {
         let w = bucket.inline_property_byte_width();
-        let k = property_leaf_fanout(w).ok_or(
-            LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: w,
-                edge_inline_property_width: 0,
-            },
-        )?;
+        let k = property_slots_per_block(graph, w)?;
         // Sequential walks stay inside one leaf for `K` consecutive slots, so the
         // cached first slot replaces the per-row division/modulo (both are
         // integer divisions on the hot path).
@@ -605,14 +582,14 @@ where
     let mut property_buf = vec![0u8; usize::from(w)];
     match order {
         OutEdgeOrder::Ascending => {
-            let mut property_leaf = PropertyLeafCache::new();
+            let mut property_leaf = PropertyLeafCache::new(graph.ltb().payload_bytes());
             for block_index in 0..leaf_count {
                 let block_id =
                     super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
                 let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
-                let mut payload = [0u8; ltb_payload_bytes_const()];
+                let mut payload = vec![0u8; graph.ltb().payload_bytes()];
                 graph
                     .ltb()
                     .read_payload(block_id, &mut payload)
@@ -630,14 +607,14 @@ where
             }
         }
         OutEdgeOrder::Descending => {
-            let mut property_leaf = PropertyLeafCache::new();
+            let mut property_leaf = PropertyLeafCache::new(graph.ltb().payload_bytes());
             for block_index in (0..leaf_count).rev() {
                 let block_id =
                     super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
                 let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
-                let mut payload = [0u8; ltb_payload_bytes_const()];
+                let mut payload = vec![0u8; graph.ltb().payload_bytes()];
                 graph
                     .ltb()
                     .read_payload(block_id, &mut payload)
@@ -656,12 +633,6 @@ where
         }
     }
     Ok(ControlFlow::Continue(()))
-}
-
-/// Constant-time accessor for the LTB payload byte count, used to
-/// size the stack `payload` buffer in [`visit_tree_mode_label_bucket_edges`].
-const fn ltb_payload_bytes_const() -> usize {
-    BLOCK_B * 4
 }
 
 /// Plan 0338 (ADR 0094 §4 S1/S2 read-path helper): scan one tree leaf
@@ -694,7 +665,7 @@ where
     debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
-    let mut payload = [0u8; ltb_payload_bytes_const()];
+    let mut payload = vec![0u8; graph.ltb().payload_bytes()];
     graph
         .ltb()
         .read_payload(block_id, &mut payload)
@@ -746,7 +717,7 @@ where
     debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
-    let mut payload = [0u8; ltb_payload_bytes_const()];
+    let mut payload = vec![0u8; graph.ltb().payload_bytes()];
     graph
         .ltb()
         .read_payload(block_id, &mut payload)
@@ -1013,7 +984,8 @@ mod tests {
                 .read_label_bucket_slot(bucket_slot)
                 .expect("tree bucket");
             assert!(bucket.is_tree_mode());
-            let fanout = property_leaf_fanout(width).expect("property fanout");
+            let fanout =
+                crate::labeled::tree_csr::property_slots_per_block(width).expect("property fanout");
             let (stop_slot, unread_property_block) = match order {
                 OutEdgeOrder::Ascending => (fanout - 1, 1),
                 OutEdgeOrder::Descending => (stored - fanout, stored / fanout - 2),
@@ -1705,7 +1677,7 @@ mod tests {
         assert!(bucket.is_tree_mode(), "4096 rows must promote");
         assert_eq!(bucket.degree, stored);
 
-        let k = u64::from(property_leaf_fanout(w).expect("fanout"));
+        let k = u64::from(crate::labeled::tree_csr::property_slots_per_block(w).expect("fanout"));
         let expected_calls = u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64)
             + u64::from(stored).div_ceil(k);
         assert_eq!(expected_calls, 36, "4 edge blocks + 32 property leaves");
@@ -1746,13 +1718,31 @@ mod tests {
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn lpb_in_tree_property_leaf_fanout_matches_documented_table() {
-        assert_eq!(property_leaf_fanout(1), Some(4096));
-        assert_eq!(property_leaf_fanout(8), Some(512));
-        assert_eq!(property_leaf_fanout(32), Some(128));
-        assert_eq!(property_leaf_fanout(128), Some(32));
-        assert_eq!(property_leaf_fanout(1024), Some(4));
-        assert_eq!(property_leaf_fanout(0), None);
-        assert_eq!(property_leaf_fanout(4097), None);
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(1),
+            Some(4096)
+        );
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(8),
+            Some(512)
+        );
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(32),
+            Some(128)
+        );
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(128),
+            Some(32)
+        );
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(1024),
+            Some(4)
+        );
+        assert_eq!(crate::labeled::tree_csr::property_slots_per_block(0), None);
+        assert_eq!(
+            crate::labeled::tree_csr::property_slots_per_block(4097),
+            None
+        );
     }
 
     /// **LPB-in-tree demote round-trip (Plan 0326 §demote-and-compaction).**
