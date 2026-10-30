@@ -624,11 +624,11 @@ mod tests {
 
         assert_eq!(graph.edges().header().segment_size, 16);
         assert_eq!(
-            crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota(16),
+            crate::labeled::graph::leaf_arena::labeled_leaf_vertex_edge_quota(16),
             1
         );
         assert_eq!(
-            crate::labeled::graph::leaf_pin::labeled_leaf_physical_block_len(16),
+            crate::labeled::graph::leaf_arena::labeled_leaf_physical_block_len(16),
             16
         );
     }

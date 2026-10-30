@@ -361,7 +361,8 @@ where
                             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                         let old_combined_len = old_edge_root_len + old_prop_root_len;
                         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-                        let new_combined = match graph.allocate_resident_span_avoiding(
+                        let new_combined = match super::leaf_arena::LeafArena::reserve(
+                            graph,
                             vid,
                             u64::from(new_combined_len),
                             avoid,
@@ -705,7 +706,8 @@ where
     }
     debug_assert_eq!(cursor, old_root_len as usize);
     // 4. Allocate the new combined span (avoiding the old one).
-    let new_combined_start = match graph.allocate_resident_span_avoiding(
+    let new_combined_start = match super::leaf_arena::LeafArena::reserve(
+        graph,
         vid,
         u64::from(new_combined_len),
         Some((old_combined_start, u64::from(old_combined_len))),
@@ -1298,7 +1300,8 @@ where
         old_combined_start
     } else if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), avoid)
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1309,7 +1312,7 @@ where
             }
         }
     } else {
-        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), None) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1451,7 +1454,7 @@ where
     // owned remainder is released. Best-effort (`let _ =`) preserved.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
         let in_pin = matches!(
-            super::leaf_pin::LabeledLeafPin::capture(graph, vid),
+            super::leaf_arena::LeafArena::capture(graph, vid),
             Ok(Some(pin)) if pin.contains(old_combined_start, u64::from(old_combined_len))
         );
         if !in_pin {
@@ -1632,7 +1635,8 @@ where
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let old_combined_start = bucket.edge_start();
                     let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-                    let new_combined = match graph.allocate_resident_span_avoiding(
+                    let new_combined = match super::leaf_arena::LeafArena::reserve(
+                        graph,
                         vid,
                         u64::from(new_combined_len),
                         avoid,
@@ -1777,7 +1781,8 @@ where
     let old_combined_start = bucket.edge_start();
     let new_edge_start = if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match graph.allocate_resident_span_avoiding(vid, u64::from(new_combined_len), avoid) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), avoid)
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_interior_id);
@@ -1789,7 +1794,7 @@ where
             }
         }
     } else {
-        match graph.allocate_resident_span(vid, u64::from(new_combined_len)) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), None) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_interior_id);
@@ -2584,7 +2589,7 @@ where
     if tail > 0 {
         let tail_start = old_combined_start + u64::from(new_combined_len);
         let in_pin = matches!(
-            super::leaf_pin::LabeledLeafPin::capture(graph, vid),
+            super::leaf_arena::LeafArena::capture(graph, vid),
             Ok(Some(pin)) if pin.contains(tail_start, u64::from(tail))
         );
         if !in_pin {
@@ -2651,10 +2656,11 @@ where
     let new_root_len = leaf_ids.len() as u32;
     debug_assert!(new_root_len <= k, "depth 2 root_len must be <= R_MAX");
     // 2. Allocate the new root region span.
-    let new_edge_start = match graph.allocate_resident_span(vid, u64::from(new_root_len)) {
-        Ok(s) => s,
-        Err(e) => return Err(LabeledOperationError::from(e)),
-    };
+    let new_edge_start =
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_root_len), None) {
+            Ok(s) => s,
+            Err(e) => return Err(LabeledOperationError::from(e)),
+        };
     // 3. Write the leaf-id array to the new root region.
     let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * E::BYTES);
     for &id in &leaf_ids {
@@ -2758,7 +2764,7 @@ where
 ///    `visit_tree_mode_label_bucket_edges`, filtering tombstones
 ///    (the visit yields ALL slot positions; tombstones are filtered
 ///    inside the visit closure using `E::is_tombstone_edge`).
-/// 2. **Reserve**: `graph.allocate_resident_span(vid, degree as u64)`.
+/// 2. **Reserve**: `LeafArena::reserve(graph, vid, degree as u64, None)`.
 /// 3. **Write**: copy the live edges contiguously into the new span.
 /// 4. **Publish**: write the new slab-mode descriptor
 ///    (`with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
@@ -2869,7 +2875,7 @@ where
     // Phase 2: Reserve new slab span of exactly `degree` slots,
     // avoiding the live root region (see comment above).
     let new_edge_start =
-        match graph.allocate_resident_span_avoiding(src, u64::from(degree), avoid_range) {
+        match super::leaf_arena::LeafArena::reserve(graph, src, u64::from(degree), avoid_range) {
             Ok(s) => s,
             Err(e) => return Err(LabeledOperationError::from(e)),
         };

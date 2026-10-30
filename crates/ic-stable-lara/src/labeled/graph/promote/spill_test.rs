@@ -1434,7 +1434,7 @@ fn initialized_prefix_bytes<E: CsrEdge, M: Memory>(
 }
 
 fn root_containment_errors<E: CsrEdge, M: Memory>(graph: &LabeledLaraGraph<E, M>) -> Vec<String> {
-    match super::super::leaf_pin::LabeledLeafPin::capture(graph, VertexId::from(0)) {
+    match super::super::leaf_arena::LeafArena::capture(graph, VertexId::from(0)) {
         Ok(Some(pin)) => pin.containment_errors(),
         _ => Vec::new(),
     }

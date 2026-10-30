@@ -268,7 +268,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     } else {
         // Resident space belongs to the leaf pin: place the root inside it, keeping
         // the source span (still live until the transcription reads it) intact.
-        let pin = super::leaf_pin::LabeledLeafPin::capture(graph, vid)?;
+        let pin = super::leaf_arena::LeafArena::capture(graph, vid)?;
         let avoid = pin.as_ref().and_then(|pin| pin.resident(vid));
         match (pin.as_ref(), avoid) {
             (Some(pin), Some(avoid)) => pin.free_base_avoiding(vid, u64::from(combined_len), avoid),

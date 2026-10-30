@@ -740,7 +740,7 @@ fn seed_stage2_leaf(
     if saturate_mates {
         // Keep the fixture at the same relative density when testing an experimental
         // quota. The default quota is 1, so this remains a small sparse-leaf fixture.
-        let leaf_mate_degree = crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota(
+        let leaf_mate_degree = crate::labeled::graph::leaf_arena::labeled_leaf_vertex_edge_quota(
             graph.edges().header().segment_size,
         )
         .saturating_sub(4)

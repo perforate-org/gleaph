@@ -258,7 +258,7 @@ mod headroom_screen;
 mod init;
 mod insert;
 mod iter;
-pub(crate) mod leaf_pin;
+pub(crate) mod leaf_arena;
 mod promote;
 mod remove;
 #[cfg(test)]

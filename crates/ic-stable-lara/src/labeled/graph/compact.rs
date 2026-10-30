@@ -4085,7 +4085,7 @@ where
                             ] {
                                 if start < end {
                                     if matches!(
-                                        super::leaf_pin::LabeledLeafPin::capture(self, src),
+                                        super::leaf_arena::LeafArena::capture(self, src),
                                         Ok(Some(pin)) if pin.contains(start, end - start)
                                     ) {
                                         continue;
@@ -5233,7 +5233,7 @@ where
             resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
         }
         let seg = source.header.segment_size.max(1);
-        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let block_len = super::leaf_arena::labeled_leaf_physical_block_len(seg);
         let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
         let raw_len = resident_geometry
             .saturating_add(active_vertices)
@@ -5300,7 +5300,7 @@ where
             }
             resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
         }
-        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let block_len = super::leaf_arena::labeled_leaf_physical_block_len(seg);
         let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
         let raw_len = resident_geometry
             .saturating_add(active_vertices)
@@ -7921,7 +7921,7 @@ mod tests {
 
     #[test]
     fn labeled_segment_relocate_releases_single_footprint() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         reset_labeled_leaf_release_test_metrics();
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -8029,7 +8029,7 @@ mod tests {
 
     #[test]
     fn labeled_segment_relocate_does_not_call_vertex_span_release() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         let vertex_releases_before = labeled_vertex_footprint_release_calls();
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -8063,7 +8063,7 @@ mod tests {
 
     #[test]
     fn labeled_relocate_commit_order() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);
@@ -8114,7 +8114,7 @@ mod tests {
 
     #[test]
     fn labeled_relocation_preserves_all_leaf_vertices() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
 
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
@@ -8164,7 +8164,7 @@ mod tests {
 
     #[test]
     fn labeled_segment_slide_coalesces_adjacent_free() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
 
         let graph = test_graph();
         let vid = VertexId::from(0);
@@ -8248,7 +8248,7 @@ mod tests {
 
     #[test]
     fn labeled_segment_relocate_reuses_free_span() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);

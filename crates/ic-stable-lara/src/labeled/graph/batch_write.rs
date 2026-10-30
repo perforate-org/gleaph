@@ -2494,7 +2494,7 @@ where
             .checked_add(extra)
             .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
         let seg = header.segment_size.max(1);
-        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let block_len = super::leaf_arena::labeled_leaf_physical_block_len(seg);
         let geometric_slack = state.required_extra.div_ceil(8).max(u64::from(seg));
         let target_len = state
             .old_leaf_len

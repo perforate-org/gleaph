@@ -956,7 +956,7 @@ where
             self.bucket_successor_start_after_bucket_for_new_bucket(vertex, bucket_index)?
         };
         let initial_slots = if bucket_index == 0 && vertex.degree() == 1 {
-            crate::labeled::graph::leaf_pin::labeled_leaf_initial_bucket_quota(
+            crate::labeled::graph::leaf_arena::labeled_leaf_initial_bucket_quota(
                 self.edges.header().segment_size,
             )
         } else {
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn insert_beyond_initial_label_edge_span_capacity_relocates_labeled_leaf() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         let graph = test_graph();
         let vid = VertexId::from(0);
         let cap_before = graph.edges().header().elem_capacity;
@@ -1695,7 +1695,7 @@ mod tests {
 
     #[test]
     fn labeled_insert_does_not_grow_elem_capacity_for_hub_growth() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
         let graph = LabeledLaraGraph::new(
             mem(),
             mem(),
@@ -1797,7 +1797,7 @@ mod tests {
 
     #[test]
     fn single_label_tree_promotion_preserves_edge_only_tail_headroom() {
-        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use super::super::leaf_arena::labeled_leaf_physical_block_len;
 
         let graph = test_graph();
         let vid = VertexId::from(0);

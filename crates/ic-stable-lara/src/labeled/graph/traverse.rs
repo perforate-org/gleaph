@@ -3925,7 +3925,7 @@ mod tests {
         let _ = InlinePropertyBytes::from_bytes(2, &[]);
     }
 
-    use super::super::leaf_pin::labeled_leaf_physical_block_len;
+    use super::super::leaf_arena::labeled_leaf_physical_block_len;
     use super::super::test_support::*;
     use super::*;
     use std::num::NonZero;
