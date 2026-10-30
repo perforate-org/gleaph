@@ -276,17 +276,20 @@ where
         let Some(new_len) = block_len.checked_add(extension) else {
             return false;
         };
-        let Some(end) = checked_add_slot_index(start, new_len) else {
+        let Some(block_end) = checked_add_slot_index(start, block_len) else {
             return false;
         };
-        if end > self.graph.edges.header().elem_capacity {
-            return false;
-        }
-        if !self
-            .graph
-            .edges
-            .try_extend_span(start, block_len, extension)
-        {
+        let capacity = self.graph.edges.header().elem_capacity;
+        let extended = if block_end == capacity {
+            // The block ends at the slab end, so appending capacity extends it:
+            // `allocate_span` hands out the old capacity as the new span's base.
+            matches!(self.graph.edges.allocate_span(extension), Ok(base) if base == block_end)
+        } else {
+            self.graph
+                .edges
+                .try_extend_span(start, block_len, extension)
+        };
+        if !extended {
             return false;
         }
         let Ok(delta) = i64::try_from(extension) else {
@@ -1356,6 +1359,69 @@ mod tests {
             }
         }
         check(&reopened, &expected, "post-reopen-mutation");
+    }
+
+    #[test]
+    fn reserve_grows_the_block_at_the_slab_end() {
+        let graph = hub_graph();
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        // A freshly pinned block sits at the slab end; one resident covers it.
+        let (start, block_len) = graph.ensure_labeled_leaf_block_pinned(owner).unwrap();
+        graph.vertices.set(
+            owner,
+            &LabeledVertex::from_parts(start, block_len as u32, block_len as u32, 0)
+                .with_default_edge_labeled(true)
+                .with_degree(block_len as u32)
+                .with_stored_slots(block_len as u32),
+        );
+
+        let base =
+            LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, block_len)).unwrap();
+
+        assert_eq!(
+            base,
+            start + block_len,
+            "the block grows by appending capacity"
+        );
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner).total,
+            i64::try_from(block_len + 4).unwrap()
+        );
+        assert_eq!(
+            LeafArena::capture(&graph, owner).unwrap().unwrap().range(),
+            (start, block_len + 4)
+        );
+    }
+
+    #[test]
+    fn reserve_grows_the_block_into_a_free_tail() {
+        let graph = hub_graph();
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        // Pin the leaf through the production path, then let one resident cover the
+        // whole block so placement inside it has no run to hand out.
+        let (start, block_len) = graph.ensure_labeled_leaf_block_pinned(owner).unwrap();
+        graph.vertices.set(
+            owner,
+            &LabeledVertex::from_parts(start, block_len as u32, block_len as u32, 0)
+                .with_default_edge_labeled(true)
+                .with_degree(block_len as u32)
+                .with_stored_slots(block_len as u32),
+        );
+        // The store appends at `elem_capacity`, so the only free run is one that was
+        // released: take four slots after the block and give them back.
+        let tail = graph.edges.allocate_span(4).unwrap();
+        assert_eq!(tail, start + block_len);
+        graph.edges.release_span(tail, 4).unwrap();
+
+        let base =
+            LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, block_len)).unwrap();
+
+        assert_eq!(base, tail, "the span grows into the block's freed tail");
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner).total,
+            i64::try_from(block_len + 4).unwrap(),
+            "the block absorbs the growth instead of the leaf losing the span"
+        );
     }
 
     #[test]
