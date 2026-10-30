@@ -175,6 +175,22 @@ pub(crate) fn cap_for_mode(bucket: &LabelBucket) -> u32 {
     }
 }
 
+/// Stack scratch for one encoded edge record.
+///
+/// The widest record in the workspace is the 24-byte bench `WideEdge`; a wider
+/// record trips the named limit in [`edge_slot`] instead of silently truncating
+/// a slot. Shared by the descriptor-resident (tiny) and LTB (tree) write paths.
+pub(crate) const EDGE_SLOT_SCRATCH_BYTES: usize = 32;
+
+/// Splits `scratch` down to the `E::BYTES`-wide edge slot.
+#[inline]
+pub(crate) fn edge_slot<E: CsrEdge>(scratch: &mut [u8; EDGE_SLOT_SCRATCH_BYTES]) -> &mut [u8] {
+    let len = E::BYTES;
+    scratch
+        .get_mut(..len)
+        .expect("edge record is wider than EDGE_SLOT_SCRATCH_BYTES")
+}
+
 /// Check the `alloc_space` cap before any allocation. Returns a typed error when
 /// `current_alloc_space + increment > cap(bucket.mode)`.
 pub(crate) fn check_alloc_cap(
@@ -396,7 +412,7 @@ mod cap_enforcement_tests {
         // variant is added (Slab default below, Tree, Tiny here).
         use crate::labeled::record::LabelBucket;
         let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("enable");
         assert_eq!(BucketMode::from_bucket(&tiny), BucketMode::Tiny);
         assert_eq!(cap_for_mode(&tiny), LabelBucket::TINY_MAX_DEGREE);
@@ -465,13 +481,13 @@ mod cap_enforcement_tests {
         // target), so the slab formula would read a vertex id as a slot count
         // and reject every tiny bucket. Alloc space is the byte-28 used width.
         let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("enable tiny");
         assert_eq!(compute_bucket_allocation(&tiny), 2);
         check_alloc_cap(&tiny, 1).expect("two used slots leave room in a K=4 prefix");
 
         let full = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 0)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("enable tiny")
             .with_tiny_target(3, 999);
         assert_eq!(compute_bucket_allocation(&full), 4);

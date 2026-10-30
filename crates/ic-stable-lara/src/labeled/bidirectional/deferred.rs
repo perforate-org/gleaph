@@ -8917,7 +8917,7 @@ mod tests {
         // prefix; stored == degree always, so the slack arithmetic could never
         // fire — the explicit arm keeps it that way by construction).
         assert!(!fire(
-            &slab(2, 2).try_enable_tiny_mode().expect("enable"),
+            &slab(2, 2).try_enable_tiny_mode(4).expect("enable"),
             EdgePlacementPolicy::Insertion
         ));
     }

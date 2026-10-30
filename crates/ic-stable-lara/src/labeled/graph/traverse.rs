@@ -3131,11 +3131,13 @@ where
         E: CsrEdgeTombstone,
     {
         debug_assert!(bucket.is_tiny_mode());
-        debug_assert_eq!(E::BYTES, 4, "tiny buckets require 4-byte edges");
         if slot_index >= bucket.tiny_used_width() {
             return EdgeSlotState::Missing;
         }
-        let edge = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes());
+        let mut record = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        let record = super::edge_slot::<E>(&mut record);
+        bucket.tiny_slot(slot_index, E::BYTES, record);
+        let edge = E::read_from(record);
         Self::decoded_edge_state_at_slot(bucket, slot_index, edge)
     }
 

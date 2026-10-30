@@ -878,12 +878,12 @@ where
         self.ensure_vertex_bucket_row_origin(src)?;
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        // ADR 0096 §4 (birth flip): 4-byte-edge buckets are born tiny
-        // (spanless, pinless, quotaless). Wider edge types keep the slab birth
-        // path below: tiny stores 4-byte targets and transcription would be
-        // lossy (mirrors the tree carve-out at the insert dispatcher). The
-        // E::BYTES gate monomorphizes away per instantiation.
-        if E::BYTES == 4 {
+        // ADR 0096 §4 (birth flip): a bucket whose edge record fits the tiny
+        // payload is born tiny (spanless, pinless, quotaless). The capacity is
+        // `TINY_PAYLOAD_BYTES / E::BYTES`, so the 4-byte production edge gets
+        // K=4 and a record wider than the payload keeps the slab birth path
+        // below. The gate monomorphizes away per instantiation.
+        if LabelBucket::tiny_capacity(E::BYTES) > 0 {
             let anchor =
                 self.bucket_successor_start_after_bucket_for_new_bucket(&vertex, bucket_index)?;
             let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
@@ -895,7 +895,7 @@ where
             // the tiny pre-checks; failure here means the creation path itself
             // changed shape and must be re-examined, never ignored.
             let bucket = bucket
-                .try_enable_tiny_mode()
+                .try_enable_tiny_mode(E::BYTES)
                 .map_err(LaraOperationError::from)?;
             let bucket = bucket.with_edge_range(anchor, 0);
             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -1034,7 +1034,7 @@ where
             }
         }
         if edge.edge_inline_property_byte_width() != 0
-            || (hole.is_none() && bucket.tiny_used_width() >= LabelBucket::TINY_MAX_DEGREE)
+            || (hole.is_none() && bucket.tiny_used_width() >= LabelBucket::tiny_capacity(E::BYTES))
         {
             self.promote_tiny_to_slab_with_growth(src, bucket_slot, &bucket)?;
             return self.insert_edge_skip_leaf_cascade_impl(
@@ -1045,10 +1045,6 @@ where
                 location_capture,
             );
         }
-        debug_assert!(
-            E::BYTES == 4,
-            "tiny buckets require 4-byte edges (birth gate)"
-        );
         // Unordered hole-fill (found above) or dense append at the used width
         // (Insertion's tail ordinal); the used width grows only on append while
         // `degree` (live) always +1.
@@ -1069,7 +1065,10 @@ where
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?,
             )
         };
-        let grown = grown.with_tiny_target(logical_slot, u32::from(edge.neighbor_vid()));
+        let mut slot = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        let slot = super::edge_slot::<E>(&mut slot);
+        edge.write_to(slot);
+        let grown = grown.with_tiny_slot(logical_slot, E::BYTES, slot);
         let grown = self.write_edge_inline_property_after_insert(src, bucket_slot, grown, &edge)?;
         self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
         let hdr = self.edges.header();
@@ -1142,10 +1141,6 @@ where
         debug_assert!(
             bucket.is_tiny_mode(),
             "tiny promotion requires a tiny-mode bucket"
-        );
-        debug_assert!(
-            E::BYTES == 4,
-            "tiny buckets require 4-byte edges (birth gate)"
         );
         let degree = bucket.degree();
         let span_len = degree
@@ -1319,16 +1314,18 @@ where
         // Transcribe LIVE targets only (skip tombstone holes — the slab form
         // is dense; holes do not survive promotion).
         let mut transcribed = 0u32;
+        let mut tiny_slot = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
         for i in 0..bucket.tiny_used_width() {
-            let target = bucket.tiny_target(i);
-            if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
+            let record = super::edge_slot::<E>(&mut tiny_slot);
+            bucket.tiny_slot(i, E::BYTES, record);
+            if E::read_from(record).is_deleted_slot() {
                 continue;
             }
             let slot = span_base
                 .checked_add(u64::from(transcribed))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.edges
-                .write_slot_bytes(slot, &target.to_le_bytes())
+                .write_slot_bytes(slot, record)
                 .map_err(LabeledOperationError::from)?;
             transcribed = transcribed
                 .checked_add(1)
@@ -2168,6 +2165,83 @@ mod tests {
     // via `force_tiny_bucket` (birth-tiny flips separately); all assertions
     // hold through the full `insert_edge` path including the cascade check.
     use std::ops::ControlFlow;
+
+    #[test]
+    fn tiny_capacity_follows_the_edge_record_width() {
+        // The descriptor reserves 16 payload bytes, so the live capacity is
+        // 16 / E::BYTES: four 4-byte records (the K=4 wire), two 8-byte records,
+        // one 10- or 16-byte record, and no tiny mode at all for a record wider
+        // than the payload.
+        assert_eq!(LabelBucket::tiny_capacity(4), 4);
+        assert_eq!(LabelBucket::tiny_capacity(8), 2);
+        assert_eq!(LabelBucket::tiny_capacity(10), 1);
+        assert_eq!(LabelBucket::tiny_capacity(16), 1);
+        assert_eq!(LabelBucket::tiny_capacity(24), 0);
+    }
+
+    #[test]
+    fn wide_edge_bucket_uses_tiny_until_its_capacity_then_promotes() {
+        // An 8-byte record fits two slots: two inserts stay descriptor-resident
+        // and the third crosses the capacity into the slab.
+        let graph = crate::labeled::graph::test_support::test_graph_with_edge::<
+            crate::test_support::LabelledTestEdge,
+        >();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..2u32 {
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    crate::test_support::LabelledTestEdge::new(target, 7),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let tiny_bucket = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(tiny_bucket.is_tiny_mode(), "two 8-byte records fit inline");
+        assert_eq!(tiny_bucket.degree(), 2);
+        assert_eq!(tiny_bucket.tiny_used_width(), 2);
+        // The stored records round-trip through the descriptor payload.
+        let mut record = [0u8; crate::labeled::graph::EDGE_SLOT_SCRATCH_BYTES];
+        for target in 0..2u32 {
+            let record = crate::labeled::graph::edge_slot::<crate::test_support::LabelledTestEdge>(
+                &mut record,
+            );
+            tiny_bucket.tiny_slot(target, 8, record);
+            assert_eq!(
+                crate::test_support::LabelledTestEdge::read_from(record),
+                crate::test_support::LabelledTestEdge::new(target, 7)
+            );
+        }
+        graph
+            .insert_edge(
+                vid,
+                label,
+                crate::test_support::LabelledTestEdge::new(2, 7),
+                EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let promoted = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => panic!("bucket missing"),
+        };
+        assert!(
+            !promoted.is_tiny_mode(),
+            "the third record exceeds the two-slot tiny capacity"
+        );
+        assert_eq!(promoted.stored_slots(), 3);
+        assert_eq!(promoted.degree(), 3);
+    }
 
     fn tiny_test_bucket(
         graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,

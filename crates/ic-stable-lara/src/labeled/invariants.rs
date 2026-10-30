@@ -281,13 +281,16 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 // read back via `E::is_deleted_slot()`), so the live slots below
                 // the used width are exactly `degree`.
                 assert!(
-                    bucket.tiny_used_width() <= LabelBucket::TINY_MAX_DEGREE
+                    bucket.tiny_used_width() <= LabelBucket::tiny_capacity(E::BYTES)
                         && bucket.degree() <= bucket.tiny_used_width(),
                     "vertex {vidx} bucket {slot}: tiny used width below degree or above cap"
                 );
+                let mut record = [0u8; crate::labeled::graph::EDGE_SLOT_SCRATCH_BYTES];
                 let live = (0..bucket.tiny_used_width())
                     .filter(|index| {
-                        !E::read_from(&bucket.tiny_target(*index).to_le_bytes()).is_deleted_slot()
+                        let record = crate::labeled::graph::edge_slot::<E>(&mut record);
+                        bucket.tiny_slot(*index, E::BYTES, record);
+                        !E::read_from(record).is_deleted_slot()
                     })
                     .count() as u32;
                 assert_eq!(

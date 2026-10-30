@@ -34,10 +34,14 @@ the slab PMA stays the mid tier.
 
 ## Decision
 
-Add a third bucket storage class, **tiny**: buckets with `degree ≤ 4` whose edge
-targets live inline in the descriptor, hold zero slab slots, use no overflow
-log, and carry no inline-property schema. The tier shipped at K=3 and was
-extended to K=4 by §3b Phase 2 (not 8 — see §3).
+Add a third bucket storage class, **tiny**: buckets whose edge records live
+inline in the descriptor, hold zero slab slots, use no overflow log, and carry no
+inline-property schema. The payload is the descriptor byte range `[12..28)`
+(16 bytes), so the live capacity is **`TINY_PAYLOAD_BYTES / E::BYTES`**: four
+edges for the 4-byte production record (the K=4 wire, extended from K=3 by §3b
+Phase 2 — not 8, see §3), two for an 8-byte record, one for a 10- or 16-byte
+record, and no tiny mode at all for a record wider than the payload (such
+buckets are born on the slab).
 
 ### 1. Wire (29 bytes, unchanged size, no new region)
 
@@ -52,11 +56,14 @@ shrinks to bits 61–62 with the same exclusion pattern as the tree bit.
 | word: log-head [52..60] | log head or NONE | MUST be `OVERFLOW_LOG_NONE` (a zero here would decode as a live log) |
 | word: bits 60–63 | reserved/tree flag | bit 60 = 1, bits 61–62 = 0, bit 63 = 0 |
 | [8..12] degree | live count | live count, 0..=4 (untouched — all degree readers keep working) |
-| [12..16] stored_slots | slab width | **T3** (u32 LE inline target) |
-| [16..20] / [20..24] / [24..28] | ipb fields | **T0 / T1 / T2** (u32 LE inline targets) |
+| [12..16] stored_slots | slab width | **T0** (first inline edge record; u32 target for a 4-byte record) |
+| [16..20] / [20..24] / [24..28] | ipb fields | **T1 / T2 / T3** (records 1-3) |
 | [28] | ipb log len | **used width** 0..=4 (live slots + tombstone holes; reserved zero under the retired K=3 wire) |
 
-Tiny payload is the used prefix `[0..used)` of T0..T3: live slots hold targets,
+Tiny payload is the used prefix `[0..used)` of the slots laid out in record
+order from byte 12 (slot `i` starts at `12 + i * E::BYTES`; a 4-byte record
+therefore has T0 at `[12..16)`, T1 at `[16..20)`, T2 at `[20..24)` and T3 at
+`[24..28)`): live slots hold edge records,
 dead slots hold the layout-native `E::tombstone_edge()` encoding (read via
 `E::is_deleted_slot()`), and slots at or past `used` are never read (their
 content is unconstrained — no zero-tail rule). `used` is stored explicitly
@@ -104,7 +111,8 @@ predicate filters — the layout audit additionally requires live-slot count ==
 `degree` inside the prefix.
 
 Validation gradient (why K=2 is special): the retired K=3 wire carried one
-jumbled target and the K=4 wire carries two (T2 and T3), so no K≥3 tiny bucket
+jumbled target and the K=4 wire carries two (T3, and T2 is the value-offset low
+word), so no K≥3 tiny bucket
 is fully wire-checkable — its schema bytes ARE target payload and have no second
 meaning to expose. Byte separation is impossible by construction; the design
 separates PATHS instead (§5 entry order: tiny arm before every width check) and
@@ -116,8 +124,14 @@ discipline, the retreat is K=2, not more encapsulation.
 
 ### 2. Constants and mode representation
 
-- `TINY_MAX_DEGREE: u32 = 4`; the tiny bound is `tiny_used_width()` (byte 28),
-  not a stored width — bytes 12..16 are payload.
+- `TINY_MAX_DEGREE: u32 = 4` is the **wire maximum** of the used-width byte (and
+  of the live count) for every record width; the effective bound for an edge type
+  is `LabelBucket::tiny_capacity(E::BYTES) = TINY_PAYLOAD_BYTES / E::BYTES`, and
+  `0` means the type has no tiny mode. The tiny bound is `tiny_used_width()`
+  (byte 28), not a stored width — bytes 12..16 are payload.
+- Geometry setters never write the payload: `with_edge_range` keeps
+  `stored_slots_raw` on a tiny bucket (its width is `degree`, served by the
+  mode-aware `stored_slots()`), so a span move cannot clobber slot 0.
 - `cap_for_mode(Tiny) = TINY_MAX_DEGREE` (a tiny bucket can never approach the
   slab/tree caps; the promote trigger fires first).
 - `BucketMode` gains a `Tiny` variant; `from_bucket` maps tiny-bit → Tiny

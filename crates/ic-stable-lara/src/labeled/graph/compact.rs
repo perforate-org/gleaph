@@ -225,7 +225,7 @@ mod physical_layout_tests {
         )
         .with_tree_mode(true);
         let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 114, 0, 0)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .unwrap()
             .with_tiny_target(0, 55)
             .with_degree_field(1)
@@ -679,7 +679,7 @@ mod physical_layout_tests {
         let owner = VertexId::from(0);
         let slab = graph.buckets.read_label_bucket_slot(0).unwrap();
         let tiny = slab
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .unwrap()
             .with_tiny_target(0, 7)
             .with_tiny_target(1, 0)
@@ -2331,7 +2331,7 @@ mod physical_layout_tests {
             graph.push_vertex(LabeledVertex::default()).unwrap();
             graph.push_vertex(LabeledVertex::default()).unwrap();
             let early = LabelBucket::from_parts(BucketLabelKey::from_raw(1), 80, 0, 0)
-                .try_enable_tiny_mode()
+                .try_enable_tiny_mode(4)
                 .unwrap()
                 .with_tiny_target(0, 41)
                 .with_tiny_target(1, 0)
@@ -2353,7 +2353,7 @@ mod physical_layout_tests {
             )
             .with_tree_mode(true);
             let late = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 90, 0, 0)
-                .try_enable_tiny_mode()
+                .try_enable_tiny_mode(4)
                 .unwrap()
                 .with_tiny_target(0, 51)
                 .with_degree_field(1)
@@ -9108,7 +9108,7 @@ mod tests {
             0,
         )
         .unwrap()
-        .try_enable_tiny_mode()
+        .try_enable_tiny_mode(4)
         .expect("enable")
         .with_tiny_target(0, 7)
         .with_tiny_target(1, 8)

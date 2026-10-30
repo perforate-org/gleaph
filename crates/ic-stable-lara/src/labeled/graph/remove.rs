@@ -303,16 +303,6 @@ where
     /// Tombstone slots are skipped by every scan path and excluded from
     /// promotion transcription; the prefix compacts only via re-insert
     /// hole-fill or full-empty reset.
-    fn encode_tiny_tombstone_edge() -> u32
-    where
-        E: CsrEdgeTombstone,
-    {
-        let tomb = E::tombstone_edge();
-        let mut bytes = [0u8; 4];
-        tomb.write_to(&mut bytes[..E::BYTES.min(4)]);
-        u32::from_le_bytes(bytes)
-    }
-
     fn remove_tiny_edge_at_slot(
         &self,
         src: VertexId,
@@ -334,7 +324,10 @@ where
         // Layout-native liveness (same predicate as slab/tree read paths):
         // decode the slot and ask the edge layout. Already-dead is an
         // idempotent no-op (mirrors slab double-delete None).
-        let probe = E::read_from(&bucket.tiny_target(slot_index).to_le_bytes());
+        let mut probe_record = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        let probe_record = super::edge_slot::<E>(&mut probe_record);
+        bucket.tiny_slot(slot_index, E::BYTES, probe_record);
+        let probe = E::read_from(probe_record);
         if probe.is_deleted_slot() {
             return Ok(None);
         }
@@ -345,15 +338,17 @@ where
         let updated = if new_degree == 0 {
             // Clean-empty reset: zero width, zeroed payload (birth shape).
             let mut fresh = *bucket;
-            for i in 0..LabelBucket::TINY_MAX_DEGREE {
-                fresh = fresh.with_tiny_target(i, 0);
+            let zeros = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+            for i in 0..LabelBucket::tiny_capacity(E::BYTES) {
+                fresh = fresh.with_tiny_slot(i, E::BYTES, &zeros[..E::BYTES]);
             }
-            // `with_tiny_target(3, 0)` (in the loop above) already zeroes T3,
-            // the former stored position.
             fresh.with_degree_field(0).with_tiny_used_width(0)
         } else {
+            let mut tombstone = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+            let tombstone = super::edge_slot::<E>(&mut tombstone);
+            E::tombstone_edge().write_to(tombstone);
             bucket
-                .with_tiny_target(slot_index, Self::encode_tiny_tombstone_edge())
+                .with_tiny_slot(slot_index, E::BYTES, tombstone)
                 .with_degree_field(new_degree)
         };
         self.buckets.write_label_bucket_slot(slot, updated)?;
@@ -1231,22 +1226,20 @@ where
                 // input mirrors the slab path (label attached,
                 // no values — tiny width is identically zero).
                 BucketMode::Tiny => {
-                    debug_assert!(
-                        E::BYTES == 4,
-                        "tiny buckets require 4-byte edges (birth gate)"
-                    );
                     // Bounded by the byte-28 used width, not the live degree: a
                     // hole inside the prefix makes `degree` smaller than
                     // `used`, and bounding by `degree` would hide every live
                     // slot at or beyond it.
+                    let mut record = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
                     for ordinal in 0..bucket.tiny_used_width() {
-                        let target = bucket.tiny_target(ordinal);
+                        let record = super::edge_slot::<E>(&mut record);
+                        bucket.tiny_slot(ordinal, E::BYTES, record);
                         // Layout-native liveness (same predicate as the scan
                         // paths): a dead slot is a hole, never a match.
-                        if E::read_from(&target.to_le_bytes()).is_deleted_slot() {
+                        if E::read_from(record).is_deleted_slot() {
                             continue;
                         }
-                        let edge = E::read_from(&target.to_le_bytes())
+                        let edge = E::read_from(record)
                             .with_slot_index(ordinal)
                             .with_label_id(label_id.raw());
                         if matches(&edge) {

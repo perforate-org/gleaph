@@ -312,6 +312,108 @@ impl LabelBucket {
     /// (Insertion's tail ordinal), and promotion transcription.
     pub(crate) const TINY_MAX_DEGREE: u32 = 4;
 
+    /// Bytes of descriptor space shared by the tiny slots: descriptor bytes
+    /// `[12..28)` — the former `stored_slots` position, the value-slab slot
+    /// count, the value offset, the inline-property width and the log byte.
+    /// Byte 28 stays the used width and is not payload.
+    pub(crate) const TINY_PAYLOAD_BYTES: usize = 16;
+
+    /// Live-edge capacity of a tiny bucket whose edge records are
+    /// `record_bytes` wide.
+    ///
+    /// `0` means "this record has no tiny mode": a record wider than the payload
+    /// cannot be stored inline, so such buckets are born on the slab (ADR 0096
+    /// §4). For the 4-byte production edge this is `4`, the K=4 wire.
+    pub(crate) const fn tiny_capacity(record_bytes: usize) -> u32 {
+        if record_bytes == 0 || record_bytes > Self::TINY_PAYLOAD_BYTES {
+            0
+        } else {
+            (Self::TINY_PAYLOAD_BYTES / record_bytes) as u32
+        }
+    }
+
+    /// 16-byte view of the tiny slot payload, in slot order.
+    fn tiny_payload(self) -> [u8; Self::TINY_PAYLOAD_BYTES] {
+        let mut payload = [0u8; Self::TINY_PAYLOAD_BYTES];
+        payload[0..4].copy_from_slice(&self.stored_slots_raw.to_le_bytes());
+        payload[4..8].copy_from_slice(&self.inline_property_bytes_slab_slots.to_le_bytes());
+        let offset_wire: &mut [u8; 5] = (&mut payload[8..13])
+            .try_into()
+            .expect("tiny payload value-offset slice must be 5 bytes");
+        write_u40(self.inline_property_bytes_offset, offset_wire);
+        payload[13..15].copy_from_slice(&self.inline_property_byte_width.to_le_bytes());
+        payload[15] = self.inline_property_bytes_log_byte;
+        payload
+    }
+
+    /// Returns a copy whose tiny slot payload is `payload` (slot order).
+    fn with_tiny_payload(self, payload: &[u8; Self::TINY_PAYLOAD_BYTES]) -> Self {
+        let offset_wire: &[u8; 5] = (&payload[8..13])
+            .try_into()
+            .expect("tiny payload value-offset slice must be 5 bytes");
+        Self {
+            stored_slots_raw: u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+            inline_property_bytes_slab_slots: u32::from_le_bytes([
+                payload[4], payload[5], payload[6], payload[7],
+            ]),
+            inline_property_bytes_offset: read_u40(offset_wire),
+            inline_property_byte_width: u16::from_le_bytes([payload[13], payload[14]]),
+            inline_property_bytes_log_byte: payload[15],
+            ..self
+        }
+    }
+
+    /// Copies tiny slot `index` — one full `record_bytes`-wide edge record — into
+    /// `out`.
+    ///
+    /// Slots are laid out in record order from [`Self::TINY_PAYLOAD_START`], so a
+    /// 4-byte record has four slots and an 8-byte record two; a record wider than
+    /// [`Self::TINY_PAYLOAD_BYTES`] has no tiny mode (capacity 0).
+    pub(crate) fn tiny_slot(&self, index: u32, record_bytes: usize, out: &mut [u8]) {
+        debug_assert!(self.is_tiny_mode(), "tiny_slot requires a tiny-mode bucket");
+        assert!(
+            index < Self::tiny_capacity(record_bytes),
+            "tiny_slot: index {index} exceeds the capacity of a {record_bytes}-byte record"
+        );
+        assert_eq!(
+            out.len(),
+            record_bytes,
+            "tiny_slot: buffer must be one record"
+        );
+        if record_bytes == 4 {
+            out.copy_from_slice(&self.tiny_target(index).to_le_bytes());
+            return;
+        }
+        let payload = self.tiny_payload();
+        let start = index as usize * record_bytes;
+        out.copy_from_slice(&payload[start..start + record_bytes]);
+    }
+
+    /// Returns a copy with tiny slot `index` set from `bytes`.
+    pub(crate) fn with_tiny_slot(self, index: u32, record_bytes: usize, bytes: &[u8]) -> Self {
+        debug_assert!(
+            self.is_tiny_mode(),
+            "with_tiny_slot requires a tiny-mode bucket"
+        );
+        assert!(
+            index < Self::tiny_capacity(record_bytes),
+            "with_tiny_slot: index {index} exceeds the capacity of a {record_bytes}-byte record"
+        );
+        assert_eq!(
+            bytes.len(),
+            record_bytes,
+            "with_tiny_slot: buffer must be one record"
+        );
+        if record_bytes == 4 {
+            let target = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            return self.with_tiny_target(index, target);
+        }
+        let mut payload = self.tiny_payload();
+        let start = index as usize * record_bytes;
+        payload[start..start + record_bytes].copy_from_slice(bytes);
+        self.with_tiny_payload(&payload)
+    }
+
     /// Bit 60 of the packed `word`: 1 = tiny mode (descriptor-resident inline
     /// targets), 0 = slab/tree interpretation. ADR 0096 §1.
     pub(crate) const TINY_MODE_BIT: u64 = BUCKET_TINY_MODE_BIT;
@@ -340,20 +442,23 @@ impl LabelBucket {
             self.is_tiny_mode(),
             "tiny_target requires a tiny-mode bucket"
         );
-        debug_assert!(
-            index < Self::TINY_MAX_DEGREE,
-            "tiny target index out of range"
+        assert!(
+            index < Self::tiny_capacity(4),
+            "tiny_target: index {index} exceeds the 4-byte record capacity"
         );
+        // Slot order follows the payload byte range [12..28): slot 0 is the
+        // former stored-width field, slot 3 spans the value-offset top byte, the
+        // inline-property width and the log byte.
         match index {
-            0 => self.inline_property_bytes_slab_slots,
-            1 => (self.inline_property_bytes_offset & 0xFFFF_FFFF) as u32,
-            2 => {
+            0 => self.stored_slots_raw,
+            1 => self.inline_property_bytes_slab_slots,
+            2 => (self.inline_property_bytes_offset & 0xFFFF_FFFF) as u32,
+            3 => {
                 let hi = ((self.inline_property_bytes_offset >> 32) & 0xFF) as u32;
                 hi | ((u32::from(self.inline_property_byte_width)) << 8)
                     | ((u32::from(self.inline_property_bytes_log_byte)) << 24)
             }
-            3 => self.stored_slots_raw,
-            _ => panic!("LabelBucket::tiny_target: index {index} exceeds TINY_MAX_DEGREE"),
+            _ => panic!("LabelBucket::tiny_target: index {index} exceeds the capacity"),
         }
     }
 
@@ -398,7 +503,7 @@ impl LabelBucket {
     #[inline]
     pub fn with_tiny_target(self, index: u32, target: u32) -> Self {
         assert!(
-            index < Self::TINY_MAX_DEGREE,
+            index < Self::tiny_capacity(4),
             "LabelBucket::with_tiny_target: index out of range"
         );
         debug_assert!(
@@ -407,26 +512,26 @@ impl LabelBucket {
         );
         match index {
             0 => Self {
-                inline_property_bytes_slab_slots: target,
+                stored_slots_raw: target,
                 ..self
             },
             1 => Self {
+                inline_property_bytes_slab_slots: target,
+                ..self
+            },
+            2 => Self {
                 inline_property_bytes_offset: (self.inline_property_bytes_offset & !0xFFFF_FFFF)
                     | u64::from(target),
                 ..self
             },
-            2 => Self {
+            3 => Self {
                 inline_property_bytes_offset: (self.inline_property_bytes_offset & 0xFFFF_FFFF)
                     | ((u64::from(target & 0xFF)) << 32),
                 inline_property_byte_width: ((target >> 8) & 0xFFFF) as u16,
                 inline_property_bytes_log_byte: (target >> 24) as u8,
                 ..self
             },
-            3 => Self {
-                stored_slots_raw: target,
-                ..self
-            },
-            _ => panic!("LabelBucket::with_tiny_target: index {index} exceeds TINY_MAX_DEGREE"),
+            _ => panic!("LabelBucket::with_tiny_target: index {index} exceeds the capacity"),
         }
     }
 
@@ -439,7 +544,7 @@ impl LabelBucket {
     /// the tiny wire rules require; a live value log is rejected, never
     /// destroyed. R2b dispatch additionally guarantees width-0 callers.
     /// Already-tiny input revalidates idempotently.
-    pub fn try_enable_tiny_mode(self) -> Result<Self, LabelBucketFieldError> {
+    pub fn try_enable_tiny_mode(self, record_bytes: usize) -> Result<Self, LabelBucketFieldError> {
         if self.is_tiny_mode() {
             self.check_tiny_invariants()?;
             return Ok(self);
@@ -447,12 +552,13 @@ impl LabelBucket {
         if self.is_tree_mode() {
             return Err(LabelBucketFieldError::TinyTreeModeConflict);
         }
-        if self.degree > Self::TINY_MAX_DEGREE {
+        let capacity = Self::tiny_capacity(record_bytes);
+        if self.degree > capacity {
             return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
         }
-        // The former stored field becomes T3 payload and byte 28 becomes the used
-        // width, so neither carries a pre-enable constraint beyond the value-state
-        // checks below (which reject any live edge/property bytes).
+        // The former stored field becomes slot payload and byte 28 becomes the
+        // used width, so neither carries a pre-enable constraint beyond the
+        // value-state checks below (which reject any live edge/property bytes).
         let mut out = self;
         if out.inline_property_bytes_log_byte == OVERFLOW_LOG_NONE
             && out.inline_property_bytes_log_len == 0
@@ -474,8 +580,13 @@ impl LabelBucket {
         // meaning and are never read, but a stale corpus value in T3 would
         // otherwise leak into the golden wire).
         out = out.with_tiny_used_width(out.degree);
-        for index in out.degree..Self::TINY_MAX_DEGREE {
-            out = out.with_tiny_target(index, 0);
+        // Zero the whole capacity: before enabling, the payload bytes were
+        // value-slab fields (and, at the old 4-byte positions, the former stored
+        // width), so any survivor would be read as a live target. Callers write
+        // the slots they own after this returns.
+        let zeros = [0u8; Self::TINY_PAYLOAD_BYTES];
+        for index in 0..capacity {
+            out = out.with_tiny_slot(index, record_bytes, &zeros[..record_bytes]);
         }
         out.check_tiny_invariants()?;
         Ok(out)
@@ -876,7 +987,14 @@ impl LabelBucket {
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
         Ok(Self {
             word,
-            stored_slots_raw: stored_slots,
+            // A tiny bucket has no stored width: descriptor bytes 12..16 are
+            // slot payload (ADR 0096 §1), so a geometry update must not write
+            // them. Its width is `degree`, served by `stored_slots()`.
+            stored_slots_raw: if self.is_tiny_mode() {
+                self.stored_slots_raw
+            } else {
+                stored_slots
+            },
             ..self
         })
     }
@@ -2047,7 +2165,7 @@ mod tests {
         // ADR 0096 §1 keeps tiny's payload meaning, and ADR 0097 §3 makes bytes 27..34 the ids'
         // region only in slab mode: a tiny row keeps its payload there and carries no run id.
         let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 2, 2)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("tiny")
             .with_tiny_target(0, 0xAABB_CCDD)
             .with_tiny_target(1, 0x1122_3344)
@@ -2150,7 +2268,7 @@ mod tests {
         // which a fresh slab descriptor leaves at 0 — valid for an empty bucket;
         // an out-of-range used width must fail with the precise tiny error.
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("tiny");
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2365,7 +2483,7 @@ mod tests {
 
     fn tiny_bucket_degree2() -> LabelBucket {
         LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 2, 2)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("fresh degree-2 bucket enables tiny")
             .with_tiny_target(0, 7)
             .with_tiny_target(1, 9)
@@ -2391,10 +2509,11 @@ mod tests {
         assert_eq!(word & (1u64 << 53), 0); // tree bit clear
         assert_eq!((word >> 54) & 0x3FF, 0x3FF); // run low bits = NO_SPILL_RUN
         assert_eq!(bytes[8..12], 2u32.to_le_bytes());
-        assert_eq!(bytes[12..16], 0u32.to_le_bytes()); // T3 zeroed at enable
-        assert_eq!(bytes[16..20], 7u32.to_le_bytes()); // T0
-        assert_eq!(bytes[20..24], 9u32.to_le_bytes()); // T1
-        assert!(bytes[24..28].iter().all(|&b| b == 0)); // T2 zero
+        // Slot order follows the payload byte range [12..28).
+        assert_eq!(bytes[12..16], 7u32.to_le_bytes()); // slot 0
+        assert_eq!(bytes[16..20], 9u32.to_le_bytes()); // slot 1
+        assert!(bytes[20..24].iter().all(|&b| b == 0)); // slot 2 zeroed at enable
+        assert!(bytes[24..28].iter().all(|&b| b == 0)); // slot 3 zeroed at enable
         assert_eq!(bytes[28], 2); // used width (K=4 byte-28 rule)
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
     }
@@ -2410,7 +2529,7 @@ mod tests {
     #[test]
     fn stored_slots_accessor_is_mode_aware() {
         let live = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, 3, 3)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("enable tiny");
         assert_eq!(
             live.stored_slots(),
@@ -2418,11 +2537,15 @@ mod tests {
             "tiny accessor reports the live count"
         );
 
-        // K=4: the raw field is T3 payload, so a missed dispatch must degrade to a
-        // bounded live count instead of reading a target as a width (the T3 value
-        // here is far outside any width).
-        let holed = live.with_tiny_target(3, 1 << 20).with_degree_field(2);
-        assert_eq!(holed.stored_slots_raw(), 1 << 20, "T3 carries the target");
+        // K=4: the raw field is slot 0 payload, so a missed dispatch must degrade
+        // to a bounded live count instead of reading a target as a width (the
+        // value here is far outside any width).
+        let holed = live.with_tiny_target(0, 1 << 20).with_degree_field(2);
+        assert_eq!(
+            holed.stored_slots_raw(),
+            1 << 20,
+            "slot 0 aliases the former stored-width field"
+        );
         assert_eq!(holed.stored_slots(), 2, "accessor stays the live count");
         assert!(
             holed.stored_slots() <= LabelBucket::TINY_MAX_DEGREE,
@@ -2443,7 +2566,7 @@ mod tests {
         for degree in 0..=4u32 {
             let mut bucket =
                 LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, degree, degree)
-                    .try_enable_tiny_mode()
+                    .try_enable_tiny_mode(4)
                     .expect("fresh bucket enables tiny");
             for i in 0..degree {
                 bucket = bucket.with_tiny_target(i, 1000 + i);
@@ -2460,26 +2583,34 @@ mod tests {
     }
 
     #[test]
-    fn tiny_target_t2_splits_across_three_fields() {
-        // T2 = offset-hi byte | width LE | log byte — byte-exact composition.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 3, 3)
-            .try_enable_tiny_mode()
+    fn tiny_target_slot3_splits_across_three_fields() {
+        // Slot order follows the payload byte range [12..28): slot 3 is the
+        // fourth record, which spans the value-offset's top byte, the width and
+        // the log byte - byte-exact composition.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 4, 4)
+            .try_enable_tiny_mode(4)
             .expect("enable")
-            .with_tiny_target(2, 0xAABBCCDD);
-        assert_eq!(bucket.tiny_target(2), 0xAABBCCDD);
+            .with_tiny_target(3, 0xAABBCCDD);
+        assert_eq!(bucket.tiny_target(3), 0xAABBCCDD);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bytes[24], 0xDD);
         assert_eq!(bytes[25..27], 0xBBCCu16.to_le_bytes());
         assert_eq!(bytes[27], 0xAA);
-        assert_eq!(bytes[28], 3); // used width equals degree 3
+        assert_eq!(bytes[28], 4); // used width equals degree 4
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
+        // Slot 2 is a plain little-endian word in the value-offset position.
+        let plain = bucket.with_tiny_target(2, 0x1234_5678);
+        assert_eq!(plain.tiny_target(2), 0x1234_5678);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        plain.write_to(&mut bytes);
+        assert_eq!(bytes[20..24], 0x1234_5678u32.to_le_bytes());
     }
 
     #[test]
     fn try_enable_tiny_mode_is_idempotent() {
         let bucket = tiny_bucket_degree2();
-        let again = bucket.try_enable_tiny_mode().expect("re-enable");
+        let again = bucket.try_enable_tiny_mode(4).expect("re-enable");
         assert_eq!(again, bucket);
     }
 
@@ -2488,18 +2619,18 @@ mod tests {
         // Tree bit set.
         let tree = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1).with_tree_mode(true);
         assert_eq!(
-            tree.try_enable_tiny_mode(),
+            tree.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyTreeModeConflict)
         );
         // Degree 4 is the K=4 cap: accepted.
         let cap = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 4)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("degree 4 enables tiny");
         assert_eq!(cap.tiny_used_width(), 4);
         // Degree above the K=4 cap.
         let wide = LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 5);
         assert_eq!(
-            wide.try_enable_tiny_mode(),
+            wide.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyDegreeOutOfRange)
         );
         // Live value state (width).
@@ -2515,17 +2646,17 @@ mod tests {
             0,
         );
         assert_eq!(
-            valued.try_enable_tiny_mode(),
+            valued.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyValueStatePresent)
         );
         // Used width below degree (memory + wire sides): a live slot outside the
         // used range is an incoherent row.
         let incoherent = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1)
-            .try_enable_tiny_mode()
+            .try_enable_tiny_mode(4)
             .expect("enable")
             .with_degree_field(2);
         assert_eq!(
-            incoherent.try_enable_tiny_mode(),
+            incoherent.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2541,7 +2672,7 @@ mod tests {
         // Valid tiny degree-1 bytes; corrupt one rule at a time.
         fn valid_tiny_bytes() -> [u8; LabelBucket::BYTES] {
             let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 1, 1)
-                .try_enable_tiny_mode()
+                .try_enable_tiny_mode(4)
                 .expect("enable")
                 .with_tiny_target(0, 11)
                 .with_tiny_used_width(1);

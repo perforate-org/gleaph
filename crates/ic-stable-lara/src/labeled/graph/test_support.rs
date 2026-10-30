@@ -145,6 +145,36 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     test_graph_with_default(BucketLabelKey::directed_from_index(1))
 }
 
+/// Builds the same fixture graph over another edge record type, for tests that
+/// pin a width-dependent layout (tiny capacity, tree slot stride).
+pub fn test_graph_with_edge<E: crate::traits::CsrEdge>() -> LabeledLaraGraph<E, crate::VectorMemory>
+{
+    let graph = LabeledLaraGraph::new_with_segment_size(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::directed_from_index(1),
+        32,
+    )
+    .unwrap();
+    graph.push_vertex(LabeledVertex::default()).unwrap();
+    graph
+}
+
 /// Promotes an existing tiny bucket to the slab (test fixture helper).
 ///
 /// ADR 0096 §3b: four inline edges stay inline at K=4, so fixtures that need a
@@ -198,7 +228,7 @@ pub(crate) fn force_tiny_bucket<E: CsrEdgeTombstone, M: ic_stable_structures::Me
     let (slot, bucket) = graph
         .find_or_create_bucket(vid, &vertex, label)
         .expect("create bucket");
-    let mut bucket = bucket.try_enable_tiny_mode().expect("enable tiny");
+    let mut bucket = bucket.try_enable_tiny_mode(4).expect("enable tiny");
     for (i, target) in targets.iter().enumerate() {
         bucket = bucket.with_tiny_target(i as u32, *target);
     }

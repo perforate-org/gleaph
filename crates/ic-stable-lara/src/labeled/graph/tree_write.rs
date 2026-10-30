@@ -43,7 +43,7 @@
 
 use ic_stable_structures::Memory;
 
-use super::LabeledLaraGraph;
+use super::{EDGE_SLOT_SCRATCH_BYTES, LabeledLaraGraph, edge_slot};
 use crate::GrowFailed;
 use crate::VertexId;
 use crate::labeled::bucket_label_key::BucketLabelKey;
@@ -52,13 +52,6 @@ use crate::labeled::record::LabelBucket;
 use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
-
-/// Stack scratch for one encoded edge record.
-///
-/// The widest record in the workspace is the 24-byte bench `WideEdge`; a wider
-/// record trips the named limit in [`edge_slot`] instead of silently truncating
-/// the slot.
-const EDGE_SLOT_SCRATCH_BYTES: usize = 32;
 
 /// ADR 0088 §1 property fanout `K` for this store, failing closed when the
 /// bucket's inline-property width cannot fill a block.
@@ -87,15 +80,6 @@ where
 pub(super) fn push_root_entry<E: CsrEdge>(image: &mut Vec<u8>, id: u32) {
     image.extend_from_slice(&id.to_le_bytes());
     image.resize(image.len() + (E::BYTES - 4), 0);
-}
-
-/// Splits `scratch` down to the `E::BYTES`-wide edge slot.
-#[inline]
-fn edge_slot<E: CsrEdge>(scratch: &mut [u8; EDGE_SLOT_SCRATCH_BYTES]) -> &mut [u8] {
-    let len = E::BYTES;
-    scratch
-        .get_mut(..len)
-        .expect("edge record is wider than EDGE_SLOT_SCRATCH_BYTES")
 }
 
 /// Tree-mode append for a single edge. Returns the logical slot index
