@@ -360,7 +360,10 @@ where
                             .and_then(|v| v.checked_add(1))
                             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                         let old_combined_len = old_edge_root_len + old_prop_root_len;
-                        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
+                        let avoid = super::leaf_arena::SourceRegion::new(
+                            old_combined_start,
+                            u64::from(old_combined_len),
+                        );
                         let new_combined = match super::leaf_arena::LeafArena::reserve(
                             graph,
                             vid,
@@ -710,7 +713,7 @@ where
         graph,
         vid,
         u64::from(new_combined_len),
-        Some((old_combined_start, u64::from(old_combined_len))),
+        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len)),
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1296,23 +1299,13 @@ where
             .read_slots_contiguous_bytes(old_combined_start, &mut bytes);
         bytes
     });
+    let source =
+        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
     let new_combined_start = if in_place {
         old_combined_start
-    } else if w > 0 && old_combined_len > 0 {
-        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), avoid)
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = graph.ltb().release(new_block_id);
-                if let Some(p) = &plan {
-                    release_property_plan::<E, M>(graph, p);
-                }
-                return Err(e.into());
-            }
-        }
     } else {
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), None) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), source)
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1634,7 +1627,10 @@ where
                         .checked_add(1)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let old_combined_start = bucket.edge_start();
-                    let avoid = Some((old_combined_start, u64::from(old_combined_len)));
+                    let avoid = super::leaf_arena::SourceRegion::new(
+                        old_combined_start,
+                        u64::from(old_combined_len),
+                    );
                     let new_combined = match super::leaf_arena::LeafArena::reserve(
                         graph,
                         vid,
@@ -1779,31 +1775,22 @@ where
         })
         .expect("new combined span overflow");
     let old_combined_start = bucket.edge_start();
-    let new_edge_start = if w > 0 && old_combined_len > 0 {
-        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), avoid)
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = graph.ltb().release(new_interior_id);
-                let _ = graph.ltb().release(new_leaf_id);
-                if let Some(p) = &plan {
-                    release_property_plan::<E, M>(graph, p);
-                }
-                return Err(e.into());
+    let source =
+        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
+    let new_edge_start = match super::leaf_arena::LeafArena::reserve(
+        graph,
+        vid,
+        u64::from(new_combined_len),
+        source,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = graph.ltb().release(new_interior_id);
+            let _ = graph.ltb().release(new_leaf_id);
+            if let Some(p) = &plan {
+                release_property_plan::<E, M>(graph, p);
             }
-        }
-    } else {
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), None) {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = graph.ltb().release(new_interior_id);
-                let _ = graph.ltb().release(new_leaf_id);
-                if let Some(p) = &plan {
-                    release_property_plan::<E, M>(graph, p);
-                }
-                return Err(e.into());
-            }
+            return Err(e.into());
         }
     };
     let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
@@ -2655,9 +2642,23 @@ where
     let leaf_ids = collect_leaf_block_ids::<E, M>(graph, bucket)?;
     let new_root_len = leaf_ids.len() as u32;
     debug_assert!(new_root_len <= k, "depth 2 root_len must be <= R_MAX");
+    // The old root region is the live source: the new root is written from
+    // `leaf_ids`, and the old span must stay readable until the publish.
+    let leaf_count =
+        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let physical_depth = bucket.tree_mode_physical_depth();
+    let old_physical_root_len: u32 = match physical_depth {
+        1 => leaf_count,
+        2 => leaf_count.div_ceil(k),
+        3 => leaf_count.div_ceil(k).div_ceil(k),
+        _ => unreachable!("tree_mode_physical_depth out of range"),
+    };
+    let source =
+        super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
     // 2. Allocate the new root region span.
     let new_edge_start =
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_root_len), None) {
+        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_root_len), source) {
             Ok(s) => s,
             Err(e) => return Err(LabeledOperationError::from(e)),
         };
@@ -2703,16 +2704,6 @@ where
     // structural `derived_root_len` may be inconsistent with the
     // physical layout (a manually-deepened bucket at stored=1,048,576
     // has structural root_len=1024 but physical root_len=1).
-    let leaf_count =
-        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
-            .expect("leaf_count fits u32 for MAX_DEPTH=3");
-    let physical_depth = bucket.tree_mode_physical_depth();
-    let old_physical_root_len: u32 = match physical_depth {
-        1 => leaf_count,
-        2 => leaf_count.div_ceil(k),
-        3 => leaf_count.div_ceil(k).div_ceil(k),
-        _ => unreachable!("tree_mode_physical_depth out of range"),
-    };
     if new_edge_start != bucket.edge_start() {
         let _ = graph
             .edges()
@@ -2836,11 +2827,8 @@ where
         3 => leaf_count.div_ceil(k_for_avoid).div_ceil(k_for_avoid),
         _ => unreachable!("tree_mode_physical_depth out of range"),
     };
-    let avoid_range = if old_physical_root_len > 0 {
-        Some((bucket.edge_start(), u64::from(old_physical_root_len)))
-    } else {
-        None
-    };
+    let avoid_range =
+        super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
 
     // Phase 1: Collect live edges in ascending logical order.
     // We use the property-aware visit so the property stream is

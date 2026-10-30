@@ -48,6 +48,28 @@ fn labeled_vertex_edge_offset_in_leaf(vid: VertexId, segment_size: u32) -> u64 {
         .saturating_mul(u64::from(labeled_leaf_vertex_edge_quota(segment_size)))
 }
 
+/// The caller's live region inside a leaf, which the arena must keep readable.
+///
+/// Placement never overlaps `source`, so the caller can read it before the new
+/// span replaces it. The type is what keeps "no source" out of the API: a growth
+/// always has a live region, and a caller that cannot name one has no business
+/// asking the arena for room.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceRegion {
+    start: u64,
+    len: u64,
+}
+
+impl SourceRegion {
+    pub(crate) fn new(start: u64, len: u64) -> Self {
+        Self { start, len }
+    }
+
+    fn as_pair(self) -> (u64, u64) {
+        (self.start, self.len)
+    }
+}
+
 /// Owner of one PMA leaf's pinned edge-slab block.
 ///
 /// Every resident of a leaf vertex must live inside this range: relocation copies the
@@ -220,6 +242,76 @@ where
         }
     }
 
+    /// Free slots at the very end of the block: the run a growth can extend
+    /// without moving any resident.
+    fn tail_free(&self) -> u64 {
+        let (start, len) = self.range;
+        let Some(end) = checked_add_slot_index(start, len) else {
+            return 0;
+        };
+        let last_end = self
+            .allocated()
+            .iter()
+            .map(|&(_, span_end)| span_end)
+            .max()
+            .unwrap_or(start)
+            .min(end);
+        end - last_end
+    }
+
+    /// Extends the block so that it ends with a free run of `len` slots.
+    ///
+    /// One free-span edit and no copy: the new slots come from the span that starts
+    /// right after the block, and only the leaf's `total` moves (the block's slots are
+    /// leaf geometry, not live slab rows). Returns false when that span is not free or
+    /// the block would pass the slab capacity, which leaves the block unchanged: the
+    /// caller has nowhere to grow and must relocate or fail.
+    fn grow(&mut self, len: u64) -> bool {
+        let (start, block_len) = self.range;
+        let tail_free = self.tail_free();
+        if tail_free >= len {
+            return true;
+        }
+        let extension = len - tail_free;
+        let Some(new_len) = block_len.checked_add(extension) else {
+            return false;
+        };
+        let Some(end) = checked_add_slot_index(start, new_len) else {
+            return false;
+        };
+        if end > self.graph.edges.header().elem_capacity {
+            return false;
+        }
+        if !self
+            .graph
+            .edges
+            .try_extend_span(start, block_len, extension)
+        {
+            return false;
+        }
+        let Ok(delta) = i64::try_from(extension) else {
+            return false;
+        };
+        let leaf_vid = VertexId::from(
+            self.leaf
+                .saturating_mul(self.graph.edges.header().segment_size.max(1)),
+        );
+        if self
+            .graph
+            .edges
+            .bump_vertex_segment_counts(leaf_vid, 0, delta)
+            .is_err()
+        {
+            let _ = self
+                .graph
+                .edges
+                .release_span(start.saturating_add(block_len), extension);
+            return false;
+        }
+        self.range.1 = new_len;
+        true
+    }
+
     pub(crate) fn contains(&self, start: u64, len: u64) -> bool {
         let Some(end) = checked_add_slot_index(start, len) else {
             return false;
@@ -288,17 +380,23 @@ where
         graph: &'a LabeledLaraGraph<E, M>,
         vid: VertexId,
         len: u64,
-        source: Option<(u64, u64)>,
+        source: SourceRegion,
     ) -> Result<u64, crate::GrowFailed> {
-        if let Ok(Some(arena)) = Self::capture(graph, vid)
-            && let Some(base) = arena.allocate(vid, len, source)
-        {
-            return Ok(base);
+        if let Ok(Some(mut arena)) = Self::capture(graph, vid) {
+            // 1. Rebalance inside the block: a free run already exists.
+            if let Some(base) = arena.allocate(vid, len, Some(source.as_pair())) {
+                return Ok(base);
+            }
+            // 2. Grow the block until it ends with a free run of `len`, then place.
+            if arena.grow(len)
+                && let Some(base) = arena.allocate(vid, len, Some(source.as_pair()))
+            {
+                return Ok(base);
+            }
         }
-        match source {
-            Some(avoid) => graph.edges.allocate_span_avoiding(len, Some(avoid)),
-            None => graph.edges.allocate_span(len),
-        }
+        graph
+            .edges
+            .allocate_span_avoiding(len, Some(source.as_pair()))
     }
 }
 
