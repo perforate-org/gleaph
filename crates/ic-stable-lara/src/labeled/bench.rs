@@ -15,7 +15,7 @@ use crate::labeled::{
 use crate::{
     VertexId,
     lara::maintenance::MaintenanceBudget,
-    test_support::{labeled_lara_memories, vector_memory},
+    test_support::{TestEdge, labeled_lara_memories, vector_memory},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use canbench_rs::{bench, bench_fn};
@@ -2399,7 +2399,7 @@ fn tcsr_promote_inline_property_w32() -> canbench_rs::BenchResult {
 /// them by name.
 const LTB_REOPEN_ENVELOPE: u32 = 4096;
 
-fn seed_ltb_free_list(n: u32) -> LtbRawBlockStore<crate::VectorMemory> {
+fn seed_ltb_free_list(n: u32) -> LtbRawBlockStore<crate::VectorMemory, TestEdge> {
     let ltb = LtbRawBlockStore::new(vector_memory()).expect("ltb new");
     let mut ids = Vec::with_capacity(n as usize);
     for _ in 0..n {

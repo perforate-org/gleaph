@@ -2,10 +2,9 @@
 //!
 //! Replaces the [`super::ltb_reopen_prototype`] scaffold (and the StableBTreeMap
 //! scaffold in `tree_csr`) with direct `Memory::read` / `Memory::write`
-//! access against fixed-stride blocks (16-byte header + 4096-byte payload =
-//! 4112 bytes per block). **Evidence-only**: the LTB store is wired into the
-//! prototype here, not into the production [`crate::labeled::LabeledLaraGraph`]
-//! (that lands in a later implementation slice).
+//! access against fixed-stride blocks: a 16-byte header plus a payload holding
+//! [`EDGES_PER_BLOCK`] edge records of `E::BYTES` bytes each (4096 bytes and a
+//! 4112-byte stride for the 4-byte production edge).
 #![allow(
     dead_code,
     reason = "Wired into the prototype in Plan 0315 Step 2; crate-root users come later."
@@ -17,7 +16,7 @@
 //! |-------:|-----:|-----------------------------------------------------------------------|
 //! |      0 |    3 | magic `"LTB"`                                                          |
 //! |      3 |    1 | layout version = 1                                                    |
-//! |      4 |    4 | payload bytes per block = 4096 (wire truth; fail-closed otherwise)     |
+//! |      4 |    4 | payload bytes per block = 1024 × `E::BYTES` (wire truth; fail-closed) |
 //! |      8 |    4 | root fan-out cap R_max = 1024 (wire truth; fail-closed otherwise)      |
 //! |     12 |    8 | `block_capacity` (allocated block slots in pages)                      |
 //! |     20 |    8 | `tail_next` (first never-minted id)                                    |
@@ -38,14 +37,16 @@
 //! |     13 |    2 | tombstone count in this block's payload (Plan 0337 Level 1)             |
 //! |     15 |    1 | reserved (zero)                                                        |
 //!
-//! The 4096-byte payload follows immediately after the 16-byte block header
-//! for a stride of 4112 bytes per block. Blocks are dense: block id `i` lives
-//! at `HEADER_SIZE + i * BLOCK_STRIDE`.
+//! The payload follows immediately after the 16-byte block header. Blocks are
+//! dense: block id `i` lives at `HEADER_SIZE + i * (BLOCK_HEADER_BYTES +
+//! payload_bytes)`.
 
 use ic_stable_structures::Memory;
 use std::cell::Cell;
+use std::marker::PhantomData;
 
 use crate::GrowFailed;
+use crate::traits::CsrEdge;
 
 #[cfg(test)]
 thread_local! {
@@ -73,12 +74,16 @@ fn record_ltb_payload_read_call() {
 
 /// Header size in bytes (ADR 0088 §1).
 pub(crate) const HEADER_SIZE: u64 = 64;
-/// Per-block payload capacity in bytes (ADR 0088 §1 wire truth).
-pub(crate) const BLOCK_PAYLOAD_BYTES: usize = 4096;
+/// Edge records per tree block (ADR 0088 §1: one block holds 1024 edges).
+pub(crate) const EDGES_PER_BLOCK: usize = 1024;
+/// Per-block payload capacity of the 4-byte production edge record.
+///
+/// The store's own payload is `EDGES_PER_BLOCK * E::BYTES` for the edge type
+/// `E` it is instantiated with; this constant names the production (4-byte)
+/// case that the tree paths size their stack buffers for.
+pub(crate) const BLOCK_PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * 4;
 /// Per-block header size in bytes (ADR 0088 §1).
 pub(crate) const BLOCK_HEADER_BYTES: usize = 16;
-/// Per-block stride = header + payload (4112 bytes).
-pub(crate) const BLOCK_STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + BLOCK_PAYLOAD_BYTES as u64;
 /// Root fan-out cap R_max (ADR 0088 §1 wire truth).
 pub(crate) const R_MAX: u32 = 1024;
 /// Sentinel value for `free_head == none`.
@@ -144,12 +149,17 @@ pub enum BlockError {
     NotMinted { id: u32 },
     /// Block id is past the allocated memory envelope (unbacked page).
     OutOfRange { id: u32 },
-    /// `offset + len` exceeds the 4096-byte payload envelope (or
+    /// `offset + len` exceeds the block payload envelope (or
     /// `offset.checked_add(len)` overflowed). Raised by
     /// [`LtbRawBlockStore::read_payload_partial`] and
     /// [`LtbRawBlockStore::write_payload_partial`] for callers that
     /// exceed the block's payload capacity.
     OutOfBounds { id: u32, offset: usize, len: usize },
+    /// A whole-payload transfer was given a buffer whose length is not the
+    /// block payload size (`EDGES_PER_BLOCK * E::BYTES`). Reading a longer
+    /// buffer would cross into the next block's header, so the store rejects
+    /// the transfer instead of truncating it.
+    PayloadLenMismatch { expected: usize, actual: usize },
     /// Reopen header failed magic / reserved / wire-truth / counter checks.
     Init(InitError),
     /// Plan 0337 / ADR 0094 §3 fail-closed verification: a fully-scanned
@@ -175,8 +185,8 @@ pub enum InitError {
     IncompatibleVersion(u8),
     /// Header reserved bytes (28 bytes) are not zero.
     NonZeroReserved,
-    /// `payload_bytes` field is not 4096.
-    BadPayloadBytes(u32),
+    /// `payload_bytes` field does not match the edge type's block payload.
+    BadPayloadBytes { actual: u32, expected: u32 },
     /// `R_max` field is not 1024.
     BadRMax(u32),
     /// Counter consistency: `free_count > tail_next`, `tail_next > block_capacity`,
@@ -210,8 +220,11 @@ impl std::fmt::Display for InitError {
                 write!(f, "ltb header version {v} is not the supported version 1")
             }
             Self::NonZeroReserved => write!(f, "ltb header reserved bytes are not zero"),
-            Self::BadPayloadBytes(p) => {
-                write!(f, "ltb header payload_bytes {p} is not the supported 4096")
+            Self::BadPayloadBytes { actual, expected } => {
+                write!(
+                    f,
+                    "ltb header payload_bytes {actual} is not the expected {expected} for this edge width"
+                )
             }
             Self::BadRMax(r) => {
                 write!(f, "ltb header R_max {r} is not the supported 1024")
@@ -236,26 +249,37 @@ impl std::fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Raw-block LTB store, generic over [`Memory`].
+/// Raw-block LTB store, generic over [`Memory`] and the edge record type.
 ///
-/// Holds the LTB header fields in cached form so the read/write path skips
-/// stable memory on the hot scan path; mutations invalidate the cache by
+/// The record type fixes the block geometry: one block holds
+/// [`EDGES_PER_BLOCK`] records of `E::BYTES` bytes, so the payload is
+/// `EDGES_PER_BLOCK * E::BYTES` and the block stride is the header plus that
+/// payload. A store therefore cannot be reopened as a different edge width:
+/// the header records the payload and [`Self::init`] rejects a mismatch.
+///
+/// Holds the remaining LTB header fields in cached form so the read/write path
+/// skips stable memory on the hot scan path; mutations invalidate the cache by
 /// rewriting the canonical header bytes through [`Self::write_header`].
 #[allow(
     dead_code,
     reason = "All methods are exercised by benches and tests; allow until wired."
 )]
-pub(crate) struct LtbRawBlockStore<M: Memory> {
+pub(crate) struct LtbRawBlockStore<M: Memory, E: CsrEdge> {
     memory: M,
-    payload_bytes: Cell<u32>,
     r_max: Cell<u32>,
     block_capacity: Cell<u32>,
     tail_next: Cell<u32>,
     free_head: Cell<u32>,
     free_count: Cell<u32>,
+    edge: PhantomData<E>,
 }
 
-impl<M: Memory> LtbRawBlockStore<M> {
+impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
+    /// Block payload in bytes: [`EDGES_PER_BLOCK`] edge records of `E::BYTES`.
+    pub(crate) const PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * E::BYTES;
+    /// Block stride in bytes: the per-block header plus the payload.
+    const STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + (EDGES_PER_BLOCK * E::BYTES) as u64;
+
     // ----- header I/O ------------------------------------------------------
 
     fn write_header(&self) -> Result<(), GrowFailed> {
@@ -264,7 +288,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
         crate::safe_write(
             &self.memory,
             OFFSET_PAYLOAD_BYTES,
-            &self.payload_bytes.get().to_le_bytes(),
+            &(Self::PAYLOAD_BYTES as u32).to_le_bytes(),
         )?;
         crate::safe_write(&self.memory, OFFSET_R_MAX, &self.r_max.get().to_le_bytes())?;
         crate::write_u64(
@@ -338,8 +362,11 @@ impl<M: Memory> LtbRawBlockStore<M> {
         if !Self::region_is_zero(memory, HEADER_RESERVED_OFFSET, HEADER_RESERVED_BYTES) {
             return Err(InitError::NonZeroReserved);
         }
-        if h.payload_bytes != BLOCK_PAYLOAD_BYTES as u32 {
-            return Err(InitError::BadPayloadBytes(h.payload_bytes));
+        if h.payload_bytes != Self::PAYLOAD_BYTES as u32 {
+            return Err(InitError::BadPayloadBytes {
+                actual: h.payload_bytes,
+                expected: Self::PAYLOAD_BYTES as u32,
+            });
         }
         if h.r_max != R_MAX {
             return Err(InitError::BadRMax(h.r_max));
@@ -402,7 +429,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// Compute the byte offset of block id `id`'s per-block header.
     #[inline]
     pub(crate) fn block_offset(id: u32) -> u64 {
-        HEADER_SIZE + u64::from(id) * BLOCK_STRIDE
+        HEADER_SIZE + u64::from(id) * Self::STRIDE
     }
 
     // ----- constructors ----------------------------------------------------
@@ -412,12 +439,12 @@ impl<M: Memory> LtbRawBlockStore<M> {
     pub(crate) fn new(memory: M) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
-            payload_bytes: Cell::new(BLOCK_PAYLOAD_BYTES as u32),
             r_max: Cell::new(R_MAX),
             block_capacity: Cell::new(0),
             tail_next: Cell::new(0),
             free_head: Cell::new(NULL_BLOCK),
             free_count: Cell::new(0),
+            edge: PhantomData,
         };
         store.write_header()?;
         Ok(store)
@@ -449,19 +476,20 @@ impl<M: Memory> LtbRawBlockStore<M> {
         Self::validate_free_list(&memory, &header)?;
         Ok(Self {
             memory,
-            payload_bytes: Cell::new(header.payload_bytes),
             r_max: Cell::new(header.r_max),
             block_capacity: Cell::new(header.block_capacity),
             tail_next: Cell::new(header.tail_next),
             free_head: Cell::new(header.free_head),
             free_count: Cell::new(header.free_count),
+            edge: PhantomData,
         })
     }
 
     // ----- accessors --------------------------------------------------------
 
+    /// Block payload in bytes for this store's edge type.
     pub(crate) fn payload_bytes(&self) -> usize {
-        self.payload_bytes.get() as usize
+        Self::PAYLOAD_BYTES
     }
 
     pub(crate) fn r_max(&self) -> u32 {
@@ -518,12 +546,22 @@ impl<M: Memory> LtbRawBlockStore<M> {
         self.memory.write(Self::block_offset(id), &bytes);
     }
 
-    /// Reads the 4096-byte payload at id `id` into `dst`.
-    pub(crate) fn read_payload(
-        &self,
-        id: u32,
-        dst: &mut [u8; BLOCK_PAYLOAD_BYTES],
-    ) -> Result<(), BlockError> {
+    /// Rejects a whole-payload transfer whose buffer is not exactly the block
+    /// payload size.
+    fn check_payload_len(actual: usize) -> Result<(), BlockError> {
+        if actual != Self::PAYLOAD_BYTES {
+            return Err(BlockError::PayloadLenMismatch {
+                expected: Self::PAYLOAD_BYTES,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    /// Reads the full block payload (`EDGES_PER_BLOCK * E::BYTES` bytes) at id
+    /// `id` into `dst`.
+    pub(crate) fn read_payload(&self, id: u32, dst: &mut [u8]) -> Result<(), BlockError> {
+        Self::check_payload_len(dst.len())?;
         if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
@@ -538,7 +576,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// block `id` into `dst`. Use this when only a small portion of a block
     /// is needed (e.g. `random_ordinal_access` reads 4 bytes at
     /// `slot * 4`) to avoid materializing a 4 KiB stack buffer per call.
-    /// Bounds check: `offset + dst.len() <= BLOCK_PAYLOAD_BYTES`. The
+    /// Bounds check: `offset + dst.len() <= Self::PAYLOAD_BYTES`. The
     /// kind/owner/ordinal/level fields in the 16-byte block header are not
     /// touched.
     pub(crate) fn read_payload_partial(
@@ -557,7 +595,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
                 offset,
                 len: dst.len(),
             })?;
-        if end > BLOCK_PAYLOAD_BYTES {
+        if end > Self::PAYLOAD_BYTES {
             return Err(BlockError::OutOfBounds {
                 id,
                 offset,
@@ -571,12 +609,9 @@ impl<M: Memory> LtbRawBlockStore<M> {
         Ok(())
     }
 
-    /// Writes the 4096-byte payload at id `id` from `src`.
-    pub(crate) fn write_payload(
-        &self,
-        id: u32,
-        src: &[u8; BLOCK_PAYLOAD_BYTES],
-    ) -> Result<(), BlockError> {
+    /// Writes the full block payload at id `id` from `src`.
+    pub(crate) fn write_payload(&self, id: u32, src: &[u8]) -> Result<(), BlockError> {
+        Self::check_payload_len(src.len())?;
         if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
@@ -589,7 +624,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// block `id`. Use this when only a small portion of a block has changed
     /// (e.g. one slot within a 4 KiB block) to avoid the read-modify-write
     /// cost of [`Self::write_payload`]. Bounds check: `offset + src.len()
-    /// <= BLOCK_PAYLOAD_BYTES`. The kind/owner/ordinal/level fields in the
+    /// <= Self::PAYLOAD_BYTES`. The kind/owner/ordinal/level fields in the
     /// 16-byte block header are not touched.
     pub(crate) fn write_payload_partial(
         &self,
@@ -607,7 +642,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
                 offset,
                 len: src.len(),
             })?;
-        if end > BLOCK_PAYLOAD_BYTES {
+        if end > Self::PAYLOAD_BYTES {
             return Err(BlockError::OutOfBounds {
                 id,
                 offset,
@@ -622,7 +657,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
     // ----- mint / release --------------------------------------------------
 
     /// Mint a new block id. Pops the free list if non-empty; otherwise mints
-    /// at `tail_next` and grows memory by [`BLOCK_STRIDE`] (rounded up to the
+    /// at `tail_next` and grows memory by [`Self::STRIDE`] (rounded up to the
     /// nearest WASM page). The returned id has `kind = Free` until the caller
     /// writes a header via [`Self::write_block_header`].
     pub(crate) fn mint(&self) -> Result<u32, GrowFailed> {
@@ -844,13 +879,16 @@ impl BlockHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::vector_memory;
+    use crate::test_support::{LabelledTestEdge, TestEdge, vector_memory};
+
+    /// The production 4-byte edge record fixes the 4096-byte block payload.
+    type Store = LtbRawBlockStore<crate::VectorMemory, TestEdge>;
 
     fn block_offset_for_test(id: u32) -> u64 {
-        LtbRawBlockStore::<crate::VectorMemory>::block_offset(id)
+        Store::block_offset(id)
     }
 
-    fn fresh() -> LtbRawBlockStore<crate::VectorMemory> {
+    fn fresh() -> Store {
         LtbRawBlockStore::new(vector_memory()).expect("fresh ltb")
     }
 
@@ -884,9 +922,9 @@ mod tests {
         ltb.write_block_header(id, &round_trip_header());
         let memory = ltb.into_memory();
         // Fresh header: reopen succeeds.
-        let reopened = LtbRawBlockStore::init(memory.clone()).expect("reopen");
+        let reopened = Store::init(memory.clone()).expect("reopen");
         assert_eq!(reopened.tail_next(), 1);
-        assert_eq!(reopened.payload_bytes(), BLOCK_PAYLOAD_BYTES);
+        assert_eq!(reopened.payload_bytes(), Store::PAYLOAD_BYTES);
         assert_eq!(reopened.r_max(), R_MAX);
         // Helper to clone and tamper one byte / range of bytes.
         fn tamper(memory: &crate::VectorMemory, offset: u64, value: &[u8]) -> crate::VectorMemory {
@@ -896,11 +934,11 @@ mod tests {
         }
         // Tamper with the magic byte: reopen rejects.
         let bad_magic = tamper(&memory, OFFSET_MAGIC, b"XTB");
-        let err = LtbRawBlockStore::init(bad_magic).err().unwrap();
+        let err = Store::init(bad_magic).err().unwrap();
         assert!(matches!(err, InitError::BadMagic { .. }), "got {err:?}");
         // Tamper with the reserved region: reopen rejects.
         let bad_reserved = tamper(&memory, HEADER_RESERVED_OFFSET, &[1]);
-        let err = LtbRawBlockStore::init(bad_reserved).err().unwrap();
+        let err = Store::init(bad_reserved).err().unwrap();
         assert!(matches!(err, InitError::NonZeroReserved), "got {err:?}");
         // Tamper with payload_bytes: reopen rejects.
         let bad_payload = tamper(
@@ -908,15 +946,24 @@ mod tests {
             OFFSET_PAYLOAD_BYTES,
             &((BLOCK_PAYLOAD_BYTES as u32 + 1).to_le_bytes()),
         );
-        let err = LtbRawBlockStore::init(bad_payload).err().unwrap();
-        assert!(matches!(err, InitError::BadPayloadBytes(_)), "got {err:?}");
+        let err = Store::init(bad_payload).err().unwrap();
+        assert!(
+            matches!(
+                err,
+                InitError::BadPayloadBytes {
+                    actual,
+                    expected
+                } if actual == BLOCK_PAYLOAD_BYTES as u32 + 1 && expected == Store::PAYLOAD_BYTES as u32
+            ),
+            "got {err:?}"
+        );
         // Tamper with R_max: reopen rejects.
         let bad_r_max = tamper(&memory, OFFSET_R_MAX, &((R_MAX + 1).to_le_bytes()));
-        let err = LtbRawBlockStore::init(bad_r_max).err().unwrap();
+        let err = Store::init(bad_r_max).err().unwrap();
         assert!(matches!(err, InitError::BadRMax(_)), "got {err:?}");
         // Tamper with layout version: reopen rejects.
         let bad_version = tamper(&memory, OFFSET_VERSION, &[99]);
-        let err = LtbRawBlockStore::init(bad_version).err().unwrap();
+        let err = Store::init(bad_version).err().unwrap();
         assert!(
             matches!(err, InitError::IncompatibleVersion(99)),
             "got {err:?}"
@@ -935,7 +982,7 @@ mod tests {
             v[OFFSET_FREE_COUNT as usize..OFFSET_FREE_COUNT as usize + 4].copy_from_slice(&bad);
             std::rc::Rc::new(std::cell::RefCell::new(v))
         };
-        let err = LtbRawBlockStore::init(new_bytes).err().unwrap();
+        let err = Store::init(new_bytes).err().unwrap();
         assert!(
             matches!(err, InitError::CounterMismatch { .. }),
             "got {err:?}"
@@ -975,7 +1022,7 @@ mod tests {
         }
         let memory = ltb.into_memory();
         // Clean reopen succeeds.
-        let _ = LtbRawBlockStore::init(memory.clone()).expect("clean reopen");
+        let _ = Store::init(memory.clone()).expect("clean reopen");
         // Tamper: corrupt the kind byte of the free-list head so the walker
         // sees a non-Free kind. Reopen rejects with FreeListCorrupt.
         let head = {
@@ -991,7 +1038,7 @@ mod tests {
             v[head_offset as usize] = BlockKind::Edge as u8;
             std::rc::Rc::new(std::cell::RefCell::new(v))
         };
-        let err = LtbRawBlockStore::init(tampered).err().unwrap();
+        let err = Store::init(tampered).err().unwrap();
         assert!(matches!(err, InitError::FreeListCorrupt), "got {err:?}");
     }
 
@@ -1043,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_round_trip_4096_bytes() {
+    fn payload_round_trip_full_block() {
         let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let src: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
@@ -1054,12 +1101,74 @@ mod tests {
     }
 
     #[test]
+    fn payload_follows_edge_width_for_wide_records() {
+        // The payload is EDGES_PER_BLOCK * E::BYTES, not a global constant: a
+        // wider record widens the block instead of shrinking how many edges a
+        // block holds.
+        let ltb: LtbRawBlockStore<crate::VectorMemory, LabelledTestEdge> =
+            LtbRawBlockStore::new(vector_memory()).expect("fresh wide ltb");
+        assert_eq!(
+            ltb.payload_bytes(),
+            EDGES_PER_BLOCK * LabelledTestEdge::BYTES
+        );
+        let id = ltb.mint().expect("mint");
+        let src: Vec<u8> = (0..ltb.payload_bytes()).map(|i| (i % 251) as u8).collect();
+        ltb.write_payload(id, &src).expect("write wide payload");
+        let mut dst = vec![0u8; ltb.payload_bytes()];
+        ltb.read_payload(id, &mut dst).expect("read wide payload");
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn reopen_rejects_a_store_opened_with_another_edge_width() {
+        let ltb = fresh();
+        let memory = ltb.into_memory();
+        let err = LtbRawBlockStore::<_, LabelledTestEdge>::init(memory)
+            .err()
+            .expect("8-byte reopen must fail");
+        assert_eq!(
+            err,
+            InitError::BadPayloadBytes {
+                actual: BLOCK_PAYLOAD_BYTES as u32,
+                expected: (EDGES_PER_BLOCK * LabelledTestEdge::BYTES) as u32,
+            }
+        );
+    }
+
+    #[test]
+    fn whole_payload_transfer_rejects_a_wrong_buffer_length() {
+        let ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let err = ltb
+            .write_payload(id, &[0u8; BLOCK_PAYLOAD_BYTES - 1])
+            .expect_err("short payload must be rejected");
+        assert_eq!(
+            err,
+            BlockError::PayloadLenMismatch {
+                expected: BLOCK_PAYLOAD_BYTES,
+                actual: BLOCK_PAYLOAD_BYTES - 1,
+            }
+        );
+        let mut dst = vec![0u8; BLOCK_PAYLOAD_BYTES + 1];
+        let err = ltb
+            .read_payload(id, &mut dst)
+            .expect_err("long buffer must be rejected");
+        assert_eq!(
+            err,
+            BlockError::PayloadLenMismatch {
+                expected: BLOCK_PAYLOAD_BYTES,
+                actual: BLOCK_PAYLOAD_BYTES + 1,
+            }
+        );
+    }
+
+    #[test]
     fn reopen_init_lazy_creates_on_empty_memory() {
         // Plan 0318 §Step 2 amend: a zero-size memory is treated as a
         // fresh graph that has not yet promoted any bucket. The header
         // is written lazily and the store reopens cleanly.
         let memory: crate::VectorMemory = vector_memory();
-        let ltb = LtbRawBlockStore::init(memory).expect("lazy-create on empty");
+        let ltb = Store::init(memory).expect("lazy-create on empty");
         assert_eq!(ltb.block_capacity(), 0);
         // The header is now materialized: the underlying memory has
         // grown to fit the 64-byte header.

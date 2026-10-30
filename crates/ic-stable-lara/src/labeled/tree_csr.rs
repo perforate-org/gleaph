@@ -26,7 +26,7 @@
 //!
 //! # Plan 0315 refactor
 //!
-//! The block store is now [`super::ltb_raw_block_store::LtbRawBlockStore<M>`],
+//! The block store is now [`super::ltb_raw_block_store::LtbRawBlockStore`],
 //! a raw-byte backend that talks directly to stable memory. The previous
 //! `StableBTreeMap<BlockId, Vec<u8>, VectorMemory>` scaffold inflated every
 //! measurement (Gate 3 was 315.74M ins for edge-only promotion — well past the
@@ -60,10 +60,40 @@
 
 use ic_stable_structures::Memory;
 
-use super::ltb_raw_block_store::{BLOCK_PAYLOAD_BYTES, LtbRawBlockStore};
+use super::ltb_raw_block_store::{BLOCK_PAYLOAD_BYTES, EDGES_PER_BLOCK, LtbRawBlockStore};
 
-/// Block payload capacity (ADR 0088 §1 wire truth).
-pub(crate) const B: usize = BLOCK_PAYLOAD_BYTES / 4;
+/// Edge slots per block (ADR 0088 §1: one block holds 1024 edges).
+pub(crate) const B: usize = EDGES_PER_BLOCK;
+
+/// 4-byte target record of the bench-only [`TreeCsrBucket`] model.
+///
+/// ADR 0088 §1 stores one raw 4-byte `target` per slot; this marker names that
+/// record type so the block store derives the 4096-byte payload it models (the
+/// production `Edge::BYTES == 4` case).
+#[derive(Clone, Copy)]
+struct TargetRecord(u32);
+
+impl crate::traits::CsrEdge for TargetRecord {
+    const BYTES: usize = 4;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self(u32::from_le_bytes(
+            bytes[0..4].try_into().expect("4-byte target"),
+        ))
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> crate::VertexId {
+        crate::VertexId::from(self.0)
+    }
+
+    fn with_neighbor_vid(&self, vid: crate::VertexId) -> Self {
+        Self(u32::from(vid))
+    }
+}
 /// Root array cap (ADR 0088 §1 wire truth).
 pub(crate) const R_MAX: usize = 1024;
 /// Fail-closed depth boundary (ADR 0088 §4).
@@ -120,7 +150,7 @@ pub(crate) fn root_len(stored_slots: u32) -> usize {
 /// `root` length disagreeing with `stored_slots`.
 pub(crate) struct TreeCsrBucket<M: Memory> {
     root: Vec<u32>,
-    store: LtbRawBlockStore<M>,
+    store: LtbRawBlockStore<M, TargetRecord>,
     stored_slots: u32,
 }
 

@@ -303,7 +303,7 @@ where
     /// Returns the per-orientation LTB (LARA Tree Block) store backing
     /// tree-mode buckets. Plan 0318 §Step 4 promotion reads from and writes
     /// to this store; slab-mode buckets leave it empty.
-    pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M> {
+    pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M, E> {
         &self.ltb
     }
 

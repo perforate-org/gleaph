@@ -265,7 +265,7 @@ Per Plan 0316 §Notes and Plan 0322 §Notes, the following remain explicitly def
 - [Plan 0318](./0318-tree-csr-demotion-tree-to-slab.md) — Demotion (tree → slab), a benchmark-gated maintenance operation.
 - Plan 0319 — `materialize_inline_property_stream` migration primitive (currently recorded as planned).
 - Plan 0320 — Batch admission widening to tree-mode buckets.
-- Plan 0317 — Tree-CSR implementation in `LabeledLaraGraph`. Wires `LtbRawBlockStore<VirtualMemory>` per orientation (forward + reverse), adds the descriptor mode-flag bit, promotion / deepen / flatten transitions, mode dispatch in the bucket access constructor. Plan 0322 must close before Plan 0317 starts so the production code paths can use `range_target` and `for_each_chunk` from day one.
+- Plan 0317 — Tree-CSR implementation in `LabeledLaraGraph`. Wires `LtbRawBlockStore<VirtualMemory, E>` per orientation (forward + reverse), adds the descriptor mode-flag bit, promotion / deepen / flatten transitions, mode dispatch in the bucket access constructor. Plan 0322 must close before Plan 0317 starts so the production code paths can use `range_target` and `for_each_chunk` from day one.
 - Plan 0321 — Normal LARA (unlabeled) tree mode as a second instance of the same contract.
 
 ### 1. LTB block store
@@ -278,7 +278,7 @@ update on implementation) holding a 64-byte header plus fixed-stride blocks.
 -------------------------------------------------- <- Address 0
 Magic "LTB"                            ↕ 3 bytes
 Layout version (=1)                    ↕ 1 byte
-Payload bytes per block (=4096)        ↕ 4 bytes    (power of two; wire truth)
+Payload bytes per block (1024 × E::BYTES) ↕ 4 bytes  (wire truth; 4096 for 4-byte edges)
 Root fan-out cap R_max (=1024)         ↕ 4 bytes    (wire truth; see §4)
 Block capacity (allocated block slots) ↕ 8 bytes
 Tail next (first never-minted id)      ↕ 8 bytes
@@ -286,7 +286,7 @@ Free head (intrusive list; MAX=none)   ↕ 4 bytes
 Free count                             ↕ 4 bytes
 Reserved (must be zero)                ↕ 28 bytes
 -------------------------------------------------- <- Address 64 (HEADER_SIZE)
-Block 0: block header ↕ 16 B | payload ↕ 4096 B      (stride 4112)
+Block 0: block header ↕ 16 B | payload ↕ 1024 × E::BYTES (stride 4112 for 4-byte edges)
 Block 1: ...
 -------------------------------------------------- <- 64 + capacity × 4112
 ```
@@ -351,21 +351,29 @@ of its packed word; the descriptor stays 29 bytes. In tree mode:
 All geometry is derived — no new persisted field:
 
 ```text
-B       = payload / 4 = 1024 edge slots per block
+B       = 1024 edge slots per block      (EDGES_PER_BLOCK)
+payload = B * E::BYTES                  (4096 bytes for the 4-byte production edge)
 K       = floor(payload / w) values per property block (w > 0)
 edge root len     = ceil(S / B^d)        d = derived depth (§4)
 property root len = ceil(S / (K·B^(d'−1)))
 span width        = edge root len + property root len      (gap = 0, §3)
 ```
 
-**Edge width (Plan 0318 post-merge):** tree mode stores one 4-byte target per
-LTB slot, so promotion is restricted to edge types with `E::BYTES == 4`. Wider
-edge types fail promotion with the typed `TreeModeEdgeWidthUnsupported` error,
-and the insert dispatcher carves them out of the promote trigger so such
-buckets stay on the CSR slab path (mirroring the inline-property carve-out).
-The carve-out was added after the canbench `bench_l_s2_det_sat_4096` bench
-(10-byte edge type) trapped on the tree-append guard following a silent
-mis-transcription — the promotion-side guard is typed, not debug-only.
+**Edge width:** tree mode stores one `E::BYTES`-wide edge record per LTB slot,
+so a block holds `EDGES_PER_BLOCK = 1024` edges at every width and the payload
+is `1024 × E::BYTES`. For the 4-byte production edge this is exactly the
+original 4096-byte payload and 4112-byte stride, so production layout, capacity
+and measurements are unchanged. The store is typed by the edge record
+(`LtbRawBlockStore<M, E>`), writes `1024 × E::BYTES` into the header, and
+reopen rejects a store opened with a different width (`InitError::
+BadPayloadBytes`), so a mismatched geometry fails at open instead of
+mis-striding blocks.
+
+The former `E::BYTES == 4` promotion restriction and its slab carve-out (added
+after the canbench `bench_l_s2_det_sat_4096` bench trapped on the tree-append
+guard following a silent mis-transcription) are removed in the follow-up commit
+(Plan 0405 `p240`); until that lands the insert dispatcher still rejects wider
+records with the typed `TreeModeEdgeWidthUnsupported` error.
 
 Logical positions are unchanged: `BucketEntryPosition` remains the bucket-local
 tombstone-inclusive position (`crates/ic-stable-lara/src/traverse.rs`), so

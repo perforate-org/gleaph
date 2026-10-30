@@ -5882,10 +5882,7 @@ mod tests {
             }
             graph
                 .ltb()
-                .write_payload(
-                    id,
-                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
-                )
+                .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
         // Combined span [edge root | property root].
@@ -6262,10 +6259,7 @@ mod tests {
             }
             graph
                 .ltb()
-                .write_payload(
-                    id,
-                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
-                )
+                .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
         let combined_len = edge_root_len + l_p;
@@ -6374,10 +6368,7 @@ mod tests {
             }
             graph_b
                 .ltb()
-                .write_payload(
-                    id,
-                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
-                )
+                .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
         let combined_len_b = edge_root_len_b + l_p_b;

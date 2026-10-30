@@ -283,7 +283,7 @@ where
     /// (forward + reverse), so the bidirectional graph holds two of these.
     /// Lazily created (the LTB region stays physically unallocated until the
     /// first promotion) per ADR 0088 §1.
-    ltb: LtbRawBlockStore<M>,
+    ltb: LtbRawBlockStore<M, E>,
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     inline_property_bytes_compaction_deferred: Cell<bool>,
