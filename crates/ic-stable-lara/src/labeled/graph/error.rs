@@ -96,17 +96,6 @@ pub enum LabeledOperationError {
         /// Requested label key.
         label: BucketLabelKey,
     },
-    /// Tree-mode edge append was attempted for an `E` whose wire width is
-    /// not 4 bytes. Tree-mode LTB blocks are 4-byte-aligned (each block
-    /// holds `B = 1024` 4-byte targets); wider edges would break the
-    /// block math. Plan 0318 §Step 6 typed guard (replaces the Step 5
-    /// `debug_assert_eq!(E::BYTES, 4)` at every tree read entry).
-    TreeModeEdgeWidthUnsupported {
-        /// `E::BYTES` reported by the edge type.
-        actual: usize,
-        /// Required width for tree-mode LTB block alignment (4).
-        expected: usize,
-    },
     /// Tree-mode `deepen` was requested but the bucket is already at the
     /// structural maximum depth (`MAX_DEPTH = 3`, per ADR 0088 §4). The
     /// fan-out of every interior level is `K = R_MAX = 1024`; once a
@@ -233,10 +222,6 @@ impl fmt::Display for LabeledOperationError {
                     "labeled bucket not found for promotion: vid={vid}, label={label:?}"
                 )
             }
-            Self::TreeModeEdgeWidthUnsupported { actual, expected } => write!(
-                f,
-                "tree-mode edge append requires E::BYTES == {expected} (got {actual})"
-            ),
             Self::TreeDepthLimitReached { depth, max_depth } => write!(
                 f,
                 "tree-mode depth limit reached: depth={depth}, max_depth={max_depth}"
@@ -296,7 +281,6 @@ impl std::error::Error for LabeledOperationError {
             | Self::VertexBucketCountCapReached { .. }
             | Self::LtbBlock(_)
             | Self::BucketNotFound { .. }
-            | Self::TreeModeEdgeWidthUnsupported { .. }
             | Self::TreeDepthLimitReached { .. }
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }

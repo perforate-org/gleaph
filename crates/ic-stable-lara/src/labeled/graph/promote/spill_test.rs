@@ -352,27 +352,20 @@ fn promotion_retained_below_cap_rejects_without_mutation() {
     );
 }
 #[test]
-fn promotion_retained_wide_rejects_without_mutation() {
+fn promotion_retained_wide_promotes_and_keeps_rows() {
     let outer = retained::<10>(crate::labeled::spill_run_store::MAX_ROWS);
     let g = outer.forward();
     let label = g.default_label();
     let old = bucket(g, label);
     let run = g.edges().spill_mint(old.edge_spill_run()).unwrap();
-    let used = g.edges().spill_used_len(run);
+    let extent = old.stored_slots() + g.edges().spill_used_len(run);
     let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
-    assert!(matches!(
-        promote_bucket_to_tree_mode(g, VertexId::from(0), label),
-        Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: 10,
-            expected: 4
-        })
-    ));
-    assert_eq!(bucket(g, label), old);
-    assert_eq!(g.edges().spill_used_len(run), used);
-    assert_eq!(
-        rows(g, label, super::super::OutEdgeOrder::Ascending),
-        before
-    );
+    promote_bucket_to_tree_mode(g, VertexId::from(0), label).unwrap();
+    let after = bucket(g, label);
+    assert!(after.is_tree_mode());
+    assert_eq!(after.stored_slots(), extent);
+    assert_eq!(after.degree(), old.degree());
+    assert_tree(g, label, extent, &before);
 }
 fn distinct_sidecar(target: u32, width: u16) -> Vec<u8> {
     let identity = (u64::from(target) + 1).to_le_bytes();
@@ -683,25 +676,10 @@ fn check_cascade_ownership<const N: usize>() {
         ),
         expected.iter().cloned().rev().collect::<Vec<_>>()
     );
-    if N == 4 {
-        promote_bucket_to_tree_mode(&g, v, g.default_label()).unwrap();
-        assert_tree(&g, g.default_label(), extent, &expected);
-    } else {
-        assert!(matches!(
-            promote_bucket_to_tree_mode(&g, v, g.default_label()),
-            Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-                actual: 10,
-                expected: 4
-            })
-        ));
-        assert_eq!(bucket(&g, g.default_label()), b);
-    }
+    promote_bucket_to_tree_mode(&g, v, g.default_label()).unwrap();
+    assert_tree(&g, g.default_label(), extent, &expected);
     let b = bucket(&g, g.default_label());
-    let physical = if N == 4 {
-        extent.div_ceil(BLOCK_B as u32)
-    } else {
-        prefix
-    };
+    let physical = extent.div_ceil(BLOCK_B as u32);
     for free in g.edges().free_byte_spans() {
         assert!(
             free.start_slot + free.len <= b.edge_start()

@@ -59,12 +59,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    if E::BYTES != 4 {
-        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: E::BYTES,
-            expected: 4,
-        });
-    }
     debug_assert!(
         bucket.is_tree_mode(),
         "tree_mode_random_ordinal_access: bucket is not in tree mode (caller must dispatch)"
@@ -121,11 +115,6 @@ where
     M: Memory,
     Visit: FnMut(u32, E) -> ControlFlow<B>,
 {
-    debug_assert_eq!(
-        E::BYTES,
-        4,
-        "visit_tree_mode_label_bucket_edges requires E::BYTES == 4"
-    );
     debug_assert!(bucket.is_tree_mode());
     if out_degree == 0 {
         return Ok(ControlFlow::Continue(()));
@@ -563,7 +552,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4);
     debug_assert!(bucket.is_tree_mode());
     let w = bucket.inline_property_byte_width();
     if w == 0 {
@@ -662,7 +650,6 @@ where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
     let mut payload = vec![0u8; graph.ltb().payload_bytes()];
@@ -714,7 +701,6 @@ where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
     let mut payload = vec![0u8; graph.ltb().payload_bytes()];

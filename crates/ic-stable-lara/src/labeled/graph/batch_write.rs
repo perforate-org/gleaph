@@ -750,14 +750,6 @@ pub enum OneOrientationBatchError {
         /// Free bytes in the current tail block.
         tail_room_bytes: u64,
     },
-    /// Plan 0321 Step 2: tree mode requires 4-byte edges. The
-    /// batch boundary refuses any other edge width.
-    TreeModeEdgeWidthUnsupported {
-        /// Edge width in bytes for the run's edge type.
-        actual: usize,
-        /// Tree-mode required edge width.
-        expected: usize,
-    },
     /// The overflow log cannot hold the planned run.
     LogCapacityExceeded,
     /// A inline property edge carried a byte length different from the declared width.
@@ -2105,14 +2097,8 @@ where
                 // root-growth correctly). The follow-up widens to
                 // multi-block + root-growth.
                 //
-                // Tree-mode invariants (4-byte edges, no inline
-                // property bytes) are checked here.
-                if E::BYTES != 4 {
-                    return Err(OneOrientationBatchError::TreeModeEdgeWidthUnsupported {
-                        actual: E::BYTES,
-                        expected: 4,
-                    });
-                }
+                // Tree-mode invariant checked here: batch admission
+                // does not carry inline-property rows.
                 if run.inline_property_width != 0 {
                     // Plan 0326 LPB-in-tree: tree mode + `w > 0` is
                     // not admitted in batch (the property row writeback
@@ -3034,16 +3020,11 @@ where
                     // builds while keeping the release binary
                     // infallible; the production path never trips
                     // these checks.
-                    debug_assert_eq!(
-                        E::BYTES,
-                        4,
-                        "tree mode requires 4-byte edges (guarded at preflight + fingerprint)"
-                    );
-                    let mut edge_bytes = Vec::with_capacity(*run_edge_count as usize * E::BYTES);
-                    for e in &run.edges {
-                        let mut buf = [0u8; 4];
-                        e.edge.write_to(&mut buf);
-                        edge_bytes.extend_from_slice(&buf);
+                    // One edge record per LTB slot: the slot is E::BYTES wide.
+                    let mut edge_bytes = vec![0u8; *run_edge_count as usize * E::BYTES];
+                    for (index, e) in run.edges.iter().enumerate() {
+                        let slot = &mut edge_bytes[index * E::BYTES..(index + 1) * E::BYTES];
+                        e.edge.write_to(slot);
                     }
                     if let Err(e) = graph.ltb().write_payload_partial(
                         *tail_block_id,
@@ -4118,10 +4099,6 @@ impl std::fmt::Display for OneOrientationBatchError {
             } => write!(
                 f,
                 "tree-mode run exceeds tail-block room: vertex {owner_vertex_id:?} label {label_id:?} run_bytes={run_bytes} tail_room_bytes={tail_room_bytes}"
-            ),
-            Self::TreeModeEdgeWidthUnsupported { actual, expected } => write!(
-                f,
-                "tree-mode batch requires 4-byte edges (got {actual}, expected {expected})"
             ),
         }
     }

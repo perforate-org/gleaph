@@ -369,11 +369,15 @@ reopen rejects a store opened with a different width (`InitError::
 BadPayloadBytes`), so a mismatched geometry fails at open instead of
 mis-striding blocks.
 
-The former `E::BYTES == 4` promotion restriction and its slab carve-out (added
-after the canbench `bench_l_s2_det_sat_4096` bench trapped on the tree-append
-guard following a silent mis-transcription) are removed in the follow-up commit
-(Plan 0405 `p240`); until that lands the insert dispatcher still rejects wider
-records with the typed `TreeModeEdgeWidthUnsupported` error.
+Every edge width promotes. The former `E::BYTES == 4` restriction and its slab
+carve-out — added after the canbench `bench_l_s2_det_sat_4096` bench trapped on
+the tree-append guard following a silent mis-transcription — are removed: tree
+mode addresses every slot by `E::BYTES`, and both the slab root region and the
+interior block payloads are indexed in edge-record slots (one `u32` block id in
+the slot's first four bytes, zero-padded), so one raw byte copy still moves a
+whole level and a wider record only scales the block. The insert dispatcher's
+run-full exit is tree promotion for every width, and the retired
+`TreeModeEdgeWidthUnsupported` errors are gone.
 
 Logical positions are unchanged: `BucketEntryPosition` remains the bucket-local
 tombstone-inclusive position (`crates/ic-stable-lara/src/traverse.rs`), so

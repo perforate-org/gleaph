@@ -253,17 +253,11 @@ where
             if label_id == self.bypass_storage_label_for(&vertex)
                 && self.may_use_homogeneous_bypass(src)
             {
-                if E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES {
-                    match self.insert_homogeneous_bypass_edge(src, label_id, edge.clone()) {
-                        Err(LabeledOperationError::Store(
-                            LaraOperationError::SpillNeedsPromotion,
-                        )) => {
-                            super::promote::promote_bypass_with_edge(self, src, &edge)?;
-                        }
-                        result => result?,
+                match self.insert_homogeneous_bypass_edge(src, label_id, edge.clone()) {
+                    Err(LabeledOperationError::Store(LaraOperationError::SpillNeedsPromotion)) => {
+                        super::promote::promote_bypass_with_edge(self, src, &edge)?;
                     }
-                } else {
-                    self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
+                    result => result?,
                 }
                 return Ok(None);
             }
@@ -408,18 +402,11 @@ where
                 // try to mint `resident / B` LTB blocks and fail in a
                 // different way.
                 //
-                // The `E::BYTES == 4` carve-out keeps wide edge types on the slab
-                // path: tree mode stores one 4-byte target per LTB slot (ADR 0088
-                // §1), so a wider `E` can never be promoted. Mirrors the
-                // inline-property carve-out — such buckets stay slab and keep the
-                // pre-Plan-0318 growth behavior. (Post-merge fix: the canbench
-                // `bench_l_s2_det_sat_4096` bench drives a 10-byte edge type and
-                // trapped on the tree-append typed guard after the promotion had
-                // already mis-transcribed — promote now rejects before minting.)
-                if E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES && {
-                    let resident = self.bucket_resident_rows(&bucket)?;
-                    (super::T_PROMOTE..u32::MAX).contains(&resident)
-                } {
+                // Every edge width promotes: a tree block holds EDGES_PER_BLOCK
+                // records of `E::BYTES`, so the width only scales the block, it
+                // does not select a different path.
+                let resident = self.bucket_resident_rows(&bucket)?;
+                if (super::T_PROMOTE..u32::MAX).contains(&resident) {
                     super::promote::promote_bucket_to_tree_mode(self, src, label_id)?;
                     // Re-read the bucket: after promotion it is tree mode.
                     let vertex = self.vertices.get(src);
@@ -620,31 +607,6 @@ where
                             }));
                         }
                         Err(LaraOperationError::SpillNeedsPromotion) => {
-                            if E::BYTES != super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES {
-                                // Wide-edge carve-out (ADR 0097 §6, mirroring the slab-growth
-                                // trigger's): tree mode stores one 4-byte target per LTB slot, so a
-                                // wider edge type can never be promoted. Such a bucket stays slab,
-                                // and it gets a writable prefix back the only way ADR 0097 §7
-                                // allows: the explicit compaction copies the run's rows into the
-                                // prefix and releases the run, so the retry below writes into the
-                                // slab again - the pre-swap behavior for a wide-edge bucket that ran
-                                // out of overflow room, expressed with the mechanism that replaces
-                                // the fold.
-                                super::promote::compact_run_into_prefix_with_growth_retry(
-                                    self,
-                                    src,
-                                    bucket_index,
-                                    bucket,
-                                )?;
-                                let vertex = self.vertices.get(src);
-                                let bucket_slot =
-                                    Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                                bucket = self
-                                    .buckets
-                                    .read_label_bucket_slot(bucket_slot)
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                                continue;
-                            }
                             // The bucket's run cannot serve another row (ADR 0097 §6): its class is
                             // full at MAX_ROWS, or the arena cannot address the growth. Tree mode is
                             // the chunked path with no fixed row ceiling, so promote and re-dispatch

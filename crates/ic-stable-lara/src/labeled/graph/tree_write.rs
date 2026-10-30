@@ -53,13 +53,6 @@ use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
-/// Edge record width the tree append paths still require.
-///
-/// The store derives its payload from `E::BYTES` (`EDGES_PER_BLOCK` records per
-/// block), so this guard is the last piece of the old "one block is 4096 bytes"
-/// assumption; the follow-up commit deletes it along with the slab carve-out.
-pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
-
 /// Stack scratch for one encoded edge record.
 ///
 /// The widest record in the workspace is the 24-byte bench `WideEdge`; a wider
@@ -83,6 +76,17 @@ where
             edge_inline_property_width: 0,
         },
     )
+}
+
+/// Appends one root/interior entry to a slot-strided image.
+///
+/// A root or interior entry is the `u32` block id in its slot's first four
+/// bytes, zero-padded to the edge record width (ADR 0088 §2: both the slab root
+/// region and the interior block payloads are indexed in edge-record slots, so
+/// one raw byte copy moves a whole level).
+pub(super) fn push_root_entry<E: CsrEdge>(image: &mut Vec<u8>, id: u32) {
+    image.extend_from_slice(&id.to_le_bytes());
+    image.resize(image.len() + (E::BYTES - 4), 0);
 }
 
 /// Splits `scratch` down to the `E::BYTES`-wide edge slot.
@@ -117,13 +121,6 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    // Typed guard: tree mode requires 4-byte edges.
-    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
-        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: E::BYTES,
-            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
-        });
-    }
     debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
     // Plan 0326 (F-7 fix): tree mode now supports
     // `inline_property_byte_width > 0` (LPB-in-tree). The
@@ -392,9 +389,10 @@ where
                             }
                         };
                         let mut combined_bytes: Vec<u8> =
-                            Vec::with_capacity(new_combined_len as usize * 4);
+                            Vec::with_capacity(new_combined_len as usize * E::BYTES);
                         if old_edge_root_len > 0 {
-                            let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
+                            let mut old_edge_bytes =
+                                vec![0u8; old_edge_root_len as usize * E::BYTES];
                             graph.edges().read_slots_contiguous_bytes(
                                 old_combined_start,
                                 &mut old_edge_bytes,
@@ -402,14 +400,15 @@ where
                             combined_bytes.extend_from_slice(&old_edge_bytes);
                         }
                         if old_prop_root_len > 0 {
-                            let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+                            let mut old_prop_bytes =
+                                vec![0u8; old_prop_root_len as usize * E::BYTES];
                             graph.edges().read_slots_contiguous_bytes(
                                 old_combined_start + u64::from(old_edge_root_len),
                                 &mut old_prop_bytes,
                             );
                             combined_bytes.extend_from_slice(&old_prop_bytes);
                         }
-                        combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
+                        push_root_entry::<E>(&mut combined_bytes, entry_id);
                         if let Err(e) = graph
                             .edges()
                             .write_slots_contiguous_bytes(new_combined, &combined_bytes)
@@ -442,7 +441,7 @@ where
                         // (edge_start is the post-ensure value).
                         if let Err(e) = graph.ltb().write_payload_partial(
                             plan.interior_id,
-                            (plan.row as usize) * 4,
+                            (plan.row as usize) * E::BYTES,
                             &plan.leaf_id.to_le_bytes(),
                         ) {
                             release_property_plan::<E, M>(graph, &plan);
@@ -698,7 +697,7 @@ where
     //    interiors (B entries per block).
     let old_combined_start = bucket.edge_start();
     let property_root_offset = old_combined_start + u64::from(edge_root_len);
-    let mut old_root_bytes: Vec<u8> = vec![0u8; old_root_len as usize * 4];
+    let mut old_root_bytes: Vec<u8> = vec![0u8; old_root_len as usize * E::BYTES];
     if old_root_len > 0 {
         graph
             .edges()
@@ -711,7 +710,7 @@ where
         if let Err(e) = graph.ltb().write_payload_partial(
             interior_id,
             0,
-            &old_root_bytes[cursor * 4..(cursor + this_block_count) * 4],
+            &old_root_bytes[cursor * E::BYTES..(cursor + this_block_count) * E::BYTES],
         ) {
             for &id in interior_ids.iter().rev() {
                 let _ = graph.ltb().release(id);
@@ -736,16 +735,16 @@ where
         }
     };
     // 5. Build the new combined bytes: [old edge root | new interior ids].
-    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if edge_root_len > 0 {
-        let mut old_edge_bytes = vec![0u8; edge_root_len as usize * 4];
+        let mut old_edge_bytes = vec![0u8; edge_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
         combined_bytes.extend_from_slice(&old_edge_bytes);
     }
     for &id in &interior_ids {
-        combined_bytes.extend_from_slice(&id.to_le_bytes());
+        push_root_entry::<E>(&mut combined_bytes, id);
     }
     if let Err(e) = graph
         .edges()
@@ -929,7 +928,11 @@ where
             let mut child_id_bytes = [0u8; 4];
             graph
                 .ltb()
-                .read_payload_partial(child_id, (level_idx as usize) * 4, &mut child_id_bytes)
+                .read_payload_partial(
+                    child_id,
+                    (level_idx as usize) * E::BYTES,
+                    &mut child_id_bytes,
+                )
                 .map_err(LabeledOperationError::LtbBlock)?;
             child_id = u32::from_le_bytes(child_id_bytes);
         }
@@ -1025,10 +1028,6 @@ where
     // GATE 1: Unordered placement only (Insertion tree buckets never
     // reuse — ADR 0052 §6). The gate is structural, not a tuning choice.
     if placement != super::EdgePlacementPolicy::Unordered {
-        return Ok(None);
-    }
-    // GATE 2: tree width guard (unchanged).
-    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
         return Ok(None);
     }
     debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
@@ -1316,17 +1315,17 @@ where
         }
     };
     // 3. Build new combined bytes: [edge root (old + new edge block_id) | property root (old + maybe entry)].
-    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if old_edge_root_len > 0 {
-        let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
+        let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
         combined_bytes.extend_from_slice(&old_edge_bytes);
     }
-    combined_bytes.extend_from_slice(&new_block_id.to_le_bytes());
+    push_root_entry::<E>(&mut combined_bytes, new_block_id);
     if old_property_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * 4];
+        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * E::BYTES];
         graph.edges().read_slots_contiguous_bytes(
             old_combined_start + u64::from(old_edge_root_len),
             &mut old_prop_bytes,
@@ -1336,7 +1335,7 @@ where
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
+        push_root_entry::<E>(&mut combined_bytes, entry_id);
     }
 
     if let Err(e) = graph
@@ -1601,7 +1600,7 @@ where
                     // unchanged.
                     if let Err(e) = graph.ltb().write_payload_partial(
                         p.interior_id,
-                        (p.row as usize) * 4,
+                        (p.row as usize) * E::BYTES,
                         &p.leaf_id.to_le_bytes(),
                     ) {
                         let _ = graph.ltb().release(new_leaf_id);
@@ -1641,23 +1640,23 @@ where
                         }
                     };
                     let mut combined_bytes: Vec<u8> =
-                        Vec::with_capacity(new_combined_len as usize * 4);
+                        Vec::with_capacity(new_combined_len as usize * E::BYTES);
                     if old_edge_root_len > 0 {
-                        let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
+                        let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
                         graph
                             .edges()
                             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
                         combined_bytes.extend_from_slice(&old_edge_bytes);
                     }
                     if old_prop_root_len > 0 {
-                        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+                        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * E::BYTES];
                         graph.edges().read_slots_contiguous_bytes(
                             old_combined_start + u64::from(old_edge_root_len),
                             &mut old_prop_bytes,
                         );
                         combined_bytes.extend_from_slice(&old_prop_bytes);
                     }
-                    combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
+                    push_root_entry::<E>(&mut combined_bytes, entry_id);
                     if let Err(e) = graph
                         .edges()
                         .write_slots_contiguous_bytes(new_combined, &combined_bytes)
@@ -1797,17 +1796,17 @@ where
             }
         }
     };
-    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if old_edge_root_len > 0 {
-        let mut old_bytes = vec![0u8; old_edge_root_len as usize * 4];
+        let mut old_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(old_combined_start, &mut old_bytes);
         new_root_bytes.extend_from_slice(&old_bytes);
     }
-    new_root_bytes.extend_from_slice(&new_interior_id.to_le_bytes());
+    push_root_entry::<E>(&mut new_root_bytes, new_interior_id);
     if old_prop_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * E::BYTES];
         graph.edges().read_slots_contiguous_bytes(
             old_combined_start + u64::from(old_edge_root_len),
             &mut old_prop_bytes,
@@ -1817,7 +1816,7 @@ where
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        new_root_bytes.extend_from_slice(&entry_id.to_le_bytes());
+        push_root_entry::<E>(&mut new_root_bytes, entry_id);
     }
     if let Err(e) = graph
         .edges()
@@ -1956,12 +1955,6 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
-        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: E::BYTES,
-            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
-        });
-    }
     debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
     debug_assert_eq!(
         bucket.inline_property_byte_width(),
@@ -2129,11 +2122,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(
-        E::BYTES,
-        4,
-        "resolve_leaf_block_id requires E::BYTES == 4 (typed guard lives at the dispatcher)"
-    );
     // Use the **physical** depth from the bucket, not the structural
     // `derive_depth(stored_slots)`. A manually-deepened bucket at
     // stored=1,048,576 has structural depth 1 but physical depth 2;
@@ -2224,11 +2212,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(
-        E::BYTES,
-        4,
-        "resolve_interior_block_id requires E::BYTES == 4 (typed guard lives at the dispatcher)"
-    );
     let depth = bucket.tree_mode_physical_depth();
     debug_assert!(
         depth >= 2,
@@ -2283,7 +2266,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4);
     let stored_slots = bucket.stored_slots();
     let leaf_count =
         u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
@@ -2359,7 +2341,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4);
     debug_assert!(bucket.is_tree_mode());
     let stored_slots = bucket.stored_slots();
     // Compute the depth *without* calling `derive_depth` so a stored
@@ -2504,7 +2485,7 @@ where
     }
     // 3. Pack the old edge root array into the interiors.
     let old_combined_start = bucket.edge_start();
-    let mut old_edge_bytes: Vec<u8> = vec![0u8; old_root_len as usize * 4];
+    let mut old_edge_bytes: Vec<u8> = vec![0u8; old_root_len as usize * E::BYTES];
     if old_root_len > 0 {
         graph
             .edges()
@@ -2517,7 +2498,7 @@ where
         if let Err(e) = graph.ltb().write_payload_partial(
             interior_id,
             0,
-            &old_edge_bytes[cursor * 4..(cursor + this_block_count) * 4],
+            &old_edge_bytes[cursor * E::BYTES..(cursor + this_block_count) * E::BYTES],
         ) {
             for &id in interior_ids.iter().rev() {
                 let _ = graph.ltb().release(id);
@@ -2551,12 +2532,12 @@ where
         }
     };
     // 5. Build new combined bytes: [new edge root (interior ids) | old property root].
-    let mut new_combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    let mut new_combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     for &id in &interior_ids {
-        new_combined_bytes.extend_from_slice(&id.to_le_bytes());
+        push_root_entry::<E>(&mut new_combined_bytes, id);
     }
     if old_property_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * 4];
+        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * E::BYTES];
         graph.edges().read_slots_contiguous_bytes(
             old_combined_start + u64::from(old_root_len),
             &mut old_prop_bytes,
@@ -2644,7 +2625,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    debug_assert_eq!(E::BYTES, 4);
     debug_assert!(bucket.is_tree_mode());
     let stored_slots = bucket.stored_slots();
     // Use the **physical** depth (stored in the bucket via the
@@ -2671,9 +2651,9 @@ where
         Err(e) => return Err(LabeledOperationError::from(e)),
     };
     // 3. Write the leaf-id array to the new root region.
-    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * 4);
+    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * E::BYTES);
     for &id in &leaf_ids {
-        new_root_bytes.extend_from_slice(&id.to_le_bytes());
+        push_root_entry::<E>(&mut new_root_bytes, id);
     }
     if let Err(e) = graph
         .edges()
@@ -2732,7 +2712,7 @@ where
     // (FIFO) for consistency with `tree_mode_deepen`'s mint order.
     let old_root_len = old_physical_root_len;
     // Read the old root region to discover the interior block_ids.
-    let mut old_root_bytes = vec![0u8; old_root_len as usize * 4];
+    let mut old_root_bytes = vec![0u8; old_root_len as usize * E::BYTES];
     if old_root_len > 0 {
         graph
             .edges()
@@ -2762,9 +2742,7 @@ where
 /// **Preconditions** (typed, before any state change — mirrors the
 /// promote path's Precondition 1-4 from `promote_bucket_to_tree_mode`):
 /// 1. `bucket.is_tree_mode()` (caller's responsibility; assert).
-/// 2. `E::BYTES == TREE_MODE_REQUIRED_EDGE_BYTES` (typed
-///    `TreeModeEdgeWidthUnsupported`).
-/// 3. `bucket.inline_property_byte_width() <= tree_csr::PROPERTY_BLOCK_BYTES`
+/// 2. `bucket.inline_property_byte_width() <= tree_csr::PROPERTY_BLOCK_BYTES`
 ///    (Plan 0326 LPB-in-tree: `0 < w <= property block bytes` rebuilds the
 ///    byte slab from the LPB; wider widths are the typed
 ///    `InlinePropertyBytesWidthMismatch` declared bound).
@@ -2812,13 +2790,6 @@ where
 {
     // Precondition 1 (asserted; the dispatcher filters).
     debug_assert!(bucket.is_tree_mode(), "demote requires tree-mode bucket");
-    // Precondition 2: edge width.
-    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
-        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: E::BYTES,
-            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
-        });
-    }
     // Precondition 3 (Plan 0326 LPB-in-tree): inline-property width.
     // For `0 < w <= payload_bytes`, the demote restores the byte-slab
     // from the LPB (depth-1 property tree) and writes the live values
@@ -3045,7 +3016,7 @@ where
     // the LTB pop-time double-release guard. For depth 2+ these are
     // interiors and need release here.
     if physical_depth >= 2 && old_physical_root_len > 0 {
-        let mut old_root_bytes = vec![0u8; old_physical_root_len as usize * 4];
+        let mut old_root_bytes = vec![0u8; old_physical_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_root_bytes);
@@ -3082,7 +3053,7 @@ where
                 .edges()
                 .release_span(prop_root_start, u64::from(prop_total));
             // Release the LPB leaf blocks.
-            let mut prop_root_bytes = vec![0u8; prop_total as usize * 4];
+            let mut prop_root_bytes = vec![0u8; prop_total as usize * E::BYTES];
             graph
                 .edges()
                 .read_slots_contiguous_bytes(prop_root_start, &mut prop_root_bytes);
@@ -5697,10 +5668,9 @@ mod tests {
     ///
     /// Easier path: demote on a slab-mode bucket (caller misuse) is
     /// caught by `debug_assert!(bucket.is_tree_mode())`; we instead
-    /// test the typed `TreeModeEdgeWidthUnsupported` guard by checking
-    /// that demote on a tree bucket with `inline_property_byte_width()
-    /// != 0` returns `InlinePropertyBytesWidthMismatch` and leaves the
-    /// bucket untouched. We construct the failing state by reading the
+    /// test the typed property-width guard by checking that demote on a
+    /// tree bucket with `inline_property_byte_width() != 0` returns
+    /// `InlinePropertyBytesWidthMismatch` and leaves the bucket untouched. We construct the failing state by reading the
     /// bucket and re-writing it with a non-zero inline_property_byte_width
     /// (the encode is invariant under this write because the byte
     /// is repurposed for tree-mode physical depth which we don't

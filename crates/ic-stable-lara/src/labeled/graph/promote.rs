@@ -8,10 +8,7 @@
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{
-    BucketMode, BucketSearch, LabeledLaraGraph, T_PROMOTE,
-    tree_write::TREE_MODE_REQUIRED_EDGE_BYTES,
-};
+use super::{BucketMode, BucketSearch, LabeledLaraGraph, T_PROMOTE};
 use crate::VertexId;
 use crate::labeled::{
     bucket_label_key::BucketLabelKey,
@@ -74,12 +71,16 @@ where
 /// vertex span once and retrying when the prefix has no room for it yet.
 ///
 /// This is the only shape that moves a run's rows back into the span (ADR 0097 §7): a
-/// relocation keeps the run, so every caller that needs the rows in the prefix - the
-/// wide-edge carve-out that cannot promote because tree mode stores one 4-byte
-/// target per slot - goes through here rather than
-/// through a rewrite. The growth step replaces the pre-swap fold's copy: it asks the
-/// rebalance for room (`preferred_extra` = the run's rows) while keeping the run where it
-/// is, and the retry then performs the explicit compaction that fills it.
+/// relocation keeps the run, so a caller that needs the rows in the prefix goes through
+/// here rather than through a rewrite. The growth step asks the rebalance for room
+/// (`preferred_extra` = the run's rows) while keeping the run where it is, and the retry
+/// then performs the explicit compaction that fills it.
+///
+/// No production path calls this since every edge width promotes (a tree block holds
+/// `EDGES_PER_BLOCK` records of `E::BYTES`): the insert dispatcher's run-full exit is
+/// tree promotion, not a fold. The remaining callers materialize a prefix in test and
+/// screening fixtures; whether an explicit fold trigger belongs to the spill<->slab
+/// contract is settled with that contract, not here.
 pub(super) fn compact_run_into_prefix_with_growth_retry<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
@@ -179,12 +180,6 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: width,
             edge_inline_property_width: 0,
-        });
-    }
-    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
-        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
-            actual: E::BYTES,
-            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
         });
     }
     let value_run = if bucket.values_spill_run() == NO_SPILL_RUN {
@@ -389,6 +384,14 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         }
 
         // The same native id-block encoding builds either stream's unpublished interior levels.
+        //
+        // One root entry occupies one edge-record slot, so tree mode needs a slot
+        // wide enough for a u32 block id; the production edge is exactly 4 bytes
+        // and every in-tree record is at least that wide.
+        debug_assert!(
+            E::BYTES >= 4,
+            "tree root entries are u32 block ids, so E::BYTES must be at least 4"
+        );
         let mut root = |mut ids: Vec<u32>,
                         depth: u32,
                         kind: BlockKind|
@@ -413,7 +416,14 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                 }
                 ids = parents;
             }
-            Ok(ids.iter().flat_map(|id| id.to_le_bytes()).collect())
+            // The root region lives in edge-record slots: each entry is the u32
+            // block id in its slot's first four bytes, zero-padded to E::BYTES.
+            let mut image = vec![0u8; ids.len() * E::BYTES];
+            for (index, id) in ids.iter().enumerate() {
+                let offset = index * E::BYTES;
+                image[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
+            }
+            Ok(image)
         };
         let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior)?;
         let property_root = root(
@@ -421,8 +431,8 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             property_depth,
             BlockKind::InlinePropertyInterior,
         )?;
-        if edge_root.len() != edge_root_len as usize * 4
-            || property_root.len() != property_root_len as usize * 4
+        if edge_root.len() != edge_root_len as usize * E::BYTES
+            || property_root.len() != property_root_len as usize * E::BYTES
         {
             return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
@@ -1075,13 +1085,10 @@ pub mod tests {
         assert_ne!(pre_edge_start, post_edge_start);
     }
 
-    // ================== wide-edge promotion carve-out ==================
-    // Post-merge fix: the canbench `bench_l_s2_det_sat_4096` bench drives a
-    // 10-byte edge type; the promote trigger fired at T_PROMOTE and the
-    // tree-append typed guard trapped after a silent mis-transcription.
-    // Tree mode stores one 4-byte target per LTB slot (ADR 0088 §1), so
-    // wide edge types must never promote — they stay slab (mirroring the
-    // inline-property carve-out).
+    // ================== wide-edge promotion ==================
+    // A tree block holds `EDGES_PER_BLOCK` records of `E::BYTES`, so a wide
+    // edge type promotes exactly like a 4-byte one; the record width only
+    // scales the block. These tests pin that the stored record round-trips.
 
     use crate::test_support::LabelledTestEdge as WideTestEdge;
 
@@ -1116,42 +1123,10 @@ pub mod tests {
 
     #[test]
     #[cfg(not(feature = "canbench"))]
-    fn promote_rejects_wide_edge_type_fail_closed() {
-        // A wide (8-byte) edge bucket can never promote: tree mode stores
-        // one 4-byte target per LTB slot (ADR 0088 §1). The typed guard
-        // fires at Precondition 4 — before any LTB mint or LEG read.
-        let graph = wide_edge_graph();
-        let vid: VertexId = VertexId::from(0);
-        let label = BucketLabelKey::directed_from_index(1);
-        let bucket = LabelBucket::try_from_parts(label, 0, 4096, 4096, 0, 0, 0, -1, 0)
-            .expect("try_from_parts")
-            .with_tree_mode(false);
-        graph
-            .buckets()
-            .write_label_bucket_slot(0, bucket)
-            .expect("write bucket");
-        let vertex = graph.vertices().get(vid);
-        graph
-            .set_labeled_vertex(vid, vertex.try_with_bucket_row(0, 1).expect("bucket row"))
-            .expect("set vertex");
-
-        let result = promote_bucket_to_tree_mode(&graph, vid, label);
-        match result {
-            Err(LabeledOperationError::TreeModeEdgeWidthUnsupported { actual, expected }) => {
-                assert_eq!(actual, 8);
-                assert_eq!(expected, 4);
-            }
-            other => panic!("expected TreeModeEdgeWidthUnsupported, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(not(feature = "canbench"))]
-    fn wide_edge_insert_stays_slab_past_promote_cap() {
-        // 4096 inserts fill the bucket to T_PROMOTE; the 4097th insert
-        // crosses the promote trigger — which must carve wide edge types
-        // out and keep the bucket on the slab path (pre-Plan-0318
-        // behavior, mirroring the inline-property carve-out).
+    fn wide_edge_insert_promotes_and_reads_the_record_back() {
+        // 4096 inserts fill the bucket to T_PROMOTE; the 4097th crosses the
+        // promote trigger. Every width promotes, and the whole record (not
+        // just its target) survives the tree round trip.
         let graph = wide_edge_graph();
         let vid: VertexId = VertexId::from(0);
         // A non-default label: the default-label insert would take the
@@ -1168,18 +1143,34 @@ pub mod tests {
                 .expect("wide edge insert");
         }
         let vertex = graph.vertices().get(vid);
-        let search = graph.find_bucket(vid, &vertex, label).expect("find");
-        let BucketSearch::Found { bucket, .. } = search else {
+        let BucketSearch::Found { bucket, .. } =
+            graph.find_bucket(vid, &vertex, label).expect("find")
+        else {
             panic!("bucket missing");
         };
         assert!(
-            !bucket.is_tree_mode(),
-            "wide edge bucket must stay slab past T_PROMOTE"
+            bucket.is_tree_mode(),
+            "wide edge bucket must promote past T_PROMOTE"
         );
-        // The slab path counts slab-resident slots in `stored_slots` and
-        // live edges in `degree`; past the slab window the 4097th edge
-        // lives in the overflow log (degree 4097, stored unchanged).
         assert_eq!(bucket.degree, 4097);
+        assert_eq!(bucket.stored_slots(), 4097);
+        let mut read = Vec::new();
+        let flow = graph
+            .visit_edges_with_inline_property(
+                vid,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |slot, item| {
+                    read.push((slot.raw(), item.edge));
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("visit tree-mode rows");
+        assert_eq!(flow, std::ops::ControlFlow::Continue(()));
+        assert_eq!(read.len(), 4097);
+        for (slot, edge) in read {
+            assert_eq!(edge, WideTestEdge::new(slot, 7), "slot {slot}");
+        }
     }
 }
 
