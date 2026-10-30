@@ -424,7 +424,47 @@ Capacity bounds (all fail-closed at the allocation site):
 Every per-bucket leaf region is thus constant-bounded, which: caps the
 relocation/rebalance unit, removes giant contiguous allocations from both the
 edge slab and the inline-property byte slab (retired spans become small and
-bin-friendly), and closes the oversized-span placement regime. This subsumes
+bin-friendly), and closes the oversized-span placement regime.
+
+**Growth ladder and the role of spill (2026-10-30, Plan 0405 `p249`).** A tree
+span carries no slack, so it grows by exactly the slots the derived root needs
+(`+1` per `B` inserts at depth 1). The growth path tries, in cost order:
+
+1. **Extend in place** — the slots right after the span are free: take them from
+   the free-span store (one store edit, no copy).
+2. **Spill the overflow** — append the extra ids to the bucket's run instead of
+   growing the contiguous span (ADR 0097; one row write, no copy). This is why
+   the spill tier exists: **it avoids the copy that rebalance and relocation
+   pay**, not merely a failure fallback.
+3. **Rebalance inside the leaf** — the leaf block has slack but not where the
+   span needs it: re-tile the block's vertices (`LeafSlide`/`VertexRewrite`: a
+   copy inside the block, no store edit).
+4. **Grow or move the leaf block** — the leaf has no slack: grow the block in
+   place, or relocate it (copy plus one or two store edits).
+
+Only the last step touches the global free-span store. Two properties bound it:
+the caps (`T_promote` per slab bucket, `R_max` root entries, the structural cap,
+the bucket-count cap) always bind before any representability limit, so a span is
+never "too large to place"; and a fragmented store that cannot serve the
+contiguous length surfaces as `CollectAllocationOverflow` — a *consequence*
+(fragmentation or growth failure), not the reason the ladder exists.
+
+The choice between step 2 and steps 3-4 is a cost decision, not a failure test. A
+run makes every read take an extra indirection (the reader concatenates the slab
+range with the run rows): cheap for a bucket whose rows are scanned together,
+expensive for a tree root, whose entries are read one at a time on every leaf
+resolution. A root therefore prefers 1 and 3 while its growth is a single slot,
+and reaches for 2 when the alternative is a copy (a multi-slot batch, or a leaf
+with no slack). Which rows a split keeps in the slab is the split-point contract,
+not an implementation detail.
+
+**Status (2026-10-30).** Steps 1, 3 and 4 exist. The root path currently jumps
+straight to step 4 (allocate a fresh span, release the old one) without trying 1
+or 3, which is the measured two-edit cost on `tcsr_1048576_deepen_beyond_r_max`
+(~39 K of one insert). Step 2 for a tree root is design-only: the descriptor
+forbids a run on a tree bucket (bytes 27..34 are the depth marker and zeros), and
+the split-point encoding is the open question recorded in
+`E/validation-spill-continuation/design.md`. This subsumes
 the remaining (fragmentation/locality) motivation of ADR 0022's dedicated-span
 tier. PMA leaf-level gaps (density invariant) and tombstone slack awaiting
 compaction remain and are owned by their existing contracts.

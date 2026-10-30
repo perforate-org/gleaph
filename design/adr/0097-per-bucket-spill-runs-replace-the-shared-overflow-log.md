@@ -242,6 +242,17 @@ bucket.
    and the arena bound becomes a stated limit of the spill tier rather than a panic. The store must return an error
    where it now expects (the `expect` sites go with this rule), and the insert path must treat that error as the
    promotion trigger, distinct from a genuine memory-growth failure (which stays an error the caller reports).
+
+   **Note (2026-10-30, Plan 0405 `p249`): the purpose of spilling is cost, not
+   failure.** Appending a row to a run is one write; growing a contiguous span
+   copies what is already there (a leaf rebalance copies the block's tiling, a
+   relocation copies the block) plus one or two global free-span edits. The growth
+   order is therefore: extend in place, then append to the run, and only then
+   rebalance/relocate - see ADR 0088 section 3, "Growth ladder and the role of
+   spill". `MAX_ROWS` and arena exhaustion are the hard boundaries of the tier,
+   not its motivation. Folding back (run -> prefix) stays on explicit triggers
+   only (section 7, Operations): copying pays only when the rows are subsequently
+   scanned (18-22 scans at width 8, 4-5 at width 33).
 7. **Operations.** Insert: prefix slot if free (tombstone reuse or the Insertion headroom), else append to the run,
    else grow by class. Scan: prefix rows then run rows, both contiguous. Delete: tombstone in place, live count
    down, run length unchanged. Compaction: when the live rows fit the prefix, copy them in and **release the run** —
