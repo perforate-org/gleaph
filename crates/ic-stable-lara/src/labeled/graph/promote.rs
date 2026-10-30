@@ -256,19 +256,35 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     canonical.validate(graph)?;
     graph.edges().free_span_store().reserve_for_releases(2)?;
     graph.values().reserve_retired_byte_spans(1)?;
-    // Resident space belongs to the leaf pin: place the root inside it, keeping the source
-    // span (still live until the transcription reads it) intact. Only a leaf that cannot hold
-    // the root falls back to the global allocator.
-    let pin = super::leaf_pin::LabeledLeafPin::capture(graph, vid)?;
-    let avoid = pin.as_ref().and_then(|pin| pin.resident(vid));
-    let in_pin_start = match (pin.as_ref(), avoid) {
-        (Some(pin), Some(avoid)) => pin.free_base_avoiding(vid, u64::from(combined_len), avoid),
-        _ => None,
+    // Promotion is a shrink: the root (`combined_len` slots) never needs more room
+    // than the prefix it replaces (`prefix >= combined_len` for every production
+    // trigger), so write it at the bucket's own base. That keeps the label-order
+    // address monotonicity the successor windows rely on and allocates nothing.
+    // A prefix too small for the root falls back to the leaf heap, then to the
+    // global allocator (no production path reaches it).
+    let in_place = prefix >= combined_len;
+    let in_pin_start = if in_place {
+        None
+    } else {
+        // Resident space belongs to the leaf pin: place the root inside it, keeping
+        // the source span (still live until the transcription reads it) intact.
+        let pin = super::leaf_pin::LabeledLeafPin::capture(graph, vid)?;
+        let avoid = pin.as_ref().and_then(|pin| pin.resident(vid));
+        match (pin.as_ref(), avoid) {
+            (Some(pin), Some(avoid)) => pin.free_base_avoiding(vid, u64::from(combined_len), avoid),
+            _ => None,
+        }
     };
     let allocated_in_pin = in_pin_start.is_some();
-    let new_start = match in_pin_start {
-        Some(base) => base,
-        None => graph.edges().allocate_span(u64::from(combined_len))?,
+    // Only a span taken from the global allocator is rolled back on failure.
+    let owns_new_span = !in_place && !allocated_in_pin;
+    let new_start = if in_place {
+        bucket.edge_start()
+    } else {
+        match in_pin_start {
+            Some(base) => base,
+            None => graph.edges().allocate_span(u64::from(combined_len))?,
+        }
     };
     let allocated_header = graph.edges().header();
     let mut allocated_blocks = Vec::new();
@@ -442,16 +458,6 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         {
             return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
-        graph
-            .edges()
-            .write_slots_contiguous_bytes(new_start, &edge_root)
-            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        if !property_root.is_empty() {
-            graph
-                .edges()
-                .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
-                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        }
         let target = template.with_base_slot_start(new_start);
         let mut publication = if canonical.vertex.is_default_edge_labeled() {
             let plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
@@ -480,6 +486,20 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
         if !counts.validate_source() {
             return Err(LaraOperationError::CollectAllocationOverflow.into());
         }
+        // The root lands in the bucket's own base, so writing it overwrites the
+        // head of the source prefix. Every fallible step is therefore done; the
+        // write requires no growth (the prefix already backs those slots) and the
+        // publish below is infallible.
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(new_start, &edge_root)
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+        if !property_root.is_empty() {
+            graph
+                .edges()
+                .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
+                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+        }
         ready.publish();
         counts.write();
         if canonical.vertex.is_default_edge_labeled() {
@@ -499,7 +519,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                 .release(id)
                 .expect("unpublished promotion block must remain owned");
         }
-        if !allocated_in_pin {
+        if owns_new_span {
             graph
                 .edges()
                 .release_span(new_start, u64::from(combined_len))
@@ -521,10 +541,24 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             .expect("source values run was validated");
     }
     if !sheltered_prefix {
-        graph
-            .edges()
-            .release_span(bucket.edge_start(), u64::from(prefix))
-            .expect("source prefix retirement was reserved");
+        if in_place {
+            // The root occupies the prefix's head; its unused tail becomes free.
+            let tail = prefix - combined_len;
+            if tail > 0 {
+                graph
+                    .edges()
+                    .release_span(
+                        bucket.edge_start() + u64::from(combined_len),
+                        u64::from(tail),
+                    )
+                    .expect("source prefix tail retirement was reserved");
+            }
+        } else {
+            graph
+                .edges()
+                .release_span(bucket.edge_start(), u64::from(prefix))
+                .expect("source prefix retirement was reserved");
+        }
     }
     graph
         .release_bucket_inline_property_bytes_span(vid, &bucket)
@@ -692,6 +726,16 @@ pub mod tests {
             .edges()
             .write_slots_contiguous_bytes(edge_start, &all_bytes)
             .expect("write_slots_contiguous");
+        // The raw write bypasses the allocator, so declare the capacity the
+        // prefix now occupies: promotion validates that the root fits inside the
+        // declared slab capacity and writes it in place.
+        let end = edge_start + u64::from(count);
+        if graph.edges().header().elem_capacity < end {
+            graph
+                .edges()
+                .set_elem_capacity(end)
+                .expect("fixture prefix capacity");
+        }
     }
 
     #[test]
@@ -793,6 +837,7 @@ pub mod tests {
         let edge_start = existing.edge_start();
         // Pre-populate the LEG slab prefix with deterministic data.
         fill_leg_slab_prefix(&graph, edge_start, stored);
+        let capacity_before = graph.edges().header().elem_capacity;
 
         // Promote.
         let result =
@@ -811,12 +856,17 @@ pub mod tests {
         let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
         assert_eq!(graph.ltb().block_capacity(), root_len);
 
-        // Verify the new edge_start points at a LEG offset at or above the
-        // minted block ids (root entries 0..root_len).
-        assert!(
-            new_bucket.edge_start() >= u64::from(root_len),
-            "edge_start {} should be ≥ {root_len} (LTB block ids are 0..{root_len})",
-            new_bucket.edge_start()
+        // The root is written at the bucket's own base (promotion is a shrink),
+        // so the address does not move and nothing is allocated.
+        assert_eq!(
+            new_bucket.edge_start(),
+            edge_start,
+            "the root stays at the bucket's base"
+        );
+        assert_eq!(
+            graph.edges().header().elem_capacity,
+            capacity_before,
+            "in-place promotion allocates no span"
         );
     }
 
@@ -849,9 +899,8 @@ pub mod tests {
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn promote_publish_phase_atomic_descriptor_write() {
-        // After a successful promotion, the descriptor must be in
-        // tree mode and the new edge_start must differ from the
-        // pre-promotion edge_start.
+        // After a successful promotion the descriptor is published in tree mode;
+        // only the mode/geometry fields change, not the root address.
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
         let stored = T_PROMOTE;
@@ -884,7 +933,17 @@ pub mod tests {
             .read_label_bucket_slot(slot)
             .expect("read_label_bucket_slot");
         assert!(post_bucket.is_tree_mode());
-        assert_ne!(post_bucket.edge_start(), pre_edge_start);
+        assert_ne!(post_bucket, pre_bucket, "the mode fields change");
+        assert_eq!(
+            post_bucket.edge_start(),
+            pre_edge_start,
+            "the root address is unchanged"
+        );
+        assert_eq!(
+            post_bucket.degree(),
+            pre_bucket.degree(),
+            "the logical edge count is unchanged"
+        );
     }
 
     #[test]
@@ -1008,9 +1067,10 @@ pub mod tests {
 
     #[test]
     #[cfg(not(feature = "canbench"))]
-    fn promote_edge_start_points_to_leg_offset() {
-        // After promotion, the new descriptor's `edge_start` must point
-        // to a LEG offset (>= root_len = 4), not to an LTB block id.
+    fn promote_writes_the_root_at_the_bucket_base() {
+        // Promotion is a shrink, so the root is written at the bucket's own base
+        // and the address does not move. The root region still holds the leaf
+        // block ids: entry 0 resolves to a minted edge leaf.
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
         let stored = T_PROMOTE;
@@ -1042,20 +1102,28 @@ pub mod tests {
             .buckets()
             .read_label_bucket_slot(slot)
             .expect("read_label_bucket_slot");
-        // The LTB block ids are 0..3; the LEG root region offset must
-        // be ≥ 4 to be unambiguously a LEG offset.
-        assert!(
-            post_bucket.edge_start() >= 4,
-            "edge_start {} should be ≥ 4 (LTB block ids are 0..3)",
-            post_bucket.edge_start()
+        assert_eq!(
+            post_bucket.edge_start(),
+            pre_edge_start,
+            "the root stays at the bucket's base"
+        );
+        assert!(post_bucket.is_tree_mode());
+        let block0 =
+            super::super::tree_write::resolve_leaf_block_id::<TestEdge, _>(&graph, &post_bucket, 0)
+                .expect("root entry 0 resolves");
+        assert_eq!(
+            graph.ltb().read_block_header(block0).kind,
+            crate::labeled::ltb_raw_block_store::BlockKind::Edge,
+            "root entry 0 is a minted edge leaf"
         );
     }
 
     #[test]
     #[cfg(not(feature = "canbench"))]
-    fn promote_pre_and_post_edge_start_differ() {
-        // Pre-promotion `edge_start` (slab prefix) must differ from
-        // post-promotion `edge_start` (LEG root region).
+    fn promote_returns_the_unused_prefix_tail_to_the_free_store() {
+        // The root is written at the bucket's base, so the address does not move;
+        // the slots past the root region are no longer resident and must return to
+        // the free-span store (a promotion that kept them would leak capacity).
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
         let stored = T_PROMOTE;
@@ -1088,7 +1156,24 @@ pub mod tests {
             .read_label_bucket_slot(slot)
             .expect("read_label_bucket_slot");
         let post_edge_start = post_bucket.edge_start();
-        assert_ne!(pre_edge_start, post_edge_start);
+        assert_eq!(
+            post_edge_start, pre_edge_start,
+            "the root stays at the base"
+        );
+        let combined = crate::labeled::graph::compact::bucket_physical_resident_slots(&post_bucket);
+        assert!(
+            combined < pre_bucket.stored_slots(),
+            "promotion shrinks the resident region"
+        );
+        let tail_start = post_edge_start + u64::from(combined);
+        let tail_len = u64::from(pre_bucket.stored_slots()) - u64::from(combined);
+        assert!(
+            graph.edges().free_byte_spans().iter().any(|span| {
+                span.start_slot <= tail_start && span.start_slot + span.len >= tail_start + tail_len
+            }),
+            "the unused prefix tail [{tail_start}, {}) must be free",
+            tail_start + tail_len
+        );
     }
 
     // ================== wide-edge promotion ==================

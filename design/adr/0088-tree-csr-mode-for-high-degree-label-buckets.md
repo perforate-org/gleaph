@@ -572,6 +572,19 @@ old edge span (via the vertex-span rewrite) and the old property span (to the
 byte-slab `FreeSpanStore`). Promotion is also the moment the leaf releases up
 to `T_promote` slots of pressure.
 
+**In-place root (2026-10-30, Plan 0405 `p239`):** promotion is a shrink — the root
+always fits the prefix it replaces (`ceil(S/B) + property_root <= S`) — so the
+commit writes the root region at the bucket's own base instead of allocating a new
+span. That keeps the label-order address monotonicity the successor windows rely
+on, allocates nothing, and turns the old "release the source prefix" into "return
+the unused prefix tail" (a pin-sheltered prefix is not released at all; the leaf's
+derived occupancy reclaims it). Allocation stays a growth operation (bucket append,
+deepen, demote). Atomicity: the root write overwrites the head of the source
+prefix, so every fallible step — block minting, descriptor publication preparation,
+source/canonical/counts validation — completes first, and the root write is the
+last mutation before the infallible publish; a failure before it leaves the source
+intact, and a failure after it is impossible by construction.
+
 **Implementation note (2026-09-20, GAP-2026-09-20-001):** the commit folds the
 bucket's slab edge overflow log into the prefix first
 (`ensure_label_bucket_folded_to_slab`) and then transcribes that prefix, rather

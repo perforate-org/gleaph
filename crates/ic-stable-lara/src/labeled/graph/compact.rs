@@ -941,11 +941,12 @@ mod physical_layout_tests {
                 owner,
                 &TestEdge { target: 4242 },
             );
-            let allocated_capacity = source_header.elem_capacity + 2;
+            // Promotion is a shrink: the two-slot root reuses the bypass row's
+            // own span, so no capacity is allocated.
             assert_eq!(
                 graph.edges.header().elem_capacity,
-                allocated_capacity,
-                "the standalone two-slot root allocation must actually grow capacity"
+                source_header.elem_capacity,
+                "in-place promotion allocates nothing"
             );
             if fault == 0 {
                 result.unwrap();
@@ -968,7 +969,9 @@ mod physical_layout_tests {
                         bucket.edge_spill_run()
                     ),
                     (
-                        source_header.elem_capacity,
+                        // In-place: the two-slot root reuses the bypass row's
+                        // own span (base 64), it is not allocated past capacity.
+                        64,
                         extent + 1,
                         live + 1,
                         crate::traits::NO_SPILL_RUN
@@ -1085,12 +1088,12 @@ mod physical_layout_tests {
                 free_ids.sort_unstable();
                 assert_eq!(free_ids, vec![1, 2], "exact attempt-owned target IDs");
                 assert_eq!(free_ids.len() as u32, graph.ltb.free_count());
-                assert_eq!(
-                    graph.edges.free_byte_spans(),
-                    vec![crate::lara::edge::free_span::FreeSpan {
-                        start_slot: source_header.elem_capacity,
-                        len: 2
-                    }]
+                // In-place promotion allocates no root span, so a rollback has
+                // none to release: the free-span store is unchanged.
+                assert!(
+                    graph.edges.free_byte_spans().is_empty(),
+                    "in-place promotion frees no span: {:?}",
+                    graph.edges.free_byte_spans()
                 );
                 if fault == 1 {
                     graph
