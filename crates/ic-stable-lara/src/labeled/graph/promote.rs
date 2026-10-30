@@ -399,7 +399,13 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             for level in 1..depth {
                 let mut parents = Vec::new();
                 for chunk in ids.chunks(BLOCK_B) {
-                    let bytes: Vec<_> = chunk.iter().flat_map(|id| id.to_le_bytes()).collect();
+                    // An interior payload is a slot-strided root image: one u32
+                    // block id in each edge-record slot, the same codec the slab
+                    // root region uses (so a raw copy still moves a whole level).
+                    let mut bytes = vec![0u8; chunk.len() * E::BYTES];
+                    for id in chunk {
+                        super::tree_write::push_root_entry::<E>(&mut bytes, *id);
+                    }
                     let header_level = if kind == BlockKind::InlinePropertyInterior {
                         level + 1
                     } else {
