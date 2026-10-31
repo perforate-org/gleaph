@@ -276,7 +276,7 @@ where
         };
         buckets
             .iter()
-            .filter_map(|bucket| super::compact::bucket_content_region(bucket))
+            .filter_map(super::compact::bucket_content_region)
             .filter(|(_, slots)| *slots > 0)
             .map(|(start, slots)| (start, start + u64::from(slots)))
             .collect()
