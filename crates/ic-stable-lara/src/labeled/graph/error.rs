@@ -58,7 +58,7 @@ pub enum LabeledOperationError {
     InlinePropertyMaterializationInvalidSource,
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
-    /// `alloc_space = stored_slots + alloc_gap` reached the mode cap. The caller
+    /// The bucket's resident rows reached the mode cap. The caller
     /// must trigger `promote_bucket_to_tree_mode` (slab mode) or `deepen` (tree
     /// mode) before retrying. Plan 0318 §Step 3 cap enforcement.
     AllocSpaceCapReached {

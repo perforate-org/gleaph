@@ -38,14 +38,16 @@ const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 
 // ---- Plan 0318 §Step 3 cap enforcement constants ---------------------------
 
-/// CSR slab mode cap: `alloc_space = stored_slots + alloc_gap ≤ T_PROMOTE = 4096 slots (16 KiB)`.
+/// CSR slab mode cap: a slab bucket's resident rows stay below `T_PROMOTE = 1024`
+/// slots; crossing it promotes to tree mode.
 ///
-/// Tree mode cap: `alloc_space = stored_slots ≤ TREE_STRUCTURAL_CAP = 2^30 slots`
-/// (the `MAX_DEPTH = 3` fail-closed structural boundary; see ADR 0088 §4).
+/// Tree mode: the root id count is capped by `R_MAX` (crossing it deepens) and the
+/// logical slot count by `TREE_STRUCTURAL_CAP = 2^30` (the `MAX_DEPTH = 3`
+/// fail-closed structural boundary; see ADR 0088 §4).
 ///
-/// The cap is on `alloc_space = stored_slots + alloc_gap`, NOT on `stored_slots` alone
-/// (per Plan 0317 amend). LARA rebalance naturally keeps `alloc_space` bounded via
-/// weighted gap allocation.
+/// The cap is on the bucket's **live width**, not on any allocation that includes
+/// growth room: growth slack belongs to the leaf extent, which covers a bucket's
+/// live width plus its gap (`E/validation-leaf-arena/spec.md`).
 ///
 /// `R_MAX = 1024` is the **root-array fan-out cap** (number of `u32` block_id
 /// entries that fit in one root); the derive-depth formula in
@@ -122,27 +124,14 @@ impl BucketMode {
     }
 }
 
-/// LARA rebalance weighted gap allocation (slab mode only; tree mode is gap-0).
+/// The width a bucket's mode cap is checked against. Single source of truth used
+/// by every cap-enforcement call site.
 ///
-/// `alloc_gap(stored_slots)` returns the gap slots the LARA rebalance would
-/// reserve on top of `stored_slots` for the current degree. It is a pure
-/// function of `stored_slots` (no graph state). Plan 0317 §Step 3 used the
-/// simple `T_PROMOTE - stored_slots` form; we keep that here as the canonical
-/// implementation. The real LARA rebalance path may use a more sophisticated
-/// weighted allocation in a future slice.
-#[inline]
-pub(crate) fn alloc_gap(stored_slots: u32) -> u32 {
-    T_PROMOTE.saturating_sub(stored_slots)
-}
-
-/// Compute `alloc_space` for a bucket. Single source of truth used by every
-/// cap-enforcement call site.
-///
-/// CSR slab mode: `alloc_space = stored_slots + alloc_gap(stored_slots)`.
-/// Tree mode: `alloc_space = stored_slots` (gap-0 invariant).
-/// Tiny mode: `alloc_space = tiny_used_width()` — a tiny bucket owns no slab
-/// allocation, and its raw stored field is payload (the 4th inline target), so
-/// the slab formula would read a vertex id as a slot count.
+/// CSR slab mode: a slab bucket's allocation *is* the mode cap by construction, so
+/// the check asks only whether it may grow at all — it may not, it must promote.
+/// Tree mode: `stored_slots` (the logical count). Tiny mode: `tiny_used_width()` —
+/// a tiny bucket owns no slab allocation, and its raw stored field is payload (the
+/// 4th inline target), so the slab reading would treat a vertex id as a slot count.
 #[inline]
 pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
     if bucket.is_tiny_mode() {
@@ -150,15 +139,15 @@ pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
     } else if bucket.is_tree_mode() {
         bucket.stored_slots_raw()
     } else {
-        bucket
-            .stored_slots_raw()
-            .saturating_add(alloc_gap(bucket.stored_slots_raw()))
+        // A slab bucket's allocation is the cap itself: any increment has to go
+        // through promotion, and the check below says exactly that.
+        T_PROMOTE
     }
 }
 
 /// Cap for the bucket's current mode.
 ///
-/// - Slab: `T_PROMOTE = 4096` slots.
+/// - Slab: `T_PROMOTE = 1024` slots.
 /// - Tree: `TREE_STRUCTURAL_CAP = 2^30` slots (the `MAX_DEPTH = 3` fail-closed
 ///   boundary). `R_MAX = 1024` is the **root-array fan-out cap** governing
 ///   `deepen` (Step 7), not a slot cap.
@@ -507,7 +496,8 @@ mod cap_enforcement_tests {
 
     #[test]
     fn check_alloc_cap_slab_mode_triggers_at_t_promote() {
-        // Slab mode: stored_slots = T_PROMOTE - 6, alloc_gap = 6.
+        // Slab mode: stored_slots = T_PROMOTE - 6; a slab allocation is the cap, so
+        // any increment must promote.
         // alloc_space = (T_PROMOTE - 6) + 6 = T_PROMOTE. Any positive increment
         // triggers the cap, whatever the tuned threshold is.
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, T_PROMOTE - 6);

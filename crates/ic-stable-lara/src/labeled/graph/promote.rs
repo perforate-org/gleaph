@@ -742,7 +742,7 @@ pub mod tests {
     #[cfg(not(feature = "canbench"))]
     fn promote_rejects_existing_bucket_below_cap() {
         // Plan 0318 §Step 4 amend: under the placeholder
-        // `alloc_gap = T_PROMOTE - stored`, `compute_bucket_allocation`
+        // `compute_bucket_allocation` reports the slab cap,
         // is constant T_PROMOTE so the alloc_space form of the trigger
         // never fires for an existing bucket. The precondition is
         // `stored_slots < T_PROMOTE` directly. An existing bucket at

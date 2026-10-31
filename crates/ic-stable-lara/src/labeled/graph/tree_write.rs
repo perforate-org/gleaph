@@ -20,7 +20,7 @@
 //!
 //! Promotion trigger (Plan 0318 §Step 6 amend): the dispatcher promotes
 //! when the slab bucket's logical resident width reaches `T_PROMOTE`.
-//! When the weighted `alloc_gap` is introduced the trigger switches to the
+//! When the leaf extent owns the growth gap the trigger switches to the
 //! `compute_bucket_allocation < T_PROMOTE` form. See
 //! `super::promote::promote_bucket_to_tree_mode` for the cap semantics.
 //!
