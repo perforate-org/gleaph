@@ -1573,7 +1573,7 @@ fn root_geometry_normal_promotion_keeps_cover_and_pin() {
                 T_PROMOTE.div_ceil(4096 / u32::from(width))
             };
         assert_eq!(
-            super::super::compact::bucket_resident_region(&tree),
+            super::super::compact::bucket_content_region(&tree),
             Some((tree.edge_start(), root_slots))
         );
         assert_eq!(graph.edges().header().num_edges, count);

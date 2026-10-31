@@ -70,7 +70,21 @@ impl SourceRegion {
     }
 }
 
-/// Owner of one PMA leaf's pinned edge-slab block.
+/// Owner of one PMA leaf's slot space.
+///
+/// Vocabulary (module-private; nothing outside this module needs it):
+///
+/// ```text
+/// extent   [start, end)   the leaf's reservation; `counts.total == end - start`
+///   slice  [start, end)   the exclusive space of one vertex
+///     region              the space granted to one bucket (= content + its gap)
+///       content           what the bucket really wrote (slab rows / tree root ids)
+/// ```
+///
+/// Unused space has three owners: a **gap** belongs to its bucket (grow in place,
+/// no arena call), a **free run** belongs to the slice (new region or region
+/// growth), and **leaf slack** (before the first slice) belongs to nobody — only a
+/// layout rewrite reclaims it.
 ///
 /// Every resident of a leaf vertex must live inside this range: relocation copies the
 /// block, density follows it, and the whole-cover release frees it. The type exists so
@@ -79,7 +93,7 @@ impl SourceRegion {
 pub(crate) struct LeafArena<'a, E: CsrEdge, M: Memory> {
     graph: &'a LabeledLaraGraph<E, M>,
     leaf: u32,
-    range: (u64, u64),
+    extent: (u64, u64),
 }
 
 impl<'a, E, M> LeafArena<'a, E, M>
@@ -97,7 +111,11 @@ where
         };
         let header = graph.edges.header();
         let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(vid, header.segment_size.max(1));
-        Ok(Some(Self { graph, leaf, range }))
+        Ok(Some(Self {
+            graph,
+            leaf,
+            extent: range,
+        }))
     }
 
     pub(crate) fn leaf(&self) -> u32 {
@@ -105,8 +123,8 @@ where
     }
 
     /// `(start_slot, block_len)` of the pinned block.
-    pub(crate) fn range(&self) -> (u64, u64) {
-        self.range
+    pub(crate) fn extent(&self) -> (u64, u64) {
+        self.extent
     }
 
     /// Slab spans owned by the other labeled vertices of this leaf.
@@ -121,7 +139,7 @@ where
     }
 
     /// The vertex's resident slab span: first non-tiny bucket base plus `stored_slots`.
-    pub(crate) fn resident(&self, vid: VertexId) -> Option<(u64, u64)> {
+    pub(crate) fn vertex_space(&self, vid: VertexId) -> Option<(u64, u64)> {
         let vertex = self.graph.vertices.get(vid);
         let buckets = self.graph.read_vertex_label_buckets(&vertex).ok()?;
         let first = buckets.iter().find(|bucket| !bucket.is_tiny_mode())?;
@@ -131,7 +149,7 @@ where
     }
 
     /// Every resident span in this leaf, per bucket plus bypass rows (the vertex row owns those).
-    pub(crate) fn allocated(&self) -> Vec<(u64, u64)> {
+    pub(crate) fn used_spans(&self) -> Vec<(u64, u64)> {
         let seg = self.graph.edges.header().segment_size.max(1);
         let start_vid = self.leaf.saturating_mul(seg);
         let end_vid = start_vid.saturating_add(seg).min(self.graph.vertices.len());
@@ -159,7 +177,7 @@ where
                 spans.push((base, base + u64::from(vertex.stored_slots)));
             }
             for bucket in &buckets {
-                let Some((start, slots)) = super::compact::bucket_resident_region(bucket) else {
+                let Some((start, slots)) = super::compact::bucket_content_region(bucket) else {
                     continue;
                 };
                 if slots > 0 {
@@ -178,18 +196,18 @@ where
         len: u64,
         avoid: Option<(u64, u64)>,
     ) -> Option<u64> {
-        self.free_base_avoiding(vid, len, avoid?)
+        self.place(vid, len, avoid?)
     }
 
     /// Residents inside the block and pairwise disjoint.
     pub(crate) fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        let spans = self.allocated();
+        let spans = self.used_spans();
         for (start, end) in &spans {
-            if !self.contains(*start, end.saturating_sub(*start)) {
+            if !self.extent_contains(*start, end.saturating_sub(*start)) {
                 errors.push(format!(
                     "resident[{start},{end}) outside block {:?}",
-                    self.range
+                    self.extent
                 ));
             }
         }
@@ -204,29 +222,18 @@ where
         errors
     }
 
-    /// Lowest free base in this pin offering `need` slots, ignoring `vid`'s own span.
-    pub(crate) fn free_base(&self, vid: VertexId, need: u64) -> Option<u64> {
-        self.graph
-            .find_free_labeled_leaf_edge_base(vid, self.range.0, self.range.1, need)
-    }
-
     /// Lowest free base in this pin offering `need` slots, keeping `avoid` (the caller's own
     /// live source) intact. Unlike `free_base`, the vertex's own span is not treated as free:
     /// the caller still has to read it before it can be overwritten.
-    pub(crate) fn free_base_avoiding(
-        &self,
-        _vid: VertexId,
-        need: u64,
-        avoid: (u64, u64),
-    ) -> Option<u64> {
-        if need == 0 || need > self.range.1 {
+    pub(crate) fn place(&self, _vid: VertexId, need: u64, avoid: (u64, u64)) -> Option<u64> {
+        if need == 0 || need > self.extent.1 {
             return None;
         }
-        let leaf_end = checked_add_slot_index(self.range.0, self.range.1)?;
-        let mut spans = self.allocated();
+        let leaf_end = checked_add_slot_index(self.extent.0, self.extent.1)?;
+        let mut spans = self.used_spans();
         spans.push(avoid);
         spans.sort_by_key(|(start, _)| *start);
-        let mut cursor = self.range.0;
+        let mut cursor = self.extent.0;
         for (start, end) in &spans {
             if *start > cursor && start.saturating_sub(cursor) >= need {
                 return Some(cursor);
@@ -244,13 +251,13 @@ where
 
     /// Free slots at the very end of the block: the run a growth can extend
     /// without moving any resident.
-    fn tail_free(&self) -> u64 {
-        let (start, len) = self.range;
+    fn free_tail(&self) -> u64 {
+        let (start, len) = self.extent;
         let Some(end) = checked_add_slot_index(start, len) else {
             return 0;
         };
         let last_end = self
-            .allocated()
+            .used_spans()
             .iter()
             .map(|&(_, span_end)| span_end)
             .max()
@@ -267,8 +274,8 @@ where
     /// the block would pass the slab capacity, which leaves the block unchanged: the
     /// caller has nowhere to grow and must relocate or fail.
     fn grow(&mut self, len: u64) -> bool {
-        let (start, block_len) = self.range;
-        let tail_free = self.tail_free();
+        let (start, block_len) = self.extent;
+        let tail_free = self.free_tail();
         if tail_free >= len {
             return true;
         }
@@ -311,16 +318,16 @@ where
                 .release_span(start.saturating_add(block_len), extension);
             return false;
         }
-        self.range.1 = new_len;
+        self.extent.1 = new_len;
         true
     }
 
-    pub(crate) fn contains(&self, start: u64, len: u64) -> bool {
+    pub(crate) fn extent_contains(&self, start: u64, len: u64) -> bool {
         let Some(end) = checked_add_slot_index(start, len) else {
             return false;
         };
-        self.range.0 <= start
-            && end <= checked_add_slot_index(self.range.0, self.range.1).unwrap_or(u64::MAX)
+        self.extent.0 <= start
+            && end <= checked_add_slot_index(self.extent.0, self.extent.1).unwrap_or(u64::MAX)
     }
 
     /// Reports every resident of this leaf that lies outside the pin or outside its vertex's
@@ -332,13 +339,13 @@ where
         let mut errors = Vec::new();
         for ordinal in start_vid..end_vid {
             let vid = VertexId::from(ordinal);
-            let Some((base, end)) = self.resident(vid) else {
+            let Some((base, end)) = self.vertex_space(vid) else {
                 continue;
             };
-            if !self.contains(base, end.saturating_sub(base)) {
+            if !self.extent_contains(base, end.saturating_sub(base)) {
                 errors.push(format!(
                     "owner {ordinal} cover[{base},{end}) outside pin {:?}",
-                    Some(self.range)
+                    Some(self.extent)
                 ));
             }
             // The contract is per bucket: every resident region lives inside the pin. A
@@ -349,17 +356,17 @@ where
                 continue;
             };
             for bucket in &buckets {
-                let Some((start, slots)) = super::compact::bucket_resident_region(bucket) else {
+                let Some((start, slots)) = super::compact::bucket_content_region(bucket) else {
                     continue;
                 };
                 let Some(limit) = checked_add_slot_index(start, u64::from(slots)) else {
                     continue;
                 };
-                if !self.contains(start, u64::from(slots)) {
+                if !self.extent_contains(start, u64::from(slots)) {
                     errors.push(format!(
                         "owner {ordinal} label{} resident[{start},{limit}) outside pin {:?}",
                         bucket.bucket_label_key().raw(),
-                        Some(self.range)
+                        Some(self.extent)
                     ));
                 }
             }
@@ -1388,7 +1395,7 @@ mod tests {
             i64::try_from(block_len + 4).unwrap()
         );
         assert_eq!(
-            LeafArena::capture(&graph, owner).unwrap().unwrap().range(),
+            LeafArena::capture(&graph, owner).unwrap().unwrap().extent(),
             (start, block_len + 4)
         );
     }

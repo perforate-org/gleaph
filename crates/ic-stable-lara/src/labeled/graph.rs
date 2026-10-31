@@ -237,7 +237,7 @@ pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_
 // Resident-geometry SSOT (GAP-2026-09-17-001): the layout audit in
 // `labeled::invariants` validates tree buckets against their physical root
 // region, so the helper is re-exported to the crate.
-pub(crate) use compact::bucket_physical_resident_slots;
+pub(crate) use compact::bucket_content_slots;
 pub mod batch_write;
 #[cfg(test)]
 mod batch_write_test;

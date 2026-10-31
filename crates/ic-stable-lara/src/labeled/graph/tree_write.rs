@@ -1448,7 +1448,7 @@ where
     if old_combined_start != new_combined_start && old_combined_len > 0 {
         let in_pin = matches!(
             super::leaf_arena::LeafArena::capture(graph, vid),
-            Ok(Some(pin)) if pin.contains(old_combined_start, u64::from(old_combined_len))
+            Ok(Some(pin)) if pin.extent_contains(old_combined_start, u64::from(old_combined_len))
         );
         if !in_pin {
             let _ = graph
@@ -2577,7 +2577,7 @@ where
         let tail_start = old_combined_start + u64::from(new_combined_len);
         let in_pin = matches!(
             super::leaf_arena::LeafArena::capture(graph, vid),
-            Ok(Some(pin)) if pin.contains(tail_start, u64::from(tail))
+            Ok(Some(pin)) if pin.extent_contains(tail_start, u64::from(tail))
         );
         if !in_pin {
             let _ = graph.edges().release_span(tail_start, u64::from(tail));

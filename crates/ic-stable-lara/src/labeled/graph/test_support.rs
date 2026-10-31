@@ -464,7 +464,7 @@ pub(crate) fn retained_compaction_rows(
 pub(crate) fn retained_compaction_fixture(
     width: u16,
 ) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
-    use super::{EdgePlacementPolicy, compact::bucket_physical_resident_slots};
+    use super::{EdgePlacementPolicy, compact::bucket_content_slots};
     let graph = inline_property_test_graph();
     let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
     for (raw, targets) in [(2, 0..8), (3, 9000..9004)] {
@@ -543,7 +543,7 @@ pub(crate) fn retained_compaction_fixture(
     let vertex = graph.vertices().get(vid);
     let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
     let base = buckets[0].edge_start();
-    let physical: u32 = buckets.iter().map(bucket_physical_resident_slots).sum();
+    let physical: u32 = buckets.iter().map(bucket_content_slots).sum();
     // Existing non-folding physical publisher; never a fictitious allocation/extent.
     graph
         .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))
@@ -602,7 +602,7 @@ pub(crate) fn retained_compaction_fixture(
 pub(crate) fn tree_compaction_fixture(
     width: u16,
 ) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
-    use super::{EdgePlacementPolicy, bucket_physical_resident_slots};
+    use super::{EdgePlacementPolicy, bucket_content_slots};
     let graph = inline_property_test_graph();
     let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
     let slab = BucketLabelKey::from_raw(2);
@@ -667,7 +667,7 @@ pub(crate) fn tree_compaction_fixture(
         .read_vertex_label_buckets(&graph.vertices().get(vid))
         .unwrap();
     let base = buckets[0].edge_start();
-    let physical = buckets.iter().map(bucket_physical_resident_slots).sum();
+    let physical = buckets.iter().map(bucket_content_slots).sum();
     // No fabricated descriptor: reuse the non-folding publisher and its backing checks.
     graph
         .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))

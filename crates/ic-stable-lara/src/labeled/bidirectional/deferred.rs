@@ -5329,7 +5329,7 @@ mod tests {
     #[test]
     fn point_state_public_tree_noops_preserve_both_populated_orientations() {
         use crate::labeled::graph::{
-            T_PROMOTE, bucket_physical_resident_slots,
+            T_PROMOTE, bucket_content_slots,
             test_support::{
                 InlinePropertyTestEdge, retained_compaction_rows, tree_compaction_fixture,
             },
@@ -5358,8 +5358,7 @@ mod tests {
                             else {
                                 panic!("missing fixture bucket")
                             };
-                            let mut bytes =
-                                vec![0; bucket_physical_resident_slots(&bucket) as usize * 4];
+                            let mut bytes = vec![0; bucket_content_slots(&bucket) as usize * 4];
                             g.edges()
                                 .read_slots_contiguous_bytes(bucket.edge_start(), &mut bytes);
                             (
@@ -5468,7 +5467,7 @@ mod tests {
     fn check_tree_sibling_compaction(tree_policy: EdgePlacementPolicy, width: u16) {
         use crate::labeled::{
             graph::{
-                T_PROMOTE, bucket_physical_resident_slots,
+                T_PROMOTE, bucket_content_slots,
                 test_support::{
                     inline_property_test_graph, retained_compaction_rows,
                     retained_compaction_value, tree_compaction_fixture,
@@ -5517,7 +5516,7 @@ mod tests {
             expected_tree
         );
         let roots = |b: LabelBucket| {
-            let mut bytes = vec![0; bucket_physical_resident_slots(&b) as usize * 4];
+            let mut bytes = vec![0; bucket_content_slots(&b) as usize * 4];
             graph
                 .forward()
                 .edges()
@@ -5737,7 +5736,7 @@ mod tests {
                 }
                 assert_eq!(live, bucket(owner, label).degree());
                 let b = bucket(owner, label);
-                let len = u64::from(bucket_physical_resident_slots(&b));
+                let len = u64::from(bucket_content_slots(&b));
                 for free in graph.forward().edges().free_span_store().spans() {
                     assert!(
                         len == 0

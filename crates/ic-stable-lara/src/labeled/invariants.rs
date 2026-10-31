@@ -228,9 +228,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             // `stored_slots` width — that width counts LTB-block rows, which
             // occupy no LEG slots. Route through the resident-geometry SSOT.
             let on_slab_len = if bucket.is_tree_mode() {
-                u64::from(crate::labeled::graph::bucket_physical_resident_slots(
-                    &bucket,
-                ))
+                u64::from(crate::labeled::graph::bucket_content_slots(&bucket))
             } else if bucket.is_tiny_mode() {
                 0
             } else if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {

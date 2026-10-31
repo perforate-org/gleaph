@@ -3400,7 +3400,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         let mut supplied = transcribed.map(Vec::into_iter);
         for ((old, new), position) in canonical.buckets.iter().zip(desired).zip(positions) {
-            let region = bucket_resident_region(&new);
+            let region = bucket_content_region(&new);
             let bytes = supplied.as_mut().and_then(Iterator::next).flatten();
             if let Some((_, slots)) = region {
                 if crate::slab_index::checked_add_slot_exclusive_end(position, u64::from(slots))
@@ -3409,7 +3409,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
                 {
                     return Err(LaraOperationError::CollectAllocationOverflow.into());
                 }
-                let old_region = bucket_resident_region(old);
+                let old_region = bucket_content_region(old);
                 if let Some(bytes) = bytes {
                     if bytes.len() != LabeledLaraGraph::<E, M>::edge_bytes_for_len(slots as usize)?
                     {
@@ -3952,8 +3952,8 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
 /// GAP-2026-09-17-001: sizing any of these paths on the logical width
 /// over-allocates the leaf, misreads live ranges on relocate, and feeds
 /// unowned ranges to the free store on release.
-pub(crate) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
-    bucket_resident_region(bucket).map_or(0, |(_, len)| len)
+pub(crate) fn bucket_content_slots(bucket: &LabelBucket) -> u32 {
+    bucket_content_region(bucket).map_or(0, |(_, len)| len)
 }
 
 /// The edge-slab region a bucket physically owns, as `(start_slot, len)`, or
@@ -3961,7 +3961,7 @@ pub(crate) fn bucket_physical_resident_slots(bucket: &LabelBucket) -> u32 {
 /// only through this SSOT: slab is its `stored_slots` prefix, tree its LEG root
 /// array (its `stored_slots` is a logical count), tiny nothing.
 #[inline]
-pub(crate) fn bucket_resident_region(bucket: &LabelBucket) -> Option<(u64, u32)> {
+pub(crate) fn bucket_content_region(bucket: &LabelBucket) -> Option<(u64, u32)> {
     if bucket.is_tiny_mode() {
         return None;
     }
@@ -4086,7 +4086,7 @@ where
                                 if start < end {
                                     if matches!(
                                         super::leaf_arena::LeafArena::capture(self, src),
-                                        Ok(Some(pin)) if pin.contains(start, end - start)
+                                        Ok(Some(pin)) if pin.extent_contains(start, end - start)
                                     ) {
                                         continue;
                                     }
@@ -4328,7 +4328,7 @@ where
                     && canonical
                         .iter()
                         .flat_map(|row| &row.buckets)
-                        .filter_map(bucket_resident_region)
+                        .filter_map(bucket_content_region)
                         .all(|(start, len)| {
                             start >= old.start_slot
                                 && start
@@ -4541,23 +4541,20 @@ where
                 // ADR 0096 §5 + GAP-2026-09-17-001: tiny buckets occupy zero slab
                 // slots (including them would validate phantom anchor spans
                 // against real geometry); tree buckets occupy only their root
-                // region (`bucket_physical_resident_slots` — the logical
+                // region (`bucket_content_slots` — the logical
                 // `stored_slots` width is NOT releasable). The zero-physical
                 // filter below subsumes both (tiny and empty buckets carry no
                 // owned ranges).
-                .filter(|bucket| bucket_physical_resident_slots(bucket) > 0)
+                .filter(|bucket| bucket_content_slots(bucket) > 0)
                 .map(|bucket| {
                     // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
                     // buckets, the vertex span is `[edge root | property
                     // root]` (gap 0, ADR 0088 §2). The combined length is
                     // `edge_root_len + property_root_len` — the physical width
-                    // from `bucket_physical_resident_slots` (NOT the logical
+                    // from `bucket_content_slots` (NOT the logical
                     // `stored_slots`). The single interval covers both regions
                     // contiguously; no separate property-root interval is needed.
-                    (
-                        bucket.edge_start(),
-                        u64::from(bucket_physical_resident_slots(bucket)),
-                    )
+                    (bucket.edge_start(), u64::from(bucket_content_slots(bucket)))
                 }),
         );
         bucket_intervals.sort_unstable_by_key(|(start, _)| *start);
@@ -4846,7 +4843,7 @@ where
         // free store with live ranges on release. Nothing live, nothing to free.
         let has_live_slab = buckets
             .iter()
-            .any(|bucket| bucket_physical_resident_slots(bucket) > 0);
+            .any(|bucket| bucket_content_slots(bucket) > 0);
         if !has_live_slab {
             return Ok(());
         }
@@ -4904,7 +4901,7 @@ where
             }
             // Physical publication preserves initialized regions and run ordinals.
             // Logical reservation/headroom policy remains separate.
-            let resident = bucket_physical_resident_slots(bucket);
+            let resident = bucket_content_slots(bucket);
             total_live = total_live
                 .checked_add(resident)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
@@ -5331,7 +5328,7 @@ where
             // Unset (NO_SPILL_RUN) or outside the arena: no rows beyond the prefix.
             Err(_) => 0,
         };
-        bucket_physical_resident_slots(bucket)
+        bucket_content_slots(bucket)
             .checked_add(spill_rows)
             .ok_or(LaraOperationError::RowDegreeOverflow)
             .map_err(LabeledOperationError::from)
@@ -5352,7 +5349,7 @@ where
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         let physical = buckets.iter().try_fold(0u32, |sum, bucket| {
-            sum.checked_add(bucket_physical_resident_slots(bucket))
+            sum.checked_add(bucket_content_slots(bucket))
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
         if vertex.stored_slots > physical {
@@ -5915,7 +5912,7 @@ where
             // Keeping the floor made a run-backed bucket demand a span its prefix did not
             // need (`span_slots=64 < effective_live=65`), which trapped the non-tail bypass
             // insert (GAP-2026-09-20-007).
-            let resident = bucket_physical_resident_slots(bucket)
+            let resident = bucket_content_slots(bucket)
                 .checked_add(extra)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
             // Keep the validated physical width for the placement pass. The output
