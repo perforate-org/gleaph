@@ -1446,13 +1446,16 @@ where
     // it whole — identical behavior; when its head is already free only the
     // owned remainder is released. Best-effort (`let _ =`) preserved.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
-        let in_pin = matches!(
-            super::leaf_arena::LeafArena::capture(graph, vid),
-            Ok(Some(pin)) if pin.extent_contains(old_combined_start, u64::from(old_combined_len))
-        );
-        if !in_pin {
-            let _ = graph
-                .release_vertex_edge_span_slab(old_combined_start, u64::from(old_combined_len));
+        // Only the part outside the leaf extent goes back to the free-span store: the rest
+        // is leaf space, and returning it would make a live extent overlap a free span.
+        let parts = match super::leaf_arena::LeafArena::capture(graph, vid) {
+            Ok(Some(arena)) => {
+                arena.parts_outside_extent(old_combined_start, u64::from(old_combined_len))
+            }
+            _ => vec![(old_combined_start, u64::from(old_combined_len))],
+        };
+        for (start, len) in parts {
+            let _ = graph.release_vertex_edge_span_slab(start, len);
         }
     }
     // 8. Bump global accounting.
@@ -1709,11 +1712,18 @@ where
             }
             return Err(e.into());
         }
-        // Release the old combined span after publish.
+        // Release the old combined span after publish, minus whatever the extent covers
+        // (that part is leaf space).
         if let Some((start, len)) = release_old_combined
             && start != new_edge_start
         {
-            let _ = graph.edges().release_span(start, u64::from(len));
+            let parts = match super::leaf_arena::LeafArena::capture(graph, vid) {
+                Ok(Some(arena)) => arena.parts_outside_extent(start, u64::from(len)),
+                _ => vec![(start, u64::from(len))],
+            };
+            for (part_start, part_len) in parts {
+                let _ = graph.edges().release_span(part_start, part_len);
+            }
         }
         // Bump global accounting.
         let hdr = graph.edges().header();
@@ -3029,9 +3039,15 @@ where
     }
     // 5c. Release the old root region span.
     if old_physical_root_len > 0 {
-        let _ = graph
-            .edges()
-            .release_span(bucket.edge_start(), u64::from(old_physical_root_len));
+        let parts = match super::leaf_arena::LeafArena::capture(graph, src) {
+            Ok(Some(arena)) => {
+                arena.parts_outside_extent(bucket.edge_start(), u64::from(old_physical_root_len))
+            }
+            _ => vec![(bucket.edge_start(), u64::from(old_physical_root_len))],
+        };
+        for (start, len) in parts {
+            let _ = graph.edges().release_span(start, len);
+        }
     }
     // 5e. Plan 0326 LPB-in-tree (REWORK): release the property
     //     root region and the LPB leaf blocks. The descriptor no

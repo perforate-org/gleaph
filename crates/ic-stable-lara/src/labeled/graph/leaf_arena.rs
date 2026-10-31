@@ -445,6 +445,32 @@ where
         true
     }
 
+    /// The part of `[start, start + len)` that lies **outside** the extent, as up to two
+    /// runs. A range the extent covers is leaf space, so the free-span store must not
+    /// hear about it: returning it would make a live extent overlap a free span.
+    pub(crate) fn parts_outside_extent(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
+        let mut parts = Vec::new();
+        let Some(end) = checked_add_slot_index(start, len) else {
+            return parts;
+        };
+        let (extent_start, extent_len) = self.extent;
+        let Some(extent_end) = checked_add_slot_index(extent_start, extent_len) else {
+            parts.push((start, len));
+            return parts;
+        };
+        if end <= extent_start || extent_end <= start {
+            parts.push((start, len));
+            return parts;
+        }
+        if start < extent_start {
+            parts.push((start, extent_start - start));
+        }
+        if extent_end < end {
+            parts.push((extent_end, end - extent_end));
+        }
+        parts
+    }
+
     pub(crate) fn extent_contains(&self, start: u64, len: u64) -> bool {
         let Some(end) = checked_add_slot_index(start, len) else {
             return false;
