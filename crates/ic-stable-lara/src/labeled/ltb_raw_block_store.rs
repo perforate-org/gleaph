@@ -264,21 +264,35 @@ impl std::error::Error for InitError {}
     dead_code,
     reason = "All methods are exercised by benches and tests; allow until wired."
 )]
-pub(crate) struct LtbRawBlockStore<M: Memory, E: CsrEdge> {
+/// The payload size of a block store. One store owns one payload size: edge blocks are
+/// `EDGES_PER_BLOCK x E::BYTES`, property blocks are a fixed `PROPERTY_BLOCK_BYTES`.
+pub(crate) trait BlockPayload {
+    /// Payload bytes per block.
+    const PAYLOAD_BYTES: usize;
+}
+
+/// Edge-record blocks: [`EDGES_PER_BLOCK`] records of the edge width.
+pub(crate) struct EdgePayload<E: CsrEdge>(PhantomData<E>);
+
+impl<E: CsrEdge> BlockPayload for EdgePayload<E> {
+    const PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * E::BYTES;
+}
+
+pub(crate) struct LtbRawBlockStore<M: Memory, P: BlockPayload> {
     memory: M,
     r_max: Cell<u32>,
     block_capacity: Cell<u32>,
     tail_next: Cell<u32>,
     free_head: Cell<u32>,
     free_count: Cell<u32>,
-    edge: PhantomData<E>,
+    payload_marker: PhantomData<P>,
 }
 
-impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
-    /// Block payload in bytes: [`EDGES_PER_BLOCK`] edge records of `E::BYTES`.
-    pub(crate) const PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * E::BYTES;
+impl<M: Memory, P: BlockPayload> LtbRawBlockStore<M, P> {
+    /// Block payload in bytes, fixed by the store's payload policy.
+    pub(crate) const PAYLOAD_BYTES: usize = P::PAYLOAD_BYTES;
     /// Block stride in bytes: the per-block header plus the payload.
-    const STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + (EDGES_PER_BLOCK * E::BYTES) as u64;
+    const STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + P::PAYLOAD_BYTES as u64;
 
     // ----- header I/O ------------------------------------------------------
 
@@ -444,7 +458,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             tail_next: Cell::new(0),
             free_head: Cell::new(NULL_BLOCK),
             free_count: Cell::new(0),
-            edge: PhantomData,
+            payload_marker: PhantomData,
         };
         store.write_header()?;
         Ok(store)
@@ -481,7 +495,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             tail_next: Cell::new(header.tail_next),
             free_head: Cell::new(header.free_head),
             free_count: Cell::new(header.free_count),
-            edge: PhantomData,
+            payload_marker: PhantomData,
         })
     }
 
@@ -882,7 +896,7 @@ mod tests {
     use crate::test_support::{LabelledTestEdge, TestEdge, vector_memory};
 
     /// The production 4-byte edge record fixes the 4096-byte block payload.
-    type Store = LtbRawBlockStore<crate::VectorMemory, TestEdge>;
+    type Store = LtbRawBlockStore<crate::VectorMemory, EdgePayload<TestEdge>>;
 
     fn block_offset_for_test(id: u32) -> u64 {
         Store::block_offset(id)
@@ -1105,7 +1119,7 @@ mod tests {
         // The payload is EDGES_PER_BLOCK * E::BYTES, not a global constant: a
         // wider record widens the block instead of shrinking how many edges a
         // block holds.
-        let ltb: LtbRawBlockStore<crate::VectorMemory, LabelledTestEdge> =
+        let ltb: LtbRawBlockStore<crate::VectorMemory, EdgePayload<LabelledTestEdge>> =
             LtbRawBlockStore::new(vector_memory()).expect("fresh wide ltb");
         assert_eq!(
             ltb.payload_bytes(),
@@ -1123,7 +1137,7 @@ mod tests {
     fn reopen_rejects_a_store_opened_with_another_edge_width() {
         let ltb = fresh();
         let memory = ltb.into_memory();
-        let err = LtbRawBlockStore::<_, LabelledTestEdge>::init(memory)
+        let err = LtbRawBlockStore::<_, EdgePayload<LabelledTestEdge>>::init(memory)
             .err()
             .expect("8-byte reopen must fail");
         assert_eq!(

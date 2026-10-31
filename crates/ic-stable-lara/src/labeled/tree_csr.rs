@@ -170,7 +170,7 @@ pub(crate) fn root_len(stored_slots: u32) -> usize {
 /// `root` length disagreeing with `stored_slots`.
 pub(crate) struct TreeCsrBucket<M: Memory> {
     root: Vec<u32>,
-    store: LtbRawBlockStore<M, TargetRecord>,
+    store: LtbRawBlockStore<M, crate::labeled::ltb_raw_block_store::EdgePayload<TargetRecord>>,
     stored_slots: u32,
 }
 

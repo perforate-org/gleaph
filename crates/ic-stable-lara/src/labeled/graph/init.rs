@@ -308,7 +308,9 @@ where
         crate::labeled::tree_csr::property_slots_per_block(w)
     }
 
-    pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M, E> {
+    pub(crate) fn ltb(
+        &self,
+    ) -> &LtbRawBlockStore<M, crate::labeled::ltb_raw_block_store::EdgePayload<E>> {
         &self.ltb
     }
 
