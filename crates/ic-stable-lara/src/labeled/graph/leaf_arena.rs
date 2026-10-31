@@ -200,23 +200,146 @@ where
     }
 
     /// Residents inside the block and pairwise disjoint.
+    /// The leaf's slices: participants sorted by their first content start, each owning
+    /// `[start_i, start_{i+1})`, the last up to the extent end. The slice is the vertex's
+    /// exclusive space; the tiling lays the vertices out in start order with no gaps, so
+    /// this partition needs no `stored_slots`.
+    pub(crate) fn slices(&self) -> Vec<(VertexId, (u64, u64))> {
+        let seg = self.graph.edges.header().segment_size.max(1);
+        let start_vid = self.leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.graph.vertices.len());
+        let extent_end = self.extent.0.saturating_add(self.extent.1);
+        let mut starts: Vec<(u64, VertexId)> = Vec::new();
+        for ordinal in start_vid..end_vid {
+            let vid = VertexId::from(ordinal);
+            let vertex = self.graph.vertices.get(vid);
+            if vertex.stored_slots == 0 {
+                continue;
+            }
+            let base = if vertex.is_default_edge_labeled() {
+                Some(vertex.base_slot_start())
+            } else {
+                self.graph
+                    .read_vertex_label_buckets(&vertex)
+                    .ok()
+                    .and_then(|buckets| {
+                        buckets
+                            .iter()
+                            .find(|bucket| !bucket.is_tiny_mode())
+                            .map(|bucket| bucket.edge_start())
+                    })
+            };
+            if let Some(base) = base {
+                starts.push((base, vid));
+            }
+        }
+        starts.sort_unstable();
+        let participants = starts.len();
+        starts.dedup_by_key(|(base, _)| *base);
+        debug_assert_eq!(
+            participants,
+            starts.len(),
+            "two vertices of one leaf start at the same slot"
+        );
+        let mut slices = Vec::with_capacity(starts.len());
+        for (i, (start, vid)) in starts.iter().enumerate() {
+            let end = starts.get(i + 1).map(|(s, _)| *s).unwrap_or(extent_end);
+            if end > *start {
+                slices.push((*vid, (*start, end)));
+            }
+        }
+        slices
+    }
+
+    /// The vertex's slice, or `None` when it owns no content.
+    pub(crate) fn slice(&self, vid: VertexId) -> Option<(u64, u64)> {
+        self.slices()
+            .into_iter()
+            .find(|(owner, _)| *owner == vid)
+            .map(|(_, range)| range)
+    }
+
+    /// The regions one vertex's buckets occupy (its content). Tiny buckets own nothing.
+    pub(crate) fn regions(&self, vid: VertexId) -> Vec<(u64, u64)> {
+        let vertex = self.graph.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            let base = vertex.base_slot_start();
+            let end = base.saturating_add(u64::from(vertex.stored_slots));
+            return if end > base {
+                vec![(base, end)]
+            } else {
+                Vec::new()
+            };
+        }
+        let Ok(buckets) = self.graph.read_vertex_label_buckets(&vertex) else {
+            return Vec::new();
+        };
+        buckets
+            .iter()
+            .filter_map(|bucket| super::compact::bucket_content_region(bucket))
+            .filter(|(_, slots)| *slots > 0)
+            .map(|(start, slots)| (start, start + u64::from(slots)))
+            .collect()
+    }
+
+    /// End of the right-most content in the leaf.
+    pub(crate) fn last_region_end(&self) -> u64 {
+        let seg = self.graph.edges.header().segment_size.max(1);
+        let start_vid = self.leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.graph.vertices.len());
+        let mut last = self.extent.0;
+        for ordinal in start_vid..end_vid {
+            for (_, end) in self.regions(VertexId::from(ordinal)) {
+                last = last.max(end);
+            }
+        }
+        last
+    }
+
     pub(crate) fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        let spans = self.used_spans();
-        for (start, end) in &spans {
+        let extent_end = self.extent.0.saturating_add(self.extent.1);
+        let slices = self.slices();
+        // The partition: strictly increasing, inside the extent, the last one ending at
+        // the extent end (anything before the first slice is leaf slack).
+        for (vid, (start, end)) in &slices {
             if !self.extent_contains(*start, end.saturating_sub(*start)) {
+                errors.push(format!("slice of {vid:?} {start}..{end} outside extent"));
+            }
+        }
+        for pair in slices.windows(2) {
+            if pair[0].1.1 > pair[1].1.0 {
                 errors.push(format!(
-                    "resident[{start},{end}) outside block {:?}",
-                    self.extent
+                    "slices overlap: {:?} and {:?}",
+                    pair[0].1, pair[1].1
                 ));
             }
         }
-        for pair in spans.windows(2) {
-            if pair[0].1 > pair[1].0 {
-                errors.push(format!(
-                    "residents overlap: {:?} and {:?}",
-                    pair[0], pair[1]
-                ));
+        if let Some((_, (_, last_end))) = slices.last()
+            && *last_end != extent_end
+        {
+            errors.push(format!(
+                "last slice ends at {last_end}, extent ends at {extent_end}"
+            ));
+        }
+        // Every region lives in its own vertex's slice, and regions of one slice do not
+        // overlap.
+        for (vid, (slice_start, slice_end)) in &slices {
+            let regions = self.regions(*vid);
+            for (start, end) in &regions {
+                if *start < *slice_start || *end > *slice_end {
+                    errors.push(format!(
+                        "region of {vid:?} {start}..{end} outside its slice {slice_start}..{slice_end}"
+                    ));
+                }
+            }
+            for pair in regions.windows(2) {
+                if pair[0].1 > pair[1].0 {
+                    errors.push(format!(
+                        "regions of {vid:?} overlap: {:?} and {:?}",
+                        pair[0], pair[1]
+                    ));
+                }
             }
         }
         errors
