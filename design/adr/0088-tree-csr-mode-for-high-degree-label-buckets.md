@@ -351,31 +351,65 @@ of its packed word; the descriptor stays 29 bytes. In tree mode:
 All geometry is derived — no new persisted field:
 
 ```text
-B       = 1024 edge slots per block      (EDGES_PER_BLOCK)
-payload = B * E::BYTES                  (4096 bytes for the 4-byte production edge)
-K       = floor(payload / w) values per property block (w > 0)
-edge root len     = ceil(S / B^d)        d = derived depth (§4)
-property root len = ceil(S / (K·B^(d'−1)))
+B                = 1024 edge slots per block        (EDGES_PER_BLOCK)
+edge payload     = B × E::BYTES                     (4096 B at the 4-byte production edge)
+property payload = PROPERTY_BLOCK_BYTES = 4096      (fixed; does not follow E::BYTES)
+K                = floor(4096 / w) values per property leaf (w > 0)
+PROPERTY_ID_BYTES = 4                               (property block-id width; B × 4 = 4096)
+edge root len     = ceil(S / B^d)                   d = derived depth (§4)
+property root len = ceil(S / (K·B^(d'−1)))          entries, one edge slot each (§2 below)
 span width        = edge root len + property root len      (gap = 0, §3)
 ```
 
-**Edge width:** tree mode stores one `E::BYTES`-wide edge record per LTB slot,
-so a block holds `EDGES_PER_BLOCK = 1024` edges at every width and the payload
-is `1024 × E::BYTES`. For the 4-byte production edge this is exactly the
-original 4096-byte payload and 4112-byte stride, so production layout, capacity
-and measurements are unchanged. The store is typed by the edge record
-(`LtbRawBlockStore<M, E>`), writes `1024 × E::BYTES` into the header, and
+**Edge width (edge blocks):** tree mode stores one `E::BYTES`-wide edge record
+per LTB slot, so an edge block holds `EDGES_PER_BLOCK = 1024` edges and its
+payload is `1024 × E::BYTES`. Tree mode is reached only by a **4-byte edge
+record** (see below), for which the payload is exactly 4096 bytes. For the 4-byte production edge this
+is exactly the original 4096-byte payload and 4112-byte stride, so production
+layout, capacity and measurements are unchanged. The store is typed by the edge
+record (`LtbRawBlockStore<M, E>`), writes `1024 × E::BYTES` into the header, and
 reopen rejects a store opened with a different width (`InitError::
 BadPayloadBytes`), so a mismatched geometry fails at open instead of
 mis-striding blocks.
 
-Every edge width promotes. The former `E::BYTES == 4` restriction and its slab
-carve-out — added after the canbench `bench_l_s2_det_sat_4096` bench trapped on
-the tree-append guard following a silent mis-transcription — are removed: tree
-mode addresses every slot by `E::BYTES`, and both the slab root region and the
-interior block payloads are indexed in edge-record slots (one `u32` block id in
-the slot's first four bytes, zero-padded), so one raw byte copy still moves a
-whole level and a wider record only scales the block. The insert dispatcher's
+**Block payload (property blocks):** a property block never holds edges — it
+holds either `K` inline-property values or `B` block ids — so its payload is
+**fixed at `PROPERTY_BLOCK_BYTES = 4096`** and deliberately does not follow
+`E::BYTES`; a wider edge record only leaves the tail of a property block unused
+until the store split lands (§5). The payload is a per-store policy today
+(`LtbRawBlockStore<M, P: BlockPayload>`), so the edge and property payloads are
+chosen by the store's type and each store rejects a header written by the other.
+
+**Block-id grids:** an edge-tree id occupies one edge-record slot (a `u32` in
+the slot's first four bytes, zero-padded), so a raw byte copy moves a whole edge
+tree level and a wider record only scales the block. A property-tree id is
+**packed at `PROPERTY_ID_BYTES = 4`**, because `B × 4 = 4096` exactly fills a
+property block: padding property ids to `E::BYTES` would make the property
+fan-out — and every root-length and span-length derived from it — depend on the
+edge width, which is a correctness boundary, not a space trade. The two grids
+meet only at the property root: it starts slot-aligned right after the edge
+root, its entries are packed at 4 bytes, and an entry therefore straddles two
+edge records when `E::BYTES` is not a multiple of 4. The root region itself is
+reserved one edge slot per entry, so `entries × 4 ≤ entries × E::BYTES` holds
+for every width and the packed ids always fit; at the production 4-byte edge
+the packed length and the reserved length coincide exactly.
+
+**Tree mode is the 4-byte edge.** A tree block fixes three quantities at once:
+the edge payload is `1024 × E::BYTES`, the block-id grid is `u32`, and the
+interior fan-out is `B`. Only at `E::BYTES == 4` do they close together
+(`1024 × 4 = 4096 = PROPERTY_BLOCK_BYTES`, `B × 4 = 4096`, one id per edge
+slot), so a wider record is **refused at promotion** with
+`TreeModeEdgeWidthUnsupported` rather than given a second geometry in which the
+block payload and the id grid disagree. This restores the former `E::BYTES == 4`
+restriction, which had been removed on the theory that "a wider record only
+scales the block"; it does, but it also scales the root and interior id slots,
+and the property tree's fixed 4096-byte payload makes that scaling inconsistent.
+A width-agnostic tree is a recorded follow-up: fix the id at 4 bytes and derive
+the interior fan-out from the payload (`1024 × E::BYTES / 4`), which is the
+identity at the production width. The slab/edge root region and the edge
+interior payloads stay indexed in edge-record slots (one `u32` block id in the
+slot's first four bytes, zero-padded), so one raw byte copy still moves a whole
+tree level. The insert dispatcher's
 run-full exit is tree promotion for every width, and the retired
 `TreeModeEdgeWidthUnsupported` errors are gone.
 
@@ -550,7 +584,11 @@ level-generic (2→3 identical one level up).
 
 ### 5. Inline-property bytes
 
-Same block store, `kind = InlineProperty`, same 4,096-byte payload. Property
+Same block store, `kind = InlineProperty`, the same 4,096-byte payload - tree
+mode only exists at the 4-byte edge record, so the store's edge-width stride is
+4096 bytes anyway and property blocks need no store of their own (a separate
+store was measured at twice the reserved pages with no instruction-count gain).
+Property
 position `i` ↔ edge position `i` (1:1, tombstone-inclusive); per-block residue
 `payload mod w < w` is dead bytes. The property root follows the edge root in
 the span; the +1 shift when the edge root grows is absorbed by fold/rebalance

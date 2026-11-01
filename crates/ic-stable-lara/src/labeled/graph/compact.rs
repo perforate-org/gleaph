@@ -3821,6 +3821,19 @@ impl TreeSpans {
         )
     }
 
+    /// Address of property-root entry `index` as `(slot, byte offset past that slot)`.
+    ///
+    /// The property root starts slot-aligned (it follows the edge root), but its block
+    /// ids are packed at [`PROPERTY_ID_BYTES`](crate::labeled::tree_csr::PROPERTY_ID_BYTES)
+    /// inside it, so entries are addressed in bytes rather than by slot index.
+    pub(crate) fn property_root_entry(&self, index: u32) -> (u64, u64) {
+        (
+            self.edge_start
+                .saturating_add(u64::from(self.edge_root_len)),
+            u64::from(index) * 4,
+        )
+    }
+
     /// `(start, len)` covering both roots (gap 0).
     pub(crate) fn combined(&self) -> (u64, u32) {
         (
@@ -3896,7 +3909,7 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
 /// bucket.tree_mode_property_depth()` is the property-tree physical
 /// depth (Plan 0327). At `d' == 1` this reduces to `ceil(S / K)`.
 /// No tail buffer (the ADR §2 wire truth is the exact coverage).
-pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
+pub(super) fn property_root_entry_count(bucket: &LabelBucket) -> u32 {
     if !bucket.is_tree_mode() {
         return 0;
     }
@@ -3915,6 +3928,18 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
         r = r.div_ceil(b);
     }
     u32::try_from(r).expect("property root entry count fits u32 (bounded by R_MAX)")
+}
+
+/// Edge slots the property root reserves inside the combined region.
+///
+/// The root holds [`property_root_entry_count`] u32 ids packed at
+/// [`PROPERTY_ID_BYTES`](crate::labeled::tree_csr::PROPERTY_ID_BYTES), so the entries
+/// occupy `entries * 4` bytes at the start of the region. The region itself still
+/// reserves one edge slot per entry: `entries * 4 <= entries * E::BYTES` for every
+/// edge width, so the packed ids always fit, and at the 4-byte tree-mode edge the two
+/// lengths coincide exactly.
+pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
+    property_root_entry_count(bucket)
 }
 
 #[allow(clippy::needless_return)]

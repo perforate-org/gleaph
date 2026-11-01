@@ -308,9 +308,12 @@ where
         crate::labeled::tree_csr::property_slots_per_block(w)
     }
 
-    pub(crate) fn ltb(
-        &self,
-    ) -> &LtbRawBlockStore<M, crate::labeled::ltb_raw_block_store::EdgePayload<E>> {
+    /// Per-tree division of the shared LTB store (diagnostics only).
+    pub(crate) fn tree_block_stats(&self) -> crate::labeled::ltb_raw_block_store::TreeBlockStats {
+        self.ltb.tree_block_stats()
+    }
+
+    pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M, E> {
         &self.ltb
     }
 

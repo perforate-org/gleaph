@@ -75,6 +75,16 @@ pub(crate) const B: usize = EDGES_PER_BLOCK;
 /// unused instead of changing root-region geometry.
 pub(crate) const PROPERTY_BLOCK_BYTES: usize = 4096;
 
+/// Bytes per property-tree block id: `u32`, packed.
+///
+/// Interior blocks hold [`B`] ids, and `B * PROPERTY_ID_BYTES == PROPERTY_BLOCK_BYTES`
+/// exactly, so a full interior fills its block without padding. The id grid is
+/// therefore independent of `E::BYTES`; padding ids to the edge record width would
+/// make the interior fan-out (and every root-region length) width-dependent.
+pub(crate) const PROPERTY_ID_BYTES: usize = 4;
+
+const _: () = assert!(B * PROPERTY_ID_BYTES == PROPERTY_BLOCK_BYTES);
+
 /// Inline-property values per block for width `w` (ADR 0088 §1 `K`).
 ///
 /// Returns `None` when `w` is 0 (no property stream) or wider than a property
@@ -170,7 +180,7 @@ pub(crate) fn root_len(stored_slots: u32) -> usize {
 /// `root` length disagreeing with `stored_slots`.
 pub(crate) struct TreeCsrBucket<M: Memory> {
     root: Vec<u32>,
-    store: LtbRawBlockStore<M, crate::labeled::ltb_raw_block_store::EdgePayload<TargetRecord>>,
+    store: LtbRawBlockStore<M, TargetRecord>,
     stored_slots: u32,
 }
 

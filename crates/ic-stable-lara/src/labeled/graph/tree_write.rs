@@ -49,7 +49,7 @@ use crate::VertexId;
 use crate::labeled::bucket_label_key::BucketLabelKey;
 use crate::labeled::graph::error::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
-use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
+use crate::labeled::tree_csr::{B as BLOCK_B, PROPERTY_ID_BYTES, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
@@ -80,6 +80,66 @@ where
 pub(super) fn push_root_entry<E: CsrEdge>(image: &mut Vec<u8>, id: u32) {
     image.extend_from_slice(&id.to_le_bytes());
     image.resize(image.len() + (E::BYTES - 4), 0);
+}
+
+/// Appends one property-root block id.
+///
+/// The property tree's id grid is 4 bytes whatever `E::BYTES` is (ADR 0088 §2): `B`
+/// ids exactly fill one [`crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES`] property
+/// block, so padding ids to the edge record width would make the interior fan-out
+/// width-dependent.
+pub(super) fn push_property_root_entry(image: &mut Vec<u8>, id: u32) {
+    image.extend_from_slice(&id.to_le_bytes());
+}
+
+/// Reads property-root entry `index` (`(slot, byte offset)` addressed by [`TreeSpans`]).
+///
+/// [`TreeSpans`]: super::compact::TreeSpans
+pub(super) fn read_property_root_entry<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+    index: u32,
+) -> u32
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    let spans = super::compact::TreeSpans::of(bucket).expect("tree-mode bucket has root spans");
+    let (slot, byte_offset) = spans.property_root_entry(index);
+    let mut id_bytes = [0u8; 4];
+    graph
+        .edges()
+        .read_from_slot_bytes(slot, byte_offset, &mut id_bytes);
+    u32::from_le_bytes(id_bytes)
+}
+
+/// Reads the packed property-root ids `[0, entries)` of `bucket`.
+pub(super) fn read_property_root_ids<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+    entries: u32,
+) -> Vec<u8>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    let mut bytes = vec![0u8; entries as usize * 4];
+    if !bytes.is_empty() {
+        let spans = super::compact::TreeSpans::of(bucket).expect("tree-mode bucket has root spans");
+        let (slot, byte_offset) = spans.property_root_entry(0);
+        graph
+            .edges()
+            .read_from_slot_bytes(slot, byte_offset, &mut bytes);
+    }
+    bytes
+}
+
+/// Zero-pads a `[edge root | property root]` image to whole edge slots.
+///
+/// The edge root is `E::BYTES`-strided while the property root is 4-byte packed, so the
+/// image can end mid-slot; `write_slots_contiguous_bytes` works in slots.
+fn pad_image_to_slots<E: CsrEdge>(image: &mut Vec<u8>, slots: u32) {
+    image.resize(slots as usize * E::BYTES, 0);
 }
 
 /// Tree-mode append for a single edge. Returns the logical slot index
@@ -389,14 +449,16 @@ where
                         }
                         if old_prop_root_len > 0 {
                             let mut old_prop_bytes =
-                                vec![0u8; old_prop_root_len as usize * E::BYTES];
-                            graph.edges().read_slots_contiguous_bytes(
+                                vec![0u8; old_prop_root_len as usize * PROPERTY_ID_BYTES];
+                            graph.edges().read_from_slot_bytes(
                                 old_combined_start + u64::from(old_edge_root_len),
+                                0,
                                 &mut old_prop_bytes,
                             );
                             combined_bytes.extend_from_slice(&old_prop_bytes);
                         }
-                        push_root_entry::<E>(&mut combined_bytes, entry_id);
+                        push_property_root_entry(&mut combined_bytes, entry_id);
+                        pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
                         if let Err(e) = graph
                             .edges()
                             .write_slots_contiguous_bytes(new_combined, &combined_bytes)
@@ -429,7 +491,7 @@ where
                         // (edge_start is the post-ensure value).
                         if let Err(e) = graph.ltb().write_payload_partial(
                             plan.interior_id,
-                            (plan.row as usize) * E::BYTES,
+                            (plan.row as usize) * PROPERTY_ID_BYTES,
                             &plan.leaf_id.to_le_bytes(),
                         ) {
                             release_property_plan::<E, M>(graph, &plan);
@@ -684,13 +746,7 @@ where
     // 3. Read the old property root bytes and pack them into the
     //    interiors (B entries per block).
     let old_combined_start = bucket.edge_start();
-    let property_root_offset = old_combined_start + u64::from(edge_root_len);
-    let mut old_root_bytes: Vec<u8> = vec![0u8; old_root_len as usize * E::BYTES];
-    if old_root_len > 0 {
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(property_root_offset, &mut old_root_bytes);
-    }
+    let old_root_bytes = read_property_root_ids::<E, M>(graph, bucket, old_root_len);
     let mut cursor: usize = 0;
     for &interior_id in &interior_ids {
         let remaining = (old_root_len as usize) - cursor;
@@ -698,7 +754,8 @@ where
         if let Err(e) = graph.ltb().write_payload_partial(
             interior_id,
             0,
-            &old_root_bytes[cursor * E::BYTES..(cursor + this_block_count) * E::BYTES],
+            &old_root_bytes
+                [cursor * PROPERTY_ID_BYTES..(cursor + this_block_count) * PROPERTY_ID_BYTES],
         ) {
             for &id in interior_ids.iter().rev() {
                 let _ = graph.ltb().release(id);
@@ -733,8 +790,9 @@ where
         combined_bytes.extend_from_slice(&old_edge_bytes);
     }
     for &id in &interior_ids {
-        push_root_entry::<E>(&mut combined_bytes, id);
+        push_property_root_entry(&mut combined_bytes, id);
     }
+    pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
     if let Err(e) = graph
         .edges()
         .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
@@ -895,21 +953,9 @@ where
     // chain (the same hop chain as `resolve_property_leaf_block_id`,
     // truncated one level short — do NOT resolve the leaf itself).
     let home_interior_id = (|| -> Result<u32, LabeledOperationError> {
-        let edge_root_len = super::compact::bucket_span_region_len(bucket);
-        let property_root_offset = bucket
-            .edge_start()
-            .checked_add(u64::from(edge_root_len))
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
         let mut child_id: u32 = {
             let divisor = b.pow(d - 2);
-            let level_idx = home_index / divisor;
-            let mut id_bytes = [0u8; 4];
-            graph
-                .edges()
-                .read_slot_bytes(property_root_offset + u64::from(level_idx), &mut id_bytes);
-            u32::from_le_bytes(id_bytes)
+            read_property_root_entry::<E, M>(graph, bucket, home_index / divisor)
         };
         for j in 1..d - 1 {
             let divisor = b.pow(d - 2 - j);
@@ -919,7 +965,7 @@ where
                 .ltb()
                 .read_payload_partial(
                     child_id,
-                    (level_idx as usize) * E::BYTES,
+                    (level_idx as usize) * PROPERTY_ID_BYTES,
                     &mut child_id_bytes,
                 )
                 .map_err(LabeledOperationError::LtbBlock)?;
@@ -1327,9 +1373,10 @@ where
     }
     push_root_entry::<E>(&mut combined_bytes, new_block_id);
     if old_property_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * E::BYTES];
-        graph.edges().read_slots_contiguous_bytes(
+        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * PROPERTY_ID_BYTES];
+        graph.edges().read_from_slot_bytes(
             old_combined_start + u64::from(old_edge_root_len),
+            0,
             &mut old_prop_bytes,
         );
         combined_bytes.extend_from_slice(&old_prop_bytes);
@@ -1337,8 +1384,9 @@ where
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        push_root_entry::<E>(&mut combined_bytes, entry_id);
+        push_property_root_entry(&mut combined_bytes, entry_id);
     }
+    pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
 
     // Undo hook for every failure after the span grew: an in-place append must
     // restore the old root bytes and hand the extension back, a fresh span is
@@ -1385,20 +1433,31 @@ where
     }
     // 5. Write the property side.
     if let Some(p) = &plan {
-        // Wire the leaf id into its home (new interior row or the root
-        // entry already appended above), then write the value at the
-        // leaf row (a K-boundary slot → row 0).
-        if p.entry_for_root.is_some() && p.interior_id != 0 && p.entry_for_root != Some(p.leaf_id) {
-            // d' >= 2, row == 0: the plan minted a new interior whose
-            // id is the root entry; record the leaf at interior row 0.
-            if let Err(e) =
-                graph
-                    .ltb()
-                    .write_payload_partial(p.interior_id, 0, &p.leaf_id.to_le_bytes())
-            {
-                undo_grown_root();
-                return Err(LabeledOperationError::LtbBlock(e));
+        // Wire the leaf id into its home - the root entry appended above, or a row of
+        // the home interior - then write the value at the leaf row (a K-boundary slot,
+        // so row 0 of the new leaf).
+        //
+        // The property tree can be deeper than the edge tree (wide inline-property
+        // values give a large `L_p` while the edge leaf count is still 1), so this
+        // edge-depth-1 append must still record a `d' >= 2` row.
+        let interior_row = match (p.entry_for_root, p.interior_id) {
+            (None, interior_id) if interior_id != 0 && p.row != 0 => Some((interior_id, p.row)),
+            // d' >= 2, row 0: the plan minted the interior whose id is the root entry,
+            // so the leaf is its first row.
+            (Some(entry_id), interior_id) if interior_id != 0 && entry_id != p.leaf_id => {
+                Some((interior_id, 0))
             }
+            _ => None,
+        };
+        if let Some((interior_id, row)) = interior_row
+            && let Err(e) = graph.ltb().write_payload_partial(
+                interior_id,
+                (row as usize) * PROPERTY_ID_BYTES,
+                &p.leaf_id.to_le_bytes(),
+            )
+        {
+            undo_grown_root();
+            return Err(LabeledOperationError::LtbBlock(e));
         }
         if let Err(e) = graph.ltb().write_payload_partial(
             p.leaf_id,
@@ -1572,7 +1631,7 @@ where
         // === Interior-row append (edge root unchanged) ===
         if let Err(e) = graph.ltb().write_payload_partial(
             home_interior_id,
-            (row_in_home_interior as usize) * E::BYTES,
+            (row_in_home_interior as usize) * PROPERTY_ID_BYTES,
             &new_leaf_id.to_le_bytes(),
         ) {
             let _ = graph.ltb().release(new_leaf_id);
@@ -1604,7 +1663,7 @@ where
                     // unchanged.
                     if let Err(e) = graph.ltb().write_payload_partial(
                         p.interior_id,
-                        (p.row as usize) * E::BYTES,
+                        (p.row as usize) * PROPERTY_ID_BYTES,
                         &p.leaf_id.to_le_bytes(),
                     ) {
                         let _ = graph.ltb().release(new_leaf_id);
@@ -1657,14 +1716,17 @@ where
                         combined_bytes.extend_from_slice(&old_edge_bytes);
                     }
                     if old_prop_root_len > 0 {
-                        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * E::BYTES];
-                        graph.edges().read_slots_contiguous_bytes(
+                        let mut old_prop_bytes =
+                            vec![0u8; old_prop_root_len as usize * PROPERTY_ID_BYTES];
+                        graph.edges().read_from_slot_bytes(
                             old_combined_start + u64::from(old_edge_root_len),
+                            0,
                             &mut old_prop_bytes,
                         );
                         combined_bytes.extend_from_slice(&old_prop_bytes);
                     }
-                    push_root_entry::<E>(&mut combined_bytes, entry_id);
+                    push_property_root_entry(&mut combined_bytes, entry_id);
+                    pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
                     if let Err(e) = graph
                         .edges()
                         .write_slots_contiguous_bytes(new_combined, &combined_bytes)
@@ -1813,9 +1875,10 @@ where
     }
     push_root_entry::<E>(&mut new_root_bytes, new_interior_id);
     if old_prop_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * E::BYTES];
-        graph.edges().read_slots_contiguous_bytes(
+        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * PROPERTY_ID_BYTES];
+        graph.edges().read_from_slot_bytes(
             old_combined_start + u64::from(old_edge_root_len),
+            0,
             &mut old_prop_bytes,
         );
         new_root_bytes.extend_from_slice(&old_prop_bytes);
@@ -1823,8 +1886,9 @@ where
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        push_root_entry::<E>(&mut new_root_bytes, entry_id);
+        push_property_root_entry(&mut new_root_bytes, entry_id);
     }
+    pad_image_to_slots::<E>(&mut new_root_bytes, new_combined_len);
     if let Err(e) = graph
         .edges()
         .write_slots_contiguous_bytes(new_edge_start, &new_root_bytes)
@@ -3025,16 +3089,14 @@ where
     // the LTB pop-time double-release guard. For depth 2+ these are
     // interiors and need release here.
     if physical_depth >= 2 && old_physical_root_len > 0 {
-        let mut old_root_bytes = vec![0u8; old_physical_root_len as usize * E::BYTES];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_root_bytes);
-        for chunk in old_root_bytes.chunks(4) {
-            if chunk.len() < 4 {
-                break;
-            }
-            let id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            let _ = graph.ltb().release(id);
+        // Edge-root entries are edge-record sized (a u32 id plus zero padding), so the
+        // walk is one entry per slot - a 4-byte chunk walk would decode the padding.
+        for index in 0..old_physical_root_len {
+            let mut id_bytes = [0u8; 4];
+            graph
+                .edges()
+                .read_slot_bytes(bucket.edge_start() + u64::from(index), &mut id_bytes);
+            let _ = graph.ltb().release(u32::from_le_bytes(id_bytes));
         }
     }
     // 5c. Release the old root region span.
@@ -3063,21 +3125,45 @@ where
             .expect("property root offset overflow");
         let prop_total = property_root_region_len(bucket);
         if prop_total > 0 {
+            // The property root's ids are 4-byte packed, so `prop_total` entries are
+            // `prop_total * PROPERTY_ID_BYTES` bytes - not `prop_total` edge slots.
+            let prop_ids = read_property_root_ids::<E, M>(graph, bucket, prop_total);
             // Release the property root half of the combined span.
             let _ = graph
                 .edges()
                 .release_span(prop_root_start, u64::from(prop_total));
-            // Release the LPB leaf blocks.
-            let mut prop_root_bytes = vec![0u8; prop_total as usize * E::BYTES];
-            graph
-                .edges()
-                .read_slots_contiguous_bytes(prop_root_start, &mut prop_root_bytes);
-            for chunk in prop_root_bytes.chunks(4) {
-                if chunk.len() < 4 {
-                    break;
+            // At `d' >= 2` the root entries are interiors, so each one still owns the
+            // property leaves at rows `i*B .. min((i+1)*B, L_p)`; releasing only the
+            // root entries leaks every leaf (plan `p285`).
+            let prop_depth = bucket.tree_mode_property_depth();
+            let l_p = match crate::labeled::tree_csr::property_slots_per_block(w) {
+                Some(k) if k >= 1 => u64::from(bucket.stored_slots().div_ceil(k)),
+                _ => 0,
+            };
+            let fanout = crate::labeled::tree_csr::B as u64;
+            for (index, chunk) in prop_ids
+                .as_chunks::<PROPERTY_ID_BYTES>()
+                .0
+                .iter()
+                .enumerate()
+            {
+                let interior_id = u32::from_le_bytes(*chunk);
+                if prop_depth >= 2 {
+                    let first = index as u64 * fanout;
+                    let leaves = l_p.saturating_sub(first).min(fanout) as usize;
+                    let mut leaf_ids = vec![0u8; leaves * PROPERTY_ID_BYTES];
+                    if !leaf_ids.is_empty()
+                        && graph
+                            .ltb()
+                            .read_payload_partial(interior_id, 0, &mut leaf_ids)
+                            .is_ok()
+                    {
+                        for leaf in leaf_ids.as_chunks::<PROPERTY_ID_BYTES>().0 {
+                            let _ = graph.ltb().release(u32::from_le_bytes(*leaf));
+                        }
+                    }
                 }
-                let id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let _ = graph.ltb().release(id);
+                let _ = graph.ltb().release(interior_id);
             }
         }
     }
@@ -6441,5 +6527,284 @@ mod tests {
                 "post slot b {slot}"
             );
         }
+    }
+
+    /// A depth-2 property tree resolves every leaf through the property root's
+    /// interior, so it is the only fixture that reads interior block ids.
+    ///
+    /// `w = 64` gives `K = floor(4096 / w) = 64` values per property leaf, so the
+    /// `T_PROMOTE` edges that promotion requires span 16 property leaves and a single
+    /// manual deepen puts the property root behind one interior. The fixture then reads
+    /// through the interior at `d' = 2`, crosses a property-leaf boundary at `d' = 2`
+    /// (the home-interior row write), demotes, and reopens so both the release walk and
+    /// the LTB free list are validated.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn property_tree_depth_two_resolves_through_the_root_interior() {
+        use crate::LabeledVertex;
+        use crate::labeled::graph::test_support::labeled_memories;
+        use crate::traits::{CsrEdge, CsrEdgeTombstone};
+
+        const W: u16 = 64;
+        const SLOTS: u32 = 1024;
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct PropEdge {
+            target: u32,
+            value: Vec<u8>,
+        }
+        impl PropEdge {
+            fn with_bytes(target: u32, bytes: &[u8]) -> Self {
+                Self {
+                    target,
+                    value: bytes.to_vec(),
+                }
+            }
+        }
+        impl CsrEdge for PropEdge {
+            const BYTES: usize = 4;
+            fn read_from(bytes: &[u8]) -> Self {
+                Self {
+                    target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                    value: Vec::new(),
+                }
+            }
+            fn write_to(&self, bytes: &mut [u8]) {
+                bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+            }
+            fn neighbor_vid(&self) -> crate::VertexId {
+                crate::VertexId::from(self.target)
+            }
+            fn with_neighbor_vid(&self, vid: crate::VertexId) -> Self {
+                Self {
+                    target: u32::from(vid),
+                    ..self.clone()
+                }
+            }
+            fn edge_inline_property_byte_width(&self) -> u16 {
+                u16::try_from(self.value.len()).expect("test value fits u16")
+            }
+            fn edge_inline_property_bytes(&self) -> &[u8] {
+                &self.value
+            }
+            fn with_stored_inline_property_bytes(mut self, _width: u16, bytes: &[u8]) -> Self {
+                self.value = bytes.to_vec();
+                self
+            }
+        }
+        impl CsrEdgeTombstone for PropEdge {
+            fn tombstone_edge() -> Self {
+                Self {
+                    target: u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL),
+                    value: Vec::new(),
+                }
+            }
+        }
+
+        fn value(slot: u32) -> Vec<u8> {
+            let mut bytes = vec![0u8; usize::from(W)];
+            bytes[0..4].copy_from_slice(&(slot + 100).to_le_bytes());
+            bytes[usize::from(W) - 4..].copy_from_slice(&slot.wrapping_mul(7).to_le_bytes());
+            bytes
+        }
+
+        fn read_value(
+            graph: &LabeledLaraGraph<PropEdge, VectorMemory>,
+            bucket: &LabelBucket,
+            slot: u32,
+        ) -> Vec<u8> {
+            let mut buf = vec![0u8; usize::from(W)];
+            super::super::tree_read::read_property_value_at_slot::<PropEdge, VectorMemory>(
+                graph, bucket, slot, &mut buf,
+            )
+            .expect("read_property_value_at_slot");
+            buf
+        }
+
+        let memories = labeled_memories();
+        let capacities = crate::labeled::InitialCapacities {
+            bucket_slots: 256,
+            edge_slots: 256,
+            inline_property_bytes: 1 << 16,
+        };
+        let graph = LabeledLaraGraph::<PropEdge, VectorMemory>::new(
+            memories[0].clone(),
+            memories[1].clone(),
+            memories[2].clone(),
+            memories[3].clone(),
+            memories[4].clone(),
+            memories[5].clone(),
+            memories[6].clone(),
+            memories[7].clone(),
+            memories[8].clone(),
+            memories[9].clone(),
+            memories[10].clone(),
+            memories[11].clone(),
+            memories[12].clone(),
+            memories[13].clone(),
+            memories[14].clone(),
+            memories[15].clone(),
+            capacities,
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("graph");
+        let owner = graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push_vertex");
+        let label = BucketLabelKey::from_raw(3);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(owner, label, W)
+            .expect("ensure width");
+        for slot in 0..SLOTS {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    owner,
+                    label,
+                    PropEdge::with_bytes(1000 + slot, &value(slot)),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        super::super::promote::promote_bucket_to_tree_mode(&graph, owner, label).expect("promote");
+
+        let (bucket_slot, bucket) = {
+            let vertex = graph.vertices().get(owner);
+            match graph
+                .find_bucket(owner, &vertex, label)
+                .expect("find_bucket")
+            {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("bucket missing after promote"),
+            }
+        };
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.inline_property_byte_width(), W);
+        assert_eq!(
+            bucket.tree_mode_property_depth(),
+            1,
+            "K = 64 keeps the promoted property tree at d' = 1"
+        );
+        for slot in 0..SLOTS {
+            assert_eq!(
+                read_value(&graph, &bucket, slot),
+                value(slot),
+                "d' = 1 property value at slot {slot}"
+            );
+        }
+        assert_eq!(bucket.tree_mode_property_depth(), 1);
+
+        // Force d' = 2 so the property root holds interior ids instead of leaf ids.
+        tree_mode_property_deepen(&graph, owner, bucket_slot, &bucket).expect("property deepen");
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("reread bucket");
+        assert_eq!(bucket.tree_mode_property_depth(), 2);
+        // Every property leaf but the first is reachable only through the interior.
+        for slot in [0, 63, 64, 65, 127, 512, 1023] {
+            assert_eq!(
+                read_value(&graph, &bucket, slot),
+                value(slot),
+                "d' = 2 property value at slot {slot}"
+            );
+        }
+
+        // One store, two trees: the split a separate region would have enforced is
+        // visible as counts instead (edge tree = 1 leaf + 0 interiors at depth 1;
+        // property tree = 16 leaves + 1 interior after the deepen).
+        let stats = graph.tree_block_stats();
+        assert_eq!(
+            stats.edge_leaves,
+            crate::labeled::graph::compact::bucket_span_region_len(&bucket),
+            "one edge leaf per edge-root entry at edge depth 1"
+        );
+        assert_eq!(stats.edge_interiors, 0, "edge tree is depth 1 here");
+        assert_eq!(
+            stats.property_leaves,
+            u32::from(bucket.stored_slots().div_ceil(64)),
+            "one property leaf per K = 64 values"
+        );
+        assert_eq!(
+            stats.property_interiors, 1,
+            "the deepen minted one interior"
+        );
+        assert_eq!(
+            stats.free
+                + stats.edge_leaves
+                + stats.edge_interiors
+                + stats.property_leaves
+                + stats.property_interiors,
+            stats.blocks,
+            "the per-kind counts partition the minted envelope"
+        );
+
+        // Cross a property-leaf boundary at d' = 2: the new leaf is wired into the
+        // root's interior at a packed row, which is the other half of the id grid.
+        graph
+            .insert_edge_skip_leaf_cascade(
+                owner,
+                label,
+                PropEdge::with_bytes(1000 + SLOTS, &value(SLOTS)),
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert past a leaf boundary");
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("reread bucket");
+        assert_eq!(bucket.tree_mode_property_depth(), 2);
+        for slot in [SLOTS - 1, SLOTS] {
+            assert_eq!(
+                read_value(&graph, &bucket, slot),
+                value(slot),
+                "d' = 2 append at slot {slot}"
+            );
+        }
+
+        // Demotion releases the property leaves and interior through the same id grid.
+        tree_mode_demote_to_slab(&graph, owner, bucket_slot, label, &bucket).expect("demote");
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("reread bucket");
+        assert!(!bucket.is_tree_mode());
+        // A demote at `d' >= 2` frees the root entries (interiors) *and* the property
+        // leaves they point at (plan `p285`): nothing of the property tree survives.
+        let after = graph.tree_block_stats();
+        assert_eq!(
+            after.property_leaves, 0,
+            "demote released every property leaf"
+        );
+        assert_eq!(
+            after.property_interiors, 0,
+            "demote released the property interior"
+        );
+        assert_eq!(
+            after.free + after.edge_leaves + after.edge_interiors,
+            after.blocks,
+            "only the edge tree survives the demote"
+        );
+        drop(graph);
+        LabeledLaraGraph::<PropEdge, VectorMemory>::init(
+            memories[0].clone(),
+            memories[1].clone(),
+            memories[2].clone(),
+            memories[3].clone(),
+            memories[4].clone(),
+            memories[5].clone(),
+            memories[6].clone(),
+            memories[7].clone(),
+            memories[8].clone(),
+            memories[9].clone(),
+            memories[10].clone(),
+            memories[11].clone(),
+            memories[12].clone(),
+            memories[13].clone(),
+            memories[14].clone(),
+            memories[15].clone(),
+            capacities,
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("reopen must validate both LTB free lists after demote");
     }
 }

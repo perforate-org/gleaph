@@ -596,6 +596,34 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         self.memory.read(slot_offset::<E>(slot), out);
     }
 
+    /// Reads `out.len()` bytes starting `byte_offset` bytes past the start of `slot`.
+    ///
+    /// The tree-mode root regions pack `u32` block ids at 4 bytes whatever the edge
+    /// record width is, so a packed id can straddle an edge-record boundary when
+    /// `E::BYTES` is not a multiple of 4. This accessor keeps the address anchored to
+    /// a slot - callers never handle absolute memory offsets.
+    #[inline]
+    pub(crate) fn read_from_slot_bytes(&self, slot: u64, byte_offset: u64, out: &mut [u8]) {
+        self.memory
+            .read(slot_offset::<E>(slot).saturating_add(byte_offset), out);
+    }
+
+    /// Writes `src` starting `byte_offset` bytes past the start of `slot`.
+    /// See [`Self::read_from_slot_bytes`] for why the address is slot-anchored.
+    #[inline]
+    pub(crate) fn write_from_slot_bytes(
+        &self,
+        slot: u64,
+        byte_offset: u64,
+        src: &[u8],
+    ) -> Result<(), GrowFailed> {
+        safe_write(
+            &self.memory,
+            slot_offset::<E>(slot).saturating_add(byte_offset),
+            src,
+        )
+    }
+
     /// Reads `count` contiguous slots starting at `start_slot` into `out`.
     ///
     /// `out.len()` must equal `count * E::BYTES` for some `count >= 0`.

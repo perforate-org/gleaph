@@ -199,6 +199,26 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.read_slots_contiguous(start_slot, out);
     }
 
+    /// Reads `out.len()` bytes starting `byte_offset` bytes past `slot`.
+    ///
+    /// Tree-mode property-root ids are packed at 4 bytes regardless of `E::BYTES`
+    /// (ADR 0088 §2), so a packed id can straddle an edge-record boundary. The
+    /// address stays slot-anchored: callers pass a within-span byte offset.
+    pub(crate) fn read_from_slot_bytes(&self, slot: u64, byte_offset: u64, out: &mut [u8]) {
+        self.edges.read_from_slot_bytes(slot, byte_offset, out);
+    }
+
+    /// Writes `src` starting `byte_offset` bytes past `slot`.
+    /// See [`Self::read_from_slot_bytes`].
+    pub(crate) fn write_from_slot_bytes(
+        &self,
+        slot: u64,
+        byte_offset: u64,
+        src: &[u8],
+    ) -> Result<(), crate::GrowFailed> {
+        self.edges.write_from_slot_bytes(slot, byte_offset, src)
+    }
+
     /// Writes `count * E::BYTES` contiguous bytes from `src` starting at
     /// `start_slot`. `src.len()` must be a multiple of `E::BYTES`. Used
     /// by Plan 0318 §Step 4 to write the block_id array into the LEG

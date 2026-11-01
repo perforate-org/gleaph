@@ -106,6 +106,23 @@ const MAGIC: [u8; 3] = *b"LTB";
 /// Layout version byte stored immediately after [`MAGIC`].
 const LAYOUT_VERSION: u8 = 1;
 
+/// Per-tree division of one shared block store (see [`LtbRawBlockStore::tree_block_stats`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeBlockStats {
+    /// `kind = Edge` blocks (edge-tree leaves).
+    pub edge_leaves: u32,
+    /// `kind = EdgeInterior` blocks (edge-tree branch levels).
+    pub edge_interiors: u32,
+    /// `kind = InlineProperty` blocks (property-tree leaves).
+    pub property_leaves: u32,
+    /// `kind = InlinePropertyInterior` blocks (property-tree branch levels).
+    pub property_interiors: u32,
+    /// Blocks on the free list.
+    pub free: u32,
+    /// Minted block ids (`= tail_next`; `free + live == blocks`).
+    pub blocks: u32,
+}
+
 /// Block kind (1 byte). See module docs for the full table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -264,35 +281,24 @@ impl std::error::Error for InitError {}
     dead_code,
     reason = "All methods are exercised by benches and tests; allow until wired."
 )]
-/// The payload size of a block store. One store owns one payload size: edge blocks are
-/// `EDGES_PER_BLOCK x E::BYTES`, property blocks are a fixed `PROPERTY_BLOCK_BYTES`.
-pub(crate) trait BlockPayload {
-    /// Payload bytes per block.
-    const PAYLOAD_BYTES: usize;
-}
-
-/// Edge-record blocks: [`EDGES_PER_BLOCK`] records of the edge width.
-pub(crate) struct EdgePayload<E: CsrEdge>(PhantomData<E>);
-
-impl<E: CsrEdge> BlockPayload for EdgePayload<E> {
-    const PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * E::BYTES;
-}
-
-pub(crate) struct LtbRawBlockStore<M: Memory, P: BlockPayload> {
+pub(crate) struct LtbRawBlockStore<M: Memory, E: CsrEdge> {
     memory: M,
     r_max: Cell<u32>,
     block_capacity: Cell<u32>,
     tail_next: Cell<u32>,
     free_head: Cell<u32>,
     free_count: Cell<u32>,
-    payload_marker: PhantomData<P>,
+    record_marker: PhantomData<E>,
 }
 
-impl<M: Memory, P: BlockPayload> LtbRawBlockStore<M, P> {
-    /// Block payload in bytes, fixed by the store's payload policy.
-    pub(crate) const PAYLOAD_BYTES: usize = P::PAYLOAD_BYTES;
+impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
+    /// Block payload in bytes: one edge record per slot, `EDGES_PER_BLOCK` slots.
+    ///
+    /// Tree mode exists only for the 4-byte edge record (ADR 0088 §2), so this is
+    /// 4096 bytes in every reachable configuration.
+    pub(crate) const PAYLOAD_BYTES: usize = EDGES_PER_BLOCK * E::BYTES;
     /// Block stride in bytes: the per-block header plus the payload.
-    const STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + P::PAYLOAD_BYTES as u64;
+    const STRIDE: u64 = BLOCK_HEADER_BYTES as u64 + Self::PAYLOAD_BYTES as u64;
 
     // ----- header I/O ------------------------------------------------------
 
@@ -458,7 +464,7 @@ impl<M: Memory, P: BlockPayload> LtbRawBlockStore<M, P> {
             tail_next: Cell::new(0),
             free_head: Cell::new(NULL_BLOCK),
             free_count: Cell::new(0),
-            payload_marker: PhantomData,
+            record_marker: PhantomData,
         };
         store.write_header()?;
         Ok(store)
@@ -495,7 +501,7 @@ impl<M: Memory, P: BlockPayload> LtbRawBlockStore<M, P> {
             tail_next: Cell::new(header.tail_next),
             free_head: Cell::new(header.free_head),
             free_count: Cell::new(header.free_count),
-            payload_marker: PhantomData,
+            record_marker: PhantomData,
         })
     }
 
@@ -520,6 +526,36 @@ impl<M: Memory, P: BlockPayload> LtbRawBlockStore<M, P> {
 
     pub(crate) fn free_count(&self) -> u32 {
         self.free_count.get()
+    }
+
+    /// How the store's minted envelope is divided between the two trees.
+    ///
+    /// One shared block store has to make the per-purpose split visible somewhere, and
+    /// this is that place: one header read per minted block, so diagnostics only. The
+    /// counts are read-disjoint (`free + live == blocks`) and the two trees' entries
+    /// plus the free list add up to `blocks`, which is the invariant the split would
+    /// have enforced with a second region.
+    pub fn tree_block_stats(&self) -> TreeBlockStats {
+        let mut stats = TreeBlockStats {
+            blocks: self.tail_next.get(),
+            ..TreeBlockStats::default()
+        };
+        for id in 0..stats.blocks {
+            match self.read_block_header(id).kind {
+                BlockKind::Free => stats.free = stats.free.saturating_add(1),
+                BlockKind::Edge => stats.edge_leaves = stats.edge_leaves.saturating_add(1),
+                BlockKind::EdgeInterior => {
+                    stats.edge_interiors = stats.edge_interiors.saturating_add(1)
+                }
+                BlockKind::InlineProperty => {
+                    stats.property_leaves = stats.property_leaves.saturating_add(1)
+                }
+                BlockKind::InlinePropertyInterior => {
+                    stats.property_interiors = stats.property_interiors.saturating_add(1)
+                }
+            }
+        }
+        stats
     }
 
     pub(crate) fn free_head(&self) -> u32 {
@@ -896,7 +932,7 @@ mod tests {
     use crate::test_support::{LabelledTestEdge, TestEdge, vector_memory};
 
     /// The production 4-byte edge record fixes the 4096-byte block payload.
-    type Store = LtbRawBlockStore<crate::VectorMemory, EdgePayload<TestEdge>>;
+    type Store = LtbRawBlockStore<crate::VectorMemory, TestEdge>;
 
     fn block_offset_for_test(id: u32) -> u64 {
         Store::block_offset(id)
@@ -1119,7 +1155,7 @@ mod tests {
         // The payload is EDGES_PER_BLOCK * E::BYTES, not a global constant: a
         // wider record widens the block instead of shrinking how many edges a
         // block holds.
-        let ltb: LtbRawBlockStore<crate::VectorMemory, EdgePayload<LabelledTestEdge>> =
+        let ltb: LtbRawBlockStore<crate::VectorMemory, LabelledTestEdge> =
             LtbRawBlockStore::new(vector_memory()).expect("fresh wide ltb");
         assert_eq!(
             ltb.payload_bytes(),
@@ -1137,7 +1173,7 @@ mod tests {
     fn reopen_rejects_a_store_opened_with_another_edge_width() {
         let ltb = fresh();
         let memory = ltb.into_memory();
-        let err = LtbRawBlockStore::<_, EdgePayload<LabelledTestEdge>>::init(memory)
+        let err = LtbRawBlockStore::<_, LabelledTestEdge>::init(memory)
             .err()
             .expect("8-byte reopen must fail");
         assert_eq!(

@@ -122,6 +122,16 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+    // ADR 0088 §2: a tree block holds one edge record per slot and indexes its block
+    // ids in edge-record slots, so `payload = B * E::BYTES` and the id grid only
+    // coincide with the property tree's fixed 4096-byte / 4-byte-id geometry when the
+    // record is exactly 4 bytes. Wider records are refused here rather than given a
+    // second geometry (plan `p280`).
+    if E::BYTES != crate::labeled::tree_csr::PROPERTY_ID_BYTES {
+        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
+            edge_bytes: E::BYTES,
+        });
+    }
     let vertex = graph.vertices().get(vid);
     let BucketSearch::Found { bucket, .. } = graph.find_bucket(vid, &vertex, label)? else {
         return Err(LabeledOperationError::BucketNotFound { vid, label });
@@ -408,9 +418,13 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             E::BYTES >= 4,
             "tree root entries are u32 block ids, so E::BYTES must be at least 4"
         );
+        // `id_stride` is the tree's block-id grid: edge ids occupy one edge record
+        // each, property ids are packed at `PROPERTY_ID_BYTES` so that `B` of them
+        // exactly fill a property block (ADR 0088 §2).
         let mut root = |mut ids: Vec<u32>,
                         depth: u32,
-                        kind: BlockKind|
+                        kind: BlockKind,
+                        id_stride: usize|
          -> Result<Vec<u8>, LabeledOperationError> {
             for level in 1..depth {
                 let mut parents = Vec::new();
@@ -418,9 +432,10 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                     // An interior payload is a slot-strided root image: one u32
                     // block id in each edge-record slot, the same codec the slab
                     // root region uses (so a raw copy still moves a whole level).
-                    let mut bytes = vec![0u8; chunk.len() * E::BYTES];
-                    for id in chunk {
-                        super::tree_write::push_root_entry::<E>(&mut bytes, *id);
+                    let mut bytes = vec![0u8; chunk.len() * id_stride];
+                    for (index, id) in chunk.iter().enumerate() {
+                        let offset = index * id_stride;
+                        bytes[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
                     }
                     let header_level = if kind == BlockKind::InlinePropertyInterior {
                         level + 1
@@ -442,16 +457,17 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
             // block id in its slot's first four bytes, zero-padded to E::BYTES.
             let mut image = vec![0u8; ids.len() * E::BYTES];
             for (index, id) in ids.iter().enumerate() {
-                let offset = index * E::BYTES;
+                let offset = index * id_stride;
                 image[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
             }
             Ok(image)
         };
-        let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior)?;
+        let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior, E::BYTES)?;
         let property_root = root(
             property_ids,
             property_depth,
             BlockKind::InlinePropertyInterior,
+            crate::labeled::tree_csr::PROPERTY_ID_BYTES,
         )?;
         if edge_root.len() != edge_root_len as usize * E::BYTES
             || property_root.len() != property_root_len as usize * E::BYTES
@@ -1214,25 +1230,33 @@ pub mod tests {
 
     #[test]
     #[cfg(not(feature = "canbench"))]
-    fn wide_edge_insert_promotes_and_reads_the_record_back() {
-        // 4096 inserts fill the bucket to T_PROMOTE; the 4097th crosses the
-        // promote trigger. Every width promotes, and the whole record (not
-        // just its target) survives the tree round trip.
+    fn wide_edge_insert_is_rejected_at_promotion() {
+        // ADR 0088 §2 (plan `p281`): the 4-byte record is the only width whose block
+        // payload, id grid and fan-out agree, so promotion refuses a wider record
+        // instead of scaling the block. One non-default-label edge is enough - the
+        // guard runs before any block is minted.
         let graph = wide_edge_graph();
         let vid: VertexId = VertexId::from(0);
-        // A non-default label: the default-label insert would take the
-        // homogeneous-bypass row (no bucket), which cannot promote.
         let label = BucketLabelKey::directed_from_index(2);
-        for i in 0..4097u32 {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    vid,
-                    label,
-                    WideTestEdge::new(i, 7),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .expect("wide edge insert");
-        }
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                WideTestEdge::new(0, 7),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("slab insert");
+        let err = super::promote_bucket_to_tree_mode(&graph, vid, label)
+            .expect_err("a wide edge record must not promote");
+        assert!(
+            matches!(
+                err,
+                super::super::error::LabeledOperationError::TreeModeEdgeWidthUnsupported {
+                    edge_bytes: WideTestEdge::BYTES
+                }
+            ),
+            "expected TreeModeEdgeWidthUnsupported, got {err:?}"
+        );
         let vertex = graph.vertices().get(vid);
         let BucketSearch::Found { bucket, .. } =
             graph.find_bucket(vid, &vertex, label).expect("find")
@@ -1240,28 +1264,9 @@ pub mod tests {
             panic!("bucket missing");
         };
         assert!(
-            bucket.is_tree_mode(),
-            "wide edge bucket must promote past T_PROMOTE"
+            !bucket.is_tree_mode(),
+            "the rejected bucket stays in slab mode"
         );
-        assert_eq!(bucket.degree, 4097);
-        assert_eq!(bucket.stored_slots(), 4097);
-        let mut read = Vec::new();
-        let flow = graph
-            .visit_edges_with_inline_property(
-                vid,
-                label,
-                crate::labeled::graph::OutEdgeOrder::Ascending,
-                |slot, item| {
-                    read.push((slot.raw(), item.edge));
-                    std::ops::ControlFlow::<()>::Continue(())
-                },
-            )
-            .expect("visit tree-mode rows");
-        assert_eq!(flow, std::ops::ControlFlow::Continue(()));
-        assert_eq!(read.len(), 4097);
-        for (slot, edge) in read {
-            assert_eq!(edge, WideTestEdge::new(slot, 7), "slot {slot}");
-        }
     }
 }
 

@@ -96,6 +96,15 @@ pub enum LabeledOperationError {
         /// Requested label key.
         label: BucketLabelKey,
     },
+    /// Tree mode stores one edge record per LTB slot (`E::BYTES` bytes) and its block
+    /// ids in edge-record slots, so its geometry only closes when the record is exactly
+    /// `PROPERTY_ID_BYTES` = 4 bytes wide. Any other width is refused at promotion
+    /// instead of building a tree whose block payload, id grid and fan-out disagree
+    /// (ADR 0088 §2).
+    TreeModeEdgeWidthUnsupported {
+        /// `E::BYTES` of the edge type the graph was opened with.
+        edge_bytes: usize,
+    },
     /// Tree-mode `deepen` was requested but the bucket is already at the
     /// structural maximum depth (`MAX_DEPTH = 3`, per ADR 0088 §4). The
     /// fan-out of every interior level is `K = R_MAX = 1024`; once a
@@ -222,6 +231,10 @@ impl fmt::Display for LabeledOperationError {
                     "labeled bucket not found for promotion: vid={vid}, label={label:?}"
                 )
             }
+            Self::TreeModeEdgeWidthUnsupported { edge_bytes } => write!(
+                f,
+                "tree mode requires a 4-byte edge record, got {edge_bytes} bytes (ADR 0088 §2)"
+            ),
             Self::TreeDepthLimitReached { depth, max_depth } => write!(
                 f,
                 "tree-mode depth limit reached: depth={depth}, max_depth={max_depth}"
@@ -281,6 +294,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::VertexBucketCountCapReached { .. }
             | Self::LtbBlock(_)
             | Self::BucketNotFound { .. }
+            | Self::TreeModeEdgeWidthUnsupported { .. }
             | Self::TreeDepthLimitReached { .. }
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }

@@ -336,20 +336,23 @@ where
     let spans = crate::labeled::graph::compact::TreeSpans::of(bucket).ok_or(
         LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
     )?;
-    let (property_root_offset, _) = spans.property_root();
     // Depth-generic descent, mirroring `resolve_leaf_block_id` but
     // with interior radix B (block capacity) instead of the edge
     // tree's R_MAX hop radix and root offset after the edge root.
     let b = crate::labeled::tree_csr::B as u64;
     let depth = bucket.tree_mode_property_depth();
     let mut child_id: u32 = {
-        // Root hop: index into the property root region.
+        // Root hop: index into the property root region. Its ids are packed at
+        // `PROPERTY_ID_BYTES`, so the address is `(slot, byte offset)`, not a slot index.
         let divisor = b.pow(depth - 1);
-        let level_idx = property_leaf_index / divisor;
+        let level_idx = u32::try_from(property_leaf_index / divisor).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
+        let (slot, byte_offset) = spans.property_root_entry(level_idx);
         let mut id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(property_root_offset + level_idx, &mut id_bytes);
+            .read_from_slot_bytes(slot, byte_offset, &mut id_bytes);
         u32::from_le_bytes(id_bytes)
     };
     for j in 1..depth {
@@ -358,7 +361,11 @@ where
         let mut child_id_bytes = [0u8; 4];
         graph
             .ltb()
-            .read_payload_partial(child_id, level_idx * 4, &mut child_id_bytes)
+            .read_payload_partial(
+                child_id,
+                level_idx * crate::labeled::tree_csr::PROPERTY_ID_BYTES,
+                &mut child_id_bytes,
+            )
             .map_err(LabeledOperationError::LtbBlock)?;
         child_id = u32::from_le_bytes(child_id_bytes);
     }

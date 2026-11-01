@@ -2399,10 +2399,7 @@ fn tcsr_promote_inline_property_w32() -> canbench_rs::BenchResult {
 /// them by name.
 const LTB_REOPEN_ENVELOPE: u32 = 4096;
 
-fn seed_ltb_free_list(
-    n: u32,
-) -> LtbRawBlockStore<crate::VectorMemory, crate::labeled::ltb_raw_block_store::EdgePayload<TestEdge>>
-{
+fn seed_ltb_free_list(n: u32) -> LtbRawBlockStore<crate::VectorMemory, TestEdge> {
     let ltb = LtbRawBlockStore::new(vector_memory()).expect("ltb new");
     let mut ids = Vec::with_capacity(n as usize);
     for _ in 0..n {

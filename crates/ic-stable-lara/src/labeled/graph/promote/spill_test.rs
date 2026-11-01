@@ -351,21 +351,29 @@ fn promotion_retained_below_cap_rejects_without_mutation() {
         before
     );
 }
-#[test]
-fn promotion_retained_wide_promotes_and_keeps_rows() {
-    let outer = retained::<10>(crate::labeled::spill_run_store::MAX_ROWS);
+/// ADR 0088 §2: a tree block holds one edge record per slot and indexes its block ids in
+/// edge-record slots, so only the 4-byte record gives a geometry that closes. A wider
+/// record is refused at promotion rather than given a second geometry.
+fn assert_wide_promotion_rejected<const N: usize>() {
+    let outer = retained::<N>(crate::labeled::spill_run_store::MAX_ROWS);
     let g = outer.forward();
     let label = g.default_label();
-    let old = bucket(g, label);
-    let run = g.edges().spill_mint(old.edge_spill_run()).unwrap();
-    let extent = old.stored_slots() + g.edges().spill_used_len(run);
-    let before = rows(g, label, super::super::OutEdgeOrder::Ascending);
-    promote_bucket_to_tree_mode(g, VertexId::from(0), label).unwrap();
-    let after = bucket(g, label);
-    assert!(after.is_tree_mode());
-    assert_eq!(after.stored_slots(), extent);
-    assert_eq!(after.degree(), old.degree());
-    assert_tree(g, label, extent, &before);
+    let err = promote_bucket_to_tree_mode(g, crate::VertexId::from(0), label)
+        .expect_err("a wide edge record must not promote");
+    assert!(
+        matches!(
+            err,
+            crate::labeled::graph::error::LabeledOperationError::TreeModeEdgeWidthUnsupported {
+                edge_bytes
+            } if edge_bytes == N
+        ),
+        "expected TreeModeEdgeWidthUnsupported({N}), got {err:?}"
+    );
+}
+
+#[test]
+fn promotion_retained_wide_is_rejected() {
+    assert_wide_promotion_rejected::<10>();
 }
 fn distinct_sidecar(target: u32, width: u16) -> Vec<u8> {
     let identity = (u64::from(target) + 1).to_le_bytes();
@@ -702,8 +710,8 @@ fn cascade_retained_prefix_ownership_four_bytes() {
     check_cascade_ownership::<4>();
 }
 #[test]
-fn cascade_retained_prefix_ownership_ten_bytes() {
-    check_cascade_ownership::<10>();
+fn cascade_retained_prefix_ownership_ten_bytes_is_rejected() {
+    assert_wide_promotion_rejected::<10>();
 }
 
 fn check_public_capacity(holes: u32) {
