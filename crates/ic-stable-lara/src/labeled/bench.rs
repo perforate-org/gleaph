@@ -26,7 +26,10 @@ use std::{cell::Cell, hint::black_box};
 struct BenchEdge(u32);
 
 impl CsrEdge for BenchEdge {
-    const BYTES: usize = 10;
+    // Tree mode is the 4-byte record (ADR 0088 §2), and these benches seed hubs past
+    // `T_PROMOTE`, so the bench edge has to be the production width: a wider record is
+    // rejected at promotion rather than scaling the block.
+    const BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
         Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
@@ -34,7 +37,6 @@ impl CsrEdge for BenchEdge {
 
     fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
-        bytes[4..10].fill(0);
     }
 
     fn neighbor_vid(&self) -> VertexId {
@@ -2035,8 +2037,13 @@ fn bench_l_uo_tomb_h_del_1024() -> canbench_rs::BenchResult {
 
 /// ADR 0052 Slice 3 control: the same tombstone-heavy fixture with Insertion
 /// placement, which must never reuse an interior tombstone (ADR 0052 §6) and
-/// instead appends. Keeps the Insertion scalar path regression-visible against
-/// the Unordered reuse path.
+/// instead appends. Keeps the Insertion path regression-visible against the
+/// Unordered reuse path.
+///
+/// A hub of `STAGE2_HUB_DEGREE = 1024` rows is at `T_PROMOTE`, so under the 4-byte
+/// tree-mode contract this bucket promotes and the measured append is the tree-mode
+/// tail append (block mint plus root growth every `B` inserts), not the slab append
+/// the pre-P3 fixture measured with a 10-byte record.
 #[bench(raw)]
 fn bench_l_ins_ap_hub_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
