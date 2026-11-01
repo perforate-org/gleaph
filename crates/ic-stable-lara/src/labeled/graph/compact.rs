@@ -5178,6 +5178,38 @@ where
         Ok(())
     }
 
+    /// Relocates the leaf's block with `extra_slots` of room beyond its residents, so a
+    /// caller that is about to place a span there does not have to relocate twice.
+    pub(crate) fn relocate_labeled_leaf_physical_block_with_room(
+        &self,
+        src: VertexId,
+        extra_slots: u64,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let _relocate_guard = LabeledLeafRelocateGuard::new();
+        #[cfg(test)]
+        physical_layout_event(PhysicalLayoutEvent::Prepare(src));
+        let (source, canonical) = self.capture_physical_layout_source(src)?;
+        let target = self.plan_labeled_leaf_relocation_from(src, &source, &canonical)?;
+        let new_len = target
+            .new_len
+            .checked_add(extra_slots)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let mut preparation = self.prepare_physical_layout_from(
+            src,
+            source,
+            canonical,
+            PhysicalLayoutOperation::LeafSlide {
+                src,
+                destination: LeafPhysicalDestination::Relocate(new_len),
+            },
+        )?;
+        preparation.ready()?.publish();
+        Ok(())
+    }
+
     pub(crate) fn relocate_labeled_leaf_physical_block(
         &self,
         src: VertexId,
@@ -8203,7 +8235,7 @@ mod tests {
         // cover-extend would tail-grow live spans into the would-be adjacent
         // free ranges, breaking the void-both-sides coalescing premise).
         graph
-            .ensure_labeled_leaf_block_pinned(vid)
+            .ensure_labeled_leaf_block_pinned(vid, 16)
             .expect("pin before promotions");
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
         for target in 0..block_len {
@@ -8470,26 +8502,24 @@ mod tests {
         // never do is land the span half-inside a block or across a mate — the
         // straddle case is what corrupted the tiling.
         let hub = VertexId::from(15);
-        let hub_vertex = graph.vertices().get(hub);
-        let hub_base = graph
-            .read_vertex_label_buckets(&hub_vertex)
-            .unwrap()
-            .iter()
-            .find(|bucket| !bucket.is_tiny_mode())
-            .map(|bucket| bucket.edge_start())
-            .expect("hub owns a slab span after the fold");
-        let (leaf_start, leaf_len) = graph
-            .labeled_leaf_physical_range(hub)
+        // The cover is the hub's slice, not `first base + stored_slots`: the slice is
+        // derived from the starts and cannot drift when the fold moves a resident.
+        let arena = crate::labeled::graph::leaf_arena::LeafArena::capture(&graph, hub)
             .unwrap()
             .expect("hub leaf stays pinned");
-        let hub_end = hub_base + u64::from(hub_vertex.stored_slots);
-        let leaf_end = leaf_start + leaf_len;
-        let inside = hub_base >= leaf_start && hub_end <= leaf_end;
-        let outside = hub_end <= leaf_start || hub_base >= leaf_end;
+        let (slice_start, slice_end) = arena.slice(hub).expect("hub owns a slice after the fold");
+        let (extent_start, extent_len) = arena.extent();
         assert!(
-            inside || outside,
-            "hub cover must not straddle its leaf block: base={hub_base} end={hub_end} leaf=({leaf_start}, {leaf_len})"
+            slice_start >= extent_start && slice_end <= extent_start + extent_len,
+            "hub slice {slice_start}..{slice_end} must stay inside its extent {extent_start}..{}",
+            extent_start + extent_len
         );
+        for (region_start, region_end) in arena.leaf_slice(hub).regions() {
+            assert!(
+                region_start >= slice_start && region_end <= slice_end,
+                "hub region {region_start}..{region_end} must stay inside its slice {slice_start}..{slice_end}"
+            );
+        }
     }
 
     #[test]

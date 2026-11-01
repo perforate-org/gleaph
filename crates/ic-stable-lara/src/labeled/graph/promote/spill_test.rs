@@ -1463,6 +1463,10 @@ fn root_geometry_normal_promotion_keeps_cover_and_pin() {
         let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
         let peer = graph.push_vertex(LabeledVertex::default()).unwrap();
         assert_eq!(owner, VertexId::from(0));
+        // The 32-vertex leaf's default extent is `32 x 32 = 1024` slots, which the
+        // owner's 32 + 1024 seeded rows overflow. Take a larger extent first so the
+        // content never has to leave the leaf.
+        graph.ensure_labeled_leaf_block_pinned(owner, 4096).unwrap();
         let target = BucketLabelKey::from_raw(target_raw);
         let retained = BucketLabelKey::from_raw(5 - target_raw);
         let target_seed: Vec<_> = (0..32)

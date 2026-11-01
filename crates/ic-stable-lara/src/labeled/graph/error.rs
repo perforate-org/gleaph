@@ -135,6 +135,16 @@ pub enum LabeledOperationError {
         /// Structural cap (`R_MAX = 1024` per ADR 0088 §4).
         cap: u32,
     },
+    /// The leaf's extent cannot take the request: no free run in the vertex's slice, no
+    /// room to grow the extent, and relocation could not make one. A resident is never
+    /// allocated outside the leaf (ADR 0097 I5), so this is the fail-closed answer rather
+    /// than a fall back to the global free-span store.
+    LeafArenaExhausted {
+        /// The vertex whose region could not be placed.
+        vid: VertexId,
+        /// Slots the request needed.
+        need: u64,
+    },
     /// Plan 0326 LPB-in-tree (F-2 cap guard): the property root
     /// region (in the combined `[edge root | property root]` span)
     /// would exceed `R_MAX = 1024` entries on the next property-leaf
@@ -239,6 +249,11 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "tree-mode depth limit reached: depth={depth}, max_depth={max_depth}"
             ),
+            Self::LeafArenaExhausted { vid, need } => write!(
+                f,
+                "leaf arena exhausted: {vid:?} cannot place {need} slot(s) inside its leaf \
+                 without leaving it"
+            ),
             Self::TreeRootCapacityReached {
                 stored_slots,
                 root_len,
@@ -296,6 +311,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::BucketNotFound { .. }
             | Self::TreeModeEdgeWidthUnsupported { .. }
             | Self::TreeDepthLimitReached { .. }
+            | Self::LeafArenaExhausted { .. }
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }
             | Self::InlinePropertyMaterializeDeferredRequired { .. } => None,

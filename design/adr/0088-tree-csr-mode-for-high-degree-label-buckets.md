@@ -359,6 +359,8 @@ PROPERTY_ID_BYTES = 4                               (property block-id width; B 
 edge root len     = ceil(S / B^d)                   d = derived depth (§4)
 property root len = ceil(S / (K·B^(d'−1)))          entries, one edge slot each (§2 below)
 span width        = edge root len + property root len      (gap = 0, §3)
+  arena region      = span width + growth gap                (the leaf grants the gap,
+                                                              the span stays gap-exact)
 ```
 
 **Edge width (edge blocks):** tree mode stores one `E::BYTES`-wide edge record
@@ -459,6 +461,61 @@ Every per-bucket leaf region is thus constant-bounded, which: caps the
 relocation/rebalance unit, removes giant contiguous allocations from both the
 edge slab and the inline-property byte slab (retired spans become small and
 bin-friendly), and closes the oversized-span placement regime.
+
+#### Leaf arena: four spaces, one owner each (2026-11-02, Plan 0405 `p291`)
+
+The leaf block is described with exactly four nested spaces and three kinds of
+unused space. Earlier text in this ADR says "cover"; that word is retired in the
+arena because it meant both the slice and `first_base + stored_slots`, and the
+second drifts as soon as a resident moves. Read "cover" below as **slice**.
+
+```
+extent      [start, end)                 the leaf's reservation; counts.total mirrors it
+  slice     [slice.start, slice.end)     one vertex's exclusive space
+    region  [region.start, region.end)   one bucket: content + gap
+      content                            what the bucket really wrote
+```
+
+| Term         | Definition                    | Who may use it                                                        |
+| ------------ | ----------------------------- | --------------------------------------------------------------------- |
+| gap          | `region - content`            | the bucket itself, in place, with no arena call                        |
+| free run     | `slice - regions`, maximal    | the slice: a new region, or an existing region's growth                |
+| leaf slack   | `extent - slices`             | nobody; only a layout rewrite reclaims it                              |
+
+A slice starts at its vertex's first region, so a slice has no leading free run;
+the space before the first slice is leaf slack. A free run is bounded by the
+successor's first region start, or by the extent end for the last vertex. Slices,
+regions and free runs are derived per call and never stored - only the extent is.
+
+**For tree buckets, span and region differ.** The published span is gap-exact
+(`edge root len + property root len`, §3); the region the arena grants it is
+`span + growth gap`, in every mode. A tree bucket therefore grows its root
+region without needing a new region for the first `gap` slots.
+
+Invariants (E1-E5, the leaf-layout contract):
+
+- **E1** A leaf extent contains its slices, which contain their regions.
+- **E2** Slices are strictly increasing and disjoint; the last ends at the extent end.
+- **E3** `[extent_start, first_start)` is unowned leaf slack, reclaimed only by a
+  layout rewrite.
+- **E4** The slice is the vertex's exclusive space; `stored_slots` is a content
+  width and never defines it.
+- **E5** Placement happens inside the vertex's own slice; a slice that is too
+  small grows the extent or relocates the leaf, it never borrows a neighbour's.
+
+Ownership is split along the same line: `LeafArena` owns the extent (creation,
+growth, relocation, and it is the only caller of the free-span store), while
+`LeafSlice` owns one vertex's slice and can only report that a request does not
+fit.
+
+**Fail-closed growth ladder.** `reserve` tries, in cost order: a free run in the
+slice; growing the extent from the last resident; relocating the leaf's block.
+When none applies it returns `LeafArenaExhausted` and no resident is allocated
+from the free-span store - the store is reached only for an extent (create, grow,
+move). Two operations stay distinct: growing an existing region in place (a
+replace, used by promotion) and placing a new region beside a live source (used
+by root growth). Collapsing them into one `need` is what made the earlier
+attempts unreadable.
 
 **Growth ladder and the role of spill (2026-10-30, Plan 0405 `p249`).** A tree
 span carries no slack, so it grows by exactly the slots the derived root needs

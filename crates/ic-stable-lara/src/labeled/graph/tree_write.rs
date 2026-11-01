@@ -424,7 +424,7 @@ where
                             old_combined_start,
                             u64::from(old_combined_len),
                         );
-                        let new_combined = match super::leaf_arena::LeafArena::reserve(
+                        let new_combined = match super::leaf_arena::LeafArena::reserve_relocating(
                             graph,
                             vid,
                             u64::from(new_combined_len),
@@ -433,7 +433,7 @@ where
                             Ok(s) => s,
                             Err(e) => {
                                 release_property_plan::<E, M>(graph, &plan);
-                                return Err(e.into());
+                                return Err(e);
                             }
                         };
                         let mut combined_bytes: Vec<u8> =
@@ -688,7 +688,7 @@ pub(crate) fn tree_mode_property_deepen<E, M>(
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     debug_assert!(bucket.is_tree_mode());
@@ -766,7 +766,7 @@ where
     }
     debug_assert_eq!(cursor, old_root_len as usize);
     // 4. Allocate the new combined span (avoiding the old one).
-    let new_combined_start = match super::leaf_arena::LeafArena::reserve(
+    let new_combined_start = match super::leaf_arena::LeafArena::reserve_relocating(
         graph,
         vid,
         u64::from(new_combined_len),
@@ -777,7 +777,7 @@ where
             for &id in interior_ids.iter().rev() {
                 let _ = graph.ltb().release(id);
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     // 5. Build the new combined bytes: [old edge root | new interior ids].
@@ -847,7 +847,7 @@ pub(crate) fn ensure_property_tree_depth<E, M>(
     next_stored: u32,
 ) -> Result<LabelBucket, LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     let w = bucket.inline_property_byte_width();
@@ -1350,15 +1350,19 @@ where
     let new_combined_start = if in_place {
         old_combined_start
     } else {
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_combined_len), source)
-        {
+        match super::leaf_arena::LeafArena::reserve_relocating(
+            graph,
+            vid,
+            u64::from(new_combined_len),
+            source,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
                 if let Some(p) = &plan {
                     release_property_plan::<E, M>(graph, p);
                 }
-                return Err(e.into());
+                return Err(e);
             }
         }
     };
@@ -1693,7 +1697,7 @@ where
                         old_combined_start,
                         u64::from(old_combined_len),
                     );
-                    let new_combined = match super::leaf_arena::LeafArena::reserve(
+                    let new_combined = match super::leaf_arena::LeafArena::reserve_relocating(
                         graph,
                         vid,
                         u64::from(new_combined_len),
@@ -1703,7 +1707,7 @@ where
                         Err(e) => {
                             let _ = graph.ltb().release(new_leaf_id);
                             release_property_plan::<E, M>(graph, p);
-                            return Err(e.into());
+                            return Err(e);
                         }
                     };
                     let mut combined_bytes: Vec<u8> =
@@ -1849,7 +1853,7 @@ where
     let old_combined_start = bucket.edge_start();
     let source =
         super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
-    let new_edge_start = match super::leaf_arena::LeafArena::reserve(
+    let new_edge_start = match super::leaf_arena::LeafArena::reserve_relocating(
         graph,
         vid,
         u64::from(new_combined_len),
@@ -1862,7 +1866,7 @@ where
             if let Some(p) = &plan {
                 release_property_plan::<E, M>(graph, p);
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
@@ -2409,7 +2413,7 @@ pub(crate) fn tree_mode_deepen<E, M>(
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     debug_assert!(bucket.is_tree_mode());
@@ -2693,7 +2697,7 @@ pub(crate) fn tree_mode_flatten<E, M>(
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     debug_assert!(bucket.is_tree_mode());
@@ -2731,11 +2735,12 @@ where
     let source =
         super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
     // 2. Allocate the new root region span.
-    let new_edge_start =
-        match super::leaf_arena::LeafArena::reserve(graph, vid, u64::from(new_root_len), source) {
-            Ok(s) => s,
-            Err(e) => return Err(LabeledOperationError::from(e)),
-        };
+    let new_edge_start = super::leaf_arena::LeafArena::reserve_relocating(
+        graph,
+        vid,
+        u64::from(new_root_len),
+        source,
+    )?;
     // 3. Write the leaf-id array to the new root region.
     let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * E::BYTES);
     for &id in &leaf_ids {
@@ -2829,7 +2834,7 @@ where
 ///    `visit_tree_mode_label_bucket_edges`, filtering tombstones
 ///    (the visit yields ALL slot positions; tombstones are filtered
 ///    inside the visit closure using `E::is_tombstone_edge`).
-/// 2. **Reserve**: `LeafArena::reserve(graph, vid, degree as u64, None)`.
+/// 2. **Reserve**: `LeafArena::reserve_relocating(graph, vid, degree as u64, None)`.
 /// 3. **Write**: copy the live edges contiguously into the new span.
 /// 4. **Publish**: write the new slab-mode descriptor
 ///    (`with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
@@ -2936,11 +2941,12 @@ where
 
     // Phase 2: Reserve new slab span of exactly `degree` slots,
     // avoiding the live root region (see comment above).
-    let new_edge_start =
-        match super::leaf_arena::LeafArena::reserve(graph, src, u64::from(degree), avoid_range) {
-            Ok(s) => s,
-            Err(e) => return Err(LabeledOperationError::from(e)),
-        };
+    let new_edge_start = super::leaf_arena::LeafArena::reserve_relocating(
+        graph,
+        src,
+        u64::from(degree),
+        avoid_range,
+    )?;
 
     // Phase 3: Write the live edges contiguously.
     let write_bytes = {

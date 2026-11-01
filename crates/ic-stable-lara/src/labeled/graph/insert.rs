@@ -681,7 +681,12 @@ where
         // slab growth paths, which pin on demand. Wider edge types keep the
         // anticipatory pin below.
         if E::BYTES != 4 {
-            self.ensure_labeled_leaf_block_pinned(src)?;
+            self.ensure_labeled_leaf_block_pinned(
+                src,
+                super::leaf_arena::labeled_leaf_physical_block_len(
+                    self.edges.header().segment_size.max(1),
+                ),
+            )?;
         }
         Ok(())
     }
@@ -930,7 +935,12 @@ where
         // Pin even the first bucket's leaf before publishing its initial position. The
         // pin owns physical capacity and PMA total counts; the first bucket receives
         // only the configured per-vertex initial quota from that block.
-        self.ensure_labeled_leaf_block_pinned(src)?;
+        self.ensure_labeled_leaf_block_pinned(
+            src,
+            super::leaf_arena::labeled_leaf_physical_block_len(
+                self.edges.header().segment_size.max(1),
+            ),
+        )?;
 
         // Later buckets are inserted with `stored_slots = 0`. Their edge_start is
         // placed at the successor bucket's edge_start (or the preceding bucket's end
@@ -1224,7 +1234,12 @@ where
                 // the first-fit free run. Tiling-safe: nothing pre-exists;
                 // publishing edge_start below sets the exact cover. The pin
                 // owns PMA total (no bump here).
-                let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(src)?;
+                let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(
+                    src,
+                    super::leaf_arena::labeled_leaf_physical_block_len(
+                        self.edges.header().segment_size.max(1),
+                    ),
+                )?;
                 if let Some(base) = self.find_free_labeled_leaf_edge_base(
                     src,
                     leaf_start,

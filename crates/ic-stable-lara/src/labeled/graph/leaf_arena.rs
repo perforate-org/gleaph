@@ -10,7 +10,7 @@ use crate::{
         edge::{counts::segment_span_density, span_meta::SPAN_PHYSICAL_UNASSIGNED},
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
 
@@ -96,6 +96,246 @@ pub(crate) struct LeafArena<'a, E: CsrEdge, M: Memory> {
     extent: (u64, u64),
 }
 
+/// The gap a region carries on top of its content: 12.5%, at least one slot.
+fn gap(content: u64) -> u64 {
+    (content / 8).max(1)
+}
+
+/// One vertex's slice: the exclusive space it may place its buckets' regions in.
+///
+/// A view, not state. The slice bounds are derived from the leaf's first-region starts, so
+/// they cannot drift. It can report that a request does not fit and nothing else: growing
+/// the extent or relocating the leaf belongs to [`LeafArena`].
+pub(crate) struct LeafSlice<'a, 'b, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    arena: &'b LeafArena<'a, E, M>,
+    vid: VertexId,
+}
+
+impl<'a, 'b, E, M> std::ops::Deref for LeafSlice<'a, 'b, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Target = LeafArena<'a, E, M>;
+
+    fn deref(&self) -> &Self::Target {
+        self.arena
+    }
+}
+
+impl<'a, 'b, E, M> LeafSlice<'a, 'b, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    fn new(arena: &'b LeafArena<'a, E, M>, vid: VertexId) -> Self {
+        Self { arena, vid }
+    }
+
+    /// What this vertex's buckets actually wrote: slab rows or tree root ids, per bucket.
+    /// The width is the bucket's own; the space granted to it is the region.
+    pub(crate) fn contents(&self) -> Vec<(u64, u64)> {
+        // A vertex that was never materialized owns no content. The arena is also driven
+        // by buckets described directly in fixtures, which have no vertex record; the
+        // contract is about what a vertex wrote, and such a vertex wrote nothing.
+        if u64::from(self.vid) >= u64::from(self.graph.vertices.len()) {
+            return Vec::new();
+        }
+        let vertex = self.graph.vertices.get(self.vid);
+        if vertex.is_default_edge_labeled() {
+            let base = vertex.base_slot_start();
+            let end = base.saturating_add(u64::from(vertex.stored_slots));
+            return if end > base {
+                vec![(base, end)]
+            } else {
+                Vec::new()
+            };
+        }
+        let Ok(buckets) = self.graph.read_vertex_label_buckets(&vertex) else {
+            return Vec::new();
+        };
+        buckets
+            .iter()
+            .filter_map(super::compact::bucket_content_region)
+            .filter(|(_, slots)| *slots > 0)
+            .map(|(start, slots)| (start, start + u64::from(slots)))
+            .collect()
+    }
+
+    /// The space granted to each of this vertex's buckets: its content plus the gap it may
+    /// grow into without asking the arena.
+    pub(crate) fn regions(&self) -> Vec<(u64, u64)> {
+        self.contents()
+            .into_iter()
+            .map(|(start, end)| (start, end.saturating_add(gap(end - start))))
+            .collect()
+    }
+
+    pub(crate) fn place_leaf_wide(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
+        let extent_end = checked_add_slot_index(self.extent.0, self.extent.1)?;
+        let cover_width = self.tile_width_with(avoid.0, need);
+        let mut spans = self.used_spans();
+        spans.push(avoid);
+        spans.sort_by_key(|(start, _)| *start);
+        let mut cursor = self.extent.0;
+        for (start, end) in &spans {
+            if *start > cursor
+                && start.saturating_sub(cursor) >= need
+                && checked_add_slot_index(cursor, cover_width).is_some_and(|c| c <= *start)
+            {
+                return Some(cursor);
+            }
+            if *end > cursor {
+                cursor = *end;
+            }
+        }
+        if checked_add_slot_index(cursor, need).is_some_and(|end| end <= extent_end)
+            && checked_add_slot_index(cursor, cover_width).is_some_and(|end| end <= extent_end)
+        {
+            Some(cursor)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn place(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
+        if need == 0 {
+            return None;
+        }
+        let (slice_start, slice_end) = self.slice(self.vid)?;
+        // The cover after this placement is `base + tile`, and the tile is the vertex's
+        // post-operation content plus its gaps. A region that fits `need` but not the tile
+        // would push the cover into the next vertex.
+        let cover_width = self.tile_width_with(avoid.0, need);
+        let limit = self
+            .next_region_start_above(avoid.0)
+            .map_or(slice_end, |next| next.min(slice_end));
+        // The tile is laid out from the vertex's first region, not from wherever this one
+        // lands: the guard reads the declared width as `first_start + width`. A vertex
+        // that owns no region yet starts at the placement itself.
+        let anchor = self
+            .contents()
+            .into_iter()
+            .map(|(start, _)| start)
+            .min()
+            .unwrap_or(avoid.0);
+        let fits = |base: u64| -> bool {
+            let first = anchor.min(base);
+            checked_add_slot_index(base, need).is_some_and(|end| end <= limit)
+                && checked_add_slot_index(first, cover_width).is_some_and(|end| end <= slice_end)
+        };
+        let mut spans = self.regions();
+        spans.push(avoid);
+        spans.sort_by_key(|(start, _)| *start);
+        let mut cursor = slice_start;
+        for (start, end) in &spans {
+            if *end <= cursor {
+                continue;
+            }
+            if *start > cursor && start.saturating_sub(cursor) >= need && fits(cursor) {
+                return Some(cursor);
+            }
+            if *end > cursor {
+                cursor = *end;
+            }
+        }
+        fits(cursor).then_some(cursor)
+    }
+    /// The vertex's tile width if one bucket's content became `content_after`: every
+    /// bucket's `content + gap(content)`, with the bucket whose region starts at
+    /// `target_start` taking the new content. This is the width the cover will have, so a
+    /// placement must fit it, not just the region.
+    pub(crate) fn tile_width_with(&self, target_start: u64, content_after: u64) -> u64 {
+        let mut total = 0u64;
+        let mut seen_target = false;
+        for (start, end) in self.contents() {
+            let width = if start == target_start {
+                seen_target = true;
+                content_after.saturating_add(gap(content_after))
+            } else {
+                end.saturating_sub(start).saturating_add(gap(end - start))
+            };
+            total = total.saturating_add(width);
+        }
+        if !seen_target {
+            total = total
+                .saturating_add(content_after)
+                .saturating_add(gap(content_after));
+        }
+        total
+    }
+    /// Smallest region start of `vid` strictly above `after`.
+    fn next_region_start_above(&self, after: u64) -> Option<u64> {
+        self.regions()
+            .into_iter()
+            .map(|(start, _)| start)
+            .filter(|start| *start > after)
+            .min()
+    }
+    /// Lowest free base in this pin offering `need` slots, keeping `avoid` (the caller's own
+    /// live source) intact. Unlike `free_base`, the vertex's own span is not treated as free:
+    /// the caller still has to read it before it can be overwritten.
+    /// First fit of `need` slots inside the vertex's **slice**, below the next region's
+    /// start so the vertex's buckets keep their label order. The caller's own regions are
+    /// occupied; `avoid` (its live source) is kept intact.
+    /// First fit of `need` slots anywhere in the leaf (the whole extent minus the
+    /// occupied spans), for a vertex that owns no content yet and therefore has no slice
+    /// to be exclusive about.
+    /// Grows the region at `source_start` to `new_content + gap(new_content)` **in place**,
+    /// returning its base. This is the replace operation: the region's own content changes,
+    /// so nothing is placed - the slots after it have to be this vertex's own (its gap,
+    /// then a free run before the next region) and stay inside the slice. `None` means the
+    /// caller must place a region elsewhere or grow the extent.
+    pub(crate) fn grow_region(&self, source_start: u64, new_content: u64) -> Option<u64> {
+        let (slice_start, slice_end) = self.slice(self.vid)?;
+        if source_start < slice_start {
+            return None;
+        }
+        let width = new_content.saturating_add(gap(new_content));
+        let target_end = checked_add_slot_index(source_start, width)?;
+        if target_end > slice_end {
+            return None;
+        }
+        // The slots between the region's old end and its new end must be this vertex's own.
+        let content = self.contents();
+        for (start, end) in content {
+            if start == source_start {
+                continue;
+            }
+            if start < target_end && source_start < end {
+                return None;
+            }
+        }
+        // The tile after the growth must still fit the slice, anchored at the vertex's
+        // first region: that is where the declared width is read from.
+        let first = self
+            .contents()
+            .into_iter()
+            .map(|(start, _)| start)
+            .min()
+            .map_or(source_start, |first| first.min(source_start));
+        if checked_add_slot_index(first, self.tile_width_with(source_start, new_content))?
+            > slice_end
+        {
+            return None;
+        }
+        Some(source_start)
+    }
+    /// Leaf heap allocation: best fit over the per-bucket resident set, keeping `avoid` intact.
+    pub(crate) fn allocate(&self, len: u64, avoid: Option<(u64, u64)>) -> Option<u64> {
+        let avoid = avoid?;
+        if self.slice(self.vid).is_some() {
+            return self.place(len, avoid);
+        }
+        // No content yet: the vertex has no slice to be exclusive about, so its first
+        // region comes from the leaf's own free space (which then becomes its slice).
+        self.place_leaf_wide(len, avoid)
+    }
+}
+
 impl<'a, E, M> LeafArena<'a, E, M>
 where
     E: CsrEdge,
@@ -123,19 +363,13 @@ where
     }
 
     /// `(start_slot, block_len)` of the pinned block.
-    pub(crate) fn extent(&self) -> (u64, u64) {
-        self.extent
+    /// The vertex's slice: its exclusive space inside this leaf.
+    pub(crate) fn leaf_slice(&self, vid: VertexId) -> LeafSlice<'_, '_, E, M> {
+        LeafSlice::new(self, vid)
     }
 
-    /// Slab spans owned by the other labeled vertices of this leaf.
-    pub(crate) fn occupied(&self, exclude: VertexId) -> Vec<(u64, u64)> {
-        // `occupied_spans` derives the leaf from `vid`; any member resolves the same leaf,
-        // and `exclude` is the only vertex-specific input.
-        let any_member = self
-            .leaf
-            .saturating_mul(self.graph.edges.header().segment_size.max(1));
-        self.graph
-            .labeled_leaf_occupied_spans(VertexId::from(any_member), exclude)
+    pub(crate) fn extent(&self) -> (u64, u64) {
+        self.extent
     }
 
     /// The vertex's resident slab span: first non-tiny bucket base plus `stored_slots`.
@@ -187,16 +421,6 @@ where
         }
         spans.sort_unstable();
         spans
-    }
-
-    /// Leaf heap allocation: best fit over the per-bucket resident set, keeping `avoid` intact.
-    pub(crate) fn allocate(
-        &self,
-        vid: VertexId,
-        len: u64,
-        avoid: Option<(u64, u64)>,
-    ) -> Option<u64> {
-        self.place(vid, len, avoid?)
     }
 
     /// Residents inside the block and pairwise disjoint.
@@ -259,43 +483,6 @@ where
             .map(|(_, range)| range)
     }
 
-    /// The regions one vertex's buckets occupy (its content). Tiny buckets own nothing.
-    pub(crate) fn regions(&self, vid: VertexId) -> Vec<(u64, u64)> {
-        let vertex = self.graph.vertices.get(vid);
-        if vertex.is_default_edge_labeled() {
-            let base = vertex.base_slot_start();
-            let end = base.saturating_add(u64::from(vertex.stored_slots));
-            return if end > base {
-                vec![(base, end)]
-            } else {
-                Vec::new()
-            };
-        }
-        let Ok(buckets) = self.graph.read_vertex_label_buckets(&vertex) else {
-            return Vec::new();
-        };
-        buckets
-            .iter()
-            .filter_map(super::compact::bucket_content_region)
-            .filter(|(_, slots)| *slots > 0)
-            .map(|(start, slots)| (start, start + u64::from(slots)))
-            .collect()
-    }
-
-    /// End of the right-most content in the leaf.
-    pub(crate) fn last_region_end(&self) -> u64 {
-        let seg = self.graph.edges.header().segment_size.max(1);
-        let start_vid = self.leaf.saturating_mul(seg);
-        let end_vid = start_vid.saturating_add(seg).min(self.graph.vertices.len());
-        let mut last = self.extent.0;
-        for ordinal in start_vid..end_vid {
-            for (_, end) in self.regions(VertexId::from(ordinal)) {
-                last = last.max(end);
-            }
-        }
-        last
-    }
-
     pub(crate) fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let extent_end = self.extent.0.saturating_add(self.extent.1);
@@ -325,7 +512,7 @@ where
         // Every region lives in its own vertex's slice, and regions of one slice do not
         // overlap.
         for (vid, (slice_start, slice_end)) in &slices {
-            let regions = self.regions(*vid);
+            let regions = self.leaf_slice(*vid).contents();
             for (start, end) in &regions {
                 if *start < *slice_start || *end > *slice_end {
                     errors.push(format!(
@@ -343,33 +530,6 @@ where
             }
         }
         errors
-    }
-
-    /// Lowest free base in this pin offering `need` slots, keeping `avoid` (the caller's own
-    /// live source) intact. Unlike `free_base`, the vertex's own span is not treated as free:
-    /// the caller still has to read it before it can be overwritten.
-    pub(crate) fn place(&self, _vid: VertexId, need: u64, avoid: (u64, u64)) -> Option<u64> {
-        if need == 0 || need > self.extent.1 {
-            return None;
-        }
-        let leaf_end = checked_add_slot_index(self.extent.0, self.extent.1)?;
-        let mut spans = self.used_spans();
-        spans.push(avoid);
-        spans.sort_by_key(|(start, _)| *start);
-        let mut cursor = self.extent.0;
-        for (start, end) in &spans {
-            if *start > cursor && start.saturating_sub(cursor) >= need {
-                return Some(cursor);
-            }
-            if *end > cursor {
-                cursor = *end;
-            }
-        }
-        if checked_add_slot_index(cursor, need)? <= leaf_end {
-            Some(cursor)
-        } else {
-            None
-        }
     }
 
     /// Free slots at the very end of the block: the run a growth can extend
@@ -396,17 +556,37 @@ where
     /// leaf geometry, not live slab rows). Returns false when that span is not free or
     /// the block would pass the slab capacity, which leaves the block unchanged: the
     /// caller has nowhere to grow and must relocate or fail.
-    fn grow(&mut self, len: u64) -> bool {
+    fn grow(&mut self, vid: VertexId, need: u64) -> bool {
         let (start, block_len) = self.extent;
-        let tail_free = self.free_tail();
-        if tail_free >= len {
+        // The run a placement can use starts after the vertex's last *region*, which
+        // already carries its gap; measuring from the content end would leave the gap
+        // unusable and short the request by exactly its size.
+        // The run has to start after everything already resident in the extent: the
+        // vertex's own regions (which carry their gaps) and every leaf-mate's span.
+        let own = self
+            .leaf_slice(vid)
+            .regions()
+            .into_iter()
+            .map(|(_, end)| end)
+            .max()
+            .unwrap_or(start);
+        let used = self
+            .used_spans()
+            .into_iter()
+            .map(|(_, end)| end)
+            .max()
+            .unwrap_or(start);
+        let last = own.max(used).min(start.saturating_add(block_len));
+        let extent_end = start.saturating_add(block_len);
+        let have = extent_end.saturating_sub(last);
+        if have >= need {
             return true;
         }
-        let extension = len - tail_free;
-        let Some(new_len) = block_len.checked_add(extension) else {
+        let extension = need - have;
+        let Some(block_end) = checked_add_slot_index(start, block_len) else {
             return false;
         };
-        let Some(block_end) = checked_add_slot_index(start, block_len) else {
+        let Some(new_len) = block_len.checked_add(extension) else {
             return false;
         };
         let capacity = self.graph.edges.header().elem_capacity;
@@ -540,22 +720,151 @@ where
         vid: VertexId,
         len: u64,
         source: SourceRegion,
-    ) -> Result<u64, crate::GrowFailed> {
-        if let Ok(Some(mut arena)) = Self::capture(graph, vid) {
-            // 1. Rebalance inside the block: a free run already exists.
-            if let Some(base) = arena.allocate(vid, len, Some(source.as_pair())) {
+    ) -> Result<u64, LabeledOperationError> {
+        Self::reserve_with(graph, vid, len, source, |_, _| Ok(false))
+    }
+
+    /// [`LeafArena::reserve`] plus the ladder's last step: relocate the leaf's block so the
+    /// request has room. Relocation rewrites every resident's address, so it needs the
+    /// tombstone-aware readers; callers that cannot name an `E: CsrEdgeTombstone` fail
+    /// closed instead.
+    pub(super) fn reserve_relocating(
+        graph: &'a LabeledLaraGraph<E, M>,
+        vid: VertexId,
+        len: u64,
+        source: SourceRegion,
+    ) -> Result<u64, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        Self::reserve_with(graph, vid, len, source, |graph, vid| {
+            graph
+                .relocate_labeled_leaf_physical_block_with_room(vid, len.saturating_add(gap(len)))
+                .map(|()| true)
+        })
+    }
+
+    /// Makes room for `len` slots in the vertex's slice without placing anything: the
+    /// extent grows, and when it cannot the leaf's block moves. Callers that place the
+    /// span themselves (a promotion writing its own root) use this and then place.
+    pub(super) fn ensure_room(
+        graph: &'a LabeledLaraGraph<E, M>,
+        vid: VertexId,
+        len: u64,
+        source: SourceRegion,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let need = len.saturating_add(gap(len));
+        let avoid = Some(source.as_pair());
+        // Growing only helps when the vertex's slice reaches the extent end: for any other
+        // vertex the successor bounds the slice, so the probe placement below is what
+        // decides whether to relocate.
+        let mut arena = match Self::capture(graph, vid) {
+            Ok(Some(arena)) => arena,
+            _ => Self::create_extent(graph, vid, need)?,
+        };
+        if arena.leaf_slice(vid).allocate(len, avoid).is_some() {
+            return Ok(());
+        }
+        if arena.grow(vid, need) && arena.leaf_slice(vid).allocate(len, avoid).is_some() {
+            return Ok(());
+        }
+        graph.relocate_labeled_leaf_physical_block_with_room(vid, need)?;
+        let mut moved = Self::capture(graph, vid)?
+            .ok_or(LabeledOperationError::LeafArenaExhausted { vid, need: len })?;
+        if moved.leaf_slice(vid).allocate(len, avoid).is_some() {
+            return Ok(());
+        }
+        if moved.grow(vid, need) && moved.leaf_slice(vid).allocate(len, avoid).is_some() {
+            return Ok(());
+        }
+        Err(LabeledOperationError::LeafArenaExhausted { vid, need: len })
+    }
+
+    /// Pins the leaf's first extent, sized by the region rather than the content: a
+    /// placement asks for `need + gap`, so an extent of `need` would be one slot short of
+    /// the request it was created for.
+    fn create_extent(
+        graph: &'a LabeledLaraGraph<E, M>,
+        vid: VertexId,
+        need: u64,
+    ) -> Result<Self, LabeledOperationError> {
+        let quota = labeled_leaf_physical_block_len(graph.edges.header().segment_size.max(1));
+        graph.ensure_labeled_leaf_block_pinned(vid, quota.max(need))?;
+        Self::capture(graph, vid)?.ok_or(LabeledOperationError::LeafArenaExhausted {
+            vid,
+            need: need.saturating_sub(gap(need)),
+        })
+    }
+
+    fn reserve_with<R>(
+        graph: &'a LabeledLaraGraph<E, M>,
+        vid: VertexId,
+        len: u64,
+        source: SourceRegion,
+        relocate: R,
+    ) -> Result<u64, LabeledOperationError>
+    where
+        R: FnOnce(&'a LabeledLaraGraph<E, M>, VertexId) -> Result<bool, LabeledOperationError>,
+    {
+        let exhaust = || LabeledOperationError::LeafArenaExhausted { vid, need: len };
+        let avoid = Some(source.as_pair());
+        // A leaf has an extent once it holds a resident. Before that there is nothing to
+        // place in, so the extent is created for this request. It is sized by the region,
+        // not the content: a placement asks for `need + gap`.
+        let mut arena = match Self::capture(graph, vid) {
+            Ok(Some(arena)) => arena,
+            _ => {
+                let quota =
+                    labeled_leaf_physical_block_len(graph.edges.header().segment_size.max(1));
+                graph.ensure_labeled_leaf_block_pinned(
+                    vid,
+                    quota.max(len.saturating_add(gap(len))),
+                )?;
+                Self::capture(graph, vid)?.ok_or_else(exhaust)?
+            }
+        };
+        // 1. A free run in the vertex's slice already takes it.
+        if let Some(base) = arena.leaf_slice(vid).allocate(len, avoid) {
+            return Ok(base);
+        }
+        // 2. Grow the extent until the slice ends with a free run of the region's width,
+        //    then place again.
+        if arena.grow(vid, len.saturating_add(gap(len)))
+            && let Some(base) = arena.leaf_slice(vid).allocate(len, avoid)
+        {
+            return Ok(base);
+        }
+        // 3. Relocate the leaf's block, then place at its new home.
+        if relocate(graph, vid).unwrap_or(false)
+            && let Ok(Some(mut moved)) = Self::capture(graph, vid)
+        {
+            let moved_source = moved
+                .leaf_slice(vid)
+                .contents()
+                .into_iter()
+                .max_by_key(|(_, end)| *end)
+                .map_or(SourceRegion::new(0, 0), |(start, end)| {
+                    SourceRegion::new(start, end.saturating_sub(start))
+                });
+            if moved.grow(vid, len.saturating_add(gap(len)))
+                && let Some(base) = moved
+                    .leaf_slice(vid)
+                    .allocate(len, Some(moved_source.as_pair()))
+            {
                 return Ok(base);
             }
-            // 2. Grow the block until it ends with a free run of `len`, then place.
-            if arena.grow(len)
-                && let Some(base) = arena.allocate(vid, len, Some(source.as_pair()))
+            if let Some(base) = moved
+                .leaf_slice(vid)
+                .allocate(len, Some(moved_source.as_pair()))
             {
                 return Ok(base);
             }
         }
-        graph
-            .edges
-            .allocate_span_avoiding(len, Some(source.as_pair()))
+        // 4. Fail closed: a resident is never allocated from the global free-span store.
+        Err(exhaust())
     }
 }
 
@@ -728,14 +1037,18 @@ where
 
     /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block, returning
     /// `(physical_start, block_len)`. Allocates the block on first use.
+    /// Creates the leaf's extent on first use, sized to `need` slots: the extent covers
+    /// exactly the residents that asked for it, so a leaf is never reserved for vertices
+    /// that own nothing.
     pub(super) fn ensure_labeled_leaf_block_pinned(
         &self,
         vid: VertexId,
+        need: u64,
     ) -> Result<(u64, u64), LabeledOperationError> {
         let header = self.edges.header();
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(vid, seg);
-        let block_len = labeled_leaf_physical_block_len(seg);
+        let block_len = need.max(1);
 
         let span_rec = self.edges.span_meta_store().get(u64::from(leaf));
         if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
@@ -765,7 +1078,10 @@ where
         &self,
         vid: VertexId,
     ) -> Result<u64, LabeledOperationError> {
-        let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(vid)?;
+        let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(
+            vid,
+            labeled_leaf_physical_block_len(self.edges.header().segment_size.max(1)),
+        )?;
         if let Some(base) = self.find_free_labeled_leaf_edge_base(
             vid,
             leaf_start,
@@ -1521,31 +1837,41 @@ mod tests {
     fn reserve_grows_the_block_at_the_slab_end() {
         let graph = hub_graph();
         let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
-        // A freshly pinned block sits at the slab end; one resident covers it.
-        let (start, block_len) = graph.ensure_labeled_leaf_block_pinned(owner).unwrap();
+        // A freshly pinned block sits at the slab end; one resident covers it. The extent
+        // has to cover the resident's *region* (its content plus the gap it may grow
+        // into), not just its content - an extent of `block_len` would already be too
+        // small for the region the resident owns.
+        let quota = labeled_leaf_physical_block_len(graph.edges.header().segment_size.max(1));
+        let content = quota;
+        let (start, block_len) = graph
+            .ensure_labeled_leaf_block_pinned(owner, quota + gap(quota))
+            .unwrap();
         graph.vertices.set(
             owner,
-            &LabeledVertex::from_parts(start, block_len as u32, block_len as u32, 0)
+            &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
                 .with_default_edge_labeled(true)
-                .with_degree(block_len as u32)
-                .with_stored_slots(block_len as u32),
+                .with_degree(content as u32)
+                .with_stored_slots(content as u32),
         );
 
-        let base =
-            LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, block_len)).unwrap();
+        let base = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content)).unwrap();
 
         assert_eq!(
             base,
-            start + block_len,
-            "the block grows by appending capacity"
+            start + content + gap(content),
+            "the new span lands after the resident's region, which carries its gap"
         );
+        // The extent grows by the *region* the request will own: the four slots plus the
+        // gap they carry.
+        let grown = block_len + 4 + gap(4);
         assert_eq!(
             graph.leaf_segment_counts_for_vid(owner).total,
-            i64::try_from(block_len + 4).unwrap()
+            i64::try_from(grown).unwrap(),
+            "the extent grows by the region the request will own"
         );
         assert_eq!(
             LeafArena::capture(&graph, owner).unwrap().unwrap().extent(),
-            (start, block_len + 4)
+            (start, grown)
         );
     }
 
@@ -1554,29 +1880,81 @@ mod tests {
         let graph = hub_graph();
         let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
         // Pin the leaf through the production path, then let one resident cover the
-        // whole block so placement inside it has no run to hand out.
-        let (start, block_len) = graph.ensure_labeled_leaf_block_pinned(owner).unwrap();
+        // whole extent so placement inside it has no run to hand out. The extent covers
+        // the resident's region (content + gap), as in the fixture above.
+        let quota = labeled_leaf_physical_block_len(graph.edges.header().segment_size.max(1));
+        let content = quota;
+        let (start, block_len) = graph
+            .ensure_labeled_leaf_block_pinned(owner, quota + gap(quota))
+            .unwrap();
         graph.vertices.set(
             owner,
-            &LabeledVertex::from_parts(start, block_len as u32, block_len as u32, 0)
+            &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
                 .with_default_edge_labeled(true)
-                .with_degree(block_len as u32)
-                .with_stored_slots(block_len as u32),
+                .with_degree(content as u32)
+                .with_stored_slots(content as u32),
         );
         // The store appends at `elem_capacity`, so the only free run is one that was
-        // released: take four slots after the block and give them back.
-        let tail = graph.edges.allocate_span(4).unwrap();
+        // released: take the region the request will need after the block and give it
+        // back. Growing into it is what the extent does, so the freed run must cover the
+        // region (four slots plus its gap), not just the four.
+        let region = 4 + gap(4);
+        let tail = graph.edges.allocate_span(region).unwrap();
         assert_eq!(tail, start + block_len);
-        graph.edges.release_span(tail, 4).unwrap();
+        graph.edges.release_span(tail, region).unwrap();
 
-        let base =
-            LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, block_len)).unwrap();
+        let base = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content)).unwrap();
 
-        assert_eq!(base, tail, "the span grows into the block's freed tail");
+        assert_eq!(
+            base,
+            start + content + gap(content),
+            "the span grows into the block's freed tail"
+        );
         assert_eq!(
             graph.leaf_segment_counts_for_vid(owner).total,
-            i64::try_from(block_len + 4).unwrap(),
+            i64::try_from(block_len + region).unwrap(),
             "the block absorbs the growth instead of the leaf losing the span"
+        );
+    }
+
+    #[test]
+    fn reserve_fails_closed_when_the_leaf_cannot_grow() {
+        let graph = hub_graph();
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        // The extent covers this resident's region exactly, and the slots after it belong
+        // to the store, so neither the region nor the extent can take another span.
+        let content = 16u64;
+        let extent_len = content + gap(content);
+        let (start, _) = graph
+            .ensure_labeled_leaf_block_pinned(owner, extent_len)
+            .unwrap();
+        graph.vertices.set(
+            owner,
+            &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
+                .with_default_edge_labeled(true)
+                .with_degree(content as u32)
+                .with_stored_slots(content as u32),
+        );
+        let blocker = graph.edges.allocate_span(4).unwrap();
+        assert_eq!(blocker, start + extent_len, "the tail is taken");
+
+        let before = LeafArena::capture(&graph, owner).unwrap().unwrap().extent();
+        let error = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content))
+            .expect_err("the leaf has nowhere to put the span");
+
+        assert!(
+            matches!(error, LabeledOperationError::LeafArenaExhausted { vid, need: 4 } if vid == owner),
+            "a resident is never allocated outside the leaf: {error:?}"
+        );
+        assert_eq!(
+            LeafArena::capture(&graph, owner).unwrap().unwrap().extent(),
+            before,
+            "a failed reserve must not move the extent"
+        );
+        assert_eq!(
+            graph.leaf_segment_counts_for_vid(owner).total,
+            i64::try_from(extent_len).unwrap(),
+            "and must not change the leaf's slot count"
         );
     }
 

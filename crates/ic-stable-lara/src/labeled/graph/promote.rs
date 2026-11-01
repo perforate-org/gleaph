@@ -150,6 +150,18 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     bucket: LabelBucket,
     pending: Option<&E>,
 ) -> Result<(), LabeledOperationError> {
+    transcribe_and_publish_tree_inner(graph, vid, bucket, pending, false)
+}
+
+/// `retried` is true once the vertex window has been rebalanced for this promotion; a
+/// second failure is reported instead of rebalancing again (which would loop).
+fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    bucket: LabelBucket,
+    pending: Option<&E>,
+    retried: bool,
+) -> Result<(), LabeledOperationError> {
     use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
     use crate::traits::NO_SPILL_RUN;
     use std::ops::ControlFlow;
@@ -273,27 +285,91 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     // A prefix too small for the root falls back to the leaf heap, then to the
     // global allocator (no production path reaches it).
     let in_place = prefix >= combined_len;
+    // The root replaces the bucket's own region when it fits that prefix. Otherwise it
+    // needs a region beside the live source: the arena is asked, and when the slice has no
+    // run the arena grows the extent or moves the leaf. The latter changes the leaf's
+    // layout, so the captured source is stale and the promotion restarts from it once.
+    let avoid = (
+        bucket.edge_start(),
+        u64::from(super::compact::bucket_content_slots(&bucket)),
+    );
     let in_pin_start = if in_place {
         None
     } else {
-        // Resident space belongs to the leaf pin: place the root inside it, keeping
-        // the source span (still live until the transcription reads it) intact.
-        let pin = super::leaf_arena::LeafArena::capture(graph, vid)?;
-        let avoid = pin.as_ref().and_then(|pin| pin.vertex_space(vid));
-        match (pin.as_ref(), avoid) {
-            (Some(pin), Some(avoid)) => pin.place(vid, u64::from(combined_len), avoid),
-            _ => None,
+        match super::leaf_arena::LeafArena::capture(graph, vid)? {
+            // The root replaces this bucket's own region, so it grows in place when the
+            // following slots are the vertex's own: keeping the base is what keeps the
+            // declared width inside the successor's boundary.
+            Some(pin) if prefix > 0 => pin
+                .leaf_slice(vid)
+                .grow_region(avoid.0, u64::from(combined_len))
+                .or_else(|| pin.leaf_slice(vid).place(u64::from(combined_len), avoid)),
+            // A bucket with no slab content owns no region yet, so it has no slice to be
+            // exclusive about: its root comes from the leaf's own free space.
+            Some(pin) => pin
+                .leaf_slice(vid)
+                .allocate(u64::from(combined_len), Some(avoid)),
+            None => None,
         }
     };
-    let allocated_in_pin = in_pin_start.is_some();
-    // Only a span taken from the global allocator is rolled back on failure.
-    let owns_new_span = !in_place && !allocated_in_pin;
-    let new_start = if in_place {
-        bucket.edge_start()
-    } else {
-        match in_pin_start {
-            Some(base) => base,
-            None => graph.edges().allocate_span(u64::from(combined_len))?,
+    let new_start = match in_pin_start {
+        Some(base) => base,
+        None if in_place => bucket.edge_start(),
+        None if !retried => {
+            // First make room *inside* the vertex: its buckets may be laid out with the
+            // free run between them, and re-tiling is cheaper than moving the leaf.
+            let vertex = graph.vertices().get(vid);
+            let super::BucketSearch::Found { slot, .. } = graph.find_bucket(vid, &vertex, label)?
+            else {
+                return Err(LabeledOperationError::BucketNotFound { vid, label });
+            };
+            let bucket_index = u32::try_from(slot.saturating_sub(vertex.base_slot_start()))
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            // `Required`: the room must exist, so a rewrite that cannot place the wider
+            // span fails instead of silently keeping the current one.
+            let retiled = graph
+                .rewrite_vertex_edge_span_with_policy(
+                    vid,
+                    Some(bucket_index),
+                    combined_len.saturating_sub(prefix),
+                    true,
+                    None,
+                    super::compact::SpanResolutionPolicy::Required,
+                )
+                .is_ok();
+            // Re-tiling may or may not have left a run the root fits (`Required` only
+            // guarantees the rewrite was attempted). `ensure_room` probes the placement
+            // itself and grows the extent or moves the leaf only when it still fails.
+            let vertex = graph.vertices().get(vid);
+            let fresh_avoid = match graph.find_bucket(vid, &vertex, label)? {
+                super::BucketSearch::Found { bucket: b, .. } => (
+                    b.edge_start(),
+                    u64::from(super::compact::bucket_content_slots(&b)),
+                ),
+                super::BucketSearch::Missing { .. } => avoid,
+            };
+            let _ = retiled;
+            super::leaf_arena::LeafArena::ensure_room(
+                graph,
+                vid,
+                u64::from(combined_len),
+                super::leaf_arena::SourceRegion::new(fresh_avoid.0, fresh_avoid.1),
+            )?;
+            let vertex = graph.vertices().get(vid);
+            let super::BucketSearch::Found { bucket: fresh, .. } =
+                graph.find_bucket(vid, &vertex, label)?
+            else {
+                return Err(LabeledOperationError::BucketNotFound { vid, label });
+            };
+            return transcribe_and_publish_tree_inner(graph, vid, fresh, pending, true);
+        }
+        // The leaf was already given room for this promotion, so no further growth is
+        // available: fail closed rather than leave the leaf.
+        None => {
+            return Err(LabeledOperationError::LeafArenaExhausted {
+                vid,
+                need: u64::from(combined_len),
+            });
         }
     };
     let allocated_header = graph.edges().header();
@@ -535,12 +611,8 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
                 .release(id)
                 .expect("unpublished promotion block must remain owned");
         }
-        if owns_new_span {
-            graph
-                .edges()
-                .release_span(new_start, u64::from(combined_len))
-                .expect("promotion rollback capacity was reserved");
-        }
+        // The span came from the leaf's extent, so it is not returned to the free-span
+        // store: it stays owned by the leaf and a later layout reuses it.
         return Err(error);
     }
     // No recoverable errors after publication. Only old allocations are retired here.
