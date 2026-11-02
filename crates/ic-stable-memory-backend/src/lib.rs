@@ -252,7 +252,7 @@ mod tests {
         let guard = enter_shadow();
         let memory = default_memory_impl();
         memory.write(0, &[7; 4]);
-        assert_eq!(guard.dirty_bytes(), 4, "the write stayed in the overlay");
+        assert_eq!(guard.dirty_ranges(), 1, "the write stayed in the overlay");
         guard.commit().expect("commit");
 
         // The window's memory kept the committed bytes, and a fresh handle outside any window is
