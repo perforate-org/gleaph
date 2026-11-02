@@ -1872,6 +1872,92 @@ fn bench_l_df_ip_frag_mnt_6() -> canbench_rs::BenchResult {
     })
 }
 
+/// One non-forcing span-compaction step that rebuilds a tombstone-heavy spill run.
+///
+/// This is the whole cost a rebuild adds to one maintenance message: the fold fails because the
+/// span has no room for the run's live rows, so the run is repacked and its slot rewrites are
+/// reported. Measured 1.77 M instructions for a 995-row run whose 597 deleted head rows leave 403
+/// live rows to rekey - about 0.006% of `MAX_TIMER_MAINTENANCE_INSTRUCTIONS`, which is why the
+/// rebuild is bounded by `MAX_ROWS` rather than admitted against the budget.
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_l_spill_rebuild_step() -> canbench_rs::BenchResult {
+    const ROWS: u32 = 1000;
+    let graph = bench_graph(1 << 16);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    // The first inserts go through the cascade so the label's bucket exists; the rest skip it so
+    // the bucket keeps the span it was given and the surplus spills into its run.
+    for target in 1..=4u32 {
+        graph
+            .insert_edge(
+                vid,
+                label,
+                BenchEdge(target),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("seed");
+    }
+    for target in 5..=ROWS {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                BenchEdge(target),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert");
+    }
+    let bucket = (0..64u64)
+        .find_map(|slot| {
+            let bucket = graph.buckets().read_label_bucket_slot(slot)?;
+            (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then_some(bucket)
+        })
+        .expect("the fixture must spill rows");
+    let run = graph
+        .edges()
+        .spill_mint(bucket.edge_spill_run())
+        .expect("spill run");
+    let used = graph.edges().spill_used_len(run);
+    // 60% of the run, past the `dead > used / 2` hysteresis, deleted from the run's head so every
+    // surviving row moves. Matching by target keeps the fixture out of the bucket's slot numbering.
+    let dead = used * 3 / 5;
+    let mut removed = 0u32;
+    for target in (bucket.stored_slots() + 1)..=(bucket.stored_slots() + dead) {
+        if graph
+            .remove_edge_matching(vid, label, |edge| edge.0 == target)
+            .expect("remove")
+            .is_some()
+        {
+            removed += 1;
+        }
+    }
+    assert_eq!(removed, dead, "the fixture deletes the run's head");
+    bench_fn(|| {
+        let outcome = graph
+            .compact_vertex_edge_span_one_step_with_span_policy(
+                vid,
+                0,
+                0,
+                &|_| crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                crate::labeled::graph::SpanResolutionPolicy::SlackMayBeDropped,
+            )
+            .expect("compact step");
+        match outcome {
+            VertexEdgeSpanCompactOneStep::OverflowRewrite(moves) => {
+                assert_eq!(
+                    moves.len() as u32,
+                    403,
+                    "every live row after the hole moved"
+                );
+                black_box(moves.len());
+            }
+            other => panic!("expected the rebuild batch, got {other:?}"),
+        }
+    })
+}
+
 /// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
 fn bench_l_du_spill_del_scn() -> canbench_rs::BenchResult {
