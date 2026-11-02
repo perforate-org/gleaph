@@ -2672,21 +2672,38 @@ fn delete_below_hysteresis_leaves_tombstones_for_append() {
             reverse_vertices: targets,
         })
         .expect("fold log to slab");
+    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
+    let read_info = || {
+        store
+            .with_graph_mut(|graph| {
+                graph
+                    .read_forward_bucket_placement_info(source, storage_label)
+                    .expect("placement read")
+            })
+            .expect("bucket exists")
+    };
+    // ADR 0097: a bucket's logical row `i` is the prefix slot for `i < prefix_len`,
+    // otherwise spill row `i - prefix_len`, so `stored_edge_slots` is the prefix length
+    // and the rest of the rows live in the per-bucket spill run. The rows that were
+    // folded here are whatever the fold chose to pack; the invariant is that the two
+    // together are the degree, not that the prefix absorbed everything.
+    let folded = read_info();
+    assert_eq!(folded.degree, 16);
+    assert_eq!(
+        folded.stored_edge_slots + folded.edge_spill_rows,
+        16,
+        "every row is either packed in the prefix or waiting in the spill run"
+    );
+
     for handle in &handles[..8] {
         store.delete_edge_by_handle(*handle).expect("delete");
     }
-    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
-    let info = store
-        .with_graph_mut(|graph| {
-            graph
-                .read_forward_bucket_placement_info(source, storage_label)
-                .expect("placement read")
-        })
-        .expect("bucket exists");
+    let info = read_info();
     assert_eq!(info.degree, 8);
     assert_eq!(
-        info.stored_edge_slots, 16,
-        "below the hysteresis no compaction may fire; the slack survives"
+        (info.stored_edge_slots, info.edge_spill_rows),
+        (folded.stored_edge_slots, folded.edge_spill_rows),
+        "below the hysteresis no compaction may fire; the prefix and the spill are unchanged"
     );
     crate::edge_inline_property_schema::set_execution_resolved_labels(None);
 }
