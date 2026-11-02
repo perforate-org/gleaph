@@ -407,6 +407,12 @@ impl<M: Memory> SpillRunStore<M> {
     }
 
     /// Data rows a live run's class can hold, derived from its used length.
+    /// How many rows may be dropped from the head before the run would change class.
+    pub(crate) fn head_drop_capacity(&self, run: SpillRunId) -> u32 {
+        let used = self.read_used_len(run);
+        used.saturating_sub(Self::class_rows(used.max(1)) / 2)
+    }
+
     /// Drops `count` rows from the head of `run`, shifting the remaining rows down.
     ///
     /// This is the fold's companion: rows that moved into the bucket's slab span are removed from
@@ -645,8 +651,11 @@ mod tests {
             store.write_row(run, i, &i.to_le_bytes()).expect("row");
         }
 
+        // A 16-row run may lose rows down to its class floor (half the class), no further.
+        assert_eq!(store.head_drop_capacity(run), 8);
         // 16 -> 9 stays inside the 16-row class, so the rows shift down and the tail is released.
         store.drop_head(run, 7).expect("drop inside the class");
+        assert_eq!(store.head_drop_capacity(run), 1, "one row above the floor");
         assert_eq!(store.read_used_len(run), 9);
         for i in 0..9u32 {
             let mut row = [0u8; 4];

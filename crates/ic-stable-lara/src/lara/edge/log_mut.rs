@@ -100,6 +100,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map_err(LaraOperationError::from)
     }
 
+    /// Rows that may be dropped from the head of `run` before it would change class.
+    pub(crate) fn spill_head_drop_capacity(&self, run: SpillRunId) -> u32 {
+        self.spill.head_drop_capacity(run)
+    }
+
+    /// Drops `count` rows from the head of `run`. The caller folds them into the slab span first
+    /// and publishes the new prefix length after, so a failure here leaves the rows readable.
+    pub(crate) fn spill_drop_head(
+        &self,
+        run: SpillRunId,
+        count: u32,
+    ) -> Result<(), LaraOperationError> {
+        self.spill
+            .drop_head(run, count)
+            .map_err(LaraOperationError::from)
+    }
+
     /// Releases `run` to its class's free list. The class comes from the run's own header.
     pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
         self.spill.release(run).map_err(LaraOperationError::from)
