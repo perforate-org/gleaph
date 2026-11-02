@@ -1514,26 +1514,14 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     // Fold the deferred-insert overflow log into the slab first so the bucket is
     // edge-slab-only (the swap gate requires it); the facade's deferred insert path
     // leaves fresh edges log-backed until maintenance folds them.
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &super::GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark pre-fold");
-    });
+    // Force the fold with the eager `Required` span policy: the maintenance path resolves
+    // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
+    // the rows would never reach the span this test needs them in.
     store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
+        .with_graph_mut(|graph| {
+            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
         })
-        .expect("pre-fold drain");
+        .expect("forced fold into the span");
 
     // The pre-fold span rewrite may relocate the bucket, so re-resolve the first edge's
     // current handle before deleting it.
@@ -1647,26 +1635,14 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
         .expect("third edge");
     // Fold the deferred-insert overflow log so the comparison starts from the same
     // slab-backed bucket as the swap test.
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &super::GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark pre-fold");
-    });
+    // Force the fold with the eager `Required` span policy: the maintenance path resolves
+    // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
+    // the rows would never reach the span these assertions are about.
     store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
+        .with_graph_mut(|graph| {
+            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
         })
-        .expect("pre-fold drain");
+        .expect("forced fold into the span");
     // The pre-fold span rewrite may relocate the bucket; re-resolve the first edge's handle.
     let first_edge = store
         .find_first_forward_handle(
@@ -1771,24 +1747,9 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
     }
     // Fold the deferred-insert overflow log into the slab so the delete leaves an
     // in-slab tombstone (the swap gate requires edge-slab-only buckets).
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark pre-fold");
-    });
     store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
+        .with_graph_mut(|graph| {
+            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
         })
         .expect("pre-fold drain");
     let first_edge = store
@@ -2045,26 +2006,14 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     crate::index::edge_pending::take_pending(); // swallow insert postings
 
     // Fold the deferred-insert overflow log into the slab so the swap gate applies.
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
-                source,
-                0,
-                &super::GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark pre-fold");
-    });
+    // Force the fold with the eager `Required` span policy: the maintenance path resolves
+    // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
+    // the rows would never reach the span these assertions are about.
     store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
+        .with_graph_mut(|graph| {
+            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
         })
-        .expect("pre-fold drain");
+        .expect("forced fold into the span");
     crate::index::edge_pending::take_pending(); // swallow fold move postings
 
     // The pre-fold span rewrite may relocate the bucket; re-resolve the first edge's handle.
