@@ -140,8 +140,15 @@ defect from being rediscovered without its prior reasoning.
     artefact of comparing runs with different batch sizes.
   - What the addresses do show: **the three buckets' regions start one slot apart** (4096, 4097,
     4098) while each holds many rows, so all of those rows live in the per-bucket spill runs, not in
-    the slabs. The corrupted row is therefore a *run* row. The next probe belongs in the spill
-    append path (`spill_append` / `insert_into_spill_with_layout`), not in placement addressing.
+    the slabs. The corrupted row is therefore a *run* row.
+  - **Instrumenting the run write is the wrong layer, twice over.** In
+    `log_mut.rs::insert_into_spill_with_layout` every append printed the same neighbour
+    (`VertexId(1)`) and the same run id (`0`) regardless of the vertex, which cannot be the stored
+    payload: the read-back disagrees. Like `VertexId::from(0)` in the earlier probe, the value this
+    layer sees is a placeholder/normalised one and the real identity rides in the `access` context.
+    Two probes in a row have now misled on that; the reliable observation is what is read back, not
+    what these inner functions are handed. A dump of the run's stored rows (an inspector, not a
+    print at a write site) is the next instrument.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
