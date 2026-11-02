@@ -568,6 +568,24 @@ mod tests {
             },
         );
 
+        // Promote both buckets out of tiny mode first: span compaction advances past tiny buckets,
+        // so the divergence this test asserts could never happen while they stay tiny. Tiny holds a
+        // handful of inline edges, so filling past that and deleting the fillers leaves the bucket
+        // in slab mode with an empty span.
+        let mut fillers = Vec::new();
+        for index in 0..6u32 {
+            let filler = store.insert_vertex().expect("filler vertex");
+            fillers.push(
+                store
+                    .insert_directed_edge(n, filler, Some(label))
+                    .expect("filler"),
+            );
+            let _ = index;
+        }
+        for filler in fillers {
+            store.delete_edge_by_handle(filler).expect("drop filler");
+        }
+
         let e_a = store
             .insert_directed_edge(n, v, Some(label))
             .expect("first n->v");
