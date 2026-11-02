@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-09-22
-Anchor timestamp: 2026-09-22 10:15:06 UTC +0000
+Last updated: 2026-11-02
+Anchor timestamp: 2026-11-02 15:24:46 UTC +0000
 
 ## Status
 
@@ -46,6 +46,54 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
+
+- **Status:** Open. Three of the six are understood (contract drift after ADR 0097); one is a
+  compaction behavior question with the spill explanation ruled out; two are untriaged.
+- **Observed behavior:** `cargo test -p gleaph-graph --lib` reports 1097 passed / 6 failed:
+  `insertion_policy_maintenance_preserves_left_pack_order`,
+  `unordered_compaction_swap_publishes_move_and_moves_sidecars`,
+  `swap_compaction_rekeys_inline_scalar_index_to_new_slot`,
+  `unordered_captured_at_enqueue_drains_without_ambient_table`,
+  `updating_undirected_edge_inline_property_updates_both_storage_rows`, and
+  `vertex_delete::tests::detach_delete_fence_uses_canonical_forward_slot_for_diverged_directed_in_edge`.
+- **What is known per test:**
+  - The three swap/left-pack tests sit behind `slab_bucket_allows_unordered_swap`, which requires
+    the inline values to be slab-backed and exactly one block per live row; with a value width the
+    fixtures do not reach that state before the delete, so the pass left-packs instead of swapping.
+  - `detach_delete_fence_...` is **not** spill-related: the run-backed skip in
+    `compact_vertex_edge_span_one_step_with_span_policy` never fires for it, the label policy
+    resolves to `Insertion`, and after delete plus a drained compaction the rows are still at slots
+    1 and 2 with slot 0 empty - the pass moved nothing - so forward and reverse slots stay equal and
+    the test's precondition fails. Whether `stored_slots` was already shrunk to `degree` (putting
+    slot 2 outside the span) is untested.
+  - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
+    only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
+- **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
+  state or the tests must state the narrower contract (value-bearing buckets left-pack until the
+  values are dense). For the other three, the behavior must be explained before any test is edited.
+- **Owner:** `crates/graph/src/facade/store` (test contracts); `compact.rs` for the compaction
+  question.
+- **Evidence:** the test names and the run command above; ADR 0052's 2026-11-02 amendment for the
+  swap gate; `plans/0408` carries the session log (ignored by git).
+
+### GAP-LARA-INLINE-DELETE-COST — removing from a bucket with inline values is superlinear
+
+- **Status:** Open, measured. Recorded in ADR 0052's 2026-11-02 amendment; the fix is a design
+  change, not a constant.
+- **Observed behavior:** `plan_bucket_inline_property_bytes_delete` copies the whole trailing value
+  suffix into a fresh buffer and writes it back one block left on every removal, with no threshold.
+  Deleting a bucket's edges front-first costs 150 K instructions per edge at 8 rows, 234 K at 32 and
+  454 K at 128 (width 8), against 124 K for the same drain at width 0 - roughly `k^1.4` across those
+  points and 3.7x the width-0 case at 128.
+- **Expected or needed behavior:** removal cost should not grow with the bucket. Values are dense and
+  ordinal-addressed today, which forces the shift; addressing them by physical slot with tombstones
+  would let removal be O(1) and move the copying to compaction, as rows already do.
+- **Owner:** `crates/ic-stable-lara/src/labeled/graph/values.rs` (the span) and
+  `compact.rs` (the swap gate that depends on denseness).
+- **Evidence:** `bench_delete_w0_k128`, `bench_delete_w8_k8`, `bench_delete_w8_k32`,
+  `bench_delete_w8_k128` in `crates/graph/src/bench/batch_placement.rs` (commit `e8b4d31c1`).
 
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
