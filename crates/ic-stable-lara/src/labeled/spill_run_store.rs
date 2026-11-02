@@ -406,7 +406,6 @@ impl<M: Memory> SpillRunStore<M> {
         safe_write(&self.memory, self.header_address(run), &len.to_le_bytes())
     }
 
-    /// Data rows a live run's class can hold, derived from its used length.
     /// How many rows may be dropped from the head before the run would change class.
     pub(crate) fn head_drop_capacity(&self, run: SpillRunId) -> u32 {
         let used = self.read_used_len(run);
@@ -446,6 +445,7 @@ impl<M: Memory> SpillRunStore<M> {
             .map_err(SpillRunError::from)
     }
 
+    /// Data rows a live run's class can hold, derived from its used length.
     fn capacity(&self, run: SpillRunId) -> u32 {
         Self::class_rows(self.read_used_len(run).max(1))
     }
