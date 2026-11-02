@@ -19,7 +19,6 @@ use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use crate::edge_inline_property_schema::resolved_edge_label_with;
-use ic_stable_lara::labeled::batch_write::OneOrientationBatchError;
 use rapidhash::RapidHashMap;
 
 /// One logical edge supplied for optimized batch planning.
@@ -131,7 +130,6 @@ pub enum BatchPlacementError {
         property_id: PropertyId,
     },
     /// The one-orientation writer rejected a non-recoverable batch condition.
-    BatchWrite(OneOrientationBatchError),
     /// A Building/Sealing index DML failed its Graph-owned admission before any batch write.
     IndexBuildAdmission(GraphStoreError),
 }
@@ -179,7 +177,6 @@ impl std::fmt::Display for BatchPlacementError {
                 "logical ordinal {logical_ordinal} repeats inline property id {}",
                 property_id.raw()
             ),
-            Self::BatchWrite(error) => write!(f, "batch writer failed: {error}"),
             Self::PayloadWidthMixed => {
                 write!(f, "inline property byte widths are mixed within one leaf")
             }

@@ -14,7 +14,6 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedMixedBatchResultV1, LabelStatsDelta, MutationId,
 };
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::batch_write::OneOrientationBatchError;
 use std::collections::BTreeMap;
 
 use super::GraphStore;
@@ -26,27 +25,14 @@ use crate::facade::GraphStoreError;
 #[derive(Debug)]
 pub(crate) enum OrderedEdgeBatchExecutionError {
     Validation(BatchPlacementError),
-    RecoverableGeometry(OneOrientationBatchError),
     /// A Building/Sealing index DML failed its Graph-owned admission before any batch write.
     IndexBuildAdmission(GraphStoreError),
-}
-
-impl OrderedEdgeBatchExecutionError {
-    pub(crate) fn is_recoverable_geometry(&self) -> bool {
-        matches!(self, Self::RecoverableGeometry(_))
-    }
 }
 
 impl std::fmt::Display for OrderedEdgeBatchExecutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Validation(error) => write!(f, "ordered Graph batch validation failed: {error}"),
-            Self::RecoverableGeometry(error) => {
-                write!(
-                    f,
-                    "ordered Graph clean-slab geometry is unsupported: {error}"
-                )
-            }
             Self::IndexBuildAdmission(error) => {
                 write!(
                     f,
