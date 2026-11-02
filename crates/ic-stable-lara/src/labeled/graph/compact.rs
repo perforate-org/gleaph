@@ -1163,6 +1163,48 @@ mod physical_layout_tests {
     }
 
     #[test]
+    fn fold_moves_the_spill_head_into_the_span_without_moving_ordinals() {
+        use super::super::test_support::TestEdge;
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+        // A head drop is legal only above the run's class floor (`used - class/2`), so the
+        // fixture pushes the run past the 4-row floor of its 8-row class.
+        for target in [7u32, 8, 9] {
+            let bytes = target.to_le_bytes();
+            assert!(graph.edges.spill_append(run, &bytes).unwrap());
+        }
+        let used = graph.edges.spill_used_len(run);
+        assert!(used > 4, "the run must sit above its class floor");
+        let head: Vec<TestEdge> = (0..2)
+            .map(|index| graph.edges.spill_edge_at(run, index).unwrap())
+            .collect();
+
+        let folded = graph
+            .fold_bucket_edge_spill_head_into_span(0, &source, 2)
+            .unwrap();
+
+        assert_eq!(folded, 2, "two spill rows move into the span");
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        assert_eq!(
+            after.stored_slots(),
+            source.stored_slots() + 2,
+            "the span grew by exactly the rows it absorbed"
+        );
+        assert_eq!(
+            graph.edges.spill_used_len(run),
+            used - 2,
+            "and the run lost exactly those rows from its head"
+        );
+        // The absorbed rows sit at the end of the span, in the order they had in the spill.
+        let start = super::bucket_content_region(&after).unwrap().0;
+        for (index, expected) in head.iter().enumerate() {
+            let slot = start + u64::from(after.stored_slots()) - 2 + index as u64;
+            assert_eq!(graph.edges.read_slot(slot), *expected);
+        }
+    }
+
+    #[test]
     fn physical_layout_overlapping_copy_keeps_source_ordinals() {
         use super::super::test_support::TestEdge;
         for destination in [98u64, 102] {
@@ -6265,6 +6307,67 @@ where
             bucket_slot,
             bucket,
         )
+    }
+
+    /// Moves the head of a bucket's edge spill run into its slab span.
+    ///
+    /// A spilled row is one the leaf could not give the span a slot for, and it stays spilled
+    /// because the edge fold was deleted with the shared overflow log (ADR 0097). When the span
+    /// has room again - its region's own gap after a left-pack - the lowest spill rows belong back
+    /// in the span, where a read finds them without touching the run.
+    ///
+    /// No logical ordinal moves: logical row `i` is the span slot for `i < stored_slots` and spill
+    /// row `i - stored_slots` otherwise, so growing `stored_slots` by `k` re-homes exactly the `k`
+    /// rows removed from the front of the run. That is why this needs no move observer and no
+    /// rekey, unlike a rebuild.
+    ///
+    /// Order matters: write the span, drop the run's head, then publish `stored_slots`. A failure
+    /// before the publish leaves the old descriptor naming the spill, so the rows stay readable and
+    /// the written span bytes are simply not visible yet. `max_rows` is the caller's capacity
+    /// bound; the drop is also capped at the run's class floor, because a class change is the
+    /// rebuild's job.
+    pub(super) fn fold_bucket_edge_spill_head_into_span(
+        &self,
+        bucket_slot: u64,
+        bucket: &LabelBucket,
+        max_rows: u32,
+    ) -> Result<u32, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
+            return Ok(0);
+        };
+        let Some((start, len)) = bucket_content_region(bucket) else {
+            return Ok(0);
+        };
+        let fold = max_rows
+            .min(self.edges.spill_used_len(run))
+            .min(self.edges.spill_head_drop_capacity(run));
+        if fold == 0 {
+            return Ok(0);
+        }
+        let mut rows = vec![0u8; fold as usize * E::BYTES];
+        for index in 0..fold {
+            let offset = index as usize * E::BYTES;
+            let mut row = vec![0u8; E::BYTES];
+            self.edges
+                .spill_read_row(run, index, &mut row)
+                .map_err(LabeledOperationError::from)?;
+            rows[offset..offset + E::BYTES].copy_from_slice(&row);
+        }
+        self.edges
+            .write_slots_contiguous(start.saturating_add(u64::from(len)), &rows)
+            .map_err(LabeledOperationError::from)?;
+        self.edges
+            .spill_drop_head(run, fold)
+            .map_err(LabeledOperationError::from)?;
+        let grown = len
+            .checked_add(fold)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.buckets
+            .write_label_bucket_slot(bucket_slot, bucket.with_stored_slots(grown))?;
+        Ok(fold)
     }
 
     /// Plan 0341 (GAP-2026-09-07-001 bypass side): left-pack a tombstoned
