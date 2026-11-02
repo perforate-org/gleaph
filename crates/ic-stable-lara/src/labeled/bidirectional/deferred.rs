@@ -3423,12 +3423,12 @@ where
         let baseline = current_instruction_counter();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
         let mut checkpoint_tick = 0u32;
-        // Holds an in-flight `DeleteVertex` continuation between steps. A delete is the
-        // highest-priority item and nothing enqueues mid-drain, so its continuation is
-        // always the next pop; keeping it in memory instead of round-tripping through the
-        // BTreeMap per step removes two queue ops per removed edge (the continuation is
-        // re-inserted only when the pass stops at a budget boundary). Compaction
-        // continuations keep the one-`EdgeMoved`-per-pop contract and round-trip as before.
+        // Holds an in-flight continuation between steps: a `DeleteVertex` or a span
+        // compaction. Neither enqueues anything mid-drain, so its continuation is always the
+        // next pop; keeping it in memory instead of round-tripping through the BTreeMap per
+        // step removes two queue ops per moved edge (the continuation is re-inserted only
+        // when the pass stops at a budget boundary). Compaction used to round-trip because a
+        // step reports at most one move, which made every moved row two stable-map writes.
         let mut in_flight: Option<(MaintenanceQueueKey, MaintenanceWorkItem)> = None;
 
         loop {
@@ -3754,9 +3754,18 @@ where
                 continue;
             }
             match requeue {
-                Some(next) if matches!(next, MaintenanceWorkItem::DeleteVertexV1 { .. }) => {
-                    // The delete continuation stays in flight; it is re-inserted when the
-                    // pass stops so the in-progress `removed_edges` cursor survives.
+                Some(next)
+                    if matches!(
+                        next,
+                        MaintenanceWorkItem::DeleteVertexV1 { .. }
+                            | MaintenanceWorkItem::CompactVertexEdgeSpanV1 { .. }
+                    ) =>
+                {
+                    // The continuation stays in flight; it is re-inserted when the pass stops, so
+                    // the in-progress cursor survives. Compaction joins the delete path here: its
+                    // item identity is the same (orientation, vertex, anchor) across steps, and the
+                    // alternative - a queue pop and requeue per moved edge - is two stable-map
+                    // operations for every row, which is the dominant cost of a dense drain.
                     in_flight = Some((item_key, next));
                 }
                 Some(next) => {
