@@ -79,6 +79,35 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
         rows
     };
 
+    // Two buckets must never overlap: every run here lives in its bucket's own span, and a
+    // sibling's row landing inside another bucket's span is exactly how a row picks up the wrong
+    // neighbour.
+    store.with_graph_mut(|graph| {
+        let wire = crate::facade::store::helpers::lara_label(
+            label.pack(gleaph_graph_kernel::entry::EdgeDirectedness::Undirected),
+        );
+        let mut spans: Vec<(u64, u64)> = [("low", low), ("high", high), ("guard", guard)]
+            .into_iter()
+            .filter_map(|(_, vertex)| {
+                ic_stable_lara::labeled::fixture_support::bucket_geometry(
+                    graph.forward(),
+                    vertex,
+                    wire,
+                )
+                .map(|(start, stored, _, _)| (start, start + u64::from(stored)))
+            })
+            .collect();
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "bucket spans overlap: {:?} and {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    });
+
     // Read twice: a stored wrong neighbour is stable, a mapping artefact is not.
     assert_eq!(
         read(low),

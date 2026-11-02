@@ -152,6 +152,16 @@ defect from being rediscovered without its prior reasoning.
   - One read-side fact is now settled: reading the same vertex twice returns the same rows, so the
     wrong neighbour is **stored**, not produced by the read mapping. That rules out the ordinal/slot
     resolution path and confirms the row content itself is wrong in the run.
+  - **Cause found (2026-11-03): two buckets' spans overlap.** A run inspector
+    (`fixture_support::bucket_geometry`) reports, for the reproduction:
+    `low = (edge_start 4096, stored_slots 11, degree 17)`, `high = (4097, 0, 34)`,
+    `guard = (4098, 1, 1)`. Low's span is `[4096, 4107)` and it contains `high`'s start at 4097 and
+    `guard`'s at 4098, so `guard`'s single row is written at physical 4098 - which is low's slot
+    index 2. That is exactly the observed row: value from low's values span (2002) and neighbour
+    from guard's row. So this is not a spill bug at all: the leaf arena handed out bucket starts one
+    slot apart and then one bucket's prefix grew across its siblings. It is a residency violation of
+    the leaf contract (E5: placement stays inside the vertex's own slice), and the reproduction now
+    asserts it directly with a non-overlap check on the three spans.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.

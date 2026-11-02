@@ -21,3 +21,50 @@ pub fn force_span_fold<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
 ) -> Result<(), LabeledOperationError> {
     graph.compact_vertex_edge_span(vid, bucket_index)
 }
+
+/// Every stored row of one bucket's spill run, as `(index, neighbour)`.
+///
+/// Unlike a print at a write site, this reads what the run actually holds, which is the only
+/// observation that matched the read-back in earlier investigations.
+pub fn dump_spill_rows<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+) -> Vec<(u32, VertexId)> {
+    let vertex = graph.vertices().get(vid);
+    let bucket = match graph.find_bucket(vid, &vertex, label).expect("find bucket") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+        crate::labeled::graph::BucketSearch::Missing { .. } => return Vec::new(),
+    };
+    let Ok(run) = graph.edges.spill_mint(bucket.edge_spill_run()) else {
+        return Vec::new();
+    };
+    let used = graph.edges.spill_used_len(run);
+    (0..used)
+        .map(|index| {
+            let edge = graph
+                .edges
+                .spill_edge_at(run, index)
+                .expect("spill row readable");
+            (index, edge.neighbor_vid())
+        })
+        .collect()
+}
+
+/// One bucket's physical geometry: `(edge_start, stored_slots, degree, spill_run)`.
+pub fn bucket_geometry<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+) -> Option<(u64, u32, u32, u32)> {
+    let vertex = graph.vertices().get(vid);
+    match graph.find_bucket(vid, &vertex, label).expect("find bucket") {
+        crate::labeled::graph::BucketSearch::Found { bucket, .. } => Some((
+            bucket.edge_start(),
+            bucket.stored_slots(),
+            bucket.degree,
+            bucket.edge_spill_run(),
+        )),
+        crate::labeled::graph::BucketSearch::Missing { .. } => None,
+    }
+}
