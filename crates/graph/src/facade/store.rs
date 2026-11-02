@@ -56,7 +56,7 @@ mod vertex_row;
 pub use error::GraphStoreError;
 pub use handle::EdgeHandle;
 pub use helpers::{canonical_undirected_owner, catalog_edge_label_from_wire};
-pub(crate) use index_build_admission::{FencedTransition, PlannedBuildEnvelope, trap_build_fence};
+pub(crate) use index_build_admission::{FencedTransition, PlannedBuildEnvelope};
 pub use maintenance::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
 pub(crate) use pending_purge::vertex_hidden_by_pending_purge;
 
