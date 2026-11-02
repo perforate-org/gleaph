@@ -167,15 +167,17 @@ defect from being rediscovered without its prior reasoning.
     `trusts_neighbor_boundary() == true`, so `slab_window_exclusive_end` clamps the append at
     `vertices[1].base_slot_start()`. Low could therefore write exactly one slab row - yet its bucket
     records `stored_slots = 11`.
-  - **Lead for the fix:** the spill path grows the packed slab count. In
-    `log_mut.rs::insert_into_spill_with_layout` the `prepare` closure is
-    `v.try_with_spill_run(run).and_then(CsrVertex::try_grow_packed_slab_by_one)`, and it runs for a
-    row that is about to be appended to the *run*. If the bucket's `stored_slots` derives from that
-    counter, every spilled row also lengthens the prefix, so reads take the first `stored_slots`
-    rows from the slab - walking into the sibling buckets placed after it. That matches every
-    observation: the right value (values span is addressed by ordinal) and the wrong neighbour (the
-    row read from a sibling's slot). Confirm that `stored_slots` reads the packed slab counter, then
-    decide whether a spill row may grow it at all.
+  - First lead, **checked and wrong**: that the spill path grows the prefix.
+    `CsrVertex::try_grow_packed_slab_by_one` already branches on `edge_spill_run != NO_SPILL_RUN`
+    and grows only `degree` there, so a spill row cannot lengthen `stored_slots`.
+  - **Second lead, consistent with every number:** the *fold* fills the span past the sibling
+    boundary. Low holds 11 prefix rows and 6 run rows, so 11 rows reached the slab by some path even
+    though the append window is one slot - and the path that can do that is
+    `compact_label_bucket_overflow_to_slab`, whose room check is
+    `available = bucket_successor_start(...) - bucket.edge_start()`: the next *bucket inside the same
+    vertex*, not the next *vertex's* base. Growing a prefix up to the next bucket of its own vertex
+    can therefore cross into the vertex that was placed after it, which is what the recorded
+    4096/4097/4098 starts show. The fix belongs where that fold decides it has room.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
