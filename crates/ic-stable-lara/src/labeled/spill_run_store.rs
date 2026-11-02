@@ -406,6 +406,47 @@ impl<M: Memory> SpillRunStore<M> {
         safe_write(&self.memory, self.header_address(run), &len.to_le_bytes())
     }
 
+    /// Copies the rows at `keep` into a fresh run of their own class and returns it.
+    ///
+    /// This is the rebuild's store half: a run cannot shrink below its class floor by dropping the
+    /// head, so reclaiming that space means rebuilding into a run sized to the live rows. The
+    /// caller publishes the returned id in the bucket descriptor and releases `run` after the
+    /// publication, which keeps the descriptor from ever naming a freed run (the same order
+    /// [`Self::grow_in_place`] requires). `keep` must be ascending and non-empty; the empty case is
+    /// the caller's, because an empty bucket releases its run instead of rebuilding one.
+    pub(crate) fn repack(
+        &self,
+        run: SpillRunId,
+        keep: &[u32],
+    ) -> Result<SpillRunId, SpillRunError> {
+        assert!(!run.is_none(), "cannot repack the sentinel run");
+        assert!(!keep.is_empty(), "an empty run is released, not repacked");
+        assert!(
+            keep.windows(2).all(|pair| pair[0] < pair[1]),
+            "repack rows must be ascending and distinct"
+        );
+        let len = u32::try_from(keep.len()).map_err(|_| SpillRunError::RunIdOutOfRange {
+            id: u32::MAX,
+            arena_id_capacity: self.arena_id_capacity.ids(),
+        })?;
+        let fresh = self.allocate(len)?;
+        let mut row = vec![0u8; self.row_bytes as usize];
+        for (destination, source) in keep.iter().copied().enumerate() {
+            if !self.read_rows(run, source, &mut row) {
+                let _ = self.release(fresh);
+                return Err(SpillRunError::HeadDropWouldReclass {
+                    used: self.read_used_len(run),
+                    dropped: source,
+                });
+            }
+            if let Err(err) = self.write_row(fresh, destination as u32, &row) {
+                let _ = self.release(fresh);
+                return Err(err);
+            }
+        }
+        Ok(fresh)
+    }
+
     /// How many rows may be dropped from the head before the run would change class.
     pub(crate) fn head_drop_capacity(&self, run: SpillRunId) -> u32 {
         // A run keeps its class while `class_rows(new_len) == class_rows(used)`, i.e. while
@@ -694,6 +735,29 @@ mod tests {
         );
         store.drop_head(run, 0).expect("a no-op drop");
         assert_eq!(store.read_used_len(run), 9);
+    }
+
+    #[test]
+    fn repack_moves_the_live_rows_into_a_smaller_class() {
+        let store = store();
+        let run = store.allocate(16).expect("run");
+        for i in 0..16u32 {
+            store.write_row(run, i, &i.to_le_bytes()).expect("row");
+        }
+
+        let keep = [0u32, 2, 5];
+        let fresh = store.repack(run, &keep).expect("repack");
+
+        assert_ne!(fresh, run, "the rebuild lands in its own run");
+        assert_eq!(store.read_used_len(fresh), 3, "sized to the live rows");
+        for (destination, source) in keep.iter().copied().enumerate() {
+            let mut row = [0u8; 4];
+            assert!(store.read_rows(fresh, destination as u32, &mut row));
+            assert_eq!(u32::from_le_bytes(row), source, "row order is preserved");
+        }
+        // The source is untouched until the caller publishes and releases it.
+        assert_eq!(store.read_used_len(run), 16);
+        store.release(run).expect("release the old run");
     }
 
     #[test]
