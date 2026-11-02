@@ -23,6 +23,53 @@ pub(super) fn install_w2_inline_property_profile(label_id: EdgeLabelId) {
     );
 }
 
+/// Minimal reproduction attempt for the one row that reads back with the right value and the wrong
+/// neighbour: one vertex, undirected self-loops carrying inline values, read straight back.
+#[test]
+fn undirected_self_loops_with_inline_values_keep_their_neighbour() {
+    let store = GraphStore::new();
+    let v = store.insert_vertex().expect("vertex");
+    let label_id = crate::test_labels::edge_label_id_for_name("UndirectedSelfLoopNeighbour");
+    install_w2_inline_property_profile(label_id);
+
+    for value in 1..=8u16 {
+        store
+            .insert_undirected_edge_with_inline_property_bytes(
+                v,
+                v,
+                Some(label_id),
+                &value.to_le_bytes(),
+            )
+            .expect("self loop");
+    }
+
+    let mut rows: Vec<_> = store
+        .undirected_edges(v)
+        .expect("undirected rows")
+        .into_iter()
+        .map(|edge| {
+            (
+                edge.edge_slot_index.raw(),
+                edge.neighbor_vid(),
+                <[u8; 2]>::try_from(edge.edge_inline_property_bytes()).expect("two bytes"),
+            )
+        })
+        .collect();
+    rows.sort_unstable_by_key(|row| row.0);
+    for (index, (_, neighbour, bytes)) in rows.iter().enumerate() {
+        assert_eq!(
+            *neighbour, v,
+            "row {index} is a self-loop and must point at its owner"
+        );
+        assert_eq!(
+            u16::from_le_bytes(*bytes),
+            index as u16 + 1,
+            "row {index} keeps the value it was inserted with"
+        );
+    }
+    assert_eq!(rows.len(), 8);
+}
+
 pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Measurement {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
