@@ -120,9 +120,18 @@ defect from being rediscovered without its prior reasoning.
     than anything about the row being read.
   - What the reproduction shows: `guard`'s own bucket still holds its row correctly (slot 0,
     neighbour `VertexId(2)`, value 6000), so this is **not** a row overwritten by another bucket -
-    the self-loop row itself was written with the wrong neighbour. The likely owner is undirected
-    self-loop alias resolution, which has to pick the owner as the neighbour; with 32 prior rows in
-    a sibling bucket something makes it pick `guard` instead.
+    the self-loop row itself was written with the wrong neighbour.
+  - **The payloads are correct at the LARA entry the undirected path uses.**
+    `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location` receives
+    16 x `(low, low)`, 33 x `(high, high)`, one `(low, high)`, one `(high, low)` and one
+    `(guard, guard)` - all right. So the wrong neighbour appears *inside* the deferred placement,
+    not on the way in.
+  - **Instrumenting the wrong function first cost time.** The earlier probe sat in
+    `lara/edge/insert.rs::insert_edge_inner`, which this path does not reach the way I assumed: it
+    reported 54 calls all with owner 0, which is nonsense for rows whose bucket owner is 1 or 2.
+    That either means `vid` there is not the bucket owner or the call arrives with the wrong owner -
+    a question to settle before reading anything into those counts. Check which function the entry
+    above actually calls before instrumenting again.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
