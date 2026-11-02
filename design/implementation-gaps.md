@@ -109,6 +109,11 @@ defect from being rediscovered without its prior reasoning.
     low reads `VertexId(0)`. So one row carries the right value and the wrong neighbour - the
     signature of a write landing in the wrong field or a row/value pair being mismatched, not of a
     fixture that forgot to fold.
+  - Minimising it through this fixture does not work: the `guard` self-loop participates in the
+    later placement assertions, so removing it changes two expectations instead of isolating the
+    row. A reproduction needs its own fixture - one vertex, a handful of undirected self-loops
+    carrying inline values, read straight back - plus the raw bytes of the offending slot, to tell
+    whether the neighbour field or the value field was written in the wrong place.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
