@@ -190,6 +190,53 @@ fn proportional_count(count: usize, target_bytes: usize, measured_bytes: usize) 
     ((count as u128).saturating_mul(target_bytes as u128) / measured_bytes as u128) as usize
 }
 
+/// What one delivery may carry: the consumer's entry bound and the encoded payload bound.
+///
+/// The two limits are independent and a page ends at whichever is reached first. Entries are not a
+/// proxy for cost - a text posting rebuild and a scalar rekey are both one entry - so the entry
+/// bound belongs to the consumer that knows its own cost, and the byte bound is measured here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageBounds {
+    /// Most entries the consumer accepts in one delivery.
+    pub max_ops: u32,
+    /// Hard encoded-byte limit for the delivery.
+    pub max_bytes: usize,
+}
+
+impl PageBounds {
+    pub const fn new(max_ops: u32, max_bytes: usize) -> Self {
+        Self { max_ops, max_bytes }
+    }
+
+    /// The portable inter-canister ceiling for the byte half, with no entry bound implied.
+    pub const fn inter_canister(max_ops: u32) -> Self {
+        Self::new(max_ops, INTER_CANISTER_TARGET_PAYLOAD_BYTES)
+    }
+
+    /// How many leading entries fit, ending at the first bound that is reached.
+    ///
+    /// `bytes_of` is the authoritative size of one entry as it will be encoded; the byte bound is
+    /// inclusive, so a page that lands exactly on `max_bytes` is accepted. An entry that alone
+    /// exceeds the byte bound stops the page instead of being truncated, because a partial entry is
+    /// not a delivery unit.
+    pub fn fit<T>(&self, entries: &[T], bytes_of: impl Fn(&T) -> usize) -> usize {
+        let mut used = 0usize;
+        let mut count = 0usize;
+        for entry in entries {
+            if count as u32 >= self.max_ops {
+                break;
+            }
+            let next = used.saturating_add(bytes_of(entry));
+            if next > self.max_bytes {
+                break;
+            }
+            used = next;
+            count += 1;
+        }
+        count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -269,6 +316,21 @@ mod tests {
         assert_eq!(result.entry_count, 8);
         assert_eq!(result.encoded_bytes, 500);
         assert_eq!(calls.first().copied(), Some(8));
+    }
+
+    #[test]
+    fn page_bounds_stop_at_the_first_limit_reached() {
+        let entries = [10usize, 10, 10, 10];
+        let bytes = |entry: &usize| *entry;
+
+        // The entry bound stops first.
+        assert_eq!(PageBounds::new(3, 1_000).fit(&entries, bytes), 3);
+        // The byte bound stops first: three entries fit exactly (inclusive), the fourth does not.
+        assert_eq!(PageBounds::new(10, 30).fit(&entries, bytes), 3);
+        // An entry that alone exceeds the bound stops the page rather than being split.
+        assert_eq!(PageBounds::new(10, 5).fit(&entries, bytes), 0);
+        // Nothing to deliver.
+        assert_eq!(PageBounds::new(10, 30).fit(&[] as &[usize], bytes), 0);
     }
 
     #[test]
