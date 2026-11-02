@@ -594,6 +594,11 @@ fn seed_single_label_hub(
 
 /// Hub degree for the ADR 0022 Stage 2 baselines (single skewed bucket).
 const STAGE2_HUB_DEGREE: u32 = 1024;
+/// One row past `T_PROMOTE`: promotion fires on the insert *after* the resident count
+/// reaches the threshold, so a 1024-row hub is still slab when the measured insert runs
+/// and every measurement would be a promotion. Seeding past the threshold puts the bucket
+/// in tree mode before the bench function starts.
+const STAGE2_HUB_SEED: u32 = STAGE2_HUB_DEGREE + 1;
 
 /// One PMA leaf worth of vertices (matches `DEFAULT_SEGMENT_SIZE`).
 const STAGE2_LEAF: u32 = 32;
@@ -1999,15 +2004,16 @@ fn bench_l_s2_h_del_h_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0052 Slice 3: Unordered scalar insert into a tombstone-heavy slab-backed
-/// hub bucket. The fixture folds the overflow log to the slab and deletes half
-/// the edges, so every measured re-insert reuses an in-slab tombstone (same
-/// `stored_slots`, degree + 1, ADR 0052 §5 step 1) instead of appending to the
-/// tail or overflow log.
+/// ADR 0052 Slice 3: Unordered scalar insert into a tombstone-heavy hub bucket.
+/// The fixture seeds one row past `T_PROMOTE` so the bucket is already in tree mode
+/// when the measured insert runs - a 1024-row seed would make every measurement a
+/// promotion (278K of the 281K it used to report) rather than an insert. It then
+/// deletes half the edges, so every measured re-insert reuses a tombstone (same
+/// `stored_slots`, degree + 1, ADR 0052 §5 step 1) instead of appending to the tail.
 #[bench(raw)]
 fn bench_l_uo_tomb_h_del_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
-    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_SEED);
     compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
     for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
         graph
@@ -2047,7 +2053,7 @@ fn bench_l_uo_tomb_h_del_1024() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_l_ins_ap_hub_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
-    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_SEED);
     compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
     for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
         graph

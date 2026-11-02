@@ -256,13 +256,13 @@ benches:
   bench_l_ins_ap_hub_1024:
     total:
       calls: 1
-      instructions: 302465
+      instructions: 4087
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insertion_append_on_tombstone_hub:
         calls: 1
-        instructions: 301507
+        instructions: 3119
         heap_increase: 0
         stable_memory_increase: 0
   bench_l_ins_ex_bucket_128:
@@ -833,13 +833,13 @@ benches:
   bench_l_uo_tomb_h_del_1024:
     total:
       calls: 1
-      instructions: 281087
+      instructions: 5799
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_unordered_tombstone_reuse_half_deleted:
         calls: 1
-        instructions: 280129
+        instructions: 4831
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384:
