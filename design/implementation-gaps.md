@@ -68,7 +68,11 @@ defect from being rediscovered without its prior reasoning.
     twice and returns `AdvanceBucket` both times.
   - `unordered_compaction_swap_publishes_move_and_moves_sidecars`: the bucket *is* `Slab` but is
     run-backed - `stored_slots = 0` with a live `edge_spill_run` - so every row lives in the run and
-    the span-level swap finds no slots to move. Same class of fixture gap, different mode.
+    the span-level swap finds no slots to move. Promoting the fixture out of tiny mode first does
+    **not** help: deleting the fillers empties the bucket, which releases its span, so the edges
+    under test land in a zero-slot region again and the fold has nothing to fit. A working fixture
+    has to keep the bucket non-empty while giving it span room, or seed the slab geometry directly
+    (LARA's `promote_bucket_to_slab` is `pub(crate)`, so the graph crate cannot call it).
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
     only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
