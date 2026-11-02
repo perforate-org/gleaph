@@ -1441,6 +1441,153 @@ mod tests {
             .collect()
     }
 
+    /// One vertex's observable adjacency: the edges in ordinal order, with the neighbor written
+    /// as its position inside the group under test and the inline bytes the read boundary hands
+    /// back. Order is compared; absolute slot addresses and allocator bookkeeping are not - a
+    /// batch may allocate differently, it may not reorder or drop edges.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ObservableView {
+        out: Vec<(u8, u16, Vec<u8>)>,
+        undirected: Vec<(u8, u16, Vec<u8>)>,
+        in_: Vec<(u8, u16, Vec<u8>)>,
+    }
+
+    impl ObservableView {
+        fn of(store: &GraphStore, vid: VertexId, group: &[VertexId]) -> Self {
+            let position = |target: VertexId| -> u8 {
+                group
+                    .iter()
+                    .position(|candidate| *candidate == target)
+                    .map_or(u8::MAX, |index| index as u8)
+            };
+            let project = |edges: Vec<gleaph_graph_kernel::entry::Edge>| {
+                edges
+                    .into_iter()
+                    .map(|edge| {
+                        let target = edge.target.local_id();
+                        (
+                            position(target),
+                            edge.label_id,
+                            edge.inline_property.as_slice().to_vec(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            Self {
+                out: project(store.directed_out_edges(vid).expect("out edges")),
+                undirected: project(store.undirected_edges(vid).expect("undirected edges")),
+                in_: project(store.directed_in_edges(vid).expect("in edges")),
+            }
+        }
+    }
+
+    fn observable_state(store: &GraphStore, group: &[VertexId]) -> Vec<ObservableView> {
+        group
+            .iter()
+            .map(|vid| ObservableView::of(store, *vid, group))
+            .collect()
+    }
+
+    /// The reference implementation: every edge through the scalar path, one at a time.
+    fn scalar_edges(store: &GraphStore, edges: &[BatchEdgeInput]) {
+        store.execute_ordered_scalar_edges(edges, 0);
+    }
+
+    /// The production shape: try the clean-slab batch, and on recoverable geometry re-run the
+    /// same logical edges through the scalar path. This is what a caller does, so what it leaves
+    /// behind is what a caller can observe.
+    fn batch_edges_with_scalar_fallback(store: &GraphStore, edges: &[BatchEdgeInput]) -> bool {
+        match store
+            .try_insert_batch_edges_clean_slab_with_locations(edges)
+            .expect("plan/encode ok")
+        {
+            BatchEdgeInsertResult::Committed { .. } => true,
+            BatchEdgeInsertResult::RecoverableGeometry { .. } => {
+                scalar_edges(store, edges);
+                false
+            }
+        }
+    }
+
+    /// The batch is an optimization of the scalar path: same logical edges, same resulting graph.
+    /// It may allocate differently, decline and fall back, or merge reservations - it may not
+    /// change what a reader sees. Both groups sit in one store so the two runs share every
+    /// allocator and only the insert path differs.
+    #[test]
+    fn batch_and_scalar_leave_the_same_observable_state() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3001);
+        install_width(label, 1);
+        let v = make_vertices(&store, 6);
+        let scalar_group = v[0..3].to_vec();
+        let batch_group = v[3..6].to_vec();
+        let scalar_input: Vec<BatchEdgeInput> = vec![
+            input(scalar_group[0], scalar_group[1], Some(label), true, vec![7]),
+            input(scalar_group[2], scalar_group[1], Some(label), true, vec![9]),
+        ];
+        let batch_input: Vec<BatchEdgeInput> = vec![
+            input(batch_group[0], batch_group[1], Some(label), true, vec![7]),
+            input(batch_group[2], batch_group[1], Some(label), true, vec![9]),
+        ];
+        // No prepared bucket here: production lets the batch reserve a new one, and a prepared
+        // bucket's one-slot window would force the deferral this test is not about.
+
+        scalar_edges(&store, &scalar_input);
+        let committed = batch_edges_with_scalar_fallback(&store, &batch_input);
+
+        // Known limitation, pinned so the expansion work has to flip it deliberately: a bucket
+        // created inside the batch gets a one-slot window, so the second projection that lands in
+        // it exceeds the window and defers. The equivalence below therefore compares the scalar
+        // fallback here; `plans/0408` records the reach this costs.
+        assert!(
+            !committed,
+            "a run wider than a one-slot bucket window must decline, not half-write"
+        );
+        assert_eq!(
+            observable_state(&store, &scalar_group),
+            observable_state(&store, &batch_group),
+            "the batch path must leave the scalar path's graph"
+        );
+    }
+
+    /// The window-overflow case, where the batch declines and the caller re-runs the same edges
+    /// through the scalar path. A deferral is only safe if that re-run leaves the identical graph,
+    /// so assert both the decline and the equality here.
+    #[test]
+    fn a_deferred_batch_leaves_the_same_observable_state_as_the_scalar_path() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3002);
+        install_width(label, 0);
+        let v = make_vertices(&store, 8);
+        let scalar_group = v[0..4].to_vec();
+        let batch_group = v[4..8].to_vec();
+        // Both projections land in the middle vertex's undirected bucket, whose window holds one
+        // slot: the batch cannot reserve the run and defers.
+        let scalar_input: Vec<BatchEdgeInput> = vec![
+            input(scalar_group[1], scalar_group[2], Some(label), false, vec![]),
+            input(scalar_group[2], scalar_group[3], Some(label), false, vec![]),
+        ];
+        let batch_input: Vec<BatchEdgeInput> = vec![
+            input(batch_group[1], batch_group[2], Some(label), false, vec![]),
+            input(batch_group[2], batch_group[3], Some(label), false, vec![]),
+        ];
+        store.prepare_clean_slab_undir_buckets(batch_group[3], batch_group[2], label, 0);
+        store.prepare_clean_slab_undir_buckets(batch_group[2], batch_group[1], label, 0);
+
+        scalar_edges(&store, &scalar_input);
+        let committed = batch_edges_with_scalar_fallback(&store, &batch_input);
+
+        assert!(
+            !committed,
+            "a run wider than the window must decline rather than write a partial batch"
+        );
+        assert_eq!(
+            observable_state(&store, &scalar_group),
+            observable_state(&store, &batch_group),
+            "the scalar fallback must rebuild exactly what the scalar path builds"
+        );
+    }
+
     fn input(
         source: VertexId,
         target: VertexId,
