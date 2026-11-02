@@ -63,9 +63,9 @@ const TREE_SEED_SLOTS: u32 = 1_048_577; // 1M+1: the last insert deepens to dept
 const TREE_DENSITY_875: u32 = 917_504; // 87.5% of 1,048,576
 const TREE_DENSITY_50: u32 = 524_288; // 50%
 const OFFSET_STEP: u32 = 65_536;
-const SLAB_REANCHOR_EXTENT: u32 = 4_096;
+const SLAB_REANCHOR_EXTENT: u32 = 1_024;
 const SLAB_REANCHOR_STRIDE: u32 = 8;
-const SLAB_REANCHOR_OFFSET: u32 = 960;
+const SLAB_REANCHOR_OFFSET: u32 = 240;
 
 struct TreeFixture {
     graph: LabeledLaraGraph<TreeBenchEdge, crate::VectorMemory>,
@@ -540,12 +540,13 @@ fn offset_tree_1m_d50_off_first() -> canbench_rs::BenchResult {
     })
 }
 
-/// Slab-regime re-anchor at the post-ADR-0088 extent cap 4,096: the 0283
-/// worst-case shape (87.5% tombstones, OFFSET 960, LIMIT 32) at the legal
-/// slab ceiling. The fixed slab rule: slab stays status-quo iff worst
-/// overshoot < 100,000 instructions/query.
+/// Slab-regime re-anchor at the current slab ceiling `T_PROMOTE = 1024` rows: the
+/// 0283 worst-case shape (87.5% tombstones, OFFSET 240, LIMIT 32) at the legal slab
+/// ceiling. The extent was 4,096 when a slab bucket could hold that many rows; tree
+/// mode owns everything past `T_PROMOTE` now, so the ceiling - and the offset that
+/// keeps the same live rows in the window - shrank by the same factor of four.
 #[bench(raw)]
-fn offset_slab4096_d875_off960() -> canbench_rs::BenchResult {
+fn offset_slab1024_d875_off240() -> canbench_rs::BenchResult {
     let (graph, vid, label) = super::bench::workload_dense_graph(SLAB_REANCHOR_EXTENT);
     for slot in 0..SLAB_REANCHOR_EXTENT {
         if slot % SLAB_REANCHOR_STRIDE != 0 {

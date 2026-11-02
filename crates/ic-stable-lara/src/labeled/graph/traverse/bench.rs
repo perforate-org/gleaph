@@ -349,8 +349,9 @@ fn collect_offset_truth(
     extent: u32,
     stride: u32,
 ) -> Vec<(BucketEntryPosition, u32)> {
+    let live = extent / stride;
     let bucket = offset_bucket(graph, src, label);
-    assert_eq!(bucket.degree(), OFFSET_LIVE_ROWS);
+    assert_eq!(bucket.degree(), live);
     assert_eq!(bucket.stored_slots(), extent);
     assert!(bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
     let mut tombstones = 0u32;
@@ -364,11 +365,11 @@ fn collect_offset_truth(
             assert_eq!(edge.0, offset_target(slot));
         }
     }
-    assert_eq!(tombstones, extent - OFFSET_LIVE_ROWS);
+    assert_eq!(tombstones, extent - live);
     assert_eq!(graph.vertices().get(src).stored_slots, extent);
 
     let ascending = collect_offset_rows(graph, src, label, OutEdgeOrder::Ascending);
-    assert_eq!(ascending.len(), OFFSET_LIVE_ROWS as usize);
+    assert_eq!(ascending.len(), live as usize);
     assert!(
         ascending
             .iter()
@@ -388,7 +389,11 @@ fn collect_offset_truth(
 }
 
 fn build_offset_fixture(extent: u32, stride: u32) -> OffsetFixture {
-    assert_eq!(extent / stride, OFFSET_LIVE_ROWS);
+    // The extent stays inside one slab bucket: past `T_PROMOTE` rows the bucket promotes
+    // to tree mode and its ids move into LTB blocks, which is a different storage form
+    // rather than a denser slab. The live count is therefore `extent / stride`.
+    assert!(extent <= OFFSET_SLAB_EXTENT);
+    assert_eq!(extent % stride, 0);
     let (graph, src, label) = build_dense_offset_graph(extent);
     for slot in 0..extent {
         if slot % stride != 0 {
@@ -1753,62 +1758,76 @@ range_case!(
     true
 );
 
-/// Fixed-survivor OFFSET matrix: dense control at the first live ordinal.
+/// Fixed-survivor OFFSET matrix over a slab bucket.
+///
+/// A slab bucket holds at most `T_PROMOTE = 1024` rows; past that the bucket promotes
+/// to tree mode and its ids live in LTB blocks, so a larger extent would measure a
+/// different storage form rather than a denser slab. The matrix therefore varies the
+/// **tombstone ratio** at a fixed 1024-row bucket, with the window offset scaled to the
+/// live count of each ratio, instead of growing the extent.
+const OFFSET_SLAB_EXTENT: u32 = 1_024;
+
+/// Dense control at the first live ordinal.
 #[bench(raw)]
-fn bench_t_off_l1k_e1k_0_a() -> canbench_rs::BenchResult {
-    offset_query_bench(1_024, 1, 0, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_dense_0_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 1, 0, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: dense OFFSET query.
+/// Dense OFFSET query at the window offset.
 #[bench(raw)]
-fn bench_t_off_l1k_e1k_960_a() -> canbench_rs::BenchResult {
-    offset_query_bench(1_024, 1, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_dense_960_a() -> canbench_rs::BenchResult {
+    offset_query_bench(
+        OFFSET_SLAB_EXTENT,
+        1,
+        OFFSET_WINDOW_OFFSET,
+        OutEdgeOrder::Ascending,
+    )
 }
 
-/// Fixed-survivor OFFSET matrix: 50% tombstones at the first live ordinal.
+/// 50% tombstones (512 live rows) at the first live ordinal.
 #[bench(raw)]
-fn bench_t_off_l1k_e2k_0_a() -> canbench_rs::BenchResult {
-    offset_query_bench(2_048, 2, 0, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t50_0_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 2, 0, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: 50% tombstones at live ordinal 960.
+/// 50% tombstones (512 live rows) at live ordinal 384.
 #[bench(raw)]
-fn bench_t_off_l1k_e2k_960_a() -> canbench_rs::BenchResult {
-    offset_query_bench(2_048, 2, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t50_384_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 2, 384, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: 75% tombstones at the first live ordinal.
+/// 75% tombstones (256 live rows) at the first live ordinal.
 #[bench(raw)]
-fn bench_t_off_l1k_e4k_0_a() -> canbench_rs::BenchResult {
-    offset_query_bench(4_096, 4, 0, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t75_0_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 4, 0, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: 75% tombstones at live ordinal 960.
+/// 75% tombstones (256 live rows) at live ordinal 192.
 #[bench(raw)]
-fn bench_t_off_l1k_e4k_960_a() -> canbench_rs::BenchResult {
-    offset_query_bench(4_096, 4, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t75_192_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 4, 192, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: 87.5% tombstones at the first live ordinal.
+/// 87.5% tombstones (128 live rows) at the first live ordinal.
 #[bench(raw)]
-fn bench_t_off_l1k_e8k_0_a() -> canbench_rs::BenchResult {
-    offset_query_bench(8_192, 8, 0, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t88_0_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 8, 0, OutEdgeOrder::Ascending)
 }
 
-/// Fixed-survivor OFFSET matrix: 87.5% tombstones at live ordinal 960.
+/// 87.5% tombstones (128 live rows) at live ordinal 96.
 #[bench(raw)]
-fn bench_t_off_l1k_e8k_960_a() -> canbench_rs::BenchResult {
-    offset_query_bench(8_192, 8, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+fn bench_t_off_l1k_t88_96_a() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 8, 96, OutEdgeOrder::Ascending)
 }
 
 /// Descending dense control for the fixed-survivor OFFSET matrix.
 #[bench(raw)]
-fn bench_t_off_l1k_e1k_0_d() -> canbench_rs::BenchResult {
-    offset_query_bench(1_024, 1, 0, OutEdgeOrder::Descending)
+fn bench_t_off_l1k_dense_0_d() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 1, 0, OutEdgeOrder::Descending)
 }
 
 /// Descending 87.5% tombstone control for the fixed-survivor OFFSET matrix.
 #[bench(raw)]
-fn bench_t_off_l1k_e8k_0_d() -> canbench_rs::BenchResult {
-    offset_query_bench(8_192, 8, 0, OutEdgeOrder::Descending)
+fn bench_t_off_l1k_t88_0_d() -> canbench_rs::BenchResult {
+    offset_query_bench(OFFSET_SLAB_EXTENT, 8, 0, OutEdgeOrder::Descending)
 }
