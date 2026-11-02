@@ -10,10 +10,6 @@ use crate::{
     labeled::{
         BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
-        graph::batch_write::{
-            BatchLocationMode, BatchReservation, OneOrientationBatchError,
-            OneOrientationBatchResult,
-        },
         graph::traverse::{EdgeFindScope, EdgeWithInlinePropertyRef, FoundEdge},
         graph::{
             BucketEntryPosition, BucketSearch, EdgePlacementPolicy, EdgeRemoval, EdgeSlotMove,
@@ -1293,66 +1289,6 @@ where
         &self.reverse
     }
 
-    /// Reserves all orientations for one owner batch.
-    ///
-    /// Direct LARA mutation is crate-private. All reservations are acquired before any
-    /// canonical write, and partial reservation failure is rolled back inside this owner.
-    pub fn reserve_batch_orientations(
-        &self,
-        plans: crate::labeled::batch_write::BidirectionalBatchPlan<E>,
-    ) -> Result<Vec<(super::Orientation, BatchReservation<E>)>, OneOrientationBatchError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        plans.validate()?;
-        let plans = plans.into_orientations();
-        let mut reservations = Vec::with_capacity(plans.len());
-        for (orientation, plan) in plans {
-            let result = match orientation {
-                super::Orientation::Forward => self.forward.reserve_one_orientation_batch(&plan),
-                super::Orientation::Reverse => self.reverse.reserve_one_orientation_batch(&plan),
-            };
-            match result {
-                Ok(reservation) => reservations.push((orientation, reservation)),
-                Err(error) => {
-                    for (reserved_orientation, reservation) in reservations {
-                        match reserved_orientation {
-                            super::Orientation::Forward => reservation.rollback(&self.forward),
-                            super::Orientation::Reverse => reservation.rollback(&self.reverse),
-                        }
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        Ok(reservations)
-    }
-
-    /// Commits all previously reserved orientations through the owner boundary.
-    pub fn commit_batch_orientations(
-        &self,
-        reservations: Vec<(super::Orientation, BatchReservation<E>)>,
-        location_mode: BatchLocationMode,
-    ) -> Vec<(super::Orientation, OneOrientationBatchResult)>
-    where
-        E: CsrEdgeTombstone,
-    {
-        reservations
-            .into_iter()
-            .map(|(orientation, reservation)| {
-                let result = match orientation {
-                    super::Orientation::Forward => {
-                        reservation.commit_with_location_mode(&self.forward, location_mode)
-                    }
-                    super::Orientation::Reverse => {
-                        reservation.commit_with_location_mode(&self.reverse, location_mode)
-                    }
-                };
-                (orientation, result)
-            })
-            .collect()
-    }
-
     /// Ensures the inline-property-bytes schema for one orientation during reverse repair.
     ///
     /// intentionally a repair boundary, not a general-purpose single-orientation write API.
@@ -2172,25 +2108,6 @@ where
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         Ok(())
-    }
-
-    /// Roll back a one-orientation batch reservation without committing it.
-    ///
-    /// This consumes the reservation token, delegates to the forward or reverse
-    /// labeled graph, and restores the edge-store logical capacity and inline property bytes
-    /// occupied tail captured at reserve time.  Any inline property bytes that were
-    /// already appended are retired to the inline property free-list as reusable slack;
-    /// the underlying stable-memory pages are not shrunk.  Canonical adjacency
-    /// and bucket metadata are untouched.
-    pub fn rollback_batch_reservation(
-        &self,
-        orientation: Orientation,
-        reservation: BatchReservation<E>,
-    ) {
-        match orientation {
-            Orientation::Forward => reservation.rollback(&self.forward),
-            Orientation::Reverse => reservation.rollback(&self.reverse),
-        }
     }
 
     /// Inserts one directed edge into forward and reverse orientations.

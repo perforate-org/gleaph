@@ -191,46 +191,6 @@ fn promoting_a_spilling_bucket_keeps_every_row() {
 }
 
 #[test]
-fn the_batch_defers_a_run_backed_append_without_writing() {
-    // F3c: the batch rejects the run before reserving anything, and the caller's scalar fallback
-    // appends, grows and promotes.
-    let graph = spilling_graph();
-    graph.push_vertex(LabeledVertex::default()).unwrap();
-    let label = BucketLabelKey::from_raw(2);
-    insert_many(&graph, VertexId::from(0), label, 0..6);
-    let before = bucket_of(&graph, VertexId::from(0), label);
-    let census_before = graph.edges().header().num_edges;
-
-    let plan = super::batch_write::OneOrientationBatchPlan {
-        runs: vec![super::batch_write::OneOrientationBucketRun {
-            owner_vertex_id: VertexId::from(0),
-            label_id: label,
-            inline_property_width: 0,
-            placement: EdgePlacementPolicy::Insertion,
-            edges: (100..104)
-                .map(|target| super::batch_write::OneOrientationBatchEdge {
-                    logical_ordinal: target,
-                    owner_vertex_id: VertexId::from(0),
-                    neighbor_vertex_id: VertexId::from(target),
-                    label_id: label,
-                    edge: TestEdge { target },
-                })
-                .collect(),
-        }],
-    };
-    let error = graph
-        .insert_one_orientation_batch(&plan)
-        .expect_err("a run-backed batch run is deferred");
-    assert!(
-        error.is_recoverable_geometry(),
-        "the deferral must be recoverable: {error:?}"
-    );
-    let after = bucket_of(&graph, VertexId::from(0), label);
-    assert_eq!(after.degree(), before.degree());
-    assert_eq!(graph.edges().header().num_edges, census_before);
-}
-
-#[test]
 fn bypass_conversion_carries_the_run_and_the_total_width() {
     // ADR 0097 §3: a bypass row carries its own run id, and its `stored_degree` is the total width.
     let graph = spilling_graph();

@@ -9,7 +9,6 @@ use crate::labeled::tree_csr::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, EdgePlacementPolicy,
     LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
-    batch_write::{OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBucketRun},
     graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
 use crate::{
@@ -182,62 +181,6 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         BucketLabelKey::from_raw(1),
     )
     .expect("graph")
-}
-
-/// Tombstone-heavy unordered bucket batch fill (ADR 0052 §5 batch hole-first).
-///
-/// Setup builds a slab-backed bucket, deletes half its edges, and batches the
-/// replacement edges; the measured closure runs the full reserve+commit once
-/// (preflight window scan + per-hole or window-rewrite writes). This is the
-/// batch counterpart to the scalar `labeled_*_tombstone_reuse` benches.
-#[bench(raw)]
-fn bench_l_b_uo_hf_256() -> canbench_rs::BenchResult {
-    const EDGES: u32 = 256;
-    let graph = bench_graph(1 << 16);
-    graph.push_vertex(LabeledVertex::default()).expect("vertex");
-    let label = BucketLabelKey::from_raw(2);
-    for i in 0..EDGES {
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                label,
-                BenchEdge(i),
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-            )
-            .expect("seed");
-    }
-    graph
-        .compact_vertex_edge_span(VertexId::from(0), 0)
-        .expect("fold log to slab");
-    for slot in 0..EDGES / 2 {
-        graph
-            .remove_edge_at_slot(VertexId::from(0), label, slot)
-            .expect("remove")
-            .expect("live edge");
-    }
-    let plan = OneOrientationBatchPlan {
-        runs: vec![OneOrientationBucketRun {
-            owner_vertex_id: VertexId::from(0),
-            label_id: label,
-            inline_property_width: 0,
-            placement: EdgePlacementPolicy::Unordered,
-            edges: (0..EDGES / 2)
-                .map(|i| OneOrientationBatchEdge {
-                    logical_ordinal: i,
-                    owner_vertex_id: VertexId::from(0),
-                    neighbor_vertex_id: VertexId::from(1),
-                    label_id: label,
-                    edge: BenchEdge(1000 + i),
-                })
-                .collect(),
-        }],
-    };
-    bench_fn(|| {
-        graph
-            .insert_one_orientation_batch(&plan)
-            .expect("batch hole fill");
-        black_box(graph.edges().header().num_edges);
-    })
 }
 
 /// Fixture: a labeled graph over `InlinePropertyBenchEdge` with the given element capacity.

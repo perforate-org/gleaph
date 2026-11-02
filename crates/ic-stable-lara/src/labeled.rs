@@ -89,7 +89,6 @@ mod bucket_store;
     reason = "labeled graph contains maintenance and diagnostics entry points"
 )]
 pub(crate) mod graph;
-pub use graph::batch_write;
 #[cfg_attr(
     not(test),
     expect(

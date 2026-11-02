@@ -238,9 +238,6 @@ pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_
 // `labeled::invariants` validates tree buckets against their physical root
 // region, so the helper is re-exported to the crate.
 pub(crate) use compact::bucket_content_slots;
-pub mod batch_write;
-#[cfg(test)]
-mod batch_write_test;
 mod error;
 #[cfg(any(test, feature = "canbench"))]
 mod headroom_screen;

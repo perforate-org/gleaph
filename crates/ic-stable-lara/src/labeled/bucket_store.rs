@@ -1026,6 +1026,7 @@ impl<M: Memory> LabelBucketStore<M> {
         Ok((out_slot, true))
     }
 
+    #[cfg(test)]
     /// Removes one label bucket and rewrites its owning vertex segment.
     ///
     /// This is used by a failed batch reservation to undo a bucket descriptor
