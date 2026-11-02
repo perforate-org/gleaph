@@ -42,6 +42,59 @@ pub const ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM: u64 = 4_000_000_000;
 /// ~34% margin). Consumed by `graph_batch_chunk_within_update_budget`.
 pub const ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE: u64 = 50_000_000;
 
+/// One derived-state family that drains outbox work with its own cost profile.
+///
+/// Planes differ in what one operation costs: rekeying a posting is far cheaper than rebuilding a
+/// text posting, and a vector sync carries its own batch protocol. A page bound therefore belongs to
+/// the plane, never to the producer that filled the outbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plane {
+    /// Derived index postings: rekey one edge from its old ordinal to its new one.
+    Index,
+    /// Text inverted index: postings, possibly rebuilt per operation.
+    Text,
+    /// Vector store: batched sync with its own retry protocol.
+    Vector,
+    /// Unique-index effects delivered through their own outbox.
+    UniqueEffect,
+}
+
+/// The instruction budget one plane may spend applying a page in a single message.
+///
+/// Derived from the update-call ceiling minus the shared headroom, so a plane that is also doing
+/// its own bookkeeping in that message still has room to finish and return.
+pub const fn plane_budget(plane: Plane) -> u64 {
+    let _ = plane;
+    MAX_UPDATE_CALL_INSTRUCTIONS - UPDATE_CALL_INSTRUCTION_HEADROOM
+}
+
+/// Declared worst-case instruction cost of applying one operation in `plane`.
+///
+/// These are **declared ceilings**, not measurements: a page's observed cost replaces them at
+/// runtime, and never exceeds them. Raising one is a claim that the plane's worst case grew, and
+/// that claim belongs in the same review as the code that made it grow.
+pub const fn plane_op_estimate(plane: Plane) -> u64 {
+    match plane {
+        Plane::Index => 320_000_000,
+        Plane::Text => 3_500_000_000,
+        Plane::Vector => 1_000_000_000,
+        Plane::UniqueEffect => 100_000_000,
+    }
+}
+
+/// Operations a plane may take in one page before measurement refines the number.
+///
+/// The consumer derives its own constant from this, and a test asserts the quotient, so the page
+/// size is a reviewed number rather than a literal someone guessed.
+pub const fn initial_ops_per_page(plane: Plane) -> u32 {
+    let ops = plane_budget(plane) / plane_op_estimate(plane);
+    if ops > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        ops as u32
+    }
+}
+
 /// Conservative per-message cap for Graph's deferred LARA maintenance timer.
 pub const MAX_TIMER_MAINTENANCE_INSTRUCTIONS: u64 = 32_000_000_000;
 
@@ -188,6 +241,37 @@ pub fn call_context_instruction_counter() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_plane_fits_at_least_one_operation_in_a_page() {
+        for plane in [
+            Plane::Index,
+            Plane::Text,
+            Plane::Vector,
+            Plane::UniqueEffect,
+        ] {
+            assert!(
+                plane_op_estimate(plane) <= plane_budget(plane),
+                "{plane:?} cannot fit a single operation in its own budget"
+            );
+            assert!(
+                initial_ops_per_page(plane) >= 1,
+                "{plane:?} must start at one operation, not zero"
+            );
+            assert_eq!(
+                initial_ops_per_page(plane),
+                (plane_budget(plane) / plane_op_estimate(plane)) as u32,
+                "the page size is the reviewed quotient, not a guessed literal"
+            );
+        }
+    }
+
+    #[test]
+    fn the_text_plane_takes_fewer_operations_than_the_index_plane() {
+        // A text posting rebuild is an order of magnitude dearer than a posting rekey, which is the
+        // whole reason a page bound belongs to the plane rather than to the producer.
+        assert!(initial_ops_per_page(Plane::Text) < initial_ops_per_page(Plane::Index));
+    }
     use super::*;
 
     #[test]
