@@ -151,6 +151,8 @@ pub use bucket_label_key::{
 };
 pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use graph::BucketEntryPosition;
+#[cfg(any(test, feature = "test-support"))]
+pub use graph::fixture_support;
 pub use graph::{EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage};
 pub use graph::{EdgeRemoval, EdgeSlotMove};
 pub use graph::{

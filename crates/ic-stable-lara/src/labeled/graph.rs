@@ -239,6 +239,8 @@ pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_
 // region, so the helper is re-exported to the crate.
 pub(crate) use compact::bucket_content_slots;
 mod error;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture_support;
 #[cfg(any(test, feature = "canbench"))]
 mod headroom_screen;
 mod init;

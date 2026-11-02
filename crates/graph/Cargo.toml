@@ -85,6 +85,9 @@ sha2 = { version = "0.11", optional = true }
 canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+# `test-support` compiles ic-stable-lara's fixture helpers so tests can force a storage shape
+# (a span-resident value-bearing bucket) instead of inserting filler rows.
+ic-stable-lara = { workspace = true, features = ["test-support"] }
 ethnum.workspace = true
 f256.workspace = true
 half.workspace = true

@@ -23,6 +23,10 @@ canbench = ["dep:canbench-rs", "dep:candid"]
 # Enables only scoped instruction probes in production code paths. Unlike `canbench`, this does
 # not compile the crate's benchmark-export module and therefore does not enlarge canister exports.
 canbench-scopes = ["dep:canbench-rs"]
+# Compiles the fixture helpers that force a specific storage geometry in non-test builds, so a
+# dependent crate's tests can seed a shape instead of reaching it by inserting filler rows.
+# Not for production: it only widens helper visibility and adds a fold entry point.
+test-support = []
 
 [dependencies]
 canbench-rs = { workspace = true, optional = true }
