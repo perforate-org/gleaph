@@ -1509,6 +1509,42 @@ mod tests {
         }
     }
 
+    /// The shadow window must be transparent: what a reader sees through the overlay has to equal
+    /// what it sees once the overlay is published into the backend memory. This is the property the
+    /// batch rewrite leans on - the ladder runs against the overlay and the heap caches describe the
+    /// same bytes the commit writes out.
+    #[test]
+    fn a_shadowed_insert_reads_back_the_same_graph_after_commit() {
+        let guard = ic_stable_memory_backend::enter_shadow();
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3101);
+        install_width(label, 1);
+        let v = make_vertices(&store, 4);
+        let edges = vec![
+            input(v[0], v[1], Some(label), true, vec![7]),
+            input(v[2], v[1], Some(label), true, vec![9]),
+        ];
+        store.prepare_clean_slab_dir_buckets(v[0], v[2], label, 1);
+        let _ = batch_edges_with_scalar_fallback(&store, &edges);
+
+        let through_overlay = observable_state(&store, &v);
+        let dirty = guard.dirty_bytes();
+        let ranges = guard.dirty_ranges();
+        guard
+            .commit()
+            .expect("the overlay must fit the backend memory");
+
+        assert!(
+            dirty > 0,
+            "the insert must have written through the overlay, not around it"
+        );
+        assert_eq!(
+            through_overlay,
+            observable_state(&store, &v),
+            "commit published {dirty} bytes in {ranges} ranges and changed what a reader sees"
+        );
+    }
+
     /// The batch is an optimization of the scalar path: same logical edges, same resulting graph.
     /// It may allocate differently, decline and fall back, or merge reservations - it may not
     /// change what a reader sees. Both groups sit in one store so the two runs share every
