@@ -32,9 +32,17 @@ type PlatformMemory = ic_stable_structures::VectorMemory;
 type PlatformMemory = Stable64Memory;
 
 /// The canister's stable memory.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct DefaultMemoryImpl {
     platform: PlatformMemory,
+}
+
+impl std::fmt::Debug for DefaultMemoryImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The platform handle is a wasm import on `wasm32` and a heap buffer elsewhere; only the
+        // fact that a handle exists is meaningful to a caller.
+        f.write_str("DefaultMemoryImpl")
+    }
 }
 
 impl DefaultMemoryImpl {
