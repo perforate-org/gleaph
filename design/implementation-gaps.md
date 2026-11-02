@@ -80,6 +80,18 @@ defect from being rediscovered without its prior reasoning.
   - The open question is therefore narrower than "the fixture needs promotion": **why does a bucket
     carrying inline values end up promoted with `stored_slots = 0` and every row in its run?** That
     decides whether the remaining swap failures are a fixture problem or an insert-path defect.
+  - **Answered (2026-11-03): it is the insert path, by design.** An edge that carries inline property
+    bytes is inserted through `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location`
+    (`bidirectional/deferred.rs:2140`), which deliberately skips the leaf cascade so the captured
+    value offsets stay valid; `insert_edge` - the entry that grows the leaf through
+    `rebalance_cascade_after_labeled_mutation` - is never called on that path. Instrumenting
+    `insert_edge_inner` showed why every one of those inserts spills: `have_space_on_slab` is
+    `loc < slab_window_exclusive_end`, and a fresh vertex's window is empty
+    (`stored_degree = 0`), so the first insert already spills and the vertex keeps a run. The rows
+    then return to the span only when something grows the leaf - which is what the fixtures' pre-fold
+    drain is supposed to do and cannot, because the fold needs the room the cascade would have made.
+    A fixture that wants a span-resident value-bearing bucket must therefore grow the leaf by some
+    other means first, and that is a real hole in the test kit rather than a stale assertion.
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
     only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
