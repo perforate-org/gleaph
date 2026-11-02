@@ -92,6 +92,14 @@ defect from being rediscovered without its prior reasoning.
     drain is supposed to do and cannot, because the fold needs the room the cascade would have made.
     A fixture that wants a span-resident value-bearing bucket must therefore grow the leaf by some
     other means first, and that is a real hole in the test kit rather than a stale assertion.
+  - **Closed except one (2026-11-03).** The hole is now filled:
+    `fixture_support::force_span_fold` (behind the `test-support` feature) runs the eager
+    `Required`-policy fold, and the five fixtures that needed a span-resident bucket call it. Suite
+    1097/6 -> 1102/1. What remains is
+    `updating_undirected_edge_inline_property_updates_both_storage_rows`, whose fixture models exact
+    slot placement across several undirected buckets and now differs in one row (slot 2 reports
+    `VertexId(2)` where the model says `VertexId(0)`); that one needs its model checked against the
+    spill layout rather than another fold.
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
     only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
