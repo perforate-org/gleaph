@@ -62,12 +62,13 @@ defect from being rediscovered without its prior reasoning.
   - The three swap/left-pack tests sit behind `slab_bucket_allows_unordered_swap`, which requires
     the inline values to be slab-backed and exactly one block per live row; with a value width the
     fixtures do not reach that state before the delete, so the pass left-packs instead of swapping.
-  - `detach_delete_fence_...` is **not** spill-related: the run-backed skip in
-    `compact_vertex_edge_span_one_step_with_span_policy` never fires for it, the label policy
-    resolves to `Insertion`, and after delete plus a drained compaction the rows are still at slots
-    1 and 2 with slot 0 empty - the pass moved nothing - so forward and reverse slots stay equal and
-    the test's precondition fails. Whether `stored_slots` was already shrunk to `degree` (putting
-    slot 2 outside the span) is untested.
+  - `detach_delete_fence_...`: the fixture's bucket is **`BucketMode::Tiny`** (`stored_slots = 2`,
+    `degree = 2`), and the span step advances past tiny buckets by design, so no slab compaction
+    ever runs and the slots never diverge. Confirmed by instrumenting the step entry: it is called
+    twice and returns `AdvanceBucket` both times.
+  - `unordered_compaction_swap_publishes_move_and_moves_sidecars`: the bucket *is* `Slab` but is
+    run-backed - `stored_slots = 0` with a live `edge_spill_run` - so every row lives in the run and
+    the span-level swap finds no slots to move. Same class of fixture gap, different mode.
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
     only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
