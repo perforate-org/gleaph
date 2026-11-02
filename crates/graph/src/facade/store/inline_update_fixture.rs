@@ -79,6 +79,18 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
         rows
     };
 
+    // Read twice: a stored wrong neighbour is stable, a mapping artefact is not.
+    assert_eq!(
+        read(low),
+        read(low),
+        "the same read must return the same rows"
+    );
+    assert_eq!(
+        read(high),
+        read(high),
+        "the same read must return the same rows"
+    );
+
     for (vertex, other) in [(low, high), (high, low)] {
         for (slot, neighbour, value) in read(vertex) {
             if value == 5000 {

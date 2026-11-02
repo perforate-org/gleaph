@@ -149,6 +149,9 @@ defect from being rediscovered without its prior reasoning.
     Two probes in a row have now misled on that; the reliable observation is what is read back, not
     what these inner functions are handed. A dump of the run's stored rows (an inspector, not a
     print at a write site) is the next instrument.
+  - One read-side fact is now settled: reading the same vertex twice returns the same rows, so the
+    wrong neighbour is **stored**, not produced by the read mapping. That rules out the ordinal/slot
+    resolution path and confirms the row content itself is wrong in the run.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
