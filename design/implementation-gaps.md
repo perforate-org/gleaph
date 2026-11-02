@@ -116,7 +116,8 @@ defect from being rediscovered without its prior reasoning.
     2 reads neighbour `VertexId(2)` (`guard`) with the correct value `2002`. Removing the guard
     self-loop from the real fixture changed two expectations, so it could not isolate the row; the
     new test can, and the only difference between pass and fail is the size of the *other* vertex's
-    first batch.
+    first batch. Bisected: **24 rows pass and 25 fail**, so the trigger is that batch's size rather
+    than anything about the row being read.
   - What the reproduction shows: `guard`'s own bucket still holds its row correctly (slot 0,
     neighbour `VertexId(2)`, value 6000), so this is **not** a row overwritten by another bucket -
     the self-loop row itself was written with the wrong neighbour. The likely owner is undirected

@@ -43,7 +43,9 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
             )
             .expect("insert");
     };
-    for value in 1000..1032u16 {
+    // 24 rows pass and 25 fail, so the trigger is the size of this sibling batch, not the
+    // self-loop's own data.
+    for value in 1000..1025u16 {
         insert(high, high, value);
     }
     for value in 2000..2008u16 {
@@ -103,6 +105,8 @@ fn undirected_cross_edge_between_valued_buckets_keeps_neighbours() {
     let label = crate::test_labels::edge_label_id_for_name("UndirectedCrossNeighbour");
     install_w2_inline_property_profile(label);
 
+    // 24 rows pass and 25 fail, so the trigger is the size of this sibling batch, not the
+    // self-loop's own data.
     for value in 1000..1004u16 {
         store
             .insert_undirected_edge_with_inline_property_bytes(
