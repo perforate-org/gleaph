@@ -1215,6 +1215,145 @@ mod physical_layout_tests {
     }
 
     #[test]
+    fn non_forcing_compaction_rebuilds_a_dense_spill_run() {
+        use super::super::test_support::TestEdge;
+        use crate::labeled::EdgePlacementPolicy;
+        use crate::labeled::graph::{SpanResolutionPolicy, VertexEdgeSpanCompactOneStep};
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+        // Row 2 is already a tombstone; two more make the dead rows dominate the run, which is the
+        // hysteresis a rebuild needs (a repack must reclaim more than it copies).
+        for index in [0u32, 1] {
+            graph.edges.spill_tombstone_row(run, index).unwrap();
+        }
+        assert_eq!(graph.edges.spill_used_len(run), 4);
+        assert_eq!(graph.bucket_edge_spill_dead_rows(&source).unwrap(), 3);
+        // The vertex's whole span is the bucket's four slots, so the fold has no room for the
+        // run's live row and fails - the condition this arm exists for.
+        graph
+            .vertices
+            .set(VertexId::from(0), &LabeledVertex::from_parts(0, 1, 4, 0));
+
+        // A delete-driven pass may not relocate the leaf for rows that already live in the run, so
+        // the rebuild is the only reclaimer left.
+        let outcome = graph
+            .compact_vertex_edge_span_one_step_with_span_policy(
+                VertexId::from(0),
+                0,
+                0,
+                &|_| EdgePlacementPolicy::Insertion,
+                SpanResolutionPolicy::SlackMayBeDropped,
+            )
+            .unwrap();
+
+        let moves = match outcome {
+            VertexEdgeSpanCompactOneStep::OverflowRewrite(moves) => moves,
+            other => panic!("expected the rebuild's batch, got {other:?}"),
+        };
+        let prefix = super::bucket_content_slots(&source);
+        assert_eq!(moves.len(), 1, "only the run's last row was live");
+        assert_eq!(moves[0].label_id, source.bucket_label_key());
+        assert_eq!(moves[0].old_slot_index, prefix + 3);
+        assert_eq!(moves[0].new_slot_index, prefix);
+
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let fresh = graph.edges.spill_mint(after.edge_spill_run()).unwrap();
+        assert_ne!(fresh, run, "the rebuild published a new run");
+        assert_eq!(
+            graph.edges.spill_used_len(fresh),
+            1,
+            "the run holds only the live row"
+        );
+    }
+
+    #[test]
+    fn non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis() {
+        use super::super::test_support::TestEdge;
+        use crate::labeled::EdgePlacementPolicy;
+        use crate::labeled::graph::{SpanResolutionPolicy, VertexEdgeSpanCompactOneStep};
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+        // Two dead rows in four is exactly the threshold, which a rebuild must not cross: the
+        // repack copies three live rows to reclaim two, so the pass would pay more than it frees.
+        graph.edges.spill_tombstone_row(run, 0).unwrap();
+        assert_eq!(graph.bucket_edge_spill_dead_rows(&source).unwrap(), 2);
+        graph
+            .vertices
+            .set(VertexId::from(0), &LabeledVertex::from_parts(0, 1, 4, 0));
+
+        let outcome = graph
+            .compact_vertex_edge_span_one_step_with_span_policy(
+                VertexId::from(0),
+                0,
+                0,
+                &|_| EdgePlacementPolicy::Insertion,
+                SpanResolutionPolicy::SlackMayBeDropped,
+            )
+            .unwrap();
+
+        assert!(
+            !matches!(outcome, VertexEdgeSpanCompactOneStep::OverflowRewrite(_)),
+            "the run must keep its ordinals below the hysteresis, got {outcome:?}"
+        );
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        assert_eq!(after.edge_spill_run(), source.edge_spill_run());
+        assert_eq!(
+            graph.edges.spill_used_len(run),
+            4,
+            "the run was not repacked"
+        );
+    }
+
+    #[test]
+    fn non_forcing_compaction_repacks_a_tail_tombstoned_run_without_reporting_moves() {
+        use super::super::test_support::TestEdge;
+        use crate::labeled::EdgePlacementPolicy;
+        use crate::labeled::graph::{SpanResolutionPolicy, VertexEdgeSpanCompactOneStep};
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+        for target in [21u32, 22] {
+            assert!(
+                graph
+                    .edges
+                    .spill_append(run, &target.to_le_bytes())
+                    .unwrap()
+            );
+        }
+        // Every hole sits at the tail, so packing them leaves the live prefix in place and the
+        // rebuild reports nothing. Returning that empty batch would reset the pass to bucket 0
+        // and spin, so the arm must fall through instead.
+        for index in [2u32, 3, 4, 5] {
+            graph.edges.spill_tombstone_row(run, index).unwrap();
+        }
+        assert_eq!(graph.bucket_edge_spill_dead_rows(&source).unwrap(), 4);
+        graph
+            .vertices
+            .set(VertexId::from(0), &LabeledVertex::from_parts(0, 1, 4, 0));
+
+        let outcome = graph
+            .compact_vertex_edge_span_one_step_with_span_policy(
+                VertexId::from(0),
+                0,
+                0,
+                &|_| EdgePlacementPolicy::Insertion,
+                SpanResolutionPolicy::SlackMayBeDropped,
+            )
+            .unwrap();
+
+        assert!(
+            !matches!(outcome, VertexEdgeSpanCompactOneStep::OverflowRewrite(_)),
+            "a move-free repack must not claim a batch, got {outcome:?}"
+        );
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let fresh = graph.edges.spill_mint(after.edge_spill_run()).unwrap();
+        assert_ne!(fresh, run, "the tail holes were still packed away");
+        assert_eq!(graph.edges.spill_used_len(fresh), 2);
+    }
+
+    #[test]
     fn fold_moves_the_spill_head_into_the_span_without_moving_ordinals() {
         use super::super::test_support::TestEdge;
         let (graph, _m) = physical_fixture::<TestEdge>();
@@ -5918,6 +6057,27 @@ where
                             span_policy,
                         );
                     }
+                    // A non-forcing pass must not relocate the leaf for rows that already live in
+                    // the bucket's own run, so the span-side fold can never make room here and the
+                    // run would keep its tombstones for good. Rebuilding the run is the only path
+                    // that reclaims them without touching the span or the leaf, and its slot
+                    // rewrites are reported exactly like the fold's.
+                    //
+                    // Rebuild copies every live row into a fresh run, so it runs on the slab
+                    // hysteresis (`dead > used / 2`): below that, one delete would repack a whole
+                    // run to reclaim a row or two and the pass would cost more than it frees.
+                    let used = self.bucket_edge_spill_rows(bucket);
+                    let dead = self.bucket_edge_spill_dead_rows(bucket)?;
+                    if used > 0 && dead > used / 2 {
+                        let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                        let moves = self.rebuild_bucket_edge_spill(bucket_slot, bucket)?;
+                        // An empty batch means every hole sat at the tail, so the run is already
+                        // packed: returning it would reset the pass to bucket 0 forever. Fall
+                        // through to the ordinal-retaining skip below instead.
+                        if !moves.is_empty() {
+                            return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
+                        }
+                    }
                     // Run-backed buckets are skipped by the move finder and retain their
                     // prefix/run ordinals. Completion may pack physical regions, not rows.
                 }
@@ -6451,6 +6611,37 @@ where
             }
         }
         Ok(moves)
+    }
+
+    /// Tombstones inside the bucket's edge-plane spill run.
+    ///
+    /// The run header counts `used` rows including tombstones, and a tombstone is only visible by
+    /// reading the row, so this is one scan. It exists so a caller can decide whether a rebuild is
+    /// worth its repack before paying for one: [`Self::rebuild_bucket_edge_spill`] copies every
+    /// live row into a fresh run, which only pays for itself once the dead rows dominate.
+    fn bucket_edge_spill_dead_rows(
+        &self,
+        bucket: &LabelBucket,
+    ) -> Result<u32, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
+            // Unset (NO_SPILL_RUN) or outside the arena: the bucket has no rows beyond its prefix.
+            return Ok(0);
+        };
+        let used = self.edges.spill_used_len(run);
+        let mut dead = 0u32;
+        for index in 0..used {
+            let edge = self
+                .edges
+                .spill_edge_at(run, index)
+                .map_err(LabeledOperationError::from)?;
+            if edge.is_tombstone_edge() {
+                dead = dead.saturating_add(1);
+            }
+        }
+        Ok(dead)
     }
 
     /// Moves the head of a bucket's edge spill run into its slab span.
