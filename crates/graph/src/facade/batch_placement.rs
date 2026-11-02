@@ -6,13 +6,13 @@
 //! the optimized batch mutation path; no slab write, overflow-log append,
 //! rebalance, relocation, alias, sidecar, or derived-index mutation occurs here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, VertexId,
-    labeled::{LabelBucketPlacementInfo, LabeledOrientation, LeafBucketPlacementStats},
+    labeled::{LabelBucketPlacementInfo, LabeledOrientation},
 };
 
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
@@ -272,215 +272,12 @@ impl std::hash::Hash for BatchPlacementKey {
     }
 }
 
-/// Placement summary for one ownership group.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchPlacementGroup {
-    /// Ownership key for this group.
-    pub key: BatchPlacementKey,
-    /// Number of physical half-edge intents pending in this group.
-    pub pending_edge_intents: u64,
-    /// Existing edge-slab slots reserved for this bucket, or zero if no bucket exists.
-    pub resident_slab_edge_slots: u32,
-    /// Existing edge overflow-log entries for this bucket, or zero if none.
-    pub resident_log_edge_slots: u32,
-    /// Existing inline-property-bytes slab slots reserved for this bucket, or zero.
-    pub resident_slab_inline_property_bytes_slots: u32,
-    /// Existing inline-property-bytes overflow-log entries for this bucket, or zero.
-    pub resident_log_inline_property_bytes_slots: u32,
-}
-
-impl BatchPlacementGroup {
-    /// Minimum edge slots required to hold all resident and pending edges.
-    ///
-    /// Uses checked arithmetic and fails closed on overflow.
-    pub fn projected_minimum_edge_slots(&self) -> Result<u64, BatchPlacementError> {
-        u64::from(self.resident_slab_edge_slots)
-            .checked_add(u64::from(self.resident_log_edge_slots))
-            .and_then(|s| s.checked_add(self.pending_edge_intents))
-            .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
-    }
-
-    /// Minimum inline-property-bytes slots required to hold all resident and pending values.
-    pub fn projected_minimum_inline_property_bytes_slots(
-        &self,
-    ) -> Result<u64, BatchPlacementError> {
-        u64::from(self.resident_slab_inline_property_bytes_slots)
-            .checked_add(u64::from(self.resident_log_inline_property_bytes_slots))
-            .and_then(|s| s.checked_add(self.pending_edge_intents))
-            .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
-    }
-
-    /// Minimum inline-property-bytes bytes required to hold all resident and pending values.
-    pub fn projected_minimum_payload_bytes(&self) -> Result<u64, BatchPlacementError> {
-        let slots = self.projected_minimum_inline_property_bytes_slots()?;
-        slots
-            .checked_mul(u64::from(self.key.inline_property_width))
-            .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
-    }
-}
-
-/// Aggregated projected capacity for one PMA leaf segment and orientation.
-///
-/// One leaf hosts many bucket groups that share physical slab/log capacity.
-/// The per-bucket [`BatchPlacementGroup`] minimum is necessary but not sufficient;
-/// this aggregate catches leaf-level pressure when multiple owner/label groups
-/// share the same leaf.
-///
-/// Resident counts are reported in two ways:
-///
-/// - `target_*`: sum over buckets directly targeted by the pending batch.
-/// - `full_leaf_*`: sum over **all** existing buckets on the leaf, including buckets
-///   that are not targeted by this batch. ADR 0045 projected geometry must use the
-///   full-leaf view because an untouched bucket still occupies shared slab/log space.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchPlacementLeafSummary {
-    /// Orientation that owns this leaf projection.
-    pub orientation: LabeledOrientation,
-    /// PMA leaf segment index.
-    pub leaf_segment: u32,
-    /// Sum of edge-slab slots reserved by buckets targeted by this batch.
-    pub target_resident_slab_edge_slots: u64,
-    /// Sum of edge overflow-log slots reserved by buckets targeted by this batch.
-    pub target_resident_log_edge_slots: u64,
-    /// Number of pending edge intents targeting this leaf.
-    pub pending_edge_intents: u64,
-    /// Sum of edge-slab slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_slab_edge_slots: u64,
-    /// Sum of edge overflow-log slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_log_edge_slots: u64,
-    /// Sum of inline-property-bytes slab slots reserved by buckets targeted by this batch.
-    pub target_resident_slab_inline_property_bytes_slots: u64,
-    /// Sum of inline-property-bytes overflow-log slots reserved by buckets targeted by this batch.
-    pub target_resident_log_inline_property_bytes_slots: u64,
-    /// Number of pending payload intents targeting this leaf.
-    pub pending_payload_intents: u64,
-    /// Sum of inline-property-bytes slab slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_slab_inline_property_bytes_slots: u64,
-    /// Sum of inline-property-bytes overflow-log slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_log_inline_property_bytes_slots: u64,
-    /// Payload widths represented by resident and pending payloads on this leaf.
-    pub inline_property_byte_widths: BTreeSet<u16>,
-}
-
-impl BatchPlacementLeafSummary {
-    /// Minimum edge slots required to hold all leaf-wide resident and pending edges.
-    ///
-    /// Uses the full-leaf resident view, not only the targeted buckets.
-    pub fn projected_minimum_edge_slots(&self) -> Result<u64, BatchPlacementError> {
-        self.full_leaf_resident_slab_edge_slots
-            .checked_add(self.full_leaf_resident_log_edge_slots)
-            .and_then(|s| s.checked_add(self.pending_edge_intents))
-            .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
-    }
-
-    /// Minimum inline-property-bytes slots required to hold all leaf-wide resident and pending values.
-    pub fn projected_minimum_inline_property_bytes_slots(
-        &self,
-    ) -> Result<u64, BatchPlacementError> {
-        if self.inline_property_byte_widths.len() > 1 {
-            return Err(BatchPlacementError::PayloadWidthMixed);
-        }
-        self.full_leaf_resident_slab_inline_property_bytes_slots
-            .checked_add(self.full_leaf_resident_log_inline_property_bytes_slots)
-            .and_then(|s| s.checked_add(self.pending_payload_intents))
-            .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
-    }
-}
-
-/// Read-only placement summary for a bounded edge batch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchPlacementSummary {
-    /// Number of logical edges supplied as input.
-    pub logical_edge_count: u32,
-    /// Total number of physical half-edge intents after expansion.
-    pub physical_intent_count: u64,
-    /// Placement groups keyed by ownership.
-    pub groups: BTreeMap<BatchPlacementKey, BatchPlacementGroup>,
-    /// Leaf-level projected capacity by orientation and leaf segment.
-    pub leaf_summaries: BTreeMap<OrientationLeafKey, BatchPlacementLeafSummary>,
-    /// Logical ordinals that have at least one physical bucket run with multiple pending rows.
-    pub logical_ordinals_with_multi_runs: BTreeSet<u32>,
-}
-
 /// Cheap, mutation-free classification result shared with the ordered writer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BatchEdgeClassification {
     pub(crate) intents: Vec<BatchEdgeIntent>,
     pub(crate) logical_ordinals_with_multi_runs: BTreeSet<u32>,
     pub(crate) pending_intents_by_run: RapidHashMap<BatchPlacementKey, Vec<u32>>,
-}
-
-/// Key for leaf-level summaries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OrientationLeafKey {
-    /// Orientation that owns this leaf.
-    pub orientation: LabeledOrientation,
-    /// PMA leaf segment index.
-    pub leaf_segment: u32,
-}
-
-impl OrientationLeafKey {
-    fn as_tuple(self) -> (u8, u32) {
-        (
-            match self.orientation {
-                LabeledOrientation::Forward => 0,
-                LabeledOrientation::Reverse => 1,
-            },
-            self.leaf_segment,
-        )
-    }
-}
-
-impl PartialOrd for OrientationLeafKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrientationLeafKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_tuple().cmp(&other.as_tuple())
-    }
-}
-
-impl std::hash::Hash for OrientationLeafKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_tuple().hash(state);
-    }
-}
-
-impl BatchPlacementSummary {
-    /// Total pending edge intents across all groups.
-    pub fn total_pending_edge_intents(&self) -> u64 {
-        self.groups.values().map(|g| g.pending_edge_intents).sum()
-    }
-
-    /// Total pending edge intents across all leaf summaries.
-    pub fn total_leaf_pending_edge_intents(&self) -> u64 {
-        self.leaf_summaries
-            .values()
-            .map(|l| l.pending_edge_intents)
-            .sum()
-    }
-
-    /// Whether every affected physical bucket receives exactly one pending intent.
-    ///
-    /// The batch writer's fixed planning/reservation cost is not amortized for this
-    /// geometry. Ordered callers may use the scalar owner boundary for this case;
-    /// requests containing any multi-intent bucket remain eligible for batch writing.
-    pub fn all_physical_runs_singleton(&self) -> bool {
-        !self.groups.is_empty()
-            && self
-                .groups
-                .values()
-                .all(|group| group.pending_edge_intents == 1)
-    }
-
-    /// Logical edges outside this set have singleton forward/reverse projections and may use
-    /// the scalar owner boundary when a request also contains batch-eligible edges.
-    pub fn logical_ordinals_requiring_batch(&self) -> &BTreeSet<u32> {
-        &self.logical_ordinals_with_multi_runs
-    }
 }
 
 impl GraphStore {
@@ -577,67 +374,6 @@ impl GraphStore {
             intents,
             logical_ordinals_with_multi_runs,
             pending_intents_by_run: ordinals_by_run,
-        })
-    }
-
-    pub fn plan_batch_edge_insertion(
-        &self,
-        edges: &[BatchEdgeInput],
-    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
-        #[cfg(feature = "canbench")]
-        let _scope = canbench_rs::bench_scope("ordered_batch_plan_placement");
-        let intents = self.expand_batch_edge_intents(edges)?;
-        self.plan_batch_edge_insertion_with_intents(edges, &intents)
-    }
-
-    pub(crate) fn plan_batch_edge_insertion_with_intents(
-        &self,
-        edges: &[BatchEdgeInput],
-        intents: &[BatchEdgeIntent],
-    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
-        self.plan_batch_edge_insertion_with_intents_and_run_counts(edges, intents, None)
-    }
-
-    pub(crate) fn plan_batch_edge_insertion_with_classification(
-        &self,
-        edges: &[BatchEdgeInput],
-        classification: &BatchEdgeClassification,
-    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
-        self.plan_batch_edge_insertion_with_intents_and_run_counts(
-            edges,
-            &classification.intents,
-            Some(&classification.pending_intents_by_run),
-        )
-    }
-
-    fn plan_batch_edge_insertion_with_intents_and_run_counts(
-        &self,
-        edges: &[BatchEdgeInput],
-        intents: &[BatchEdgeIntent],
-        pending_intents_by_run: Option<&RapidHashMap<BatchPlacementKey, Vec<u32>>>,
-    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
-        let (groups, leaf_summaries) =
-            group_intents_for_placement(intents, pending_intents_by_run)?;
-        let logical_ordinals_with_multi_runs = intents
-            .iter()
-            .filter_map(|intent| {
-                groups
-                    .get(&batch_placement_key(intent))
-                    .filter(|group| group.pending_edge_intents > 1)
-                    .map(|_| intent.logical_ordinal)
-            })
-            .collect();
-        let physical_intent_count = u64::try_from(intents.len())
-            .map_err(|_| BatchPlacementError::ProjectedCountOverflow)?;
-        let logical_edge_count =
-            u32::try_from(edges.len()).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
-
-        Ok(BatchPlacementSummary {
-            logical_edge_count,
-            physical_intent_count,
-            groups,
-            leaf_summaries,
-            logical_ordinals_with_multi_runs,
         })
     }
 }
@@ -739,136 +475,6 @@ fn expand_logical_edge_to_intents(
     Ok(())
 }
 
-fn group_intents_for_placement(
-    intents: &[BatchEdgeIntent],
-    pending_intents_by_run: Option<&RapidHashMap<BatchPlacementKey, Vec<u32>>>,
-) -> Result<
-    (
-        BTreeMap<BatchPlacementKey, BatchPlacementGroup>,
-        BTreeMap<OrientationLeafKey, BatchPlacementLeafSummary>,
-    ),
-    BatchPlacementError,
-> {
-    let mut groups: BTreeMap<BatchPlacementKey, BatchPlacementGroup> = BTreeMap::new();
-    let mut leaf_summaries: BTreeMap<OrientationLeafKey, BatchPlacementLeafSummary> =
-        BTreeMap::new();
-
-    for intent in intents {
-        let key = batch_placement_key(intent);
-        use std::collections::btree_map::Entry;
-        if let Entry::Vacant(slot) = groups.entry(key) {
-            let existing = read_existing_bucket_placement(key)?;
-            slot.insert(BatchPlacementGroup {
-                key,
-                pending_edge_intents: pending_intents_by_run
-                    .and_then(|counts| counts.get(&key).map(|ordinals| ordinals.len()))
-                    .map(|count| u64::try_from(count).expect("batch run count fits u64"))
-                    .unwrap_or(0),
-                resident_slab_edge_slots: existing.map(|e| e.stored_edge_slots).unwrap_or(0),
-                resident_log_edge_slots: existing.map(|e| e.edge_spill_rows).unwrap_or(0),
-                resident_slab_inline_property_bytes_slots: existing
-                    .map(|e| e.inline_property_bytes_slab_slots)
-                    .unwrap_or(0),
-                resident_log_inline_property_bytes_slots: existing
-                    .map(|e| e.inline_property_bytes_overflow_log_len)
-                    .unwrap_or(0),
-            });
-        }
-        let group = groups.get_mut(&key).expect("group inserted above");
-        if pending_intents_by_run.is_none() {
-            group.pending_edge_intents = group
-                .pending_edge_intents
-                .checked_add(1)
-                .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        }
-
-        // Aggregate pending counts into leaf summary. Resident counts are added once per
-        // bucket group below, after all intents have been counted.
-        let leaf_segment = leaf_index_for_vertex(intent.owner_vertex_id, segment_size());
-        let leaf_key = OrientationLeafKey {
-            orientation: intent.orientation,
-            leaf_segment,
-        };
-        let leaf_entry = leaf_summaries
-            .entry(leaf_key)
-            .or_insert(BatchPlacementLeafSummary {
-                orientation: intent.orientation,
-                leaf_segment,
-                target_resident_slab_edge_slots: 0,
-                target_resident_log_edge_slots: 0,
-                pending_edge_intents: 0,
-                full_leaf_resident_slab_edge_slots: 0,
-                full_leaf_resident_log_edge_slots: 0,
-                target_resident_slab_inline_property_bytes_slots: 0,
-                target_resident_log_inline_property_bytes_slots: 0,
-                pending_payload_intents: 0,
-                full_leaf_resident_slab_inline_property_bytes_slots: 0,
-                full_leaf_resident_log_inline_property_bytes_slots: 0,
-                inline_property_byte_widths: BTreeSet::new(),
-            });
-        leaf_entry.pending_edge_intents = leaf_entry
-            .pending_edge_intents
-            .checked_add(1)
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        if intent.inline_property_width > 0 {
-            leaf_entry
-                .inline_property_byte_widths
-                .insert(intent.inline_property_width);
-            leaf_entry.pending_payload_intents = leaf_entry
-                .pending_payload_intents
-                .checked_add(1)
-                .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        }
-    }
-
-    // Add target resident counts from each bucket group to its leaf summary exactly once.
-    for group in groups.values() {
-        let leaf_key = OrientationLeafKey {
-            orientation: group.key.orientation,
-            leaf_segment: group.key.leaf_segment,
-        };
-        let leaf_entry = leaf_summaries
-            .get_mut(&leaf_key)
-            .expect("leaf summary created while processing intents");
-        leaf_entry.target_resident_slab_edge_slots = leaf_entry
-            .target_resident_slab_edge_slots
-            .checked_add(u64::from(group.resident_slab_edge_slots))
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        leaf_entry.target_resident_log_edge_slots = leaf_entry
-            .target_resident_log_edge_slots
-            .checked_add(u64::from(group.resident_log_edge_slots))
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        leaf_entry.target_resident_slab_inline_property_bytes_slots = leaf_entry
-            .target_resident_slab_inline_property_bytes_slots
-            .checked_add(u64::from(group.resident_slab_inline_property_bytes_slots))
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        leaf_entry.target_resident_log_inline_property_bytes_slots = leaf_entry
-            .target_resident_log_inline_property_bytes_slots
-            .checked_add(u64::from(group.resident_log_inline_property_bytes_slots))
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-    }
-
-    // Add full-leaf resident counts from LARA. This includes untouched buckets that
-    // share the same PMA leaf and must be part of projected geometry.
-    for leaf_key in leaf_summaries.keys().copied().collect::<Vec<_>>() {
-        let stats = read_leaf_placement_stats(leaf_key)?;
-        let leaf_entry = leaf_summaries
-            .get_mut(&leaf_key)
-            .expect("leaf summary present");
-        leaf_entry.full_leaf_resident_slab_edge_slots = stats.total_stored_edge_slots;
-        leaf_entry.full_leaf_resident_log_edge_slots = stats.total_edge_spill_rows;
-        leaf_entry.full_leaf_resident_slab_inline_property_bytes_slots =
-            stats.total_inline_property_bytes_slab_slots;
-        leaf_entry.full_leaf_resident_log_inline_property_bytes_slots =
-            stats.total_inline_property_bytes_overflow_log_slots;
-        leaf_entry
-            .inline_property_byte_widths
-            .extend(stats.inline_property_byte_widths);
-    }
-
-    Ok((groups, leaf_summaries))
-}
-
 fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
     BatchPlacementKey {
         orientation: intent.orientation,
@@ -877,27 +483,6 @@ fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
         storage_label: intent.storage_label,
         inline_property_width: intent.inline_property_width,
     }
-}
-
-fn read_leaf_placement_stats(
-    key: OrientationLeafKey,
-) -> Result<LeafBucketPlacementStats, BatchPlacementError> {
-    GRAPH.with_borrow(|graph| {
-        let result = match key.orientation {
-            LabeledOrientation::Forward => {
-                graph.read_forward_leaf_placement_stats(key.leaf_segment)
-            }
-            LabeledOrientation::Reverse => {
-                graph.read_reverse_leaf_placement_stats(key.leaf_segment)
-            }
-        };
-        result.map_err(|err| {
-            BatchPlacementError::PlacementReadFailed(format!(
-                "leaf placement stats for {:?} leaf {}: {err}",
-                key.orientation, key.leaf_segment
-            ))
-        })
-    })
 }
 
 fn read_existing_bucket_placement(
@@ -967,64 +552,68 @@ mod tests {
         }
     }
 
-    #[test]
     fn directed_edge_expands_to_forward_and_reverse_intents() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchDirected");
         let edges = vec![input(v[0], v[1], Some(label), true, vec![])];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        assert_eq!(summary.logical_edge_count, 1);
-        assert_eq!(summary.physical_intent_count, 2);
-        assert_eq!(summary.groups.len(), 2);
-
-        let forward = summary
-            .groups
-            .values()
-            .find(|g| g.key.orientation == LabeledOrientation::Forward)
-            .expect("forward group");
-        assert_eq!(forward.key.owner_vertex_id, v[0]);
-        assert_eq!(forward.pending_edge_intents, 1);
-
-        let reverse = summary
-            .groups
-            .values()
-            .find(|g| g.key.orientation == LabeledOrientation::Reverse)
-            .expect("reverse group");
-        assert_eq!(reverse.key.owner_vertex_id, v[1]);
-        assert_eq!(reverse.pending_edge_intents, 1);
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
+            .expect("classify");
+        assert_eq!(classification.intents.len(), 2);
+        let forward = classification
+            .intents
+            .iter()
+            .find(|i| i.orientation == LabeledOrientation::Forward)
+            .expect("forward intent");
+        assert_eq!(forward.owner_vertex_id, v[0]);
+        let reverse = classification
+            .intents
+            .iter()
+            .find(|i| i.orientation == LabeledOrientation::Reverse)
+            .expect("reverse intent");
+        assert_eq!(reverse.owner_vertex_id, v[1]);
     }
 
-    #[test]
     fn undirected_edge_expands_to_two_forward_intents() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchUndirected");
         let edges = vec![input(v[0], v[1], Some(label), false, vec![])];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        assert_eq!(summary.physical_intent_count, 2);
-
-        let owners: Vec<_> = summary
-            .groups
-            .values()
-            .map(|g| g.key.owner_vertex_id)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
+            .expect("classify");
+        assert_eq!(classification.intents.len(), 2);
+        assert!(
+            classification
+                .intents
+                .iter()
+                .all(|i| i.orientation == LabeledOrientation::Forward)
+        );
+        let owners: Vec<_> = classification
+            .intents
+            .iter()
+            .map(|i| i.owner_vertex_id)
             .collect();
         assert!(owners.contains(&v[0]));
         assert!(owners.contains(&v[1]));
     }
 
-    #[test]
     fn undirected_self_loop_produces_single_forward_intent() {
         let store = fresh_store();
         let v = make_vertices(&store, 1);
         let label = edge_label_id_for_name("BatchSelfLoop");
         let edges = vec![input(v[0], v[0], Some(label), false, vec![])];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        assert_eq!(summary.physical_intent_count, 1);
-        assert_eq!(summary.groups.len(), 1);
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
+            .expect("classify");
+        assert_eq!(classification.intents.len(), 1);
+        assert_eq!(
+            classification.intents[0].orientation,
+            LabeledOrientation::Forward
+        );
     }
 
-    #[test]
     fn parallel_edges_share_owner_and_label_but_different_neighbor() {
         let store = fresh_store();
         let v = make_vertices(&store, 3);
@@ -1033,14 +622,16 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![]),
             input(v[0], v[2], Some(label), true, vec![]),
         ];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        let forward_groups: Vec<_> = summary
-            .groups
-            .values()
-            .filter(|g| g.key.orientation == LabeledOrientation::Forward)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
+            .expect("classify");
+        let forward: Vec<_> = classification
+            .intents
+            .iter()
+            .filter(|i| i.orientation == LabeledOrientation::Forward)
             .collect();
-        assert_eq!(forward_groups.len(), 1);
-        assert_eq!(forward_groups[0].pending_edge_intents, 2);
+        assert_eq!(forward.len(), 2, "one forward intent per logical edge");
+        assert!(forward.iter().all(|i| i.owner_vertex_id == v[0]));
     }
 
     #[test]
@@ -1059,8 +650,6 @@ mod tests {
                 .logical_ordinals_with_multi_runs
                 .is_empty()
         );
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        assert!(summary.all_physical_runs_singleton());
     }
 
     #[test]
@@ -1081,8 +670,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1]
         );
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        assert!(!summary.all_physical_runs_singleton());
     }
 
     #[test]
@@ -1094,10 +681,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![]),
             input(v[0], v[1], Some(label), true, vec![]),
         ];
-        let summary = store
-            .plan_batch_edge_insertion(&edges)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
             .expect("parallel plan");
-        assert_eq!(summary.logical_edge_count, 2);
+        assert_eq!(
+            classification.intents.len(),
+            4,
+            "two intents per logical edge"
+        );
     }
 
     #[test]
@@ -1109,10 +700,14 @@ mod tests {
             input(v[0], v[1], Some(label), false, vec![]),
             input(v[1], v[0], Some(label), false, vec![]),
         ];
-        let summary = store
-            .plan_batch_edge_insertion(&edges)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
             .expect("parallel plan");
-        assert_eq!(summary.logical_edge_count, 2);
+        assert_eq!(
+            classification.intents.len(),
+            4,
+            "two intents per logical edge"
+        );
     }
 
     #[test]
@@ -1131,10 +726,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![1, 0]),
             input(v[0], v[1], Some(label), true, vec![2, 0]),
         ];
-        let summary = store
-            .plan_batch_edge_insertion(&edges)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
             .expect("parallel plan");
-        assert_eq!(summary.logical_edge_count, 2);
+        assert_eq!(
+            classification.intents.len(),
+            4,
+            "two intents per logical edge"
+        );
     }
 
     #[test]
@@ -1153,10 +752,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![1, 0]),
             input(v[0], v[1], Some(label), true, vec![1, 0]),
         ];
-        let summary = store
-            .plan_batch_edge_insertion(&edges)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
             .expect("parallel plan");
-        assert_eq!(summary.logical_edge_count, 2);
+        assert_eq!(
+            classification.intents.len(),
+            4,
+            "two intents per logical edge"
+        );
     }
 
     #[test]
@@ -1167,7 +770,7 @@ mod tests {
         let label = edge_label_id_for_name("BatchMissingVertex");
         let edges = vec![input(v0, missing, Some(label), true, vec![])];
         let err = store
-            .plan_batch_edge_insertion(&edges)
+            .classify_batch_edge_insertion(&edges)
             .expect_err("missing");
         assert!(matches!(err, BatchPlacementError::VertexNotLive(_)));
     }
@@ -1185,7 +788,9 @@ mod tests {
             },
         );
         let edges = vec![input(v[0], v[1], Some(label), true, vec![1])];
-        let err = store.plan_batch_edge_insertion(&edges).expect_err("width");
+        let err = store
+            .classify_batch_edge_insertion(&edges)
+            .expect_err("width");
         assert!(matches!(
             err,
             BatchPlacementError::InlinePropertyBytesWidthMismatch {
@@ -1194,75 +799,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn existing_bucket_occupancy_is_included_in_summary() {
-        let store = fresh_store();
-        let v = make_vertices(&store, 6);
-        let label = edge_label_id_for_name("BatchExisting");
-        // A bucket stays tiny (zero reserved slots, ADR 0096 §5) until it holds more than
-        // the four inline positions, and a directed insert also fills the reverse bucket
-        // at its target, so both orientations are seeded past that regime.
-        for target in &v[1..6] {
-            store
-                .insert_directed_edge(v[0], *target, Some(label))
-                .expect("seed edge");
-            store
-                .insert_directed_edge(*target, v[0], Some(label))
-                .expect("seed reverse edge");
-        }
-
-        // Use a distinct target so planning succeeds; the source bucket still exists.
-        let v2 = store.insert_vertex().expect("v2");
-        let edges = vec![input(v[0], v2, Some(label), true, vec![])];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-        let forward = summary
-            .groups
-            .values()
-            .find(|g| g.key.orientation == LabeledOrientation::Forward)
-            .expect("forward group");
-        assert!(forward.resident_slab_edge_slots >= 1);
-        assert_eq!(forward.pending_edge_intents, 1);
-
-        let reverse = summary
-            .groups
-            .values()
-            .find(|g| g.key.orientation == LabeledOrientation::Reverse)
-            .expect("reverse group");
-        assert_eq!(reverse.key.owner_vertex_id, v2);
-        assert_eq!(reverse.pending_edge_intents, 1);
-    }
-
-    #[test]
-    fn leaf_summary_aggregates_multiple_buckets_on_same_leaf() {
-        let store = fresh_store();
-        let v = make_vertices(&store, 8);
-        let label_a = edge_label_id_for_name("BatchLeafA");
-        let label_b = edge_label_id_for_name("BatchLeafB");
-        // Make sure all vertices fall on leaf 0 with the default segment size.
-        let edges = vec![
-            input(v[0], v[1], Some(label_a), true, vec![]),
-            input(v[0], v[2], Some(label_b), true, vec![]),
-            input(v[1], v[2], Some(label_a), true, vec![]),
-        ];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-
-        // The forward orientation should have one leaf summary for leaf 0.
-        let forward_leaf = summary
-            .leaf_summaries
-            .values()
-            .find(|l| l.orientation == LabeledOrientation::Forward && l.leaf_segment == 0)
-            .expect("forward leaf 0 summary");
-        assert_eq!(forward_leaf.pending_edge_intents, 3);
-
-        // Bucket groups should still be separate by owner+label.
-        let forward_groups = summary
-            .groups
-            .values()
-            .filter(|g| g.key.orientation == LabeledOrientation::Forward)
-            .count();
-        assert!(forward_groups >= 3);
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1312,198 +848,19 @@ mod tests {
     }
 
     #[test]
-    fn planning_leaves_no_canonical_state_change() {
-        let store = fresh_store();
-        let v = make_vertices(&store, 4);
-        let label = edge_label_id_for_name("BatchReadOnly");
-
-        let before = snapshot_graph_state(&store, &v);
-
-        let edges = vec![
-            input(v[0], v[1], Some(label), true, vec![]),
-            input(v[2], v[3], Some(label), false, vec![]),
-        ];
-        let _summary = store
-            .plan_batch_edge_insertion(&edges)
-            .expect("read-only plan");
-
-        let after = snapshot_graph_state(&store, &v);
-        assert_eq!(after, before);
-    }
-
-    #[test]
     fn default_label_edge_is_planned_with_default_storage_bucket() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let edges = vec![input(v[0], v[1], None, true, vec![])];
-        let summary = store
-            .plan_batch_edge_insertion(&edges)
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
             .expect("default label batch plan");
-        assert_eq!(summary.total_pending_edge_intents(), 2);
+        assert_eq!(classification.intents.len(), 2);
         assert!(
-            summary
-                .groups
-                .keys()
-                .all(|key| key.storage_label == LaraLabelId::UNLABELED_DIRECTED)
-        );
-    }
-
-    #[test]
-    fn projected_minimum_edge_slots_includes_resident_and_pending() {
-        let group = BatchPlacementGroup {
-            key: BatchPlacementKey {
-                orientation: LabeledOrientation::Forward,
-                leaf_segment: 0,
-                owner_vertex_id: VertexId::from(0),
-                storage_label: LaraLabelId::UNLABELED_DIRECTED,
-                inline_property_width: 0,
-            },
-            pending_edge_intents: 3,
-            resident_slab_edge_slots: 2,
-            resident_log_edge_slots: 1,
-            resident_slab_inline_property_bytes_slots: 0,
-            resident_log_inline_property_bytes_slots: 0,
-        };
-        assert_eq!(group.projected_minimum_edge_slots().unwrap(), 6);
-    }
-
-    #[test]
-    fn projected_minimum_payload_bytes_with_width() {
-        let group = BatchPlacementGroup {
-            key: BatchPlacementKey {
-                orientation: LabeledOrientation::Forward,
-                leaf_segment: 0,
-                owner_vertex_id: VertexId::from(0),
-                storage_label: LaraLabelId::UNLABELED_DIRECTED,
-                inline_property_width: 4,
-            },
-            pending_edge_intents: 2,
-            resident_slab_edge_slots: 0,
-            resident_log_edge_slots: 0,
-            resident_slab_inline_property_bytes_slots: 1,
-            resident_log_inline_property_bytes_slots: 1,
-        };
-        assert_eq!(
-            group
-                .projected_minimum_inline_property_bytes_slots()
-                .unwrap(),
-            4
-        );
-        assert_eq!(group.projected_minimum_payload_bytes().unwrap(), 16);
-    }
-
-    #[test]
-    fn leaf_payload_projection_rejects_mixed_widths() {
-        let summary = BatchPlacementLeafSummary {
-            orientation: LabeledOrientation::Forward,
-            leaf_segment: 0,
-            target_resident_slab_edge_slots: 0,
-            target_resident_log_edge_slots: 0,
-            pending_edge_intents: 2,
-            full_leaf_resident_slab_edge_slots: 0,
-            full_leaf_resident_log_edge_slots: 0,
-            target_resident_slab_inline_property_bytes_slots: 0,
-            target_resident_log_inline_property_bytes_slots: 0,
-            pending_payload_intents: 2,
-            full_leaf_resident_slab_inline_property_bytes_slots: 1,
-            full_leaf_resident_log_inline_property_bytes_slots: 1,
-            inline_property_byte_widths: [1u16, 8u16].into_iter().collect(),
-        };
-        assert!(matches!(
-            summary.projected_minimum_inline_property_bytes_slots(),
-            Err(BatchPlacementError::PayloadWidthMixed)
-        ));
-    }
-
-    #[test]
-    fn leaf_summary_counts_untargeted_existing_buckets_on_same_leaf() {
-        let store = fresh_store();
-        let v = make_vertices(&store, 8);
-        let label_existing = edge_label_id_for_name("BatchUntouchedExisting");
-        let label_new = edge_label_id_for_name("BatchUntouchedNew");
-
-        // Create an existing bucket that the pending batch will NOT target. The bucket
-        // has to be past the tiny regime on BOTH orientations, because a directed insert
-        // also builds the reverse bucket at the target: five edges out of `v[1]` fill its
-        // forward bucket, five edges into it fill the reverse one.
-        for target in &v[2..7] {
-            store
-                .insert_directed_edge(v[1], *target, Some(label_existing))
-                .expect("seed existing edge");
-            store
-                .insert_directed_edge(*target, v[1], Some(label_existing))
-                .expect("seed reverse edge");
-        }
-
-        // Plan a new edge on the same leaf (default segment size puts v[0..15] on leaf 0).
-        let edges = vec![input(v[0], v[1], Some(label_new), true, vec![])];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
-
-        let forward_leaf = summary
-            .leaf_summaries
-            .values()
-            .find(|l| l.orientation == LabeledOrientation::Forward && l.leaf_segment == 0)
-            .expect("forward leaf 0 summary");
-
-        // The targeted bucket is new, so target resident counts are zero.
-        assert_eq!(forward_leaf.target_resident_slab_edge_slots, 0);
-        assert_eq!(forward_leaf.target_resident_log_edge_slots, 0);
-        // Full-leaf view must still include the untouched existing v[1] bucket.
-        assert!(
-            forward_leaf.full_leaf_resident_slab_edge_slots > 0,
-            "full_leaf_resident_slab_edge_slots should count untouched existing bucket"
-        );
-
-        let reverse_leaf = summary
-            .leaf_summaries
-            .values()
-            .find(|l| l.orientation == LabeledOrientation::Reverse && l.leaf_segment == 0)
-            .expect("reverse leaf 0 summary");
-        // Pending reverse intent is new; targeted reverse bucket has no resident rows.
-        assert_eq!(reverse_leaf.target_resident_slab_edge_slots, 0);
-        assert_eq!(reverse_leaf.target_resident_log_edge_slots, 0);
-        // The untouched reverse bucket for v[2] must appear in the full-leaf view.
-        assert!(
-            reverse_leaf.full_leaf_resident_slab_edge_slots > 0,
-            "reverse full_leaf_resident_slab_edge_slots should count untouched existing bucket"
-        );
-
-        // Pending intents are still reported.
-        assert_eq!(forward_leaf.pending_edge_intents, 1);
-        assert_eq!(reverse_leaf.pending_edge_intents, 1);
-    }
-
-    #[test]
-    fn leaf_summary_counts_existing_default_bypass_edge_occupancy() {
-        let store = fresh_store();
-        let v = make_vertices(&store, 7);
-        let label = edge_label_id_for_name("BatchBypassOccupancy");
-
-        // The unlabeled edges use the default-label bypass, but still occupy the same edge
-        // PMA leaf that the labeled batch must project. Several of them, so the bypass row
-        // holds reserved slots rather than the inline-only prefix.
-        for target in &v[2..7] {
-            store
-                .insert_directed_edge(v[1], *target, None)
-                .expect("seed default-label edge");
-        }
-
-        let summary = store
-            .plan_batch_edge_insertion(&[input(v[0], v[1], Some(label), true, vec![])])
-            .expect("plan");
-        let forward_leaf = summary
-            .leaf_summaries
-            .values()
-            .find(|leaf| leaf.orientation == LabeledOrientation::Forward && leaf.leaf_segment == 0)
-            .expect("forward leaf 0 summary");
-
-        assert!(
-            forward_leaf.full_leaf_resident_slab_edge_slots > 0,
-            "full leaf edge occupancy must include default-label bypass rows"
-        );
-        assert_eq!(
-            forward_leaf.full_leaf_resident_slab_inline_property_bytes_slots,
-            0
+            classification
+                .intents
+                .iter()
+                .all(|intent| intent.storage_label == LaraLabelId::UNLABELED_DIRECTED)
         );
     }
 }

@@ -37,8 +37,7 @@ pub(crate) use store::{FencedTransition, PlannedBuildEnvelope};
     reason = "batch placement types are re-exported for canbench and test callers"
 )]
 pub(crate) use batch_placement::{
-    BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementGroup,
-    BatchPlacementKey, BatchPlacementSummary,
+    BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
 };
 
 pub(crate) use stable::ensure_graph_initialized;
