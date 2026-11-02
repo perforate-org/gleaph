@@ -162,6 +162,20 @@ defect from being rediscovered without its prior reasoning.
     slot apart and then one bucket's prefix grew across its siblings. It is a residency violation of
     the leaf contract (E5: placement stays inside the vertex's own slice), and the reproduction now
     asserts it directly with a non-overlap check on the three spans.
+  - The overlap is already there **immediately after the inserts** (no relayout involved), and the
+    write window is one slot: a synthetic `LabelEdgeSpanAccess` reports `v_ord = 0` with
+    `trusts_neighbor_boundary() == true`, so `slab_window_exclusive_end` clamps the append at
+    `vertices[1].base_slot_start()`. Low could therefore write exactly one slab row - yet its bucket
+    records `stored_slots = 11`.
+  - **Lead for the fix:** the spill path grows the packed slab count. In
+    `log_mut.rs::insert_into_spill_with_layout` the `prepare` closure is
+    `v.try_with_spill_run(run).and_then(CsrVertex::try_grow_packed_slab_by_one)`, and it runs for a
+    row that is about to be appended to the *run*. If the bucket's `stored_slots` derives from that
+    counter, every spilled row also lengthens the prefix, so reads take the first `stored_slots`
+    rows from the slab - walking into the sibling buckets placed after it. That matches every
+    observation: the right value (values span is addressed by ordinal) and the wrong neighbour (the
+    row read from a sibling's slot). Confirm that `stored_slots` reads the packed slab counter, then
+    decide whether a spill row may grow it at all.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
