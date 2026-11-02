@@ -19,7 +19,6 @@ use crate::{
     VertexId,
     labeled::{
         bucket_label_key::BucketDirectedness,
-        bucket_label_key::BucketLabelKey,
         record::{
             LabelBucket, LabeledVertex, MAX_VERTEX_LABEL_BUCKET_SLACK, MAX_VERTEX_LABEL_BUCKETS,
         },
@@ -36,6 +35,9 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 use std::fmt;
+
+#[cfg(any(test, feature = "canbench"))]
+use crate::labeled::bucket_label_key::BucketLabelKey;
 
 struct BucketRowRewrite {
     ordinal: u32,
