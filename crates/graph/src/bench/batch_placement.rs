@@ -11,9 +11,7 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId,
 };
-use gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1;
 use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
-use std::collections::BTreeSet;
 use std::hint::black_box;
 
 const LABEL_NAMES: [&str; 4] = [
@@ -365,79 +363,6 @@ fn setup_two_parallel_directed_edges_per_bucket(
     (store, label, input)
 }
 
-fn setup_mixed_ordered_partition_fixture() -> (GraphStore, Vec<BatchEdgeInput>, BTreeSet<u32>) {
-    let store = GraphStore::new();
-    let label = label_id("BenchMixedOrderedPartitionW0");
-    install_width_profile(label, 0);
-    let multi_bucket_count = 64usize;
-    let singleton_count = 128usize;
-    let vertices = make_vertices(
-        &store,
-        ((multi_bucket_count + singleton_count) * 2)
-            .try_into()
-            .expect("mixed benchmark vertex count fits u32"),
-    );
-    let mut input = Vec::with_capacity(multi_bucket_count * 2 + singleton_count);
-    let mut batch_ordinals = BTreeSet::new();
-    for pair in 0..multi_bucket_count {
-        let source = vertices[pair * 2];
-        let target = vertices[pair * 2 + 1];
-        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
-        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
-        for _ in 0..2 {
-            batch_ordinals.insert(input.len() as u32);
-            input.push(BatchEdgeInput {
-                source_vertex_id: source,
-                target_vertex_id: target,
-                catalog_label: Some(label),
-                directed: true,
-                inline_property_bytes: Vec::new(),
-                initial_edge_properties: Vec::new(),
-            });
-        }
-    }
-    let singleton_start = multi_bucket_count;
-    for index in 0..singleton_count {
-        let source = vertices[(singleton_start + index) * 2];
-        let target = vertices[(singleton_start + index) * 2 + 1];
-        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
-        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
-        input.push(BatchEdgeInput {
-            source_vertex_id: source,
-            target_vertex_id: target,
-            catalog_label: Some(label),
-            directed: true,
-            inline_property_bytes: Vec::new(),
-            initial_edge_properties: Vec::new(),
-        });
-    }
-    (store, input, batch_ordinals)
-}
-
-#[bench(raw)]
-fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_128_directed_edges(0);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w0");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
-#[bench(raw)]
-fn bench_clean_slab_directed_128_width_0_with_locations() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_128_directed_edges(0);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w0_with_locations");
-        let result = store
-            .try_insert_batch_edges_clean_slab_with_locations(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
 #[bench(raw)]
 fn bench_scalar_directed_128_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_128_directed_edges(0);
@@ -448,30 +373,6 @@ fn bench_scalar_directed_128_width_0() -> canbench_rs::BenchResult {
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
-    })
-}
-
-#[bench(raw)]
-fn bench_clean_slab_directed_128_width_8() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_128_directed_edges(8);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w8");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
-#[bench(raw)]
-fn bench_clean_slab_directed_128_width_8_with_locations() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_128_directed_edges(8);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w8_with_locations");
-        let result = store
-            .try_insert_batch_edges_clean_slab_with_locations(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
     })
 }
 
@@ -547,18 +448,6 @@ fn bench_scalar_directed_128_sidecar_4_per_property() -> canbench_rs::BenchResul
 }
 
 #[bench(raw)]
-fn bench_clean_slab_directed_1024_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_directed_edges(1024, 0);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_1024_w0");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
-#[bench(raw)]
 fn bench_scalar_directed_1024_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_directed_edges(1024, 0);
     canbench_rs::bench_fn(|| {
@@ -568,18 +457,6 @@ fn bench_scalar_directed_1024_width_0() -> canbench_rs::BenchResult {
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
-    })
-}
-
-#[bench(raw)]
-fn bench_clean_slab_directed_1024_width_8() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_directed_edges(1024, 8);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_directed_1024_w8");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
     })
 }
 
@@ -602,18 +479,6 @@ fn bench_scalar_directed_1024_width_8() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_clean_slab_fan_out_128_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_fan_out_directed_edges(128, 0);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_fan_out_128_w0");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
-#[bench(raw)]
 fn bench_scalar_fan_out_128_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_fan_out_directed_edges(128, 0);
     canbench_rs::bench_fn(|| {
@@ -623,18 +488,6 @@ fn bench_scalar_fan_out_128_width_0() -> canbench_rs::BenchResult {
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
-    })
-}
-
-#[bench(raw)]
-fn bench_clean_slab_fan_out_1024_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_fan_out_directed_edges(1024, 0);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_fan_out_1024_w0");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
     })
 }
 
@@ -652,18 +505,6 @@ fn bench_scalar_fan_out_1024_width_0() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_clean_slab_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_two_parallel_directed_edges_per_bucket(64);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("clean_slab_two_parallel_per_bucket_128_w0");
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-    })
-}
-
-#[bench(raw)]
 fn bench_scalar_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_two_parallel_directed_edges_per_bucket(64);
     canbench_rs::bench_fn(|| {
@@ -673,147 +514,6 @@ fn bench_scalar_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResul
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_partitioned_mixed_256_width_0() -> canbench_rs::BenchResult {
-    let (store, input, batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x53; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_partitioned_mixed_256_w0");
-        black_box(
-            store
-                .execute_ordered_edge_batch_partitioned(
-                    5_300_001,
-                    identity.clone(),
-                    &input,
-                    &batch_ordinals,
-                )
-                .expect("partitioned ordered batch"),
-        );
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_partitioned_mixed_256_width_0_with_planner() -> canbench_rs::BenchResult {
-    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x56; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_partitioned_mixed_256_w0_with_planner");
-        let classification = store
-            .classify_batch_edge_insertion(&input)
-            .expect("ordered classification");
-        let summary = store
-            .plan_batch_edge_insertion_with_classification(&input, &classification)
-            .expect("ordered plan");
-        black_box(
-            store
-                .execute_ordered_edge_batch_partitioned_with_intents(
-                    5_300_004,
-                    identity.clone(),
-                    &input,
-                    summary.logical_ordinals_requiring_batch(),
-                    Some(&classification.intents),
-                )
-                .expect("planned partitioned ordered batch"),
-        );
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_all_batch_mixed_256_width_0() -> canbench_rs::BenchResult {
-    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x54; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0");
-        black_box(
-            store
-                .execute_ordered_edge_batch_clean_slab(5_300_002, identity.clone(), &input)
-                .expect("all-batch ordered batch"),
-        );
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_all_batch_mixed_256_width_0_with_planner() -> canbench_rs::BenchResult {
-    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x57; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0_with_planner");
-        store
-            .plan_batch_edge_insertion(&input)
-            .expect("ordered plan");
-        black_box(
-            store
-                .execute_ordered_edge_batch_clean_slab(5_300_005, identity.clone(), &input)
-                .expect("planned all-batch ordered batch"),
-        );
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_all_batch_mixed_256_width_0_with_classifier() -> canbench_rs::BenchResult {
-    let (store, mixed_input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let input = mixed_input[..128].to_vec();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x58; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0_with_classifier");
-        let classification = store
-            .classify_batch_edge_insertion(&input)
-            .expect("ordered classification");
-        assert_eq!(
-            classification.logical_ordinals_with_multi_runs.len(),
-            input.len()
-        );
-        black_box(
-            store
-                .execute_ordered_edge_batch_clean_slab_with_intents(
-                    5_300_006,
-                    identity.clone(),
-                    &input,
-                    &classification.intents,
-                )
-                .expect("classified all-batch ordered batch"),
-        );
-    })
-}
-
-#[bench(raw)]
-fn bench_ordered_all_scalar_mixed_256_width_0() -> canbench_rs::BenchResult {
-    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
-    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
-        canonical_encoding_version: 1,
-        graph_request_fingerprint: [0x55; 32],
-        logical_item_count: input.len() as u32,
-    };
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("ordered_all_scalar_mixed_256_w0");
-        black_box(store.execute_ordered_edge_batch_scalar_fallback(
-            5_300_003,
-            identity.clone(),
-            &input,
-        ));
     })
 }
 
@@ -949,36 +649,6 @@ fn bench_scalar_fan_in_32_width_0() -> canbench_rs::BenchResult {
     })
 }
 
-/// The batch path in the same message shape, so the comparison against the scalar path is fair.
-#[bench(raw)]
-fn bench_clean_slab_directed_128_width_0_message_drain() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_128_directed_edges(0);
-    canbench_rs::bench_fn(|| {
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_some());
-        store
-            .drain_maintenance_at_message_end()
-            .expect("boundary drain");
-    })
-}
-
-/// The batch's cost on the shape it cannot serve: it plans, declines, and pays for both.
-#[bench(raw)]
-fn bench_batch_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_fan_in_directed_edges(128, 0);
-    canbench_rs::bench_fn(|| {
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(result.total_edge_slots().is_none(), "fan-in must decline");
-        store
-            .drain_maintenance_at_message_end()
-            .expect("boundary drain");
-    })
-}
-
 /// Fan-out with the same message shape: 128 buckets, one edge each.
 #[bench(raw)]
 fn bench_scalar_directed_128_width_0_message_drain() -> canbench_rs::BenchResult {
@@ -1040,21 +710,5 @@ fn bench_shadowed_scalar_fan_in_128_width_0() -> canbench_rs::BenchResult {
         let commit = canbench_rs::bench_scope("shadowed_commit");
         guard.commit().expect("the overlay fits stable memory");
         drop(commit);
-    })
-}
-
-/// What the batch does with the same workload today: it declines, so the caller pays for the
-/// planning and intent expansion and then runs the scalar path anyway.
-#[bench(raw)]
-fn bench_batch_fan_in_128_width_0() -> canbench_rs::BenchResult {
-    let (store, _label, input) = setup_fan_in_directed_edges(128, 0);
-    canbench_rs::bench_fn(|| {
-        let result = store
-            .try_insert_batch_edges_clean_slab(&input)
-            .expect("batch");
-        assert!(
-            result.total_edge_slots().is_none(),
-            "fan-in must decline until the batch can grow a bucket"
-        );
     })
 }
