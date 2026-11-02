@@ -1,7 +1,7 @@
 # Glossary
 
-Last updated: 2026-08-29
-Anchor timestamp: 2026-08-29 12:32:54 UTC +0000
+Last updated: 2026-11-02
+Anchor timestamp: 2026-11-02 04:42:35 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.
 
@@ -55,6 +55,19 @@ Distinct from federation **property graph** registration ([ADR 0011](adr/0011-gq
 | **LARA** | Localized Adjacency Relocation Array; CSR-based adjacency in `ic-stable-lara`. |
 | **Forward-to-remote index** | — | **Removed**; was `REMOTE_FORWARD_IN` |
 | **Authoritative shard** | Shard holding the vertex’s primary CSR record (graph shard for that `shard_id`). |
+
+## Derived state sync
+
+How a graph shard keeps derived state (property index, text index, vector index, unique effects) in step with its own writes. The three that are easiest to confuse are separated explicitly: an **op** is stored in the outbox, a **page** is what one delivery carries, and a **batch** is what one in-process observer call carries.
+
+| Term | Status / location | Meaning |
+|------|-------------------|---------|
+| **Derived index outbox** | In code — `DERIVED_INDEX_OUTBOX` (`graph/src/facade/stable/memory.rs`), MemoryId 46 | Append-only log of derived work produced by a graph write. The graph only appends; delivery drains it. |
+| **Plane** | In code — `gleaph_instruction_budget::Plane` | One derived-state family with its own per-message instruction budget and per-op cost estimate: `Index`, `Text`, `Vector`, `UniqueEffect`. Every bound is stated per plane, because the families differ in cost and atomicity needs. |
+| **Op / entry** | In code | One unit of derived work. An *entry* is its outbox row `{ mutation_id, op }` — storage and ordering; an *op* is the payload the consumer applies. |
+| **Page** | In code — `gleaph_message_sizing::PageBounds` | The entries one delivery carries, applied inside one message. Not a fixed size: it ends at the first bound reached (payload bytes, or entries the consumer can afford). The consumer reports how much it applied, so a page may be acknowledged only in part. |
+| **Batch** | Seam only — `EdgeSlotMoveObserver::edge_slot_moves` | The moves one observer call carries. The observer runs in-process, so no payload bound applies; only the maintenance message's instruction budget does. A batch is **not** a page, and a page is not a batch. |
+| **Indivisible unit** | Property, no API | An operation with no durable mid-point — a spill rebuild releases its old run before returning the moves it produced, so an unreported move can never be recomputed. It must fit the remaining message budget as a whole and cannot be paged; a trap rolls it back safely but makes no progress, so "start it and let it trap" retries forever. Check it fits before starting. |
 
 ## Query execution
 
