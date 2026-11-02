@@ -71,8 +71,15 @@ defect from being rediscovered without its prior reasoning.
     the span-level swap finds no slots to move. Promoting the fixture out of tiny mode first does
     **not** help: deleting the fillers empties the bucket, which releases its span, so the edges
     under test land in a zero-slot region again and the fold has nothing to fit. A working fixture
-    has to keep the bucket non-empty while giving it span room, or seed the slab geometry directly
-    (LARA's `promote_bucket_to_slab` is `pub(crate)`, so the graph crate cannot call it).
+    has to keep the bucket non-empty while giving it span room, or seed the slab geometry directly.
+  - Seeding it directly was tried and is not the missing piece either: exposing LARA's
+    `promote_bucket_to_slab` to the graph crate through a `test-support` feature compiles, but both
+    fixtures refuse it with "bucket is already promoted" - the swap fixture's bucket is already
+    `Slab` with a zero-slot span, and the fence fixture's is promoted before the seeding point. That
+    exposure was reverted rather than kept without a user.
+  - The open question is therefore narrower than "the fixture needs promotion": **why does a bucket
+    carrying inline values end up promoted with `stored_slots = 0` and every row in its run?** That
+    decides whether the remaining swap failures are a fixture problem or an insert-path defect.
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
     only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
