@@ -4,6 +4,7 @@
 //! benches include the corresponding canonical adjacency, label-delta, and journal work so the
 //! ordered partition comparison is not a setup-only proxy.
 
+use crate::facade::EdgeHandle;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
@@ -509,4 +510,61 @@ fn bench_shadowed_scalar_fan_in_128_width_0() -> canbench_rs::BenchResult {
         guard.commit().expect("the overlay fits stable memory");
         drop(commit);
     })
+}
+
+/// One bucket's worth of edges from a single source, each carrying a fixed-width inline value.
+///
+/// Deleting them one at a time from the front is the worst case for the values span: every delete
+/// shifts the whole trailing suffix one block left (`plan_bucket_inline_property_bytes_delete`).
+fn setup_single_bucket_inline_deletes(count: u32, width: u16) -> (GraphStore, Vec<EdgeHandle>) {
+    let store = GraphStore::new();
+    let label = label_id("BenchDeleteInline");
+    install_width_profile(label, width);
+    let source = store.insert_vertex().expect("source");
+    let targets = make_vertices(&store, count);
+    let bytes = vec![0u8; usize::from(width)];
+    let handles = targets
+        .into_iter()
+        .map(|target| {
+            store
+                .insert_directed_edge_with_inline_property_bytes(
+                    source,
+                    target,
+                    Some(label),
+                    &bytes,
+                )
+                .expect("insert")
+        })
+        .collect();
+    (store, handles)
+}
+
+fn delete_leading_edges(store: &GraphStore, handles: &[EdgeHandle]) {
+    for handle in handles {
+        store.delete_edge_by_handle(*handle).expect("delete");
+    }
+}
+
+#[bench(raw)]
+fn bench_delete_w0_k128() -> canbench_rs::BenchResult {
+    let (store, handles) = setup_single_bucket_inline_deletes(128, 0);
+    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+}
+
+#[bench(raw)]
+fn bench_delete_w8_k8() -> canbench_rs::BenchResult {
+    let (store, handles) = setup_single_bucket_inline_deletes(8, 8);
+    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+}
+
+#[bench(raw)]
+fn bench_delete_w8_k32() -> canbench_rs::BenchResult {
+    let (store, handles) = setup_single_bucket_inline_deletes(32, 8);
+    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+}
+
+#[bench(raw)]
+fn bench_delete_w8_k128() -> canbench_rs::BenchResult {
+    let (store, handles) = setup_single_bucket_inline_deletes(128, 8);
+    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
 }
