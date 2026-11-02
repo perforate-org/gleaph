@@ -8,6 +8,10 @@
 
 #![deny(unsafe_code)]
 
+pub mod shadow;
+
+pub use shadow::{PAGE_BYTES, ShadowCommitError, ShadowMemory};
+
 #[cfg(all(target_family = "wasm", target_os = "unknown", target_arch = "wasm32"))]
 pub use ic_stable_structures::DefaultMemoryImpl;
 
