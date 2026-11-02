@@ -949,6 +949,36 @@ fn bench_scalar_fan_in_32_width_0() -> canbench_rs::BenchResult {
     })
 }
 
+/// The batch path in the same message shape, so the comparison against the scalar path is fair.
+#[bench(raw)]
+fn bench_clean_slab_directed_128_width_0_message_drain() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_128_directed_edges(0);
+    canbench_rs::bench_fn(|| {
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+        store
+            .drain_maintenance_at_message_end()
+            .expect("boundary drain");
+    })
+}
+
+/// The batch's cost on the shape it cannot serve: it plans, declines, and pays for both.
+#[bench(raw)]
+fn bench_batch_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_fan_in_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_none(), "fan-in must decline");
+        store
+            .drain_maintenance_at_message_end()
+            .expect("boundary drain");
+    })
+}
+
 /// Fan-out with the same message shape: 128 buckets, one edge each.
 #[bench(raw)]
 fn bench_scalar_directed_128_width_0_message_drain() -> canbench_rs::BenchResult {
