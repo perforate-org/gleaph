@@ -1202,11 +1202,19 @@ mod tests {
     #[test]
     fn existing_bucket_occupancy_is_included_in_summary() {
         let store = fresh_store();
-        let v = make_vertices(&store, 2);
+        let v = make_vertices(&store, 6);
         let label = edge_label_id_for_name("BatchExisting");
-        store
-            .insert_directed_edge(v[0], v[1], Some(label))
-            .expect("seed edge");
+        // A bucket stays tiny (zero reserved slots, ADR 0096 §5) until it holds more than
+        // the four inline positions, and a directed insert also fills the reverse bucket
+        // at its target, so both orientations are seeded past that regime.
+        for target in &v[1..6] {
+            store
+                .insert_directed_edge(v[0], *target, Some(label))
+                .expect("seed edge");
+            store
+                .insert_directed_edge(*target, v[0], Some(label))
+                .expect("seed reverse edge");
+        }
 
         // Use a distinct target so planning succeeds; the source bucket still exists.
         let v2 = store.insert_vertex().expect("v2");
@@ -1413,14 +1421,22 @@ mod tests {
     #[test]
     fn leaf_summary_counts_untargeted_existing_buckets_on_same_leaf() {
         let store = fresh_store();
-        let v = make_vertices(&store, 3);
+        let v = make_vertices(&store, 8);
         let label_existing = edge_label_id_for_name("BatchUntouchedExisting");
         let label_new = edge_label_id_for_name("BatchUntouchedNew");
 
-        // Create an existing bucket that the pending batch will NOT target.
-        store
-            .insert_directed_edge(v[1], v[2], Some(label_existing))
-            .expect("seed existing edge");
+        // Create an existing bucket that the pending batch will NOT target. The bucket
+        // has to be past the tiny regime on BOTH orientations, because a directed insert
+        // also builds the reverse bucket at the target: five edges out of `v[1]` fill its
+        // forward bucket, five edges into it fill the reverse one.
+        for target in &v[2..7] {
+            store
+                .insert_directed_edge(v[1], *target, Some(label_existing))
+                .expect("seed existing edge");
+            store
+                .insert_directed_edge(*target, v[1], Some(label_existing))
+                .expect("seed reverse edge");
+        }
 
         // Plan a new edge on the same leaf (default segment size puts v[0..15] on leaf 0).
         let edges = vec![input(v[0], v[1], Some(label_new), true, vec![])];
@@ -1463,14 +1479,17 @@ mod tests {
     #[test]
     fn leaf_summary_counts_existing_default_bypass_edge_occupancy() {
         let store = fresh_store();
-        let v = make_vertices(&store, 3);
+        let v = make_vertices(&store, 7);
         let label = edge_label_id_for_name("BatchBypassOccupancy");
 
-        // The unlabeled edge uses the default-label bypass, but still occupies
-        // the same edge PMA leaf that the labeled batch must project.
-        store
-            .insert_directed_edge(v[1], v[2], None)
-            .expect("seed default-label edge");
+        // The unlabeled edges use the default-label bypass, but still occupy the same edge
+        // PMA leaf that the labeled batch must project. Several of them, so the bypass row
+        // holds reserved slots rather than the inline-only prefix.
+        for target in &v[2..7] {
+            store
+                .insert_directed_edge(v[1], *target, None)
+                .expect("seed default-label edge");
+        }
 
         let summary = store
             .plan_batch_edge_insertion(&[input(v[0], v[1], Some(label), true, vec![])])

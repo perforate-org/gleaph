@@ -2572,7 +2572,6 @@ fn unordered_default_reuses_tombstoned_slot() {
     assert_eq!(store.directed_out_edges(source).expect("out").len(), 3);
 }
 
-#[test]
 // --- Plan 0339: remove-side maintenance admission trigger (facade entry) ---
 #[test]
 fn delete_past_hysteresis_enqueues_span_compaction_and_left_packs() {
