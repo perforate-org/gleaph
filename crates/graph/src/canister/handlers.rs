@@ -413,65 +413,18 @@ async fn execute_ordered_edge_batch_impl(
         request.resolved_labels.clone(),
     ));
     let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
-    let classification = store
+    store
         .classify_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph batch classification failed: {error}"))?;
-    let result = if !edges.is_empty()
-        && classification.logical_ordinals_with_multi_runs.len() == edges.len()
-    {
-        match store.execute_ordered_edge_batch_clean_slab_with_intents(
-            args.mutation_id,
-            identity.clone(),
-            &edges,
-            &classification.intents,
-        ) {
-            Ok(result) => Ok(result),
-            Err(error) if error.is_recoverable_geometry() => Ok(store
-                .execute_ordered_edge_batch_scalar_fallback(args.mutation_id, identity, &edges)),
-            Err(error) => Err(error.to_string()),
-        }
-    } else {
-        store
-            .plan_batch_edge_insertion_with_classification(&edges, &classification)
-            .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
-            .and_then(|summary| {
-                let batch_ordinals = summary.logical_ordinals_requiring_batch();
-                if batch_ordinals.is_empty() {
-                    return Ok(store.execute_ordered_edge_batch_scalar_fallback(
-                        args.mutation_id,
-                        identity,
-                        &edges,
-                    ));
-                }
-
-                if batch_ordinals.len() < edges.len() {
-                    return store
-                        .execute_ordered_edge_batch_partitioned_with_intents(
-                            args.mutation_id,
-                            identity,
-                            &edges,
-                            batch_ordinals,
-                            Some(&classification.intents),
-                        )
-                        .map_err(|error| error.to_string());
-                }
-
-                match store.execute_ordered_edge_batch_clean_slab(
-                    args.mutation_id,
-                    identity.clone(),
-                    &edges,
-                ) {
-                    Ok(result) => Ok(result),
-                    Err(error) if error.is_recoverable_geometry() => Ok(store
-                        .execute_ordered_edge_batch_scalar_fallback(
-                            args.mutation_id,
-                            identity,
-                            &edges,
-                        )),
-                    Err(error) => Err(error.to_string()),
-                }
-            })
-    };
+    // Every edge takes the scalar path. The clean-slab batch this used to select is a measured loss
+    // on the only shape it can serve (6.01 M against 4.23 M for 128 edges in one message) and it
+    // declines the shape it could amortize, so the planner selection is gone with it. The
+    // classification above stays for validation.
+    let result = Ok::<_, String>(store.execute_ordered_edge_batch_scalar_fallback(
+        args.mutation_id,
+        identity,
+        &edges,
+    ));
     crate::edge_inline_property_schema::clear_execution_resolved_labels();
     flush_ordered_batch_postings(args.mutation_id)
         .await
