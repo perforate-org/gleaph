@@ -465,9 +465,10 @@ bin-friendly), and closes the oversized-span placement regime.
 #### Leaf arena: four spaces, one owner each (2026-11-02, Plan 0405 `p291`)
 
 The leaf block is described with exactly four nested spaces and three kinds of
-unused space. Earlier text in this ADR says "cover"; that word is retired in the
-arena because it meant both the slice and `first_base + stored_slots`, and the
-second drifts as soon as a resident moves. Read "cover" below as **slice**.
+unused space. The word "cover" is retired in the arena: it meant both the slice and
+`first_base + stored_slots`, and the second drifts as soon as a resident moves. Every
+leaf-layout use of it here now says **slice**; the unrelated `EditImage::cover` in the
+retained-map sections keeps its own meaning.
 
 ```
 extent      [start, end)                 the leaf's reservation; counts.total mirrors it
@@ -1611,7 +1612,7 @@ three cost rows above is caused by the re-tune:
   `a021a309c`) merges those ranges per delete and removed the cost entirely, so
   both drain benches now measure **identically at 1,024 and 4,096** (25.01 M and
   102.59 M). What remains above the pre-F1 20.72 M is F1's necessary per-delete
-  cover sync (~4.2 K per emptied bucket, vertex-row accounting), not a re-tune
+  slice sync (~4.2 K per emptied bucket, vertex-row accounting), not a re-tune
   effect.
 - **The once-per-B-rows block-boundary mint** is a genuine re-tune cost, bounded
   to one mint per B appended rows.
@@ -1746,7 +1747,7 @@ this does not certify GAP002 headers or every plausible minted cross-bucket alia
 must describe actual initialized prefix/run extents and independently dense live values. A spill-free
 target uses `stored_slots = S`; a prefix/run target uses prefix `P` plus used run `R = S - P`. Neither
 constructor nor degree can stand in for old ownership. Pin-owned subspans are not individually free;
-standalone unpinned regions and the old leaf cover must each be retired exactly once.
+standalone unpinned regions and the old leaf slices must each be retired exactly once.
 
 `compact.rs` remains the single physical publication owner. **The unit is one outer rewrite or
 whole-leaf slide/relocation call, including all peers it can change**, not one invocation of its
@@ -1770,9 +1771,9 @@ peer canonical at its old coordinates. Before the first canonical write, the own
    placement/leaf geometry; preserve weights, headroom, thresholds and fallback semantics.
 2. Checked all slot/byte ranges, descriptor destinations/encodings, source/destination intersections,
    and prospective counters for the whole unit. Physical-only work changes neither global nor slab
-   live counts; pinned leaf `total` follows the **cover**, not the sum of bucket replacements.
+   live counts; pinned leaf `total` follows the **slices**, not the sum of bucket replacements.
 3. Planned every destination without publishing free-list or element-capacity changes, under the
-   allocation authority described below. Prepare exact old-cover/unpinned releases against that
+   allocation authority described below. Prepare exact old-slice/unpinned releases against that
    prospective post-acquisition state. Stable backing growth, serializer/copy scratch, index directory
    space, heap bookkeeping and release validation are obligations, not just `reserve_for_releases(n)`.
    Discard on rejection; do not acquire through today's bare-address facade and compensate afterward.
@@ -1807,7 +1808,7 @@ problem. Record actual capacities, copied/read/written bytes and growth for both
 no unconditional whole-leaf buffer or extra full-payload validation scan is accepted without measurement.
 
 The minimal shape is **one private, non-Clone, nonpersisted prepared layout** at this owner, containing
-all participant final rows, validated copy ranges, old/new cover and count transition, planned
+all participant final rows, validated copy ranges, old/new slice bounds and count transition, planned
 reservations plus their owner-bound acquisition/retirement image, and the selected raw scratch strategy. A fallible
 prepare call returns it; one consuming publish call has no recoverable result. Child descriptor and
 release data remain opaque to `compact`; wire/index rules stay in their current stores. Replace the
