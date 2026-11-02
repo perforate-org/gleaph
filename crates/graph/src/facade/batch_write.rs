@@ -406,44 +406,14 @@ impl GraphStore {
         logical_operation_count: u64,
         allocated_vertex_ids: Vec<LocalVertexId>,
     ) -> Result<GraphOrderedMixedBatchResult, OrderedEdgeBatchExecutionError> {
-        let classification = self
-            .classify_batch_edge_insertion(edges)
+        // Validation only. The clean-slab batch this used to select is measured as a loss on the
+        // one shape it can serve - 6.01 M against 4.23 M for the same 128 edges in the same
+        // message shape - and it declines the shape it could amortize (one bucket, many rows), so
+        // every edge goes through the scalar path, which is also the reference the equivalence
+        // tests compare against.
+        self.classify_batch_edge_insertion(edges)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
-        let result = if !edges.is_empty()
-            && classification.logical_ordinals_with_multi_runs.len() == edges.len()
-        {
-            match self.execute_mixed_clean_slab(edges, &classification.intents, mutation_id) {
-                Ok(()) => Ok(()),
-                Err(error) if error.is_recoverable_geometry() => {
-                    self.execute_ordered_scalar_edges(edges, mutation_id);
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        } else {
-            self.plan_batch_edge_insertion_with_classification(edges, &classification)
-                .map_err(OrderedEdgeBatchExecutionError::Validation)
-                .and_then(|summary| {
-                    let batch_ordinals = summary.logical_ordinals_requiring_batch();
-                    if batch_ordinals.is_empty() {
-                        self.execute_ordered_scalar_edges(edges, mutation_id);
-                        return Ok(());
-                    }
-                    if batch_ordinals.len() < edges.len() {
-                        return self.execute_mixed_partitioned(edges, batch_ordinals, mutation_id);
-                    }
-                    match self.execute_mixed_clean_slab(edges, &classification.intents, mutation_id)
-                    {
-                        Ok(()) => Ok(()),
-                        Err(error) if error.is_recoverable_geometry() => {
-                            self.execute_ordered_scalar_edges(edges, mutation_id);
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    }
-                })
-        };
-        result?;
+        self.execute_ordered_scalar_edges(edges, mutation_id);
 
         let label_stats_delta = ordered_edge_label_stats_delta(edges);
         let delta_event = (!label_stats_delta.edge.is_empty()).then(|| {
