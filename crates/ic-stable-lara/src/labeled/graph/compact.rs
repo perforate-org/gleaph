@@ -5912,8 +5912,31 @@ where
             return Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved));
         }
         let finalized = Self::finalize_bucket_slab_metadata(bucket);
-        if finalized != bucket {
+        let finalized = if finalized != bucket {
             self.buckets.write_label_bucket_slot(slot, finalized)?;
+            finalized
+        } else {
+            finalized
+        };
+        // The packed bucket may leave room at the end of its own region; spilled rows belong back
+        // in the span there (ADR 0097: the edge fold lost its implementation with the overflow log).
+        if let Ok(Some(arena)) = super::leaf_arena::LeafArena::capture(self, vid) {
+            let content_end = finalized
+                .edge_start()
+                .saturating_add(u64::from(finalized.stored_slots()));
+            let region_end = arena
+                .leaf_slice(vid)
+                .regions()
+                .into_iter()
+                .find(|(start, _)| *start == finalized.edge_start())
+                .map(|(_, end)| end);
+            if let Some(region_end) = region_end {
+                let free =
+                    u32::try_from(region_end.saturating_sub(content_end)).unwrap_or(u32::MAX);
+                if free > 0 {
+                    self.fold_bucket_edge_spill_head_into_span(slot, &finalized, free)?;
+                }
+            }
         }
         Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(
             bucket_index.saturating_add(1),
@@ -6335,8 +6358,12 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
-            return Ok(0);
+        let run = match self.edges.spill_mint(bucket.edge_spill_run()) {
+            Ok(run) => run,
+            Err(error) => {
+                eprintln!("FOLD-MINT slot={bucket_slot} => {error:?}");
+                return Ok(0);
+            }
         };
         let Some((start, len)) = bucket_content_region(bucket) else {
             return Ok(0);
@@ -6359,9 +6386,13 @@ where
         self.edges
             .write_slots_contiguous(start.saturating_add(u64::from(len)), &rows)
             .map_err(LabeledOperationError::from)?;
-        self.edges
-            .spill_drop_head(run, fold)
-            .map_err(LabeledOperationError::from)?;
+        if let Err(error) = self.edges.spill_drop_head(run, fold) {
+            eprintln!(
+                "FOLD-DROP slot={bucket_slot} fold={fold} used={} => {error:?}",
+                self.edges.spill_used_len(run)
+            );
+            return Err(LabeledOperationError::from(error));
+        }
         let grown = len
             .checked_add(fold)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
