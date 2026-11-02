@@ -139,9 +139,9 @@ impl std::error::Error for ValuesSpillWriteError {
 fn map_write_error(err: SpillRunError) -> ValuesSpillWriteError {
     match err {
         SpillRunError::Grow(err) => ValuesSpillWriteError::Grow(err),
-        SpillRunError::ArenaExhausted { .. } | SpillRunError::RunIdOutOfRange { .. } => {
-            ValuesSpillWriteError::RunFull
-        }
+        SpillRunError::ArenaExhausted { .. }
+        | SpillRunError::RunIdOutOfRange { .. }
+        | SpillRunError::HeadDropWouldReclass { .. } => ValuesSpillWriteError::RunFull,
     }
 }
 

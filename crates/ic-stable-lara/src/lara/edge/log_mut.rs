@@ -380,7 +380,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 impl From<SpillRunError> for LaraOperationError {
     fn from(err: SpillRunError) -> Self {
         match err {
-            SpillRunError::ArenaExhausted { .. } | SpillRunError::RunIdOutOfRange { .. } => {
+            // The fold matches on this error itself and rebuilds the run; the conversion is only
+            // reached by the append/grow paths, which never drop rows from the head.
+            SpillRunError::ArenaExhausted { .. }
+            | SpillRunError::RunIdOutOfRange { .. }
+            | SpillRunError::HeadDropWouldReclass { .. } => {
                 // One outcome for every way the arena refuses: the caller promotes the bucket.
                 LaraOperationError::SpillNeedsPromotion
             }

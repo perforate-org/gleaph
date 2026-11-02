@@ -162,6 +162,14 @@ pub(crate) enum SpillRunError {
     },
     /// The backing stable memory could not grow.
     Grow(GrowFailed),
+    /// A head drop would move the run into a different capacity class (ADR 0097: a run's class is
+    /// derived from its used length), so the caller must rebuild the run instead.
+    HeadDropWouldReclass {
+        /// The run's used length before the drop.
+        used: u32,
+        /// Rows the caller asked to drop from the head.
+        dropped: u32,
+    },
 }
 
 impl From<GrowFailed> for SpillRunError {
@@ -399,6 +407,39 @@ impl<M: Memory> SpillRunStore<M> {
     }
 
     /// Data rows a live run's class can hold, derived from its used length.
+    /// Drops `count` rows from the head of `run`, shifting the remaining rows down.
+    ///
+    /// This is the fold's companion: rows that moved into the bucket's slab span are removed from
+    /// the front of the spill, so the run's used length follows the rows that are still there. The
+    /// used length may only move inside the run's current class, so a drop that would re-class the
+    /// run is refused - the caller rebuilds into a smaller run instead (ADR 0097).
+    pub(crate) fn drop_head(&self, run: SpillRunId, count: u32) -> Result<(), SpillRunError> {
+        assert!(!run.is_none(), "cannot drop rows from the sentinel run");
+        let used = self.read_used_len(run);
+        if count == 0 {
+            return Ok(());
+        }
+        let new_len = used.saturating_sub(count);
+        if count > used || Self::class_rows(new_len.max(1)) != Self::class_rows(used.max(1)) {
+            return Err(SpillRunError::HeadDropWouldReclass {
+                used,
+                dropped: count,
+            });
+        }
+        let mut row = vec![0u8; self.row_bytes as usize];
+        for index in count..used {
+            if !self.read_rows(run, index, &mut row) {
+                return Err(SpillRunError::HeadDropWouldReclass {
+                    used,
+                    dropped: count,
+                });
+            }
+            self.write_row(run, index - count, &row)?;
+        }
+        self.set_used_len(run.get(), new_len)
+            .map_err(SpillRunError::from)
+    }
+
     fn capacity(&self, run: SpillRunId) -> u32 {
         Self::class_rows(self.read_used_len(run).max(1))
     }
@@ -594,6 +635,50 @@ mod tests {
             ArenaRows::min_of(&[ArenaRows::from_ids(MIN_ROWS + RUN_HEADER_ROWS)]),
         )
         .expect("store")
+    }
+
+    #[test]
+    fn drop_head_shifts_rows_down_and_refuses_a_class_change() {
+        let store = store();
+        let run = store.allocate(16).expect("run");
+        for i in 0..16u32 {
+            store.write_row(run, i, &i.to_le_bytes()).expect("row");
+        }
+
+        // 16 -> 9 stays inside the 16-row class, so the rows shift down and the tail is released.
+        store.drop_head(run, 7).expect("drop inside the class");
+        assert_eq!(store.read_used_len(run), 9);
+        for i in 0..9u32 {
+            let mut row = [0u8; 4];
+            assert!(store.read_rows(run, i, &mut row));
+            assert_eq!(u32::from_le_bytes(row), i + 7, "row {i} shifted down by 7");
+        }
+
+        // 9 -> 8 would re-class the run to the 8-row class, so the store refuses and leaves it
+        // untouched; the caller rebuilds into a smaller run instead (ADR 0097).
+        assert_eq!(
+            store.drop_head(run, 1),
+            Err(SpillRunError::HeadDropWouldReclass {
+                used: 9,
+                dropped: 1
+            })
+        );
+        assert_eq!(
+            store.read_used_len(run),
+            9,
+            "a refused drop changes nothing"
+        );
+
+        // Dropping more rows than the run holds is refused the same way.
+        assert_eq!(
+            store.drop_head(run, 10),
+            Err(SpillRunError::HeadDropWouldReclass {
+                used: 9,
+                dropped: 10
+            })
+        );
+        store.drop_head(run, 0).expect("a no-op drop");
+        assert_eq!(store.read_used_len(run), 9);
     }
 
     #[test]
