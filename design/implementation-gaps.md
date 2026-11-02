@@ -126,12 +126,17 @@ defect from being rediscovered without its prior reasoning.
     16 x `(low, low)`, 33 x `(high, high)`, one `(low, high)`, one `(high, low)` and one
     `(guard, guard)` - all right. So the wrong neighbour appears *inside* the deferred placement,
     not on the way in.
-  - **Instrumenting the wrong function first cost time.** The earlier probe sat in
-    `lara/edge/insert.rs::insert_edge_inner`, which this path does not reach the way I assumed: it
-    reported 54 calls all with owner 0, which is nonsense for rows whose bucket owner is 1 or 2.
-    That either means `vid` there is not the bucket owner or the call arrives with the wrong owner -
-    a question to settle before reading anything into those counts. Check which function the entry
-    above actually calls before instrumenting again.
+  - **Instrumenting the wrong function first cost time, and the mystery was self-inflicted.** The
+    earlier probe sat in `lara/edge/insert.rs::insert_edge_inner` and reported 54 calls all with
+    owner 0. The reason is in `labeled/graph/insert.rs:540`: this path calls
+    `insert_edge_without_logical_slot(&access, VertexId::from(0), ...)` - the `vid` argument is a
+    placeholder and the real context rides in `access`. So those counts were neighbours only, and
+    they were right (17 x neighbour 0, 1 x neighbour 2, 36 x neighbour 1 against 16 low self-loops,
+    33 high self-loops, the cross edge each way and guard's one row).
+  - That leaves one anomaly worth chasing next: **54 writes where 52 are expected**, i.e. two extra
+    writes carrying neighbour 1. Either the cross edge is written twice or a retry duplicates a
+    row, and if one of those lands in the wrong bucket it would produce exactly the symptom. The
+    next probe is the physical slot each write lands in compared with the bucket's own span.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
