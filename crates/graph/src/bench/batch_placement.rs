@@ -862,3 +862,169 @@ fn bench_edge_mate_counterpart_scan() -> canbench_rs::BenchResult {
         );
     })
 }
+
+/// Fan-in: every edge lands in the hub's reverse bucket, so one bucket takes `count` rows.
+///
+/// This is the shape a batch would amortize over - one bucket, many rows - and the shape the
+/// clean-slab batch declines today, because a bucket created inside the batch gets a one-slot
+/// window. Comparing the scalar path against the same inserts under a shadow window is therefore
+/// the comparison that decides whether the shadow can replace the batch's geometry.
+fn setup_fan_in_directed_edges(
+    count: usize,
+    width: u16,
+) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+    let store = GraphStore::new();
+    let label = label_id(if width == 0 {
+        "BenchFanInDirectedW0"
+    } else {
+        "BenchFanInDirectedW8"
+    });
+    install_width_profile(label, width);
+    let inline_property_bytes = if width == 0 {
+        vec![]
+    } else {
+        vec![0u8; width as usize]
+    };
+    let hub = store.insert_vertex().expect("hub");
+    let sources = make_vertices(
+        &store,
+        count.try_into().expect("fan-in benchmark count fits u32"),
+    );
+    for &source in &sources {
+        store.prepare_clean_slab_dir_buckets(source, hub, label, width);
+    }
+    let input = sources
+        .into_iter()
+        .map(|source| BatchEdgeInput {
+            source_vertex_id: source,
+            target_vertex_id: hub,
+            catalog_label: Some(label),
+            directed: true,
+            inline_property_bytes: inline_property_bytes.clone(),
+            initial_edge_properties: Vec::new(),
+        })
+        .collect();
+    (store, label, input)
+}
+
+/// The reference path: one scalar insert per edge, no overlay.
+#[bench(raw)]
+fn bench_scalar_fan_in_128_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_in_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        black_box(input.len());
+    })
+}
+
+/// Fan-in at a smaller width, to separate "append into one bucket" from "grow that bucket".
+#[bench(raw)]
+fn bench_scalar_fan_in_8_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_in_directed_edges(8, 0);
+    canbench_rs::bench_fn(|| {
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        black_box(input.len());
+    })
+}
+
+/// Fan-in at a middle width, to see whether the per-append cost grows with the bucket.
+#[bench(raw)]
+fn bench_scalar_fan_in_32_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_in_directed_edges(32, 0);
+    canbench_rs::bench_fn(|| {
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        black_box(input.len());
+    })
+}
+
+/// Fan-out with the same message shape: 128 buckets, one edge each.
+#[bench(raw)]
+fn bench_scalar_directed_128_width_0_message_drain() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        store
+            .drain_maintenance_at_message_end()
+            .expect("boundary drain");
+        black_box(input.len());
+    })
+}
+
+/// The message shape the write path now uses: insert every edge, then drain maintenance once.
+///
+/// Before the boundary drain, each insert drained the queue itself and a 128-edge fan-in cost
+/// 27.90 M instructions, 85% of it in that drain.
+#[bench(raw)]
+fn bench_scalar_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_in_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        let drain = canbench_rs::bench_scope("message_boundary_drain");
+        store
+            .drain_maintenance_at_message_end()
+            .expect("boundary drain");
+        drop(drain);
+        black_box(input.len());
+    })
+}
+
+/// The same inserts, run against a copy-on-write overlay and published in one commit.
+#[bench(raw)]
+fn bench_shadowed_scalar_fan_in_128_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_in_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        let guard = ic_stable_memory_backend::enter_shadow();
+        let inserts = canbench_rs::bench_scope("shadowed_scalar_inserts");
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+        drop(inserts);
+        ic_cdk::println!(
+            "shadow fan-in: dirty_blocks={} dirty_bytes={}",
+            guard.dirty_ranges(),
+            guard.dirty_bytes()
+        );
+        black_box(guard.dirty_bytes());
+        let commit = canbench_rs::bench_scope("shadowed_commit");
+        guard.commit().expect("the overlay fits stable memory");
+        drop(commit);
+    })
+}
+
+/// What the batch does with the same workload today: it declines, so the caller pays for the
+/// planning and intent expansion and then runs the scalar path anyway.
+#[bench(raw)]
+fn bench_batch_fan_in_128_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_fan_in_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(
+            result.total_edge_slots().is_none(),
+            "fan-in must decline until the batch can grow a bucket"
+        );
+    })
+}

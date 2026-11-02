@@ -147,7 +147,10 @@ pub(crate) fn arm_if_needed() {
         }
         let action = MAINTENANCE_SCHEDULER.with_borrow_mut(|scheduler| scheduler.request_arm());
         if action == MaintenanceArmAction::Schedule {
-            #[cfg(target_family = "wasm")]
+            // `canbench` executes its benchmarks outside a replicated update call, where
+            // `ic0_global_timer_set` is not available. The scheduler state above still runs, so the
+            // request/latch behaviour under measurement is the production one.
+            #[cfg(all(target_family = "wasm", not(feature = "canbench")))]
             {
                 let timer_id = schedule(MAINTENANCE_TIMER_FLOOR_DELAY);
                 MAINTENANCE_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));

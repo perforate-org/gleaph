@@ -287,8 +287,12 @@ impl GraphStore {
                 membership,
             );
         }
-        self.run_post_edge_insert_maintenance()
-            .unwrap_or_else(trap_post_fence_commit);
+        {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("scalar_insert_post_maintenance");
+            self.run_post_edge_insert_maintenance()
+                .unwrap_or_else(trap_post_fence_commit);
+        }
         Ok(())
     }
 }

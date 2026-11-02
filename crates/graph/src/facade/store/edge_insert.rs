@@ -162,14 +162,18 @@ impl GraphStore {
             planned,
             needs_commit,
             shard_id,
-        } = self.preflight_edge_insert(
-            source_vertex_id,
-            target_vertex_id,
-            catalog_label,
-            false,
-            inline_property_bytes,
-            properties,
-        )?;
+        } = {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("scalar_insert_preflight");
+            self.preflight_edge_insert(
+                source_vertex_id,
+                target_vertex_id,
+                catalog_label,
+                false,
+                inline_property_bytes,
+                properties,
+            )?
+        };
 
         let forward = build_edge_to(target_vertex_id)
             .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
@@ -180,40 +184,50 @@ impl GraphStore {
             inline_property: EdgeInlinePropertyBytes::EMPTY,
         }
         .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let locations = self.with_graph_mut(|graph| {
-            if inline_property_width != 0 {
-                graph.ensure_directed_edge_inline_property_width(
+        let locations = {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("scalar_insert_lara");
+            self.with_graph_mut(|graph| {
+                if inline_property_width != 0 {
+                    graph.ensure_directed_edge_inline_property_width(
+                        source_vertex_id,
+                        target_vertex_id,
+                        label,
+                        inline_property_width,
+                    )?;
+                }
+                graph.insert_directed_edge_with_locations(
                     source_vertex_id,
                     target_vertex_id,
                     label,
-                    inline_property_width,
-                )?;
+                    forward,
+                    reverse,
+                    placement,
+                    &Self::maintenance_policy_for_label,
+                )
+            })?
+        };
+        let canonical = {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("scalar_insert_resolve_handle");
+            if let Some(location) = locations.forward {
+                EdgeHandle::at_slot(source_vertex_id, label, location.logical_slot)
+            } else {
+                self.find_first_forward_handle(source_vertex_id, label, |edge| {
+                    edge_matches_local_neighbor(edge, target_vertex_id, inline_property_bytes)
+                })?
+                .ok_or(GraphStoreError::EdgeNotFound {
+                    owner_vertex_id: source_vertex_id,
+                    label_id: label,
+                    slot_index: u32::MAX,
+                })?
             }
-            graph.insert_directed_edge_with_locations(
-                source_vertex_id,
-                target_vertex_id,
-                label,
-                forward,
-                reverse,
-                placement,
-                &Self::maintenance_policy_for_label,
-            )
-        })?;
-        let canonical = if let Some(location) = locations.forward {
-            EdgeHandle::at_slot(source_vertex_id, label, location.logical_slot)
-        } else {
-            self.find_first_forward_handle(source_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target_vertex_id, inline_property_bytes)
-            })?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: source_vertex_id,
-                label_id: label,
-                slot_index: u32::MAX,
-            })?
         };
         // Commit (infallible): bind the exact canonical subject and reserve+append the envelopes
         // before any derived dispatch or sidecar write.
         if needs_commit {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("scalar_insert_index_admission");
             let subject = IndexBuildSubject::Edge {
                 shard_id,
                 owner_vertex_id: u32::try_from(u64::from(canonical.owner_vertex_id))
@@ -223,6 +237,8 @@ impl GraphStore {
             };
             self.commit_index_build_admission(mutation_id, subject, planned);
         }
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_rs::bench_scope("scalar_insert_sidecar");
         self.commit_directed_edge_insert(EdgeInsertSpec {
             source_vertex_id,
             target_vertex_id,
