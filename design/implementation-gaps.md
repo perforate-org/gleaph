@@ -109,11 +109,19 @@ defect from being rediscovered without its prior reasoning.
     low reads `VertexId(0)`. So one row carries the right value and the wrong neighbour - the
     signature of a write landing in the wrong field or a row/value pair being mismatched, not of a
     fixture that forgot to fold.
-  - Minimising it through this fixture does not work: the `guard` self-loop participates in the
-    later placement assertions, so removing it changes two expectations instead of isolating the
-    row. A reproduction needs its own fixture - one vertex, a handful of undirected self-loops
-    carrying inline values, read straight back - plus the raw bytes of the offending slot, to tell
-    whether the neighbour field or the value field was written in the wrong place.
+  - **Reproduced (2026-11-03)** by
+    `inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which replays the
+    fixture's insert order and asserts only that each row's neighbour is right. With **8** valued
+    self-loops on `high` it passes; with **32** it fails exactly like the real fixture - `low`'s slot
+    2 reads neighbour `VertexId(2)` (`guard`) with the correct value `2002`. Removing the guard
+    self-loop from the real fixture changed two expectations, so it could not isolate the row; the
+    new test can, and the only difference between pass and fail is the size of the *other* vertex's
+    first batch.
+  - What the reproduction shows: `guard`'s own bucket still holds its row correctly (slot 0,
+    neighbour `VertexId(2)`, value 6000), so this is **not** a row overwritten by another bucket -
+    the self-loop row itself was written with the wrong neighbour. The likely owner is undirected
+    self-loop alias resolution, which has to pick the owner as the neighbour; with 32 prior rows in
+    a sibling bucket something makes it pick `guard` instead.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.

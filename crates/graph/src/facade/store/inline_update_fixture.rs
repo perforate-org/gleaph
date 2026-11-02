@@ -23,6 +23,161 @@ pub(super) fn install_w2_inline_property_profile(label_id: EdgeLabelId) {
     );
 }
 
+/// Third step: the real fixture's insert sequence, read back for neighbour/value agreement only.
+#[test]
+fn undirected_valued_insert_sequence_keeps_neighbours() {
+    let store = GraphStore::new();
+    let low = store.insert_vertex().expect("low");
+    let high = store.insert_vertex().expect("high");
+    let guard = store.insert_vertex().expect("guard");
+    let label = crate::test_labels::edge_label_id_for_name("UndirectedSequenceNeighbour");
+    install_w2_inline_property_profile(label);
+
+    let insert = |src: VertexId, dst: VertexId, value: u16| {
+        store
+            .insert_undirected_edge_with_inline_property_bytes(
+                src,
+                dst,
+                Some(label),
+                &value.to_le_bytes(),
+            )
+            .expect("insert");
+    };
+    for value in 1000..1032u16 {
+        insert(high, high, value);
+    }
+    for value in 2000..2008u16 {
+        insert(low, low, value);
+    }
+    insert(high, low, 5000);
+    insert(guard, guard, 6000);
+    for value in 3000..3008u16 {
+        insert(high, high, value);
+    }
+    for value in 4000..4008u16 {
+        insert(low, low, value);
+    }
+
+    let read = |vertex: VertexId| {
+        let mut rows: Vec<(u32, VertexId, u16)> = store
+            .undirected_edges(vertex)
+            .expect("rows")
+            .into_iter()
+            .map(|edge| {
+                (
+                    edge.edge_slot_index.raw(),
+                    edge.neighbor_vid(),
+                    u16::from_le_bytes(
+                        <[u8; 2]>::try_from(edge.edge_inline_property_bytes()).expect("two bytes"),
+                    ),
+                )
+            })
+            .collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        rows
+    };
+
+    for (vertex, other) in [(low, high), (high, low)] {
+        for (slot, neighbour, value) in read(vertex) {
+            if value == 5000 {
+                assert_eq!(neighbour, other, "cross row at slot {slot}");
+            } else if value == 6000 {
+                assert_eq!(neighbour, guard, "guard row at slot {slot}");
+            } else {
+                assert_eq!(
+                    neighbour, vertex,
+                    "self-loop row at slot {slot} (value {value}) points at its owner"
+                );
+            }
+        }
+    }
+}
+
+/// Second step of the reproduction: two vertices that each hold valued self-loops, joined by one
+/// undirected edge - the row that lands in both buckets.
+#[test]
+fn undirected_cross_edge_between_valued_buckets_keeps_neighbours() {
+    let store = GraphStore::new();
+    let low = store.insert_vertex().expect("low");
+    let high = store.insert_vertex().expect("high");
+    let label = crate::test_labels::edge_label_id_for_name("UndirectedCrossNeighbour");
+    install_w2_inline_property_profile(label);
+
+    for value in 1000..1004u16 {
+        store
+            .insert_undirected_edge_with_inline_property_bytes(
+                high,
+                high,
+                Some(label),
+                &value.to_le_bytes(),
+            )
+            .expect("high self loop");
+    }
+    for value in 2000..2004u16 {
+        store
+            .insert_undirected_edge_with_inline_property_bytes(
+                low,
+                low,
+                Some(label),
+                &value.to_le_bytes(),
+            )
+            .expect("low self loop");
+    }
+    store
+        .insert_undirected_edge_with_inline_property_bytes(
+            high,
+            low,
+            Some(label),
+            &5000u16.to_le_bytes(),
+        )
+        .expect("cross edge");
+
+    let read = |vertex: VertexId| {
+        let mut rows: Vec<(u32, VertexId, u16)> = store
+            .undirected_edges(vertex)
+            .expect("rows")
+            .into_iter()
+            .map(|edge| {
+                (
+                    edge.edge_slot_index.raw(),
+                    edge.neighbor_vid(),
+                    u16::from_le_bytes(
+                        <[u8; 2]>::try_from(edge.edge_inline_property_bytes()).expect("two bytes"),
+                    ),
+                )
+            })
+            .collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        rows
+    };
+
+    for (vertex, self_values, other, cross_value) in [
+        (low, 2000u16..2004, high, 5000u16),
+        (high, 1000u16..1004, low, 5000u16),
+    ] {
+        let rows = read(vertex);
+        let mut seen_self = 0u16;
+        let mut seen_cross = false;
+        for (slot, neighbour, value) in rows {
+            if value == cross_value {
+                assert_eq!(
+                    neighbour, other,
+                    "cross row at slot {slot} points at the peer"
+                );
+                seen_cross = true;
+            } else {
+                assert_eq!(
+                    neighbour, vertex,
+                    "self-loop row at slot {slot} (value {value}) points at its owner"
+                );
+                assert_eq!(value, self_values.start + seen_self);
+                seen_self += 1;
+            }
+        }
+        assert!(seen_cross, "the cross row is present in both buckets");
+    }
+}
+
 /// Minimal reproduction attempt for the one row that reads back with the right value and the wrong
 /// neighbour: one vertex, undirected self-loops carrying inline values, read straight back.
 #[test]
