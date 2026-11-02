@@ -94,6 +94,18 @@ pub struct ScalarInsertPair {
 pub trait EdgeSlotMoveObserver {
     /// Called after a row compaction has moved one live edge slot.
     fn edge_slot_moved(&mut self, orientation: Orientation, vid: VertexId, moved: EdgeSlotMove);
+
+    /// Called with one page of moves for the same orientation and vertex, in apply order.
+    ///
+    /// A page is applied inside a single message and rolled back as a whole if it traps, so an
+    /// observer that can relocate several rows in one pass should override this instead of paying
+    /// the per-move setup N times. The default forwards to [`Self::edge_slot_moved`] in order, so
+    /// every existing observer keeps its exact behaviour and ordering.
+    fn edge_slot_moves(&mut self, orientation: Orientation, vid: VertexId, moves: &[EdgeSlotMove]) {
+        for moved in moves {
+            self.edge_slot_moved(orientation, vid, *moved);
+        }
+    }
 }
 
 struct NoopEdgeSlotMoveObserver;
