@@ -1,9 +1,18 @@
 # 0049. Input-order-preserving batch graph mutations
 
 Date: 2026-07-23
-Status: Implemented
-Last revised: 2026-08-20
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Status: Implemented (ingress and ordering); its planned physical substrate was removed
+Last revised: 2026-11-02
+Anchor timestamp: 2026-11-02 15:24:46 UTC +0000
+
+> **Amendment (2026-11-02): the substrate this ADR planned to retain is gone.** The one-orientation
+> batch - `OneOrientationBatchPlan`, `reserve_batch_orientations`, the per-bucket preflight, the
+> commit/rollback arms and the location capture - was deleted along with ADR 0045's substrate, so
+> every edge in an `atomic_insert` is now inserted through the scalar path in input order. The
+> ingress contract, the ordering guarantees and the receipt this ADR defines are unchanged; any
+> implementation step below that assumed the reservation substrate needs re-planning against the
+> scalar path, and the measurements that motivated the removal are recorded in ADR 0045's removal
+> notice.
 
 The 2026-08-02 public-surface correction replaces the specialized Router updates
 with the `atomic_insert(AtomicInsertRequest)` mutation and the

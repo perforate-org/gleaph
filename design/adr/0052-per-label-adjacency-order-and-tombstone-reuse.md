@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 Status: planned
-Last revised: 2026-08-01
-Anchor timestamp: 2026-08-01 14:41:58 UTC +0000
+Last revised: 2026-11-02
+Anchor timestamp: 2026-11-02 15:24:46 UTC +0000
 Implementation status: Slice 1 (2026-08-01, Plan 0196) implements the Graph Type `ORDER BY
 INSERTION` declaration and the Router-side per-label `EdgeOrderingPolicy` resolution end-to-end.
 Slice 2 (2026-08-01, Plan 0197) implements the query syntax `ORDER BY INSERTION(e)` (replacing
@@ -320,6 +320,27 @@ Separate persisted `TombstoneReusePolicy` or `CompactionPolicy` fields are not i
 > path — after a successful removal, if post-removal tombstones exceed half the stored width on
 > an Insertion-policy slab bucket, the existing `CompactVertexEdgeSpanV1` work item is enqueued
 > (Unordered and tree buckets are excluded by the gate).
+
+> **Amendment (2026-11-02): when swap-compaction is allowed at all.** Step 2 above moves the row;
+> the inline values span is dense and addressed by live ordinal, so the move is only
+> well-defined for a bucket whose values are on the slab with no holes -
+> `slab_bucket_allows_unordered_swap` requires `edge_spill_run == NO_SPILL_RUN` and, when the
+> bucket carries inline bytes, `values_spill_run == NO_SPILL_RUN` with
+> `inline_property_bytes_slab_slots == degree`. A bucket whose values sit in a run, or whose value
+> span is not exactly one block per live row, falls back to `Insertion`-style left-packing; the
+> swap's own value shift is O(window) anyway, so the loss is small. Deferring the swap until a
+> materialisation pass has made the values dense is the intended recovery.
+>
+> **Known cost (measured 2026-11-02).** Because values are ordinal-addressed and dense, every
+> removal from a bucket that carries inline bytes also compacts the values span:
+> `plan_bucket_inline_property_bytes_delete` reads the whole trailing suffix into a fresh buffer
+> and writes it back one block left, per removed edge, with no threshold. Deleting a bucket's
+> edges front-first costs 150 K instructions per edge at 8 rows, 234 K at 32 and 454 K at 128 -
+> the per-delete cost grows with the bucket, roughly k^1.4 across those points, and the inline
+> case ends up 3.7x the width-0 case. The bound is a bucket's promotion cap, so this is a
+> performance defect rather than an availability one, and the fix is a design change (address
+> values by physical slot with tombstones, letting compaction reclaim them as it already does for
+> rows), not a constant.
 
 ### 8. Edge identity and compaction
 

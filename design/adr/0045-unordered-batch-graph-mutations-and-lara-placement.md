@@ -1,9 +1,35 @@
 # 0045. Unordered batch graph mutations and LARA placement planning
 
 Date: 2026-07-23
-Status: Partially Implemented
-Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 08:34:44 UTC +0000
+Status: Removed - the one-orientation batch substrate this ADR specifies was deleted
+Last revised: 2026-11-02
+Anchor timestamp: 2026-11-02 15:24:46 UTC +0000
+
+**Removal notice (2026-11-02).** The physical substrate this ADR describes - the clean-slab
+one-orientation batch, its per-bucket preflight, reservation, commit, rollback and location
+capture, and the placement planner that chose between them - no longer exists. Every edge
+insertion goes through the scalar path. What this ADR records below is kept as the analysis that
+led to it and as the explanation of why the substrate was removed; read it as history, not as a
+description of current behaviour.
+
+Why it went, measured on the shape it could actually serve (128 directed edges, one per bucket):
+
+| Path | Instructions |
+|--|--|
+| scalar, same message shape | 4.23 M |
+| clean-slab batch | 6.01 M |
+
+Its planning, reservation and intent expansion alone cost 2.86 M, roughly the whole scalar cost on
+that shape, because a bucket that receives a single row has nothing to amortize. On the shape it
+could amortize - one bucket taking many rows - it declined: a bucket created inside a batch is
+given a one-slot window, so a second projection landing in it exceeded the window and the run was
+deferred to the scalar path after paying 1.8 M to decide that. The substrate was therefore a loss
+on the shape it served and unused on the shape it was built for.
+
+What survives from it: `BatchEdgeInput`, `BatchEdgeIntent`, `BatchEdgeIntentRole`,
+`BatchPlacementKey`, `BatchPlacementError`, and `classify_batch_edge_insertion` with its intent
+expansion, which production still calls to validate a batch before inserting it edge by edge. The
+rejections live there, not in the deleted planner.
 
 Planned successor: [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md)
 will, after ADR 0048 completion, retain this ADR's physical placement,
