@@ -1868,6 +1868,109 @@ fn maintenance_without_resolved_table_compacts_order_preserving() {
 }
 
 #[test]
+fn left_pack_keeps_inline_values_with_their_rows() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let third = store.insert_vertex().expect("third");
+    let label = crate::test_labels::edge_label_id_for_name("LeftPackValues");
+    install_w2_inline_property_profile(label);
+
+    let mut handles = Vec::new();
+    for (target, value) in [(first, 11u16), (second, 22), (third, 33)] {
+        handles.push(
+            store
+                .insert_directed_edge_with_inline_property_bytes(
+                    source,
+                    target,
+                    Some(label),
+                    &value.to_le_bytes(),
+                )
+                .expect("insert"),
+        );
+    }
+    let budget = MaintenanceBudget {
+        max_instructions: 0,
+        reserve_instructions: 0,
+        checkpoint_every: 1,
+        max_work_items: None,
+        max_segments: None,
+        max_delete_edge_steps: None,
+    };
+    // Fold first so the bucket is slab-backed, as the swap test does.
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
+            .expect("mark pre-fold");
+    });
+    store.run_maintenance_best_effort(budget).expect("fold");
+
+    let first_edge = store
+        .find_first_forward_handle(
+            source,
+            lara_label(label.pack(EdgeDirectedness::Directed)),
+            |edge| edge.neighbor_vid() == first,
+        )
+        .expect("lookup")
+        .expect("first edge");
+    store.delete_edge_by_handle(first_edge).expect("delete");
+
+    for edge in store.directed_out_edges(source).expect("out edges") {
+        let expected = if edge.neighbor_vid() == second {
+            22u16
+        } else if edge.neighbor_vid() == third {
+            33u16
+        } else {
+            panic!("unexpected survivor {:?}", edge.neighbor_vid());
+        };
+        assert_eq!(
+            edge.inline_property.as_slice(),
+            &expected.to_le_bytes(),
+            "value must already match right after the delete, before compaction"
+        );
+    }
+
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
+            .expect("mark compaction");
+    });
+    store.run_maintenance_best_effort(budget).expect("compact");
+
+    let edges = store.directed_out_edges(source).expect("out edges");
+    for edge in &edges {
+        let expected = if edge.neighbor_vid() == second {
+            22u16
+        } else if edge.neighbor_vid() == third {
+            33u16
+        } else {
+            panic!("unexpected survivor {:?}", edge.neighbor_vid());
+        };
+        assert_eq!(
+            edge.inline_property.as_slice(),
+            &expected.to_le_bytes(),
+            "inline value must follow its row through compaction"
+        );
+    }
+    assert_eq!(
+        edges.len(),
+        2,
+        "the deleted edge is gone and the rest survive"
+    );
+}
+
+#[test]
 fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     // The swap move flows through `GraphSidecarMoveObserver` ->
     // `relocate_edge_properties_for_move`, rekeying the property-index entry keyed on the
