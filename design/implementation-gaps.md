@@ -133,10 +133,15 @@ defect from being rediscovered without its prior reasoning.
     placeholder and the real context rides in `access`. So those counts were neighbours only, and
     they were right (17 x neighbour 0, 1 x neighbour 2, 36 x neighbour 1 against 16 low self-loops,
     33 high self-loops, the cross edge each way and guard's one row).
-  - That leaves one anomaly worth chasing next: **54 writes where 52 are expected**, i.e. two extra
-    writes carrying neighbour 1. Either the cross edge is written twice or a retry duplicates a
-    row, and if one of those lands in the wrong bucket it would produce exactly the symptom. The
-    next probe is the physical slot each write lands in compared with the bucket's own span.
+  - The write site agrees. Instrumenting it (`labeled/graph/insert.rs`, just before
+    `insert_edge_without_logical_slot`) shows the exact expected set - 33 `high` self-loops at bucket
+    start 4097, 16 `low` self-loops at 4096, one `guard` at 4098, and the cross edge once in each
+    direction - so nothing above the row write is wrong, and the earlier "two extra writes" was an
+    artefact of comparing runs with different batch sizes.
+  - What the addresses do show: **the three buckets' regions start one slot apart** (4096, 4097,
+    4098) while each holds many rows, so all of those rows live in the per-bucket spill runs, not in
+    the slabs. The corrupted row is therefore a *run* row. The next probe belongs in the spill
+    append path (`spill_append` / `insert_into_spill_with_layout`), not in placement addressing.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
