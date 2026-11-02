@@ -178,6 +178,14 @@ defect from being rediscovered without its prior reasoning.
     vertex*, not the next *vertex's* base. Growing a prefix up to the next bucket of its own vertex
     can therefore cross into the vertex that was placed after it, which is what the recorded
     4096/4097/4098 starts show. The fix belongs where that fold decides it has room.
+  - **Sharpest statement of the defect.** Low's prefix is 11 slots at 4096, so low's own extent must
+    cover at least `[4096, 4107)` for those rows to be legal - yet `high` was placed at 4097 and
+    `guard` at 4098, inside it. Either the extent really is 11 and the *placement of the next
+    vertex* ignored it, or the extent is 1 and the prefix grew past it. Both are one question: does
+    the leaf arena place a new vertex after the end of the previous vertex's extent? That is the
+    invariant to check (`next_vertex_edge_span_allocation` / `LeafArena::reserve`), and it is the
+    same E2/E5 residency rule the fail-closed ladder exists to keep - a *vertex*-level violation
+    here rather than a bucket-level one.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
