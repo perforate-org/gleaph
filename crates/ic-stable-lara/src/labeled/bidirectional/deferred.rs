@@ -3767,22 +3767,20 @@ where
             }
             match requeue {
                 Some(next)
-                    if matches!(
-                        next,
-                        MaintenanceWorkItem::DeleteVertexV1 { .. }
-                            | MaintenanceWorkItem::CompactVertexEdgeSpanV1 { .. }
-                    ) =>
+                    if maintenance_queue_key(&next).at_priority(item_key.priority) == item_key =>
                 {
                     // The continuation stays in flight; it is re-inserted when the pass stops, so
-                    // the in-progress cursor survives. Compaction joins the delete path here: its
-                    // item identity is the same (orientation, vertex, anchor) across steps, and the
-                    // alternative - a queue pop and requeue per moved edge - is two stable-map
-                    // operations for every row, which is the dominant cost of a dense drain.
+                    // the in-progress cursor survives. This is only sound while the continuation
+                    // still owns the popped identity: keeping it in flight is one map write per
+                    // step instead of two, which is the dominant cost of a dense drain. Asking the
+                    // key rather than the variant is what makes that condition exact - a step can
+                    // hand back a continuation of a different kind (a span compaction finishing
+                    // into the next variant), and requeueing that under the old key traps.
                     in_flight = Some((item_key, next));
                 }
                 Some(next) => {
-                    // Dense completion can produce a different span variant. Derive
-                    // that continuation's own identity; never retain the old tag/key.
+                    // The continuation owns a different identity. Derive that continuation's own
+                    // key; never retain the old tag/key.
                     self.maintenance.enqueue(next);
                 }
                 None => {
