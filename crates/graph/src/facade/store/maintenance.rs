@@ -133,6 +133,19 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Drains the deferred maintenance queue once, at the end of an update message.
+    ///
+    /// This replaces the per-insert drain: draining on every edge insert made a hot bucket's own
+    /// compaction the dominant cost of inserting into it, measured at 85% of a 128-edge fan-in
+    /// (23.7 M of 27.9 M instructions). Once per message keeps the same reclamation intent - the
+    /// message still leaves no more backlog than one drain pass can take - without paying it per
+    /// row.
+    pub fn drain_maintenance_at_message_end(&self) -> Result<(), GraphStoreError> {
+        self.run_maintenance_best_effort(crate::facade::ic_budget::timer_lara_maintenance_budget())?;
+        crate::facade::maintenance_timer::arm_if_needed();
+        Ok(())
+    }
+
     /// Enqueues `CompactVertexEdgeSpan` for tombstone-free bulk ingest vertices.
     ///
     /// The caller must guarantee no live tombstones on the listed spans; see

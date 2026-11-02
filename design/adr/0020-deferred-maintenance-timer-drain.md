@@ -110,6 +110,33 @@ self-rescheduling one-shot timer**, with **event-driven re-arm on enqueue** and
   - Every mutation path that enqueues maintenance work (vertex/edge delete, hot
     edge insert, `enqueue_bulk_ingest_finalize` / `finalize_bulk_ingest`).
 
+### Per-message drain, not per insert
+
+The insert path used to drain the queue on every edge insert, with the timer's instruction
+budget. That made a hot bucket's own compaction the dominant cost of inserting into it: a
+128-edge fan-in into one bucket cost 27.9 M instructions, 23.7 M of it (85%) inside
+`run_post_edge_insert_maintenance`, because each insert re-entered the queue and advanced the
+same span again. Bounding the drain to one work item per insert still cost 14.7 M, because a
+single compaction step over a growing span is itself the expensive unit.
+
+The policy is now:
+
+- **Insert enqueues and arms; it does not drain.** `post_edge_insert_maintenance_budget()` is an
+  empty budget, so `run_post_edge_insert_maintenance` is an arm site only.
+- **The message drains once, at its end.** `GraphStore::drain_maintenance_at_message_end()` runs
+  one pass with the timer budget, before the derived-index outbox drain crosses the canister
+  boundary.
+
+Measured on the same fan-in: inserts alone 6.2 M, inserts plus one boundary drain 11.6 M, against
+27.9 M before - 2.4x cheaper, and the reclamation still happens inside the message. On a fan-out of
+128 one-row buckets the same change costs 2.9 M -> 4.2 M, because the boundary drain performs the
+queued compaction that the per-insert drains never actually completed; that work is reclamation,
+not overhead, and the timer would otherwise do it later.
+
+There is a test-coverage asymmetry to keep in mind: native builds still use `unlimited_*` so unit
+tests observe fully reclaimed state, which means the canister budget is validated by `canbench`
+rather than by the suite.
+
 ### Tick and reschedule policy
 
 Each tick runs one budgeted `run_timer_maintenance_tick()` pass, then chooses the

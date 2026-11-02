@@ -1617,6 +1617,10 @@ async fn execute_plan_impl(
         "run_wire_plans",
         _phase_t2.saturating_sub(_phase_t1),
     );
+    // One maintenance drain per message, before the outbox drain crosses the canister boundary.
+    GraphStore::new()
+        .drain_maintenance_at_message_end()
+        .map_err(|e| format!("execute_plan_impl: maintenance drain failed: {e}"))?;
     if drain_outbox_after && let Err(e) = sync_drain_derived_index_outbox().await {
         return Err(format!(
             "execute_plan_impl: synchronous index drain failed: {e}"

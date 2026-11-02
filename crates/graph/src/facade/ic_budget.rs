@@ -102,13 +102,27 @@ pub const fn delete_maintenance_budget() -> MaintenanceBudget {
 
 /// Best-effort maintenance budget after a local edge insert.
 ///
-/// On canisters, uses the timer budget so bulk ingest in one update message does
-/// not trap while still reclaiming overflow on hot vertices incrementally. Native
-/// builds drain fully so tests and local benches see dense-eligible buckets.
+/// Nothing. The message drains once instead, at its end
+/// ([`GraphStore::drain_maintenance_at_message_end`]).
+///
+/// Draining on every insert made a hot bucket's own compaction the dominant cost of inserting into
+/// it - measured at 85% of a 128-edge fan-in (23.7 M of 27.9 M instructions), because each insert
+/// re-entered the queue and advanced the same span again. One item per insert still cost 14.7 M;
+/// none costs 0.13 M, and the message-boundary drain keeps the reclamation intent.
+///
+/// Native builds still drain fully so tests and local benches observe reclaimed state; this budget
+/// therefore applies to canisters only and is validated by `canbench`, not by the test suite.
 #[cfg(target_family = "wasm")]
 #[inline]
 pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
-    timer_lara_maintenance_budget()
+    MaintenanceBudget {
+        max_instructions: 0,
+        reserve_instructions: 0,
+        checkpoint_every: 1,
+        max_work_items: Some(0),
+        max_segments: None,
+        max_delete_edge_steps: None,
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
