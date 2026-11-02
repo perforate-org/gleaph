@@ -101,7 +101,14 @@ defect from being rediscovered without its prior reasoning.
     `VertexId(2)` where the model says `VertexId(0)`); that one needs its model checked against the
     spill layout rather than another fold.
   - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
-    only: slot 2 reports `VertexId(2)` where the expectation has `VertexId(0)`.
+    only, and the discrepancy now looks like a **defect rather than a model gap**. The fixture's
+    vertices are `low = VertexId(0)`, `high = VertexId(1)`, `guard = VertexId(2)`; low's undirected
+    bucket reads back 17 rows whose values all match the model (`2000..2007`, the `high`-`low` edge
+    with `5000` and neighbour `VertexId(1)`, then `4000..4007`), except **slot 2**: its value is the
+    expected `2002` but its neighbour reads `VertexId(2)` (`guard`) where every other self-loop on
+    low reads `VertexId(0)`. So one row carries the right value and the wrong neighbour - the
+    signature of a write landing in the wrong field or a row/value pair being mismatched, not of a
+    fixture that forgot to fold.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
