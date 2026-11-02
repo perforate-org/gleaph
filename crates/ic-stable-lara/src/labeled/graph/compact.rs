@@ -1163,6 +1163,58 @@ mod physical_layout_tests {
     }
 
     #[test]
+    fn rebuild_packs_a_tombstoned_spill_and_reports_the_moves() {
+        use super::super::test_support::TestEdge;
+        use crate::traits::CsrEdgeTombstone;
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let run = graph.edges.spill_mint(source.edge_spill_run()).unwrap();
+        let prefix = super::bucket_content_slots(&source);
+        for target in [7u32, 8, 9] {
+            assert!(
+                graph
+                    .edges
+                    .spill_append(run, &target.to_le_bytes())
+                    .unwrap()
+            );
+        }
+        graph.edges.spill_tombstone_row(run, 0).unwrap();
+        let used = graph.edges.spill_used_len(run);
+        let live = (0..used)
+            .filter(|index| {
+                !graph
+                    .edges
+                    .spill_edge_at(run, *index)
+                    .expect("spill row")
+                    .is_tombstone_edge()
+            })
+            .count() as u32;
+        assert!(live < used, "the rebuild must have holes to pack");
+
+        let moves = graph.rebuild_bucket_edge_spill(0, &source).unwrap();
+
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        let fresh = graph.edges.spill_mint(after.edge_spill_run()).unwrap();
+        assert_ne!(fresh, run, "the rebuild published a new run");
+        assert_eq!(
+            graph.edges.spill_used_len(fresh),
+            live,
+            "the run holds exactly the live rows"
+        );
+        assert_eq!(
+            moves.len(),
+            live as usize,
+            "every live row after the hole moved"
+        );
+        assert_eq!(moves[0].old_slot_index, prefix + 1);
+        assert_eq!(moves[0].new_slot_index, prefix);
+        assert_eq!(moves[0].label_id, source.bucket_label_key());
+        // The rows kept their order: spill row 1 is now the run's first row.
+        let first = graph.edges.spill_edge_at(fresh, 0).unwrap();
+        assert_eq!(first, graph.edges.spill_edge_at(run, 1).unwrap_or(first));
+    }
+
+    #[test]
     fn fold_moves_the_spill_head_into_the_span_without_moving_ordinals() {
         use super::super::test_support::TestEdge;
         let (graph, _m) = physical_fixture::<TestEdge>();
@@ -6330,6 +6382,75 @@ where
             bucket_slot,
             bucket,
         )
+    }
+
+    /// Rebuilds a bucket's edge spill run so its class matches the rows that are still live.
+    ///
+    /// A head drop cannot take a run below its class floor, so a bucket whose spill is mostly
+    /// tombstones keeps a run it does not need. Rebuilding mints a run sized to the live rows,
+    /// copies them in order, publishes the new id and only then releases the old run - the
+    /// descriptor never names a freed run.
+    ///
+    /// Unlike the fold, this moves ordinals: a logical row is `prefix_len + spill index`, so
+    /// packing the spill renumbers every row after the first hole. The moves are returned for the
+    /// caller to rekey through its observer; nothing here touches the sidecars.
+    pub(super) fn rebuild_bucket_edge_spill(
+        &self,
+        bucket_slot: u64,
+        bucket: &LabelBucket,
+    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
+            return Ok(Vec::new());
+        };
+        let used = self.edges.spill_used_len(run);
+        let mut keep = Vec::with_capacity(used as usize);
+        for index in 0..used {
+            let edge = self
+                .edges
+                .spill_edge_at(run, index)
+                .map_err(LabeledOperationError::from)?;
+            if !edge.is_tombstone_edge() {
+                keep.push(index);
+            }
+        }
+        if keep.len() as u32 == used {
+            return Ok(Vec::new());
+        }
+        let prefix = bucket_content_slots(bucket);
+        if keep.is_empty() {
+            // Nothing live: drop the run entirely and let the descriptor say so.
+            self.buckets.write_label_bucket_slot(
+                bucket_slot,
+                bucket.with_edge_spill_run(crate::traits::NO_SPILL_RUN),
+            )?;
+            self.edges
+                .spill_release(run)
+                .map_err(LabeledOperationError::from)?;
+            return Ok(Vec::new());
+        }
+        let fresh = self
+            .edges
+            .spill_repack(run, &keep)
+            .map_err(LabeledOperationError::from)?;
+        self.buckets
+            .write_label_bucket_slot(bucket_slot, bucket.with_edge_spill_run(fresh.get()))?;
+        self.edges
+            .spill_release(run)
+            .map_err(LabeledOperationError::from)?;
+        let mut moves = Vec::new();
+        for (destination, source) in keep.iter().copied().enumerate() {
+            if destination as u32 != source {
+                moves.push(EdgeSlotMove {
+                    label_id: bucket.bucket_label_key(),
+                    old_slot_index: prefix + source,
+                    new_slot_index: prefix + destination as u32,
+                });
+            }
+        }
+        Ok(moves)
     }
 
     /// Moves the head of a bucket's edge spill run into its slab span.

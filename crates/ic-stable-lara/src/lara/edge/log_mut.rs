@@ -117,6 +117,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map_err(LaraOperationError::from)
     }
 
+    /// Copies the rows at `keep` into a fresh run of their own class (the rebuild's store half).
+    pub(crate) fn spill_repack(
+        &self,
+        run: SpillRunId,
+        keep: &[u32],
+    ) -> Result<SpillRunId, LaraOperationError> {
+        self.spill
+            .repack(run, keep)
+            .map_err(LaraOperationError::from)
+    }
+
     /// Releases `run` to its class's free list. The class comes from the run's own header.
     pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
         self.spill.release(run).map_err(LaraOperationError::from)
