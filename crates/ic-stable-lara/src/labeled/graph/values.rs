@@ -822,23 +822,22 @@ where
         if width == 0 || bucket.is_tiny_mode() {
             return Ok(bucket);
         }
+        // One admission for both residencies, because the invariant is about the *row*, not about
+        // which plane it lands in: a width-`w` bucket only admits width-`w` edges, so the mirrored
+        // value plane has no representation for a row without a block. The caller has already run
+        // `ensure_bucket_inline_property_schema_for_insert_with_materialize`, which rejects the
+        // mismatch with the typed error before any row is written (see
+        // `non_empty_bucket_rejects_inline_property_byte_width_changes`); every current caller is
+        // downstream of it. A new path that is not must return `InlinePropertyBytesWidthMismatch`
+        // instead of reaching this, because the trap is deliberately fail-closed (message rollback)
+        // rather than a carved-out error.
+        if edge.edge_inline_property_byte_width() != width {
+            unreachable!(
+                "a width-{width} bucket only admits width-{width} edges; the mirrored value plane \
+                 has no block for a row that carries none"
+            );
+        }
         if slot_index >= bucket.stored_slots() {
-            // ADR 0099 mirror: one block per run row, so the value plane has no representation for a
-            // row without a block.
-            //
-            // This depends on the caller having run
-            // `ensure_bucket_inline_property_schema_for_insert_with_materialize`, which rejects a
-            // width-mismatched edge with the typed error before any row is written (see
-            // `non_empty_bucket_rejects_inline_property_byte_width_changes`). Every current caller is
-            // downstream of it; a new path that is not must return
-            // `InlinePropertyBytesWidthMismatch` instead of reaching this, because the trap is
-            // deliberately fail-closed (message rollback) rather than a carved-out error.
-            if edge.edge_inline_property_byte_width() != width {
-                unreachable!(
-                    "a width-{width} bucket only admits width-{width} edges; the mirrored value \
-                     plane has no block for a row that carries none"
-                );
-            }
             return self
                 .write_inline_property_bytes_to_log(&bucket, edge.edge_inline_property_bytes());
         }
