@@ -194,9 +194,15 @@ defect from being rediscovered without its prior reasoning.
     test's layout already assumes a vertex's span may run past the next vertex's base - the overlap
     is not an edge case, it is what the placement currently relies on, and the suite is green only
     because nothing reads those rows back afterwards.
-  - That is the argument for doing `VertexArena` and the growth bound together rather than the bound
+  - That is the argument for doing the slice and the growth bound together rather than the bound
     first: placement has to hand each vertex a slice wide enough for its span, and only then can
     growth be clamped to the slice without starving legitimate buckets. The clamp was reverted.
+  - **Decision recorded in [ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md).** The
+    owner is `LeafSlice`, which ADR 0088 already names for exactly this, so the ADR rejects a new
+    `VertexArena` layer and instead routes the write window, the fold and the bucket successor
+    through the slice. It also records why a bound-only clamp is insufficient (the stack-overflowing
+    fixture) and that spill rows stay in `SpillRunStore`, with only the slab/run decision and the
+    `stored_slots` + `spill_used_len` pairing changing.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
