@@ -364,6 +364,14 @@ thirteen are `values::tests` and the bulk of those assert the old geometry (`sla
 dense-by-degree statistics) rather than behaviour; `traverse` (7) and `compact` (5) mix the same.
 The code paths still known to be wrong are materialization's publication and the promotion path.
 
+**Materialization resists a one-line change, twice measured.** Publishing the fill over `stored_slots`
+plus extending the value run to the edge run's length was tried twice: 48 -> 50 both times. Four of
+the deferred-materialization fixtures (`materialize_atomic_on_failure`,
+`materialize_owner_wrapper_publishes_both_orientations_and_surfaces_cancellation`,
+`materialize_inline_property_stream_drains_via_bidi_maintenance_queue`,
+`directed_insert_deferred_materialize_via_wrapper_retry_after_drain`) depend on the publication shape,
+so the code change and their migration have to land together - which is the next unit, not a patch.
+
 **And a third, found by instrumenting the simplest failing case.** In
 `values::tests::edge_inline_propertys_preserved` (three valued inserts, then
 `compact_vertex_edge_span`, then read back - all zeros), the head fold never runs, and by the time the
