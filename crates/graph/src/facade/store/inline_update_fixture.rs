@@ -563,7 +563,6 @@ fn bench_graph_undirected_inline_update_no_fit_w2() -> canbench_rs::BenchResult 
 /// the change; a test that only inserts and reads back cannot tell the two apart, so this one
 /// interleaves deletes, refills of the holes they leave, updates, and maintenance passes.
 #[test]
-#[ignore = "blocked on the update-after-delete misalignment: the focused reproduction is inline_update_after_a_delete_writes_the_right_row"]
 fn values_stay_with_their_rows_through_random_mutations() {
     const TARGETS: u32 = 5;
     const OPS: u32 = 240;

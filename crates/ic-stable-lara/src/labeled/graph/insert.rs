@@ -811,7 +811,9 @@ where
                     .write_bytes(destination, &trailing)
                     .map_err(LabeledOperationError::from)?;
             }
-            self.write_edge_inline_property_at_slot(&bucket, ordinal_before, edge)?;
+            // `ordinal_before` is the hole's live ordinal, so the ordinal primitive is the right
+            // form: resolving it from the physical slot would skip the hole being filled.
+            self.write_edge_inline_property_at_ordinal(&bucket, ordinal_before, edge)?;
         } else {
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
         }
