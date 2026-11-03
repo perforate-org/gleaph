@@ -325,6 +325,16 @@ defect from being rediscovered without its prior reasoning.
     allocation must equal what its buckets actually claim** (measured mismatch 1 vs 11). Until those
     two agree, every cheap guard - the fast path, the oversized test, the occupied-span list - is
     reasoning about a number that is not the layout.
+  - **Why the record must not be kept in sync (counted 2026-11-03).** There is no single point that
+    publishes a bucket's width: `with_stored_slots` / `with_edge_range` / `try_with_edge_range` are
+    called from **78 sites** (32 of them in `compact.rs`, 7 in `insert.rs`, 5 in `bucket_store.rs`,
+    plus `bypass.rs`, `headroom_screen.rs`, `access.rs`). Keeping `vertex.stored_slots` equal to the
+    sum would therefore mean adding an update at 78 places, which is the duplicated-update-logic
+    shape the round-one review rejects - and the measured 1-vs-11 drift is what that shape produces.
+    The buckets stay the source of truth; the vertex field is the **bypass** span width (it already
+    is, in `stored_degree` and `slab_append_exclusive_end`, both gated on
+    `is_default_edge_labeled()`), and every labeled consumer goes through one derived accessor.
+    Readers counted on labeled paths: `compact.rs` (9), `deferred.rs` (2), `promote.rs` (1).
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
