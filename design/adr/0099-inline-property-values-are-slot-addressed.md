@@ -370,10 +370,17 @@ value slots when the bucket has no width (which is what several "slab_slots on a
 assertions were really about). Two of the four fixtures moved with it; the tombstone-inclusive fill
 now expects `stored_slots` blocks and reads them, because a tombstoned slot keeps its block.
 
-The rest of that list is fixture migration - `values::tests` (now ~11), `traverse` (7), `deferred`
-(6), `compact` (5), `remove` (3), `promote` (2) - plus the promotion path and one wide-value (1000
-byte) materialization case that raises a width mismatch where both sides report 1000, which needs its
-own look.
+**Emptied buckets release the value plane too.** A bucket with no live rows owns no values, whether or
+not its edge run survives as a tombstone holder - but the emptied branch only cleared the values plane
+when the edge run was already gone, so a delete that left a tombstoned edge run kept a values run no
+row could read. Releasing it at `degree == 0` and migrating the two remove fixtures that asserted
+slab-residency took the branch to 44.
+
+**Where it stands: 96 -> 44**, and the remainder is dominated by fixture migration:
+`values::tests` (14), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
+test, a tree-read test and a spill-read test. The code paths still known to be wrong are the promotion
+path and one wide-value (1000 byte) materialization case that raises a width mismatch where both sides
+report 1000.
 
 **Materialization resists a one-line change, twice measured.** Publishing the fill over `stored_slots`
 plus extending the value run to the edge run's length was tried twice: 48 -> 50 both times. Four of
