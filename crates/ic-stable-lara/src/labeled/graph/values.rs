@@ -70,8 +70,10 @@ impl MaterializeCursor {
         (self.src, self.bucket_slot)
     }
 
+    /// Bytes to fill: one block per **slab** row (ADR 0099), because the values plane mirrors the
+    /// edge prefix. Rows beyond it keep their values in the spill run, extended at publication.
     fn total_bytes(&self) -> u64 {
-        u64::from(self.source.degree()) * u64::from(self.width)
+        u64::from(self.source.stored_slots()) * u64::from(self.width)
     }
 
     fn is_consumed(&self) -> bool {
@@ -925,6 +927,46 @@ where
         })
     }
 
+    /// Grows the value run to the edge run's length, filling the new blocks with the cursor's fill
+    /// byte, and publishes the run id when the bucket did not have one.
+    fn fill_value_run_for_edge_spill(
+        &self,
+        cursor: &MaterializeCursor,
+    ) -> Result<(), LabeledOperationError> {
+        let (_, bucket) = self.materialize_source(cursor.src, cursor.bucket_slot, cursor.width)?;
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+            return Ok(());
+        }
+        let edge_run = self
+            .edges
+            .spill_mint(bucket.edge_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        let target = self.edges.spill_used_len(edge_run);
+        let mut run = self.values.spill_mint(bucket.values_spill_run()).ok();
+        let fill = vec![cursor.fill_byte; usize::from(cursor.width)];
+        loop {
+            let used = run.map_or(0, |run| self.values.spill_used_len(run));
+            if used >= target {
+                break;
+            }
+            let (next, _row) = self
+                .values
+                .spill_append(run, cursor.width, &fill)
+                .map_err(LabeledOperationError::from)?;
+            run = Some(next);
+        }
+        if let Some(run) = run
+            && bucket.values_spill_run() != run.get()
+        {
+            let updated = bucket
+                .try_with_values_spill_run(run.get())
+                .map_err(LabeledOperationError::from)?;
+            self.buckets
+                .write_label_bucket_slot(cursor.bucket_slot, updated)?;
+        }
+        Ok(())
+    }
+
     fn prepare_materialize_publication(
         &self,
         cursor: &MaterializeCursor,
@@ -940,8 +982,7 @@ where
         let updated = bucket
             .with_inline_property_byte_width(cursor.width)
             .with_inline_property_bytes_offset(offset)
-            .with_inline_property_bytes_slab_slots(bucket.degree())
-            .without_values_spill_run();
+            .with_inline_property_bytes_slab_slots(bucket.stored_slots());
         let bucket_write = self
             .buckets
             .prepare_existing_bucket_slot(cursor.bucket_slot, updated)?;
@@ -1068,6 +1109,7 @@ where
         };
         if end == cursor.total_bytes() {
             publication.publish();
+            self.fill_value_run_for_edge_spill(cursor)?;
             cursor.progress = MaterializeProgress::Consumed;
             Ok(MaterializeStep::Finished)
         } else {
@@ -5068,9 +5110,9 @@ mod tests {
     /// (a) dense-with-tombstones: insert 5 edges, tombstone slot 2,
     /// materialize w=2 → every position reads fill (tombstone-inclusive).
     ///
-    /// After tombstoning slot 2, `bucket.degree()` drops to 4 (the
-    /// remove-edge path decrements degree). The primitive uses `degree`
-    /// as the stream length and writes `fill` to every position.
+    /// ADR 0099: the stream length is the **edge prefix** (`stored_slots` = 5), not `degree`
+    /// (= 4 after the tombstone), because the values plane is addressed by slot and a tombstoned
+    /// slot keeps its block. The old dense-by-rank stream covered only the live rows.
     #[test]
     fn materialize_tombstone_inclusive_fill() {
         let graph = materialize_setup(256);
@@ -5090,9 +5132,9 @@ mod tests {
             .buckets
             .read_label_bucket_slot(bucket_slot)
             .expect("read");
-        // degree=4 after tombstone, slab_slots=4 (dense prefix only).
-        assert_eq!(bucket.inline_property_bytes_slab_slots(), 4);
-        for slot in 0..4 {
+        // degree=4 after the tombstone, but the prefix is still 5 slots.
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 5);
+        for slot in 0..5 {
             let bytes = graph
                 .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
                 .expect("read");

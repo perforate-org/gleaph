@@ -804,8 +804,12 @@ impl LabelBucket {
     /// Number of inline-property-bytes entries resident in the inline property bytes slab.
     #[inline]
     /// Values are addressed by row slot (ADR 0099), so the value prefix width is the edge prefix
-    /// width. The stored field is retained only until the record layout drops it.
+    /// width - and zero when the bucket carries no values at all. The stored field is retained only
+    /// until the record layout drops it.
     pub fn inline_property_bytes_slab_slots(self) -> u32 {
+        if self.inline_property_byte_width() == 0 {
+            return 0;
+        }
         self.stored_slots()
     }
 
