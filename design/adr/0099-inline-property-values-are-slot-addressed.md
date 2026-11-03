@@ -384,6 +384,19 @@ removes - so a reused low tombstone left every value one generation behind. The 
 `values::tests` (12), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
 test, a tree-read test and a spill-read test.
 
+**What the wholesale rewrite needs, traced.** `rewrite_vertex_edge_span_with_policy` ends in
+`prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite { .. })` and
+`PhysicalLayoutPreparation::publish`. The rows travel through a `BackedPhysicalEdgeImage` - a copy
+image over the edge slab that the preparation validates and writes in one step. The values plane is
+not part of that image, so whatever the image does to the slot order (a rewrite publishes a packed
+span) the value blocks stay where they were.
+
+The missing piece is therefore symmetrical to what already exists: a **value-slab image composed into
+the same preparation**, published in the same `publish()` so the two planes land atomically - the
+same rule this ADR applies to the spill runs, one level up. Building it means extending
+`PhysicalLayoutPreparation` with the value images for the vertex's buckets and writing them in the same
+commit; that is a self-contained unit, and it is the last code gap.
+
 Two fixtures still show values one row behind after a **wholesale** span rewrite
 (`edge_inline_propertys_survive_rewrite_with_tombstones`,
 `remove_matching_middle_edge_removes_same_inline_property_bytes_ordinal`). The incremental moves and the
