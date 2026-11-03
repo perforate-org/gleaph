@@ -2113,12 +2113,18 @@ mod tests {
         if let BucketSearch::Found { bucket, .. } =
             graph.find_bucket(VertexId::from(0), &vertex, road).unwrap()
         {
-            let mut raw = vec![0u8; 4];
-            graph
-                .values()
-                .read_bytes(bucket.inline_property_bytes_offset(), &mut raw);
-            assert_eq!(u16::from_le_bytes([raw[0], raw[1]]), 1);
-            assert_eq!(u16::from_le_bytes([raw[2], raw[3]]), 100);
+            // ADR 0099: read the block per row rather than assuming the span starts at the bucket's
+            // offset with one block per live row - a spilled row keeps its block in the run.
+            for (slot, expected) in [(0u32, 1u16), (1, 100)] {
+                let bytes = graph
+                    .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
+                    .expect("value block");
+                assert_eq!(
+                    u16::from_le_bytes([bytes[0], bytes[1]]),
+                    expected,
+                    "slot {slot}"
+                );
+            }
         }
         let mut edges = Vec::new();
         graph
