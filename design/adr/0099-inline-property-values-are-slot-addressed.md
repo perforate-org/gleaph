@@ -467,7 +467,20 @@ have (`RowOutOfRange { index: 1 }` in the reverse store). The fix belongs at the
 boundary - the moment a bucket acquires a value plane, its existing run rows need their blocks - not at
 the write site, which would only mask it.
 
-**Where it stands: lara 705/0, graph 5** (from 96 lara failures and 16 graph ones). The seven left are
+**The emptied bucket was the real gap.** Releasing the values run when a bucket lost its last row put
+the planes out of step: the edge run stays as a reusable tombstone holder until compaction sweeps it
+(`deleting_every_row_keeps_the_run_until_compaction`), so the next insert landed at values index 0 while
+its edge row sat at the edge run's index 1 - every read or update at that slot was one row off. An
+emptied bucket now gives up only its slab span, which is space rather than state. That took the graph
+failures 5 -> 2.
+
+The last two are `updating_undirected_edge_inline_property_*`: they assert
+`slab_occupied_tail == canonical_prefix * 2` after inserting self-loop rows, which held when values were
+dense over live rows regardless of where those rows lived. Under the mirrored plane those rows spill, so
+the slab is empty and the fixture has no span to grow - it needs a shape that keeps the rows in the
+slab, not a number change.
+
+**Where it stands: lara 705/0, graph 2** (from 96 lara failures and 16 graph ones). The seven left are
 mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
 occupied slab from rows that now spill).
 
