@@ -376,11 +376,20 @@ when the edge run was already gone, so a delete that left a tombstoned edge run 
 row could read. Releasing it at `degree == 0` and migrating the two remove fixtures that asserted
 slab-residency took the branch to 44.
 
-**Where it stands: 96 -> 44**, and the remainder is dominated by fixture migration:
-`values::tests` (14), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
-test, a tree-read test and a spill-read test. The code paths still known to be wrong are the promotion
-path and one wide-value (1000 byte) materialization case that raises a width mismatch where both sides
-report 1000.
+**Filling a hole writes the hole's slot.** The tombstone-reuse path still inserted the value at the
+hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
+removes - so a reused low tombstone left every value one generation behind. The shift is gone.
+
+**Where it stands: 96 -> 43**, and the remainder is dominated by fixture migration:
+`values::tests` (12), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
+test, a tree-read test and a spill-read test.
+
+Two fixtures still show values one row behind after a **wholesale** span rewrite
+(`edge_inline_propertys_survive_rewrite_with_tombstones`,
+`remove_matching_middle_edge_removes_same_inline_property_bytes_ordinal`). The incremental moves and the
+swap both carry values now, so what remains is the rewrite that copies the whole span in one pass -
+the last known code gap besides promotion and the wide-value (1000 byte) materialization case that
+raises a width mismatch where both sides report 1000.
 
 **Materialization resists a one-line change, twice measured.** Publishing the fill over `stored_slots`
 plus extending the value run to the edge run's length was tried twice: 48 -> 50 both times. Four of
