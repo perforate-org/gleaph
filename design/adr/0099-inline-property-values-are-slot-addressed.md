@@ -380,7 +380,18 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
-**Where it stands: 96 -> 43**, and the remainder is dominated by fixture migration:
+**Where it stands: 96 -> 29.** Two more distinctions landed after the slot batch: a tree bucket owns no
+value span to charge the vertex for (its values live in the property root inside the edge span), and
+`inline_property_bytes_slab_slots` means the geometry a bucket needs while
+`inline_property_bytes_slab_slots_allocated` means what the allocator backs - the admission had been
+comparing the first against itself, which left spans unallocated and vertices uncharged.
+
+The remaining 29 are dominated by fixtures whose model is "values are dense over the live rows,
+independent of edge residency" - `value_span_relocation_*`, `inline_property_bytes_compaction_*`,
+`storage_stats`, and the traversal/deferred groups. They need their expectations rebuilt around the
+mirrored plane rather than adjusted, which is why they are not mechanical edits.
+
+**Where it stood at 43**, and the remainder is dominated by fixture migration:
 `values::tests` (12), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
 test, a tree-read test and a spill-read test.
 
