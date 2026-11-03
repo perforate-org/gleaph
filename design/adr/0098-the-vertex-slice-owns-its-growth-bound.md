@@ -152,9 +152,15 @@ rewrite and relocate that tile the whole leaf are its only writers, so there is 
 that write bucket widths. A tiled leaf skips the fixed-quota fast path and takes the placement that
 reads the real spans; an untiled leaf is by construction in the layout the fast path assumes.
 
-The flag fits in the existing `SegmentSpanMeta::physical_start`'s spare bits (slot indices are 36-bit,
-so the high bits are unused), so the metadata does not grow. Changing what a persisted bit means is a
-layout change: it requires fresh state, which the project's pre-production rule allows.
+The flag does not fit as cheaply as it first looked: `physical_start` is read or written at **46
+sites** outside `span_meta.rs` (17 in `compact.rs`, 12 in `row_layout.rs`, 8 in `leaf_arena.rs`, 3 in
+`tree_write.rs`, plus `bench.rs` and `init.rs`), and several treat it as a plain slot index, so
+stealing a high bit would put a value they do arithmetic on out of range. The cheaper shape is
+therefore to give `SegmentSpanMeta` its own field and grow `ENTRY_SIZE` from 8 to 16 bytes: there are
+only 16 constructions of the struct (13 of them inside `span_meta.rs`), and the row count is one per
+leaf segment. Either way it is a persisted-layout change that needs fresh state, which the
+pre-production rule allows - but the 46 read sites are the reason it is a unit of its own rather than
+a footnote to the placement fix.
 
 ### Spill's place in this
 
