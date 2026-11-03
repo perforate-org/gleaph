@@ -186,6 +186,17 @@ defect from being rediscovered without its prior reasoning.
     invariant to check (`next_vertex_edge_span_allocation` / `LeafArena::reserve`), and it is the
     same E2/E5 residency rule the fail-closed ladder exists to keep - a *vertex*-level violation
     here rather than a bucket-level one.
+  - **The clamp cannot land alone (tried 2026-11-03).** Capping the bucket's successor at the next
+    vertex's base is the obvious minimal fix, and it makes
+    `deferred::tests::compaction_cursor_packs_alternating_tombstones_across_steps` overflow the stack:
+    that fixture builds nine vertices and folds eight rows into `src`'s span, so with the cap its
+    fold has about one slot of room, errors, and the drain recurses. In other words a long-green
+    test's layout already assumes a vertex's span may run past the next vertex's base - the overlap
+    is not an edge case, it is what the placement currently relies on, and the suite is green only
+    because nothing reads those rows back afterwards.
+  - That is the argument for doing `VertexArena` and the growth bound together rather than the bound
+    first: placement has to hand each vertex a slice wide enough for its span, and only then can
+    growth be clamped to the slice without starving legitimate buckets. The clamp was reverted.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
