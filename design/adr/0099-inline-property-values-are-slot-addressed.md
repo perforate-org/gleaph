@@ -223,7 +223,8 @@ residency**, which is the same statement as addressing values by slot. There is 
 That is the design question to settle before the next implementation attempt; it is not a detail of
 the read path but the reason the first failure is a *read* rather than a write.
 
-**Status of this attempt:** applied as far as the delete, measured 91 red, reverted. The tree is back
+**Status of this attempt:** applied as far as the delete, measured 91 red, reverted (see the branch
+note at the end of this section). The tree is back
 to green (lara 708/0, graph 1107/0) with the plan, the sizes and the coupling recorded here.
 
 **What that coupling requires of the design (to settle before implementing).** The two runs must be
@@ -319,3 +320,25 @@ fallback, not the plan.
 - `design/storage/lara.md`: the inline-property geometry section, once the field is gone.
 - `design/implementation-gaps.md`: `GAP-LARA-INLINE-DELETE-COST` closes when step 3's measurements
   hold.
+
+## Work list, at function level (branch `slot-addressed-values`)
+
+A fourth attempt applied the accessor, the slot-based reads, residency-by-slot on insert (the value
+of a row inside the prefix goes to the slab span sized `stored_slots`, a row beyond it appends to the
+spill run) and a value-free delete. That took lara from 96 failures to 53 and is parked on the branch
+so `spill-swap` stays green. What the remaining 53 need, by function:
+
+| function | why it is on the list |
+| --- | --- |
+| `rebuild_bucket_edge_spill` (`compact.rs`) | repacks the edge run, which **renumbers rows and returns moves**. The value run has to be repacked in the same order and released with it, or values follow the wrong rows. This is `BucketSpillRuns` applied to the rebuild path. |
+| `fold_label_bucket_inline_property_bytes_log_to_slab` | folds the value run into the slab; with a mirrored plane it moves exactly the rows the edge fold moves, into the same slots, and drops the same run head. |
+| `fold_bucket_edge_spill_head_into_span` | grows `stored_slots` by `k`, so it must grow the value prefix by `k` in the same publication. |
+| `try_reuse_unordered_slab_tombstone` (`insert.rs`) | fills a slab hole; it still shifts the value suffix, which the slot plane no longer needs - write the hole's slot and stop. |
+| `apply_edge_slot_move_in_bucket` / swap | moves a row; the value block moves with it, one block per moved row. |
+| `materialize_*` | publishes `slab_slots = degree` over the whole bucket; it must publish the residency the edges actually have (slab part `stored_slots`, the rest into a value run created with the edge run). |
+| record + fixtures | the `inline_property_bytes_slab_slots` field and the tests that assert it directly (e.g. "slab_slots = w=0 edges"). |
+
+The two failures visible at 53 are exactly the first two rows: `remove_directed_deferred` returning
+false after a span compaction (the fold left values that no longer line up with slots) and
+`MissingAscLogIndex` (a read reaches for a spill run the mirrored plane has not created yet).
+
