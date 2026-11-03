@@ -342,3 +342,231 @@ The two failures visible at 53 are exactly the first two rows: `remove_directed_
 false after a span compaction (the fold left values that no longer line up with slots) and
 `MissingAscLogIndex` (a read reaches for a spill run the mirrored plane has not created yet).
 
+**Progress since the work list was written.** The live-log fold (not the spill head fold) was the
+transition that moved rows into the prefix and cleared the edge run without their values - found by
+`#[track_caller]` on `with_stored_slots`, which reported `stored 0 -> degree` at `compact.rs:5798`.
+Moving the value blocks there, and carrying them through `apply_edge_slot_move_in_bucket` (one block
+copy, now that both planes share an address), took the branch from 53 to 48 failures.
+
+A first attempt at materialization - publishing the fill over `stored_slots` and extending the value
+run to the edge run's length - *regressed* to 50 and was reverted: the materialization fixtures assert
+the old dense-by-degree publication, so that path needs its own pass rather than a one-line change.
+
+**The swap simplified itself.** Its value half used to shift the window `[k_ord..m_ord]` one block
+right, because ranks changed for the rows between the hole and the last live row. With one geometry
+the moved row's block goes where the row goes, in one copy, and the `values_spill_run ==
+NO_SPILL_RUN` restriction on that half disappears with it - a value-bearing bucket's swap is now no
+more expensive than an edge-only one's, which is what ADR 0052's 2026-11-02 value clause was working
+around.
+
+**Where the branch stands: 96 -> 48 failures, and the remainder is mostly fixtures.** Of the 48,
+thirteen are `values::tests` and the bulk of those assert the old geometry (`slab_slots = degree`,
+dense-by-degree statistics) rather than behaviour; `traverse` (7) and `compact` (5) mix the same.
+The code paths still known to be wrong are materialization's publication and the promotion path.
+
+**Materialization landed, at 46.** Its stream length is the edge prefix rather than `degree`, its
+publication keeps the value run and extends it to the edge run's length, and the accessor returns zero
+value slots when the bucket has no width (which is what several "slab_slots on a width-0 bucket"
+assertions were really about). Two of the four fixtures moved with it; the tombstone-inclusive fill
+now expects `stored_slots` blocks and reads them, because a tombstoned slot keeps its block.
+
+**Emptied buckets release the value plane too.** A bucket with no live rows owns no values, whether or
+not its edge run survives as a tombstone holder - but the emptied branch only cleared the values plane
+when the edge run was already gone, so a delete that left a tombstoned edge run kept a values run no
+row could read. Releasing it at `degree == 0` and migrating the two remove fixtures that asserted
+slab-residency took the branch to 44.
+
+**Filling a hole writes the hole's slot.** The tombstone-reuse path still inserted the value at the
+hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
+removes - so a reused low tombstone left every value one generation behind. The shift is gone.
+
+**Measured: the bucket is not tree, and the step fails on the second call.** Before the cursor steps,
+the bucket is `tiny=false tree=false width=0 degree=5 stored=5`, and the two steps print
+`progress=Unreserved total=5000` then `progress=Filling { position: 4096 } total=5000`. So the
+"tree bucket" reading above was wrong - the width the error reports (1000) is the *materialization's*
+width, and the second step's admission sees a bucket whose width is no longer 0. Something publishes the
+descriptor between the two steps; `materialize_source` requires width 0 until the final publication,
+so finding that writer is the next diagnostic. Narrowed once more: right after the first step the
+bucket is still `width=0 offset=0`, and the fixture then only mints two more cursors (`0xA5`, `0xB2`)
+and enqueues them before dropping and reopening the queue - so the writer is reached from the enqueue or
+the reopen, not from the step. It is still the one item in this group that must be
+diagnosed rather than restated.
+
+**One of the deferred failures may be a regression, not a premise.** In
+`materialize_owner_queue_identity_preserves_retry_progress_across_reopen` the step now fails with
+`InlinePropertyBytesWidthMismatch { bucket_width: 1000, edge_inline_property_width: 1000 }` - equal
+widths, so the error is the "materialization does not apply to tree buckets" branch, i.e. the bucket is
+in **tree mode** by the time the cursor steps. Whether that is a fixture premise or the span-sizing
+change causing a promotion needs measuring before the fixture is touched; it is the one item in this
+group that has to be diagnosed rather than restated.
+
+**The remaining ones are allocator-state fixtures.** Two in `values::tests` assert exact
+`free_bytes` / `moved_spans` / `moved_bytes` figures (`deferred_inline_property_insert_skips_synchronous_compaction`
+expects a freed 6-byte hole, `inline_property_bytes_compaction_moves_only_inline_property_bytes_spans`
+expects at least 8 free bytes and two moved spans). Those numbers come from the old residency - more
+spans, freed in a different order - so restating them means re-deriving the expected allocator state
+for the mirrored plane rather than adjusting a constant. That is the shape of the last group and the
+reason it is slower than the earlier ones.
+
+**Where it stands: 96 -> 13.** The last of the compact group was a fixture asserting the swap gate's
+withdrawn clause; it now states what the gate decides (a value run or a sparse value span no longer
+stops a swap, an edge run still does, because the move needs the row to be in the span it swaps
+within).
+
+**Where it stood at 14.** Two of the last four were my own bugs rather than fixture premises:
+`fill_value_run_for_edge_spill` re-ran the materialisation admission *after* publishing, so it failed its
+own follow-up with a width mismatch whose two sides were equal; and the accessor answered with
+`stored_slots` for tree buckets, where `stored_slots` is the tree's logical extent rather than a value
+width.
+
+**Where it stood at 16.** The rank-modelled fixtures fall one at a time as their premises are
+restated: the delete no longer folds the plane (`removing_non_last_...`), a row's block is read through
+the slot accessor rather than from the span's raw bytes
+(`edge_inline_propertys_round_trip_via_unchecked_label_iteration`), and the storage statistics follow
+the bucket's residency instead of assuming every row is slab-resident.
+
+**Where it stood at 22.** After the swap gate, the hybrid fixtures and the accounting, the
+promotion group cleared as well: `normal_and_bypass_relocation_retains_runs_and_values` now asserts the
+mirror (both runs stand or fall together, same row count) instead of expecting the delete to fold the
+values away, and two fixtures that proved a bucket was hybrid by "the two prefixes differ" now say so
+with the values run, because the prefixes are one number.
+
+What is left is 22: `values::tests` (10), `deferred` (5), `traverse` (3), `compact` (3) and one record
+test - the fixtures whose model is the rank-addressed plane, which have to be rebuilt rather than
+adjusted.
+
+**The last design question, found in `value_span_relocation_*`.** Those fixtures drive
+`fold_bucket_values_run_into_slab` - the fold that moves a bucket's **values only** from the run into
+the slab - and assert the run is gone afterwards. Under the mirror that fold has no meaning: moving
+only the values leaves the edge run holding rows whose blocks moved, which is precisely the divergence
+this ADR removes. It has two production callers (`update_edge_inline_property_at_slot` before an
+update, and the insert path when the value run is full) and both were there to restore the
+rank-addressed plane's dense precondition.
+
+So the question to settle is what replaces it, and the two candidates are:
+(a) delete it and let the callers write at the slot (the update path already can; the full-run insert
+needs its `ValuesRunFull` error path exercised), or
+(b) redefine it to fold the **edge run and the value run together**, which is what
+`fold_bucket_edge_spill_head_into_span` now does.
+
+(a) is the smaller statement and matches the ADR; (b) keeps the call sites' shape but duplicates the
+paired fold the edge side already has.
+
+**Decision: (a).** The values-only fold is deleted, with both production callers - the update path now
+writes the value at the row's slot, and the insert path lets a full run grow instead of pre-emptively
+folding it. Three fixtures went with it (`value_span_relocation_reclaims_8/33` and
+`..._failure_preserves_source`) because they exercised the fold itself, and the bench that measured it
+is pointed at the paired fold, which is what folding values now means. That took the branch to 19
+failures.
+
+Losing those three fixtures loses their span-accounting coverage (retired span reclaimed, free-byte
+arithmetic, source preserved on a failed relocation); `ensure_bucket_inline_property_bytes_span`'s
+relocation path is what should carry that coverage now, and rebuilding it there is part of the
+remaining work rather than something the deletion should quietly drop. Either way those three fixtures are rebuilt around whichever
+answer is chosen, which is why they are the last group rather than the next.
+
+**Where it stood at 25.** Three more distinctions landed: the swap gate's value clause is
+withdrawn (ADR 0052's reason for it was the value window shift, which the slot plane removes), the
+"hybrid" traversal fixture now proves its state with the values run instead of a width gap that can no
+longer exist, and the accounting separates what a bucket needs from what the allocator backs.
+
+The remaining 25 split into `values::tests` (10), `deferred` (5), `traverse` (3), `compact` (3) and
+`promote` (2), and they are the ones whose model is "values are dense over the live rows, independent
+of edge residency" - `value_span_relocation_*`, `inline_property_bytes_compaction_*`, `storage_stats`,
+the cursor/hybrid page fixtures. Rebuilding those expectations around the mirrored plane is the work
+that is left, plus the promotion path.
+
+**Where it stood at 29.** Two more distinctions landed after the slot batch: a tree bucket owns no
+value span to charge the vertex for (its values live in the property root inside the edge span), and
+`inline_property_bytes_slab_slots` means the geometry a bucket needs while
+`inline_property_bytes_slab_slots_allocated` means what the allocator backs - the admission had been
+comparing the first against itself, which left spans unallocated and vertices uncharged.
+
+The remaining 29 are dominated by fixtures whose model is "values are dense over the live rows,
+independent of edge residency" - `value_span_relocation_*`, `inline_property_bytes_compaction_*`,
+`storage_stats`, and the traversal/deferred groups. They need their expectations rebuilt around the
+mirrored plane rather than adjusted, which is why they are not mechanical edits.
+
+**Where it stood at 43**, and the remainder is dominated by fixture migration:
+`values::tests` (12), `traverse` (10), `deferred` (8), `compact` (4), `promote` (3), plus a record
+test, a tree-read test and a spill-read test.
+
+**What the wholesale rewrite needs, traced.** `rewrite_vertex_edge_span_with_policy` ends in
+`prepare_physical_layout(PhysicalLayoutOperation::VertexRewrite { .. })` and
+`PhysicalLayoutPreparation::publish`. The rows travel through a `BackedPhysicalEdgeImage` - a copy
+image over the edge slab that the preparation validates and writes in one step. The values plane is
+not part of that image, so whatever the image does to the slot order (a rewrite publishes a packed
+span) the value blocks stay where they were.
+
+The packing itself happens one step earlier, at **capture**: the preparation receives `canonical` rows
+and a per-bucket `desired` layout, copies each bucket's span verbatim (`PhysicalSlabPayload::Buffered`
+or `Disjoint`), and publishes `new.with_edge_range(position, ..)`. So the slot order a bucket ends up
+with is decided when its rows are captured as `desired`, and the value blocks are never part of that
+capture.
+
+The missing piece is therefore symmetrical to what already exists: a **value-slab image composed into
+the same preparation**, published in the same `publish()` so the two planes land atomically - the
+same rule this ADR applies to the spill runs, one level up. The place to hang it is the same per-bucket
+loop that builds `payloads`: for every bucket it needs the value blocks in the *desired* order, and the
+publish needs to write them alongside the edge image. Building it means extending
+`PhysicalLayoutPreparation` with the value images for the vertex's buckets and writing them in the same
+commit; that is a self-contained unit, and it is the last code gap.
+
+**Measured: the rewrite is not what moves them.** Instrumented
+`edge_inline_propertys_survive_rewrite_with_tombstones` before and after the rewrite - the bucket is
+`stored_slots = 0`, `degree = 2`, in both snapshots: all of its rows are in the **edge spill run** and
+the values in the value run, on both sides of the rewrite. So the rewrite copies nothing for this
+shape; the values were already one behind *before* it. The step that moves them is the **delete**:
+after removing slot 0 the live rows read values `[10, 20]` where `[20, 30]` were written - each row
+one block early.
+
+**Narrowed again: the reader, not the delete.** The spill delete tombstones in place
+(`spill_tombstone_row`) and drops nothing, so both runs keep their head. The off-by-one is in the read
+path that serves this shape: `visit_edges_with_inline_property_impl`'s slow arm batches values by
+**live ordinal** (`let mut ordinal = ...`, `value_range = ordinal..ordinal + batch_rows`) while the
+callback reports a *slot*, so a bucket with a tombstone reads each block one slot early. Converting
+that batch to slots is the fix, and it landed: **43 -> 34**. The bound had to be the bucket's
+*resident value slots* (slab prefix plus spill rows), not the slab prefix - bounding by the prefix alone
+gives an empty range for a run-backed bucket and underflows the in-batch offset, which is what the
+first attempt (43 -> 49) did. It also means the physical-layout value image is not needed for this
+failure.
+
+**Two things the accounting had conflated.** `inline_property_bytes_slab_slots` was answering one
+question and being used for another. After this ADR it means "how many value slots this geometry
+needs" - the edge prefix - but `ensure_bucket_inline_property_bytes_span` compared it against
+`had_bytes` computed from the *same* accessor, so the admission was a tautology: a slab bucket could
+report 16 backed slots while the vertex was charged nothing, and no span was ever allocated.
+`inline_property_bytes_slab_slots_allocated` exposes the descriptor's recorded count for that side, and
+the resident/charged accounting uses it. That distinction took the branch 34 -> 30.
+
+**Next lead, from the 34.** `invariants.rs` asserts
+`vertex.inline_property_bytes_allocated_bytes == sum of bucket_resident_inline_property_bytes`, and it
+now fails with `left: 0` on tree-mode point-state fixtures - so some publish path changes a bucket's
+value slots without growing or shrinking the span that backs them. That is the accounting side of the
+rule the value image would enforce.
+
+Two fixtures still show values one row behind after a **wholesale** span rewrite
+(`edge_inline_propertys_survive_rewrite_with_tombstones`,
+`remove_matching_middle_edge_removes_same_inline_property_bytes_ordinal`). The incremental moves and the
+swap both carry values now, so what remains is the rewrite that copies the whole span in one pass -
+the last known code gap besides promotion and the wide-value (1000 byte) materialization case that
+raises a width mismatch where both sides report 1000.
+
+**Materialization resists a one-line change, twice measured.** Publishing the fill over `stored_slots`
+plus extending the value run to the edge run's length was tried twice: 48 -> 50 both times. Four of
+the deferred-materialization fixtures (`materialize_atomic_on_failure`,
+`materialize_owner_wrapper_publishes_both_orientations_and_surfaces_cancellation`,
+`materialize_inline_property_stream_drains_via_bidi_maintenance_queue`,
+`directed_insert_deferred_materialize_via_wrapper_retry_after_drain`) depend on the publication shape,
+so the code change and their migration have to land together - which is the next unit, not a patch.
+
+**And a third, found by instrumenting the simplest failing case.** In
+`values::tests::edge_inline_propertys_preserved` (three valued inserts, then
+`compact_vertex_edge_span`, then read back - all zeros), the head fold never runs, and by the time the
+compaction step sees the bucket it is `stored_slots = degree` with **no edge run but a live values
+run**: the rows are in the slab and their values are still in the spill run. At insert time the same
+bucket was `stored = 0` with an edge run and a values run, so something between the insert and the
+compaction publishes `stored_slots = degree` - the finalize that trims trailing tombstones - without
+moving the values. That transition is the next thing to find; it is not in the fold, the rebuild or
+the delete, which is why all three fixes left the count unchanged at 53.
+
