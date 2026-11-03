@@ -408,7 +408,26 @@ spans, freed in a different order - so restating them means re-deriving the expe
 for the mirrored plane rather than adjusting a constant. That is the shape of the last group and the
 reason it is slower than the earlier ones.
 
-**Where it stands: 96 -> 2**, both in `deferred`: the remaining pair expect
+**The pair update got the owner its insert already had.** `insert_directed_edge` is one method on
+`DeferredBidirectionalLabeledLaraGraph` that owns both halves, their order and the trap discipline; the
+update was two per-orientation setters with the pairing pushed up to `GraphStore` as a local closure,
+so nothing owned "both rows moved together". `update_directed_edge_inline_property` now owns it and the
+facade calls once.
+
+**That refactor paid for itself immediately.** With one place to look, the real defect showed up:
+`write_edge_inline_property_at_slot` delegated to the *ordinal* writer, i.e. to the slab layout, so
+updating a row that lives in the values run wrote inside a span that does not exist (the bucket had
+`stored_slots = 0`) while the read looked in the run - the update appeared to do nothing
+(`inline_update_after_a_delete_writes_the_right_row` read back 203 after writing 204 and then 205). The
+insert helper is not the answer either: it appends, which is what an insert wants and an update must
+not. `write_edge_inline_property_at_existing_row` writes the row's own block - the slab block inside the
+prefix, the run's row index beyond it.
+
+**Where it stands: lara 705/0, graph 7** (from 96 lara failures and 16 graph ones). The seven left are
+mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
+occupied slab from rows that now spill).
+
+**Where it stood at 2**, both in `deferred`: the remaining pair expect
 `insert_directed_edge` to surface `InlinePropertyMaterializePending` where it now succeeds, which is a
 state-machine question about whether the pending materialisation is still pending after the paths
 above changed.
