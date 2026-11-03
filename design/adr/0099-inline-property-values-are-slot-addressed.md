@@ -423,6 +423,13 @@ insert helper is not the answer either: it appends, which is what an insert want
 not. `write_edge_inline_property_at_existing_row` writes the row's own block - the slab block inside the
 prefix, the run's row index beyond it.
 
+**The delete failures are counterpart bookkeeping, not the value plane.** Measured
+`delete_valued_directed_edge_by_handle_removes_reverse_counterpart`: after the delete the forward plane
+reads `[(slot 1, [2, 0])]` - correct, the surviving row with its own value. The test then reaches the
+same row through the reverse store's handle and gets `[1, 0]`, so the reverse row's canonical mapping
+points at the slot the delete vacated rather than at the survivor. The value plane is not the suspect
+here; the counterpart's slot bookkeeping is.
+
 **Where it stands: lara 705/0, graph 7** (from 96 lara failures and 16 graph ones). The seven left are
 mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
 occupied slab from rows that now spill).
