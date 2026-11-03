@@ -441,7 +441,21 @@ reverse row's canonical mapping is landing on the dead row rather than on the li
 candidate is therefore `select_live_edge_by_neighbor_ordinal` / the reverse-side PairOrdinal - not the
 value plane, and no longer spread over several files.
 
-**Where it stands: lara 705/0, graph 7** (from 96 lara failures and 16 graph ones). The seven left are
+**The last rank-addressed readers were in the traversal.** `visit_slab_bucket_span_edges`
+attached each row's value at a live ordinal it counted alongside the walk, and
+`attach_edge_inline_property` resolved one before reading - so the same slot produced different
+values from different readers, which is exactly what the delete-counterpart fixture caught. Both now
+pass the slot. That took the graph failures 7 -> 5.
+
+The five left are one class: the **value run falling behind the edge run**. `RowOutOfRange { index: 1 }`
+on update and `MissingAscLogIndex { asc_log_index: 1 }` on read both say a run row exists with no block
+of its own - a row inserted into the edge run without inline bytes never appended a value block. The
+mirror has to hold for those rows too (a zero block), but simply appending zeros in the insert path
+regressed twelve lara tests that pin the current run lengths, so it is a change to make deliberately
+rather than a patch: decide where a run row's block is created for a valueless insert, then restate
+those expectations.
+
+**Where it stands: lara 705/0, graph 5** (from 96 lara failures and 16 graph ones). The seven left are
 mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
 occupied slab from rows that now spill).
 
