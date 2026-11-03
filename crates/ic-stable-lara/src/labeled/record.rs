@@ -810,6 +810,11 @@ impl LabelBucket {
         if self.inline_property_byte_width() == 0 {
             return 0;
         }
+        // A tree bucket keeps its values in the property root inside the edge span, so it owns no
+        // value span at all; `stored_slots` there is the tree's logical extent, not a width.
+        if self.is_tree_mode() {
+            return 0;
+        }
         self.stored_slots()
     }
 
