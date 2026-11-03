@@ -823,16 +823,17 @@ where
             return Ok(bucket);
         }
         if slot_index >= bucket.stored_slots() {
-            // ADR 0099 mirror: one block per run row. A row that lands in the run owns a block even
-            // when its edge carries no inline bytes, so the value run never falls behind the edge run.
-            let zeros;
-            let bytes = if edge.edge_inline_property_byte_width() == width {
-                edge.edge_inline_property_bytes()
-            } else {
-                zeros = vec![0u8; usize::from(width)];
-                &zeros
-            };
-            return self.write_inline_property_bytes_to_log(&bucket, bytes);
+            // ADR 0099 mirror: one block per run row, which the admission already guarantees - a
+            // width-`w` bucket only admits width-`w` edges, so the value plane has no representation
+            // for a row without a block.
+            if edge.edge_inline_property_byte_width() != width {
+                unreachable!(
+                    "a width-{width} bucket only admits width-{width} edges; the mirrored value \
+                     plane has no block for a row that carries none"
+                );
+            }
+            return self
+                .write_inline_property_bytes_to_log(&bucket, edge.edge_inline_property_bytes());
         }
         bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
