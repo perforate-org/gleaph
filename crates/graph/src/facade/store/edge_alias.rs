@@ -4,7 +4,7 @@ use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::bidirectional::counterpart::{self, CounterpartLookupError},
+    labeled::bidirectional::counterpart::CounterpartLookupError,
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
 };
 
@@ -113,9 +113,7 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
         GRAPH
-            .with_borrow(|graph| {
-                counterpart::canonical_handle(graph.forward(), graph.reverse(), occurrence)
-            })
+            .with_borrow(|graph| graph.counterparts().canonical_handle(occurrence))
             .map(|canonical| {
                 EdgeHandle::at_slot(
                     canonical.owner_vertex_id,
@@ -144,9 +142,7 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
         GRAPH
-            .with_borrow(|graph| {
-                counterpart::counterpart_of(graph.forward(), graph.reverse(), occurrence)
-            })
+            .with_borrow(|graph| graph.counterparts().of(occurrence))
             .map_err(GraphStoreError::from)
     }
 

@@ -150,7 +150,9 @@ pub(super) fn wire_catalog_label(
 }
 
 pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
-    if u32::from(a) >= u32::from(b) { a } else { b }
+    // One rule, one owner (ADR 0099): the undirected canonical endpoint is decided where the
+    // counterpart is, so the graph layer does not restate the comparison.
+    ic_stable_lara::labeled::bidirectional::counterpart::canonical_undirected_owner(a, b)
 }
 
 pub(crate) fn build_edge_to(target: VertexId) -> Edge {

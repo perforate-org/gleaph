@@ -3157,6 +3157,21 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// The two orientations, paired.
+    ///
+    /// Counterpart resolution reads one store to name a row in the other, so the pair - not either
+    /// store - owns it. Callers that need the counterpart row, or the canonical handle that
+    /// properties and derived indexes are keyed by, go through this instead of naming the two graphs
+    /// themselves.
+    pub fn counterparts(
+        &self,
+    ) -> crate::labeled::bidirectional::counterpart::CounterpartResolver<'_, E, M> {
+        crate::labeled::bidirectional::counterpart::CounterpartResolver::new(
+            &self.forward,
+            &self.reverse,
+        )
+    }
+
     /// Updates one directed edge's inline property bytes across **both** orientations.
     ///
     /// This is the update counterpart of [`Self::insert_directed_edge`]: the pair is admitted as a
