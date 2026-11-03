@@ -405,6 +405,16 @@ publish needs to write them alongside the edge image. Building it means extendin
 `PhysicalLayoutPreparation` with the value images for the vertex's buckets and writing them in the same
 commit; that is a self-contained unit, and it is the last code gap.
 
+**Measured: the rewrite is not what moves them.** Instrumented
+`edge_inline_propertys_survive_rewrite_with_tombstones` before and after the rewrite - the bucket is
+`stored_slots = 0`, `degree = 2`, in both snapshots: all of its rows are in the **edge spill run** and
+the values in the value run, on both sides of the rewrite. So the rewrite copies nothing for this
+shape; the values were already one behind *before* it. The step that moves them is the **delete**:
+after removing slot 0 the live rows read values `[10, 20]` where `[20, 30]` were written, so the edge
+run lost its head row while the value run kept its head block. The fix therefore belongs in the
+delete's spill path (or in whichever compaction of the run it triggers), not in the physical layout
+image.
+
 Two fixtures still show values one row behind after a **wholesale** span rewrite
 (`edge_inline_propertys_survive_rewrite_with_tombstones`,
 `remove_matching_middle_edge_removes_same_inline_property_bytes_ordinal`). The incremental moves and the
