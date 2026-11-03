@@ -657,6 +657,21 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     }
 
     /// Releases `run` to its class's free list, dropping the blob sites it owned.
+    /// Copies `keep`'s rows into a fresh run of the matching class and returns its id, leaving the
+    /// source untouched: the caller publishes the new id first and releases the old run after.
+    ///
+    /// The values plane mirrors the edge plane (ADR 0099), so a rebuild repacks both with the same
+    /// `keep` - a row that moves in the edge run moves in the value run at the same index.
+    pub(crate) fn spill_repack(
+        &self,
+        run: SpillRunId,
+        keep: &[u32],
+    ) -> Result<SpillRunId, LaraOperationError> {
+        self.values_spill
+            .repack(run, keep)
+            .map_err(|error| LaraOperationError::from(error))
+    }
+
     pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
         self.values_spill
             .release(&self.blobs, run)

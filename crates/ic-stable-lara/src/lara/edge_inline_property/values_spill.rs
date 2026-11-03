@@ -151,6 +151,19 @@ pub(crate) struct ValuesSpillStore<M: Memory> {
 }
 
 impl<M: Memory> ValuesSpillStore<M> {
+    /// Copies `keep`'s rows into a fresh run of the matching class, leaving the source in place.
+    ///
+    /// The values plane mirrors the edge plane (ADR 0099), so the spill rebuild repacks both arenas
+    /// with the same `keep`: a row that moves in the edge run moves in the value run at the same
+    /// index. The caller publishes the new ids first and releases the old runs after.
+    pub(crate) fn repack(
+        &self,
+        run: SpillRunId,
+        keep: &[u32],
+    ) -> Result<SpillRunId, crate::labeled::spill_run_store::SpillRunError> {
+        self.arena.repack(run, keep)
+    }
+
     /// Opens (or creates) the values arena. The store validates its own header, version and row
     /// width and fails closed, exactly like the edge plane's.
     pub(crate) fn new(memory: M) -> Result<Self, GrowFailed> {

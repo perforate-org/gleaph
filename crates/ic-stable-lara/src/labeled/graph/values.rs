@@ -726,7 +726,14 @@ where
         }
         bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
-        self.write_edge_inline_property_at_slot(src, &vertex, bucket_slot, &bucket, slot_index, edge)?;
+        self.write_edge_inline_property_at_slot(
+            src,
+            &vertex,
+            bucket_slot,
+            &bucket,
+            slot_index,
+            edge,
+        )?;
         Ok(bucket)
     }
 

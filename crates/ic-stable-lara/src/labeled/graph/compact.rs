@@ -6668,15 +6668,46 @@ where
                 .map_err(LabeledOperationError::from)?;
             return Ok(Vec::new());
         }
+        // ADR 0099: the values plane mirrors the edge plane, so the same `keep` repacks the value
+        // run at the same indices. Both new ids are published in one descriptor write, and only
+        // then are the old runs released - the descriptor never names a freed run, and never names
+        // one plane's new run beside the other plane's old one.
         let fresh = self
             .edges
             .spill_repack(run, &keep)
             .map_err(LabeledOperationError::from)?;
+        let values_run = bucket.values_spill_run();
+        let fresh_values = if values_run == crate::traits::NO_SPILL_RUN {
+            None
+        } else {
+            let old = self
+                .values
+                .spill_mint(values_run)
+                .map_err(LabeledOperationError::from)?;
+            Some((
+                old,
+                self.values
+                    .spill_repack(old, &keep)
+                    .map_err(LabeledOperationError::from)?,
+            ))
+        };
+        let published = match &fresh_values {
+            Some((_, new_values)) => bucket
+                .with_edge_spill_run(fresh.get())
+                .try_with_values_spill_run(new_values.get())
+                .map_err(LabeledOperationError::from)?,
+            None => bucket.with_edge_spill_run(fresh.get()),
+        };
         self.buckets
-            .write_label_bucket_slot(bucket_slot, bucket.with_edge_spill_run(fresh.get()))?;
+            .write_label_bucket_slot(bucket_slot, published)?;
         self.edges
             .spill_release(run)
             .map_err(LabeledOperationError::from)?;
+        if let Some((old_values, _)) = fresh_values {
+            self.values
+                .spill_release(old_values)
+                .map_err(LabeledOperationError::from)?;
+        }
         let mut moves = Vec::new();
         for (destination, source) in keep.iter().copied().enumerate() {
             if destination as u32 != source {

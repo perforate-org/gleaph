@@ -596,8 +596,7 @@ where
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
-                                let value_slot =
-                                    logical_slot.unwrap_or(bucket.stored_slots());
+                                let value_slot = logical_slot.unwrap_or(bucket.stored_slots());
                                 let bucket = self.write_edge_inline_property_after_insert(
                                     src,
                                     bucket_slot,
