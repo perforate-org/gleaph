@@ -813,6 +813,15 @@ impl LabelBucket {
         self.stored_slots()
     }
 
+    /// The value slots actually allocated in the value slab, as the descriptor records them.
+    ///
+    /// [`Self::inline_property_bytes_slab_slots`] answers "how many does this geometry need", which
+    /// after ADR 0099 is the edge prefix; this answers "how many are backed", which is what the
+    /// admission compares against and what the vertex is charged for.
+    pub fn inline_property_bytes_slab_slots_allocated(self) -> u32 {
+        self.inline_property_bytes_slab_slots
+    }
+
     /// Per-bucket inline property bytes overflow log head, or `-1` when all values are on the slab.
     #[inline]
     pub fn inline_property_bytes_log_head(self) -> i32 {

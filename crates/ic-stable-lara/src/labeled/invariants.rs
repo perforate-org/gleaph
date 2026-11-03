@@ -88,7 +88,7 @@ pub(crate) fn bucket_resident_inline_property_bytes_slots(bucket: &LabelBucket) 
     if bucket.is_tree_mode() {
         return 0;
     }
-    bucket.inline_property_bytes_slab_slots()
+    bucket.inline_property_bytes_slab_slots_allocated()
 }
 
 #[inline]
