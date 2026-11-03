@@ -539,6 +539,24 @@ where
                 }
             }
         }
+        // Each vertex's base starts at or after the previous vertex's allocation. This is the
+        // invariant the derived slice cannot express (ADR 0098): `slices()` reads a vertex's first
+        // region, so a vertex placed inside a sibling's allocation still produces a well-shaped
+        // slice partition and every check above passes.
+        let vids: Vec<VertexId> = slices.iter().map(|(vid, _)| *vid).collect();
+        for pair in vids.windows(2) {
+            let previous = self.graph.vertices.get(pair[0]);
+            let current = self.graph.vertices.get(pair[1]);
+            let previous_base = previous.base_slot_start();
+            let previous_alloc = previous.stored_slots;
+            let base = current.base_slot_start();
+            if base < previous_base.saturating_add(u64::from(previous_alloc)) {
+                errors.push(format!(
+                    "vertex {:?} base {base} starts inside {:?} {previous_base}+{previous_alloc}",
+                    pair[1], pair[0]
+                ));
+            }
+        }
         errors
     }
 

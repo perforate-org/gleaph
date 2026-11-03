@@ -274,6 +274,17 @@ defect from being rediscovered without its prior reasoning.
     That is a circularity, not a tuning problem, and it is now recorded in ADR 0098 (alternative B')
     along with the conclusion: the bound has to come from something placement cannot move - the next
     vertex's `base_slot_start`, or an allocated width.
+  - **The exact mechanism (2026-11-03).** `LeafArena::validate` already reports the defect once it
+    runs: `region of VertexId(0) 4096..4107 outside its slice 4096..4098`. The numbers say why -
+    the slice ends at **4098**, which is the *third* vertex's start, so the second vertex (all of
+    whose rows live in its run) contributed no boundary at all. `slices()` is built from the
+    vertices that have a first region, so a vertex with none is invisible and its space is handed to
+    its predecessor. This is the sharper form of the circularity in ADR 0098, and it names the fix:
+    the partition must include every vertex, taking `base_slot_start` as the boundary, not "the next
+    vertex that happens to have placed something".
+  - `fixture_support::leaf_layout_errors` now exposes `validate()` to a dependent crate's tests, and
+    the reproduction asserts the contract is satisfied, so the failure message names the invariant
+    rather than a neighbour mismatch.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*

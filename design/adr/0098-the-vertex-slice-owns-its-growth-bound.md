@@ -103,8 +103,11 @@ per-vertex half a second name; it is a reason to route callers through the name 
 vertex's **first-region starts**, so the bound is a function of the placement it is supposed to
 constrain. Logging every width change on the reproduction shows a run-backed bucket at
 `edge_start = 4096` growing `stored_slots` 1 -> 2 -> ... -> 12 while its degree grows in step, and
-`fits` allows all of it because the neighbouring vertex's *first region* has already been placed at
-the overlapping address. The check is circular, not wrong.
+`fits` allows all of it because the slice partition is derived from the vertices that *have* a
+first region: a sibling whose rows all live in its run contributes no boundary at all, so the
+previous vertex's slice stretches to the next sibling that does have one. The reproduction states it
+plainly - `region of VertexId(0) 4096..4107 outside its slice 4096..4098`, where 4098 is the third
+vertex's start, not the second's. The check is circular, not wrong.
 
 **D. Persist a slice width on the vertex record.** Explicit data would make the bound checkable from
 anywhere, but it adds a field that must be kept equal to what the arena actually granted - a

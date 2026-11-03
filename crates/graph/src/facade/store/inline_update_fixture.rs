@@ -79,6 +79,16 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
         rows
     };
 
+    // The leaf layout must satisfy the arena's own contract, including the base-versus-allocation
+    // rule that the derived slice cannot express (ADR 0098).
+    let layout_errors = store.with_graph_mut(|graph| {
+        ic_stable_lara::labeled::fixture_support::leaf_layout_errors(graph.forward(), low)
+    });
+    assert!(
+        layout_errors.is_empty(),
+        "leaf layout violates the arena contract: {layout_errors:?}"
+    );
+
     // Two buckets must never overlap: every run here lives in its bucket's own span, and a
     // sibling's row landing inside another bucket's span is exactly how a row picks up the wrong
     // neighbour.
