@@ -400,6 +400,14 @@ in **tree mode** by the time the cursor steps. Whether that is a fixture premise
 change causing a promotion needs measuring before the fixture is touched; it is the one item in this
 group that has to be diagnosed rather than restated.
 
+**The remaining ones are allocator-state fixtures.** Two in `values::tests` assert exact
+`free_bytes` / `moved_spans` / `moved_bytes` figures (`deferred_inline_property_insert_skips_synchronous_compaction`
+expects a freed 6-byte hole, `inline_property_bytes_compaction_moves_only_inline_property_bytes_spans`
+expects at least 8 free bytes and two moved spans). Those numbers come from the old residency - more
+spans, freed in a different order - so restating them means re-deriving the expected allocator state
+for the mirrored plane rather than adjusting a constant. That is the shape of the last group and the
+reason it is slower than the earlier ones.
+
 **Where it stands: 96 -> 13.** The last of the compact group was a fixture asserting the swap gate's
 withdrawn clause; it now states what the gate decides (a value run or a sparse value span no longer
 stops a swap, an edge run still does, because the move needs the row to be in the span it swaps
