@@ -267,6 +267,19 @@ where
         }
         total
     }
+    /// Whether `[start, start + need)` lies inside this vertex's slice.
+    ///
+    /// The single capacity question (ADR 0088 E4): a caller that needs room must ask this rather
+    /// than read a content width such as `stored_slots` as if it defined the space, and rather
+    /// than derive an end from a neighbouring base of its own.
+    pub(crate) fn fits(&self, start: u64, need: u64) -> bool {
+        let Some((slice_start, slice_end)) = self.slice(self.vid) else {
+            return false;
+        };
+        start >= slice_start
+            && checked_add_slot_index(start, need).is_some_and(|end| end <= slice_end)
+    }
+
     /// Smallest region start of `vid` strictly above `after`.
     fn next_region_start_above(&self, after: u64) -> Option<u64> {
         self.regions()
@@ -290,15 +303,12 @@ where
     /// then a free run before the next region) and stay inside the slice. `None` means the
     /// caller must place a region elsewhere or grow the extent.
     pub(crate) fn grow_region(&self, source_start: u64, new_content: u64) -> Option<u64> {
-        let (slice_start, slice_end) = self.slice(self.vid)?;
-        if source_start < slice_start {
-            return None;
-        }
+        let (_, slice_end) = self.slice(self.vid)?;
         let width = new_content.saturating_add(gap(new_content));
-        let target_end = checked_add_slot_index(source_start, width)?;
-        if target_end > slice_end {
+        if !self.fits(source_start, width) {
             return None;
         }
+        let target_end = checked_add_slot_index(source_start, width)?;
         // The slots between the region's old end and its new end must be this vertex's own.
         let content = self.contents();
         for (start, end) in content {

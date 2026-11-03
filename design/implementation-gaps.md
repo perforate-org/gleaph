@@ -203,6 +203,15 @@ defect from being rediscovered without its prior reasoning.
     through the slice. It also records why a bound-only clamp is insufficient (the stack-overflowing
     fixture) and that spill rows stay in `SpillRunStore`, with only the slab/run decision and the
     `stored_slots` + `spill_used_len` pairing changing.
+  - **Step 1 landed; step 2 measured.** `LeafSlice::fits(start, need)` now answers the capacity
+    question and `grow_region` uses it, so the predicate has one implementation and one test-facing
+    meaning. Routing the *fold* through it - the actual fix - turns 13 lara tests red, which is the
+    migration the ADR predicts, and not uniform fallout: `bucket::tests::last_bucket_successor_respects_descriptor_order_cover`
+    does `validate().unwrap_err()`, i.e. it asserts that the arena's validator *reports* an
+    overlapping cover, so with the fold refusing to grow across, there is nothing to report and the
+    assertion inverts. Others sit in `compact::physical_layout_tests` (`non_forcing_compaction_*`)
+    and `deferred::tests::retained_compaction_observer_*`. Each needs a decision - assert the refusal,
+    or give the vertex a slice wide enough for the fold it wants - so the routing is its own unit.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
