@@ -3512,7 +3512,14 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 33);
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
-        assert_eq!(bucket.inline_property_bytes_slab_slots(), 33);
+        // ADR 0099: the delete writes no value and folds nothing, so the value plane still mirrors
+        // the edge plane - the prefix is whatever the edges hold, and the rows beyond it keep their
+        // blocks in the run. The old expectation (33, the live rank count) was the dense model.
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots(),
+            bucket.stored_slots()
+        );
+        assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
     }
 
     #[test]
