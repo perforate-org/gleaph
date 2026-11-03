@@ -335,6 +335,18 @@ defect from being rediscovered without its prior reasoning.
     is, in `stored_degree` and `slab_append_exclusive_end`, both gated on
     `is_default_edge_labeled()`), and every labeled consumer goes through one derived accessor.
     Readers counted on labeled paths: `compact.rs` (9), `deferred.rs` (2), `promote.rs` (1).
+  - **Step 4 tried again after the derived accessor landed (2026-11-03).** With `vertex_edge_start` /
+    `vertex_edge_allocation` in place, reporting zero-width leaf-mates still turns **11 lara tests**
+    red, and the check it trips was already there: *"leaf-mate edge spans overlap in leaf 0: vid
+    VertexId(0) reserves up to 1048832 but vid VertexId(1) starts at 1048737"*. That is a ~95-slot
+    overlap in a relocation fixture, so those fixtures are not merely fragile - their layouts are
+    overlapping by construction, and this ledger's earlier note ("a long-green test relies on the
+    overlap") is confirmed on a second, independent check.
+  - Where this leaves the work: steps 1-3 are landed and green (derived accessor, oversized test,
+    a fast-path check that now runs in every build). Step 4 is correct but needs the **11-fixture
+    migration** first: each fixture has to give every leaf vertex an allocation wide enough for its
+    span before placement can be required to clear all of them. That migration is the unit; the
+    change itself was reverted again to keep the suite green.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
