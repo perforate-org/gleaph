@@ -674,12 +674,12 @@ where
         // from disagreeing about whether the bucket is empty.
         let mut updated = updated;
         if updated.degree() == 0 {
-            if updated.values_spill_run() != crate::traits::NO_SPILL_RUN {
-                if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
-                    let _ = self.values.spill_release(run);
-                }
-                updated = updated.without_values_spill_run();
-            }
+            // ADR 0099: the two runs mirror each other, and an emptied bucket keeps them until
+            // compaction does the sweeping (the run is a reusable tombstone holder - see
+            // `deleting_every_row_keeps_the_run_until_compaction`). Releasing only the values run
+            // here is what put the planes out of step: the next insert landed at values index 0
+            // while its edge row sat at the edge run's index 1. What an emptied bucket does give up
+            // is its slab span, which is space rather than state.
             // `is_inline_property_bytes_allocated` folds "has rows" into its answer, so it reads
             // false exactly when this release is needed; the descriptor's recorded slot count is the
             // question to ask here.
@@ -1995,10 +1995,13 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        // The emptied bucket gives its value *span* back - that is the allocation this fixture is
+        // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
+        // run id may still be set.
         assert_eq!(
-            bucket.values_spill_run(),
-            crate::traits::NO_SPILL_RUN,
-            "the last removal clears the value plane, whichever one held it"
+            bucket.inline_property_bytes_slab_slots_allocated(),
+            0,
+            "the emptied bucket releases its value span"
         );
     }
 
@@ -2050,10 +2053,13 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        // The emptied bucket gives its value *span* back - that is the allocation this fixture is
+        // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
+        // run id may still be set.
         assert_eq!(
-            bucket.values_spill_run(),
-            crate::traits::NO_SPILL_RUN,
-            "the last removal clears the value plane, whichever one held it"
+            bucket.inline_property_bytes_slab_slots_allocated(),
+            0,
+            "the emptied bucket releases its value span"
         );
     }
 
