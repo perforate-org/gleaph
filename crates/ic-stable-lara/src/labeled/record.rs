@@ -2358,7 +2358,10 @@ mod tests {
         assert_eq!(tree.degree, 7);
         assert_eq!(tree.stored_slots(), 11);
         assert_eq!(tree.inline_property_byte_width(), 32);
-        assert_eq!(tree.inline_property_bytes_slab_slots(), 9);
+        // ADR 0099: `inline_property_bytes_slab_slots` answers the geometry question (the edge
+        // prefix, 11 here); the descriptor field this round-trip is about is the allocated count.
+        assert_eq!(tree.inline_property_bytes_slab_slots(), 11);
+        assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 9);
         assert_eq!(tree.inline_property_bytes_log_len(), 4);
 
         let slab_again = tree.with_tree_mode(false);
