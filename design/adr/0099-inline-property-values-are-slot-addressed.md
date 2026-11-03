@@ -200,15 +200,25 @@ grown, folded and dropped by different paths, and by this ADR's geometry they mu
 slot-for-slot. That is the remaining work, and it is the part where a mistake writes values into the
 wrong rows instead of failing a test loudly.
 
-**A third value source, found on the third attempt.** The values of a row can come from the slab, from
-a spill run, *or from the pending materialization stream* (the deferred inline-property path stages
-values in its own structure before publishing a span). Instrumenting the read that fails first
-(`bidirectional_parallel_edge_inline_propertys_survive_diamond_insert`) shows a bucket with
-`prefix = 0`, `stored_slots = 0`, `degree = 2` and no values run, being asked for slots 0 and 1: its
-values are neither in the slab nor in a run because they are still pending. So the addressing change
-has a fourth participant this ADR has not yet specified - how a pending value is keyed while its span
-does not exist - and the answer has to be slot-keyed too, or reads that work today stop working
-before the span is published.
+**The real coupling, found on the third attempt: the two planes have independent residencies.** My
+first reading of the failure - "a pending value is a third source" - was wrong. Materialization is not
+a per-row staging area: it fills a byte span with `fill_byte` over several messages and then publishes
+`slab_slots = bucket.degree()` and **clears** the values run
+(`prepare_materialize_publication`). It is a schema declaration for a bucket that had no values, and
+what it publishes is *dense by degree*.
+
+That is the defect this ADR has to remove, and it is why the accessor change broke reads. A bucket's
+residencies are decided independently today:
+
+| plane | slab holds | run holds |
+| --- | --- | --- |
+| edges | slots `[0, stored_slots)` | rows `stored_slots..` |
+| values | the first `slab_slots` **ranks** | the remaining ranks in the values run |
+
+and `slab_slots` is not tied to `stored_slots` at all - materialization sets it to `degree` while the
+edges may sit entirely in their run (`prefix = 0`, `stored_slots = 0`, `degree = 2`, no values run).
+So "one geometry" is not an addressing detail: it requires **value residency to mirror edge
+residency**, which is the same statement as addressing values by slot. There is no smaller step.
 
 That is the design question to settle before the next implementation attempt; it is not a detail of
 the read path but the reason the first failure is a *read* rather than a write.
