@@ -18,6 +18,7 @@
 
 mod adjacency;
 mod catalogs;
+mod counterpart;
 mod delete;
 mod derived_index_outbox;
 mod edge_alias;
