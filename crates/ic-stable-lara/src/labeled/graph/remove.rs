@@ -657,10 +657,29 @@ where
         if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
+        // ADR 0099: a bucket with no live rows owns no value plane, whether or not its edge run
+        // survives as a reused tombstone holder. Releasing the values run here keeps the two planes
+        // from disagreeing about whether the bucket is empty.
+        let mut updated = updated;
+        if updated.degree() == 0 && updated.values_spill_run() != crate::traits::NO_SPILL_RUN {
+            if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
+                let _ = self.values.spill_release(run);
+            }
+            updated = updated.without_values_spill_run();
+        }
         let updated = if emptied {
+            // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either - the values
+            // run is released with the edge span rather than left naming blocks that can never be
+            // read again.
+            if updated.values_spill_run() != crate::traits::NO_SPILL_RUN
+                && let Ok(run) = self.values.spill_mint(updated.values_spill_run())
+            {
+                let _ = self.values.spill_release(run);
+            }
             updated
                 .with_inline_property_bytes_log_head(-1)
                 .with_inline_property_bytes_slab_slots(0)
+                .without_values_spill_run()
                 .with_edge_range(updated.edge_start(), 0)
         } else {
             updated
@@ -1927,12 +1946,23 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0099: residency follows the row's slot, so the value may be in the slab span or in the
+        // spill run depending on where the row landed. What the fixture needs to know is that the
+        // value is there and that removing the last row clears the whole plane.
+        let vertex_before = graph.vertices().get(VertexId::from(0));
+        let bucket_slot_before = graph
+            .find_bucket_slot(&vertex_before, road)
+            .unwrap()
+            .unwrap();
+        let bucket_before = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot_before)
+            .unwrap();
         assert_eq!(
             graph
-                .vertices()
-                .get(VertexId::from(0))
-                .inline_property_bytes_allocated_bytes(),
-            2
+                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
+                .unwrap(),
+            42u16.to_le_bytes().to_vec()
         );
 
         graph
@@ -1945,6 +1975,11 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(
+            bucket.values_spill_run(),
+            crate::traits::NO_SPILL_RUN,
+            "the last removal clears the value plane, whichever one held it"
+        );
     }
 
     #[test]
@@ -1964,12 +1999,23 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0099: residency follows the row's slot, so the value may be in the slab span or in the
+        // spill run depending on where the row landed. What the fixture needs to know is that the
+        // value is there and that removing the last row clears the whole plane.
+        let vertex_before = graph.vertices().get(VertexId::from(0));
+        let bucket_slot_before = graph
+            .find_bucket_slot(&vertex_before, road)
+            .unwrap()
+            .unwrap();
+        let bucket_before = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot_before)
+            .unwrap();
         assert_eq!(
             graph
-                .vertices()
-                .get(VertexId::from(0))
-                .inline_property_bytes_allocated_bytes(),
-            2
+                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
+                .unwrap(),
+            42u16.to_le_bytes().to_vec()
         );
 
         let removed = graph
@@ -1984,6 +2030,11 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(
+            bucket.values_spill_run(),
+            crate::traits::NO_SPILL_RUN,
+            "the last removal clears the value plane, whichever one held it"
+        );
     }
 
     // Delete redesign: tiny deletes tombstone inline (no promotion).
