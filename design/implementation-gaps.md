@@ -285,6 +285,16 @@ defect from being rediscovered without its prior reasoning.
   - `fixture_support::leaf_layout_errors` now exposes `validate()` to a dependent crate's tests, and
     the reproduction asserts the contract is satisfied, so the failure message names the invariant
     rather than a neighbour mismatch.
+  - **Both halves of the fix were tried together (2026-11-03).** Including every vertex in the
+    partition works as predicted - the reproduction's slice end moves from 4098 to 4097, the second
+    vertex's base - but it turns **11 lara tests red**, and the fold routing then trips the
+    partition's own `debug_assert`: *"two vertices of one leaf start at the same slot"* (3
+    participants, 2 distinct bases). That is the defect in its purest form: **placement assigns two
+    vertices the same base**, so no boundary can be drawn between them. It confirms the order this
+    ledger has been converging on - the placement invariant (base at or after the previous base plus
+    its allocation) has to be established *before* the partition can be authoritative, and the 11-13
+    fixtures have to be migrated with it. Both changes were reverted; the validation and the
+    reproduction's contract assertion stayed, because they are green and they name the invariant.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
