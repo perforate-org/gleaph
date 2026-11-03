@@ -98,6 +98,14 @@ second owner would leave two places that believe they own the same invariant - t
 ADR exists to remove. The complexity that makes `LeafArena` hard to read is not a reason to give its
 per-vertex half a second name; it is a reason to route callers through the name it already has.
 
+**B′. Use the derived slice (`LeafArena::slices`) as the bound (measured, insufficient).** This is what
+`LeafSlice::fits` does today, and it cannot work on its own: `slices()` derives each slice from the
+vertex's **first-region starts**, so the bound is a function of the placement it is supposed to
+constrain. Logging every width change on the reproduction shows a run-backed bucket at
+`edge_start = 4096` growing `stored_slots` 1 -> 2 -> ... -> 12 while its degree grows in step, and
+`fits` allows all of it because the neighbouring vertex's *first region* has already been placed at
+the overlapping address. The check is circular, not wrong.
+
 **D. Persist a slice width on the vertex record.** Explicit data would make the bound checkable from
 anywhere, but it adds a field that must be kept equal to what the arena actually granted - a
 duplicated source of truth updated at every growth point. Rejected while the extent already answers
@@ -121,6 +129,11 @@ whether a slab row fits asks it:
 
 `stored_slots` remains the content width (E4). Its update is paired with the placement decision in
 one publish, so no reader observes a prefix longer than the slice.
+
+The bound must come from something **independent of region placement**, because the derived slice is
+not: either the next vertex's `base_slot_start` (which the arena assigns and which no region growth
+moves), or an explicitly allocated slice width. `LeafSlice::fits` stays the API the callers use, but
+its answer has to be sourced from that independent bound rather than from `slices()` alone.
 
 ### Spill's place in this
 

@@ -264,6 +264,16 @@ defect from being rediscovered without its prior reasoning.
     spill path inventing writes.
     So the next question is narrower still: which reader turns that counter into the bucket's
     `stored_slots`, and why does it not stay at the slab prefix the run-backed shape implies.
+  - **The setter was found, and the slice check is circular (2026-11-03).** Logging `with_stored_slots`
+    and `with_edge_range` shows a bucket with `edge_start = 4096` and a live run (`run = 33`) walking
+    `stored_slots` 1 -> 2 -> ... -> 12 as its degree grows in step, i.e. the **fold** is what grows the
+    prefix, and it keeps doing so even with the fold's room check routed through
+    `LeafSlice::fits`. The reason is that `slices()` derives each slice from the vertex's
+    **first-region starts**: once the neighbouring vertex has been placed at the overlapping address,
+    the derived slice contains it, so the bound can never refuse the growth it was meant to stop.
+    That is a circularity, not a tuning problem, and it is now recorded in ADR 0098 (alternative B')
+    along with the conclusion: the bound has to come from something placement cannot move - the next
+    vertex's `base_slot_start`, or an allocated width.
   - **Where the remaining growth can still come from.** `LabelBucket::try_grow_packed_slab_by_one`
     does have the ADR 0097 §7 run branch, so the bucket record is not it. The span width is set by
     `with_edge_range`/`with_stored_slots` from the rewrite path, and two of that path's exits are
