@@ -2018,37 +2018,24 @@ mod tests {
 
     #[test]
     fn inline_property_bytes_compaction_needed_detects_contiguous_allocation_pressure() {
+        // ADR 0099: this predicate is about the value *slab* - it asks whether a compaction would
+        // find a contiguous run for the requested size - so the fixture builds that fragmentation
+        // directly. Building it through inserts no longer works: a bucket whose rows spill keeps its
+        // values in the run, which leaves the slab empty and nothing to compact.
         let graph = inline_property_test_graph();
-        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        for label in 2..=5 {
-            let label = BucketLabelKey::from_raw(label);
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, label, 2)
-                .unwrap();
-            for target in 0..2u32 {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        src,
-                        label,
-                        InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
-                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    )
-                    .unwrap();
-            }
-        }
-        for label in [2, 4] {
-            let label = BucketLabelKey::from_raw(label);
-            for target in 0..2u32 {
-                graph
-                    .remove_edge_matching(src, label, |edge| edge.target == target)
-                    .unwrap()
-                    .expect("inline property edge removed");
-            }
-        }
-
         assert!(!graph.inline_property_bytes_compaction_needed(0).unwrap());
         assert!(!graph.inline_property_bytes_compaction_needed(4).unwrap());
-        assert!(graph.inline_property_bytes_compaction_needed(6).unwrap());
+
+        // A live span between two freed ones: the holes cannot coalesce, so a request that fits
+        // neither alone needs a compaction. (Freeing adjacent spans would coalesce and satisfy it.)
+        let low = graph.values.allocate_byte_span(2).unwrap();
+        let _live = graph.values.allocate_byte_span(4).unwrap();
+        let high = graph.values.allocate_byte_span(2).unwrap();
+        graph.values.retire_byte_span(low, 2).unwrap();
+        graph.values.retire_byte_span(high, 2).unwrap();
+
+        assert!(!graph.inline_property_bytes_compaction_needed(2).unwrap());
+        assert!(graph.inline_property_bytes_compaction_needed(4).unwrap());
     }
 
     #[test]
