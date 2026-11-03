@@ -915,6 +915,27 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Whether this vertex's leaf is still in the fixed-quota layout the fast placement assumes.
+    pub(crate) fn leaf_fixed_quota_intact(&self, vid: VertexId) -> bool {
+        let seg = self.edges.header().segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let store = self.edges.span_meta_store();
+        let leaf = u64::from(leaf);
+        leaf < store.len() && store.is_fixed_quota_intact(leaf)
+    }
+
+    /// Records that this vertex's leaf has left the fixed-quota layout: it was tiled, or one of its
+    /// buckets grew its slab prefix. One-way - nothing restores it (ADR 0098).
+    pub(crate) fn clear_leaf_fixed_quota_intact(&self, vid: VertexId) {
+        let seg = self.edges.header().segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let store = self.edges.span_meta_store();
+        let leaf = u64::from(leaf);
+        if leaf < store.len() {
+            store.clear_fixed_quota_intact(leaf);
+        }
+    }
+
     /// Where this vertex's edge rows start in the edge slab, or `None` when it owns no slab bucket.
     ///
     /// The edge position of a labeled vertex is its first non-tiny bucket's `edge_start`; a bypass
@@ -1088,7 +1109,7 @@ where
         // overlapping base. A debug assertion here would leave release builds writing over a
         // leaf-mate.
         if need <= quota
-            && !self.labeled_leaf_has_oversized_vertex(vid, quota)
+            && self.leaf_fixed_quota_intact(vid)
             && let Some(preferred) = preferred
             && checked_add_slot_index(preferred, need)? <= leaf_end
         {

@@ -5701,6 +5701,10 @@ where
             .stored_slots()
             .checked_add(live_log_count)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        // Folding rows into the slab grows a bucket's prefix, so this leaf is no longer in the
+        // fixed-quota layout the fast placement assumes (ADR 0098). Recorded here because the fold
+        // is the one path that grows a prefix without a leaf rewrite.
+        self.clear_leaf_fixed_quota_intact(src);
         let vertex = self.vertices.get(src);
         let successor = self.bucket_successor_start(&vertex, bucket_index)?;
         let available = successor.saturating_sub(bucket.edge_start());
