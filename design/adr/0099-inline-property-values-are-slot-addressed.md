@@ -222,6 +222,39 @@ one lifecycle, not two that happen to agree:
 Without that, the five steps that were applied produce exactly the failure that was measured: a row
 whose slot says "run" and a bucket whose value run says "nothing here".
 
+### The single publisher is a type
+
+Point 2 is best enforced by a type rather than by discipline, because the failure it prevents is
+"one of the two stores was updated" and no amount of call-site care makes that unrepresentable.
+
+`BucketRunPair` - a view over the two existing stores, not new state:
+
+| member | meaning |
+| --- | --- |
+| `edges: &SpillRunStore` / `values: &SpillRunStore` | the two arenas the rows already live in |
+| `bucket_slot` | which descriptor this pair belongs to |
+| `edge_run` / `value_run` | the ids, both or neither |
+
+Its API is the set of operations that must keep the two in step - `append(edge, value)`,
+`drop_head(n)`, `len()` - each of which applies to **both** stores and touches no descriptor. The
+only method that publishes is `commit(bucket) -> bucket`, which writes the descriptor once with both
+run ids and their shared length. That makes three things true by construction:
+
+- **the pair exists or does not**: there is no way to mint an edge run without the value run, because
+  the method that mints one mints the other;
+- **the lengths agree**: `commit` refuses a pair whose two stores disagree, so the mismatch the 91-red
+  measurement produced becomes unrepresentable rather than debug-asserted;
+- **one publish**: the descriptor is the commit point, so bytes written to either store before
+  `commit` are invisible to a reader, and a trap between them rolls back with the message (the IC's
+  message atomicity is what makes "write then publish once" safe).
+
+What it deletes is the reason this was hard: the paths that grow, fold or drop a run no longer call
+the two stores independently, and `inline_property_bytes_log_chain` / `log_len` go with the
+live-ordinal mapping they served.
+
+The type is also the natural place to test the invariant: a unit test that builds a pair whose store
+lengths differ and asserts `commit` refuses it is the smallest possible statement of point 1.
+
 **The atomicity is measured, not assumed.** Redefining
 `inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
 one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
