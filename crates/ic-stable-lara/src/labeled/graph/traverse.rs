@@ -655,9 +655,12 @@ where
             let mut emit = |slot: u32, edge: E| -> ControlFlow<()> {
                 let edge = edge.with_slot_index(slot).with_label_id(label_id.raw());
                 let edge = if attach_inline_property_bytes {
+                    // ADR 0099: the block is at the row's slot. This used to pass the live
+                    // ordinal, so a bucket with a tombstone attached its neighbour's value - the
+                    // reader that disagreed with the traversal in the delete-counterpart fixtures.
                     match self.attach_edge_inline_property_at_ordinal(
                         bucket,
-                        ordinal,
+                        slot,
                         edge,
                         log_chains.as_ref(),
                     ) {
@@ -670,11 +673,6 @@ where
                 } else {
                     edge
                 };
-                if descending {
-                    ordinal = ordinal.saturating_sub(1);
-                } else {
-                    ordinal = ordinal.saturating_add(1);
-                }
                 match visit(slot, edge) {
                     Ok(ControlFlow::Continue(())) => ControlFlow::Continue(()),
                     Ok(other) => {
