@@ -312,6 +312,19 @@ defect from being rediscovered without its prior reasoning.
     is why an empty leaf-mate is invisible. That is the concrete change: make the occupied-span
     input include every vertex as `[edge_start, edge_start + allocation)`, including the zero-width
     ones, and require the new base to clear all of them.
+  - **Tried, and it exposes the next inconsistency (2026-11-03).** Reporting zero-width leaf-mates
+    from `labeled_leaf_occupied_spans` (using the buckets' summed widths instead of the vertex's
+    `stored_slots`) turns 11 lara tests red and trips a check that already existed:
+    *"fixed-quota fast path returned base 4098 (end 4099) overlapping a leaf-mate; layout is not
+    fixed-quota intact"*. That check is right, and it names the real gap: the fast path is skipped
+    only when `labeled_leaf_has_oversized_vertex` sees a mate above the quota, and that function
+    reads **`vertex.stored_slots`**, which for the reproduction is **1** while the vertex's own
+    bucket claims **11**. The vertex record and its buckets disagree about the span width, so the
+    cheap soundness test says "fixed-quota intact" for a leaf that is nothing of the sort.
+  - So the ordering gains one more prerequisite, ahead of the placement change: **the vertex's edge
+    allocation must equal what its buckets actually claim** (measured mismatch 1 vs 11). Until those
+    two agree, every cheap guard - the fast path, the oversized test, the occupied-span list - is
+    reasoning about a number that is not the layout.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
