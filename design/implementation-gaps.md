@@ -57,13 +57,18 @@ defect from being rediscovered without its prior reasoning.
   -37 %). Forcing `leaf_fixed_quota_intact` to `true` reproduces the regressed numbers exactly, so
   the fixed-quota flag is not the cause - the cost comes from the per-message drain that landed
   earlier on this branch (ADR 0020's amendment), which every message boundary now runs.
-- **Expected or needed behavior:** a drain should cost nothing when there is nothing to do. Either
-  the boundary drain only runs when the queue is non-empty (and that check is the cost being paid),
-  or the enqueue-per-operation is what needs gating.
-- **Owner:** `crates/graph/src/facade/store/maintenance.rs` (`drain_maintenance_at_message_end` and
-  its call sites in `canister/handlers.rs`).
+- **Not the drain either (measured twice).** Making `drain_maintenance_at_message_end` return
+  immediately reproduces the same numbers exactly (1.55 M and 40.61 M), as does forcing
+  `leaf_fixed_quota_intact` to `true`. So neither the ADR 0098 work nor the per-message drain explains
+  the difference - and the title of this entry is wrong about the cause, not just the size.
+- **What the evidence does say:** the baseline (`d851adbc7`) is an ancestor with **287 commits**
+  between it and HEAD, so the regression belongs to one of those and needs a bisect rather than a
+  guess. The two isolations are recorded so the bisect does not repeat them.
+- **Expected or needed behavior:** unknown until bisected. The benches are query-shaped (inline
+  filter/projection) plus a 16-vertex insert, so whatever it is, it is not the insert drain.
+- **Owner:** unassigned; bisect between `d851adbc7` and the commit before this branch's work.
 - **Evidence:** the three benches above, `cargo test` unchanged at lara 707/0 and graph 1106/0, and
-  the forced-flag experiment that isolates the cause.
+  the two forcing experiments (flag, drain) that each reproduce the regressed numbers.
 
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
