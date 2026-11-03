@@ -2088,9 +2088,26 @@ mod tests {
             )
             .unwrap();
 
+        // ADR 0099: the delete frees whole spans, so by the time the deferred insert runs the slab has
+        // no holes left to reclaim - `free_bytes` counts hole space between live spans, not capacity.
+        // What the fixture is about survives that: the deferred insert performs no synchronous
+        // value-slab work at all, so the statistics are untouched and the value is carried as pending.
         let stats = graph.inline_property_bytes_storage_stats().unwrap();
-        assert_eq!(stats.free_bytes, 6);
-        assert!(graph.inline_property_bytes_compaction_needed(6).unwrap());
+        assert_eq!(
+            stats.allocated_bytes, 0,
+            "the deferred insert must not allocate a slab span"
+        );
+        // ...and the value is carried as pending rather than dropped.
+        let vertex = graph.vertices().get(src);
+        if let BucketSearch::Found { bucket, .. } = graph.find_bucket(src, &vertex, target).unwrap()
+        {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&bucket, 0, None)
+                    .expect("the pending value is readable"),
+                vec![3u8; 6]
+            );
+        }
     }
 
     #[test]
