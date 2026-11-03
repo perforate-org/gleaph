@@ -493,39 +493,14 @@ where
             .map(|(_, range)| range)
     }
 
-    /// Where this vertex's edge rows start in the edge slab, or its vertex-slot base when it has
-    /// no slab bucket yet.
+    /// Where this vertex's edge rows start, falling back to its vertex-slot base when it owns no
+    /// slab bucket yet.
     fn vertex_edge_start(&self, vid: VertexId) -> u64 {
-        let vertex = self.graph.vertices.get(vid);
-        if vertex.is_default_edge_labeled() {
-            return vertex.base_slot_start();
-        }
         self.graph
-            .read_vertex_label_buckets(&vertex)
+            .vertex_edge_start(vid)
             .ok()
-            .and_then(|buckets| {
-                buckets
-                    .iter()
-                    .find(|bucket| !bucket.is_tiny_mode())
-                    .map(|bucket| bucket.edge_start())
-            })
-            .unwrap_or_else(|| vertex.base_slot_start())
-    }
-
-    /// How many edge-slab slots this vertex's buckets claim, summed over its non-tiny buckets.
-    fn vertex_edge_allocation(&self, vid: VertexId) -> Option<u64> {
-        let vertex = self.graph.vertices.get(vid);
-        if vertex.is_default_edge_labeled() {
-            return Some(u64::from(vertex.stored_slots));
-        }
-        let buckets = self.graph.read_vertex_label_buckets(&vertex).ok()?;
-        Some(
-            buckets
-                .iter()
-                .filter(|bucket| !bucket.is_tiny_mode())
-                .map(|bucket| u64::from(bucket.stored_slots()))
-                .sum(),
-        )
+            .flatten()
+            .unwrap_or_else(|| self.graph.vertices.get(vid).base_slot_start())
     }
 
     pub(crate) fn validate(&self) -> Vec<String> {
@@ -582,7 +557,9 @@ where
         // record's `base_slot_start`, which is a different arena.
         let vids: Vec<VertexId> = slices.iter().map(|(vid, _)| *vid).collect();
         for pair in vids.windows(2) {
-            let Some(previous_allocation) = self.vertex_edge_allocation(pair[0]) else {
+            let Some(previous_allocation) =
+                self.graph.vertex_edge_allocation(pair[0]).ok().flatten()
+            else {
                 continue;
             };
             let previous_start = self.vertex_edge_start(pair[0]);
@@ -938,6 +915,54 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Where this vertex's edge rows start in the edge slab, or `None` when it owns no slab bucket.
+    ///
+    /// The edge position of a labeled vertex is its first non-tiny bucket's `edge_start`; a bypass
+    /// row uses its own `base_slot_start`. The two are different arenas (ADR 0098).
+    pub(crate) fn vertex_edge_start(
+        &self,
+        vid: VertexId,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return Ok(Some(vertex.base_slot_start()));
+        }
+        let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
+            return Ok(None);
+        };
+        Ok(buckets
+            .iter()
+            .find(|bucket| !bucket.is_tiny_mode())
+            .map(|bucket| bucket.edge_start()))
+    }
+
+    /// Edge-slab slots this vertex's buckets claim, summed over its non-tiny buckets.
+    ///
+    /// The buckets are the source of truth for a labeled vertex's span width. Its record's
+    /// `stored_slots` is the **bypass** span only (`stored_degree` and `slab_append_exclusive_end`
+    /// both gate on `is_default_edge_labeled()`), and keeping it equal to this sum would mean
+    /// updating it at every one of the 78 places that write a bucket's width - which is how the
+    /// measured 1-versus-11 drift happened (ADR 0098).
+    pub(crate) fn vertex_edge_allocation(
+        &self,
+        vid: VertexId,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return Ok(Some(u64::from(vertex.stored_slots)));
+        }
+        let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
+            return Ok(None);
+        };
+        let mut total = 0u64;
+        let mut owns_slab = false;
+        for bucket in buckets.iter().filter(|bucket| !bucket.is_tiny_mode()) {
+            total = total.saturating_add(u64::from(bucket.stored_slots()));
+            owns_slab = true;
+        }
+        Ok(owns_slab.then_some(total))
+    }
+
     /// Returns `(physical_start, block_len)` when the leaf is pinned, else `None`.
     ///
     /// `block_len` tracks the leaf PMA `segment_edges_total` (grows on segment relocate).
@@ -1010,8 +1035,16 @@ where
         let start_vid = leaf.saturating_mul(seg);
         let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
-            let vertex = self.vertices.get(VertexId::from(vid_u));
-            if u64::from(vertex.stored_slots) > quota {
+            let vid_u = VertexId::from(vid_u);
+            // The record's width is the bypass span only; a labeled vertex's allocation comes from
+            // its buckets, which is the difference between 1 and 11 that let the fixed-quota fast
+            // path fire on a layout that was not fixed-quota (ADR 0098).
+            let allocation = match self.vertex_edge_allocation(vid_u) {
+                Ok(Some(allocation)) => allocation,
+                Ok(None) => continue,
+                Err(_) => return true,
+            };
+            if allocation > quota {
                 return true;
             }
         }
@@ -1049,23 +1082,24 @@ where
         // vertex and bypassing this fast path. When the fast path *does* fire, the leaf
         // is in the untiled fixed-quota layout where each vertex sits in its own quota
         // slot, so `preferred` is genuinely free. The debug check below pins that down.
+        // The check below is what makes this path sound, so it runs in every build: the soundness
+        // argument above is about layouts whose vertices sit in their own quota slots, and a leaf
+        // that has drifted from that layout must take the slow path rather than publish an
+        // overlapping base. A debug assertion here would leave release builds writing over a
+        // leaf-mate.
         if need <= quota
             && !self.labeled_leaf_has_oversized_vertex(vid, quota)
             && let Some(preferred) = preferred
             && checked_add_slot_index(preferred, need)? <= leaf_end
         {
-            #[cfg(debug_assertions)]
+            let preferred_end = checked_add_slot_index(preferred, need)?;
+            let occupied = self.labeled_leaf_occupied_spans(vid, vid);
+            if occupied
+                .iter()
+                .all(|(s, e)| preferred_end <= *s || preferred >= *e)
             {
-                let preferred_end = checked_add_slot_index(preferred, need)?;
-                let occupied = self.labeled_leaf_occupied_spans(vid, vid);
-                debug_assert!(
-                    occupied
-                        .iter()
-                        .all(|(s, e)| preferred_end <= *s || preferred >= *e),
-                    "fixed-quota fast path returned base {preferred} (end {preferred_end}) overlapping a leaf-mate; layout is not fixed-quota intact"
-                );
+                return Some(preferred);
             }
-            return Some(preferred);
         }
 
         let mut spans = self.labeled_leaf_occupied_spans(vid, vid);
