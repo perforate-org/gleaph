@@ -47,33 +47,26 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-GRAPH-DRAIN-REGRESSES-SOME-SHAPES — the per-message drain costs ~24 % on other benches
+### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
-- **Status:** Open, measured. Not caused by ADR 0098's work.
-- **Observed behavior:** against the committed baseline (`crates/graph/canbench_results.yml`, last
-  re-baselined before this branch's work), `bench_graph_inline_scalar_filter_1k` is +23.9 %,
-  `bench_graph_inline_scalar_projection_1k` +23.1 % and `bench_graph_vertex_insert_scalar_16`
-  +28.2 %, while the shapes the drain was introduced for improved (`bench_scalar_fan_out_128_width_0`
-  -37 %). Forcing `leaf_fixed_quota_intact` to `true` reproduces the regressed numbers exactly, so
-  the fixed-quota flag is not the cause - the cost comes from the per-message drain that landed
-  earlier on this branch (ADR 0020's amendment), which every message boundary now runs.
-- **Not the drain either (measured twice).** Making `drain_maintenance_at_message_end` return
-  immediately reproduces the same numbers exactly (1.55 M and 40.61 M), as does forcing
-  `leaf_fixed_quota_intact` to `true`. So neither the ADR 0098 work nor the per-message drain explains
-  the difference - and the title of this entry is wrong about the cause, not just the size.
-- **What the evidence does say:** the baseline (`d851adbc7`) is an ancestor and the regression is
-  **older than this session**. Measured at `fd7838b7b` (the commit before this branch's work began)
-  the same bench reports the same `1.55 M / +28.23 %`, so nothing in the batch removal, the drain
-  work or ADR 0098 caused it. The range to bisect is `d851adbc7..fd7838b7b` - 714 commits, about ten
-  builds.
-- **The baseline itself is trustworthy:** benches whose code did not change report "no change"
-  against it (e.g. `bench_edge_vector_dot_scalar_4096x16_25pct`), so this is a real code difference
-  in a subset of paths rather than a stale or differently-built baseline.
-- **Expected or needed behavior:** unknown until bisected. The benches are query-shaped (inline
-  filter/projection) plus a 16-vertex insert, so whatever it is, it is not the insert drain.
-- **Owner:** unassigned; bisect between `d851adbc7` and the commit before this branch's work.
-- **Evidence:** the three benches above, `cargo test` unchanged at lara 707/0 and graph 1106/0, and
-  the two forcing experiments (flag, drain) that each reproduce the regressed numbers.
+- **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
+- **Observed behavior:** against the committed baseline, `bench_graph_inline_scalar_filter_1k`
+  was +23.9 %, `bench_graph_inline_scalar_projection_1k` +23.1 % and
+  `bench_graph_vertex_insert_scalar_16` +28.2 %, while `bench_scalar_fan_out_128_width_0` was -37 %.
+- **Cause, found by bisecting:** `61395eb` ("route memory access through an installed shadow"). The
+  overlay sent every `read`/`write`/`size`/`grow` through a thread-local check even when no shadow was
+  installed, so any path that touches memory paid for it. Two earlier guesses - the ADR 0098 flag and
+  the per-message drain - were each measured and cleared by forcing them off and reproducing the slow
+  numbers exactly.
+- **Fix and recovery:** the shadow had no production consumer (already rejected as a speed tool at
+  1.71x slower than direct writes, with its atomicity benefit never wired to an entry point), so the
+  overlay, its bench and its test were deleted. Measured after: 1.21 M / -0.65 % and 32.56 M on the
+  two benches above - back inside the noise threshold of the baseline.
+- **Evidence:** the two benches before and after, the bisect verdict naming the overlay commit, and
+  the two forcing experiments that cleared the drain and the ADR 0098 flag.
+- **Lesson worth keeping:** a whole-memory interception layer is invisible to unit tests and shows up
+  only as a uniform percentage on every bench; bisecting on one bench found it faster than reading
+  the diff.
 
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
