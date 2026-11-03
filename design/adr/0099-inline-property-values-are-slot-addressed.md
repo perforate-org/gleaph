@@ -191,6 +191,18 @@ small and two are not:
 So the pass is: accessor -> reads -> span allocation -> delete -> fold -> compaction -> record field.
 Any prefix of that list leaves the tree red, which is why it is a single sitting.
 
+**The coupling that makes it one sitting, measured.** With the accessor, the slot-based reads, the
+span sizing (`stored_slots` blocks) and the delete all applied - 5 of the 7 steps - the suite is still
+91 red, and the dominant failure is `InlinePropertyBytesLogRead(MissingAscLogIndex { asc_log_index: 0 })`:
+a live edge row sits at bucket-local slot >= `stored_slots` while `values_spill_run` is unset, so the
+values run the reader expects was never created. The edge run and the values run are created,
+grown, folded and dropped by different paths, and by this ADR's geometry they must be in step
+slot-for-slot. That is the remaining work, and it is the part where a mistake writes values into the
+wrong rows instead of failing a test loudly.
+
+**Status of this attempt:** applied as far as the delete, measured 91 red, reverted. The tree is back
+to green (lara 708/0, graph 1107/0) with the plan, the sizes and the coupling recorded here.
+
 **The atomicity is measured, not assumed.** Redefining
 `inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
 one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
