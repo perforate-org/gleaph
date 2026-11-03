@@ -506,11 +506,13 @@ where
                         debug_assert!(write_slot < successor_start);
                         self.edges.write_slot(write_slot, attempt_edge.clone())?;
                         let logical_slot = bucket.stored_slots();
+                        let value_slot = logical_slot;
                         let bucket = bucket.grow_packed_slab_by_one();
                         let bucket = self.write_edge_inline_property_after_insert(
                             src,
                             bucket_slot,
                             bucket,
+                            value_slot,
                             &attempt_edge,
                         )?;
                         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -574,6 +576,7 @@ where
                                 src,
                                 bucket_slot,
                                 bucket,
+                                written_slot,
                                 &attempt_edge,
                             )?;
                             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -593,10 +596,13 @@ where
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
+                                let value_slot =
+                                    logical_slot.unwrap_or(bucket.stored_slots());
                                 let bucket = self.write_edge_inline_property_after_insert(
                                     src,
                                     bucket_slot,
                                     bucket,
+                                    value_slot,
                                     &attempt_edge,
                                 )?;
                                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -1081,7 +1087,13 @@ where
         let slot = super::edge_slot::<E>(&mut slot);
         edge.write_to(slot);
         let grown = grown.with_tiny_slot(logical_slot, E::BYTES, slot);
-        let grown = self.write_edge_inline_property_after_insert(src, bucket_slot, grown, &edge)?;
+        let grown = self.write_edge_inline_property_after_insert(
+            src,
+            bucket_slot,
+            grown,
+            logical_slot,
+            &edge,
+        )?;
         self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr

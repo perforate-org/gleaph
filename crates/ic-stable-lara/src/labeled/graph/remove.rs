@@ -602,18 +602,8 @@ where
         else {
             return Err(LaraOperationError::LogChainShort.into());
         };
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            // Only this bucket's rows are about to be shifted, so only this bucket is folded.
-            bucket = self.fold_bucket_values_run_into_slab(src, slot, bucket)?;
-        }
-        let inline_property_bytes_delete = self.plan_bucket_inline_property_bytes_delete(
-            src,
-            bucket,
-            inline_property_bytes_ordinal,
-        )?;
-        if let Some(plan) = inline_property_bytes_delete {
-            bucket = self.apply_bucket_inline_property_bytes_delete(src, plan);
-        }
+        // ADR 0099: deleting writes no value. The row is tombstoned below and a reader never asks
+        // for a tombstoned slot's value, so neither a fold nor a suffix shift happens here.
         self.commit_bucket_edge_delete(src, slot, bucket, slot_index, location)
     }
 

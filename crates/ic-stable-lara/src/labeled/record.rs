@@ -803,8 +803,10 @@ impl LabelBucket {
 
     /// Number of inline-property-bytes entries resident in the inline property bytes slab.
     #[inline]
+    /// Values are addressed by row slot (ADR 0099), so the value prefix width is the edge prefix
+    /// width. The stored field is retained only until the record layout drops it.
     pub fn inline_property_bytes_slab_slots(self) -> u32 {
-        self.inline_property_bytes_slab_slots
+        self.stored_slots()
     }
 
     /// Per-bucket inline property bytes overflow log head, or `-1` when all values are on the slab.

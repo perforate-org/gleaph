@@ -704,53 +704,29 @@ where
             .map_err(LabeledOperationError::from)
     }
 
+    /// Records the value of a row that was just written at `slot_index`.
+    ///
+    /// ADR 0099: the value plane mirrors the edge plane, so residency is decided by the row's slot -
+    /// inside the prefix it is a slab block, beyond it the row lives in the spill run and so does its
+    /// value. The former heuristic (append to the run when the slab was not at the tail) decided
+    /// residency from the allocator's state, which is what let the two planes disagree.
     pub(super) fn write_edge_inline_property_after_insert(
         &self,
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
+        slot_index: u32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
         if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
             return Ok(bucket);
         }
-        let slot_index = bucket.degree().saturating_sub(1);
-        let slab_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
-            .checked_mul(u64::from(bucket.inline_property_byte_width()))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let slab_ends_at_tail = bucket
-            .inline_property_bytes_offset()
-            .checked_add(slab_bytes)
-            .is_some_and(|end| end == self.values.header().slab_occupied_tail);
-        // InlinePropertyBytes capacity is independent from the edge segment size.  A
-        // inline-property-bearing bucket starts with one value-width entry and grows
-        // in value-width byte units while its span remains extendable.  Once
-        // a inline property bytes log exists, or the span is no longer at the slab tail,
-        // append to the log instead of repeatedly relocating the span.
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-            || (bucket.inline_property_bytes_slab_slots() > 0 && !slab_ends_at_tail)
-        {
-            match self.write_edge_inline_property_to_log(&bucket, -1, edge) {
-                Ok(updated) => return Ok(updated),
-                Err(LabeledOperationError::InlinePropertyBytesLogWrite(
-                    InlinePropertyBytesLogWriteError::ValuesRunFull,
-                )) => {
-                    bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
-                    return self.write_edge_inline_property_to_log(&bucket, -1, edge);
-                }
-                Err(err) => return Err(err),
-            }
+        if slot_index >= bucket.stored_slots() {
+            return self.write_edge_inline_property_to_log(&bucket, -1, edge);
         }
-        let bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
+        bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
-        self.write_edge_inline_property_at_slot(
-            src,
-            &vertex,
-            bucket_slot,
-            &bucket,
-            slot_index,
-            edge,
-        )?;
+        self.write_edge_inline_property_at_slot(src, &vertex, bucket_slot, &bucket, slot_index, edge)?;
         Ok(bucket)
     }
 
@@ -1328,15 +1304,9 @@ where
             "tiny bucket must not reach value-span admission"
         );
         let width = bucket.inline_property_byte_width();
-        // Run-backed rows need no slab space until the caller folds them.
-        let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
-            Ok(run) => self.values.spill_used_len(run),
-            Err(_) => 0,
-        };
-        let needed_slots = bucket
-            .degree()
-            .checked_sub(run_rows)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // One value block per slab row, tombstones included: the value plane mirrors the edge
+        // prefix (ADR 0099), so the slab part is exactly `stored_slots` blocks.
+        let needed_slots = bucket.stored_slots();
         let needed_bytes = u64::from(needed_slots) * u64::from(width);
         let had_bytes = self.bucket_resident_inline_property_bytes(&bucket);
         // Admission preserves sufficient capacity, including non-tail spans.
