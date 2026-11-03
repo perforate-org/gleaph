@@ -2189,14 +2189,36 @@ mod tests {
         let valued_bucket = graph.buckets().read_label_bucket_slot(valued_slot).unwrap();
         let plain_slot = graph.find_bucket_slot(&vertex, plain).unwrap().unwrap();
         let plain_bucket = graph.buckets().read_label_bucket_slot(plain_slot).unwrap();
-        assert_eq!(valued_bucket.inline_property_bytes_slab_slots(), 1);
+        // ADR 0099: one value block per row, in whichever plane the row lives. A row that fitted the
+        // slab prefix gets a slab block; a row that spilled gets a run block. Both are "one value
+        // width", which is the quota this fixture is about.
+        let value = graph
+            .read_bucket_inline_property_bytes_for_slot(&valued_bucket, 0, None)
+            .expect("the valued row's block is readable");
         assert_eq!(
-            graph.bucket_resident_inline_property_bytes(&valued_bucket),
-            12
+            value.len(),
+            usize::from(valued_bucket.inline_property_byte_width())
         );
+        if valued_bucket.stored_slots() > 0 {
+            assert_eq!(
+                valued_bucket.inline_property_bytes_slab_slots_allocated(),
+                1,
+                "a slab-resident row owns one slab block"
+            );
+            assert_eq!(
+                graph.bucket_resident_inline_property_bytes(&valued_bucket),
+                12
+            );
+            assert_eq!(vertex.inline_property_bytes_allocated_bytes(), 12);
+        } else {
+            let run = graph
+                .values
+                .spill_mint(valued_bucket.values_spill_run())
+                .expect("a spilled row keeps its block in the value run");
+            assert_eq!(graph.values.spill_used_len(run), 1);
+        }
         assert_eq!(plain_bucket.inline_property_bytes_slab_slots(), 0);
         assert_eq!(plain_bucket.inline_property_bytes_log_head(), -1);
-        assert_eq!(vertex.inline_property_bytes_allocated_bytes(), 12);
     }
 
     #[test]
