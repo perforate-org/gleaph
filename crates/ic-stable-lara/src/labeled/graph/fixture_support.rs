@@ -84,3 +84,38 @@ pub fn leaf_layout_errors<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
         Err(_) => Vec::new(),
     }
 }
+
+/// `(vid, base_slot_start, stored_slots, first non-tiny bucket edge_start)` for every vertex of the
+/// leaf that holds `vid`. Used to see how placement assigned the bases.
+#[allow(clippy::type_complexity)]
+pub fn leaf_vertex_rows<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+) -> Vec<(u32, u64, u32, Option<u64>)> {
+    let header = graph.edges.header();
+    let seg = header.segment_size.max(1);
+    let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(vid, seg);
+    let start = leaf.saturating_mul(seg);
+    let end = start.saturating_add(seg).min(graph.vertices.len());
+    (start..end)
+        .map(|ordinal| {
+            let vertex_id = VertexId::from(ordinal);
+            let vertex = graph.vertices.get(vertex_id);
+            let bucket_start = graph
+                .read_vertex_label_buckets(&vertex)
+                .ok()
+                .and_then(|buckets| {
+                    buckets
+                        .iter()
+                        .find(|bucket| !bucket.is_tiny_mode())
+                        .map(|bucket| bucket.edge_start())
+                });
+            (
+                ordinal,
+                vertex.base_slot_start(),
+                vertex.stored_slots,
+                bucket_start,
+            )
+        })
+        .collect()
+}

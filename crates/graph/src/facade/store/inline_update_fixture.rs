@@ -84,6 +84,12 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
     let layout_errors = store.with_graph_mut(|graph| {
         ic_stable_lara::labeled::fixture_support::leaf_layout_errors(graph.forward(), low)
     });
+    eprintln!(
+        "DEBUG rows: {:?}",
+        store.with_graph_mut(|graph| {
+            ic_stable_lara::labeled::fixture_support::leaf_vertex_rows(graph.forward(), low)
+        })
+    );
     assert!(
         layout_errors.is_empty(),
         "leaf layout violates the arena contract: {layout_errors:?}"

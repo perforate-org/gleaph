@@ -493,6 +493,41 @@ where
             .map(|(_, range)| range)
     }
 
+    /// Where this vertex's edge rows start in the edge slab, or its vertex-slot base when it has
+    /// no slab bucket yet.
+    fn vertex_edge_start(&self, vid: VertexId) -> u64 {
+        let vertex = self.graph.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return vertex.base_slot_start();
+        }
+        self.graph
+            .read_vertex_label_buckets(&vertex)
+            .ok()
+            .and_then(|buckets| {
+                buckets
+                    .iter()
+                    .find(|bucket| !bucket.is_tiny_mode())
+                    .map(|bucket| bucket.edge_start())
+            })
+            .unwrap_or_else(|| vertex.base_slot_start())
+    }
+
+    /// How many edge-slab slots this vertex's buckets claim, summed over its non-tiny buckets.
+    fn vertex_edge_allocation(&self, vid: VertexId) -> Option<u64> {
+        let vertex = self.graph.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return Some(u64::from(vertex.stored_slots));
+        }
+        let buckets = self.graph.read_vertex_label_buckets(&vertex).ok()?;
+        Some(
+            buckets
+                .iter()
+                .filter(|bucket| !bucket.is_tiny_mode())
+                .map(|bucket| u64::from(bucket.stored_slots()))
+                .sum(),
+        )
+    }
+
     pub(crate) fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let extent_end = self.extent.0.saturating_add(self.extent.1);
@@ -539,20 +574,22 @@ where
                 }
             }
         }
-        // Each vertex's base starts at or after the previous vertex's allocation. This is the
-        // invariant the derived slice cannot express (ADR 0098): `slices()` reads a vertex's first
-        // region, so a vertex placed inside a sibling's allocation still produces a well-shaped
-        // slice partition and every check above passes.
+        // A vertex's edge region starts at or after the previous vertex's edge allocation. This is
+        // the invariant the derived slice cannot express (ADR 0098): `slices()` reads a vertex's
+        // first region, so a vertex placed inside a sibling's allocation still produces a
+        // well-shaped slice partition and every check above passes. The comparison is in the edge
+        // slab's address space - `edge_start` and the buckets' stored widths - not in the vertex
+        // record's `base_slot_start`, which is a different arena.
         let vids: Vec<VertexId> = slices.iter().map(|(vid, _)| *vid).collect();
         for pair in vids.windows(2) {
-            let previous = self.graph.vertices.get(pair[0]);
-            let current = self.graph.vertices.get(pair[1]);
-            let previous_base = previous.base_slot_start();
-            let previous_alloc = previous.stored_slots;
-            let base = current.base_slot_start();
-            if base < previous_base.saturating_add(u64::from(previous_alloc)) {
+            let Some(previous_allocation) = self.vertex_edge_allocation(pair[0]) else {
+                continue;
+            };
+            let previous_start = self.vertex_edge_start(pair[0]);
+            let start = self.vertex_edge_start(pair[1]);
+            if start < previous_start.saturating_add(previous_allocation) {
                 errors.push(format!(
-                    "vertex {:?} base {base} starts inside {:?} {previous_base}+{previous_alloc}",
+                    "vertex {:?} edge start {start} starts inside {:?} {previous_start}+{previous_allocation}",
                     pair[1], pair[0]
                 ));
             }

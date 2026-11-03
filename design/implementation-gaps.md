@@ -295,6 +295,23 @@ defect from being rediscovered without its prior reasoning.
     its allocation) has to be established *before* the partition can be authoritative, and the 11-13
     fixtures have to be migrated with it. Both changes were reverted; the validation and the
     reproduction's contract assertion stayed, because they are green and they name the invariant.
+  - **The two address spaces (measured 2026-11-03).** The duplicate-base assert was my own doing: I
+    had compared `base_slot_start` values, and those live in a **different arena** from the edge slab.
+    Measured for the reproduction: `(vid, base_slot_start, vertex stored_slots, first bucket
+    edge_start)` = `(0, 1027, 1, 4096)`, `(1, 1028, 0, 4097)`, `(2, 1029, 1, 4098)`. A vertex's edge
+    position is its first bucket's `edge_start`; `base_slot_start` is a vertex-slot address and must
+    never be compared with it. The check now reads the edge slab - `vertex_edge_start` /
+    `vertex_edge_allocation` - and the reproduction reports the invariant exactly:
+    `vertex VertexId(2) edge start 4098 starts inside VertexId(0) 4096+11`.
+  - **What enforcement therefore has to do.** Vertex 1 has an allocation of **0** (its rows all live
+    in its run), so it contributes no boundary, and vertex 0's 11-slot claim runs over vertex 2's
+    start. Placement must assign `edge_start(next) >= edge_start(previous) + allocation(previous)`
+    even when `allocation(previous)` is zero - i.e. an empty vertex's boundary is still a boundary,
+    and its own start must sit at or after the previous vertex's end. Today the placement only
+    avoids the spans that leaf-mates have actually *occupied* (`labeled_leaf_occupied_spans`), which
+    is why an empty leaf-mate is invisible. That is the concrete change: make the occupied-span
+    input include every vertex as `[edge_start, edge_start + allocation)`, including the zero-width
+    ones, and require the new base to clear all of them.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
