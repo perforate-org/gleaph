@@ -135,8 +135,26 @@ one publish, so no reader observes a prefix longer than the slice.
 
 The bound must come from something **independent of region placement**, because the derived slice is
 not: either the next vertex's `base_slot_start` (which the arena assigns and which no region growth
-moves), or an explicitly allocated slice width. `LeafSlice::fits` stays the API the callers use, but
-its answer has to be sourced from that independent bound rather than from `slices()` alone.
+moves), or a recorded allocation. `LeafSlice::fits` stays the API the callers use, but its answer has
+to be sourced from that independent bound rather than from `slices()` alone.
+
+**What the bound is, and why it is a flag rather than an array.** Deriving each vertex's allocation
+from its buckets is correct - it is what `validate` does - but it is not affordable where placement
+needs it: doing so on the insert path fails `g6_tiny_insert_reads_no_edge_bytes`, which exists to keep
+that path out of edge bytes. Recording a per-vertex `(start, width)` array in the leaf's metadata
+would work, but the fast path does not need the widths - it needs to know whether the fixed-quota
+layout is still intact. That is exactly the condition `labeled_leaf_has_oversized_vertex` approximates
+today by reading each vertex's record width, which is the bypass width for a labeled vertex and
+therefore the wrong number (measured 1 against 11).
+
+So the leaf records the fact the tiling pass already knows: **whether its block has been tiled**. The
+rewrite and relocate that tile the whole leaf are its only writers, so there is one writer, not the 78
+that write bucket widths. A tiled leaf skips the fixed-quota fast path and takes the placement that
+reads the real spans; an untiled leaf is by construction in the layout the fast path assumes.
+
+The flag fits in the existing `SegmentSpanMeta::physical_start`'s spare bits (slot indices are 36-bit,
+so the high bits are unused), so the metadata does not grow. Changing what a persisted bit means is a
+layout change: it requires fresh state, which the project's pre-production rule allows.
 
 ### Spill's place in this
 
