@@ -386,7 +386,10 @@ the bucket is `tiny=false tree=false width=0 degree=5 stored=5`, and the two ste
 "tree bucket" reading above was wrong - the width the error reports (1000) is the *materialization's*
 width, and the second step's admission sees a bucket whose width is no longer 0. Something publishes the
 descriptor between the two steps; `materialize_source` requires width 0 until the final publication,
-so finding that writer is the next diagnostic. It is still the one item in this group that must be
+so finding that writer is the next diagnostic. Narrowed once more: right after the first step the
+bucket is still `width=0 offset=0`, and the fixture then only mints two more cursors (`0xA5`, `0xB2`)
+and enqueues them before dropping and reopening the queue - so the writer is reached from the enqueue or
+the reopen, not from the step. It is still the one item in this group that must be
 diagnosed rather than restated.
 
 **One of the deferred failures may be a regression, not a premise.** In
