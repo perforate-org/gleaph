@@ -342,3 +342,13 @@ The two failures visible at 53 are exactly the first two rows: `remove_directed_
 false after a span compaction (the fold left values that no longer line up with slots) and
 `MissingAscLogIndex` (a read reaches for a spill run the mirrored plane has not created yet).
 
+**And a third, found by instrumenting the simplest failing case.** In
+`values::tests::edge_inline_propertys_preserved` (three valued inserts, then
+`compact_vertex_edge_span`, then read back - all zeros), the head fold never runs, and by the time the
+compaction step sees the bucket it is `stored_slots = degree` with **no edge run but a live values
+run**: the rows are in the slab and their values are still in the spill run. At insert time the same
+bucket was `stored = 0` with an edge run and a values run, so something between the insert and the
+compaction publishes `stored_slots = degree` - the finalize that trims trailing tombstones - without
+moving the values. That transition is the next thing to find; it is not in the fold, the rebuild or
+the delete, which is why all three fixes left the count unchanged at 53.
+
