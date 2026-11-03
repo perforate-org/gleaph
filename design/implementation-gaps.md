@@ -61,9 +61,14 @@ defect from being rediscovered without its prior reasoning.
   immediately reproduces the same numbers exactly (1.55 M and 40.61 M), as does forcing
   `leaf_fixed_quota_intact` to `true`. So neither the ADR 0098 work nor the per-message drain explains
   the difference - and the title of this entry is wrong about the cause, not just the size.
-- **What the evidence does say:** the baseline (`d851adbc7`) is an ancestor with **287 commits**
-  between it and HEAD, so the regression belongs to one of those and needs a bisect rather than a
-  guess. The two isolations are recorded so the bisect does not repeat them.
+- **What the evidence does say:** the baseline (`d851adbc7`) is an ancestor and the regression is
+  **older than this session**. Measured at `fd7838b7b` (the commit before this branch's work began)
+  the same bench reports the same `1.55 M / +28.23 %`, so nothing in the batch removal, the drain
+  work or ADR 0098 caused it. The range to bisect is `d851adbc7..fd7838b7b` - 714 commits, about ten
+  builds.
+- **The baseline itself is trustworthy:** benches whose code did not change report "no change"
+  against it (e.g. `bench_edge_vector_dot_scalar_4096x16_25pct`), so this is a real code difference
+  in a subset of paths rather than a stale or differently-built baseline.
 - **Expected or needed behavior:** unknown until bisected. The benches are query-shaped (inline
   filter/projection) plus a 16-vertex insert, so whatever it is, it is not the insert drain.
 - **Owner:** unassigned; bisect between `d851adbc7` and the commit before this branch's work.
