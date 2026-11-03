@@ -82,6 +82,12 @@ pub(crate) fn bucket_resident_inline_property_bytes_slots(bucket: &LabelBucket) 
     if !bucket.is_inline_property_bytes_allocated() || bucket.inline_property_byte_width() == 0 {
         return 0;
     }
+    // A tree bucket keeps its values in the property root inside the edge span, so it owns no value
+    // span to charge the vertex for: `stored_slots` there is the logical extent (which ADR 0099's
+    // accessor reports for the slab case), and charging it would count the root region twice.
+    if bucket.is_tree_mode() {
+        return 0;
+    }
     bucket.inline_property_bytes_slab_slots()
 }
 
