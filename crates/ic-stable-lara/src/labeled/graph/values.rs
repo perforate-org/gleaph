@@ -1679,9 +1679,9 @@ where
 
     pub(super) fn attach_edge_inline_property(
         &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_index: u32,
+        _src: VertexId,
+        _vertex: &LabeledVertex,
+        _bucket_index: u32,
         bucket: LabelBucket,
         slot_index: u32,
         edge: E,
@@ -1690,24 +1690,11 @@ where
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
-        let ordinal = if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-            && bucket.stored_slots() == bucket.degree()
-        {
-            slot_index
-        } else {
-            let bucket_slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-            self.bucket_live_ordinal_at_edge_slot(
-                src,
-                vertex,
-                bucket_index,
-                bucket_slot,
-                &bucket,
-                slot_index,
-            )?
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        };
+        // ADR 0099: the block is at the row's slot. This was the last reader that resolved a live
+        // ordinal first, so a sparse bucket attached its rank-N block instead of its slot-N block -
+        // which is why a deleted row left its value readable through a lookup but not a traversal.
         let edge = edge.with_slot_index(slot_index);
-        self.attach_edge_inline_property_at_ordinal(&bucket, ordinal, edge, log_chains)
+        self.attach_edge_inline_property_at_ordinal(&bucket, slot_index, edge, log_chains)
     }
 
     /// Attaches inline property bytes at a known bucket-local live ordinal. Streaming scans already yield live
