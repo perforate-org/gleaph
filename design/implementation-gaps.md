@@ -47,6 +47,24 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-GRAPH-DRAIN-REGRESSES-SOME-SHAPES — the per-message drain costs ~24 % on other benches
+
+- **Status:** Open, measured. Not caused by ADR 0098's work.
+- **Observed behavior:** against the committed baseline (`crates/graph/canbench_results.yml`, last
+  re-baselined before this branch's work), `bench_graph_inline_scalar_filter_1k` is +23.9 %,
+  `bench_graph_inline_scalar_projection_1k` +23.1 % and `bench_graph_vertex_insert_scalar_16`
+  +28.2 %, while the shapes the drain was introduced for improved (`bench_scalar_fan_out_128_width_0`
+  -37 %). Forcing `leaf_fixed_quota_intact` to `true` reproduces the regressed numbers exactly, so
+  the fixed-quota flag is not the cause - the cost comes from the per-message drain that landed
+  earlier on this branch (ADR 0020's amendment), which every message boundary now runs.
+- **Expected or needed behavior:** a drain should cost nothing when there is nothing to do. Either
+  the boundary drain only runs when the queue is non-empty (and that check is the cost being paid),
+  or the enqueue-per-operation is what needs gating.
+- **Owner:** `crates/graph/src/facade/store/maintenance.rs` (`drain_maintenance_at_message_end` and
+  its call sites in `canister/handlers.rs`).
+- **Evidence:** the three benches above, `cargo test` unchanged at lara 707/0 and graph 1106/0, and
+  the forced-flag experiment that isolates the cause.
+
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
 - **Status:** Resolved 2026-11-03 ([ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
