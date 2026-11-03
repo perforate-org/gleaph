@@ -9565,18 +9565,21 @@ mod tests {
     }
 
     #[test]
-    fn unordered_swap_gate_rejects_value_log_and_non_dense_spans() {
+    fn unordered_swap_gate_asks_only_for_a_slab_bucket() {
         use crate::labeled::record::LabelBucket;
-        let value_log = LabelBucket::default()
+        // ADR 0099 withdrew the value clause: the swap used to shift a value window, which needed a
+        // dense, run-free plane; a slot-addressed plane moves one block per row, so a bucket with a
+        // value run or a sparse value span may swap like any other.
+        let value_run = LabelBucket::default()
             .with_inline_property_byte_width(2)
-            .with_inline_property_bytes_log_head(3)
             .with_degree_field(2)
-            .with_stored_slots(4);
+            .with_stored_slots(4)
+            .with_values_spill_run(7);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
-                &value_log
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+                &value_run
             ),
-            "a bucket with log-backed inline property bytes must fall back to left-pack (ADR §9)"
+            "a value run no longer stops a swap"
         );
         let non_dense = LabelBucket::default()
             .with_inline_property_byte_width(2)
@@ -9584,20 +9587,20 @@ mod tests {
             .with_degree_field(3)
             .with_stored_slots(4);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &non_dense
             ),
-            "a non-dense value span must fall back to left-pack"
+            "a sparse value span no longer stops a swap"
         );
-        let width_zero = LabelBucket::default()
-            .with_inline_property_bytes_log_head(3)
+        let edge_run = LabelBucket::default()
             .with_degree_field(2)
-            .with_stored_slots(4);
+            .with_stored_slots(4)
+            .with_edge_spill_run(9);
         assert!(
-            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
-                &width_zero
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+                &edge_run
             ),
-            "width-0 buckets may swap regardless of a value log head"
+            "the move still needs the row to be in the span it swaps within"
         );
     }
 
