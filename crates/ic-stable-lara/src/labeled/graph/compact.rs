@@ -6604,42 +6604,6 @@ where
         Ok(bucket)
     }
 
-    /// Folds one bucket's values run into its slab.
-    ///
-    /// The caller needs those rows in the slab - a delete shifts the dense slab sequence, and a
-    /// full run needs slab room - and that is the only reason to fold. ADR 0097 §5 leaves nothing
-    /// leaf-level to sweep for: the per-leaf log this used to release is gone, so the leaf-wide
-    /// version of this forced the same copy on every run-backed bucket in the leaf (one delete
-    /// fanned out into ~56 leaf rewrites where main did one). db04af585's rule applies - relief is
-    /// not forced for rows that are not span content - so the fold is per bucket, at the one call
-    /// site that needs it.
-    pub(super) fn fold_bucket_values_run_into_slab(
-        &self,
-        src: VertexId,
-        bucket_slot: u64,
-        bucket: LabelBucket,
-    ) -> Result<LabelBucket, LabeledOperationError> {
-        let vertex = self.vertices.get(src);
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        self.fold_label_bucket_inline_property_bytes_log_to_slab(
-            src,
-            &vertex,
-            bucket_index,
-            bucket_slot,
-            bucket,
-        )
-    }
-
-    /// Rebuilds a bucket's edge spill run so its class matches the rows that are still live.
-    ///
-    /// A head drop cannot take a run below its class floor, so a bucket whose spill is mostly
-    /// tombstones keeps a run it does not need. Rebuilding mints a run sized to the live rows,
-    /// copies them in order, publishes the new id and only then releases the old run - the
-    /// descriptor never names a freed run.
-    ///
-    /// Unlike the fold, this moves ordinals: a logical row is `prefix_len + spill index`, so
-    /// packing the spill renumbers every row after the first hole. The moves are returned for the
-    /// caller to rekey through its observer; nothing here touches the sidecars.
     pub(super) fn rebuild_bucket_edge_spill(
         &self,
         bucket_slot: u64,

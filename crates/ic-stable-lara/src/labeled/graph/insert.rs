@@ -457,18 +457,9 @@ where
                 for _attempt in 0..64u32 {
                     let attempt_edge = edge.clone();
                     let vertex = self.vertices.get(src);
-                    if has_edge_inline_property
-                        && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-                        && self
-                            .values
-                            .spill_mint(bucket.values_spill_run())
-                            .is_ok_and(|run| self.values.spill_run_is_full(run))
-                    {
-                        let vertex = self.vertices.get(src);
-                        let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                        bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
-                        continue;
-                    }
+                    // ADR 0099: a full value run is no reason to fold the values plane - the
+                    // append grows the run itself, and folding it would leave the edge run's rows
+                    // pointing at blocks that moved.
                     // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab
                     // tombstone before appending to the slab tail or the overflow log.
                     // The helper keeps the dense fast path O(1) and falls back to the
