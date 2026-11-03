@@ -557,6 +557,52 @@ where
         Ok(out)
     }
 
+    /// Reads the value block of the row at bucket-local `slot`, from whichever plane holds it.
+    ///
+    /// ADR 0099's single value accessor: the row's slot decides, exactly as it does for the edge
+    /// row itself. Used by the row-move paths, which have to carry the block with the row.
+    pub(super) fn read_value_block_at_slot(
+        &self,
+        bucket: &LabelBucket,
+        slot: u32,
+    ) -> Result<Vec<u8>, LabeledOperationError> {
+        let mut buf = Vec::new();
+        buf = self.read_bucket_inline_property_bytes_for_slot(bucket, slot, None)?;
+        Ok(buf)
+    }
+
+    /// Writes the value block of the row at bucket-local `slot`, into whichever plane holds it.
+    ///
+    /// A slot inside the prefix is a slab block; beyond it the row lives in the spill run, and so
+    /// does its value.
+    pub(super) fn write_value_block_at_slot(
+        &self,
+        bucket: &LabelBucket,
+        slot: u32,
+        bytes: &[u8],
+    ) -> Result<(), LabeledOperationError> {
+        let width = bucket.inline_property_byte_width();
+        if width == 0 || bytes.is_empty() {
+            return Ok(());
+        }
+        let prefix = bucket.inline_property_bytes_slab_slots();
+        if slot < prefix {
+            let offset =
+                super::super::invariants::inline_property_bytes_byte_offset_at_slot(bucket, slot)?;
+            return self
+                .values
+                .write_bytes(offset, bytes)
+                .map_err(LabeledOperationError::from);
+        }
+        let run = self
+            .values
+            .spill_mint(bucket.values_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        self.values
+            .spill_write(run, slot - prefix, width, bytes)
+            .map_err(LabeledOperationError::from)
+    }
+
     pub(super) fn read_bucket_inline_property_bytes_for_slot(
         &self,
         bucket: &LabelBucket,

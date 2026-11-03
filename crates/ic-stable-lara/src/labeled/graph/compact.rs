@@ -5735,6 +5735,8 @@ where
         let mut moves = Vec::new();
         let run = self.edges.spill_mint(bucket.edge_spill_run())?;
         let mut live_log_edges = Vec::with_capacity(self.edges.spill_used_len(run) as usize);
+        let mut live_log_sources: Vec<(u32, u32)> =
+            Vec::with_capacity(self.edges.spill_used_len(run) as usize);
         for (log_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
             let log_offset = u32::try_from(log_offset)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -5760,6 +5762,7 @@ where
                 });
             }
             live_log_edges.push(edge.with_slot_index(new_slot_index));
+            live_log_sources.push((index, new_slot_index));
         }
 
         let live_log_count = u32::try_from(live_log_edges.len())
@@ -5794,10 +5797,42 @@ where
                 .map_err(LabeledOperationError::from)?;
         }
 
-        let compacted = bucket
-            .with_stored_slots(new_stored_slots)
-            .without_edge_spill_run();
         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
+        // prefix bring their value blocks with them, and clearing the edge run clears the values run
+        // in the same publication. A tombstoned run row is dropped with its value.
+        let width = bucket.inline_property_byte_width();
+        let values_run = bucket.values_spill_run();
+        let compacted = if width != 0 && values_run != crate::traits::NO_SPILL_RUN {
+            let sized = self.ensure_bucket_inline_property_bytes_span(
+                src,
+                bucket_slot,
+                bucket.with_stored_slots(new_stored_slots),
+            )?;
+            let values_run_id = self
+                .values
+                .spill_mint(values_run)
+                .map_err(LabeledOperationError::from)?;
+            let mut value = vec![0u8; usize::from(width)];
+            for (index, slot) in live_log_sources.iter().copied() {
+                self.values
+                    .spill_read(values_run_id, index, width, &mut value)
+                    .map_err(|error| LabeledOperationError::from(error))?;
+                let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
+                    &sized, slot,
+                )
+                .map_err(LabeledOperationError::from)?;
+                self.values
+                    .write_bytes(offset, &value)
+                    .map_err(|error| LabeledOperationError::from(error))?;
+            }
+            let _ = self.values.spill_release(values_run_id);
+            sized.without_edge_spill_run().without_values_spill_run()
+        } else {
+            bucket
+                .with_stored_slots(new_stored_slots)
+                .without_edge_spill_run()
+        };
         self.buckets
             .write_label_bucket_slot(bucket_slot, compacted)?;
         // The run's live rows now live in the prefix: release it (best-effort, like every other
@@ -6023,6 +6058,14 @@ where
         self.edges
             .write_slot(from, E::tombstone_edge())
             .map_err(LabeledOperationError::from)?;
+        // ADR 0099: a moved row takes its value block with it. Both planes are addressed by slot, so
+        // this is one block copy; before the planes were unified the values were addressed by rank
+        // and did not need to move, which is exactly why the moves and the values could disagree.
+        let width = bucket.inline_property_byte_width();
+        if width != 0 {
+            let value = self.read_value_block_at_slot(bucket, moved.old_slot_index)?;
+            self.write_value_block_at_slot(bucket, moved.new_slot_index, &value)?;
+        }
         Ok(())
     }
 
