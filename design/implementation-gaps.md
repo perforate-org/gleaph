@@ -264,6 +264,13 @@ defect from being rediscovered without its prior reasoning.
     spill path inventing writes.
     So the next question is narrower still: which reader turns that counter into the bucket's
     `stored_slots`, and why does it not stay at the slab prefix the run-backed shape implies.
+  - **Where the remaining growth can still come from.** `LabelBucket::try_grow_packed_slab_by_one`
+    does have the ADR 0097 §7 run branch, so the bucket record is not it. The span width is set by
+    `with_edge_range`/`with_stored_slots` from the rewrite path, and two of that path's exits are
+    still unbounded: `finish_span_resolution`'s `tail_append_labeled_edge_base(new_alloc)` under
+    `Required` mid-relocation, and `resolve_labeled_edge_base_for_growth`'s relocate-and-retry loop,
+    which repeats `try_labeled_vertex_edge_base_in_pinned_leaf` (now bounded) but falls through to
+    that tail append when the loop exhausts. Those are the two places to bound next.
   - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
     with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
     fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
