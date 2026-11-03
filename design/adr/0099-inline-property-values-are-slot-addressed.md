@@ -171,6 +171,13 @@ independently shippable steps.
 Steps 2 to 4 are the atomic part; the property test from step 1 is what says whether the result is
 still correct, and the benches from step 3 are what say whether it was worth it.
 
+**The atomicity is measured, not assumed.** Redefining
+`inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
+one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
+prefix width changes while every path that maintains values still assumes the dense ordinal geometry,
+so reads and writes disagree everywhere at once. It is recorded here because it is the argument for
+doing the change as one pass rather than as an increment.
+
 **Sizing, measured on the tree before starting:** 9 callers of
 `inline_property_bytes_byte_offset_at_slot` (the address choke point), 2 places in `compact.rs` that
 copy value bytes, and **112 references to `inline_property_bytes_slab_slots`**. The count looks worse
