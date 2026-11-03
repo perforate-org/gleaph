@@ -8509,10 +8509,12 @@ mod tests {
         {
             crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
                 assert_eq!(bucket.inline_property_byte_width(), 8, "width published");
+                // ADR 0099: the published prefix is the edge prefix, not the count of pre-existing
+                // rows; the rest of those rows keep their blocks in the value run.
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
-                    n_w0,
-                    "slab_slots = w=0 edges (w=8 edge not yet inserted)"
+                    bucket.stored_slots(),
+                    "the value prefix is the edge prefix"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
@@ -8541,17 +8543,23 @@ mod tests {
                 assert_eq!(bucket.inline_property_byte_width(), 8);
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
-                    n_w0 + 1,
-                    "slab_slots = w=0 + 1 w=8"
+                    bucket.stored_slots(),
+                    "the value prefix is the edge prefix"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
             _ => panic!("expected Found bucket after retry"),
         }
         let v = graph.forward().vertices().get(src);
+        let published = match graph.forward().find_bucket(src, &v, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("expected Found bucket"),
+        };
+        // ADR 0099: the vertex is charged for the span the allocator backs - the edge prefix's
+        // blocks. Rows beyond it keep their blocks in the value run, which the spill arena owns.
         assert_eq!(
             v.inline_property_bytes_allocated_bytes(),
-            u64::from(n_w0 + 1) * 8
+            u64::from(published.inline_property_bytes_slab_slots_allocated()) * 8
         );
     }
 
