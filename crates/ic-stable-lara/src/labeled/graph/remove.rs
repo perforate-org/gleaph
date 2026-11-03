@@ -403,7 +403,7 @@ where
         {
             let _ = self.values.spill_release(run);
         }
-        if bucket.is_inline_property_bytes_allocated() {
+        if bucket.inline_property_bytes_slab_slots_allocated() > 0 {
             let _ = self.release_bucket_inline_property_bytes_span(src, bucket);
         }
         let span_len = bucket.stored_slots_raw();
@@ -680,7 +680,10 @@ where
                 }
                 updated = updated.without_values_spill_run();
             }
-            if updated.is_inline_property_bytes_allocated() {
+            // `is_inline_property_bytes_allocated` folds "has rows" into its answer, so it reads
+            // false exactly when this release is needed; the descriptor's recorded slot count is the
+            // question to ask here.
+            if updated.inline_property_bytes_slab_slots_allocated() > 0 {
                 let _ = self.release_bucket_inline_property_bytes_span(src, &updated);
             }
         }

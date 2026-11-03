@@ -412,11 +412,13 @@ where
         _src: VertexId,
         bucket: &LabelBucket,
     ) -> u32 {
-        if !bucket.is_inline_property_bytes_allocated() || bucket.inline_property_byte_width() == 0
-        {
+        // "How many value slots are backed" - not "does this bucket hold value state". The composite
+        // predicate folds `degree != 0` into its answer, so using it here made an emptied bucket look
+        // like it had no span to release, which is exactly when the release has to happen.
+        if bucket.inline_property_byte_width() == 0 {
             return 0;
         }
-        bucket.inline_property_bytes_slab_slots()
+        bucket.inline_property_bytes_slab_slots_allocated()
     }
 
     pub(super) fn bucket_resident_inline_property_bytes_for(
@@ -4583,9 +4585,10 @@ mod tests {
         ));
         assert!(cursor.is_consumed());
         for ordinal in (0..5).rev() {
-            graph
+            let removed = graph
                 .remove_edge_at_slot(src, BucketLabelKey::directed_from_index(2), ordinal)
                 .unwrap();
+            eprintln!("DEBUG5 removed ordinal {ordinal}: {:?}", removed.is_some());
         }
         assert_eq!(
             graph
