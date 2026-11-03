@@ -347,6 +347,18 @@ defect from being rediscovered without its prior reasoning.
     migration** first: each fixture has to give every leaf vertex an allocation wide enough for its
     span before placement can be required to clear all of them. That migration is the unit; the
     change itself was reverted again to keep the suite green.
+  - **A hot-path contract forbids the cheap fix (2026-11-03).** Including zero-width mates makes
+    placement read each mate's buckets, and `g6_tiny_insert_reads_no_edge_bytes` fails - that test
+    exists to keep the insert path from touching edge bytes. So the allocation cannot be derived on
+    the hot path; it has to be **recorded at the leaf level** (each vertex's edge start and width,
+    written by the rewrite/relocate that already tiles the leaf wholesale) so placement reads one
+    small structure instead of N bucket lists. Unifying the debug overlap assertion onto the same
+    occupancy model was the other half of the attempt: on its own it also changes which fixtures
+    trip, including the guard's own injection test, so it has to land with the recorded allocation.
+  - **Revised order.** (a) record per-vertex edge start/width in the leaf's span metadata, written
+    only by rewrite/relocate; (b) point placement, the oversized test, `validate`, and the debug
+    guard at it; (c) then the 11-fixture migration. Deriving from buckets stays correct but is only
+    affordable off the hot path - `validate` uses it today.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
