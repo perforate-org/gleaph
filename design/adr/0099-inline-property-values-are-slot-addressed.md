@@ -203,6 +203,25 @@ wrong rows instead of failing a test loudly.
 **Status of this attempt:** applied as far as the delete, measured 91 red, reverted. The tree is back
 to green (lara 708/0, graph 1107/0) with the plan, the sizes and the coupling recorded here.
 
+**What that coupling requires of the design (to settle before implementing).** The two runs must be
+one lifecycle, not two that happen to agree:
+
+1. **Same length, always.** A row beyond the edge prefix has a value beyond the value prefix, so
+   `spill_used_len(values_run) == spill_used_len(edge_run)` is an invariant, not a coincidence.
+2. **One publisher.** Creating, growing, and dropping a run are three separate operations today;
+   after this ADR they must be one operation that touches both stores, or a crash between them leaves
+   a row whose value was never allocated. That is the same "one writer" rule ADR 0098 applied to the
+   leaf flag.
+3. **Derived, where possible.** If the value run can be derived from the edge run (same id, or created
+   by the same call), the invariant is structural rather than maintained - which is this ADR's own
+   argument applied to the runs.
+4. **The record's two run fields** then either collapse into one or are written together in a single
+   publish, and `inline_property_bytes_log_chain`/`log_len` disappear with the live-ordinal mapping
+   they exist for.
+
+Without that, the five steps that were applied produce exactly the failure that was measured: a row
+whose slot says "run" and a bucket whose value run says "nothing here".
+
 **The atomicity is measured, not assumed.** Redefining
 `inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
 one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
