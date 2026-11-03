@@ -427,16 +427,20 @@ fn promotion_retained_sidecars_keep_slot_identity() {
         let old = bucket(&g, label);
         assert!(!old.is_tree_mode());
         assert_ne!(old.edge_spill_run(), crate::traits::NO_SPILL_RUN);
-        assert_eq!(
-            old.values_spill_run() == crate::traits::NO_SPILL_RUN,
-            holes,
-            "deletion folds values; retained values-run cases here have no holes"
-        );
+        // ADR 0099: the delete writes no value, so the values run follows the edge run rather than
+        // being folded away when the fixture tombstones rows; and the two prefixes are one number,
+        // so the "independent source prefixes" this used to prove is the edge start instead.
         assert_ne!(
+            old.values_spill_run(),
+            crate::traits::NO_SPILL_RUN,
+            "the value plane mirrors the alive edge run"
+        );
+        assert_eq!(
             old.stored_slots(),
             old.inline_property_bytes_slab_slots(),
-            "independent source prefixes"
+            "the value prefix is the edge prefix"
         );
+        let _ = holes;
         let before = rows(&g, label, super::super::OutEdgeOrder::Ascending);
         assert_eq!(
             rows(&g, label, super::super::OutEdgeOrder::Descending),
