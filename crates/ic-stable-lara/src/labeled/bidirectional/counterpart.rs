@@ -315,6 +315,10 @@ pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
     if u32::from(a) >= u32::from(b) { a } else { b }
 }
 
+/// Picks the canonical side of a resolved pair.
+///
+/// For a directed label the forward row is canonical; for an undirected one it is the larger
+/// endpoint ([`canonical_undirected_owner`]). Pure - it reads neither store.
 pub fn canonical_from_counterpart(
     source: CanonicalEdgeOccurrence,
     counterpart: CanonicalEdgeOccurrence,
