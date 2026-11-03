@@ -8297,7 +8297,7 @@ mod tests {
             );
             let slots: Vec<_> = (0..=600u32).map(BucketEntryPosition::new).collect();
             let mut values = Vec::new();
-            owner
+            let _ = owner
                 .visit_edges_at_with_inline_property(
                     vertex_id,
                     label,
