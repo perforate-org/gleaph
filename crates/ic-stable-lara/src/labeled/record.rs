@@ -2363,9 +2363,10 @@ mod tests {
         assert_eq!(tree.degree, 7);
         assert_eq!(tree.stored_slots(), 11);
         assert_eq!(tree.inline_property_byte_width(), 32);
-        // ADR 0099: `inline_property_bytes_slab_slots` answers the geometry question (the edge
-        // prefix, 11 here); the descriptor field this round-trip is about is the allocated count.
-        assert_eq!(tree.inline_property_bytes_slab_slots(), 11);
+        // ADR 0099: `inline_property_bytes_slab_slots` answers the geometry question, and a tree
+        // bucket owns no value span (its values sit in the property root inside the edge span), so
+        // the tree answer is 0 while the descriptor field - the allocated count - still round-trips.
+        assert_eq!(tree.inline_property_bytes_slab_slots(), 0);
         assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 9);
         assert_eq!(tree.inline_property_bytes_log_len(), 4);
 
