@@ -400,7 +400,13 @@ in **tree mode** by the time the cursor steps. Whether that is a fixture premise
 change causing a promotion needs measuring before the fixture is touched; it is the one item in this
 group that has to be diagnosed rather than restated.
 
-**Where it stands: 96 -> 16.** The rank-modelled fixtures fall one at a time as their premises are
+**Where it stands: 96 -> 14.** Two of the last four were my own bugs rather than fixture premises:
+`fill_value_run_for_edge_spill` re-ran the materialisation admission *after* publishing, so it failed its
+own follow-up with a width mismatch whose two sides were equal; and the accessor answered with
+`stored_slots` for tree buckets, where `stored_slots` is the tree's logical extent rather than a value
+width.
+
+**Where it stood at 16.** The rank-modelled fixtures fall one at a time as their premises are
 restated: the delete no longer folds the plane (`removing_non_last_...`), a row's block is read through
 the slot accessor rather than from the span's raw bytes
 (`edge_inline_propertys_round_trip_via_unchecked_label_iteration`), and the storage statistics follow
