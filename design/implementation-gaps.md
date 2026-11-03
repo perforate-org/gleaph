@@ -214,13 +214,19 @@ defect from being rediscovered without its prior reasoning.
     or give the vertex a slice wide enough for the fold it wants - so the routing is its own unit.
   - **Triage of all 13 (2026-11-03).** Grouped by what the failure says, because the groups need
     different work:
-    - *The refusal is an error where it should be a skip (5).* `selected_property_tree_eight_byte_boundaries`,
+    - *The refusal is not a failure - it is a "grow and retry" signal, and the growth is the bug (5).* `selected_property_tree_eight_byte_boundaries`,
       `selected_property_tree_thirty_three_byte_boundaries`, `selected_property_tree_corrupt_roots_propagate`,
       `selected_property_retained_independent_planes` and `non_forcing_compaction_rebuilds_a_dense_spill_run`
-      fail with `Store(CollectAllocationOverflow)` or `SpillNeedsPromotion`. The fold's room check
-      returns `Err`, and these callers surface it instead of leaving the rows in their run. **The
-      refusal must become a non-event before any fixture is touched** - otherwise the migration would
-      be papering over an error path.
+      fail with `Store(CollectAllocationOverflow)` or `SpillNeedsPromotion`. The first reading of this
+      - "the refusal should be a non-event" - is **wrong**, and the callers say so: both
+      `promote.rs:98` and the span step at `compact.rs:6035` treat
+      `Store(CollectAllocationOverflow)` as *no room, so force room and retry*, calling
+      `rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)` and folding again. So
+      the error only escapes when that forced rebalance has already grown the span somewhere it may
+      not - which is the same overlap, now made by the growth step instead of the fold. That also
+      explains the fourth group's trip ("[288, 296) exceeds VertexEdgeSpan [288, 293)"): the check is
+      correct and the growth is what violates it. **The bound belongs in the forced slack grow**, not
+      only in the fold's room check.
     - *Move reporting changes (5).* `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis`
       and `non_forcing_compaction_repacks_a_tail_tombstoned_run_without_reporting_moves` expect no
       moves but now get `OverflowRewrite(...)`: the rebuild arm fires precisely because the fold
@@ -236,9 +242,10 @@ defect from being rediscovered without its prior reasoning.
       unexercised because the fold made the same mistake.
     - *Fixture simply asserts the old width (1).* `compact_vertex_edge_span_shrinks_vertex_edge_span`
       fails on `before.stored_slots > 8`.
-  - Ordering this implies: (a) make a declined fold a skip rather than an error, (b) decide whether a
-    declined fold may trigger a rebuild, then (c) migrate the fixtures. The routing was reverted again
-    so the suite stays green while those land.
+  - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
+    with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
+    fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
+    fixtures. The routing was reverted again so the suite stays green while those land.
 - **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
   state or the tests must state the narrower contract (value-bearing buckets left-pack until the
   values are dense). For the other three, the behavior must be explained before any test is edited.
