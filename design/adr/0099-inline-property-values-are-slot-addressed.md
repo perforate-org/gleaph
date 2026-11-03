@@ -380,6 +380,14 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
+**One of the deferred failures may be a regression, not a premise.** In
+`materialize_owner_queue_identity_preserves_retry_progress_across_reopen` the step now fails with
+`InlinePropertyBytesWidthMismatch { bucket_width: 1000, edge_inline_property_width: 1000 }` - equal
+widths, so the error is the "materialization does not apply to tree buckets" branch, i.e. the bucket is
+in **tree mode** by the time the cursor steps. Whether that is a fixture premise or the span-sizing
+change causing a promotion needs measuring before the fixture is touched; it is the one item in this
+group that has to be diagnosed rather than restated.
+
 **Where it stands: 96 -> 16.** The rank-modelled fixtures fall one at a time as their premises are
 restated: the delete no longer folds the plane (`removing_non_last_...`), a row's block is read through
 the slot accessor rather than from the span's raw bytes
