@@ -1,7 +1,7 @@
 # 0098. The vertex slice owns its growth bound
 
 Date: 2026-11-03
-Status: Proposed
+Status: Accepted (2026-11-03) - enforced at the two growth sites
 Last revised: 2026-11-03
 Anchor timestamp: 2026-11-03 00:10:16 UTC +0000
 
@@ -215,6 +215,29 @@ The work is in the fixtures and in the two bound sites:
    slice wide enough for its span before folding into it.
 3. Re-enable the reproduction's non-overlap assertion and confirm the 25-row case places the three
    spans disjointly.
+
+## Outcome
+
+The defect was closed by bounding the two paths that grow a slab prefix, without changing the slice
+partition:
+
+- **The fold.** `fold_bucket_edge_spill_head_into_span` took its room from the bucket's *region* end,
+  and the region is derived from the regions that exist - so a leaf-mate whose rows all lived in its
+  run contributed no region and the region stretched over its edge start. The fold now stops at
+  `next_leaf_vertex_edge_start`, measured and named by `#[track_caller]` on `with_stored_slots`.
+- **The rewrite.** A widened span that would run past the next leaf-mate keeps the span the vertex
+  already holds, which is what the `SlackMayBeDropped` callers accept.
+- **The fast path.** It now requires the leaf's recorded `fixed_quota_intact` flag instead of
+  inferring the layout from a vertex record width that is the bypass width (measured 1 against 11).
+
+Not needed, and not done: making `slices()` include every vertex, and the eleven-fixture migration
+that change required. The narrow bound removed the corruption without changing which layouts the
+partition considers valid, so `LeafSlice::fits` stays derived and keeps its current callers
+(`validate`, `grow_region`).
+
+Result: lara 707/0, graph 1106/0, including the reproduction
+(`inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which asserts the
+arena's layout contract) and the original fixture.
 
 ## Design Documentation Impact
 

@@ -49,7 +49,15 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
-- **Status:** Open. Three of the six are understood (contract drift after ADR 0097); one is a
+- **Status:** Resolved 2026-11-03 ([ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
+  The last one was a real defect: a bucket's spill fold took its room from a region that was derived
+  from the regions that exist, so a leaf-mate whose rows all lived in its run contributed no region
+  and the fold wrote rows over that mate's edge start - one row landed on the guard vertex's base and
+  read back inside another vertex's prefix. The fold now stops at `next_leaf_vertex_edge_start`, the
+  rewrite path takes the same bound, and the fixed-quota fast path requires the leaf's recorded
+  `fixed_quota_intact` flag rather than a vertex record width that is the bypass width. lara 707/0,
+  graph 1106/0.
+- **Original report follows.** Three of the six are understood (contract drift after ADR 0097); one is a
   compaction behavior question with the spill explanation ruled out; two are untriaged.
 - **Observed behavior:** `cargo test -p gleaph-graph --lib` reports 1097 passed / 6 failed:
   `insertion_policy_maintenance_preserves_left_pack_order`,
