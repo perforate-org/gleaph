@@ -253,6 +253,17 @@ defect from being rediscovered without its prior reasoning.
     time, and the next probe belongs in `have_space_on_slab` /
     `slab_window_exclusive_end` for a synthetic `LabelEdgeSpanAccess` whose `v_ord` is 0 while its
     real owner is another vertex.
+  - **The insert path measured (2026-11-03).** Logging the window decision at every insert shows
+    the writes are *correctly refused* - `has_space=false` for all of them - and the anomaly is
+    elsewhere: `loc` (`base + stored_degree`) walks forward one slot per insert (`4096, 4097, ...`)
+    and the reported window `end` follows it exactly, so the comparison degenerates to
+    `loc < loc`. `stored_degree` for a non-default labeled vertex is its logical `degree`, which the
+    spill path grows by design, so for a run-backed bucket `loc` is not a slab position at all - it
+    is the logical row count added to the base. Nothing writes there (the check refuses), but the
+    bookkeeping that later reads treat as "11 slab slots" comes from this counter, not from the
+    spill path inventing writes.
+    So the next question is narrower still: which reader turns that counter into the bucket's
+    `stored_slots`, and why does it not stay at the slab prefix the run-backed shape implies.
   - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
     with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
     fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
