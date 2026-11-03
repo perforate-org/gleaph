@@ -171,6 +171,14 @@ independently shippable steps.
 Steps 2 to 4 are the atomic part; the property test from step 1 is what says whether the result is
 still correct, and the benches from step 3 are what say whether it was worth it.
 
+**Sizing, measured on the tree before starting:** 9 callers of
+`inline_property_bytes_byte_offset_at_slot` (the address choke point), 2 places in `compact.rs` that
+copy value bytes, and **112 references to `inline_property_bytes_slab_slots`**. The count looks worse
+than it is: those 112 are accessor calls, so the cheapest shape is to redefine the accessor to return
+`stored_slots()` and delete the field from the record's encode/decode - the callers then keep
+compiling while the geometry unifies. That is the shape to try first; editing 112 call sites is the
+fallback, not the plan.
+
 ## Design Documentation Impact
 
 - [ADR 0052](0052-per-label-adjacency-order-and-tombstone-reuse.md): withdraw the value clause from
