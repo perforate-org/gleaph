@@ -487,31 +487,6 @@ fn bench_scalar_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
     })
 }
 
-/// The same inserts, run against a copy-on-write overlay and published in one commit.
-#[bench(raw)]
-fn bench_shadowed_scalar_fan_in_128_width_0() -> canbench_rs::BenchResult {
-    let (store, label, input) = setup_fan_in_directed_edges(128, 0);
-    canbench_rs::bench_fn(|| {
-        let guard = ic_stable_memory_backend::enter_shadow();
-        let inserts = canbench_rs::bench_scope("shadowed_scalar_inserts");
-        for edge in &input {
-            store
-                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
-                .expect("scalar insert");
-        }
-        drop(inserts);
-        ic_cdk::println!(
-            "shadow fan-in: dirty_blocks={} dirty_bytes={}",
-            guard.dirty_ranges(),
-            guard.dirty_bytes()
-        );
-        black_box(guard.dirty_bytes());
-        let commit = canbench_rs::bench_scope("shadowed_commit");
-        guard.commit().expect("the overlay fits stable memory");
-        drop(commit);
-    })
-}
-
 /// One bucket's worth of edges from a single source, each carrying a fixed-width inline value.
 ///
 /// Deleting them one at a time from the front is the worst case for the values span: every delete
