@@ -418,9 +418,17 @@ one block early.
 path that serves this shape: `visit_edges_with_inline_property_impl`'s slow arm batches values by
 **live ordinal** (`let mut ordinal = ...`, `value_range = ordinal..ordinal + batch_rows`) while the
 callback reports a *slot*, so a bucket with a tombstone reads each block one slot early. Converting
-that batch to slots is the fix - attempted once and reverted at 43 -> 49, because the callback's `slot`
-and the batch bounds have to agree with `visit_slab_bucket_span_edges`' own order, which needs its own
-careful pass. It also means the physical-layout value image is not needed for this failure.
+that batch to slots is the fix, and it landed: **43 -> 34**. The bound had to be the bucket's
+*resident value slots* (slab prefix plus spill rows), not the slab prefix - bounding by the prefix alone
+gives an empty range for a run-backed bucket and underflows the in-batch offset, which is what the
+first attempt (43 -> 49) did. It also means the physical-layout value image is not needed for this
+failure.
+
+**Next lead, from the 34.** `invariants.rs` asserts
+`vertex.inline_property_bytes_allocated_bytes == sum of bucket_resident_inline_property_bytes`, and it
+now fails with `left: 0` on tree-mode point-state fixtures - so some publish path changes a bucket's
+value slots without growing or shrinking the span that backs them. That is the accounting side of the
+rule the value image would enforce.
 
 Two fixtures still show values one row behind after a **wholesale** span rewrite
 (`edge_inline_propertys_survive_rewrite_with_tombstones`,
