@@ -380,7 +380,17 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
-**Where it stands: 96 -> 25.** Three more distinctions landed: the swap gate's value clause is
+**Where it stands: 96 -> 22.** After the swap gate, the hybrid fixtures and the accounting, the
+promotion group cleared as well: `normal_and_bypass_relocation_retains_runs_and_values` now asserts the
+mirror (both runs stand or fall together, same row count) instead of expecting the delete to fold the
+values away, and two fixtures that proved a bucket was hybrid by "the two prefixes differ" now say so
+with the values run, because the prefixes are one number.
+
+What is left is 22: `values::tests` (10), `deferred` (5), `traverse` (3), `compact` (3) and one record
+test - the fixtures whose model is the rank-addressed plane, which have to be rebuilt rather than
+adjusted.
+
+**Where it stood at 25.** Three more distinctions landed: the swap gate's value clause is
 withdrawn (ADR 0052's reason for it was the value window shift, which the slot plane removes), the
 "hybrid" traversal fixture now proves its state with the values run instead of a width gap that can no
 longer exist, and the accounting separates what a bucket needs from what the allocator backs.
