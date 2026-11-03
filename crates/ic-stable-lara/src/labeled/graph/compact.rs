@@ -1354,6 +1354,56 @@ mod physical_layout_tests {
     }
 
     #[test]
+    fn next_leaf_mate_edge_start_reports_the_mates_position() {
+        use super::super::test_support::TestEdge;
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = graph.buckets.read_label_bucket_slot(0).unwrap();
+
+        // The fixture's two buckets sit at 100 and 68, so the mate's position is the lower one. The
+        // fold's room is measured against this, not against the region end, which is derived from
+        // the regions that exist and stretches over a mate that owns none (ADR 0098).
+        assert_eq!(
+            graph
+                .next_leaf_vertex_edge_start(VertexId::from(0))
+                .unwrap(),
+            Some(68)
+        );
+
+        // Moving the mate past this bucket's content moves the reported position with it, which is
+        // what bounds the fold.
+        let content_end = source.edge_start() + u64::from(source.stored_slots());
+        graph
+            .buckets
+            .write_label_bucket_slot(
+                1,
+                LabelBucket::from_parts(
+                    source.bucket_label_key(),
+                    content_end + 1,
+                    source.degree(),
+                    1,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            graph
+                .next_leaf_vertex_edge_start(VertexId::from(0))
+                .unwrap(),
+            Some(content_end + 1)
+        );
+
+        // A row that was never written is not a mate: `vertices.len()` counts capacity, and reading
+        // its buckets would be reading uninitialised slots.
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        assert_eq!(
+            graph
+                .next_leaf_vertex_edge_start(VertexId::from(0))
+                .unwrap(),
+            Some(content_end + 1),
+            "an unwritten row contributes no edge position"
+        );
+    }
+
+    #[test]
     fn fold_moves_the_spill_head_into_the_span_without_moving_ordinals() {
         use super::super::test_support::TestEdge;
         let (graph, _m) = physical_fixture::<TestEdge>();

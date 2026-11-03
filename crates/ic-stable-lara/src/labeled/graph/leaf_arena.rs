@@ -968,6 +968,11 @@ where
         if vertex.is_default_edge_labeled() {
             return Ok(Some(vertex.base_slot_start()));
         }
+        // A row that was never written has no buckets to read; `vertices.len()` counts capacity,
+        // not live rows, so a leaf scan can reach one.
+        if vertex.degree() == 0 {
+            return Ok(None);
+        }
         let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
             return Ok(None);
         };
