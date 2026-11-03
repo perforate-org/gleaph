@@ -390,6 +390,24 @@ What is left is 22: `values::tests` (10), `deferred` (5), `traverse` (3), `compa
 test - the fixtures whose model is the rank-addressed plane, which have to be rebuilt rather than
 adjusted.
 
+**The last design question, found in `value_span_relocation_*`.** Those fixtures drive
+`fold_bucket_values_run_into_slab` - the fold that moves a bucket's **values only** from the run into
+the slab - and assert the run is gone afterwards. Under the mirror that fold has no meaning: moving
+only the values leaves the edge run holding rows whose blocks moved, which is precisely the divergence
+this ADR removes. It has two production callers (`update_edge_inline_property_at_slot` before an
+update, and the insert path when the value run is full) and both were there to restore the
+rank-addressed plane's dense precondition.
+
+So the question to settle is what replaces it, and the two candidates are:
+(a) delete it and let the callers write at the slot (the update path already can; the full-run insert
+needs its `ValuesRunFull` error path exercised), or
+(b) redefine it to fold the **edge run and the value run together**, which is what
+`fold_bucket_edge_spill_head_into_span` now does.
+
+(a) is the smaller statement and matches the ADR; (b) keeps the call sites' shape but duplicates the
+paired fold the edge side already has. Either way those three fixtures are rebuilt around whichever
+answer is chosen, which is why they are the last group rather than the next.
+
 **Where it stood at 25.** Three more distinctions landed: the swap gate's value clause is
 withdrawn (ADR 0052's reason for it was the value window shift, which the slot plane removes), the
 "hybrid" traversal fixture now proves its state with the values run instead of a width gap that can no
