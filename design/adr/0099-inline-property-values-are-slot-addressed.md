@@ -424,6 +424,14 @@ gives an empty range for a run-backed bucket and underflows the in-batch offset,
 first attempt (43 -> 49) did. It also means the physical-layout value image is not needed for this
 failure.
 
+**Two things the accounting had conflated.** `inline_property_bytes_slab_slots` was answering one
+question and being used for another. After this ADR it means "how many value slots this geometry
+needs" - the edge prefix - but `ensure_bucket_inline_property_bytes_span` compared it against
+`had_bytes` computed from the *same* accessor, so the admission was a tautology: a slab bucket could
+report 16 backed slots while the vertex was charged nothing, and no span was ever allocated.
+`inline_property_bytes_slab_slots_allocated` exposes the descriptor's recorded count for that side, and
+the resident/charged accounting uses it. That distinction took the branch 34 -> 30.
+
 **Next lead, from the 34.** `invariants.rs` asserts
 `vertex.inline_property_bytes_allocated_bytes == sum of bucket_resident_inline_property_bytes`, and it
 now fails with `left: 0` on tree-mode point-state fixtures - so some publish path changes a bucket's
