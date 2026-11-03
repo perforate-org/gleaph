@@ -364,6 +364,17 @@ thirteen are `values::tests` and the bulk of those assert the old geometry (`sla
 dense-by-degree statistics) rather than behaviour; `traverse` (7) and `compact` (5) mix the same.
 The code paths still known to be wrong are materialization's publication and the promotion path.
 
+**Materialization landed, at 46.** Its stream length is the edge prefix rather than `degree`, its
+publication keeps the value run and extends it to the edge run's length, and the accessor returns zero
+value slots when the bucket has no width (which is what several "slab_slots on a width-0 bucket"
+assertions were really about). Two of the four fixtures moved with it; the tombstone-inclusive fill
+now expects `stored_slots` blocks and reads them, because a tombstoned slot keeps its block.
+
+The rest of that list is fixture migration - `values::tests` (now ~11), `traverse` (7), `deferred`
+(6), `compact` (5), `remove` (3), `promote` (2) - plus the promotion path and one wide-value (1000
+byte) materialization case that raises a width mismatch where both sides report 1000, which needs its
+own look.
+
 **Materialization resists a one-line change, twice measured.** Publishing the fill over `stored_slots`
 plus extending the value run to the edge run's length was tried twice: 48 -> 50 both times. Four of
 the deferred-materialization fixtures (`materialize_atomic_on_failure`,
