@@ -661,6 +661,7 @@ mod tests {
                 u64::from(leaf as u32),
                 &SegmentSpanMeta {
                     physical_start: start,
+                    fixed_quota_intact: true,
                 },
             );
         }

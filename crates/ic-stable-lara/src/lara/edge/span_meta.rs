@@ -25,7 +25,7 @@ const STRIDE_OFFSET: u64 = 12;
 /// Declared reserved header bytes between the stride field and [`DATA_OFFSET`].
 const RESERVED_OFFSET: u64 = 16;
 const RESERVED_SIZE: usize = 16;
-const ENTRY_SIZE: u64 = 8;
+const ENTRY_SIZE: u64 = 9;
 
 #[derive(Debug)]
 struct HeaderV1 {
@@ -41,6 +41,14 @@ pub struct SegmentSpanMeta {
     /// Physical edge-slab start slot assigned to this segment, or the internal
     /// unassigned sentinel until the segment obtains a contiguous slab reservation.
     pub physical_start: u64,
+    /// Whether this leaf's fixed-quota layout still holds.
+    ///
+    /// A leaf is born in the fixed-quota layout, where every vertex sits in its own quota slot and
+    /// the fast placement path is sound. Tiling the leaf, or growing any bucket's slab prefix,
+    /// makes that false, and it is never restored: the placement then takes the path that reads the
+    /// real spans. This is the one place that records the fact, because deriving it from the
+    /// vertices' widths is not affordable on the insert path (ADR 0098).
+    pub fixed_quota_intact: bool,
 }
 
 /// Sentinel stored in [`SegmentSpanMeta::physical_start`] before a segment slab is pinned.
@@ -52,6 +60,7 @@ impl Default for SegmentSpanMeta {
     fn default() -> Self {
         Self {
             physical_start: SPAN_PHYSICAL_UNASSIGNED,
+            fixed_quota_intact: true,
         }
     }
 }
@@ -208,6 +217,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         assert!(index < self.len());
         SegmentSpanMeta {
             physical_start: read_u64(&self.memory, Address::from(Self::entry_offset(index))),
+            fixed_quota_intact: self.read_intact(index),
         }
     }
 
@@ -266,6 +276,40 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
             Address::from(Self::entry_offset(index)),
             item.physical_start,
         );
+        self.write_intact(index, item.fixed_quota_intact);
+    }
+
+    /// Whether this leaf's fixed-quota layout still holds, without reading the row's start.
+    #[inline]
+    pub fn is_fixed_quota_intact(&self, index: u64) -> bool {
+        assert!(index < self.len());
+        self.read_intact(index)
+    }
+
+    /// Marks this leaf's fixed-quota layout as gone. One-way on purpose: nothing restores it, so a
+    /// leaf that has been tiled or grown keeps taking the placement that reads the real spans.
+    #[inline]
+    pub fn clear_fixed_quota_intact(&self, index: u64) {
+        assert!(index < self.len());
+        if self.read_intact(index) {
+            self.write_intact(index, false);
+        }
+    }
+
+    #[inline]
+    fn read_intact(&self, index: u64) -> bool {
+        let mut byte = [0u8; 1];
+        self.memory
+            .read(Self::entry_offset(index).saturating_add(8), &mut byte);
+        byte[0] != 0
+    }
+
+    #[inline]
+    fn write_intact(&self, index: u64, intact: bool) {
+        self.memory.write(
+            Self::entry_offset(index).saturating_add(8),
+            &[u8::from(intact)],
+        );
     }
 
     /// Reads `physical_start` at `index`, stores `new_start`, and returns the previous value.
@@ -312,6 +356,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
             Self::entry_offset(len),
             &item.physical_start.to_le_bytes(),
         )?;
+        self.write_intact(len, item.fixed_quota_intact);
         self.set_len(new_len);
         Ok(())
     }
@@ -375,13 +420,58 @@ mod tests {
     fn segment_span_meta_store_reopens_physical_starts() {
         let memory = vector_memory();
         let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
-        store.push(SegmentSpanMeta { physical_start: 12 }).unwrap();
-        store.push(SegmentSpanMeta { physical_start: 48 }).unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 12,
+                fixed_quota_intact: true,
+            })
+            .unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 48,
+                fixed_quota_intact: true,
+            })
+            .unwrap();
 
         let reopened = SegmentSpanMetaStore::init(memory).unwrap();
         assert_eq!(reopened.len(), 2);
-        assert_eq!(reopened.get(0), SegmentSpanMeta { physical_start: 12 });
-        assert_eq!(reopened.get(1), SegmentSpanMeta { physical_start: 48 });
+        assert_eq!(
+            reopened.get(0),
+            SegmentSpanMeta {
+                physical_start: 12,
+                fixed_quota_intact: true
+            }
+        );
+        assert_eq!(
+            reopened.get(1),
+            SegmentSpanMeta {
+                physical_start: 48,
+                fixed_quota_intact: true
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_quota_intact_is_persisted_and_clears_one_way() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 5,
+                fixed_quota_intact: true,
+            })
+            .unwrap();
+        assert!(store.is_fixed_quota_intact(0));
+
+        store.clear_fixed_quota_intact(0);
+        assert!(!store.is_fixed_quota_intact(0));
+        // Moving the block does not restore a layout the leaf has left.
+        store.replace_physical_start(0, 9);
+        assert!(!store.is_fixed_quota_intact(0));
+
+        let reopened = SegmentSpanMetaStore::init(memory).unwrap();
+        assert_eq!(reopened.get(0).physical_start, 9);
+        assert!(!reopened.is_fixed_quota_intact(0));
     }
 
     #[test]
@@ -391,6 +481,7 @@ mod tests {
         store
             .push(SegmentSpanMeta {
                 physical_start: 100,
+                fixed_quota_intact: true,
             })
             .unwrap();
         assert_eq!(store.replace_physical_start(0, 101), 100);
@@ -404,6 +495,7 @@ mod tests {
         store
             .push(SegmentSpanMeta {
                 physical_start: 200,
+                fixed_quota_intact: true,
             })
             .unwrap();
         assert_eq!(store.update_physical_start(0, |p| p.wrapping_add(7)), 200);
@@ -414,7 +506,12 @@ mod tests {
     fn span_meta_header_reserved_region_is_zeroed_and_reopens() {
         let memory = vector_memory();
         let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
-        store.push(SegmentSpanMeta { physical_start: 12 }).unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 12,
+                fixed_quota_intact: true,
+            })
+            .unwrap();
         drop(store);
 
         let mut reserved = [0u8; RESERVED_SIZE];
@@ -423,7 +520,13 @@ mod tests {
 
         let reopened = SegmentSpanMetaStore::init(memory).unwrap();
         assert_eq!(reopened.len(), 1);
-        assert_eq!(reopened.get(0), SegmentSpanMeta { physical_start: 12 });
+        assert_eq!(
+            reopened.get(0),
+            SegmentSpanMeta {
+                physical_start: 12,
+                fixed_quota_intact: true
+            }
+        );
     }
 
     #[test]
@@ -463,6 +566,7 @@ mod bench {
                 store
                     .push(SegmentSpanMeta {
                         physical_start: black_box(i * 16),
+                        fixed_quota_intact: true,
                     })
                     .expect("push span meta");
             }

@@ -229,12 +229,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     ) -> Result<(), GrowFailed> {
         let idx = u64::from(segment);
         if idx < self.span_meta.len() {
-            self.span_meta.set(idx, &SegmentSpanMeta { physical_start });
+            // Re-pinning a leaf moves its block; it does not restore a layout the leaf has left,
+            // so the flag carries over rather than defaulting back to intact.
+            let fixed_quota_intact = self.span_meta.is_fixed_quota_intact(idx);
+            self.span_meta.set(
+                idx,
+                &SegmentSpanMeta {
+                    physical_start,
+                    fixed_quota_intact,
+                },
+            );
         } else {
             while self.span_meta.len() < idx {
                 self.span_meta.push(SegmentSpanMeta::default())?;
             }
-            self.span_meta.push(SegmentSpanMeta { physical_start })?;
+            self.span_meta.push(SegmentSpanMeta {
+                physical_start,
+                fixed_quota_intact: true,
+            })?;
         }
         Ok(())
     }
