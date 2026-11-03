@@ -380,7 +380,13 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
-**Where it stands: 96 -> 22.** After the swap gate, the hybrid fixtures and the accounting, the
+**Where it stands: 96 -> 16.** The rank-modelled fixtures fall one at a time as their premises are
+restated: the delete no longer folds the plane (`removing_non_last_...`), a row's block is read through
+the slot accessor rather than from the span's raw bytes
+(`edge_inline_propertys_round_trip_via_unchecked_label_iteration`), and the storage statistics follow
+the bucket's residency instead of assuming every row is slab-resident.
+
+**Where it stood at 22.** After the swap gate, the hybrid fixtures and the accounting, the
 promotion group cleared as well: `normal_and_bypass_relocation_retains_runs_and_values` now asserts the
 mirror (both runs stand or fall together, same row count) instead of expecting the delete to fold the
 values away, and two fixtures that proved a bucket was hybrid by "the two prefixes differ" now say so
