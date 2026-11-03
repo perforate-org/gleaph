@@ -5482,6 +5482,10 @@ where
             },
         )?;
         preparation.ready()?.publish();
+        // The slide re-tiles the whole leaf, so it is no longer in the fixed-quota layout the fast
+        // placement path assumes (ADR 0098). Recorded after the publish, next to the other writer of
+        // this fact - the fold, which grows a prefix without a rewrite.
+        self.clear_leaf_fixed_quota_intact(src);
         Ok(())
     }
 
