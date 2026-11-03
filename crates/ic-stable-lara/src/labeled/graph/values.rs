@@ -757,6 +757,45 @@ where
     /// inside the prefix it is a slab block, beyond it the row lives in the spill run and so does its
     /// value. The former heuristic (append to the run when the slab was not at the tail) decided
     /// residency from the allocator's state, which is what let the two planes disagree.
+    /// Writes an **existing** row's value block, in whichever plane the row lives.
+    ///
+    /// Unlike [`Self::write_edge_inline_property_after_insert`] this never appends: the row already
+    /// owns a block, so a slot past the prefix is written at its own index in the values run. That
+    /// distinction is the whole difference between inserting a row and updating one (ADR 0099).
+    pub(super) fn write_edge_inline_property_at_existing_row(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        mut bucket: LabelBucket,
+        slot_index: u32,
+        edge: &E,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
+            return Ok(bucket);
+        }
+        if slot_index >= bucket.stored_slots() {
+            let row = slot_index
+                .checked_sub(bucket.stored_slots())
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            self.values
+                .spill_write(
+                    run,
+                    row,
+                    bucket.inline_property_byte_width(),
+                    edge.edge_inline_property_bytes(),
+                )
+                .map_err(LabeledOperationError::from)?;
+            return Ok(bucket);
+        }
+        bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
+        self.write_edge_inline_property_at_ordinal(&bucket, slot_index, edge)?;
+        Ok(bucket)
+    }
+
     pub(super) fn write_edge_inline_property_after_insert(
         &self,
         src: VertexId,
@@ -1539,10 +1578,13 @@ where
             });
         }
         if edge_inline_property_width != 0 {
-            bucket = self.ensure_bucket_inline_property_bytes_span(src, slot, bucket)?;
-            self.write_edge_inline_property_at_slot(
-                src, &vertex, slot, &bucket, slot_index, &edge,
-            )?;
+            // ADR 0099: the block goes into the plane the row lives in. Writing at the slot as if it
+            // were a slab ordinal made an update on a fully spilled bucket land at the start of the
+            // span while the read looked in the run; appending to the run (the insert path's
+            // semantics) put it at the run's tail instead of at the row's index. An update writes the
+            // row's own block.
+            bucket = self
+                .write_edge_inline_property_at_existing_row(src, slot, bucket, slot_index, &edge)?;
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);
