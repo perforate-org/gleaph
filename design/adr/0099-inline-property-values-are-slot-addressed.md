@@ -255,6 +255,21 @@ live-ordinal mapping they served.
 The type is also the natural place to test the invariant: a unit test that builds a pair whose store
 lengths differ and asserts `commit` refuses it is the smallest possible statement of point 1.
 
+**What "a run" is, and why the two ids cannot be one.** A run is one bucket's contiguous row array in
+a `SpillRunStore`: an arena over its own memory region holding fixed-size rows (`row_bytes`), where a
+run is allocated as a power-of-two class between 8 and 1024 rows, addressed `(run_id, index)` and
+carrying a `used_len`. A bucket owns at most one run per plane, and the planes are two arenas:
+
+| arena | rows | referenced by | id capacity |
+| --- | --- | --- | --- |
+| `ArenaRows::EDGE` | edge records (`E::BYTES`) | `LabelBucket.edge_spill_run`, bypass row | 2^27-1 (the bypass row's 27-bit field binds it) |
+| `ArenaRows::VALUES` | inline-value blocks (`width` bytes) | `LabelBucket.values_spill_run` | `u32::MAX` |
+
+Their allocators are independent - different memories, different capacities, different free lists -
+so the same numeric id does not denote the same pair, and one id cannot be derived from the other.
+The pair therefore carries both ids and publishes them together; point 3 above (derive where
+possible) applies to the *length* and the *lifecycle*, not to the id.
+
 **The atomicity is measured, not assumed.** Redefining
 `inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
 one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
