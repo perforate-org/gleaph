@@ -557,3 +557,189 @@ fn bench_graph_undirected_inline_update_fit_w2() -> canbench_rs::BenchResult {
 fn bench_graph_undirected_inline_update_no_fit_w2() -> canbench_rs::BenchResult {
     check_undirected_inline_update_reuse(8)
 }
+
+/// Slice 1 of ADR 0099: a property test that must pass on the current code, so the addressing
+/// change has a net under it. Values are ordinal-addressed today and will be slot-addressed after
+/// the change; a test that only inserts and reads back cannot tell the two apart, so this one
+/// interleaves deletes, refills of the holes they leave, updates, and maintenance passes.
+#[test]
+#[ignore = "blocked on the update-after-delete misalignment: the focused reproduction is inline_update_after_a_delete_writes_the_right_row"]
+fn values_stay_with_their_rows_through_random_mutations() {
+    const TARGETS: u32 = 5;
+    const OPS: u32 = 240;
+
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let targets: Vec<VertexId> = (0..TARGETS)
+        .map(|_| store.insert_vertex().expect("target"))
+        .collect();
+    let label = crate::test_labels::edge_label_id_for_name("SlotAddressedValues");
+    install_w2_inline_property_profile(label);
+    let wire = lara_label(label.pack(EdgeDirectedness::Directed));
+
+    let mut model: BTreeMap<u32, u16> = BTreeMap::new();
+    let mut state: u64 = 0x5eed_1234;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as u32
+    };
+
+    let key_of = |target: u32| target;
+    let value_of = |target: u32, salt: u32| -> u16 {
+        // Distinct per (target, generation) so a value that stays behind would be detectable.
+        (target as u16)
+            .wrapping_mul(101)
+            .wrapping_add((salt % 400) as u16)
+    };
+    let mut generation: BTreeMap<u32, u32> = BTreeMap::new();
+
+    for op in 0..OPS {
+        let target = next() % TARGETS;
+        let _salt = next();
+        match next() % 3 {
+            // Insert or refill a hole.
+            0 | 1 => {
+                let generation = generation.entry(target).or_insert(0);
+                *generation += 1;
+                let value = value_of(target, *generation);
+                if model.contains_key(&key_of(target)) {
+                    let handle = store
+                        .find_first_forward_handle(source, wire, |edge| {
+                            edge.neighbor_vid() == targets[target as usize]
+                        })
+                        .expect("lookup")
+                        .expect("the model says the edge exists");
+                    store
+                        .update_edge_inline_property_at_handle(handle, &value.to_le_bytes())
+                        .expect("update");
+                } else {
+                    store
+                        .insert_directed_edge_with_inline_property_bytes(
+                            source,
+                            targets[target as usize],
+                            Some(label),
+                            &value.to_le_bytes(),
+                        )
+                        .expect("insert");
+                }
+                model.insert(key_of(target), value);
+            }
+            // Delete, leaving a hole a later insert refills.
+            _ => {
+                if model.remove(&key_of(target)).is_some() {
+                    let handle = store
+                        .find_first_forward_handle(source, wire, |edge| {
+                            edge.neighbor_vid() == targets[target as usize]
+                        })
+                        .expect("lookup")
+                        .expect("the model says the edge exists");
+                    store.delete_edge_by_handle(handle).expect("delete");
+                }
+                generation.remove(&target);
+            }
+        }
+
+        if op % 40 == 39 {
+            store
+                .run_maintenance_best_effort(ic_stable_lara::MaintenanceBudget {
+                    max_instructions: 0,
+                    reserve_instructions: 0,
+                    checkpoint_every: 1,
+                    max_work_items: None,
+                    max_segments: None,
+                    max_delete_edge_steps: None,
+                })
+                .expect("maintenance");
+        }
+
+        // Every live row must read back exactly the value last written to it, and nothing else may
+        // be visible.
+        let mut seen: BTreeMap<u32, u16> = BTreeMap::new();
+        for edge in store.directed_out_edges(source).expect("out edges") {
+            let bytes: [u8; 2] = edge
+                .inline_property
+                .as_slice()
+                .try_into()
+                .expect("a width-2 value");
+            let target = targets
+                .iter()
+                .position(|candidate| *candidate == edge.neighbor_vid())
+                .expect("an edge to a known target") as u32;
+            assert!(
+                seen.insert(target, u16::from_le_bytes(bytes)).is_none(),
+                "op {op}: the reader returned two rows for one edge"
+            );
+        }
+        assert_eq!(
+            seen, model,
+            "op {op}: the values did not stay with their rows"
+        );
+    }
+}
+
+/// The minimal shape the ADR 0099 property test failed on before any addressing change: deleting a
+/// row that precedes another, then updating the later row's value, writes the value to the wrong row.
+#[test]
+fn inline_update_after_a_delete_writes_the_right_row() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let v0 = store.insert_vertex().expect("v0");
+    let v1 = store.insert_vertex().expect("v1");
+    let v2 = store.insert_vertex().expect("v2");
+    let v3 = store.insert_vertex().expect("v3");
+    let label = crate::test_labels::edge_label_id_for_name("UpdateAfterDelete");
+    install_w2_inline_property_profile(label);
+    let wire = lara_label(label.pack(EdgeDirectedness::Directed));
+
+    let insert = |target: VertexId, value: u16| {
+        store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label),
+                &value.to_le_bytes(),
+            )
+            .expect("insert");
+    };
+    let handle_to = |target: VertexId| {
+        store
+            .find_first_forward_handle(source, wire, |edge| edge.neighbor_vid() == target)
+            .expect("lookup")
+            .expect("edge exists")
+    };
+
+    insert(v3, 304);
+    insert(v1, 102);
+    insert(v2, 203);
+    insert(v0, 1);
+
+    store
+        .update_edge_inline_property_at_handle(handle_to(v2), &204u16.to_le_bytes())
+        .expect("update v2");
+    store
+        .delete_edge_by_handle(handle_to(v1))
+        .expect("delete v1");
+    store
+        .update_edge_inline_property_at_handle(handle_to(v2), &205u16.to_le_bytes())
+        .expect("update v2 again");
+
+    let mut seen: Vec<(VertexId, u16)> = store
+        .directed_out_edges(source)
+        .expect("out edges")
+        .into_iter()
+        .map(|edge| {
+            (
+                edge.neighbor_vid(),
+                u16::from_le_bytes(edge.inline_property.as_slice().try_into().expect("width 2")),
+            )
+        })
+        .collect();
+    seen.sort_unstable_by_key(|(vid, _)| u32::from(*vid));
+    assert_eq!(
+        seen,
+        vec![(v0, 1), (v2, 205), (v3, 304)],
+        "each row reads back the value last written to it"
+    );
+}

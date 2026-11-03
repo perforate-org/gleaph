@@ -68,6 +68,28 @@ defect from being rediscovered without its prior reasoning.
   only as a uniform percentage on every bench; bisecting on one bench found it faster than reading
   the diff.
 
+### GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW — inline value update lands one ordinal low
+
+- **Status:** Open, reproduced 2026-11-03 while writing ADR 0099's slice-1 property test.
+- **Observed behavior:** with four directed edges carrying width-2 values on one vertex, updating one
+  value, deleting a row that precedes another, then updating the later row's value writes that value
+  **one row too early**: after `v3=304, v1=102, v2=203, v0=1`, `update(v2, 204)`, `delete(v1)`,
+  `update(v2, 205)`, the reader returns `v0=205, v2=204, v3=304` where the values last written are
+  `v0=1, v2=205, v3=304`.
+- **Expected or needed behavior:** every live row reads back the value last written to it. The
+  property test `values_stay_with_their_rows_through_random_mutations` interleaves inserts, hole
+  refills, updates, deletes and maintenance passes and asserts exactly that; it is `#[ignore]`d until
+  this is fixed, because it fails at the same op shape.
+- **Interpretation:** the update path derives the value's ordinal from a position that the delete's
+  left-shift has not been applied to - the update wrote to the slot that the deleted row used to
+  occupy. This is the ordinal/slot divergence ADR 0099 exists to remove: the values plane is a rank
+  lookup that has to be kept consistent with the rows, and one path is not doing it.
+- **Owner:** the inline-property update path in `crates/ic-stable-lara/src/labeled/graph/values.rs`
+  (the ordinal derivation), with the frozen reproduction in
+  `crates/graph/src/facade/store/inline_update_fixture.rs`.
+- **Evidence:** `inline_update_after_a_delete_writes_the_right_row` (frozen reproduction, currently
+  the suite's only red test) and the ignored property test above.
+
 ### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — the fold's new bound is only covered one layer up
 
 - **Status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
