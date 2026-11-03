@@ -5986,48 +5986,13 @@ where
         let vacated = checked_add_slot_index(bucket.edge_start(), u64::from(swap.vacated_slot))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let width = bucket.inline_property_byte_width();
-        if width > 0 && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN {
-            let degree = bucket.degree();
-            let k_ord = swap.hole_ordinal;
-            let m_ord = degree
-                .checked_sub(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if k_ord < m_ord {
-                // The moved edge's value is the last live block (ordinal m_ord); it
-                // lands at the hole ordinal k_ord and the suffix [k_ord..m_ord) shifts
-                // one block right. The window is (degree - k_ord) blocks in ordinal
-                // space, never physical-slot arithmetic.
-                let window_blocks = m_ord
-                    .checked_sub(k_ord)
-                    .and_then(|d| d.checked_add(1))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_len = u64::from(window_blocks)
-                    .checked_mul(u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_len_usize = usize::try_from(byte_len)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                let window_offset =
-                    crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
-                        bucket, k_ord,
-                    )?;
-                let mut window = vec![0u8; byte_len_usize];
-                self.values.read_bytes(window_offset, &mut window);
-                let width_usize = usize::from(width);
-                let suffix_len = window.len() - width_usize;
-                let suffix_offset = window_offset
-                    .checked_add(u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                // Shift the suffix [k_ord..m_ord) one block right (to ordinals k_ord+1..=m_ord),
-                // then write the moved block at the hole ordinal.
-                self.values
-                    .write_bytes(suffix_offset, &window[..suffix_len])
-                    .expect(
-                        "swap value shift stays within the existing inline property bytes span",
-                    );
-                self.values
-                    .write_bytes(window_offset, &window[suffix_len..])
-                    .expect("swap value move stays within the existing inline property bytes span");
-            }
+        if width > 0 {
+            // ADR 0099: the moved row's value block goes where the row goes. The window shift this
+            // used to perform existed because values were addressed by rank and the swap had to keep
+            // the ranks in order; with one geometry it is a single block copy, and it works whichever
+            // plane holds the block.
+            let value = self.read_value_block_at_slot(bucket, swap.vacated_slot)?;
+            self.write_value_block_at_slot(bucket, swap.hole_slot, &value)?;
         }
         let edge = self.edges.read_slot(vacated);
         self.edges
