@@ -924,6 +924,26 @@ where
         leaf < store.len() && store.is_fixed_quota_intact(leaf)
     }
 
+    /// The edge-slab start of the next vertex in `vid`'s PMA leaf that owns one, or `None` when no
+    /// later leaf-mate has a slab bucket.
+    pub(crate) fn next_leaf_vertex_edge_start(
+        &self,
+        vid: VertexId,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        let seg = self.edges.header().segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        let mut ordinal = u32::from(vid).saturating_add(1);
+        while ordinal < end_vid {
+            if let Some(start) = self.vertex_edge_start(VertexId::from(ordinal))? {
+                return Ok(Some(start));
+            }
+            ordinal = ordinal.saturating_add(1);
+        }
+        Ok(None)
+    }
+
     /// Records that this vertex's leaf has left the fixed-quota layout: it was tiled, or one of its
     /// buckets grew its slab prefix. One-way - nothing restores it (ADR 0098).
     pub(crate) fn clear_leaf_fixed_quota_intact(&self, vid: VertexId) {

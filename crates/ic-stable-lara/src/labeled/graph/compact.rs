@@ -5217,6 +5217,19 @@ where
         } else {
             (old_base, new_alloc)
         };
+        // A widened span may not run past the next leaf-mate's edge start: that is the space its
+        // rows must come back to, and borrowing it is how a prefix grew over a sibling (ADR 0098).
+        // Dropping the growth keeps the span the vertex already holds, which is what the
+        // `SlackMayBeDropped` callers accept.
+        let (new_base, new_alloc) = match self.next_leaf_vertex_edge_start(src)? {
+            Some(next)
+                if new_alloc > old_alloc
+                    && new_base.saturating_add(u64::from(new_alloc)) > next =>
+            {
+                (old_base, old_alloc)
+            }
+            _ => (new_base, new_alloc),
+        };
         // I1: the plan reports the width the resolution obtained, so the commit never
         // publishes a cover wider than the span that backs it.
         let moved = old_alloc == 0 || new_alloc > old_alloc;
@@ -6147,8 +6160,14 @@ where
                 .find(|(start, _)| *start == finalized.edge_start())
                 .map(|(_, end)| end);
             if let Some(region_end) = region_end {
-                let free =
-                    u32::try_from(region_end.saturating_sub(content_end)).unwrap_or(u32::MAX);
+                // The region may extend over the next leaf-mate's edge start, because the slice is
+                // derived from the regions that exist (ADR 0098). Rows folded past that point would
+                // take the space the mate's own rows must come back to, so the room is measured
+                // against whichever comes first.
+                let limit = self
+                    .next_leaf_vertex_edge_start(vid)?
+                    .map_or(region_end, |next| region_end.min(next));
+                let free = u32::try_from(limit.saturating_sub(content_end)).unwrap_or(u32::MAX);
                 if free > 0 {
                     self.fold_bucket_edge_spill_head_into_span(slot, &finalized, free)?;
                 }
