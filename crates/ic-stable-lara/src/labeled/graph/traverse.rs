@@ -1985,19 +1985,31 @@ where
                 let batch_rows = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES
                     / usize::from(width).max(1))
                 .max(1) as u32;
-                let mut ordinal = match order {
+                // ADR 0099: values are addressed by slot, so the batch is a run of **slots**, not of
+                // live ordinals. The bound is the bucket's resident value slots (slab prefix plus
+                // spill rows); a batch spanning slots also covers the tombstoned ones in between,
+                // whose blocks are stale but never visited.
+                let slot_bound =
+                    crate::labeled::invariants::bucket_resident_inline_property_bytes_slots(
+                        &bucket,
+                    );
+                let mut next_slot = match order {
                     OutEdgeOrder::Ascending => 0,
-                    OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+                    OutEdgeOrder::Descending => slot_bound.saturating_sub(1),
                 };
                 let flow =
                     self.visit_slab_bucket_span_edges(&bucket, order, false, |slot, edge| {
-                        if width > 0 && !value_range.contains(&ordinal) {
+                        if width > 0 && !value_range.contains(&slot) {
                             value_range = match order {
                                 OutEdgeOrder::Ascending => {
-                                    ordinal..ordinal + batch_rows.min(bucket.degree() - ordinal)
+                                    slot..slot
+                                        .saturating_add(batch_rows)
+                                        .min(slot_bound)
+                                        .max(slot.saturating_add(1))
                                 }
                                 OutEdgeOrder::Descending => {
-                                    (ordinal + 1).saturating_sub(batch_rows)..ordinal + 1
+                                    slot.saturating_sub(batch_rows.saturating_sub(1))
+                                        ..slot.saturating_add(1)
                                 }
                             };
                             self.read_bucket_inline_property_bytes_range_into(
@@ -2006,7 +2018,7 @@ where
                                 &mut inline_property_bytes,
                             )?;
                         }
-                        let start = (ordinal - value_range.start) as usize * usize::from(width);
+                        let start = (slot - value_range.start) as usize * usize::from(width);
                         let flow = visit(
                             BucketEntryPosition::new(slot),
                             EdgeWithInlinePropertyRef {
@@ -2020,10 +2032,7 @@ where
                         if let ControlFlow::Break(value) = flow {
                             return Ok(ControlFlow::Break(value));
                         }
-                        match order {
-                            OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                            OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
-                        }
+                        next_slot = slot;
                         Ok(flow)
                     })?;
                 if let ControlFlow::Break(value) = flow {
