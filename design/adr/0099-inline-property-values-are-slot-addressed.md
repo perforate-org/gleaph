@@ -408,7 +408,10 @@ spans, freed in a different order - so restating them means re-deriving the expe
 for the mirrored plane rather than adjusting a constant. That is the shape of the last group and the
 reason it is slower than the earlier ones.
 
-**Where it stands: 96 -> 11.** Two of the allocator-state fixtures turned out to be asserting a state
+**Where it stands: 96 -> 10.** The record round-trip closed by asserting the geometry answer for a tree
+bucket: no value span, so its slot count is 0 while the descriptor's allocated count still round-trips.
+
+**Where it stood at 11.** Two of the allocator-state fixtures turned out to be asserting a state
 the mirrored plane cannot reach rather than one it reaches differently: in those graphs every row
 spills, so the values live in the buckets' runs and the slab owns no span at all. `free_bytes` counts
 hole space between live spans, not capacity, so "six freed bytes" and "two moved spans" have no
