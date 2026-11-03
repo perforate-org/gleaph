@@ -171,6 +171,26 @@ independently shippable steps.
 Steps 2 to 4 are the atomic part; the property test from step 1 is what says whether the result is
 still correct, and the benches from step 3 are what say whether it was worth it.
 
+**What the atomic part actually contains, from a partial pass (2026-11-03).** Two of the pieces are
+small and two are not:
+
+- *Small, and they work on their own:* the range reader
+  (`read_bucket_inline_property_bytes_range_into`) is already slot-addressed - it splits at the prefix
+  and indexes the run as `slot - prefix`. Making the single-slot reader stop mapping live ordinals
+  through the run chain, and having the slot-order collector pass the row's slot instead of its
+  enumerate index, is a handful of lines.
+- *The piece that makes it coherent:* the value span's **allocation** must follow the edge prefix.
+  `ensure_bucket_inline_property_bytes_span` / `publish_bucket_inline_property_bytes_span` still size
+  the span per live degree, so with the prefix width unified the reader asks for a slot the span never
+  allocated and gets `MissingAscLogIndex` - measured on
+  `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`.
+- *Then:* delete must stop shrinking the span and stop copying the suffix, the fold must extend both
+  prefixes together, and compaction must move value blocks with rows. Those are the paths where a
+  mistake corrupts data, and none of them can be left half-done.
+
+So the pass is: accessor -> reads -> span allocation -> delete -> fold -> compaction -> record field.
+Any prefix of that list leaves the tree red, which is why it is a single sitting.
+
 **The atomicity is measured, not assumed.** Redefining
 `inline_property_bytes_slab_slots()` to return `stored_slots()` - the smallest possible first step,
 one line, no call sites touched - turns **96 of 708 lara tests red**. That is the expected shape: the
