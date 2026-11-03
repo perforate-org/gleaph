@@ -68,6 +68,23 @@ defect from being rediscovered without its prior reasoning.
   only as a uniform percentage on every bench; bisecting on one bench found it faster than reading
   the diff.
 
+### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — the fold's new bound is only covered one layer up
+
+- **Status:** Open, small.
+- **Observed behavior:** the fix that stops a bucket's spill fold at the next leaf-mate's edge start
+  is covered by the graph-level fixture
+  (`inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which asserts the
+  arena's layout contract), but nothing at the layer that owns it asserts it. A future change to the
+  fold could pass every LARA test and only fail two layers up.
+- **Why the first attempt did not land:** the existing `physical_fixture` hard-codes the two buckets'
+  origins (100 and 68), so a bounded fold has no room in it, and doctoring vertex 1's bucket origin
+  did not move the vertex's own edge start - `next_leaf_vertex_edge_start` kept reporting 335, so the
+  assertion was measuring something else entirely. A fixture that builds the shape deliberately (a
+  mate with **no slab rows** at a known edge position just past the folding bucket's content) is how
+  to write it, and that is a small unit of its own.
+- **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
+- **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
+
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
 - **Status:** Resolved 2026-11-03 ([ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
