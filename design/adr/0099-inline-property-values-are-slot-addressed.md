@@ -176,8 +176,8 @@ small and two are not:
 
 - *Small, and they work on their own:* the range reader
   (`read_bucket_inline_property_bytes_range_into`) is already slot-addressed - it splits at the prefix
-  and indexes the run as `slot - prefix`. Making the single-slot reader stop mapping live ordinals
-  through the run chain, and having the slot-order collector pass the row's slot instead of its
+  and indexes the spill run as `slot - prefix`. Making the single-slot reader stop mapping live ordinals
+  through the spill-run chain, and having the slot-order collector pass the row's slot instead of its
   enumerate index, is a handful of lines.
 - *The piece that makes it coherent:* the value span's **allocation** must follow the edge prefix.
   `ensure_bucket_inline_property_bytes_span` / `publish_bucket_inline_property_bytes_span` still size
@@ -208,13 +208,13 @@ one lifecycle, not two that happen to agree:
 
 1. **Same length, always.** A row beyond the edge prefix has a value beyond the value prefix, so
    `spill_used_len(values_run) == spill_used_len(edge_run)` is an invariant, not a coincidence.
-2. **One publisher.** Creating, growing, and dropping a run are three separate operations today;
+2. **One publisher.** Creating, growing, and dropping a spill run are three separate operations today;
    after this ADR they must be one operation that touches both stores, or a crash between them leaves
    a row whose value was never allocated. That is the same "one writer" rule ADR 0098 applied to the
    leaf flag.
 3. **Derived, where possible.** If the value run can be derived from the edge run (same id, or created
    by the same call), the invariant is structural rather than maintained - which is this ADR's own
-   argument applied to the runs.
+   argument applied to the spill runs.
 4. **The record's two run fields** then either collapse into one or are written together in a single
    publish, and `inline_property_bytes_log_chain`/`log_len` disappear with the live-ordinal mapping
    they exist for.
@@ -227,7 +227,7 @@ whose slot says "run" and a bucket whose value run says "nothing here".
 Point 2 is best enforced by a type rather than by discipline, because the failure it prevents is
 "one of the two stores was updated" and no amount of call-site care makes that unrepresentable.
 
-`BucketRunPair` - a view over the two existing stores, not new state:
+`BucketSpillRuns` - a view over the two existing stores, not new state:
 
 | member | meaning |
 | --- | --- |
@@ -238,27 +238,27 @@ Point 2 is best enforced by a type rather than by discipline, because the failur
 Its API is the set of operations that must keep the two in step - `append(edge, value)`,
 `drop_head(n)`, `len()` - each of which applies to **both** stores and touches no descriptor. The
 only method that publishes is `commit(bucket) -> bucket`, which writes the descriptor once with both
-run ids and their shared length. That makes three things true by construction:
+spill-run ids and their shared length. That makes three things true by construction:
 
-- **the pair exists or does not**: there is no way to mint an edge run without the value run, because
-  the method that mints one mints the other;
+- **the pair exists or does not**: there is no way to mint an edge spill run without the value spill
+  run, because the method that mints one mints the other;
 - **the lengths agree**: `commit` refuses a pair whose two stores disagree, so the mismatch the 91-red
   measurement produced becomes unrepresentable rather than debug-asserted;
 - **one publish**: the descriptor is the commit point, so bytes written to either store before
   `commit` are invisible to a reader, and a trap between them rolls back with the message (the IC's
   message atomicity is what makes "write then publish once" safe).
 
-What it deletes is the reason this was hard: the paths that grow, fold or drop a run no longer call
+What it deletes is the reason this was hard: the paths that grow, fold or drop a spill run no longer call
 the two stores independently, and `inline_property_bytes_log_chain` / `log_len` go with the
 live-ordinal mapping they served.
 
 The type is also the natural place to test the invariant: a unit test that builds a pair whose store
 lengths differ and asserts `commit` refuses it is the smallest possible statement of point 1.
 
-**What "a run" is, and why the two ids cannot be one.** A run is one bucket's contiguous row array in
-a `SpillRunStore`: an arena over its own memory region holding fixed-size rows (`row_bytes`), where a
-run is allocated as a power-of-two class between 8 and 1024 rows, addressed `(run_id, index)` and
-carrying a `used_len`. A bucket owns at most one run per plane, and the planes are two arenas:
+**What a spill run is, and why the two ids cannot be one.** A spill run is one bucket's contiguous row
+array in a `SpillRunStore`: an arena over its own memory region holding fixed-size rows (`row_bytes`), where a
+spill run is allocated as a power-of-two class between 8 and 1024 rows, addressed `(run_id, index)` and
+carrying a `used_len`. A bucket owns at most one spill run per plane, and the planes are two arenas:
 
 | arena | rows | referenced by | id capacity |
 | --- | --- | --- | --- |
