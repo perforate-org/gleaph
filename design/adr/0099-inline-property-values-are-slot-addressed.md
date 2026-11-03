@@ -410,10 +410,17 @@ commit; that is a self-contained unit, and it is the last code gap.
 `stored_slots = 0`, `degree = 2`, in both snapshots: all of its rows are in the **edge spill run** and
 the values in the value run, on both sides of the rewrite. So the rewrite copies nothing for this
 shape; the values were already one behind *before* it. The step that moves them is the **delete**:
-after removing slot 0 the live rows read values `[10, 20]` where `[20, 30]` were written, so the edge
-run lost its head row while the value run kept its head block. The fix therefore belongs in the
-delete's spill path (or in whichever compaction of the run it triggers), not in the physical layout
-image.
+after removing slot 0 the live rows read values `[10, 20]` where `[20, 30]` were written - each row
+one block early.
+
+**Narrowed again: the reader, not the delete.** The spill delete tombstones in place
+(`spill_tombstone_row`) and drops nothing, so both runs keep their head. The off-by-one is in the read
+path that serves this shape: `visit_edges_with_inline_property_impl`'s slow arm batches values by
+**live ordinal** (`let mut ordinal = ...`, `value_range = ordinal..ordinal + batch_rows`) while the
+callback reports a *slot*, so a bucket with a tombstone reads each block one slot early. Converting
+that batch to slots is the fix - attempted once and reverted at 43 -> 49, because the callback's `slot`
+and the batch bounds have to agree with `visit_slab_bucket_span_edges`' own order, which needs its own
+careful pass. It also means the physical-layout value image is not needed for this failure.
 
 Two fixtures still show values one row behind after a **wholesale** span rewrite
 (`edge_inline_propertys_survive_rewrite_with_tombstones`,
