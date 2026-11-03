@@ -642,12 +642,6 @@ where
         } else {
             None
         };
-        let descending = order == OutEdgeOrder::Descending;
-        let mut ordinal = if descending {
-            bucket.degree().saturating_sub(1)
-        } else {
-            0
-        };
         let mut failure = None;
         let mut breaking = None;
         let label_id = bucket.bucket_label_key();
