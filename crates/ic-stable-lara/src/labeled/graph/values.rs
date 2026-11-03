@@ -737,6 +737,18 @@ where
         _edge_entry_idx: i32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
+        self.write_inline_property_bytes_to_log(bucket, edge.edge_inline_property_bytes())
+    }
+
+    /// Appends one row's value block to the bucket's values run.
+    ///
+    /// Takes the bytes rather than an edge because the mirror gives every run row a block: a row
+    /// inserted without inline bytes still owns one, so the caller may pass zeros.
+    pub(super) fn write_inline_property_bytes_to_log(
+        &self,
+        bucket: &LabelBucket,
+        bytes: &[u8],
+    ) -> Result<LabelBucket, LabeledOperationError> {
         let width = bucket.inline_property_byte_width();
         if width == 0 {
             return Ok(*bucket);
@@ -744,7 +756,7 @@ where
         let run = self.values.spill_mint(bucket.values_spill_run()).ok();
         let (run, _row) = self
             .values
-            .spill_append(run, width, edge.edge_inline_property_bytes())
+            .spill_append(run, width, bytes)
             .map_err(LabeledOperationError::from)?;
         bucket
             .try_with_values_spill_run(run.get())
@@ -804,11 +816,23 @@ where
         slot_index: u32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
+        let width = bucket.inline_property_byte_width();
+        // Tiny buckets hold no value state by construction (ADR 0096 §5), so the mirror applies to
+        // slab and tree buckets only.
+        if width == 0 || bucket.is_tiny_mode() {
             return Ok(bucket);
         }
         if slot_index >= bucket.stored_slots() {
-            return self.write_edge_inline_property_to_log(&bucket, -1, edge);
+            // ADR 0099 mirror: one block per run row. A row that lands in the run owns a block even
+            // when its edge carries no inline bytes, so the value run never falls behind the edge run.
+            let zeros;
+            let bytes = if edge.edge_inline_property_byte_width() == width {
+                edge.edge_inline_property_bytes()
+            } else {
+                zeros = vec![0u8; usize::from(width)];
+                &zeros
+            };
+            return self.write_inline_property_bytes_to_log(&bucket, bytes);
         }
         bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
