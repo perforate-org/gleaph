@@ -14,8 +14,7 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
     },
     lara::{
-        edge_inline_property::{InlinePropertyBytesLogReadError, InlinePropertyBytesLogWriteError},
-        operation_error::LaraOperationError,
+        edge_inline_property::InlinePropertyBytesLogReadError, operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
@@ -568,9 +567,7 @@ where
         bucket: &LabelBucket,
         slot: u32,
     ) -> Result<Vec<u8>, LabeledOperationError> {
-        let mut buf = Vec::new();
-        buf = self.read_bucket_inline_property_bytes_for_slot(bucket, slot, None)?;
-        Ok(buf)
+        self.read_bucket_inline_property_bytes_for_slot(bucket, slot, None)
     }
 
     /// Writes the value block of the row at bucket-local `slot`, into whichever plane holds it.

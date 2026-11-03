@@ -579,7 +579,7 @@ where
         src: VertexId,
         vertex: &LabeledVertex,
         slot: u64,
-        mut bucket: LabelBucket,
+        bucket: LabelBucket,
         slot_index: u32,
         location: BucketEdgeDeleteLocation,
     ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
@@ -591,7 +591,9 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(vertex, slot)?;
-        let Some(inline_property_bytes_ordinal) = self.bucket_live_ordinal_at_edge_slot(
+        // The value ordinal is only needed to prove the row is live now that the delete writes no
+        // value (ADR 0099).
+        let Some(_inline_property_bytes_ordinal) = self.bucket_live_ordinal_at_edge_slot(
             src,
             vertex,
             bucket_index,

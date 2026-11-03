@@ -5817,14 +5817,14 @@ where
             for (index, slot) in live_log_sources.iter().copied() {
                 self.values
                     .spill_read(values_run_id, index, width, &mut value)
-                    .map_err(|error| LabeledOperationError::from(error))?;
+                    .map_err(LabeledOperationError::from)?;
                 let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
                     &sized, slot,
                 )
                 .map_err(LabeledOperationError::from)?;
                 self.values
                     .write_bytes(offset, &value)
-                    .map_err(|error| LabeledOperationError::from(error))?;
+                    .map_err(LabeledOperationError::from)?;
             }
             let _ = self.values.spill_release(values_run_id);
             sized.without_edge_spill_run().without_values_spill_run()
@@ -6805,7 +6805,7 @@ where
             let mut values = vec![0u8; fold as usize * usize::from(width)];
             self.values
                 .spill_read_range(values_run, 0..fold, width, &mut values)
-                .map_err(|error| LabeledOperationError::from(error))?;
+                .map_err(LabeledOperationError::from)?;
             let sized =
                 self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, grown_bucket)?;
             let offset =
@@ -6813,7 +6813,7 @@ where
                     .map_err(LabeledOperationError::from)?;
             self.values
                 .write_bytes(offset, &values)
-                .map_err(|error| LabeledOperationError::from(error))?;
+                .map_err(LabeledOperationError::from)?;
             self.values
                 .spill_drop_head(values_run, fold)
                 .map_err(LabeledOperationError::from)?;

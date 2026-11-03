@@ -669,7 +669,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     ) -> Result<SpillRunId, LaraOperationError> {
         self.values_spill
             .repack(run, keep)
-            .map_err(|error| LaraOperationError::from(error))
+            .map_err(LaraOperationError::from)
     }
 
     pub(crate) fn spill_drop_head(
@@ -679,7 +679,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     ) -> Result<(), LaraOperationError> {
         self.values_spill
             .drop_head(run, count)
-            .map_err(|error| LaraOperationError::from(error))
+            .map_err(LaraOperationError::from)
     }
 
     pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {

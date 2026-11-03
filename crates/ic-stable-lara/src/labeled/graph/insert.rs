@@ -454,7 +454,9 @@ where
                 self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
                 let vertex = self.vertices.get(src);
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-                for _attempt in 0..64u32 {
+                // A single pass: the values fold that made this a retry loop is gone (ADR 0099).
+                #[allow(clippy::never_loop)]
+                for _attempt in 0..1u32 {
                     let attempt_edge = edge.clone();
                     let vertex = self.vertices.get(src);
                     // ADR 0099: a full value run is no reason to fold the values plane - the
@@ -622,8 +624,8 @@ where
                         Err(e) => return Err(LabeledOperationError::from(e)),
                     }
                 }
-                // The retry loop is bounded; reaching here means the bucket still could not admit
-                // the row after repeated promotion and inline-property-bytes preparation, so the
+                // ADR 0099: the values fold that used to retry here is gone, so this block runs
+                // once; reaching the end means the bucket could not place the row after promotion
                 // last attempt's outcome is reported: the spill still needs promotion.
                 Err(LaraOperationError::SpillNeedsPromotion.into())
             }
@@ -762,7 +764,6 @@ where
         if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
-        let mut ordinal_before = 0u32;
         let mut reused_slot = None;
         for slot_index in 0..bucket.stored_slots() {
             let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
@@ -771,7 +772,6 @@ where
                 reused_slot = Some(slot_index);
                 break;
             }
-            ordinal_before += 1;
         }
         let Some(reused_slot) = reused_slot else {
             return Ok(None);
