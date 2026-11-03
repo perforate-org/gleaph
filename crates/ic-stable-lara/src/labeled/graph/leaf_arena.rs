@@ -1170,6 +1170,15 @@ where
         if end > leaf_end {
             return Ok(None);
         }
+        // Staying inside the leaf is not enough: the span must stay inside this vertex's slice.
+        // A leaf-mate whose rows all live in its run occupies no slab slots, so the overlap check
+        // below cannot see it, and a span that runs over its base leaves nowhere for that
+        // vertex's rows to come back to (ADR 0088 E5, ADR 0098).
+        let fits_slice = LeafArena::capture(self, vid)?
+            .is_some_and(|arena| arena.leaf_slice(vid).fits(base, u64::from(new_alloc)));
+        if !fits_slice {
+            return Ok(None);
+        }
         let overlaps_leaf_mate = self
             .labeled_leaf_occupied_spans(vid, vid)
             .into_iter()

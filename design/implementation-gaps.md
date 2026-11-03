@@ -242,6 +242,17 @@ defect from being rediscovered without its prior reasoning.
       unexercised because the fold made the same mistake.
     - *Fixture simply asserts the old width (1).* `compact_vertex_edge_span_shrinks_vertex_edge_span`
       fails on `before.stored_slots > 8`.
+  - **Two of the three growth paths are now bounded, and neither stops the corruption.**
+    `try_labeled_vertex_edge_base_in_pinned_leaf` accepted a widening span that stayed inside the
+    *leaf* while running over a leaf-mate's base - and the leaf-mate was invisible to its overlap
+    check because that vertex's rows all live in its run, so it occupies no slab slots. It now also
+    requires `LeafSlice::fits`, which costs no test (706/0). Routing the fold's room check through
+    the same predicate also leaves the reproduction unchanged: the overlap is still
+    `[4096, 4108)` against `4097`. So neither widening nor the fold is the path that grows this
+    prefix - the **slab insert itself** accepts rows that the window should refuse, one slot at a
+    time, and the next probe belongs in `have_space_on_slab` /
+    `slab_window_exclusive_end` for a synthetic `LabelEdgeSpanAccess` whose `v_ord` is 0 while its
+    real owner is another vertex.
   - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
     with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
     fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
