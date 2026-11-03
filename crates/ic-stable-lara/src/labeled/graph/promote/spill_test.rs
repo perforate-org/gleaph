@@ -920,10 +920,28 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
         for slot in [0, 3, 31, 63] {
             g.remove_edge_at_slot(owner, label, slot).unwrap().unwrap();
         }
+        // ADR 0099: the value plane mirrors the edge plane's residency, so the two runs stand or
+        // fall together and hold the same number of rows. The delete no longer folds the values
+        // into the slab, which is what this used to assert.
+        let probe = bucket(&g, label);
         assert_eq!(
-            bucket(&g, label).values_spill_run(),
-            crate::traits::NO_SPILL_RUN
+            probe.values_spill_run() == crate::traits::NO_SPILL_RUN,
+            probe.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+            "the value plane mirrors the edge plane's residency"
         );
+        if probe.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+            let edge_used = g
+                .edges
+                .spill_mint(probe.edge_spill_run())
+                .map(|run| g.edges.spill_used_len(run))
+                .unwrap();
+            let values_used = g
+                .values
+                .spill_mint(probe.values_spill_run())
+                .map(|run| g.values.spill_used_len(run))
+                .unwrap();
+            assert_eq!(values_used, edge_used, "one value block per spilled row");
+        }
         let other = BucketLabelKey::from_raw(4);
         g.ensure_label_bucket_inline_property_byte_width(owner, other, width)
             .unwrap();
@@ -975,7 +993,9 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
         );
         assert_ne!(source.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        assert_ne!(
+        // ADR 0099: the value prefix *is* the edge prefix, so a width gap is not a state a bucket
+        // can be in; the values run asserted above is what makes this bucket hybrid.
+        assert_eq!(
             source.stored_slots(),
             source.inline_property_bytes_slab_slots()
         );
