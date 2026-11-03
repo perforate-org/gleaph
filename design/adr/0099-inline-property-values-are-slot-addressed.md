@@ -380,6 +380,15 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
+**Measured: the bucket is not tree, and the step fails on the second call.** Before the cursor steps,
+the bucket is `tiny=false tree=false width=0 degree=5 stored=5`, and the two steps print
+`progress=Unreserved total=5000` then `progress=Filling { position: 4096 } total=5000`. So the
+"tree bucket" reading above was wrong - the width the error reports (1000) is the *materialization's*
+width, and the second step's admission sees a bucket whose width is no longer 0. Something publishes the
+descriptor between the two steps; `materialize_source` requires width 0 until the final publication,
+so finding that writer is the next diagnostic. It is still the one item in this group that must be
+diagnosed rather than restated.
+
 **One of the deferred failures may be a regression, not a premise.** In
 `materialize_owner_queue_identity_preserves_retry_progress_across_reopen` the step now fails with
 `InlinePropertyBytesWidthMismatch { bucket_width: 1000, edge_inline_property_width: 1000 }` - equal
