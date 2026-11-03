@@ -9191,7 +9191,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_overflow_compaction_does_not_fold_inline_property_bytes_log() {
+    fn edge_overflow_compaction_folds_both_planes_together() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
@@ -9236,11 +9236,6 @@ mod tests {
         let before = read_bucket();
         assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(before.values_spill_run() != crate::traits::NO_SPILL_RUN);
-        let inline_property_bytes_state = (
-            before.inline_property_bytes_offset(),
-            before.inline_property_bytes_slab_slots(),
-            before.values_spill_run(),
-        );
 
         // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
         // ownership"), so the step folds that suffix inside its rewrite and then carries on with
@@ -9253,14 +9248,21 @@ mod tests {
 
         let after = read_bucket();
         assert_eq!(after.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        // ADR 0099 reverses what this fixture used to pin. The span publish's edge-log fold moves the
+        // rows into the span, and the values plane is indexed by the same slots, so the fold has to
+        // carry the blocks - leaving the values run behind would strand a block for every folded row.
+        assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(
-            (
-                after.inline_property_bytes_offset(),
-                after.inline_property_bytes_slab_slots(),
-                after.values_spill_run(),
-            ),
-            inline_property_bytes_state
+            after.inline_property_bytes_slab_slots(),
+            after.stored_slots(),
+            "the value prefix follows the edge prefix"
         );
+        for slot in 0..after.degree() {
+            let bytes = graph
+                .read_bucket_inline_property_bytes_for_slot(&after, slot, None)
+                .expect("every folded row keeps its value block");
+            assert_eq!(bytes.len(), 2, "slot {slot}");
+        }
     }
 
     #[test]
