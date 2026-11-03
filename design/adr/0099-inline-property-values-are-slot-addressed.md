@@ -380,7 +380,18 @@ slab-residency took the branch to 44.
 hole's live ordinal with every later value shifted up one block - the rank-addressed behaviour this ADR
 removes - so a reused low tombstone left every value one generation behind. The shift is gone.
 
-**Where it stands: 96 -> 29.** Two more distinctions landed after the slot batch: a tree bucket owns no
+**Where it stands: 96 -> 25.** Three more distinctions landed: the swap gate's value clause is
+withdrawn (ADR 0052's reason for it was the value window shift, which the slot plane removes), the
+"hybrid" traversal fixture now proves its state with the values run instead of a width gap that can no
+longer exist, and the accounting separates what a bucket needs from what the allocator backs.
+
+The remaining 25 split into `values::tests` (10), `deferred` (5), `traverse` (3), `compact` (3) and
+`promote` (2), and they are the ones whose model is "values are dense over the live rows, independent
+of edge residency" - `value_span_relocation_*`, `inline_property_bytes_compaction_*`, `storage_stats`,
+the cursor/hybrid page fixtures. Rebuilding those expectations around the mirrored plane is the work
+that is left, plus the promotion path.
+
+**Where it stood at 29.** Two more distinctions landed after the slot batch: a tree bucket owns no
 value span to charge the vertex for (its values live in the property root inside the edge span), and
 `inline_property_bytes_slab_slots` means the geometry a bucket needs while
 `inline_property_bytes_slab_slots_allocated` means what the allocator backs - the admission had been
