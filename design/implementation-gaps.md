@@ -70,18 +70,20 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — the fold's new bound is only covered one layer up
 
-- **Status:** Open, small.
+- **Status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
+  `next_leaf_vertex_edge_start`, now has its own LARA test - including the guard that an unwritten
+  row (capacity, not a live mate) contributes no edge position. What remains open is the fold's
+  end-to-end stop at that layer.
 - **Observed behavior:** the fix that stops a bucket's spill fold at the next leaf-mate's edge start
   is covered by the graph-level fixture
   (`inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which asserts the
   arena's layout contract), but nothing at the layer that owns it asserts it. A future change to the
   fold could pass every LARA test and only fail two layers up.
-- **Why the first attempt did not land:** the existing `physical_fixture` hard-codes the two buckets'
-  origins (100 and 68), so a bounded fold has no room in it, and doctoring vertex 1's bucket origin
-  did not move the vertex's own edge start - `next_leaf_vertex_edge_start` kept reporting 335, so the
-  assertion was measuring something else entirely. A fixture that builds the shape deliberately (a
-  mate with **no slab rows** at a known edge position just past the folding bucket's content) is how
-  to write it, and that is a small unit of its own.
+- **Why the end-to-end assertion did not land:** the existing `physical_fixture` hard-codes the two
+  buckets' origins (100 and 68), and a doctored mate at `content_end + 1` made the compaction step
+  *relocate* the bucket instead of folding into the region - so the assertion passed even with the
+  clamp disabled, i.e. it had no teeth. A meaningful test has to force the fold path (call the fold
+  with the room the caller would compute) rather than the rebuild path, and that is its own unit.
 - **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
 - **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
 
