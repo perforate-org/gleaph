@@ -352,6 +352,18 @@ A first attempt at materialization - publishing the fill over `stored_slots` and
 run to the edge run's length - *regressed* to 50 and was reverted: the materialization fixtures assert
 the old dense-by-degree publication, so that path needs its own pass rather than a one-line change.
 
+**The swap simplified itself.** Its value half used to shift the window `[k_ord..m_ord]` one block
+right, because ranks changed for the rows between the hole and the last live row. With one geometry
+the moved row's block goes where the row goes, in one copy, and the `values_spill_run ==
+NO_SPILL_RUN` restriction on that half disappears with it - a value-bearing bucket's swap is now no
+more expensive than an edge-only one's, which is what ADR 0052's 2026-11-02 value clause was working
+around.
+
+**Where the branch stands: 96 -> 48 failures, and the remainder is mostly fixtures.** Of the 48,
+thirteen are `values::tests` and the bulk of those assert the old geometry (`slab_slots = degree`,
+dense-by-degree statistics) rather than behaviour; `traverse` (7) and `compact` (5) mix the same.
+The code paths still known to be wrong are materialization's publication and the promotion path.
+
 **And a third, found by instrumenting the simplest failing case.** In
 `values::tests::edge_inline_propertys_preserved` (three valued inserts, then
 `compact_vertex_edge_span`, then read back - all zeros), the head fold never runs, and by the time the
