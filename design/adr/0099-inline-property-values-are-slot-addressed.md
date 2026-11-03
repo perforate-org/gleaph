@@ -142,7 +142,14 @@ unreachable by construction, not by care.
 No compatibility path: `inline_property_bytes_slab_slots` disappears from the descriptor, so existing
 state is not readable and fresh state is required.
 
-The work lands in slices that each keep the suite green:
+The work is **one atomic change**, not a sequence that keeps the suite green at every step. The
+first draft of this section listed "addressing only" as a step with the delete-side compaction still
+in place, and that step does not exist: if values remain dense (index = live ordinal) then addressing
+them by slot reads a neighbour's value the moment a tombstone sits in front of a row, and if they are
+addressed by slot then a delete can no longer compact them without moving every later row's value -
+so addressing, the removal of compaction, the hole-refill write, and the value move in compaction all
+have to change together. The slices below are therefore checkpoints within one change, not
+independently shippable steps.
 
 1. **Property test first.** Random inserts, deletes, hole refills and compactions on a value-bearing
    bucket, asserting that every live row reads back the value last written to it. It must pass on the
@@ -152,15 +159,17 @@ The work lands in slices that each keep the suite green:
    (`GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW`). Resolving the ordinal fixed it
    (`d661eaaf2`), which is a correctness argument for this ADR rather than only a cost one: keeping a
    rank consistent with the rows is exactly what one path failed to do.
-2. **Addressing only.** `inline_property_bytes_byte_offset_at_slot` becomes slot-based and the
-   read/write paths follow; the delete-side compaction stays, so the plane stays dense and the
-   existing fixtures keep their meaning. (This step is where the ordinal assumptions in the callers
-   surface; it is expected to be the largest.)
+2. **One addressing.** Every caller passes a physical slot: the read path, the write path, the
+   delete, the hole refill and the compaction moves. `inline_property_bytes_slab_slots` becomes
+   `stored_slots` in the same change.
 3. **Delete and hole refill stop moving bytes.** The suffix copy and the upward shift are deleted; the
    measurements above are re-run to confirm the O(1) claim.
 4. **Compaction moves value blocks** with the rows it moves, and the swap gate's value clause is
    withdrawn with its ADR amendment.
 5. **Delete the field** and re-baseline the placement statistics.
+
+Steps 2 to 4 are the atomic part; the property test from step 1 is what says whether the result is
+still correct, and the benches from step 3 are what say whether it was worth it.
 
 ## Design Documentation Impact
 
