@@ -3157,6 +3157,80 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// Updates one directed edge's inline property bytes across **both** orientations.
+    ///
+    /// This is the update counterpart of [`Self::insert_directed_edge`]: the pair is admitted as a
+    /// unit and written as a unit. Both rows are checked live before either write, the canonical row
+    /// is written first, and a counterpart that has gone missing or failed after that write traps -
+    /// the caller has already committed its fence, so an error there would let the IC skip the
+    /// message while keeping the reserved admission. The same discipline as the insert path, which
+    /// is the point: one owner decides what "both rows" means.
+    ///
+    /// `canonical` and `counterpart` are the two stores' rows of the same canonical edge; `edge` is
+    /// the new payload for both. Returns `false` when either row is not live.
+    pub fn update_directed_edge_inline_property(
+        &self,
+        canonical: crate::labeled::CanonicalEdgeOccurrence,
+        counterpart: crate::labeled::CanonicalEdgeOccurrence,
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        let exists =
+            |occurrence: crate::labeled::CanonicalEdgeOccurrence| match occurrence.orientation {
+                crate::labeled::LabeledOrientation::Forward => self
+                    .forward
+                    .edge_exists_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Forward),
+                crate::labeled::LabeledOrientation::Reverse => self
+                    .reverse
+                    .edge_exists_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Reverse),
+            };
+        let write =
+            |occurrence: crate::labeled::CanonicalEdgeOccurrence| match occurrence.orientation {
+                crate::labeled::LabeledOrientation::Forward => self
+                    .forward
+                    .update_edge_inline_property_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                        edge.clone(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Forward),
+                crate::labeled::LabeledOrientation::Reverse => self
+                    .reverse
+                    .update_edge_inline_property_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                        edge.clone(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Reverse),
+            };
+        if !exists(canonical)? || !exists(counterpart)? {
+            return Ok(false);
+        }
+        if !write(canonical)? {
+            return Ok(false);
+        }
+        if counterpart == canonical {
+            return Ok(true);
+        }
+        match write(counterpart) {
+            Ok(true) => Ok(true),
+            other => panic!(
+                "counterpart row must remain updatable after its canonical row was written: {other:?}"
+            ),
+        }
+    }
+
     /// Removes one reverse-store edge at the given label-row slot.
     pub fn remove_reverse_edge_at_slot(
         &self,

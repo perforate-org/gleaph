@@ -87,24 +87,6 @@ impl GraphStore {
         let new_index_values = inline_index_values(canonical.label_id.raw(), inline_property_bytes)
             .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?;
 
-        let update_occurrence = |occurrence: CanonicalEdgeOccurrence| {
-            self.with_graph_mut(|graph| match occurrence.orientation {
-                LabeledOrientation::Forward => graph.update_forward_edge_inline_property_at_slot(
-                    occurrence.owner_vertex_id,
-                    occurrence.label_id,
-                    occurrence.slot_index.raw(),
-                    new_edge.clone(),
-                ),
-                LabeledOrientation::Reverse => graph.update_reverse_edge_inline_property_at_slot(
-                    occurrence.owner_vertex_id,
-                    occurrence.label_id,
-                    occurrence.slot_index.raw(),
-                    new_edge.clone(),
-                ),
-            })
-            .map_err(GraphStoreError::from)
-        };
-
         let mut transitions = Vec::new();
         for (membership, property_id, previous) in &previous_index_values {
             let next = new_index_values
@@ -134,21 +116,24 @@ impl GraphStore {
         // keep the reserved outbox admission while skipping the canonical inline update. The
         // canonical handle and its counterpart were resolved live above; a trap rolls the whole
         // message back instead of exposing canonical state without its build-DML.
-        assert!(
-            update_occurrence(canonical_occurrence).unwrap_or_else(trap_post_fence_commit),
-            "edge resolved live at fence plan must remain updatable within the same message"
-        );
         let mirrored = if occurrence == canonical_occurrence {
             counterpart
         } else {
             occurrence
         };
-        if mirrored != canonical_occurrence {
-            assert!(
-                update_occurrence(mirrored).unwrap_or_else(trap_post_fence_commit),
-                "edge counterpart resolved live at fence plan must remain updatable within the same message"
-            );
-        }
+        // The pair is written by the owner of both orientations, which admits both rows before the
+        // first write and traps if the counterpart cannot follow - so no path here can leave one row
+        // updated and its counterpart stale.
+        assert!(
+            self.with_graph_mut(|graph| graph.update_directed_edge_inline_property(
+                canonical_occurrence,
+                mirrored,
+                new_edge.clone(),
+            ))
+            .map_err(GraphStoreError::from)
+            .unwrap_or_else(trap_post_fence_commit),
+            "edge and counterpart resolved live at fence plan must remain updatable within the same message"
+        );
 
         for (membership, property_id, previous) in previous_index_values {
             let next = new_index_values
