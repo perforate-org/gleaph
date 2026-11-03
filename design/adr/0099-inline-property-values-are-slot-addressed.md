@@ -200,6 +200,19 @@ grown, folded and dropped by different paths, and by this ADR's geometry they mu
 slot-for-slot. That is the remaining work, and it is the part where a mistake writes values into the
 wrong rows instead of failing a test loudly.
 
+**A third value source, found on the third attempt.** The values of a row can come from the slab, from
+a spill run, *or from the pending materialization stream* (the deferred inline-property path stages
+values in its own structure before publishing a span). Instrumenting the read that fails first
+(`bidirectional_parallel_edge_inline_propertys_survive_diamond_insert`) shows a bucket with
+`prefix = 0`, `stored_slots = 0`, `degree = 2` and no values run, being asked for slots 0 and 1: its
+values are neither in the slab nor in a run because they are still pending. So the addressing change
+has a fourth participant this ADR has not yet specified - how a pending value is keyed while its span
+does not exist - and the answer has to be slot-keyed too, or reads that work today stop working
+before the span is published.
+
+That is the design question to settle before the next implementation attempt; it is not a detail of
+the read path but the reason the first failure is a *read* rather than a write.
+
 **Status of this attempt:** applied as far as the delete, measured 91 red, reverted. The tree is back
 to green (lara 708/0, graph 1107/0) with the plan, the sizes and the coupling recorded here.
 
