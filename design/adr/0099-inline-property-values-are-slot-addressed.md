@@ -391,9 +391,17 @@ image over the edge slab that the preparation validates and writes in one step. 
 not part of that image, so whatever the image does to the slot order (a rewrite publishes a packed
 span) the value blocks stay where they were.
 
+The packing itself happens one step earlier, at **capture**: the preparation receives `canonical` rows
+and a per-bucket `desired` layout, copies each bucket's span verbatim (`PhysicalSlabPayload::Buffered`
+or `Disjoint`), and publishes `new.with_edge_range(position, ..)`. So the slot order a bucket ends up
+with is decided when its rows are captured as `desired`, and the value blocks are never part of that
+capture.
+
 The missing piece is therefore symmetrical to what already exists: a **value-slab image composed into
 the same preparation**, published in the same `publish()` so the two planes land atomically - the
-same rule this ADR applies to the spill runs, one level up. Building it means extending
+same rule this ADR applies to the spill runs, one level up. The place to hang it is the same per-bucket
+loop that builds `payloads`: for every bucket it needs the value blocks in the *desired* order, and the
+publish needs to write them alongside the edge image. Building it means extending
 `PhysicalLayoutPreparation` with the value images for the vertex's buckets and writing them in the same
 commit; that is a self-contained unit, and it is the last code gap.
 
