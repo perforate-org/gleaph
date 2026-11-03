@@ -274,6 +274,14 @@ defect from being rediscovered without its prior reasoning.
     That is a circularity, not a tuning problem, and it is now recorded in ADR 0098 (alternative B')
     along with the conclusion: the bound has to come from something placement cannot move - the next
     vertex's `base_slot_start`, or an allocated width.
+  - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
+    width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
+    `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
+    vertex's `base_slot_start` is not required to sit at `base + alloc` of the previous one: the
+    reproduction has `low` allocated 11 slots at 4096 with `high` at 4097. So the invariant to
+    enforce is not "the span fits the derived slice" but "**a vertex's base starts at or after the
+    previous vertex's base plus its allocation**" - and enforcing it is what makes the derived slice
+    (and therefore `fits`) meaningful again.
   - **Where the remaining growth can still come from.** `LabelBucket::try_grow_packed_slab_by_one`
     does have the ADR 0097 §7 run branch, so the bucket record is not it. The span width is set by
     `with_edge_range`/`with_stored_slots` from the rewrite path, and two of that path's exits are
