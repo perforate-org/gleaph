@@ -6247,8 +6247,10 @@ mod tests {
         let b = bucket();
         assert!(b.stored_slots() > 3 && b.stored_slots() <= 31);
         assert_ne!(b.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        // ADR 0099 made the value prefix the edge prefix, so "the two widths differ" is no longer a
+        // state a bucket can be in; the values run above is what makes this fixture hybrid.
         assert_ne!(b.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        assert_ne!(b.stored_slots(), b.inline_property_bytes_slab_slots());
+        assert_eq!(b.stored_slots(), b.inline_property_bytes_slab_slots());
         graph
     }
 
