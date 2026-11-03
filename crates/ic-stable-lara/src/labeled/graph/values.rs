@@ -1006,7 +1006,12 @@ where
         fill_byte: u8,
     ) -> Result<(), LabeledOperationError> {
         let cursor = self.materialize_cursor(src, bucket_slot, width, fill_byte)?;
-        if cursor.total_bytes() > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
+        // The decision is about the whole stream - every live row gets a block, whether it ends up in
+        // the slab prefix or in the run - while `total_bytes` is the prefix the span has to hold
+        // (ADR 0099). A bucket whose rows all spilled therefore still needs a cursor when the stream
+        // is large, even though its span part is empty.
+        let stream_bytes = u64::from(cursor.source.degree()) * u64::from(width);
+        if stream_bytes > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
             return Err(
                 LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
                     vid: src,
