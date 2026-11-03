@@ -147,6 +147,11 @@ The work lands in slices that each keep the suite green:
 1. **Property test first.** Random inserts, deletes, hole refills and compactions on a value-bearing
    bucket, asserting that every live row reads back the value last written to it. It must pass on the
    current code - that is what makes it a regression net for the rest.
+   *Done, and it did not pass:* the update path resolved a value's ordinal from the row's physical
+   slot, so after a delete the value landed one ordinal low
+   (`GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW`). Resolving the ordinal fixed it
+   (`d661eaaf2`), which is a correctness argument for this ADR rather than only a cost one: keeping a
+   rank consistent with the rows is exactly what one path failed to do.
 2. **Addressing only.** `inline_property_bytes_byte_offset_at_slot` becomes slot-based and the
    read/write paths follow; the delete-side compaction stays, so the plane stays dense and the
    existing fixtures keep their meaning. (This step is where the ordinal assumptions in the callers

@@ -70,7 +70,12 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW — inline value update lands one ordinal low
 
-- **Status:** Open, reproduced 2026-11-03 while writing ADR 0099's slice-1 property test.
+- **Status:** Resolved 2026-11-03 (`d661eaaf2`). The update path passed the row's bucket-local
+  physical slot to a plane addressed by live ordinal; the writer now resolves the ordinal
+  (`bucket_live_ordinal_at_edge_slot`) and the primitive takes an ordinal, which the tombstone-reuse
+  path keeps using because it already computed the hole's live ordinal. The reproduction is green and
+  ADR 0099's property test is enabled (240 random ops). lara 708/0, graph 1107/0.
+- **Original report follows.**
 - **Observed behavior:** with four directed edges carrying width-2 values on one vertex, updating one
   value, deleting a row that precedes another, then updating the later row's value writes that value
   **one row too early**: after `v3=304, v1=102, v2=203, v0=1`, `update(v2, 204)`, `delete(v1)`,
