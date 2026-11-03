@@ -1989,10 +1989,16 @@ where
                 // live ordinals. The bound is the bucket's resident value slots (slab prefix plus
                 // spill rows); a batch spanning slots also covers the tombstoned ones in between,
                 // whose blocks are stale but never visited.
-                let slot_bound =
-                    crate::labeled::invariants::bucket_resident_inline_property_bytes_slots(
-                        &bucket,
-                    );
+                // ...and the bound must cover the run too: the accounting helper returns the backed
+                // span only, which clips the batch short of the run and makes the in-batch offsets
+                // read the wrong block.
+                let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
+                    Ok(run) => self.values.spill_used_len(run),
+                    Err(_) => 0,
+                };
+                let slot_bound = bucket
+                    .inline_property_bytes_slab_slots()
+                    .saturating_add(run_rows);
                 let mut next_slot = match order {
                     OutEdgeOrder::Ascending => 0,
                     OutEdgeOrder::Descending => slot_bound.saturating_sub(1),
@@ -2993,8 +2999,9 @@ where
                 ControlFlow::<()>::Continue(())
             })?;
         } else {
-            // Live values are compact; logical edge slots retain holes. Resolve ranks once in
-            // ascending order, retaining only requested edges, then restore the delivery order.
+            // ADR 0099: values are addressed by slot, so the index carried forward is the slot
+            // itself. It used to be the live rank, which is what made a sparse bucket's values read
+            // one row early.
             let requested = |i: usize| {
                 selected[match order {
                     OutEdgeOrder::Ascending => i,
@@ -3002,20 +3009,17 @@ where
                 }]
             };
             let mut next = 0;
-            let mut ordinal = 0u32;
             let end = requested(selected.len() - 1).saturating_add(1);
             let _ = self.visit_slab_bucket_edges(
                 &bucket,
                 OutEdgeOrder::Ascending,
                 TraversalWindow::new(0, Some(end)),
                 |slot, edge| {
-                    let rank = ordinal;
-                    ordinal += 1;
                     while next < selected.len() && requested(next) < slot.raw() {
                         next += 1;
                     }
                     if next < selected.len() && requested(next) == slot.raw() {
-                        selected_edges.push((slot, edge, rank));
+                        selected_edges.push((slot, edge, slot.raw()));
                         next += 1;
                     }
                     if next == selected.len() {
@@ -3029,12 +3033,16 @@ where
                 selected_edges.reverse();
             }
         }
-        let ordinals: Vec<_> = selected_edges
+        let value_slots: Vec<_> = selected_edges
             .iter()
-            .map(|(_, _, ordinal)| *ordinal)
+            .map(|(_, _, slot_index)| *slot_index)
             .collect();
         let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
-        self.append_ordered_inline_property_bytes_ordinals_next(&bucket, &ordinals, &mut scratch)?;
+        self.append_ordered_inline_property_bytes_ordinals_next(
+            &bucket,
+            &value_slots,
+            &mut scratch,
+        )?;
         for ((slot, edge, _), bytes) in selected_edges
             .into_iter()
             .zip(scratch.values.chunks_exact(usize::from(width)))
