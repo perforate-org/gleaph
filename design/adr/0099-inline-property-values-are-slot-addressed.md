@@ -430,6 +430,17 @@ same row through the reverse store's handle and gets `[1, 0]`, so the reverse ro
 points at the slot the delete vacated rather than at the survivor. The value plane is not the suspect
 here; the counterpart's slot bookkeeping is.
 
+**Counterpart processing now has an owner, and the remaining bug narrowed with it.** The pair - not
+either store - owns counterpart resolution (`CounterpartResolver`), the graph side keeps only the
+adapter (`facade/store/counterpart.rs`), and the undirected canonical-endpoint rule that existed in both
+crates now has one definition.
+
+Tracing the delete failure through that owner: the value the test reads back through the reverse
+handle (`[1, 0]`) is exactly the payload of the **tombstoned** forward row at the vacated slot, so the
+reverse row's canonical mapping is landing on the dead row rather than on the live counterpart. The
+candidate is therefore `select_live_edge_by_neighbor_ordinal` / the reverse-side PairOrdinal - not the
+value plane, and no longer spread over several files.
+
 **Where it stands: lara 705/0, graph 7** (from 96 lara failures and 16 graph ones). The seven left are
 mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
 occupied slab from rows that now spill).
