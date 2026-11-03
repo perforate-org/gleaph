@@ -342,6 +342,16 @@ The two failures visible at 53 are exactly the first two rows: `remove_directed_
 false after a span compaction (the fold left values that no longer line up with slots) and
 `MissingAscLogIndex` (a read reaches for a spill run the mirrored plane has not created yet).
 
+**Progress since the work list was written.** The live-log fold (not the spill head fold) was the
+transition that moved rows into the prefix and cleared the edge run without their values - found by
+`#[track_caller]` on `with_stored_slots`, which reported `stored 0 -> degree` at `compact.rs:5798`.
+Moving the value blocks there, and carrying them through `apply_edge_slot_move_in_bucket` (one block
+copy, now that both planes share an address), took the branch from 53 to 48 failures.
+
+A first attempt at materialization - publishing the fill over `stored_slots` and extending the value
+run to the edge run's length - *regressed* to 50 and was reverted: the materialization fixtures assert
+the old dense-by-degree publication, so that path needs its own pass rather than a one-line change.
+
 **And a third, found by instrumenting the simplest failing case.** In
 `values::tests::edge_inline_propertys_preserved` (three valued inserts, then
 `compact_vertex_edge_span`, then read back - all zeros), the head fold never runs, and by the time the
