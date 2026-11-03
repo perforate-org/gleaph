@@ -455,6 +455,18 @@ regressed twelve lara tests that pin the current run lengths, so it is a change 
 rather than a patch: decide where a run row's block is created for a valueless insert, then restate
 those expectations.
 
+**The mirror is now declared.** Every row in the edge run owns a value block, and the insert path
+passes zeros when the edge carries no inline bytes (`write_inline_property_bytes_to_log` takes bytes,
+not an edge). Tiny buckets stay out of it - they hold no value state (ADR 0096 §5) - which is what the
+admission debug assert caught when the mirror first tried to give them one.
+
+The five that remain are the case that mirror cannot reach: a **bucket whose width is declared after
+its rows exist**. Those rows have no blocks, and the run is only backfilled by the materialisation path
+(`fill_value_run_for_edge_spill`), so an update that arrives first writes at an index the run does not
+have (`RowOutOfRange { index: 1 }` in the reverse store). The fix belongs at the width-declaration
+boundary - the moment a bucket acquires a value plane, its existing run rows need their blocks - not at
+the write site, which would only mask it.
+
 **Where it stands: lara 705/0, graph 5** (from 96 lara failures and 16 graph ones). The seven left are
 mostly fixtures whose shape assumed the dense plane (`updating_undirected_...` expects 64 bytes of
 occupied slab from rows that now spill).
