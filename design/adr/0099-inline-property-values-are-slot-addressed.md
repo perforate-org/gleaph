@@ -405,7 +405,19 @@ needs its `ValuesRunFull` error path exercised), or
 `fold_bucket_edge_spill_head_into_span` now does.
 
 (a) is the smaller statement and matches the ADR; (b) keeps the call sites' shape but duplicates the
-paired fold the edge side already has. Either way those three fixtures are rebuilt around whichever
+paired fold the edge side already has.
+
+**Decision: (a).** The values-only fold is deleted, with both production callers - the update path now
+writes the value at the row's slot, and the insert path lets a full run grow instead of pre-emptively
+folding it. Three fixtures went with it (`value_span_relocation_reclaims_8/33` and
+`..._failure_preserves_source`) because they exercised the fold itself, and the bench that measured it
+is pointed at the paired fold, which is what folding values now means. That took the branch to 19
+failures.
+
+Losing those three fixtures loses their span-accounting coverage (retired span reclaimed, free-byte
+arithmetic, source preserved on a failed relocation); `ensure_bucket_inline_property_bytes_span`'s
+relocation path is what should carry that coverage now, and rebuilding it there is part of the
+remaining work rather than something the deletion should quietly drop. Either way those three fixtures are rebuilt around whichever
 answer is chosen, which is why they are the last group rather than the next.
 
 **Where it stood at 25.** Three more distinctions landed: the swap gate's value clause is
