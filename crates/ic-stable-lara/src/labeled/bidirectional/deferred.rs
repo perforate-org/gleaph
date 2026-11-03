@@ -8247,7 +8247,16 @@ mod tests {
             _ => panic!("missing pending source"),
         };
         assert_eq!(pending_forward.inline_property_byte_width(), 8);
-        assert_eq!(pending_forward.inline_property_bytes_slab_slots(), 600);
+        // ADR 0099: the published span holds the edge prefix's blocks; rows beyond it - here every
+        // one of them, since the bucket spilled - keep their blocks in the value run.
+        assert_eq!(
+            pending_forward.inline_property_bytes_slab_slots(),
+            pending_forward.stored_slots()
+        );
+        assert_ne!(
+            pending_forward.values_spill_run(),
+            crate::traits::NO_SPILL_RUN
+        );
         let pending_reverse = match graph
             .reverse()
             .find_bucket(dst, &graph.reverse().vertices().get(dst), label)
@@ -8279,22 +8288,31 @@ mod tests {
             };
             assert_eq!(bucket.inline_property_byte_width(), 8);
             assert_eq!(bucket.degree(), 601);
-            assert_eq!(bucket.inline_property_bytes_slab_slots(), 601);
-            let mut new_bytes = vec![0; 8];
-            owner.values().read_value_slot(
-                bucket.inline_property_bytes_offset() + 600 * 8,
-                8,
-                &mut new_bytes,
+            // ADR 0099: the published prefix is the edge prefix, and a row's block is read at its
+            // own slot - which for the rows past the prefix means the value run, not an offset
+            // arithmetic into the span.
+            assert_eq!(
+                bucket.inline_property_bytes_slab_slots(),
+                bucket.stored_slots()
             );
-            assert_eq!(new_bytes, vec![new_value; 8]);
-            for ordinal in 0..600 {
-                let mut bytes = vec![0xFF; 8];
-                owner.values().read_value_slot(
-                    bucket.inline_property_bytes_offset() + ordinal * 8,
-                    8,
-                    &mut bytes,
-                );
-                assert_eq!(bytes, vec![0; 8]);
+            let slots: Vec<_> = (0..=600u32).map(BucketEntryPosition::new).collect();
+            let mut values = Vec::new();
+            owner
+                .visit_edges_at_with_inline_property(
+                    vertex_id,
+                    label,
+                    &slots,
+                    OutEdgeOrder::Ascending,
+                    |_slot, item| {
+                        values.push(item.inline_property.bytes().to_vec());
+                        std::ops::ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(values.len(), 601);
+            assert_eq!(values[600], vec![new_value; 8]);
+            for (slot_index, bytes) in values.iter().take(600).enumerate() {
+                assert_eq!(*bytes, vec![0; 8], "slot {slot_index}");
             }
         }
         graph.maintenance(unbounded_budget()).unwrap();
