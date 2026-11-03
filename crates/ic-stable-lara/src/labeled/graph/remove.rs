@@ -396,6 +396,16 @@ where
             // them as edge slots would corrupt the free store.
             return Ok(());
         }
+        // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either. Releasing the
+        // edge span alone left the vertex charged for a value span no row could read.
+        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+            && let Ok(run) = self.values.spill_mint(bucket.values_spill_run())
+        {
+            let _ = self.values.spill_release(run);
+        }
+        if bucket.is_inline_property_bytes_allocated() {
+            let _ = self.release_bucket_inline_property_bytes_span(src, bucket);
+        }
         let span_len = bucket.stored_slots_raw();
         if span_len == 0 {
             return Ok(());
@@ -663,11 +673,16 @@ where
         // survives as a reused tombstone holder. Releasing the values run here keeps the two planes
         // from disagreeing about whether the bucket is empty.
         let mut updated = updated;
-        if updated.degree() == 0 && updated.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
-                let _ = self.values.spill_release(run);
+        if updated.degree() == 0 {
+            if updated.values_spill_run() != crate::traits::NO_SPILL_RUN {
+                if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
+                    let _ = self.values.spill_release(run);
+                }
+                updated = updated.without_values_spill_run();
             }
-            updated = updated.without_values_spill_run();
+            if updated.is_inline_property_bytes_allocated() {
+                let _ = self.release_bucket_inline_property_bytes_span(src, &updated);
+            }
         }
         let updated = if emptied {
             // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either - the values
