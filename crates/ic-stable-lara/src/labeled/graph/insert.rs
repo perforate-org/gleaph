@@ -788,37 +788,12 @@ where
         let width = bucket.inline_property_byte_width();
         let has_inline_property = width != 0 && edge.edge_inline_property_byte_width() != 0;
         if has_inline_property {
-            let old_offset = bucket.inline_property_bytes_offset();
-            let trailing_slots = bucket.degree().saturating_sub(ordinal_before);
-            let trailing_len = u64::from(trailing_slots)
-                .checked_mul(u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let mut trailing = vec![
-                0u8;
-                usize::try_from(trailing_len).map_err(|_| {
-                    LaraOperationError::CollectAllocationOverflow
-                })?
-            ];
-            if trailing_len > 0 {
-                let source = old_offset
-                    .checked_add(u64::from(ordinal_before) * u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.values.read_bytes(source, &mut trailing);
-            }
+            // ADR 0099: the value of the row that fills the hole is written at the hole's own slot.
+            // The upward shift this used to perform existed because values were addressed by rank,
+            // where filling a middle hole renumbered every later row's value.
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
             bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
-            if trailing_len > 0 {
-                let destination = (u64::from(ordinal_before) + 1)
-                    .checked_mul(u64::from(width))
-                    .and_then(|offset| bucket.inline_property_bytes_offset().checked_add(offset))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.values
-                    .write_bytes(destination, &trailing)
-                    .map_err(LabeledOperationError::from)?;
-            }
-            // `ordinal_before` is the hole's live ordinal, so the ordinal primitive is the right
-            // form: resolving it from the physical slot would skip the hole being filled.
-            self.write_edge_inline_property_at_ordinal(&bucket, ordinal_before, edge)?;
+            self.write_edge_inline_property_at_ordinal(&bucket, reused_slot, edge)?;
         } else {
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
         }
