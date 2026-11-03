@@ -930,7 +930,12 @@ where
         &self,
         cursor: &MaterializeCursor,
     ) -> Result<(), LabeledOperationError> {
-        let (_, bucket) = self.materialize_source(cursor.src, cursor.bucket_slot, cursor.width)?;
+        // Read the bucket directly: the caller runs this *after* publishing the width, and the
+        // admission in `materialize_source` refuses a bucket that already has one.
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(cursor.bucket_slot)
+            .ok_or(LabeledOperationError::InlinePropertyMaterializationInvalidSource)?;
         if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
             return Ok(());
         }
