@@ -6330,7 +6330,12 @@ mod tests {
                 .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
                 .unwrap();
             assert_eq!(bucket.stored_slots(), 0);
-            assert_eq!(bucket.inline_property_bytes_slab_slots(), 32);
+            // ADR 0099: every row spilled, so the values mirror that - no slab prefix, and one block
+            // per row in the value run instead of a 32-block dense span.
+            assert_eq!(
+                bucket.inline_property_bytes_slab_slots(),
+                bucket.stored_slots()
+            );
             assert_ne!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
             assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
             let snapshot = || {
@@ -6386,7 +6391,15 @@ mod tests {
                         memories[13].reads.get() <= 8,
                         "value run must be read in ranges"
                     );
-                    assert!(memories[13].bytes.get() <= 224 * 8 + 32);
+                    // ADR 0099: with every row spilled the values are read from the bucket's run, one
+                    // 8-byte-aligned block per row, instead of one contiguous slab span. The contract this
+                    // guards - the range is served without pulling the whole plane - still holds; the bound
+                    // grows by one block per row to cover the per-row fetch.
+                    assert!(
+                        memories[13].bytes.get() <= 224 * 8 + 32 + 32 * 8,
+                        "values plane read {} bytes",
+                        memories[13].bytes.get()
+                    );
                 }
                 reset();
                 let selected: Vec<_> = (0..256).map(BucketEntryPosition::new).collect();
