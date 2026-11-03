@@ -5910,10 +5910,11 @@ where
     /// edges with width 0 or a dense, degree-sized value prefix. Other value
     /// layouts retain the order-preserving left-pack step (ADR 0052 §9).
     fn slab_bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+        // ADR 0099 withdrew the value clause this used to carry. It existed because values were
+        // addressed by live rank, so a swap had to shift a value window and could only do that on a
+        // dense, run-free plane; with the values plane addressed by slot, a swap moves the row's
+        // block into the hole and needs nothing of the kind.
         bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-            && (bucket.inline_property_byte_width() == 0
-                || (bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
-                    && bucket.inline_property_bytes_slab_slots() == bucket.degree()))
     }
 
     /// Finds the first interior tombstone (a non-live slot with a later live row) and
