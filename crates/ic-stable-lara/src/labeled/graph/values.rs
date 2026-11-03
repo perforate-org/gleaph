@@ -1521,39 +1521,21 @@ where
         Ok(())
     }
 
-    /// Writes one row's inline value, resolving the row's **live ordinal** from its physical slot.
+    /// Writes one row's inline value at the row's **slot**.
     ///
-    /// The two differ as soon as a tombstone sits in front of the row, and passing the physical index
-    /// straight through wrote the value one ordinal low whenever a delete had preceded it (the
-    /// reproduction `inline_update_after_a_delete_writes_the_right_row`). That divergence is what
-    /// ADR 0099 removes by addressing values by slot instead.
+    /// ADR 0099 made the two planes one geometry, so this is the slot itself: the live-ordinal
+    /// resolution this function used to perform is what made an update after a delete land one row
+    /// early, and with slot addressing there is no rank to resolve.
     pub(super) fn write_edge_inline_property_at_slot(
         &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_slot: u64,
+        _src: VertexId,
+        _vertex: &LabeledVertex,
+        _bucket_slot: u64,
         bucket: &LabelBucket,
         slot_index: u32,
         edge: &E,
     ) -> Result<(), LabeledOperationError> {
-        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
-        let Some(ordinal) = self.bucket_live_ordinal_at_edge_slot(
-            src,
-            vertex,
-            bucket_index,
-            bucket_slot,
-            bucket,
-            slot_index,
-        )?
-        else {
-            // The slot holds no live row, so it holds no value to update. Callers that care about
-            // liveness check it themselves; the rebuild paths reach here for rows mid-publication.
-            return Ok(());
-        };
-        self.write_edge_inline_property_at_ordinal(bucket, ordinal, edge)
+        self.write_edge_inline_property_at_ordinal(bucket, slot_index, edge)
     }
 
     pub(super) fn attach_edge_inline_property(

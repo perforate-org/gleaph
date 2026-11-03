@@ -672,6 +672,16 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
             .map_err(|error| LaraOperationError::from(error))
     }
 
+    pub(crate) fn spill_drop_head(
+        &self,
+        run: SpillRunId,
+        count: u32,
+    ) -> Result<(), LaraOperationError> {
+        self.values_spill
+            .drop_head(run, count)
+            .map_err(|error| LaraOperationError::from(error))
+    }
+
     pub(crate) fn spill_release(&self, run: SpillRunId) -> Result<(), LaraOperationError> {
         self.values_spill
             .release(&self.blobs, run)

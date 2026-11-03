@@ -1422,7 +1422,7 @@ mod physical_layout_tests {
             .collect();
 
         let folded = graph
-            .fold_bucket_edge_spill_head_into_span(0, &source, 2)
+            .fold_bucket_edge_spill_head_into_span(VertexId::from(0), 0, &source, 2)
             .unwrap();
 
         assert_eq!(folded, 2, "two spill rows move into the span");
@@ -6223,7 +6223,7 @@ where
                     .map_or(region_end, |next| region_end.min(next));
                 let free = u32::try_from(limit.saturating_sub(content_end)).unwrap_or(u32::MAX);
                 if free > 0 {
-                    self.fold_bucket_edge_spill_head_into_span(slot, &finalized, free)?;
+                    self.fold_bucket_edge_spill_head_into_span(vid, slot, &finalized, free)?;
                 }
             }
         }
@@ -6771,6 +6771,7 @@ where
     /// rebuild's job.
     pub(super) fn fold_bucket_edge_spill_head_into_span(
         &self,
+        src: VertexId,
         bucket_slot: u64,
         bucket: &LabelBucket,
         max_rows: u32,
@@ -6816,8 +6817,44 @@ where
         let grown = len
             .checked_add(fold)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let grown_bucket = bucket.with_stored_slots(grown);
+        // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
+        // span bring their value blocks with them. The value run's head is dropped by the same
+        // count, after the span write and before the descriptor publish.
+        if grown_bucket.inline_property_byte_width() != 0
+            && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+        {
+            let width = grown_bucket.inline_property_byte_width();
+            let values_run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            let mut values = vec![0u8; fold as usize * usize::from(width)];
+            self.values
+                .spill_read_range(values_run, 0..fold, width, &mut values)
+                .map_err(|error| LabeledOperationError::from(error))?;
+            let sized =
+                self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, grown_bucket)?;
+            let offset =
+                crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(&sized, len)
+                    .map_err(LabeledOperationError::from)?;
+            self.values
+                .write_bytes(offset, &values)
+                .map_err(|error| LabeledOperationError::from(error))?;
+            self.values
+                .spill_drop_head(values_run, fold)
+                .map_err(LabeledOperationError::from)?;
+            let published = if self.values.spill_used_len(values_run) == 0 {
+                sized.without_values_spill_run()
+            } else {
+                sized
+            };
+            self.buckets
+                .write_label_bucket_slot(bucket_slot, published)?;
+            return Ok(fold);
+        }
         self.buckets
-            .write_label_bucket_slot(bucket_slot, bucket.with_stored_slots(grown))?;
+            .write_label_bucket_slot(bucket_slot, grown_bucket)?;
         Ok(fold)
     }
 

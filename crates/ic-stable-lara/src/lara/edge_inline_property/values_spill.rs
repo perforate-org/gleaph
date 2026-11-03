@@ -151,6 +151,18 @@ pub(crate) struct ValuesSpillStore<M: Memory> {
 }
 
 impl<M: Memory> ValuesSpillStore<M> {
+    /// Drops `count` rows from the head of `run`, shifting the rest down.
+    ///
+    /// The mirror of the edge plane's head drop: a fold that moves the edge run's head into the slab
+    /// moves the value run's head the same way (ADR 0099).
+    pub(crate) fn drop_head(
+        &self,
+        run: SpillRunId,
+        count: u32,
+    ) -> Result<(), crate::labeled::spill_run_store::SpillRunError> {
+        self.arena.drop_head(run, count)
+    }
+
     /// Copies `keep`'s rows into a fresh run of the matching class, leaving the source in place.
     ///
     /// The values plane mirrors the edge plane (ADR 0099), so the spill rebuild repacks both arenas
