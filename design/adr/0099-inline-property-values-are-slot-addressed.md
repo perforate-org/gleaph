@@ -408,7 +408,17 @@ spans, freed in a different order - so restating them means re-deriving the expe
 for the mirrored plane rather than adjusting a constant. That is the shape of the last group and the
 reason it is slower than the earlier ones.
 
-**Where it stands: 96 -> 10.** The record round-trip closed by asserting the geometry answer for a tree
+**Where it stands: 96 -> 2**, both in `deferred`: the remaining pair expect
+`insert_directed_edge` to surface `InlinePropertyMaterializePending` where it now succeeds, which is a
+state-machine question about whether the pending materialisation is still pending after the paths
+above changed.
+
+Along the way the group of failures each turned into a contract question rather than a constant to
+nudge: the resident helper was answering "does this bucket hold value state" when its callers needed
+"how many slots are backed" (the same conflation as `slab_slots`), and the selected-slot visitor
+resolved live ranks where the batch wants slots.
+
+**Where it stood at 10.** The record round-trip closed by asserting the geometry answer for a tree
 bucket: no value span, so its slot count is 0 while the descriptor's allocated count still round-trips.
 
 **Where it stood at 11.** Two of the allocator-state fixtures turned out to be asserting a state
