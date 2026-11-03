@@ -359,6 +359,18 @@ defect from being rediscovered without its prior reasoning.
     only by rewrite/relocate; (b) point placement, the oversized test, `validate`, and the debug
     guard at it; (c) then the 11-fixture migration. Deriving from buckets stays correct but is only
     affordable off the hot path - `validate` uses it today.
+  - **The recorded flag landed, as a one-byte field (2026-11-03).** `SegmentSpanMeta` is now 9 bytes
+    (`physical_start` plus `fixed_quota_intact`, `ENTRY_SIZE` 8 -> 9) with the version left at 1: the
+    header's stride check already rejects a store built with the old row size. The flag is one-way
+    and re-pinning a leaf carries it over rather than restoring it. The fast path requires it, and
+    the fold clears it - that is the path the measurement caught growing `stored_slots` 1 -> 11
+    without a rewrite. lara 707/0.
+  - **Routing the fold's room check as well still fails (re-measured).** With the flag in place,
+    pointing the fold at `LeafSlice::fits` still turns 13 lara tests red and the reproduction's
+    prefix grows one slot further (12 instead of 11), so the growth that remains is not the fold: it
+    is the rewrite path (`rewrite_vertex_edge_span_with_policy` and the relocate it delegates to),
+    which publishes a wider span through `with_edge_range`. That is where the next bound goes, and
+    it is why the routing was reverted a third time while the flag stayed.
   - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
     width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
     `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
