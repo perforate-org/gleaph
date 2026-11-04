@@ -70,6 +70,13 @@ defect from being rediscovered without its prior reasoning.
   path that did not take the early return, or the degree it reports for a 10 000-row bucket is not 10 000.
   That is the next read: print the vertex's `degree`, `bucket_slack_slots` and descriptor bits at that
   site for the probe.
+  **That probe is done and the answer is no:** the vertex's `degree`, `slack`, `default_labeled` and
+  `base` all look ordinary at that point and `label_bucket_descriptor_span()` returns `Some`, so the
+  reported line was the *other* `overflow()` call in the same function -
+  `vertex_prefix_end`'s `checked_add_slot_index(prev.edge_start(), prev.stored_slots_raw())`. That is a
+  real `u64` addition, so the only way it overflows is `stored_slots_raw` holding something other than a
+  row count for the predecessor - which is where the next session should look (print
+  `prev.edge_start()`, `prev.stored_slots_raw()`, `prev.is_tiny_mode()` at that line).
 - **Correction - the transcription is not it either:** instrumenting both transcription checks
   (`live != bucket.degree`, the value-width mismatch) and every `return Err(...CollectAllocationOverflow
   .into())` in `promote.rs` fires nothing either. So the variant is produced by a form not yet covered -
