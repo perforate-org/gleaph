@@ -44,6 +44,54 @@ where
         self.bucket
     }
 
+    /// Grows the values run until it holds as many rows as the edge run, filling the new blocks with
+    /// `fill_byte`.
+    ///
+    /// The mirror is what makes a run row addressable at all, so this is the value plane's own
+    /// operation: no caller should be appending blocks to keep step with the edge plane by hand.
+    /// A bucket with no edge run has no rows beyond its prefix and needs nothing from the run, and a
+    /// run that never needed a row is never published - the id only changes when a block is appended.
+    pub(crate) fn fill_to_edge_run_len(
+        mut self,
+        fill_byte: u8,
+    ) -> Result<Self, LabeledOperationError> {
+        let Ok(edge_run) = self.graph.edges.spill_mint(self.bucket.edge_spill_run()) else {
+            return Ok(self);
+        };
+        let target = self.graph.edges.spill_used_len(edge_run);
+        let width = self.bucket.inline_property_byte_width();
+        if width == 0 {
+            return Ok(self);
+        }
+        let mut run = self
+            .graph
+            .values
+            .spill_mint(self.bucket.values_spill_run())
+            .ok();
+        let fill = vec![fill_byte; usize::from(width)];
+        loop {
+            let used = run.map_or(0, |run| self.graph.values.spill_used_len(run));
+            if used >= target {
+                break;
+            }
+            let (next, _row) = self
+                .graph
+                .values
+                .spill_append(run, width, &fill)
+                .map_err(LabeledOperationError::from)?;
+            run = Some(next);
+        }
+        if let Some(run) = run
+            && self.bucket.values_spill_run() != run.get()
+        {
+            self.bucket = self
+                .bucket
+                .try_with_values_spill_run(run.get())
+                .map_err(LabeledOperationError::from)?;
+        }
+        Ok(self)
+    }
+
     /// Releases the values run and clears the field that names it.
     ///
     /// Best-effort like every other release on the delete path: a release that fails leaks a class

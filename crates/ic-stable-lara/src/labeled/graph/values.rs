@@ -1008,37 +1008,11 @@ where
             .buckets
             .read_label_bucket_slot(cursor.bucket_slot)
             .ok_or(LabeledOperationError::InlinePropertyMaterializationInvalidSource)?;
-        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
-            return Ok(());
-        }
-        let edge_run = self
-            .edges
-            .spill_mint(bucket.edge_spill_run())
-            .map_err(LabeledOperationError::from)?;
-        let target = self.edges.spill_used_len(edge_run);
-        let mut run = self.values.spill_mint(bucket.values_spill_run()).ok();
-        let fill = vec![cursor.fill_byte; usize::from(cursor.width)];
-        loop {
-            let used = run.map_or(0, |run| self.values.spill_used_len(run));
-            if used >= target {
-                break;
-            }
-            let (next, _row) = self
-                .values
-                .spill_append(run, cursor.width, &fill)
-                .map_err(LabeledOperationError::from)?;
-            run = Some(next);
-        }
-        if let Some(run) = run
-            && bucket.values_spill_run() != run.get()
-        {
-            let updated = bucket
-                .try_with_values_spill_run(run.get())
-                .map_err(LabeledOperationError::from)?;
-            self.buckets
-                .write_label_bucket_slot(cursor.bucket_slot, updated)?;
-        }
-        Ok(())
+        // The fill is the value plane's own operation (it is what keeps the two runs in step), so it
+        // goes through the view rather than appending blocks here.
+        self.value_plane(cursor.bucket_slot, bucket)
+            .fill_to_edge_run_len(cursor.fill_byte)?
+            .publish()
     }
 
     fn prepare_materialize_publication(
