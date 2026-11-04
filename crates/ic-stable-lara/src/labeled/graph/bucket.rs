@@ -241,7 +241,7 @@ where
             let span_resident = self
                 .read_vertex_label_buckets(&src_vertex)?
                 .iter()
-                .all(|bucket| bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN);
+                .all(|bucket| bucket.edge_run().is_none());
             if span_resident {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rewrite_vertex_edge_span");
@@ -827,9 +827,7 @@ where
             return Ok(false);
         }
         let buckets = self.read_vertex_label_buckets(vertex)?;
-        Ok(buckets
-            .iter()
-            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN))
+        Ok(buckets.iter().any(|b| b.edge_run().is_some()))
     }
 
     pub(super) fn bucket_successor_start(
@@ -1069,7 +1067,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
 
         let mut visited = Vec::new();
         let mut raw_all = |_bytes: &[u8]| true;

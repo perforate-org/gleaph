@@ -716,6 +716,40 @@ impl LabelBucket {
         self.edge_spill_run
     }
 
+    /// The edge-plane run as a typed handle, or `None` when every row lives in the slab prefix.
+    ///
+    /// The sentinel stays inside the record, exactly as for the values plane: "no run" cannot be
+    /// mistaken for a run id.
+    #[inline]
+    pub(crate) fn edge_run(self) -> Option<SpillRunId> {
+        if self.edge_spill_run == NO_SPILL_RUN {
+            return None;
+        }
+        match SpillRunId::mint(self.edge_spill_run, ArenaRows::EDGE) {
+            Ok(run) => Some(run),
+            Err(_) => {
+                debug_assert!(
+                    false,
+                    "descriptor holds edge run {} outside the edge arena",
+                    self.edge_spill_run
+                );
+                None
+            }
+        }
+    }
+
+    /// Sets or clears the edge-plane run from its typed handle.
+    #[inline]
+    pub(crate) fn with_edge_run(
+        self,
+        run: Option<SpillRunId>,
+    ) -> Result<Self, LabelBucketFieldError> {
+        match run {
+            Some(run) => self.try_with_edge_spill_run(run.get()),
+            None => Ok(self.without_edge_spill_run()),
+        }
+    }
+
     /// Fallible setter for the edge-plane spill run id: it must fit the shared arena's capacity
     /// ([`ArenaRows::EDGE`], the unlabeled tail28's 27-bit range) and must not be the sentinel.
     #[inline]

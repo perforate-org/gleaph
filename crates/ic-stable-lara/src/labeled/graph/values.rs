@@ -1377,7 +1377,7 @@ where
                 let schema_unset = bucket.inline_property_byte_width() == 0
                     && bucket.degree() == 0
                     && bucket.stored_slots() == 0
-                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                    && bucket.edge_run().is_none()
                     && bucket.values_run().is_none();
                 if !schema_unset {
                     return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -1628,7 +1628,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+        if bucket.edge_run().is_none() {
             if slot_index >= bucket.stored_slots() {
                 return Ok(false);
             }
@@ -2692,7 +2692,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         // The prefix width is no longer a fixture premise (see the sibling hybrid test): the
         // subject is that the batch walk and the span iterator agree.
 
@@ -2815,7 +2815,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
 
         let mut from_span = Vec::new();
         graph
@@ -2970,7 +2970,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         // A later zero-length new bucket may be entirely log-backed until a leaf
         // rebalance folds it; the batch path must still
         // round-trip all values regardless of slab prefix width.
@@ -3471,7 +3471,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
 
         let mut from_iter = Vec::new();
         graph
@@ -3711,7 +3711,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         assert!(bucket.values_run().is_some());
 
         let mut weights = Vec::new();
@@ -3827,7 +3827,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(
-            bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN,
+            bucket.edge_run().is_some(),
             "expected edge overflow log for wide values"
         );
         assert!(

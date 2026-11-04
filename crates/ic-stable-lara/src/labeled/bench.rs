@@ -1855,7 +1855,7 @@ fn bench_l_spill_rebuild_step() -> canbench_rs::BenchResult {
     let bucket = (0..64u64)
         .find_map(|slot| {
             let bucket = graph.buckets().read_label_bucket_slot(slot)?;
-            (bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN).then_some(bucket)
+            (bucket.edge_run().is_some()).then_some(bucket)
         })
         .expect("the fixture must spill rows");
     let run = graph

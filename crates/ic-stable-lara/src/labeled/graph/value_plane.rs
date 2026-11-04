@@ -270,7 +270,7 @@ where
                 bucket.values_spill_run()
             );
         }
-        if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+        if bucket.edge_run().is_some() {
             let run = self
                 .edges
                 .spill_mint(bucket.edge_spill_run())

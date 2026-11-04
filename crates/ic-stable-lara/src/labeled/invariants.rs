@@ -30,7 +30,7 @@ pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) 
     bucket.degree() > 0
         && bucket.inline_property_byte_width() > 0
         && bucket.inline_property_bytes_log_head() < 0
-        && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+        && bucket.edge_run().is_none()
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }
 
@@ -237,7 +237,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 u64::from(crate::labeled::graph::bucket_content_slots(&bucket))
             } else if bucket.is_tiny_mode() {
                 0
-            } else if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+            } else if bucket.edge_run().is_none() {
                 u64::from(bucket.stored_slots_raw())
             } else {
                 gap.min(u64::from(bucket.stored_slots_raw()))
@@ -303,7 +303,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: tiny live slots must equal degree"
                 );
                 assert!(
-                    bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+                    bucket.edge_run().is_none(),
                     "vertex {vidx} bucket {slot}: a tiny bucket must carry no spill run"
                 );
             }
@@ -315,7 +315,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             // with inline properties also reports `inline_property_bytes_allocated`.
             if bucket.is_tree_mode() {
                 assert!(
-                    bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+                    bucket.edge_run().is_none(),
                     "vertex {vidx} bucket {slot}: a tree bucket must carry no spill run"
                 );
                 assert!(

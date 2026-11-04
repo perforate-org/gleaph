@@ -7473,7 +7473,7 @@ mod tests {
                         // Mirror the emptied rule too (ADR 0097 §7): a bucket that still owns a
                         // spill run is not released by the delete - compaction reclaims it - so it
                         // contributes no flushed range.
-                        && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                        && bucket.edge_run().is_none()
                     {
                         freed.push((bucket.edge_start(), u64::from(bucket.stored_slots_raw())));
                     }

@@ -487,7 +487,7 @@ where
                         )?
                     };
                     let slack_span = successor_start.saturating_sub(bucket.edge_start());
-                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                    if bucket.edge_run().is_none()
                         && bucket.stored_slots() > 0
                         && slack_span > u64::from(bucket.stored_slots())
                     {
@@ -1374,7 +1374,7 @@ where
                 .with_degree(bucket.degree())
                 .with_stored_slots(stored)
                 .without_bypass_spill_run();
-            if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+            if bucket.edge_run().is_none() {
                 updated
             } else {
                 updated

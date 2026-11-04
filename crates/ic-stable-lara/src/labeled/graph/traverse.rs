@@ -1900,7 +1900,7 @@ where
                 // `!is_tree_mode()` conjunct is that routing, not a mode guard.
                 if !bucket.is_tree_mode()
                     && bucket.values_run().is_none()
-                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                    && bucket.edge_run().is_none()
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
@@ -2147,7 +2147,7 @@ where
                         .map(|_| ());
                 }
                 if bucket.values_run().is_none()
-                    && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                    && bucket.edge_run().is_none()
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
                     let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
@@ -2376,7 +2376,7 @@ where
                     );
                 }
 
-                if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+                if bucket.edge_run().is_some() {
                     return self.visit_hybrid_out_inline_property_batches_for_bucket_next(
                         owner, &bucket, order, scratch, &mut visit,
                     );
@@ -3114,7 +3114,7 @@ where
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     self.edges.read_slot(physical)
                 } else {
-                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+                    if bucket.edge_run().is_none() {
                         return Ok(EdgeSlotState::Missing);
                     }
                     let run = self.edges.spill_mint(bucket.edge_spill_run())?;
@@ -3361,10 +3361,7 @@ where
         if buckets.is_empty() {
             return None;
         }
-        if buckets
-            .iter()
-            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
-        {
+        if buckets.iter().any(|b| b.edge_run().is_some()) {
             return None;
         }
         if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
@@ -3397,10 +3394,7 @@ where
         if deg == 0 || buckets.len() != deg {
             return None;
         }
-        if buckets
-            .iter()
-            .any(|b| b.edge_spill_run() != crate::traits::NO_SPILL_RUN)
-        {
+        if buckets.iter().any(|b| b.edge_run().is_some()) {
             return None;
         }
         if buckets.iter().any(|b| b.stored_slots() != b.degree()) {
@@ -3672,7 +3666,7 @@ where
         };
         Ok(bucket.degree() > 0
             && bucket.inline_property_byte_width() > 0
-            && bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+            && bucket.edge_run().is_some())
     }
 
     /// Visits outgoing inline property bytes for one label as batches without materializing edge rows.
@@ -6663,10 +6657,7 @@ mod tests {
         };
         let bucket_a = bucket_of(a);
         let bucket_b = bucket_of(b);
-        assert!(
-            bucket_a.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                && bucket_b.edge_spill_run() != crate::traits::NO_SPILL_RUN
-        );
+        assert!(bucket_a.edge_run().is_some() && bucket_b.edge_run().is_some());
         // The matching prefix widths must not be mistaken for matching owner identity.
         assert_eq!(
             graph.bucket_slab_prefix_slots(a, &bucket_a),
@@ -6753,7 +6744,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         // This fixture requires a retained run, but not a nonempty slab prefix.
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         assert_eq!(
             graph.bucket_reserved_edge_slots(src, &bucket),
             bucket.degree()
@@ -6805,7 +6796,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
 
         let mut scratch = crate::labeled::LabeledInlinePropertyValueBatchScratch::default();
         let mut slots = Vec::new();
@@ -6860,7 +6851,7 @@ mod tests {
             graph.buckets().read_label_bucket_slot(slot).unwrap()
         };
         let bucket = bucket_of(src);
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         let slab_prefix = graph.bucket_slab_prefix_slots(src, &bucket);
 
         // Capture positions before an in-place delete; this mutation does not renumber slots.

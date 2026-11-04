@@ -64,9 +64,7 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
                 // boundary is still used by scan paths once the bucket is folded to slab.
                 // The successor is synthetic, so it carries no run of its own: a reader
                 // that walked it would otherwise replay the live bucket's rows twice.
-                let succ = if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN
-                    && bucket.stored_slots() == 0
-                {
+                let succ = if bucket.edge_run().is_some() && bucket.stored_slots() == 0 {
                     bucket.edge_start()
                 } else {
                     self.successor_start.max(bucket.edge_start())

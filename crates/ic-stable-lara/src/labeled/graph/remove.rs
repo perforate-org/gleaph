@@ -385,7 +385,7 @@ where
         bucket: &LabelBucket,
     ) -> Result<(), LabeledOperationError> {
         debug_assert!(
-            bucket.degree() == 0 && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN,
+            bucket.degree() == 0 && bucket.edge_run().is_none(),
             "F1 release requires an emptied run-free bucket"
         );
         if bucket.is_tiny_mode() {
@@ -662,8 +662,7 @@ where
         // the run, so a bucket whose rows all came from the spill still owns one (with tombstoned
         // rows) after its last delete: it is reclaimed by per-bucket compaction, not here, and
         // zeroing its prefix while the run holds rows would break `resident = prefix + spill`.
-        let emptied =
-            updated.degree() == 0 && updated.edge_spill_run() == crate::traits::NO_SPILL_RUN;
+        let emptied = updated.degree() == 0 && updated.edge_run().is_none();
         if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
@@ -676,7 +675,7 @@ where
             // The value plane is released through its own view, which pairs each release with the
             // descriptor change that makes it consistent; the edge run stays until compaction sweeps it
             // (see `deleting_every_row_keeps_the_run_until_compaction`).
-            if updated.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+            if updated.edge_run().is_none() {
                 updated = self
                     .value_plane(slot, updated)
                     .release_run()
@@ -867,7 +866,7 @@ where
                         successor,
                         src,
                     );
-                    if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+                    if bucket.edge_run().is_none() {
                         let it = OutEdgeSlabIter::try_new(
                             &self.edges,
                             bucket.edge_start(),
@@ -1275,7 +1274,7 @@ where
                     if bucket.degree() == 0 {
                         return Ok(None);
                     }
-                    if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+                    if bucket.edge_run().is_some() {
                         let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                         let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
                         for slot_index in 0..slab_prefix_slots {
@@ -1637,7 +1636,7 @@ mod tests {
         // spills to the overflow log; the tombstone stays in place until
         // rebalance (positional stability).
         assert_eq!(bucket.stored_slots(), 5);
-        assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.edge_run().is_some());
         assert_eq!(bucket.degree(), 5);
     }
 

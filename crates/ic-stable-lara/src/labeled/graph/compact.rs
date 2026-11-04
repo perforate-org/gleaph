@@ -5723,7 +5723,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+        if bucket.edge_run().is_none() {
             return Ok(Vec::new());
         }
         let mut moves = Vec::new();
@@ -5850,7 +5850,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.degree() == 0 || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+        if bucket.degree() == 0 || bucket.edge_run().is_some() {
             return Ok(None);
         }
         let mut next_live = resume_slot_index;
@@ -5908,7 +5908,7 @@ where
         // addressed by live rank, so a swap had to shift a value window and could only do that on a
         // dense, run-free plane; with the values plane addressed by slot, a swap moves the row's
         // block into the hole and needs nothing of the kind.
-        bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
+        bucket.edge_run().is_none()
     }
 
     /// Finds the first interior tombstone (a non-live slot with a later live row) and
@@ -5930,7 +5930,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        if bucket.degree() == 0 || bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+        if bucket.degree() == 0 || bucket.edge_run().is_some() {
             return Ok(None);
         }
         let mut first_hole: Option<u32> = None; // slot
@@ -6033,7 +6033,7 @@ where
         // ADR 0097 §5: a run-backed bucket's rows are addressed as `prefix_len + i`, so shrinking
         // the prefix to `degree` (and clearing the run) would shift every one of them onto the
         // wrong ordinal. Only a bucket whose rows are all in its prefix may be finalized.
-        if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+        if bucket.edge_run().is_some() {
             return bucket;
         }
         bucket
@@ -6102,7 +6102,7 @@ where
             && let Some((bucket_index, bucket)) = buckets
                 .iter()
                 .enumerate()
-                .find(|(_, bucket)| bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN)
+                .find(|(_, bucket)| bucket.edge_run().is_some())
         {
             let bucket_index = u32::try_from(bucket_index)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -9193,7 +9193,7 @@ mod tests {
             graph.buckets().read_label_bucket_slot(slot).unwrap()
         };
         let before = read_bucket();
-        assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(before.edge_run().is_some());
         assert!(before.values_run().is_some());
 
         // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
