@@ -47,6 +47,26 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — a recorded benchmark now traps
+
+- **Observed behavior:** `canbench "expand_inline_property_skewed_2k_a_100b"` traps inside
+  `execute_expand_plan` (`crates/graph/src/bench/mod.rs:715`) with
+  `Store(Graph(Forward(InlinePropertyBytesLogRead(MissingAscLogIndex { asc_log_index: 0 }))))`. The
+  committed baseline still carries a value for it (2,114,557 instructions), so it used to run.
+- **Not caused by ADR 0099:** the same command traps on the pre-merge `spill-swap` tip
+  (`f6ebb7e1e`), so the regression predates the slot-addressed values work.
+- **Cause, not yet found:** the forward store reads an inline value through the values run of a bucket
+  that has none to read there. The fixture inserts 2,000 + 100 valued edges into one destination, which
+  is enough for the bucket to promote; a reader that is not tree-aware would take exactly this path.
+- **Impact:** the full `canbench --persist` refresh cannot complete, so `crates/graph/canbench_results.yml`
+  cannot be updated for the benches added by ADR 0099 (`bench_delete_w8_*`,
+  `bench_graph_undirected_inline_update_*`). The stale baseline also means any `canbench` run reports
+  this bench as failing rather than regressed.
+- **Next decision:** does the expand path read a promoted (tree-mode) bucket's inline values through the
+  run reader? Reproduce with a unit-level expand over a bucket driven past promotion, then route that
+  read through the tree-aware accessor.
+- **Status:** Open.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
