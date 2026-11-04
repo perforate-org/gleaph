@@ -47,6 +47,20 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### Resolved 2026-11-04: the pre-ADR-0099 bench verifiers are gone
+
+- **What was removed** (approved): `value_fold_case!`, `continuous_case!`, `update_reuse_case!`,
+  `RepeatedFold::Values`, `assert_retired_prefix_reusable`, `materialize_owner_*` and the per-round
+  `slab_occupied_tail` / `free_bytes` / "later values stay at the tail" assertions. Every one of them
+  verified the byte-span values allocator or the values-only fold, both removed by ADR 0099.
+- **What was kept:** `fold_cost`, `fold_economics`, `repeated_fold::{Unfolded, Both}` and all edge-plane
+  checks - the edge allocator is unchanged, so those assertions still constrain real behaviour.
+- **Evidence:** `cargo test -p ic-stable-lara --lib --features canbench` is **641 passed / 0 failed**;
+  `canbench --persist` completes unfiltered for **both** crates, and both artifacts are current
+  (`43fe89ce0` for graph, `f493688fa` for lara).
+- **Cost, stated plainly:** five bench families and their coverage are gone. Rebuilding that coverage
+  against the slot-addressed geometry is a bench-design task and is **not** done here.
+
 ### GAP-LARA-FOLD-BENCH-RUN-PROBE — the fold-cost bench's reuse probe asks for a run the arena never frees
 
 - **Observed behavior:** `canbench "bench_t_fold_cost_33_256"` traps in `assert_reusable`
