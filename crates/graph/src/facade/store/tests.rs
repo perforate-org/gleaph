@@ -510,6 +510,39 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
     );
 }
 
+/// A bucket with ~2 048 valueless parallel edges must survive promotion.
+///
+/// This is the reproduction for the slice-ownership defect recorded in ADR 0098's 2026-11-04 amendment:
+/// `LeafArena::slices` derives a vertex's slice as the gap to its neighbour, `place` carves out of that
+/// gap without taking it from the free-span store, and the promotion then releases a tail that lands
+/// inside a free span the store still owns (`OverlapPrevious`). The test stays `#[ignore]`d until the
+/// slice is an owned extent; it is the acceptance criterion for that change.
+#[test]
+#[ignore = "ADR 0098 amendment: slices must be owned extents before this can pass"]
+fn valueless_parallel_edges_promote_past_two_thousand_rows() {
+    let store = GraphStore::new();
+    let hub = store
+        .insert_vertex_named(["PromotePast2kHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let dst = store
+        .insert_vertex_named(["PromotePast2kDst"], Vec::<(&str, Value)>::new())
+        .expect("dst");
+    for i in 0..4096u32 {
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("PromotePast2k"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .unwrap_or_else(|error| panic!("insert {i} failed: {error:?}"));
+    }
+    assert_eq!(
+        store.directed_out_edges(hub).expect("out edges").len(),
+        4096
+    );
+}
+
 #[test]
 fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
     check_undirected_inline_update_reuse(32);
