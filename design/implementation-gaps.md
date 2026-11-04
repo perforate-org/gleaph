@@ -74,6 +74,14 @@ defect from being rediscovered without its prior reasoning.
 - **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
   releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
   already does for the values plane.
+- **Why 14 verifiers fail, and it is not this session:** the values allocator reports
+  `byte_capacity: 4096, slab_occupied_tail: 0, free_bytes: 0, free_span_count: 0` **before and after** a
+  peer append - the byte-span allocator is not involved at all any more, because ADR 0099 replaced it
+  with slot-addressed blocks. The failing assertions (`"a real peer claims the value tail"`,
+  `fold_economics_*`, `update_reuse_*`, `repeated_fold_*`) were written for the pre-0099 geometry and are
+  **stale verifiers for a removed design**, not a defect in the current one. Rewriting them to the
+  slot-addressed geometry is its own unit of work: 14 tests across five bench families, each of which
+  currently asserts an allocator that no longer holds the values.
 - **The lara benchmark suite has 14 pre-existing verifier failures of its own:**
   `cargo test -p ic-stable-lara --lib --features canbench` gives **633 passed / 14 failed**, identically
   with and without the changes in this session (checked by stashing). The visible one is
