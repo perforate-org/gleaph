@@ -5826,8 +5826,12 @@ where
                     .write_bytes(offset, &value)
                     .map_err(LabeledOperationError::from)?;
             }
-            let _ = self.values.spill_release(values_run_id);
-            sized.without_edge_spill_run().without_values_spill_run()
+            // Both run releases go through their plane's owner, which pairs the store release with the
+            // descriptor field: a released run must never be named by the published bucket.
+            self.value_plane(bucket_slot, sized)
+                .release_run()
+                .bucket()
+                .without_edge_spill_run()
         } else {
             bucket
                 .with_stored_slots(new_stored_slots)
