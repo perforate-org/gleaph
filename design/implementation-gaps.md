@@ -59,8 +59,15 @@ defect from being rediscovered without its prior reasoning.
   asking for something that was never freed (or was freed into a different class).
 - **Impact:** `canbench --persist` completes for `crates/graph` (artifact refreshed in `43fe89ce0`) but not
   for `crates/ic-stable-lara`, so that crate's artifact still cannot be refreshed.
-- **Next:** read the fixture's `runs()` bookkeeping against what the bench actually releases - the probe's
-  expectation comes from the descriptor, and the descriptor is the thing that should be right.
+- **Not a leak - the probe's assumption is wrong:** relaxing the assertion to "allocating the released
+  class must not grow the arena" fails too (`299 -> 556`). That is expected once the sequence is read:
+  `assert_reusable` runs *after* the fixture has folded and appended further, and those later folds
+  allocate classes that reuse the freed span. So the freed space was returned and then legitimately
+  consumed; the probe is asking whether a run freed many operations ago is still free, which is not a
+  property the allocator promises.
+- **Next:** move the probe to run **immediately after the fold that frees the run** (before the fixture
+  continues), which is what it intends to test; or drop it for the repeated-fold path and keep the
+  backing-byte comparison, which is the property that actually matters there (no corruption, no growth).
 
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
 
