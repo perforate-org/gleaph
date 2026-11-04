@@ -82,6 +82,17 @@ defect from being rediscovered without its prior reasoning.
   **stale verifiers for a removed design**, not a defect in the current one. Rewriting them to the
   slot-addressed geometry is its own unit of work: 14 tests across five bench families, each of which
   currently asserts an allocator that no longer holds the values.
+- **Current state: 10 failures, all exercising a removed operation or the removed allocator.**
+  | Tests | Cause |
+  | --- | --- |
+  | `repeated_fold_*` (4) | `check_repeated_fold` folds in `RepeatedFold::Values` mode and then asserts the values folded - the values-only fold ADR 0099 removed, so `fold_values` cannot move values without rows |
+  | `continuous_spill_*` (4) | asserts the **byte-span allocator** (`slab_occupied_tail`, `free_byte_spans`), which holds nothing since ADR 0099 replaced it with slot-addressed blocks |
+  | `update_reuse_*` (2) | same allocator accounting (`0` vs `32`) |
+  Two of the fourteen were fixed (`5cbe2b3fe`): the values-only case in `check_fold_economics` and the
+  "edge fold leaves values untouched" expectation. The rest need a decision first: `RepeatedFold::Values`
+  and the byte-span accounting are measuring behaviour that no longer exists, so the answer is to **remove
+  those bench cases**, not to re-express them - deleting a benchmark is a coverage decision, which is why
+  it is left here rather than taken unilaterally.
 - **What rewriting them actually requires (learned by doing it, then reverting):**
   1. `check_fold_economics`'s first block exercises the **values-only fold that ADR 0099 deleted** - a
      bucket with edges in the span and values still in a run cannot exist now, so that block must go.
