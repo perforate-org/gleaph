@@ -64,10 +64,9 @@ where
             return Ok(self);
         }
         let mut run = self
-            .graph
-            .values
-            .spill_mint(self.bucket.values_spill_run())
-            .ok();
+            .bucket
+            .values_run()
+            .and_then(|run| self.graph.values.spill_mint(run.get()).ok());
         let fill = vec![fill_byte; usize::from(width)];
         loop {
             let used = run.map_or(0, |run| self.graph.values.spill_used_len(run));
@@ -82,11 +81,11 @@ where
             run = Some(next);
         }
         if let Some(run) = run
-            && self.bucket.values_spill_run() != run.get()
+            && self.bucket.values_run().map(|current| current.get()) != Some(run.get())
         {
             self.bucket = self
                 .bucket
-                .try_with_values_spill_run(run.get())
+                .with_values_run(Some(run))
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(self)
@@ -170,7 +169,8 @@ where
     /// rather than failing a successful delete, and the descriptor is left naming the run it could not
     /// give back. The field and the store therefore never disagree.
     pub(crate) fn release_run(mut self) -> Self {
-        if let Ok(run) = self.graph.values.spill_mint(self.bucket.values_spill_run())
+        if let Some(run) = self.bucket.values_run()
+            && let Ok(run) = self.graph.values.spill_mint(run.get())
             && self.graph.values.spill_release(run).is_ok()
         {
             self.bucket = self.bucket.without_values_spill_run();
@@ -257,10 +257,10 @@ where
         // allocated class, or a bucket whose rows all sit in its prefix), so emptiness only breaks the
         // descriptor when the bucket has rows the run is supposed to hold.
         let rows_beyond_prefix = bucket.degree() > bucket.inline_property_bytes_slab_slots();
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
+        if let Some(run) = bucket.values_run() {
             let run = self
                 .values
-                .spill_mint(bucket.values_spill_run())
+                .spill_mint(run.get())
                 .map_err(LabeledOperationError::from)?;
             assert!(
                 !rows_beyond_prefix || self.values.spill_used_len(run) > 0,

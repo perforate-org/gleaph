@@ -761,6 +761,46 @@ impl LabelBucket {
         self.values_spill_run
     }
 
+    /// The values-plane run as a typed handle, or `None` when nothing has spilled.
+    ///
+    /// The `u32::MAX` sentinel stays inside the record. Callers that care about the *run* rather than
+    /// about its encoding work with `Option<SpillRunId>`, so "no run" cannot be mistaken for a run id
+    /// and no code path has to remember which sentinel means "none".
+    #[inline]
+    pub(crate) fn values_run(self) -> Option<SpillRunId> {
+        if self.values_spill_run == NO_SPILL_RUN {
+            return None;
+        }
+        match SpillRunId::mint(self.values_spill_run, ArenaRows::VALUES) {
+            Ok(run) => Some(run),
+            Err(_) => {
+                // A descriptor holding an unmintable id is corrupt, not empty; report it as absent
+                // only in release, where the alternative is a panic in a read path.
+                debug_assert!(
+                    false,
+                    "descriptor holds values run {} outside the values arena",
+                    self.values_spill_run
+                );
+                None
+            }
+        }
+    }
+
+    /// Sets or clears the values-plane run from its typed handle.
+    ///
+    /// Clearing is unconditional; setting goes through the validated setter, which is what rejects a
+    /// spill run on a bucket that has no slab plane to spill from.
+    #[inline]
+    pub(crate) fn with_values_run(
+        self,
+        run: Option<SpillRunId>,
+    ) -> Result<Self, LabelBucketFieldError> {
+        match run {
+            Some(run) => self.try_with_values_spill_run(run.get()),
+            None => Ok(self.without_values_spill_run()),
+        }
+    }
+
     /// Fallible setter for the values-plane spill run id: it must fit [`ArenaRows::VALUES`] and must
     /// not be the sentinel.
     #[inline]
