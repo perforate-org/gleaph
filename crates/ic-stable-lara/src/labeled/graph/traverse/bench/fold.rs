@@ -1430,16 +1430,9 @@ fn check_fold_economics<const W: usize>(degree: u32) {
         let before = FoldFixture::<W>::new(degree);
         before.check_appends("unfolded");
     }
-    {
-        let fixture = FoldFixture::<W>::new(degree);
-        let before_vertex = fixture.graph.vertices().get(fixture.src);
-        let (_, before_bucket) = fixture.bucket();
-        let runs = fixture.runs();
-        fixture.fold_values();
-        fixture.assert_values_folded(before_vertex, before_bucket);
-        fixture.assert_reusable(runs);
-        fixture.check_appends("values_folded");
-    }
+    // ADR 0099 removed the values-only fold: a bucket's values mirror its edge run, so a state with
+    // edges in the span and values still in a run no longer exists. `fold_values` is the paired fold and
+    // cannot move values without rows to move, so this block's case went with that operation.
     let fixture = FoldFixture::<W>::new(degree);
     fixture.assert_rows(degree);
     fixture.snapshot("unfolded");
@@ -1448,18 +1441,12 @@ fn check_fold_economics<const W: usize>(degree: u32) {
     assert!(fixture.fold_edges().is_empty());
     let (_, after_edge) = fixture.bucket();
     assert_eq!(after_edge.edge_spill_run(), NO_SPILL_RUN);
-    assert_eq!(
-        (
-            after_edge.values_spill_run(),
-            after_edge.inline_property_bytes_offset(),
-            after_edge.inline_property_bytes_slab_slots()
-        ),
-        (
-            before.values_spill_run(),
-            before.inline_property_bytes_offset(),
-            before.inline_property_bytes_slab_slots()
-        ),
-    );
+    // ADR 0099: the values plane mirrors the edge plane, so folding the edges carries the values into the
+    // prefix with them. The pre-ADR expectation - that folding edges left the values plane untouched - is
+    // the divergence ADR 0099 removed.
+    assert_eq!(after_edge.values_spill_run(), NO_SPILL_RUN);
+    assert_eq!(after_edge.inline_property_bytes_slab_slots(), degree);
+    let _ = before;
     fixture.assert_rows(degree);
     fixture.snapshot("edge_folded");
     fixture.fold_values();
