@@ -157,13 +157,13 @@ benches:
   bench_l_df_ip_frag_mnt_6:
     total:
       calls: 1
-      instructions: 86839125
+      instructions: 86839065
       heap_increase: 1310
       stable_memory_increase: 0
     scopes:
       inline_property_deferred_maintenance_compaction:
         calls: 1
-        instructions: 1296
+        instructions: 1236
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
@@ -295,7 +295,7 @@ benches:
   bench_l_ins_last_1024:
     total:
       calls: 1
-      instructions: 14643668
+      instructions: 14643670
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -373,7 +373,7 @@ benches:
   bench_l_ip_exg_256:
     total:
       calls: 1
-      instructions: 46017751
+      instructions: 46017752
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -385,7 +385,7 @@ benches:
   bench_l_ip_frag_comp:
     total:
       calls: 1
-      instructions: 43317643
+      instructions: 43317644
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -412,7 +412,7 @@ benches:
   bench_l_ip_frag_s4_ctl:
     total:
       calls: 1
-      instructions: 43346059
+      instructions: 43346060
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -439,7 +439,7 @@ benches:
   bench_l_ip_frag_s6:
     total:
       calls: 1
-      instructions: 43346061
+      instructions: 43346062
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -466,7 +466,7 @@ benches:
   bench_l_ip_pstats_16:
     total:
       calls: 1
-      instructions: 45325368
+      instructions: 45325369
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -488,7 +488,7 @@ benches:
   bench_l_ip_pstats_256:
     total:
       calls: 1
-      instructions: 157451396
+      instructions: 157451397
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -510,7 +510,7 @@ benches:
   bench_l_ip_pstats_64:
     total:
       calls: 1
-      instructions: 54932657
+      instructions: 54932658
       heap_increase: 656
       stable_memory_increase: 0
     scopes:
@@ -645,7 +645,7 @@ benches:
   bench_l_s2_det_hub_4096:
     total:
       calls: 1
-      instructions: 35559781
+      instructions: 35559785
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -674,7 +674,7 @@ benches:
   bench_l_s2_det_hub_st_4096:
     total:
       calls: 1
-      instructions: 45870885
+      instructions: 45870889
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -871,7 +871,7 @@ benches:
   bench_labeled_stage2_hub_insert_grow_16384:
     total:
       calls: 1
-      instructions: 54916143
+      instructions: 54916173
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -893,7 +893,7 @@ benches:
   bench_labeled_stage2_hub_insert_grow_4096:
     total:
       calls: 1
-      instructions: 18301150
+      instructions: 18301156
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -915,7 +915,7 @@ benches:
   bench_labeled_stage2_hub_insert_grow_65536:
     total:
       calls: 1
-      instructions: 203404507
+      instructions: 203404641
       heap_increase: 14
       stable_memory_increase: 0
     scopes:
@@ -3456,6 +3456,13 @@ benches:
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
+  materialize_owner_4800:
+    total:
+      calls: 1
+      instructions: 1164929
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
   offset_slab1024_d875_off240:
     total:
       calls: 1
@@ -3522,14 +3529,14 @@ benches:
   tcsr_1048576_deepen_beyond_r_max:
     total:
       calls: 1
-      instructions: 68548
+      instructions: 68550
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   tcsr_1048576_deepen_then_interior_grow:
     total:
       calls: 1
-      instructions: 3033231
+      instructions: 3033233
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -3543,7 +3550,7 @@ benches:
   tcsr_1048576_insert_grow_below_cap:
     total:
       calls: 1
-      instructions: 2732020
+      instructions: 2732024
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -3564,7 +3571,7 @@ benches:
   tcsr_131072_insert_grow_below_cap:
     total:
       calls: 1
-      instructions: 3309794
+      instructions: 3309798
       heap_increase: 17
       stable_memory_increase: 0
     scopes: {}
@@ -3646,7 +3653,7 @@ benches:
   tiny_workload_skewed_mix:
     total:
       calls: 1
-      instructions: 117541063
+      instructions: 117541065
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
