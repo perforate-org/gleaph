@@ -529,11 +529,9 @@ impl<const W: usize> FoldFixture<W> {
             );
         } else {
             assert_eq!(runs[1], (NO_SPILL_RUN, 0));
+            // The row count is the geometry that holds under ADR 0099; the byte-span allocator's tail is
+            // not (values are addressed by row slot, so it reads zero).
             assert_eq!(bucket.inline_property_bytes_slab_slots(), self.degree);
-            assert_eq!(
-                self.graph.values.allocator_stats().slab_occupied_tail,
-                bucket.inline_property_bytes_offset() + u64::from(self.degree) * W as u64
-            );
         }
         self.assert_rows(self.degree);
     }
@@ -664,13 +662,8 @@ fn check_repeated_fold<const W: usize>(degree: u32) {
                 .unwrap()
                 .unwrap();
             fixture.repeated_snapshot(&format!("{phase}_append_{round}"));
-            if mode != RepeatedFold::Unfolded {
-                assert_eq!(
-                    runs[1].0 != NO_SPILL_RUN,
-                    round == 1,
-                    "later values stay at the tail"
-                );
-            }
+            // ADR 0099: the values run is not a byte span that folds into a tail, so "later values stay at
+            // the tail" stopped describing the plane; the edge run's reuse below still does.
             if mode == RepeatedFold::Both && round >= 3 {
                 assert_eq!(runs[0], (previous_edge, APPENDS), "natural edge-run reuse");
             }
@@ -709,20 +702,9 @@ fn check_repeated_fold<const W: usize>(degree: u32) {
                 fixture.scan_round(&mut scratch, 8),
                 fixture.degree as usize * 8
             );
-            let stats = fixture.graph.values.allocator_stats();
-            if mode == RepeatedFold::Unfolded {
-                assert_eq!(stats.slab_occupied_tail, initial_tail);
-                assert_eq!(stats.free_bytes, 0);
-            } else {
-                assert_eq!(
-                    stats.slab_occupied_tail,
-                    initial_tail + u64::from(fixture.degree) * W as u64
-                );
-                assert_eq!(
-                    stats.free_bytes,
-                    u64::from(initial_bucket.inline_property_bytes_slab_slots()) * W as u64
-                );
-            }
+            // ADR 0099: values are addressed by row slot, so the byte-span allocator's tail and free-byte
+            // accounting no longer follow the fill. What the rounds still guarantee is the scan above.
+            let _ = (initial_tail, initial_bucket);
             fixture.repeated_snapshot(&format!("{phase}_after_{round}"));
         }
         fixture.assert_repeated_reuse(mode, initial_bucket, first_fold_runs);
