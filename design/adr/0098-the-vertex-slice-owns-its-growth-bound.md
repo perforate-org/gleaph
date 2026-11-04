@@ -307,6 +307,29 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   inverts the order without providing the take, so the smaller cover simply stops admitting placements
   the layout depends on.
 
+## Resolution (2026-11-04): the invariant is enforced at the placement owner
+
+The defect this amendment was written for - free space handed out twice, surfacing as a promotion
+releasing a tail inside a free span (`OverlapPrevious`) - is closed, and not by the owned-extent refactor
+planned above. Both functions that hand out slot ranges, `LeafSlice::place` (`09f5a14d9`) and
+`LeafSlice::place_leaf_wide` (`94d1572ba`), now **claim what they hand out**: whatever the free-span store
+still owns inside the returned range is taken, and the vertex's own tile slack - which is not a free span -
+is left alone.
+
+Why this is the smaller correct fix, measured before choosing it:
+- Making the slice the tile cover broke **24** tests, and making the claim mandatory inside `place` broke
+  **22**: placements legitimately land in tile slack that the store does not own, so the claim has to be
+  best-effort rather than structural.
+- With the claim in place, every acceptance criterion this amendment listed passes: a valueless bucket
+  promotes past 2 048 rows, 10 500 rows over two labels on one vertex build
+  (`a_large_bucket_does_not_block_a_second_label`), and `canbench --persist` completes unfiltered for both
+  crates.
+- The owned-extent formulation stays available (it would make the claim unnecessary rather than
+  best-effort) but it is no longer required for correctness, so it is **decided, not scheduled**.
+
+The three documentation divergences below are unchanged by this: the slice is still derived, and `LeafArena`
+is still not the only caller of the free-span store.
+
 ## Documentation status (recorded 2026-11-04)
 
 Three sentences above describe the intended contract but not the code as it stands. They are listed here
