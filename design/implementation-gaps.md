@@ -62,6 +62,16 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
   holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
   relocated or is the bound ADR 0098 declares being enforced too early?
+- **Narrowed to the promotion's transcription, and by elimination not by guess:** every
+  `ok_or(CollectAllocationOverflow)` in `labeled/` (**264 sites**) and in `lara/` (**36 sites**) was
+  instrumented to panic, and every `.map_err(|_| CollectAllocationOverflow)` in `promote.rs` (4 sites) as
+  well; **none fires**. The variant therefore comes from a `return Err(LaraOperationError::
+  CollectAllocationOverflow.into())` fail-closed point, and the ones on the insert path are all in
+  `promote.rs`'s tree transcription: a value whose length is not the bucket width (`:424`), and
+  `live != bucket.degree` after the walk (`:473`). So inserting a second label forces the huge
+  neighbour bucket to promote, and its **transcription** disagrees with the bucket - the promotion's
+  fail-closed checks are being handed a misleading variant, which is why this read as an allocation
+  problem for so long.
 - **Two probes, two error shapes, both narrowed away:** with unnamed vertices the same shape reports
   `ResizeFailed(GrowFailed { current_size: 5, delta: 0 })`; with named ones it reports a plain
   `CollectAllocationOverflow`. Instrumenting `EdgeSlabStore::image_extent` (the one place that maps an
