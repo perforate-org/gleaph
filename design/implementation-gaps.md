@@ -111,6 +111,13 @@ defect from being rediscovered without its prior reasoning.
   `in_pin_start` path this promotion takes when it cannot place in place
   (`LeafArena::capture` → `grow_region` / `place` / `allocate`) and whether that hands out a region it
   never took from the free list.
+- **Read: `place` is legitimate in itself.** It offers a base inside the vertex's *own* slice
+  (`self.slice(vid)`), carving the gaps between the vertex's existing regions, so it consumes nothing from
+  the global free store - which is correct **if the slice itself was taken from that store**. The
+  `OverlapPrevious` in the promotion says exactly one thing is wrong with that premise: a released tail
+  lands inside a global free span, so some slice (or some region inside one) was handed out while the
+  corresponding free span stayed in the store. The next read is the slice allocation path -
+  `LeafArena::capture`'s slice extent and `bucket_free_spans` - not the per-vertex placement.
 - **Diagnosability shipped:** `EdgeStore::release_span` returns the allocator's `FreeSpanError` instead of
   flattening it to `GrowFailed { 0, 0 }` (`1f716f06b`), so this reads as `OverlapPrevious` with both spans
   rather than as a growth failure.
