@@ -4567,10 +4567,10 @@ fn vertex_layout_copy_tree_roots_64() -> canbench_rs::BenchResult {
     bench_physical_copy(PhysicalCopyFixture::TreeRoots)
 }
 
-/// Measure the shared admission/prepared publication on a real 4800-byte two-step fill.
+/// Measure the shared admission/prepared publication on a real 4800-byte fill.
 /// Setup and a distinct correctness control stay outside the measured closure.
 #[bench(raw)]
-fn materialize_owner_two_step_4800() -> canbench_rs::BenchResult {
+fn materialize_owner_4800() -> canbench_rs::BenchResult {
     let prepare = || {
         let graph = inline_property_bench_graph(1024);
         let src = graph
@@ -4604,16 +4604,12 @@ fn materialize_owner_two_step_4800() -> canbench_rs::BenchResult {
     let mut cursor = control
         .materialize_cursor(src, slot, 8, 0xA5)
         .expect("admit control");
+    // ADR 0099: the values plane is slot-addressed, so a 4800-byte fill completes in one step - the
+    // two-step shape this bench was built around (a 4096-byte chunk then a remainder) no longer exists.
     assert!(matches!(
         control
             .materialize_inline_property_stream_step(&mut cursor)
-            .expect("first chunk"),
-        crate::labeled::graph::values::MaterializeStep::Resumed
-    ));
-    assert!(matches!(
-        control
-            .materialize_inline_property_stream_step(&mut cursor)
-            .expect("publish"),
+            .expect("fill"),
         crate::labeled::graph::values::MaterializeStep::Finished
     ));
     let bucket = control
