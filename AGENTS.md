@@ -65,7 +65,18 @@ changes, or fixing concrete implementation review findings.
 
 ## Design Documents
 
-The design/ directory contains active design contracts, not archival notes.
+`design/` holds the **current contracts** and the **dated records that back them**;
+[design/README.md](design/README.md) is the map and marks each document's status.
+
+- Contracts (`adr/`, `architecture/`, `gql/`, `execution/`, `storage/`, `sharding/`, `index/`,
+  `federation/`) describe behaviour that is supposed to hold now. Keep them current; when the code departs
+  from one, either fix the code or record the departure in that document - an ADR amendment is the usual
+  form, and it must say what is decided versus implemented.
+- Records (`evidence/`, `investigations/`, `implementation-gaps.md`) are dated and append-only: what was
+  measured, reproduced or observed, and which contract it fed. Do not "update" them to match later code;
+  add a new record instead.
+- Code must not read from `design/` at build or test time. Evidence that has to execute belongs beside the
+  code it measures.
 
 When a code change alters a contract that a design document describes (architecture, storage layout, query semantics, public APIs, canister boundaries, indexing behavior, benchmark assumptions, migration requirements, or failure modes), update that document in the same patch. Do not update design documents for changes that do not affect their contracts.
 

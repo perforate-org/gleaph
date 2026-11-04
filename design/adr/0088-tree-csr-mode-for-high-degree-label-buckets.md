@@ -2841,3 +2841,21 @@ partial edge leaf, exact root errors and no-property/slab/run controls are cover
 threshold, layout, writer or demotion contract changed in that read slice. Independent review
 approved its bounded read-only repair through `f297706ab`, not deletion, demotion, matching,
 general atomicity/performance or landing.
+
+## Amendment 2026-11-04: two ownership sentences describe the target, not the code
+
+The E4/E5 ownership paragraph above states that `LeafArena` "is the only caller of the free-span store" and
+that the slice is the vertex's exclusive space. Neither holds in the code:
+
+- **Free-span callers:** `EdgeStore::{allocate_span, allocate_span_avoiding, release_span,
+  reserve_for_releases}` call the store directly, `promote.rs` reaches `free_span_store()` itself, and
+  `LeafArena::claim_placement` takes ranges it hands out. `LeafArena` owns *placement policy*, not exclusive
+  access.
+- **Slice as exclusive space:** [ADR 0098](0098-the-vertex-slice-owns-its-growth-bound.md) records that
+  `LeafArena::slices` derives a slice as the gap to the next vertex, which includes free space the store
+  still owns. Both functions that hand out ranges (`place`, `place_leaf_wide`) claim what they return
+  (`09f5a14d9`, `94d1572ba`), which closes the double-handout defect without making the slice an owned
+  extent - that formulation remains decided but unscheduled in ADR 0098.
+
+The sentences stay as written because they state the intended contract; this amendment records where the
+code stands against it, so a reader does not take them as fact.

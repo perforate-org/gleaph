@@ -39,7 +39,14 @@ pub enum LaraOperationError {
     ReadLimitExceeded,
     /// A complete value read exceeds the caller's admitted body-byte allowance.
     ReadByteLimitExceeded,
-    /// `degree * E::BYTES` overflowed when sizing a collect buffer.
+    /// The fail-closed "no room" answer for an operation that cannot proceed.
+    ///
+    /// The name promises one cause - a `degree * E::BYTES` collect buffer overflowing - but the variant is
+    /// the generic refusal at a few hundred sites: a span that cannot be placed, a bucket row that must
+    /// exist and does not, a release the allocator rejects. Construct it through [`Self::overflow`], which
+    /// records the caller (and traps with it under `GLEAPH_TRACE_OVERFLOW=1`), so the reason is found where
+    /// the refusal is raised rather than guessed from this name. A site whose refusal has a name of its own
+    /// belongs in its own variant; this one is the shared floor.
     CollectAllocationOverflow,
     /// A CSR row degree reached the representable `u32` limit.
     RowDegreeOverflow,
