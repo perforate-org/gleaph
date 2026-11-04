@@ -5796,17 +5796,14 @@ where
         // prefix bring their value blocks with them, and clearing the edge run clears the values run
         // in the same publication. A tombstoned run row is dropped with its value.
         let width = bucket.inline_property_byte_width();
-        let values_run = bucket.values_spill_run();
-        let compacted = if width != 0 && values_run != crate::traits::NO_SPILL_RUN {
+        let compacted = if width != 0
+            && let Some(values_run_id) = bucket.values_run()
+        {
             let sized = self.ensure_bucket_inline_property_bytes_span(
                 src,
                 bucket_slot,
                 bucket.with_stored_slots(new_stored_slots),
             )?;
-            let values_run_id = self
-                .values
-                .spill_mint(values_run)
-                .map_err(LabeledOperationError::from)?;
             let mut value = vec![0u8; usize::from(width)];
             for (index, slot) in live_log_sources.iter().copied() {
                 self.values
@@ -6565,10 +6562,9 @@ where
         if bucket.values_run().is_none() || !bucket.is_inline_property_bytes_allocated() {
             return Ok(bucket);
         }
-        let run = self
-            .values
-            .spill_mint(bucket.values_spill_run())
-            .map_err(LabeledOperationError::from)?;
+        let run = bucket.values_run().ok_or_else(|| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
 
         let mut saved = Vec::with_capacity(bucket.degree() as usize);
         for ordinal in 0..bucket.degree() {
@@ -6644,20 +6640,14 @@ where
             .edges
             .spill_repack(run, &keep)
             .map_err(LabeledOperationError::from)?;
-        let values_run = bucket.values_spill_run();
-        let fresh_values = if values_run == crate::traits::NO_SPILL_RUN {
-            None
-        } else {
-            let old = self
-                .values
-                .spill_mint(values_run)
-                .map_err(LabeledOperationError::from)?;
-            Some((
+        let fresh_values = match bucket.values_run() {
+            None => None,
+            Some(old) => Some((
                 old,
                 self.values
                     .spill_repack(old, &keep)
                     .map_err(LabeledOperationError::from)?,
-            ))
+            )),
         };
         let published = match &fresh_values {
             Some((_, new_values)) => bucket
