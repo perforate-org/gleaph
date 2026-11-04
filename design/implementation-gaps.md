@@ -82,6 +82,14 @@ defect from being rediscovered without its prior reasoning.
   shows today - most likely `#[track_caller]` reports the inlined outer location of a helper it calls. The
   next step is a plain call-stack (`std::backtrace::Backtrace::force_capture()` in the constructor) rather
   than another line guess.
+- **The recorded-site histogram points at a poisoned descriptor:** after the failure, the sites recorded
+  on that thread are a cluster in `bucket_store.rs`'s read/write helpers plus
+  `insert.rs:1039/1048/1064` - the **tiny-bucket insert branch**: `degree.checked_add(1)` (1039),
+  `tiny_used_width.checked_add(1)` (1048) and `num_edges.checked_add(1)` (1064) all overflow. A `degree`
+  of `u32::MAX` is not a large bucket, it is an **erased slot read as `0xFF`**, so the vertex's descriptor
+  row for the second label is pointing at a slot that was vacated rather than initialised. That is the
+  next thing to check: what vacates a bucket slot, and whether the descriptor-row origin
+  (`ensure_vertex_bucket_row_origin`) can name a slot that was never written.
 - **Backtrace taken, and it explains the earlier misses:** the capture fires inside **`insert_vertex_row`**,
   i.e. on the *first* `overflow()` construction of the run, which some caller handles as a normal
   "not there yet" answer. So panicking on construction traces the first benign occurrence, not the fatal
