@@ -187,6 +187,9 @@ where
                 && start.saturating_sub(cursor) >= need
                 && checked_add_slot_index(cursor, cover_width).is_some_and(|c| c <= *start)
             {
+                // Claimed for the same reason as in `place`: the leaf extent includes free spans the
+                // store still owns, and handing one out without taking it gives the slots two owners.
+                self.claim_placement(cursor, need);
                 return Some(cursor);
             }
             if *end > cursor {
@@ -196,6 +199,7 @@ where
         if checked_add_slot_index(cursor, need).is_some_and(|end| end <= extent_end)
             && checked_add_slot_index(cursor, cover_width).is_some_and(|end| end <= extent_end)
         {
+            self.claim_placement(cursor, need);
             Some(cursor)
         } else {
             None
