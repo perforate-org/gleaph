@@ -6561,7 +6561,7 @@ where
 
         let mut saved = Vec::with_capacity(bucket.degree() as usize);
         for ordinal in 0..bucket.degree() {
-            saved.push(self.read_bucket_inline_property_bytes_for_slot(&bucket, ordinal, None)?);
+            saved.push(self.read_value_row(&bucket, ordinal)?);
         }
         // The rows are about to move into the slab, so the descriptor stops pointing at the run
         // *before* admission: `needed_slots` must cover every row the slab will hold.
@@ -9204,7 +9204,7 @@ mod tests {
         );
         for slot in 0..after.degree() {
             let bytes = graph
-                .read_bucket_inline_property_bytes_for_slot(&after, slot, None)
+                .read_value_row(&after, slot)
                 .expect("every folded row keeps its value block");
             assert_eq!(bytes.len(), 2, "slot {slot}");
         }

@@ -1910,9 +1910,7 @@ mod tests {
             .read_label_bucket_slot(bucket_slot_before)
             .unwrap();
         assert_eq!(
-            graph
-                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
-                .unwrap(),
+            graph.read_value_row(&bucket_before, 0).unwrap(),
             42u16.to_le_bytes().to_vec()
         );
 
@@ -1966,9 +1964,7 @@ mod tests {
             .read_label_bucket_slot(bucket_slot_before)
             .unwrap();
         assert_eq!(
-            graph
-                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
-                .unwrap(),
+            graph.read_value_row(&bucket_before, 0).unwrap(),
             42u16.to_le_bytes().to_vec()
         );
 

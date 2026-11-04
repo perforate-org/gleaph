@@ -548,11 +548,8 @@ where
         for (ordinal, edge) in edges.into_iter().enumerate() {
             let slot_index = edge.edge_slot_index_raw();
             let ordinal = u32::try_from(ordinal).map_err(|_| LaraOperationError::overflow())?;
-            let value = self.read_bucket_inline_property_bytes_for_slot(
-                bucket,
-                ordinal,
-                log_chains.as_ref(),
-            )?;
+            let mut value = Vec::new();
+            self.read_value_row_with_chains(bucket, ordinal, log_chains.as_ref(), &mut value)?;
             out.push((slot_index, value));
         }
         Ok(out)
@@ -567,7 +564,7 @@ where
         bucket: &LabelBucket,
         slot: u32,
     ) -> Result<Vec<u8>, LabeledOperationError> {
-        self.read_bucket_inline_property_bytes_for_slot(bucket, slot, None)
+        self.read_value_row(bucket, slot)
     }
 
     /// Writes the value block of the row at bucket-local `slot`, into whichever plane holds it.
@@ -603,17 +600,56 @@ where
             .map_err(LabeledOperationError::from)
     }
 
-    pub(super) fn read_bucket_inline_property_bytes_for_slot(
+    /// Reads one row's value block into `buf`, sized to the bucket's value width.
+    ///
+    /// This is **the** entry point for reading a row's values. The storage class resolves here: a tree
+    /// bucket keeps its values in the property root, a row inside the slab prefix reads from the bytes span,
+    /// and a row beyond it from the values run. A bucket with no value width has no block, so `buf` comes
+    /// back empty - one rule for every caller, where each of the older entry points decided for itself
+    /// whether zero width was an error or a skip.
+    pub(super) fn read_value_row(
         &self,
         bucket: &LabelBucket,
-        slot_index: u32,
-        log_chains: Option<&Vec<u32>>,
+        row: u32,
     ) -> Result<Vec<u8>, LabeledOperationError> {
         let mut buf = Vec::new();
-        self.read_bucket_inline_property_bytes_for_slot_into(
-            bucket, slot_index, log_chains, &mut buf,
-        )?;
+        self.read_value_row_with_chains(bucket, row, None, &mut buf)?;
         Ok(buf)
+    }
+
+    /// [`Self::read_value_row`] with a precomputed run chain, for a caller reading many rows in one pass.
+    pub(super) fn read_value_row_with_chains(
+        &self,
+        bucket: &LabelBucket,
+        row: u32,
+        log_chains: Option<&Vec<u32>>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), LabeledOperationError> {
+        let width = usize::from(bucket.inline_property_byte_width());
+        if width == 0 {
+            buf.clear();
+            return Ok(());
+        }
+        if bucket.is_tree_mode() {
+            buf.clear();
+            buf.resize(width, 0);
+            return super::tree_read::read_property_value_at_slot(self, bucket, row, buf);
+        }
+        self.read_bucket_inline_property_bytes_for_slot_into(bucket, row, log_chains, buf)
+    }
+
+    /// Reads a contiguous range of rows' value blocks into `buf`, sized to `rows.len() * width`.
+    pub(super) fn read_value_range(
+        &self,
+        bucket: &LabelBucket,
+        rows: std::ops::Range<u32>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), LabeledOperationError> {
+        if bucket.inline_property_byte_width() == 0 {
+            buf.clear();
+            return Ok(());
+        }
+        self.read_bucket_inline_property_bytes_range_into(bucket, rows, buf)
     }
 
     /// Reads a contiguous span of inline property bytes for a dense slab bucket.
@@ -1737,7 +1773,8 @@ where
             return Ok(edge);
         }
         let width = bucket.inline_property_byte_width();
-        let buf = self.read_bucket_inline_property_bytes_for_slot(bucket, ordinal, log_chains)?;
+        let mut buf = Vec::new();
+        self.read_value_row_with_chains(bucket, ordinal, log_chains, &mut buf)?;
         Ok(edge.with_stored_inline_property_bytes(width, &buf))
     }
 
@@ -1912,9 +1949,7 @@ mod tests {
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        let road_value = graph
-            .read_bucket_inline_property_bytes_for_slot(&bucket, bucket.degree() - 1, None)
-            .unwrap();
+        let road_value = graph.read_value_row(&bucket, bucket.degree() - 1).unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 src,
@@ -1964,7 +1999,7 @@ mod tests {
         // slab prefix gets a slab block; a row that spilled gets a run block. Both are "one value
         // width", which is the quota this fixture is about.
         let value = graph
-            .read_bucket_inline_property_bytes_for_slot(&valued_bucket, 0, None)
+            .read_value_row(&valued_bucket, 0)
             .expect("the valued row's block is readable");
         assert_eq!(
             value.len(),
@@ -2154,7 +2189,7 @@ mod tests {
         {
             assert_eq!(
                 graph
-                    .read_bucket_inline_property_bytes_for_slot(&bucket, 0, None)
+                    .read_value_row(&bucket, 0)
                     .expect("the pending value is readable"),
                 vec![3u8; 6]
             );
@@ -2196,9 +2231,7 @@ mod tests {
             // ADR 0099: read the block per row rather than assuming the span starts at the bucket's
             // offset with one block per live row - a spilled row keeps its block in the run.
             for (slot, expected) in [(0u32, 1u16), (1, 100)] {
-                let bytes = graph
-                    .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
-                    .expect("value block");
+                let bytes = graph.read_value_row(&bucket, slot).expect("value block");
                 assert_eq!(
                     u16::from_le_bytes([bytes[0], bytes[1]]),
                     expected,
@@ -4517,9 +4550,7 @@ mod tests {
         ));
         for ordinal in 0..5 {
             assert_eq!(
-                graph
-                    .read_bucket_inline_property_bytes_for_slot(&source, ordinal, None)
-                    .unwrap(),
+                graph.read_value_row(&source, ordinal).unwrap(),
                 vec![0xA5; 2]
             );
         }
@@ -4566,9 +4597,7 @@ mod tests {
         );
         for ordinal in 0..5 {
             assert_eq!(
-                graph
-                    .read_bucket_inline_property_bytes_for_slot(&published, ordinal, None)
-                    .unwrap(),
+                graph.read_value_row(&published, ordinal).unwrap(),
                 vec![0xB2; 2]
             );
         }
@@ -4686,9 +4715,7 @@ mod tests {
         graph.vertices().set(peer, &peer_vertex);
         for ordinal in 0..5 {
             assert_eq!(
-                graph
-                    .read_bucket_inline_property_bytes_for_slot(&peer_row, ordinal, None)
-                    .unwrap(),
+                graph.read_value_row(&peer_row, ordinal).unwrap(),
                 vec![0xB2; 1000]
             );
         }
@@ -4847,9 +4874,7 @@ mod tests {
         assert_eq!(bucket.inline_property_bytes_log_len(), 0);
 
         for slot in 0..5 {
-            let bytes = graph
-                .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
-                .expect("read slot");
+            let bytes = graph.read_value_row(&bucket, slot).expect("read slot");
             assert_eq!(bytes, vec![0xAA, 0xAA, 0xAA], "slot {slot} should be 0xAA");
         }
 
@@ -4954,9 +4979,7 @@ mod tests {
         // degree=4 after the tombstone, but the prefix is still 5 slots.
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 5);
         for slot in 0..5 {
-            let bytes = graph
-                .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
-                .expect("read");
+            let bytes = graph.read_value_row(&bucket, slot).expect("read");
             assert_eq!(bytes, vec![0xCC, 0xCC], "slot {slot}");
         }
     }
