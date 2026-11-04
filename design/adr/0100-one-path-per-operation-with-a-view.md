@@ -109,6 +109,12 @@ one place, replacing the sixteen callers of `read_bucket_inline_property_bytes_f
 precondition - an optimisation inside the plane, not an entry point a caller picks. Both the fold benches
 and the expand benches report no significant change.
 
-**Still open:** retiring the graph-side helpers the views subsume (step 3 of the migration order). Until that
-happens the old entry points still exist as delegations, which is deliberate - the delegation keeps each cut
-reviewable as a move.
+**Step 3, as far as it goes** (`fdc348b99`): `insert_edge_skip_leaf_cascade_impl` - the internal wrapper the
+cut left behind - is gone, and the graph's two insert entry points plus the tiny-mode helper that re-enters
+after promotion ask `BucketRowPlane::insert_row` themselves. The view's own retry calls itself instead of
+bouncing back through the graph.
+
+What remains is **API, not a duplicate path**: `remove_edge_at_slot_with_move` and `read_edge_state` are
+public entry points that other modules (`bidirectional/deferred`) and the facade call, so they stay and
+delegate. Removing them was tried and fails to compile against those callers - which is the right outcome:
+the migration's goal was one *implementation*, not one *name*.
