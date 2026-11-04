@@ -135,6 +135,11 @@ defect from being rediscovered without its prior reasoning.
   so the sequence to look for is: a bucket publishes legitimately with an empty run and every row in its
   prefix, then a row lands **beyond** the prefix whose value block is never appended. Which insert path
   can grow the edge prefix/run without appending a block is the question that remains.
+- **Next technique, before more grep:** put `#[track_caller]` on
+  `EdgeInlinePropertyBytesStore::spill_read` / `spill_read_range` and panic with
+  `Location::caller()` on the `RowOutOfRange` path. That names the call site directly instead of
+  inferring it from the code - it is how `with_stored_slots`'s caller was found in this same work, and
+  it is cheaper than another round of probes.
 - **What that leaves:** a descriptor published from a bucket value that is **stale** with respect to a
   run another operation already released - the run id would then name a class that is on the free list,
   and `spill_mint` on it succeeds with `used_len == 0`. Every value-plane mutation now goes through
