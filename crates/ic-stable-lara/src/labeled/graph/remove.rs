@@ -669,17 +669,20 @@ where
         if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
-        // ADR 0099: a bucket with no live rows owns no value plane, whether or not its edge run
-        // survives as a reused tombstone holder. Releasing the values run here keeps the two planes
-        // from disagreeing about whether the bucket is empty.
+        // ADR 0099: a bucket with no live rows gives up its value *span* - space, not state. Its runs
+        // are reusable tombstone holders that compaction sweeps (see
+        // `deleting_every_row_keeps_the_run_until_compaction`), so they stay in step with each other;
+        // releasing only the values run here is what left the planes one row apart on the next insert.
         let mut updated = updated;
         if updated.degree() == 0 {
-            // ADR 0099: the two runs mirror each other, and an emptied bucket keeps them until
-            // compaction does the sweeping (the run is a reusable tombstone holder - see
-            // `deleting_every_row_keeps_the_run_until_compaction`). Releasing only the values run
-            // here is what put the planes out of step: the next insert landed at values index 0
-            // while its edge row sat at the edge run's index 1. What an emptied bucket does give up
-            // is its slab span, which is space rather than state.
+            if updated.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                && updated.values_spill_run() != crate::traits::NO_SPILL_RUN
+            {
+                if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
+                    let _ = self.values.spill_release(run);
+                }
+                updated = updated.without_values_spill_run();
+            }
             // `is_inline_property_bytes_allocated` folds "has rows" into its answer, so it reads
             // false exactly when this release is needed; the descriptor's recorded slot count is the
             // question to ask here.
@@ -688,14 +691,6 @@ where
             }
         }
         let updated = if emptied {
-            // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either - the values
-            // run is released with the edge span rather than left naming blocks that can never be
-            // read again.
-            if updated.values_spill_run() != crate::traits::NO_SPILL_RUN
-                && let Ok(run) = self.values.spill_mint(updated.values_spill_run())
-            {
-                let _ = self.values.spill_release(run);
-            }
             updated
                 .with_inline_property_bytes_log_head(-1)
                 .with_inline_property_bytes_slab_slots(0)
