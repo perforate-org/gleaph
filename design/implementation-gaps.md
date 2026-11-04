@@ -103,6 +103,14 @@ defect from being rediscovered without its prior reasoning.
   region - i.e. the promoted bucket grew into free space **without taking it off the free list**. That is
   the defect: the in-place growth path has to consume the adjacent free span (or not release the tail it
   has grown into), instead of assuming adjacency means ownership.
+- **Ruled out on reading it:** the release is *after* `publish()`, so the promotion cannot re-release on a
+  retry (`retried` only guards the in-leaf allocation branch, above the release). The overlapping region
+  therefore predates this promotion: a bucket's span was placed over free space that was never consumed,
+  which happens in the placement machinery (`prepare_physical_layout` and the growth ladder's
+  `try_extend_span`, the latter of which *does* take from the free store). The next thing to read is the
+  `in_pin_start` path this promotion takes when it cannot place in place
+  (`LeafArena::capture` → `grow_region` / `place` / `allocate`) and whether that hands out a region it
+  never took from the free list.
 - **Diagnosability shipped:** `EdgeStore::release_span` returns the allocator's `FreeSpanError` instead of
   flattening it to `GrowFailed { 0, 0 }` (`1f716f06b`), so this reads as `OverlapPrevious` with both spans
   rather than as a growth failure.
