@@ -116,6 +116,9 @@ defect from being rediscovered without its prior reasoning.
   publication* - the row set goes wrong afterwards, or the read that fails is not one of the three sites
   instrumented (`read_bucket_inline_property_bytes_for_slot_into`'s chain branch, the run branch's
   `spill_mint`, its `spill_read_range`).
+- **Instrumentation caveat, learned the hard way:** the benchmark runs in wasm, where `eprintln!` goes to
+  the canister log and is **not** shown by `canbench`; only a `panic!` message surfaces (as the trap
+  text). The probes below were re-run as panics and still did not fire, so their conclusion stands.
 - **Sites instrumented that do NOT fire** (so a future session need not re-probe them):
   `read_bucket_inline_property_bytes_for_slot_into`'s chain branch,
   `read_bucket_inline_property_bytes_range_into`'s `spill_mint` failure and its `spill_read_range`,
