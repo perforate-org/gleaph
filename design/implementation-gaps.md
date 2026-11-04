@@ -125,6 +125,13 @@ defect from being rediscovered without its prior reasoning.
   `map_values_spill_read_error` - i.e. a `ValuesSpillReadError::RowOutOfRange` - which only
   `spill_read` / `spill_read_range` produce. That leaves callers of those two on paths not yet reviewed,
   and the bench's own setup as the other candidate.
+- **The error index pins the state:** `ValuesSpillRunStore::read_range` reports
+  `RowOutOfRange { index: rows.start.max(used_len) }`, and the trap carries index `0`, so the run is
+  **live with `used_len == 0`** - not released (a released header makes `used_len` read as garbage and
+  the index large). The publish check deliberately allows that state while all rows sit in the prefix,
+  so the sequence to look for is: a bucket publishes legitimately with an empty run and every row in its
+  prefix, then a row lands **beyond** the prefix whose value block is never appended. Which insert path
+  can grow the edge prefix/run without appending a block is the question that remains.
 - **What that leaves:** a descriptor published from a bucket value that is **stale** with respect to a
   run another operation already released - the run id would then name a class that is on the free list,
   and `spill_mint` on it succeeds with `used_len == 0`. Every value-plane mutation now goes through
