@@ -89,6 +89,14 @@ defect from being rediscovered without its prior reasoning.
   both publish a descriptor whose runs default to `NO_SPILL_RUN`, so they are not the source. That leaves
   the materialisation fill (`fill_value_run_for_edge_spill`) and the bypass promotion as the untested
   candidates.
+- **The error's exact origin, measured:** `MissingAscLogIndex` is only a *rendering* -
+  `map_values_spill_read_error` produces it from `ValuesSpillReadError::RowOutOfRange { index }`, so the
+  fixture reads **row 0 of a run that has no rows**. Instrumenting both chain-reading sites
+  (`read_bucket_inline_property_bytes_for_slot_into` and the `spill_mint` failure in
+  `read_bucket_inline_property_bytes_range_into`) printed nothing, so the read gets a *valid* run id whose
+  `used_len` is 0. That narrows the defect to a path that empties a values run without clearing the
+  descriptor - `spill_drop_head(run, used)` reaching zero, or a run released and re-minted empty - and it
+  is a *state* bug, not a reader bug.
 - **Status:** Open.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
