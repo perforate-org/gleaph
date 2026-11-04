@@ -1175,292 +1175,317 @@ async fn execute_plan_batch_internal(
         return Err(format!("{entrypoint} requires at least one operation"));
     }
     let total_ops = operations.len();
-    let mut results = Vec::with_capacity(total_ops);
-    let mut next_index = None;
-    let mut total_instr = 0u64;
-    let mut max_instr = 0u64;
-    let mut min_instr = u64::MAX;
-    let mut errors = 0usize;
-
-    // The internal plan-batch path may carry one mutation id across its independently journaled
-    // operations; atomic-insert and bulk-load requests use their ordered Graph handlers instead.
+    let store = GraphStore::new();
+    // Bound the whole transport request, not just operations reached after an earlier await.
     let bulk_mutation_id = detect_bulk_mutation_id(&operations);
-    let is_bulk = bulk_mutation_id.is_some();
-    let mut bulk_state = if let Some(mutation_id) = bulk_mutation_id {
-        let store = GraphStore::new();
-        if let Some(journal) = store.mutation_journal_entry(mutation_id) {
-            if journal.is_completed() {
-                let persisted_row_counts = journal
-                    .bulk_progress()
-                    .as_ref()
-                    .map(|progress| progress.operation_row_counts())
-                    .unwrap_or_default();
-                if !persisted_row_counts.is_empty() && persisted_row_counts.len() != total_ops {
+    let run = async {
+        let mut results = Vec::with_capacity(total_ops);
+        let mut next_index = None;
+        let mut total_instr = 0u64;
+        let mut max_instr = 0u64;
+        let mut min_instr = u64::MAX;
+        let mut errors = 0usize;
+
+        // The internal plan-batch path may carry one mutation id across its independently journaled
+        // operations; atomic-insert and bulk-load requests use their ordered Graph handlers instead.
+        let is_bulk = bulk_mutation_id.is_some();
+        let mut bulk_state = if let Some(mutation_id) = bulk_mutation_id {
+            if let Some(journal) = store
+                .mutation_journal_entry_for_replay(
+                    mutation_id,
+                    &gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1::PlanExecution,
+                )
+                .map_err(str::to_owned)?
+            {
+                if journal.is_completed() {
+                    return replay_plan_batch(&journal, total_ops, entrypoint);
+                }
+                let start = journal
+                    .next_index()
+                    .ok_or_else(|| format!("{entrypoint}: incomplete bulk journal has no cursor"))?
+                    as usize;
+                let progress = journal.bulk_progress().as_ref().ok_or_else(|| {
+                    format!("{entrypoint}: incomplete bulk journal has no progress")
+                })?;
+                if progress.operation_count() as usize != total_ops
+                    || progress.completed_count() as usize != start
+                    || progress.operation_row_counts().len() != start
+                    || start > total_ops
+                {
                     return Err(format!(
-                        "{entrypoint}: completed bulk journal row-count cardinality {} does not match operation count {total_ops}",
-                        persisted_row_counts.len()
+                        "{entrypoint}: incomplete bulk journal progress does not match the request"
                     ));
                 }
-                // Journals written before ordered row-count persistence decode with an empty
-                // vector. Preserve their legacy synthetic-zero replay contract; typed V1 was not
-                // active before the field existed and therefore always requires exact counts.
-                let row_counts = if persisted_row_counts.is_empty() {
-                    vec![0; total_ops]
-                } else {
-                    persisted_row_counts.to_vec()
-                };
-                // Entire bulk group is already durable: replay its ordered per-operation counts.
-                return Ok(ExecutePlanBatchResult {
-                    results: row_counts
-                        .iter()
-                        .map(|row_count| {
-                            Ok(ExecutePlanResult {
-                                row_count: *row_count,
-                                rows_blob: None,
-                                hot_forward_vertices: Vec::new(),
-                                search_chain_receipt: None,
-                            })
-                        })
-                        .collect(),
-                    next_index: None,
-                });
+                Some(BulkState {
+                    mutation_id,
+                    start_index: start,
+                    completed_count: progress.completed_count(),
+                    row_count: journal.row_count(),
+                    emitted_delta_first_seq: journal.emitted_delta_first_seq(),
+                    emitted_delta_last_seq: journal.emitted_delta_last_seq(),
+                    hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
+                    operation_row_counts: progress.operation_row_counts().to_vec(),
+                })
+            } else {
+                Some(BulkState {
+                    mutation_id,
+                    start_index: 0,
+                    completed_count: 0,
+                    row_count: 0,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: Vec::new(),
+                    operation_row_counts: Vec::new(),
+                })
             }
-            let start = journal.next_index().unwrap_or(0) as usize;
-            let persisted_row_counts = journal
-                .bulk_progress()
-                .as_ref()
-                .map(|progress| progress.operation_row_counts().to_vec())
-                .unwrap_or_default();
-            Some(BulkState {
-                mutation_id,
-                start_index: start,
-                completed_count: journal
-                    .bulk_progress()
-                    .as_ref()
-                    .map(|p| p.completed_count())
-                    .unwrap_or(0),
-                row_count: journal.row_count(),
-                emitted_delta_first_seq: journal.emitted_delta_first_seq(),
-                emitted_delta_last_seq: journal.emitted_delta_last_seq(),
-                hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
-                operation_row_counts: if persisted_row_counts.is_empty() {
-                    vec![0; start]
-                } else {
-                    persisted_row_counts
-                },
-            })
         } else {
-            Some(BulkState {
-                mutation_id,
-                start_index: 0,
-                completed_count: 0,
-                row_count: 0,
-                emitted_delta_first_seq: None,
-                emitted_delta_last_seq: None,
-                hot_forward_vertices: Vec::new(),
-                operation_row_counts: Vec::new(),
-            })
-        }
-    } else {
-        None
-    };
+            None
+        };
 
-    for (index, operation) in operations.into_iter().enumerate() {
-        // Bulk op that was already completed: emit a synthetic success and continue.
-        if let Some(ref mut state) = bulk_state
-            && index < state.start_index
-        {
-            let row_count = *state.operation_row_counts.get(index).ok_or_else(|| {
-                format!("{entrypoint}: bulk journal row-count prefix is missing operation {index}")
-            })?;
-            results.push(Ok(ExecutePlanResult {
-                row_count,
-                rows_blob: None,
-                hot_forward_vertices: Vec::new(),
-                search_chain_receipt: None,
-            }));
-            continue;
+        for (index, operation) in operations.into_iter().enumerate() {
+            // Bulk op that was already completed: emit a synthetic success and continue.
+            if let Some(ref mut state) = bulk_state
+                && index < state.start_index
+            {
+                let row_count = *state.operation_row_counts.get(index).ok_or_else(|| {
+                    format!(
+                        "{entrypoint}: bulk journal row-count prefix is missing operation {index}"
+                    )
+                })?;
+                results.push(Ok(ExecutePlanResult {
+                    row_count,
+                    rows_blob: None,
+                    hot_forward_vertices: Vec::new(),
+                    search_chain_receipt: None,
+                }));
+                continue;
+            }
+
+            let before = current_instruction_counter();
+            // Early cutoff: stop before starting the next operation if the
+            // remaining per-message budget is unlikely to cover it plus drain and
+            // final bookkeeping. The Router will re-invoke the batch with the
+            // continuation cursor (next_index) inside the same ingress call.
+            if mode == ExecutePlanBatchMode::Dynamic
+                && gleaph_instruction_budget::should_cutoff(
+                    gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS,
+                    before,
+                    max_instr.max(MIN_OP_INSTRUCTION_ESTIMATE),
+                    gleaph_graph_kernel::GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM,
+                    BATCH_DRAIN_BUDGET_ESTIMATE,
+                )
+            {
+                next_index = Some(index as u32);
+                log_batch_summary(
+                    entrypoint,
+                    mode,
+                    index,
+                    total_instr,
+                    max_instr,
+                    if min_instr == u64::MAX { 0 } else { min_instr },
+                    errors,
+                    next_index,
+                );
+                break;
+            }
+
+            let (check_journal, write_incomplete_journal, write_complete_journal) = if is_bulk {
+                (false, false, false)
+            } else {
+                (true, true, true)
+            };
+            let raw_result = match ensure_execution_mode(
+                operation.args.mode,
+                GqlExecutionMode::Update,
+                entrypoint,
+            ) {
+                Ok(()) => {
+                    execute_plan_impl(
+                        operation,
+                        false,
+                        check_journal,
+                        write_incomplete_journal,
+                        write_complete_journal,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            };
+            let after = current_instruction_counter();
+            let cost = after.saturating_sub(before);
+            total_instr += cost;
+            max_instr = max_instr.max(cost);
+            min_instr = min_instr.min(cost);
+            let result_for_caller = raw_result
+                .as_ref()
+                .map(|(r, _first, _last)| r.clone())
+                .map_err(|e| e.clone());
+            if raw_result.is_err() {
+                errors += 1;
+            }
+            #[cfg(feature = "batch-instr-log")]
+            if cost >= BATCH_INSTR_OP_THRESHOLD {
+                log_batch_op(entrypoint, mode, index, cost, &result_for_caller);
+            }
+
+            // Aggregate bulk mutation durable state for the operations that committed.
+            if let Some(ref mut state) = bulk_state {
+                match raw_result {
+                    Ok((exec_result, first_seq, last_seq)) => {
+                        state.row_count = state.row_count.saturating_add(exec_result.row_count);
+                        if let Some(seq) = first_seq {
+                            extend_delta_seq_range(
+                                &mut state.emitted_delta_first_seq,
+                                &mut state.emitted_delta_last_seq,
+                                seq,
+                            );
+                        }
+                        if let Some(seq) = last_seq {
+                            extend_delta_seq_range(
+                                &mut state.emitted_delta_first_seq,
+                                &mut state.emitted_delta_last_seq,
+                                seq,
+                            );
+                        }
+                        state
+                            .hot_forward_vertices
+                            .extend(exec_result.hot_forward_vertices.clone());
+                        state.completed_count += 1;
+                        state.operation_row_counts.push(exec_result.row_count);
+                        results.push(Ok(exec_result));
+                    }
+                    Err(error) => {
+                        // Partial failure: persist progress before the failed op and stop.
+                        next_index = Some(index as u32);
+                        results.push(Err(error));
+                        break;
+                    }
+                }
+            } else {
+                results.push(result_for_caller);
+            }
         }
 
-        let before = current_instruction_counter();
-        // Early cutoff: stop before starting the next operation if the
-        // remaining per-message budget is unlikely to cover it plus drain and
-        // final bookkeeping. The Router will re-invoke the batch with the
-        // continuation cursor (next_index) inside the same ingress call.
-        if mode == ExecutePlanBatchMode::Dynamic
-            && gleaph_instruction_budget::should_cutoff(
-                gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS,
-                before,
-                max_instr.max(MIN_OP_INSTRUCTION_ESTIMATE),
-                gleaph_graph_kernel::GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM,
-                BATCH_DRAIN_BUDGET_ESTIMATE,
-            )
-        {
-            next_index = Some(index as u32);
+        // Persist the durable bulk journal entry when we managed one for this batch.
+        if let Some(ref state) = bulk_state {
+            let store = GraphStore::new();
+            store.commit_record_bulk_mutation_journal(
+                state.mutation_id,
+                state.row_count,
+                state.emitted_delta_first_seq,
+                state.emitted_delta_last_seq,
+                state.hot_forward_vertices.clone(),
+                total_ops as u32,
+                state.completed_count,
+                state.operation_row_counts.clone(),
+                next_index,
+            );
+        }
+
+        if next_index.is_none() && bulk_state.is_none() {
             log_batch_summary(
                 entrypoint,
                 mode,
-                index,
+                total_ops,
+                total_instr,
+                max_instr,
+                if min_instr == u64::MAX { 0 } else { min_instr },
+                errors,
+                None,
+            );
+        } else if next_index.is_some() && bulk_state.is_none() {
+            // summary already logged at cutoff
+        } else if let Some(ref state) = bulk_state {
+            log_batch_summary(
+                entrypoint,
+                mode,
+                state.completed_count as usize,
                 total_instr,
                 max_instr,
                 if min_instr == u64::MAX { 0 } else { min_instr },
                 errors,
                 next_index,
             );
-            break;
         }
 
-        let (check_journal, write_incomplete_journal, write_complete_journal) = if is_bulk {
-            (false, false, false)
-        } else {
-            (true, true, true)
-        };
-        let raw_result = match ensure_execution_mode(
-            operation.args.mode,
-            GqlExecutionMode::Update,
-            entrypoint,
-        ) {
-            Ok(()) => {
-                execute_plan_impl(
-                    operation,
-                    false,
-                    check_journal,
-                    write_incomplete_journal,
-                    write_complete_journal,
-                )
-                .await
+        // Synchronously drain the postings emitted by the successfully executed
+        // operations in this batch. If the drain cannot complete now, the entries
+        // remain in the durable derived-index outbox and the maintenance timer will
+        // converge the index asynchronously.
+        if results.iter().all(|r| r.is_ok()) && next_index.is_none() {
+            let _drain_before = current_instruction_counter();
+            if let Err(e) = sync_drain_derived_index_outbox().await {
+                return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
             }
-            Err(err) => Err(err),
-        };
-        let after = current_instruction_counter();
-        let cost = after.saturating_sub(before);
-        total_instr += cost;
-        max_instr = max_instr.max(cost);
-        min_instr = min_instr.min(cost);
-        let result_for_caller = raw_result
-            .as_ref()
-            .map(|(r, _first, _last)| r.clone())
-            .map_err(|e| e.clone());
-        if raw_result.is_err() {
-            errors += 1;
-        }
-        #[cfg(feature = "batch-instr-log")]
-        if cost >= BATCH_INSTR_OP_THRESHOLD {
-            log_batch_op(entrypoint, mode, index, cost, &result_for_caller);
-        }
-
-        // Aggregate bulk mutation durable state for the operations that committed.
-        if let Some(ref mut state) = bulk_state {
-            match raw_result {
-                Ok((exec_result, first_seq, last_seq)) => {
-                    state.row_count = state.row_count.saturating_add(exec_result.row_count);
-                    if let Some(seq) = first_seq {
-                        extend_delta_seq_range(
-                            &mut state.emitted_delta_first_seq,
-                            &mut state.emitted_delta_last_seq,
-                            seq,
-                        );
-                    }
-                    if let Some(seq) = last_seq {
-                        extend_delta_seq_range(
-                            &mut state.emitted_delta_first_seq,
-                            &mut state.emitted_delta_last_seq,
-                            seq,
-                        );
-                    }
-                    state
-                        .hot_forward_vertices
-                        .extend(exec_result.hot_forward_vertices.clone());
-                    state.completed_count += 1;
-                    state.operation_row_counts.push(exec_result.row_count);
-                    results.push(Ok(exec_result));
-                }
-                Err(error) => {
-                    // Partial failure: persist progress before the failed op and stop.
-                    next_index = Some(index as u32);
-                    results.push(Err(error));
-                    break;
-                }
+            #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
+            {
+                let line = format!(
+                    "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
+                    entrypoint,
+                    current_instruction_counter().saturating_sub(_drain_before),
+                );
+                crate::instr_log::push(line);
             }
-        } else {
-            results.push(result_for_caller);
         }
-    }
-
-    // Persist the durable bulk journal entry when we managed one for this batch.
-    if let Some(ref state) = bulk_state {
-        let store = GraphStore::new();
-        store.commit_record_bulk_mutation_journal(
-            state.mutation_id,
-            state.row_count,
-            state.emitted_delta_first_seq,
-            state.emitted_delta_last_seq,
-            state.hot_forward_vertices.clone(),
-            total_ops as u32,
-            state.completed_count,
-            state.operation_row_counts.clone(),
+        let result = ExecutePlanBatchResult {
+            results,
             next_index,
-        );
-    }
-
-    if next_index.is_none() && bulk_state.is_none() {
-        log_batch_summary(
-            entrypoint,
-            mode,
-            total_ops,
-            total_instr,
-            max_instr,
-            if min_instr == u64::MAX { 0 } else { min_instr },
-            errors,
-            None,
-        );
-    } else if next_index.is_some() && bulk_state.is_none() {
-        // summary already logged at cutoff
-    } else if let Some(ref state) = bulk_state {
-        log_batch_summary(
-            entrypoint,
-            mode,
-            state.completed_count as usize,
-            total_instr,
-            max_instr,
-            if min_instr == u64::MAX { 0 } else { min_instr },
-            errors,
-            next_index,
-        );
-    }
-
-    // Synchronously drain the postings emitted by the successfully executed
-    // operations in this batch. If the drain cannot complete now, the entries
-    // remain in the durable derived-index outbox and the maintenance timer will
-    // converge the index asynchronously.
-    if results.iter().all(|r| r.is_ok()) && next_index.is_none() {
-        let _drain_before = current_instruction_counter();
-        if let Err(e) = sync_drain_derived_index_outbox().await {
-            return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
-        }
-        #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
+        };
+        let response_bytes = Encode!(&result)
+            .map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
+        if response_bytes.len()
+            > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
-            let line = format!(
-                "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
-                entrypoint,
-                current_instruction_counter().saturating_sub(_drain_before),
-            );
-            crate::instr_log::push(line);
+            return Err(format!(
+                "{entrypoint} response exceeds the safe payload limit of {}",
+                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ));
         }
-    }
-    let result = ExecutePlanBatchResult {
-        results,
-        next_index,
+        Ok(result)
     };
-    let response_bytes =
-        Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
-    if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    use std::ops::ControlFlow;
+    let result = store.guard_plan_continuation(bulk_mutation_id, run).await;
+    // An outer batch fence can drop a suspended scalar future before its own cleanup runs.
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
+    match result.map_err(str::to_owned)? {
+        ControlFlow::Break(journal) => replay_plan_batch(&journal, total_ops, entrypoint),
+        ControlFlow::Continue(result) => result,
+    }
+}
+
+fn replay_plan_batch(
+    journal: &crate::facade::stable::label_stats_delta::GraphMutationJournalEntry,
+    total_ops: usize,
+    entrypoint: &str,
+) -> Result<ExecutePlanBatchResult, String> {
+    let progress = journal
+        .bulk_progress()
+        .as_ref()
+        .ok_or_else(|| format!("{entrypoint}: completed bulk journal has no progress"))?;
+    if !journal.is_completed()
+        || progress.operation_count() as usize != total_ops
+        || progress.completed_count() as usize != total_ops
+        || progress.operation_row_counts().len() != total_ops
+    {
         return Err(format!(
-            "{entrypoint} response exceeds the safe payload limit of {}",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            "{entrypoint}: completed bulk journal progress does not match the request"
         ));
     }
-    Ok(result)
+    Ok(ExecutePlanBatchResult {
+        results: progress
+            .operation_row_counts()
+            .iter()
+            .map(|&row_count| {
+                Ok(ExecutePlanResult {
+                    row_count,
+                    rows_blob: None,
+                    hot_forward_vertices: Vec::new(),
+                    search_chain_receipt: None,
+                })
+            })
+            .collect(),
+        next_index: None,
+    })
 }
 
 /// Detects a bulk mutation: all operations must share the same `mutation_id`.
@@ -3949,6 +3974,89 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn plan_batch_replay_preserves_exact_counts_and_rejects_missing_progress() {
+        use ic_stable_structures::Storable;
+        let store = GraphStore::new();
+        let id = 92_100;
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID,
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+            mutation_id: Some(id),
+            // Replay must precede mutable decoding/execution, so neither blob is executable.
+            plan_blob: vec![0],
+            params_blob: vec![0],
+            mode: GqlExecutionMode::Update,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: None,
+        };
+        let request = ExecutePlanBatchArgs {
+            operations: vec![args.clone(), args],
+            mode: ExecutePlanBatchMode::Fixed,
+        };
+        store.commit_record_bulk_mutation_journal(
+            id,
+            3,
+            Some(7),
+            Some(8),
+            vec![3, 9],
+            2,
+            2,
+            vec![3, 0],
+            None,
+        );
+        let saved = store
+            .mutation_journal_entry(id)
+            .unwrap()
+            .to_bytes()
+            .into_owned();
+        let result = pollster::block_on(execute_plan_update_batch(request.clone())).unwrap();
+        assert_eq!(result.next_index, None);
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|result| result.as_ref().unwrap().row_count)
+                .collect::<Vec<_>>(),
+            vec![3, 0]
+        );
+        assert_eq!(
+            store
+                .mutation_journal_entry(id)
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            saved
+        );
+        let mut wrong_count = request.clone();
+        wrong_count.operations.pop();
+        assert_eq!(pollster::block_on(execute_plan_update_batch(wrong_count)), Err("execute_plan_update_batch: completed bulk journal progress does not match the request".into()));
+        assert_eq!(
+            store
+                .mutation_journal_entry(id)
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            saved
+        );
+
+        store.commit_record_completed_mutation_journal_at(123, id, 3, None, None, vec![]);
+        let scalar = store.mutation_journal_entry(id).unwrap();
+        assert_eq!(
+            pollster::block_on(execute_plan_update_batch(request)),
+            Err("execute_plan_update_batch: completed bulk journal has no progress".into())
+        );
+        assert_eq!(store.mutation_journal_entry(id), Some(scalar));
     }
 
     #[test]

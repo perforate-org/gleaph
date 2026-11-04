@@ -1,9 +1,9 @@
 # 0057. Router operation API and durable bulk-load lifecycle
 
 Date: 2026-08-02
-Status: implemented
-Last revised: 2026-08-09
-Anchor timestamp: 2026-08-09 02:46:41 UTC +0000
+Status: Partially Implemented — scalar retention gap open; bulk edge SET not implemented
+Last revised: 2026-09-22
+Anchor timestamp: 2026-09-22 10:54:06 UTC +0000
 
 ## Context
 
@@ -345,12 +345,19 @@ journal is readable and its outcome can be settled. Convergence requires availab
 and a successful retry/recovery; it has no unconditional time bound. Authorization failures and
 other GQL admission checks retain their owning contracts.
 
-Scalar row dispatch also checks the retained mutation ID, pinned Graph target and typed pending
-bulk child at the actual Graph send, including later dynamic chunks. A captured count prevents
-canonical redispatch and is retained before projection can suspend; AbortPending alone does not
-cancel admitted unresolved work. [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
-owns this Router boundary. An outcome lost before Router capture can still age out on Graph;
-[ADR 0027](0027-graph-mutation-journal-retention.md) records the unresolved scalar lifetime gap.
+**Verified retention limitation (2026-09-22):** the pending-child pin described above protects
+Router row records, not Graph's PlanExecution journal. An unconfirmed Graph outcome can age out
+after nine days while its Router row is still recoverable. The existing eight-day Router-GC test
+does not cover that lost-confirmation window. See
+[GAP-2026-09-22-001](../implementation-gaps.md#gap-2026-09-22-001--recoverable-plan-execution-can-outlive-graph-journal-retention)
+and [the source trace](../investigations/2026-09-22-bulk-edge-set-outcomes.md#current-scalar-retention-gap).
+The subsequent [PocketIC probe](../investigations/2026-09-22-scalar-journal-retention-reproduction.md)
+confirmed that both scalar records remained `CanonicalPending`, lost Graph evidence under real GC,
+and reused the same IDs to reapply positive SET or turn zero into a write. The long-lived replay
+guarantee requires a separate repair; the desired regression is red. The subsequent
+[Graph and Router prerequisites](../investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-count-capture-and-actual-send-prerequisite)
+add continuation fencing, monotonic scalar count capture and fresh send checks, but do not retain
+unconfirmed Graph outcomes or introduce scalar retirement.
 
 There is no whole-chunk rollback or compensating-write contract. A terminal receipt counts
 completed row statements, and an aborted chunk's unwritten suffix is abandoned, not re-driven.
@@ -360,10 +367,14 @@ request fingerprints, and scalar row-count interpretation require fresh Router/G
 reinstall. No old-layout decoder or compatibility path is provided. Existing ADR 0029 journal
 retention and recovery contracts still apply; no new journal or retention mechanism is introduced.
 
-Edge-property SET through bulk load is **not** part of this contract: the proposed exactly-one
-pre-read used a Graph composite query, which cannot be called from the Router's replicated update
-path. Alternative edge targeting designs remain unimplemented. The prerequisite decision is recorded in
-[implementation-gaps.md](../implementation-gaps.md) GAP-2026-09-11-004.
+Edge-property SET through bulk load remains **not implemented**. The withdrawn exactly-one
+composite-query pre-read is not the selected direction: the planned row selects all eligible
+canonical parallels during local Graph execution, with zero-match success and terminal-result replay.
+The [outcome/retirement proposal](../investigations/2026-09-22-bulk-edge-set-outcomes.md) is the design
+source for positive/zero/rejected results, unknown dispatch, input-row versus matched-edge counts,
+Abort and evidence retirement. It does not change the implemented vertex zero/singleton semantics
+or add a public wire variant. Exact representation, endpoint/policy rules and production whole-row
+admission remain gates in [GAP-2026-09-11-004](../implementation-gaps.md#gap-2026-09-11-004--bulk-load-edge-property-update-needs-replicated-resolution-and-retry-safe-target-validity).
 
 `BulkLoadEdgeV1.source` and `.target` are encoded existing vertex IDs only. `BulkLoadResponse` is an
 exhaustive `Started | Appended { receipt } | Updated { next_offset, updated_row_count } |
@@ -430,10 +441,11 @@ GC preserves the canonical terminal lifecycle outcome, initializes `receipt_gc_c
 deletes at most a fixed number of consecutive receipt rows per step, and durably advances that cursor.
 While cleanup is in progress, status continues to project the preserved `Completed`, `Aborted`, or
 `Failed` outcome; after retention expires, its receipt page may be partial as rows are removed. GC
-removes the parent and client-key binding only after the entire receipt range is gone. Graph chunk
-evidence follows the existing retirement-then-nine-day policy. Open and recoverable jobs are not
-removed by ordinary terminal GC. Update-row journals additionally follow the pending-child pin
-above; their seven-day age alone never removes evidence required to settle an unfinished chunk.
+removes the parent and client-key binding only after the entire receipt range is gone. Ordered-insert
+Graph chunk evidence follows the existing retirement-then-nine-day policy. Open and recoverable jobs
+are not removed by ordinary terminal GC. Router update-row journals additionally follow the pending-
+child pin above; their seven-day age alone never removes evidence required to settle an unfinished
+chunk. Graph scalar evidence does not yet share that pin; the retention limitation above applies.
 
 If duplicate Append calls interleave, the first message has already persisted the parent/child
 identity before awaiting Graph. A same-index/same-fingerprint call resumes that exact child; a

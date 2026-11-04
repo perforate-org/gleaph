@@ -1,5 +1,7 @@
 # AI Agent Instructions
 
+When a repository's documentation and its existing code disagree, follow the conventions used in the existing code, and in your final reply point out each inconsistency you found between the documentation and the code.
+
 ## Error Handling
 
 When a failure recurs, stop speculative retries. Inspect diagnostics, owning code, and
@@ -126,5 +128,3 @@ https://skills.internetcomputer.org/.well-known/skills/{name}/SKILL.md
 
 Check guidance against the repository's dependency versions. Resolve missing or conflicting
 guidance using the official specification or API documentation for the relevant version.
-
-

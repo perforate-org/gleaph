@@ -1623,9 +1623,9 @@ where
         bucket: &LabelBucket,
         policy: EdgePlacementPolicy,
     ) -> bool {
-        // ADR 0096 §5: tiny buckets have no slab span to compact (dense inline
-        // prefix; stored == degree always, so the slack arithmetic below could
-        // never fire anyway — the explicit arm keeps it that way by construction).
+        // ADR 0096 §5: tiny buckets have no slab span to compact (inline
+        // targets, zero slab slots), so the slack arithmetic below could never
+        // fire anyway — the explicit arm keeps it that way by construction).
         if bucket.is_tiny_mode() {
             return false;
         }
@@ -7729,8 +7729,8 @@ mod tests {
             &slab(4, 8).with_tree_mode(true),
             EdgePlacementPolicy::Insertion
         ));
-        // ADR 0096 §5: tiny buckets have no slab span to compact (dense inline
-        // prefix; stored == degree always, so the slack arithmetic could never
+        // ADR 0096 §5: tiny buckets have no slab span to compact (inline
+        // targets, zero slab slots), so the slack arithmetic could never
         // fire — the explicit arm keeps it that way by construction).
         assert!(!fire(
             &slab(2, 2).try_enable_tiny_mode().expect("enable"),

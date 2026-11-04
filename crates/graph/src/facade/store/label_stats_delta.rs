@@ -20,14 +20,11 @@ use std::cell::RefCell;
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope as canbench_scope;
 
-/// Retention window for completed/incomplete mutation journal entries (ADR 0027). A
-/// `mutation_id` can only be replayed by the router while the router's client-key
-/// idempotency record lives — at most `CLIENT_MUTATION_KEY_TTL_NS` (7 days, ADR 0025)
-/// from creation, after which the same client key allocates a *fresh* id and the old id
-/// is retired forever. This constant is a one-directional lower bound on that router TTL
-/// (router TTL + margin), deliberately not an exact duplicate: it only needs to be
-/// `>= router TTL` for dedup safety. Crates cannot share the constant (graph must not
-/// depend on router), so the coupling is documented here and in ADR 0027.
+/// Journal GC window (ADR 0027), also bounding an individual suspended PlanExecution
+/// attempt. This is not a bound on Router resend permission: recoverable Router records
+/// can outlive age-only PlanExecution evidence (GAP-2026-09-22-001). The continuation
+/// fence prevents an old request from resuming after this window; a *new* request still
+/// needs the pending scalar-lifetime/retirement repair.
 const GRAPH_MUTATION_JOURNAL_RETENTION_NS: u64 = 9 * 24 * 60 * 60 * 1_000_000_000;
 
 /// Entries examined per amortized GC step on the completed-journal write path
@@ -93,6 +90,72 @@ impl GraphStore {
         // caller. This also rejects an ordered entry that was somehow persisted incompletely.
         entry.wire().validate()?;
         Ok(Some(entry))
+    }
+
+    /// Fence an already-admitted PlanExecution future at actual poll re-entry.
+    ///
+    /// The caller performs its initial journal-first replay check in the first poll. Every
+    /// subsequent poll validates the state observed when this future last suspended. Its
+    /// own synchronous progress is allowed; another invocation's terminal publication wins
+    /// without polling the old continuation. `None` supplies the enclosing transport batch's
+    /// time fence, including operations that have not started yet.
+    ///
+    /// This neither rolls back earlier message segments nor permanently fences a mutation ID.
+    pub(crate) async fn guard_plan_continuation<F: std::future::Future>(
+        &self,
+        mutation_id: Option<MutationId>,
+        execution: F,
+    ) -> Result<std::ops::ControlFlow<GraphMutationJournalEntry, F::Output>, &'static str> {
+        self.guard_plan_continuation_with_clock(mutation_id, execution, ic_time_ns)
+            .await
+    }
+
+    async fn guard_plan_continuation_with_clock<F: std::future::Future>(
+        &self,
+        mutation_id: Option<MutationId>,
+        execution: F,
+        now: impl Fn() -> u64,
+    ) -> Result<std::ops::ControlFlow<GraphMutationJournalEntry, F::Output>, &'static str> {
+        use std::{future::poll_fn, ops::ControlFlow, pin::pin, task::Poll};
+        let started_at_ns = now();
+        let mut execution = pin!(execution);
+        // Outer None means the initial poll; Some(None) means it suspended without a journal.
+        let mut observed = None;
+        let journal = || {
+            mutation_id.map_or(Ok(None), |id| {
+                self.mutation_journal_entry_for_replay(
+                    id,
+                    &GraphMutationRequestIdentityV1::PlanExecution,
+                )
+            })
+        };
+        poll_fn(|cx| {
+            if !now()
+                .checked_sub(started_at_ns)
+                .is_some_and(|elapsed| elapsed <= GRAPH_MUTATION_JOURNAL_RETENTION_NS)
+            {
+                return Poll::Ready(Err("plan execution attempt expired while suspended"));
+            }
+            if let Some(previous) = &observed {
+                let current = journal()?;
+                if &current != previous {
+                    return Poll::Ready(match current {
+                        Some(entry) if entry.is_completed() => Ok(ControlFlow::Break(entry)),
+                        _ => Err("plan execution journal changed while suspended"),
+                    });
+                }
+            }
+            match execution.as_mut().poll(cx) {
+                Poll::Ready(result) => Poll::Ready(Ok(ControlFlow::Continue(result))),
+                Poll::Pending => {
+                    // The future may have written in this segment. An impossible family change
+                    // is a post-effect invariant failure, not a recoverable partial-write Err.
+                    observed = Some(journal().expect("PlanExecution changed its journal family"));
+                    Poll::Pending
+                }
+            }
+        })
+        .await
     }
 
     fn ordered_receipt(
@@ -964,6 +1027,246 @@ mod tests {
     }
 
     const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+    async fn pause_once() {
+        let mut first = true;
+        std::future::poll_fn(move |cx| {
+            if std::mem::take(&mut first) {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        })
+        .await;
+    }
+
+    #[test]
+    fn plan_continuation_replays_positive_and_zero_before_resuming() {
+        use ic_stable_structures::Storable;
+        use std::{
+            cell::Cell,
+            future::Future,
+            ops::ControlFlow,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let store = GraphStore::new();
+        for count in [0, 1] {
+            let id = 91_000 + count;
+            let writes = Cell::new(0);
+            let mut future = pin!(store.guard_plan_continuation_with_clock(
+                Some(id),
+                async {
+                    pause_once().await;
+                    writes.set(writes.get() + 1);
+                },
+                || 10
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+            store.commit_record_completed_mutation_journal_at(
+                11,
+                id,
+                count,
+                Some(7),
+                Some(8),
+                vec![3, 9],
+            );
+            let saved = store.mutation_journal_entry(id).unwrap();
+            let bytes = saved.to_bytes().into_owned();
+            assert_eq!(
+                future.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(ControlFlow::Break(saved)))
+            );
+            assert_eq!(
+                writes.get(),
+                0,
+                "terminal outcome must win before the inner future is polled"
+            );
+            assert_eq!(
+                store
+                    .mutation_journal_entry(id)
+                    .unwrap()
+                    .to_bytes()
+                    .as_ref(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn plan_continuation_fences_expired_attempt_after_real_gc() {
+        use std::{
+            cell::Cell,
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let store = GraphStore::new();
+        // None models a transport batch: its later operations must not start fresh clocks
+        // after an earlier operation's call has suspended the enclosing request.
+        for mutation_id in [Some(91_100), None] {
+            let now = Cell::new(10);
+            let writes = Cell::new(0);
+            let mut future = pin!(store.guard_plan_continuation_with_clock(
+                mutation_id,
+                async {
+                    pause_once().await;
+                    writes.set(writes.get() + 1);
+                },
+                || now.get()
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+            store.commit_record_completed_mutation_journal_at(20, 91_100, 1, None, None, vec![]);
+            now.set(20 + GRAPH_MUTATION_JOURNAL_RETENTION_NS + 1);
+            reset_mutation_journal_gc_cursor_for_test();
+            for _ in 0..256 {
+                store.gc_mutation_journal_at(now.get());
+                if store.mutation_journal_entry(91_100).is_none() {
+                    break;
+                }
+            }
+            assert!(
+                store.mutation_journal_entry(91_100).is_none(),
+                "real production GC must erase the expired control/outcome"
+            );
+            assert_eq!(
+                future.as_mut().poll(&mut cx),
+                Poll::Ready(Err("plan execution attempt expired while suspended"))
+            );
+            assert_eq!(
+                writes.get(),
+                0,
+                "absence after GC must not revive an old continuation"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_continuation_time_boundary_and_own_progress() {
+        use std::{
+            cell::Cell,
+            future::Future,
+            ops::ControlFlow,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let store = GraphStore::new();
+        for (start, resume, allowed) in [
+            (10, 10 + GRAPH_MUTATION_JOURNAL_RETENTION_NS, true),
+            (10, 11 + GRAPH_MUTATION_JOURNAL_RETENTION_NS, false),
+            (10, 9, false),
+            (u64::MAX - 3, u64::MAX, true),
+        ] {
+            let now = Cell::new(start);
+            let writes = Cell::new(0);
+            let mut future = pin!(store.guard_plan_continuation_with_clock(
+                None,
+                async {
+                    pause_once().await;
+                    writes.set(writes.get() + 1);
+                    23
+                },
+                || now.get()
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+            now.set(resume);
+            let expected = if allowed {
+                Ok(ControlFlow::Continue(23))
+            } else {
+                Err("plan execution attempt expired while suspended")
+            };
+            assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(expected));
+            assert_eq!(writes.get(), u32::from(allowed));
+        }
+
+        let mut future = pin!(store.guard_plan_continuation_with_clock(
+            Some(91_200),
+            async {
+                store.commit_record_incomplete_mutation_journal_at(1, 91_200, Some(1), Some(1));
+                pause_once().await;
+                store.commit_record_incomplete_mutation_journal_at(2, 91_200, Some(1), Some(2));
+                pause_once().await;
+                store.commit_record_completed_mutation_journal_at(
+                    3,
+                    91_200,
+                    2,
+                    Some(1),
+                    Some(2),
+                    vec![],
+                );
+                pause_once().await; // e.g. the batch's post-journal outbox drain
+                2
+            },
+            || 10
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..3 {
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(ControlFlow::Continue(2)))
+        );
+        assert_eq!(
+            store
+                .mutation_journal_entry(91_200)
+                .unwrap()
+                .recorded_at_ns(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn plan_continuation_rejects_changed_incomplete_and_wrong_family() {
+        use std::{
+            cell::Cell,
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let store = GraphStore::new();
+        for ordered in [false, true] {
+            let id = 91_300 + u64::from(ordered);
+            let writes = Cell::new(0);
+            let mut future = pin!(store.guard_plan_continuation_with_clock(
+                Some(id),
+                async {
+                    pause_once().await;
+                    writes.set(writes.get() + 1);
+                },
+                || 10
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+            let error = if ordered {
+                store.commit_record_completed_ordered_edge_batch_journal_at(
+                    11,
+                    id,
+                    GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                        canonical_encoding_version: 1,
+                        graph_request_fingerprint: [8; 32],
+                        logical_item_count: 1,
+                    },
+                    1,
+                    None,
+                    None,
+                    vec![],
+                );
+                "mutation journal identity conflicts with replay request"
+            } else {
+                store.commit_record_incomplete_mutation_journal_at(11, id, None, None);
+                "plan execution journal changed while suspended"
+            };
+            let saved = store.mutation_journal_entry(id);
+            assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Err(error)));
+            assert_eq!(writes.get(), 0);
+            assert_eq!(store.mutation_journal_entry(id), saved);
+        }
+    }
 
     #[test]
     fn completed_write_path_stamps_and_amortized_gc_evicts() {

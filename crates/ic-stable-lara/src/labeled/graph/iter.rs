@@ -235,7 +235,8 @@ pub enum LabeledSpanIter<'a, E: CsrEdgeTombstone, M: Memory> {
     Scan(LabeledBucketScan<'a, E, M>),
     /// Descriptor-resident inline targets (tiny mode, ADR 0096 §5).
     /// Pre-materialized `(ordinal, edge)` pairs in final visit order; no slab,
-    /// log, or value reads. Tombstone-free dense prefix, so ordinals are slots.
+    /// log, or value reads. Tombstone-inclusive prefix (ordinals are slots;
+    /// holes skipped via the layout predicate).
     Inline {
         iter: std::vec::IntoIter<(u32, E)>,
         reverse: bool,

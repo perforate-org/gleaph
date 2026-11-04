@@ -3,25 +3,32 @@
 Date: 2026-06-21
 Status: Partially Implemented — recoverable PlanExecution retention gap open
 Last revised: 2026-09-22
-Anchor timestamp: 2026-09-22 18:20:36 UTC +0000
+Anchor timestamp: 2026-09-22 17:29:35 UTC +0000
 
 ## Verified retention limitation
 
-Recoverable Router PlanExecution records can outlive Graph's age-only nine-day journal
-window. Router's seven-day terminal receipt window does not bound unfinished canonical replay.
-The Router count-capture and actual-send prerequisite below closes new sends after durable
-capture; it does not retain a Graph outcome lost before capture. Exact receipt retention and
-acknowledged scalar retirement remain open in
+The 2026-09-22 [outcome investigation](../investigations/2026-09-22-bulk-edge-set-outcomes.md#current-scalar-retention-gap)
+finds that recoverable Router PlanExecution records can outlive Graph's age-only nine-day journal
+window. The seven-day Router terminal receipt window is not a bound on unfinished replay.
+The implemented lifetime coupling therefore requires repair in
 [GAP-2026-09-22-001](../implementation-gaps.md#gap-2026-09-22-001--recoverable-plan-execution-can-outlive-graph-journal-retention).
+The subsequent [PocketIC reproduction](../investigations/2026-09-22-scalar-journal-retention-reproduction.md)
+confirmed both positive SET reapplication and zero becoming a write after nine-day Graph GC, with
+Router still `CanonicalPending` under the original IDs. The desired replay assertions failed; no
+retention code or window changed in that reproduction. The subsequent Graph replay/continuation
+prerequisite below is implemented, but does not retain evidence against a fresh post-GC call.
+The Router count-capture/actual-send prerequisite is also implemented, as described below. Scalar
+repair still needs exact retained receipts and acknowledged retirement, not only a pin or send check.
+Extending existing explicit retirement to bulk edge SET rows remains a proposal in the outcome investigation.
 
 ## Context
 
 `GRAPH_MUTATION_JOURNAL` (stable region 39, `Canonical`) is the graph shard's
 idempotent-replay dedup store: one entry per `mutation_id`, written `Incomplete`
 during a DML and overwritten `Completed` at the end. On a router replay of the
-same `mutation_id`, `run_wire_plans_inner` (`crates/graph/src/gql_run.rs`)
-short-circuits on a `Completed` entry (returns the cached outcome instead of
-re-applying) and rejects a re-applied-but-`Incomplete` entry. The journal was
+same `mutation_id`, `run_wire_plans_last_read_row_count` (`crates/graph/src/gql_run.rs`)
+short-circuits on a `Completed` entry before terminal publication (returns the cached outcome without
+rewriting the entry) and rejects a re-applied-but-`Incomplete` entry. The journal was
 the graph-side twin of the router's client-mutation journal, but — unlike the
 router journal (ADR 0025) — it had **no retention**: `get`/`insert` only, one
 entry per `mutation_id` forever. Over a canister's lifetime this grows unbounded.
@@ -125,6 +132,36 @@ predicate instead retains Active evidence without an age limit and starts GC age
    operator GC share this request-kind-aware predicate and have no
    force-eviction bypass.
 
+### Graph replay and continuation prerequisite (implemented, 2026-09-22)
+
+`GraphStore::guard_plan_continuation` owns the in-flight PlanExecution fence beside the journal
+reader and retention constant. Initial scalar and shared-ID batch replay validates the request
+family. Scalar replay returns before outbox/completed-journal publication, preserving the entire
+stored outcome and timestamp. Batch replay requires exact current per-operation progress/counts;
+it no longer synthesizes zero counts for missing progress.
+
+At each actual future poll re-entry, the guard compares the journal with the state observed at the
+previous suspension. A newly published Completed entry wins before the old future can run again;
+an unexpected nonterminal change fails closed. Synchronous progress made by the guarded future
+itself is allowed. Scalar and the **entire transport batch** are bounded to one nine-day attempt,
+using Graph-local time; exactly nine days is allowed, one nanosecond beyond is refused, and a
+backward clock fails closed. The outer batch bound also covers operations not yet entered after an
+earlier await. It is not a permanent mutation-ID deadline and does not make absence proof of no write.
+
+Each canonical segment now persists its collected ordinary/vector index intents into the existing
+outbox before a later plan can suspend. Otherwise dropping a fenced future could leave earlier
+committed effects with only heap-held postings. Earlier segments are **not rolled back** by an
+expired/conflicting continuation; this is not a new whole-program atomicity guarantee. Execution
+metadata cleanup runs even when the guard drops a suspended scalar or batch future.
+
+The [follow-up evidence](../investigations/2026-09-22-scalar-journal-retention-reproduction.md#graph-replay-and-continuation-prerequisite)
+includes native polled-future and real wire-read suspension contracts, existing PocketIC update
+coverage, and the measured instruction increase. That Graph-only slice introduced no scalar
+retirement state, Router send fence, retirement RPC, schema/layout change or capacity limit. Therefore the original
+lost-capture retention gap remains **Open**. A future retirement proof must still establish fixed
+caller/callee authority and fresh permission at every send; this guard is only its Graph-side
+continuation prerequisite, not an independent proof of end-to-end replay safety.
+
 ### Router capture and send prerequisite (implemented, 2026-09-22)
 
 [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
@@ -134,10 +171,12 @@ This is not an exact retained receipt: scalar compaction still discards targets,
 `NotApplicable`, and no scalar retirement acknowledgement exists. An outcome lost **before durable
 Router capture** can still age out on Graph and be re-executed by a fresh request.
 
-Router's native paused-target contracts and owner-cost fixtures accompany the send boundary.
-The three preparation writers also require the original reservation ID under
+The [Router follow-up](../investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-count-capture-and-actual-send-prerequisite)
+records the completed paused-target contract and owner-cost measurements, alongside the initial
+runtime evidence. The three preparation writers are also now reservation-ID-bound, as specified by
 [ADR 0029's preparation boundary](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity).
-That protects a newer same-key Router reservation, not Graph evidence. A fresh gate costs about
+That prevents stale writes to a newer same-key Router reservation, not loss of Graph evidence.
+A fresh gate costs about
 4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB: it decodes the full
 retained record. The safety check remains necessary, but these measurements do not approve
 production cost/admission bounds. End-to-end retention repair remains open.
