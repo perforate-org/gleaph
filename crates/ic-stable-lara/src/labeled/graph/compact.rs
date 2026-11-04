@@ -5980,7 +5980,7 @@ where
             // used to perform existed because values were addressed by rank and the swap had to keep
             // the ranks in order; with one geometry it is a single block copy, and it works whichever
             // plane holds the block.
-            let value = self.read_value_block_at_slot(bucket, swap.vacated_slot)?;
+            let value = self.read_value_row(bucket, swap.vacated_slot)?;
             self.write_value_block_at_slot(bucket, swap.hole_slot, &value)?;
         }
         let edge = self.edges.read_slot(vacated);
@@ -6017,7 +6017,7 @@ where
         // and did not need to move, which is exactly why the moves and the values could disagree.
         let width = bucket.inline_property_byte_width();
         if width != 0 {
-            let value = self.read_value_block_at_slot(bucket, moved.old_slot_index)?;
+            let value = self.read_value_row(bucket, moved.old_slot_index)?;
             self.write_value_block_at_slot(bucket, moved.new_slot_index, &value)?;
         }
         Ok(())

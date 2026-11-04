@@ -555,18 +555,6 @@ where
         Ok(out)
     }
 
-    /// Reads the value block of the row at bucket-local `slot`, from whichever plane holds it.
-    ///
-    /// ADR 0099's single value accessor: the row's slot decides, exactly as it does for the edge
-    /// row itself. Used by the row-move paths, which have to carry the block with the row.
-    pub(super) fn read_value_block_at_slot(
-        &self,
-        bucket: &LabelBucket,
-        slot: u32,
-    ) -> Result<Vec<u8>, LabeledOperationError> {
-        self.read_value_row(bucket, slot)
-    }
-
     /// Writes the value block of the row at bucket-local `slot`, into whichever plane holds it.
     ///
     /// A slot inside the prefix is a slab block; beyond it the row lives in the spill run, and so
@@ -657,6 +645,13 @@ where
     /// `start_slot` and `slot_count` refer to bucket-local live ordinals (not physical slots).
     /// The caller must guarantee the bucket is dense and tombstone-free, i.e.
     /// `reserved_edge_slots == degree`.
+    ///
+    /// **This is the batch fast path, not an entry point.** Row-at-a-time callers ask
+    /// [`Self::read_value_row`] and range callers ask [`Self::read_value_range`]; both resolve the storage
+    /// class themselves. This one exists because a dense bucket's values are one contiguous byte run, and
+    /// copying them in a single read is what keeps a scan linear - so it keeps its precondition explicit
+    /// instead of guessing the mode (ADR 0100: an optimisation inside the plane, not a path a caller picks
+    /// by accident).
     #[inline]
     pub(super) fn read_bucket_inline_property_bytes_span(
         &self,
