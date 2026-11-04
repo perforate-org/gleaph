@@ -65,9 +65,15 @@ defect from being rediscovered without its prior reasoning.
   allocate classes that reuse the freed span. So the freed space was returned and then legitimately
   consumed; the probe is asking whether a run freed many operations ago is still free, which is not a
   property the allocator promises.
-- **Next:** move the probe to run **immediately after the fold that frees the run** (before the fixture
-  continues), which is what it intends to test; or drop it for the repeated-fold path and keep the
-  backing-byte comparison, which is the property that actually matters there (no corruption, no growth).
+- **The probe now runs at the right moment and reports a real defect** (`fdeb0573a`): immediately after
+  the first fold, the edge run is gone from the descriptor (`runs()` answers `NO_SPILL_RUN`, which is why
+  the probe takes it) yet allocating its class **still grows the arena** (`299 -> 556`). A descriptor that
+  stopped naming a run while the run's space never came back is a **lost release**, and it is the same
+  family as the double release fixed earlier this session - the release and the field clear are paired by
+  hand at each call site rather than by one owner.
+- **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
+  releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
+  already does for the values plane.
 
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
 
