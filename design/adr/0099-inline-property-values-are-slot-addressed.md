@@ -481,6 +481,23 @@ geometry (`slab_occupied_tail`, `inline_property_bytes_slab_slots`) that only ex
 folded into the span, so re-expressing it means either folding the run in before the measured update, or
 measuring the run geometry instead - a redesign of the harness rather than an edit of its numbers.
 
+**The comparison that settles it.** The same eight inserts, run on `spill-swap` and on this branch:
+
+| branch | `stored` | `degree` | `slab_slots` | `values_run` | `slab_occupied_tail` |
+| --- | --- | --- | --- | --- | --- |
+| `spill-swap` (rank plane) | 0 | 8 | **8** | none | **16** |
+| this branch (slot plane) | 0 | 8 | 0 | 8 rows | 0 |
+
+The rows spill in *both* models - the test graph's vertex segment has no room for a prefix at capacity
+256, 4096 or 65536. What changed is where the values go: the rank plane kept them dense in the slab
+regardless of edge residency, and the mirror puts them in the run beside their rows. Folding them back
+into the span does not help either (`fold_bucket_edge_spill_head_into_span` returns 0 here: there is no
+superior span room to grow into).
+
+So the last two fixtures measure a geometry this shape no longer has. Their redesign is to measure the
+**run** (values-run growth across the update) or to build a shape whose bucket really owns span slots -
+not to move numbers.
+
 The last two are `updating_undirected_edge_inline_property_*`: they assert
 `slab_occupied_tail == canonical_prefix * 2` after inserting self-loop rows, which held when values were
 dense over live rows regardless of where those rows lived. Under the mirrored plane those rows spill, so
