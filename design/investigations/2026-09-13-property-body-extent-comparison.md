@@ -10,7 +10,7 @@ Native reuse update (2026-09-14 01:10:06 UTC +0000): the [full PropertyStore com
 reuses this allocator with a private prepare/publication seam and one shared ownership audit. Real
 keys, Graph Values, directories and moves are measured separately; all36 extent and260 B-tree raw
 rows reproduce. The changed source is not IC-remeasured codegen. The
-[frozen0357 sources](artifacts/2026-09-13-property-body-0357-sources.tar.gz) preserve exact managed
+frozen0357 sources (measurement dump, not retained) preserve exact managed
 reproduction; the numbers below remain body-only evidence.
 
 Design anchor: 2026-09-13 12:48:39 UTC +0000.
@@ -38,7 +38,7 @@ The inventory stopped there: no copied B-tree internals, fork or further chunk-w
 
 ## Implemented boundary
 
-[Extent source](artifacts/2026-09-13-property-body-extent-probe.rs) implements the
+[Extent source](../../crates/graph/src/facade/stable/property_store_probe/body_extent_probe.rs) implements the
 [experimental extent design](2026-09-13-property-body-extent-design.md#4-experimental-arena-format).
 That document owns the format and allocation rules; this report records implementation and evidence.
 
@@ -63,16 +63,16 @@ That document owns the format and allocation rules; this report records implemen
   caller length still within capacity, and arbitrary upstream corruption are not universally detected.
 
 At this native checkpoint, the extent module was a native test child of the existing
-[B-tree probe](artifacts/2026-09-13-property-body-btree-probe.rs). Only its scope comment and child
+[B-tree probe](../../crates/graph/src/facade/stable/property_store_probe/body_probe.rs). Only its scope comment and child
 inclusion changed; all reference algorithms, Wasm exports and fixture controls remain unchanged.
 Both share `CountedMemory`, `Io` and the position-bearing payload generator. No production Rust,
 workspace dependency/lock, LARA storage or Graph path changed.
 
 ## Measurement contract
 
-The [retained extent CSV](artifacts/2026-09-13-property-body-extent-native.csv) has 36 rows:
+The retained extent CSV (measurement dump, not retained) has 36 rows:
 32 matched density/neighbor/hot rows and four fragmentation rows. All 260
-[reference rows](artifacts/2026-09-13-property-body-chunk-size-native.csv) reproduce exactly.
+reference rows (measurement dump, not retained) reproduce exactly.
 The `case_input` column is the byte-size axis for density/neighbor/hot rows and the initial hole
 count F for fragmentation rows; it is not universally a byte length.
 The four missing-prefix controls per B-tree configuration have no allocator equivalent: absence
@@ -242,7 +242,7 @@ Run from the repository root, using a temporary standalone manifest; do not add 
 
 ```sh
 root="$PWD"
-probe="$(mktemp -d /tmp/gleaph-extent-native-repro-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-extent-native-repro-XXXXXX)"
 cat > "$probe/Cargo.toml" <<EOF
 [package]
 name = "gleaph-property-body-extent-probe"
@@ -275,7 +275,7 @@ all36/260 native numeric rows are reproduced by the follow-up source.
 
 - Shared source SHA256: `f63f3139d0b277e7d8700209b678947482eda28e60a59ba3c90b31c42862d362`.
 - Extent source SHA256: `5979ffd82f454563736cf8e2852c3c8664268ffb0f9081d6dbe3e910b1bc3a9a`.
-- Evidence: `/tmp/gleaph-extent-native-slan7c4t/`: draft/contract/native/lint logs, failed fixture and
+- Evidence: `$TMPDIR/gleaph-extent-native-slan7c4t/`: draft/contract/native/lint logs, failed fixture and
   deliberate mutant logs, Lizard, initial/final snapshots, arithmetic/scope checks and review.
 - Same-assistant implementation/review only; no independent or security approval.
 

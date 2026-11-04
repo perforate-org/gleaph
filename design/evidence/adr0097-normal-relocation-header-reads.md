@@ -57,12 +57,12 @@ Post-format measurements at `c2088b8e0` exactly reproduce both mixed-hub CSVs. T
 
 ## Validation and retained artifacts
 
-- Final strengthened source: `timeout 120 cargo test -p ic-stable-lara --lib`, **653/0**, exit 0 (`/tmp/spill-bucket-reserve/library-raw-prefix-final.log`).
-- Final strict library clippy and five-file scoped rustfmt check, both exit 0 (`/tmp/spill-header/clippy-latest.log`, `fmt-latest.log`). An earlier manual-range lint failure was corrected, not suppressed.
+- Final strengthened source: `timeout 120 cargo test -p ic-stable-lara --lib`, **653/0**, exit 0 (`$TMPDIR/spill-bucket-reserve/library-raw-prefix-final.log`).
+- Final strict library clippy and five-file scoped rustfmt check, both exit 0 (`$TMPDIR/spill-header/clippy-latest.log`, `fmt-latest.log`). An earlier manual-range lint failure was corrected, not suppressed.
 - Native probes: positive one-test runs before/after, exit 0. Focused canbench commands: `timeout 210 canbench <name> --csv`, all exit 0, **no `--persist`**.
 - `3be28fceb` changes only CRLF to LF in the prior native-comparison CSV; all 65 records are identical. `git diff --check b9e6ada0a..16d25a3c1` failed on its old endings; the corrected actual `b9e6ada0a..HEAD` range passes.
 - Full CSV SHA256 remains `5226fd785d56ba528ba5d5a50a08206cf62034e48a9b522cbe254c5c401ea567`; YAML remains `a3e2c76e91a05c7c1a7ccd6fea56d670939b50411d697645257eade4611d162b`; benchmark source remains `bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7`. Generated lock changes were restored and foreign files preserved.
 
-Raw logs, intermediate candidates, final fixtures, fault patches and SHA256 manifests are retained in `/tmp/spill-normal/`, `/tmp/spill-bucket-reserve/`, `/tmp/spill-header/`, and `/tmp/spill-range/`. Fault patches are diagnostics, not changes to stack onto the branch.
+Raw logs, intermediate candidates, final fixtures, fault patches and SHA256 manifests are retained in `$TMPDIR/spill-normal/`, `$TMPDIR/spill-bucket-reserve/`, `$TMPDIR/spill-header/`, and `$TMPDIR/spill-range/`. Fault patches are diagnostics, not changes to stack onto the branch.
 
 Broader relocation failure atomicity, wide-edge and arena exhaustion, other caller shapes, first/second canonical writes, remaining performance regressions, space/PocketIC gates and final full benchmark persistence/all-name review remain open. The independent hybrid/batch contract investigation is now recorded in the [pinned survey and actual-consumer follow-up](adr0097-current-survey-hybrid-batches.md); its correctness repairs and focused measurements do not imply broad recovery. The preserved full benchmark artifact still describes `3ea7dc739`.

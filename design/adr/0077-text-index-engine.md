@@ -8,13 +8,13 @@ Last revised: 2026-09-04
 
 ADR 0054 leaves the Text Index as an optional derived resource with its implementation and
 partition strategy explicitly open ("including whether FST is appropriate"). GQL carries a
-`FULLTEXT INDEX` syntax sketch ([extension-syntax.md](../design/gql/extension-syntax.md)), and no
+`FULLTEXT INDEX` syntax sketch ([extension-syntax.md](../gql/extension-syntax.md)), and no
 engine exists behind it. The Internet Computer imposes hard shapes on any candidate: 500 GiB
 stable memory, 2 GiB stable read/write per replicated message (8 GiB on upgrade), 40 B / 5 B /
 300 B instruction budgets for update / query / upgrade, automatic deterministic time slicing,
 2 MiB cross-subnet payloads, composite queries restricted to one subnet, and storage at
 ~$0.45/GiB/month with free non-replicated queries
-([investigation §1](../design/investigations/2026-08-23-text-index-design-research.md), verified
+([investigation §1](../investigations/2026-08-23-text-index-design-research.md), verified
 2026-08-23/24 UTC).
 
 A full PoC benchmark round (plan 0293) produced measured evidence on this exact platform shape:
@@ -44,7 +44,7 @@ timer-driven maintenance, (b) integrates with Gleaph's derived-state contracts (
 backfill cursors, lag vocabulary, split thresholds), (c) gives Gleaph long-term ownership of the
 analyzer (Japanese bigram default), scoring representation, and determinism contract, and (d) is
 economical at scale. No existing component provides this, and no production-grade FTS canister
-exists to adopt ([investigation §2](../design/investigations/2026-08-23-text-index-design-research.md)).
+exists to adopt ([investigation §2](../investigations/2026-08-23-text-index-design-research.md)).
 
 ## Existing architecture assessment
 
@@ -166,7 +166,7 @@ No data migration paths are built.
 
 ## Design documentation impact
 
-- [investigation](../design/investigations/2026-08-23-text-index-design-research.md): §9 statuses
+- [investigation](../investigations/2026-08-23-text-index-design-research.md): §9 statuses
   updated alongside this ADR (this patch).
 - Before canister wiring: new `design/index/text-index.md` contract (segments, merges, lag
   semantics), capacity-planning.md TEXT region rows, extension-syntax.md FULLTEXT semantics,

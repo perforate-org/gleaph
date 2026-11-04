@@ -49,7 +49,7 @@ No claim about a later release or upstream willingness to accept an extension is
 
 ## Native read experiment
 
-[Probe source](artifacts/2026-09-13-sidecar-read-probe.rs): one diagnostic test, four independent
+Probe source (measurement dump, not retained): one diagnostic test, four independent
 maps, four initializations and four reopens. Each map has two `[u8;14]` keys and unbounded `Vec<u8>`
 values. The selected value is always ten bytes; only the other value's length changes. Reopen and
 fixture writes happen before instrumentation is reset.
@@ -137,7 +137,7 @@ From the repository root, create an isolated manifest; do not add the probe to t
 
 ```sh
 repo="$PWD"
-probe="$(mktemp -d /tmp/gleaph-sidecar-read-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-sidecar-read-XXXXXX)"
 printf '%s\n' \
   '[package]' 'name = "gleaph-sidecar-read-probe"' 'version = "0.0.0"' \
   'edition = "2024"' 'publish = false' '[lib]' \

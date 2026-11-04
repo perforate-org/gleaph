@@ -34,7 +34,7 @@ Current implementation facts:
   tombstones remain readable and are reclaimed by maintenance for compatibility.
 - **Implemented (2026-06-16):** inline property bytes overflow log entries are 12 B (`LVL`, layout version 1):
   `prev` (4 B) and an untagged 8 B inline cell
-  ([`edge_inline_property/log.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_property/log.rs),
+  ([`edge_inline_property/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs),
   [`edge_inline_property/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_property/cell.rs)).
   Inline vs blob on the log is derived from `LabelBucket::inline_property_byte_width`; wide bodies live in
   `inline_property_bytes_blobs` at `(leaf_segment, entry_idx)`. The inline property bytes log is an independently maintained

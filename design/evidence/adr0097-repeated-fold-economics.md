@@ -133,7 +133,7 @@ edge foldはvertex全体、value foldはtarget bucketが対象であり、同じ
 
 基点は`spill-swap`のHEAD `880ad86a024e30953bbc134ad946b2c2e7b6da67`。
 既存の未追跡fold.rsを含むdirty stateを固定し、今回の差分を`E/extension.patch`で分離した。
-`E=/Users/yota/.local/share/gleaph/evidence/adr0097/repeated-fold-0373`。
+`E=$GLEAPH_EVIDENCE/adr0097/repeated-fold-0373`。
 全コマンドのcwd・引数・終了状態・時間は`commands.json`、原出力は各`.log`に残す。
 
 - Wasm: 6,711,085 bytes、SHA256 `b6a1921d5cd8141c33bfd8b0aaa679cfa374a89ceb4af0924832c63cfb7dee8f`。
@@ -150,7 +150,7 @@ edge foldはvertex全体、value foldはtarget bucketが対象であり、同じ
 | `rustfmt --edition 2024 --config skip_children=true --check`（fold.rsのみ） | passed、`format-final-v2.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0、`clippy-v2.log`。既存39警告箇所と一致、新規0、`lint-review.json` |
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench -- --nocapture fold_economics repeated_fold` | 8 passed / 620 filtered、runtime 3.20秒、`native-final-v2.log` |
-| `canbench bench_t_repeat_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/.canbench/pocket-ic`（E/canbench-current） | 24/24条件、392 scopes、build込み115.83秒、`canbench-v2.log` |
+| `canbench bench_t_repeat_ --csv --show-canister-output --runtime-path $REPO/.canbench/pocket-ic`（E/canbench-current） | 24/24条件、392 scopes、build込み115.83秒、`canbench-v2.log` |
 | `python3 E/analyze.py` | passed、`analyze-final-v2.log`。call数・全144 IC snapshot・page増分を照合 |
 | `lizard --csv -i -1`（保存したbefore/current fold.rs） | passed、`lizard-v2.log` / `lizard-review.md` |
 | 計画`plans/0373-repeated-fold-measurement.md`の`--phase final`構造検証 | passed、`plan-final.log` |

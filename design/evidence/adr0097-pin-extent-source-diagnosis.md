@@ -286,7 +286,7 @@ work; old0395/BEFORE/RED and historical715/728 bindings remain unchanged.
 ## Historical R1 evidence
 
 Evidence root:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/maintenance-fixtures-f2-f4-0383/segment-implementation/tiny-leaf-geometry/geometry-copy-composition/pin-extent-source-r1/`.
+`$GLEAPH_EVIDENCE/adr0097/maintenance-fixtures-f2-f4-0383/segment-implementation/tiny-leaf-geometry/geometry-copy-composition/pin-extent-source-r1/`.
 
 `baseline.json` freezes source, documents, protected P1/0395 receipts and retained Wasm.
 `stage-cause.json`, `stage-red-source.rs` and `stage-red.patch` bind the exact diagnostic source and

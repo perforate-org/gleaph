@@ -55,7 +55,7 @@ Leave **≥ 100 GiB** below 500 GiB for B-tree internal nodes, `MemoryManager` b
 
 Catalog (`BidirectionalCatalog` on router today; optional on index later) scales with **unique metadata names** — typically **≪ 1 GiB** even for aggressive schemas. It is **not** a driver of the 500 GiB limit.
 
-### text canister (layout v4, [ADR 0077](adr/0077-text-index-engine.md))
+### text canister (layout v4, [ADR 0077](../adr/0077-text-index-engine.md))
 
 The text canister owns its own 16-region map (`crates/text-canister/src/state.rs`). Planning
 growth classes:

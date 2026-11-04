@@ -22,7 +22,7 @@ spillを一律に高速・低速とは評価できない。
 
 | 項目 | 本線 | spill |
 |---|---|---|
-| 作業ツリー | `/Users/yota/dev/gleaph` | `/Users/yota/dev/gleaph-spill` |
+| 作業ツリー | `$REPO` | `$REPO` |
 | HEAD | `6d82d0fc64a8a44bbd424efd7553ea6a347eee4a` | `1d3202bc35e098b1220fecf9401503fb83abb19c` |
 | LARAの未コミット変更 | `deferred.rs` / `iter.rs` のコメント | `free_span.rs` のadmission関連変更 |
 | 計測Wasm SHA256 | `204813710d53046b42146b9bbdb81dbbd537e4d49f8e7e18ee55ffc94bad8104` | `daa62418a1ac8566dcac92cf0f7f5a389dea3aef084d892f99f202ed284b5a45` |
@@ -173,7 +173,7 @@ stable-backedの4本以外は既存の`VectorMemory` fixtureである。Wasm上�
 計測証拠の保存先を`E`とする。
 
 ```text
-E=/Users/yota/.local/share/gleaph/evidence/adr0097/current-lara-comparison-0365
+E=$GLEAPH_EVIDENCE/adr0097/current-lara-comparison-0365
 ```
 
 `before.json`は本線1,971ファイル・spill2,357ファイルの元状態とHEAD/indexを固定する。

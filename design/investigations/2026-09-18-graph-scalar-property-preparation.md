@@ -13,7 +13,7 @@ Validation repository: `9a64049f47fc07542446d651d4b09421636b73c5`, with existing
 The actual Graph single-property vertex/edge SET and REMOVE paths now hold storage-owned preparation
 across index admission. **The production backend remains the existing B-tree. No extent allocator
 has been connected to Graph or activated.** This is a narrower integration step than proving the
-[experimental extent-backed preparation](2026-09-18-property-store-prepared-change.md) at this fence.
+experimental extent-backed preparation (record not retained) at this fence.
 
 The existing [shared property codec owner](../../crates/graph/src/facade/stable/vertex_properties.rs)
 contains `PreparedPropertyChange`; both concrete property stores issue it through `prepare_change`.
@@ -110,12 +110,12 @@ by the user before completion. The 2026-09-22 invocation is the completed expand
 
 ## Validation evidence
 
-Evidence directory is recorded by `/tmp/gleaph-graph-prepared-current`:
+Evidence directory is recorded by `$TMPDIR/gleaph-graph-prepared-current`:
 `/var/folders/wr/xh_5mtts77zfg_zq1r7yzzj80000gn/T/gleaph-graph-prepared-hcy10rbf`.
 Commands below run at repository root unless specified otherwise. Continuation logs are retained in
 `validation-20260918T121546Z/`, `verification-20260922T051438Z/`, `execution-20260922T052030Z/`
 and `completion-20260922T054912Z/` under that directory. The final continuation is also recorded by
-`/tmp/gleaph-graph-prepared-completion-current`; its per-command JSON records include elapsed time,
+`$TMPDIR/gleaph-graph-prepared-completion-current`; its per-command JSON records include elapsed time,
 terminal status and the reason for interruption.
 
 | Gate | Result |

@@ -260,7 +260,7 @@ budgets remain unproved. No 2× improvement is claimed or implied.
 
 ### Source-bound result
 
-Evidence root: `/Users/yota/.local/share/gleaph/evidence/adr0097/ng-direct-s555`.
+Evidence root: `$GLEAPH_EVIDENCE/adr0097/ng-direct-s555`.
 Production `lib.rs` remains `515b5e9ed92be170b2d96bf98f3d3f56219c757897a83867c81ee4164bba228d`;
 benchmark source is `11255B/e63a23bdc96c04165f9efdfee77ce869819b10e3950e9216a9cc07a7afaffc31`.
 The release/canbench Wasm is `728913B/830fc6715b1c997376a1b1c999b7b8cfb4602568bd15d22b5fcda2aa9ebb9b53`,
@@ -362,7 +362,7 @@ byte-for-byte, including all28 existing tests and the original benchmark prefix.
 5-doctest validation is reused, not rerun. No LARA build, original-gate sweep or production change
 was performed, and ADR0088's current contract remains unchanged.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/replace-scopes-0354/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/replace-scopes-0354/`.
 `control/` and `profile/` contain source snapshots, successful Cargo records, command streams and
 CSVs; `wasm/` contains frozen outputs copied before later builds. Control Wasm756405B/SHA256
 `9b98b163061dc6f4b8ba6772eff55722db6d5860180e5f507fb2c0a2ee1cfecd`; profile757436B/SHA256
@@ -433,7 +433,7 @@ three guarded drops reproduces the original lib. Both lib.rs and bench.rs were r
 all28 tests, original benchmarks, public/storage contracts and prior acceptance remain unchanged.
 Native28-unit/5-doctest evidence is reused, not rerun. No LARA build, gate sweep or optimization ran.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/lookup-scopes-0355/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/lookup-scopes-0355/`.
 `profile/` binds source, Cargo output, raw streams and CSV; frozen Wasm756917B/SHA256
 `54de75fec8924aafde8ca07b5f23240682185aaf3ee1d8dc2e999e999d2ffec3`.
 `measurement.json` distinguishes actual counters from source-derived read accounting and the
@@ -492,7 +492,7 @@ CCN6→9/NLOC50→133. Whole-file functions144→144 and CCN456→460. The added
 no measured payoff. The entire lib, including all candidate-specific assertions, is restored
 byte-for-byte; all28 retained tests and original benchmarks remain unchanged. No code is adopted.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/directory-pair-0356/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/directory-pair-0356/`.
 Candidate lib168458B/SHA256 `65a361628d903e951386e43e75a8cde2b08d36b783a8970d9f8fa42be9bb18c6`;
 frozen map740308B/SHA256 `2c20c8f2e662fe37e4a1fdffcfe0032c78f145efcfe437319dc35ea148e447b7`;
 frozen LARA5057163B/SHA256 `867297b11c0521aad700ebc5322a54b38962fe0120745c676bf6dbbefdc4273b`.
@@ -557,7 +557,7 @@ reused, not rebuilt or rerun. LARA's pending admission work remains fixed, not c
 Lizard1.24.0: only cover changes, CCN12→14/NLOC79→89/tokens682→737, parameters4 unchanged;
 whole-file CCN456→458/functions144 unchanged. No superseded helper or extra publication path remains.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/first-cover-0357/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/first-cover-0357/`.
 Retained lib164795B/SHA256 `d750b05526e08723cf46cf2a3a10dfea8a95b9b56edd8e5bc007020e717182fa`;
 frozen map743003B/SHA256 `dead4f3ddd9a3671bf3cabce6b1bd473a0a2b5d3f3f51b7bad210d26f62d1af0`;
 frozen LARA5062516B/SHA256 `1a9716a10d12887728f5b4b95085d86d6537b867612e3bbdfd4c45d96367f446`.
@@ -628,7 +628,7 @@ includes cfg(test) observation, whereas the production wrapper now only delegate
 owner test is CCN3→4/NLOC42→69/tokens372→579. Whole-file CCN458→459, functions144 unchanged;
 no signature grows, no production abstraction is introduced and no superseded fit return remains.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/reservation-owner-0358/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/reservation-owner-0358/`.
 Retained lib165868B/SHA256 `4e5456e152e8ddba352fd52d86f721bdf91aa234c01c42c429d2bc90d7f0c434`;
 frozen map742773B/SHA256 `abad51cdadd3f2aaed4e59e9ac2c0010f11f5948c7070733350c8ba5a798384d`;
 frozen LARA5063482B/SHA256 `cdcd861a113f7cee481406fec51e1e3e6517483f54246075820d7ecbe4100de7`.
@@ -648,7 +648,7 @@ change cannot close the three remaining scalar ceilings, even if it substantiall
 
 ### Source scope and observed execution
 
-The inspected worktree is `/Users/yota/dev/gleaph-spill` at commit
+The inspected worktree is `$REPO` at commit
 `b80566095f1edcec72158185cc27051bab9e2f0d`. Map source is the retained section11 `4e5456e1`.
 `lara/edge/free_span.rs` includes pending work:78962B/SHA256
 `35b7b00899db94ef58f6f6777ae2b29f9e6bc4a3c46a5dd4762e7067f87349fd`.
@@ -909,7 +909,7 @@ The complete candidate Rust files, including new tests and API comments, were re
 pre-trial bytes: map `4e5456e1`, FreeSpan `35b7b008`. All2357 pinned inputs were equal before adding
 this outcome and the lint-gap record. No API or deduplication fragment remains. Candidate sources,
 patches, command streams, source/artifact bindings, CSVs, lint diagnostics and restoration proof live
-under `/Users/yota/.local/share/gleaph/evidence/adr0097/order-preserving-rekey-0359/`.
+under `$GLEAPH_EVIDENCE/adr0097/order-preserving-rekey-0359/`.
 
 ## 14. Compact page header retained
 
@@ -984,7 +984,7 @@ sole changed return shape adds the key read with its header. The existing public
 preserved. Review verdict: focused; retain the single layout/read change, with no further
 extraction or generalization. CCN is not performance evidence.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/compact-page-header-0360/preproduction-correction/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/compact-page-header-0360/preproduction-correction/`.
 The initial trial archive in the parent directory is unchanged. The correction restores the existing
 version marker/type and removes only the superseded version-rejection scenario; codec/editor
 production logic is otherwise identical. The baseline is the immutable0358 archive.
@@ -1084,7 +1084,7 @@ The map Wasm was frozen before LARA rebuilt its default-only map dependency; tha
 archived separately. LARA still includes the unchanged pending admission work, not a clean-commit
 integration validation. No full workspace/PocketIC run, second candidate, commit or push was made.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/scratch-resize-dispatch-0361/`.
+Evidence: `$GLEAPH_EVIDENCE/adr0097/scratch-resize-dispatch-0361/`.
 The original sources, failed compiler stream, negative witnesses and blocked completion receipt
 remain immutable. `resume/` contains the input verification, successful commands, Cargo artifact
 bindings, frozen Wasm/rlib, CSVs, measurement decision, final codegen/Lizard review and completion
@@ -1201,7 +1201,7 @@ result contract. Neither is bundled into this owner-local change. Earlier input/
 directory-pair/rekey rejections stay closed; observer-affected0354/0355 scope counts do not rank
 current costs. LARA index replacement remains a separate policy decision.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/scratch-resize-owner-0362/` contains input
+Evidence: `$GLEAPH_EVIDENCE/adr0097/scratch-resize-owner-0362/` contains input
 pins, all characterization/mutant sources and transcripts, final candidate checks, Cargo/source/lock
 bindings, frozen Wasm/rlib, original-filter CSVs, codegen/Lizard and the completion decision/receipt.
 
@@ -1294,7 +1294,7 @@ map743412B/SHA256 `390097ef26b39c0e25163a424f32ca325498cdd29b4327a19d0862f18752e
 LARA5064795B/SHA256 `8cdd2f5c267eaf7892873e7149c1735be1c3639c3d68af4189492881b2de9a03`.
 Map Wasm was frozen before LARA rebuilt its default-only map dependency; that linked rlib is archived.
 
-Evidence: `/Users/yota/.local/share/gleaph/evidence/adr0097/header-pair-read-0363/` contains planning/
+Evidence: `$GLEAPH_EVIDENCE/adr0097/header-pair-read-0363/` contains planning/
 approved input pins, characterization/red/candidate/mutant sources and transcripts, source/lock/
 Cargo/Wasm bindings, original-filter CSVs, codegen/Lizard review, rejection and full-restoration proof.
 No second candidate, baseline Wasm rebuild/IC rerun, benchmark persistence, commit or push occurred.
@@ -1365,7 +1365,7 @@ calls, not one batch; amortizing them would change the original measured contrac
 
 ### Frozen Wasm corroboration
 
-E=`/Users/yota/.local/share/gleaph/evidence/adr0097/edit-pipeline-survey-0364/`.
+E=`$GLEAPH_EVIDENCE/adr0097/edit-pipeline-survey-0364/`.
 `codegen/index.json` binds complete function excerpts to the frozen Wasm and reused disassembly
 SHA256 `ecdb2253a4e354fa38d1f966c3ac092c0ca78c63cd6553ca5625fddf11f83b5f`.
 Function identity/order is checked against the binary CODE entries; demangled names alone are not

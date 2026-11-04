@@ -64,13 +64,13 @@ No full stable-memory preservation claim is made for the slab test's descriptor-
 
 ## Commands and source-bound evidence
 
-Evidence root: `/Users/yota/.local/share/gleaph/evidence/adr0097/tiny-cursor-extent-0381/`.
+Evidence root: `$GLEAPH_EVIDENCE/adr0097/tiny-cursor-extent-0381/`.
 `initial.json` freezes the empty index, 279 dirty paths, original lock, and 2551 preceding evidence
 files. `commands.json` records unique logs, source hashes, elapsed time and the fresh 590-second
 cumulative budget; each command is capped at 300 seconds. Cargo/canbench temporarily use the
 recorded common lock and restore the original bytes. These results are not canonical-lock validation.
 
-Commands below run from `/Users/yota/dev/gleaph-spill` unless noted.
+Commands below run from `$REPO` unless noted.
 
 | Command | Terminal result | Log |
 |---|---|---|

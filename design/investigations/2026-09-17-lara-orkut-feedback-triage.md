@@ -2,7 +2,7 @@
 
 Date: 2026-09-17
 Status: Triaged — recorded as external measurement-only evidence; no contract change, no implementation
-Source: `/Users/yota/dev/lara/docs/orkut-compare-2026-09-17/v1/feedback-to-gleaph.md`
+Source: `$LARA_REPO/docs/orkut-compare-2026-09-17/v1/feedback-to-gleaph.md`
 Source baseline: `95d791087`
 
 ## Scope limits (restated from the memo, not re-measured here)

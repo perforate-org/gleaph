@@ -59,8 +59,8 @@ produced and decoded by StoredPropertyValue, including its V1 envelope and IC ex
 Do not copy that envelope encoder, invent another Value codec, use serde as a substitute, or move
 these private definitions into a new production utility crate just for the experiment.
 
-Reuse the [B-tree body owner](artifacts/2026-09-13-property-body-btree-probe.rs) and
-[extent owner](artifacts/2026-09-13-property-body-extent-probe.rs). Necessary changes are narrowly
+Reuse the [B-tree body owner](../../crates/graph/src/facade/stable/property_store_probe/body_probe.rs) and
+[extent owner](../../crates/graph/src/facade/stable/property_store_probe/body_extent_probe.rs). Necessary changes are narrowly
 limited to supplied-memory construction, canonical key parametrization, local prepare/publication
 hooks and crate-private test access. Keep one algorithm per owner and preserve their six native
 tests and260+36 I/O rows. Do not copy either allocator into the PropertyStore prototype.
@@ -210,10 +210,10 @@ is not an intervening external read. Individually prepared operations do not est
 allocation safety, remap validity, index/outbox bounds or durable positive/zero/rejected outcomes.
 
 **Experimental store seam implemented; Graph integration still planned:** the
-[prepared-change experiment](2026-09-18-property-store-prepared-change.md) implements `with_prepared`
+prepared-change experiment (record not retained) implements `with_prepared`
 in the shared candidate. It lends an exclusive exact-input capability to a synchronous caller, exposes
 the previous Value, and either drops without effects or consumes commit once. Existing body owners
-and stored formats are unchanged. The [Graph source study](2026-09-17-property-store-previous-value-reuse.md)
+and stored formats are unchanged. The Graph source study (record not retained)
 explains the intended consumer: its existing index planning, not an additional facade get. A decoded
 caller Value alone is not preparation evidence. Actual Graph integration must finish all fallible
 body/cell/admission and index planning before the durable index-build reservation/outbox fence.

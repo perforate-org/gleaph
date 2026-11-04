@@ -13,6 +13,36 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | Federation / sharding | [sharding/README.md](sharding/README.md) → [sharding/standalone-mode.md](sharding/standalone-mode.md) → [sharding/federation-target.md](sharding/federation-target.md)          |
 | Security / product    | [security/rbac-and-prepared.md](security/rbac-and-prepared.md)                                                                                                                  |
 
+## Placeholders in the records
+
+`design/adr/`, `design/evidence/` and `design/investigations/` quote commands and paths from the run that
+produced them. Those paths belong to the author's machine, so they appear as placeholders rather than
+absolute paths:
+
+| Placeholder | Means |
+| --- | --- |
+| `$REPO` | a checkout of this repository |
+| `$TMPDIR` | the author's temporary directory (the dump is not retained) |
+| `$GLEAPH_EVIDENCE` | the author's evidence store, outside this repository |
+| `$AUTHOR_SKILLS` | the author's local agent skills; not part of this repo |
+| `$LARA_REPO`, `$LARA_RUNS` | a checkout of the external LARA prototype and its run output |
+
+A record that needs a path to resolve inside this repository uses a relative link instead.
+
+## Links out of this directory
+
+Two kinds of reference cannot resolve in a fresh clone, by design:
+
+- **`plans/`** is gitignored, so `../plans/...` links in ADRs and gap entries resolve only in a working
+  checkout that still holds the plan files. They are kept because a plan is the record of *why* a slice was
+  shaped as it was; a reader without it can still follow the ADR.
+- **Measured dumps** under `investigations/artifacts/` are pruned once the record that cites them has its
+  conclusions in place. On 2026-11-04 the property-store probe sources were moved beside the code that they
+  measure (`crates/graph/src/facade/stable/property_store_probe/`) and the raw dumps were pruned; the
+  affected records now say "measurement dump, not retained" instead of linking to a missing file.
+
+Everything else in the map is expected to resolve; a link to a moved or renamed document is a defect.
+
 ## Document map
 
 | Path                                                                                                                                 | Status                                                                                                 | Summary                                                                                                                     |

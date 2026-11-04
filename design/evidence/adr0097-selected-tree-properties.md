@@ -230,7 +230,7 @@ restored lock and main. As-used lock SHA256 remains
 
 ## Ledger and closure
 
-Raw evidence is preserved at `/tmp/spill-selected-a80-va1dsp1i/`.
+Raw evidence is preserved at `$TMPDIR/spill-selected-a80-va1dsp1i/`.
 One serialized cumulative monotonic600s ledger,120s non-final reserve, zero startup charge; all
 Rust/canbench commands checked remaining time and all ledger executions finished without a
 timeout/reset. No follow-on Rust validation turn occurred.

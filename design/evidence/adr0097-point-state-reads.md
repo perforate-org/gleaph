@@ -214,7 +214,7 @@ One cumulative monotonic 600s ledger, zero startup charge, 120s reserved before 
 command. No reset, timeout, cold target, cleanup or process control. The
 [ledger](sources/adr0097-point-state-ledger.json) and [run metadata](sources/adr0097-point-state-run.json)
 are authoritative for exact command arguments, source/log/lock hashes and cumulative charge.
-Raw root: `/tmp/spill-point-e921-fhkzogkf/`.
+Raw root: `$TMPDIR/spill-point-e921-fhkzogkf/`.
 
 All **27 recorded commands charged 227.77897737396415s / 600s**, leaving
 **372.22102262603585s** unused. The [final structural validator](sources/adr0097-point-state-plan-final.txt)

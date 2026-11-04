@@ -13,7 +13,7 @@ hunk. Commit/index evidence is under `width-implementation/commit/`; no push is 
 ## Evidence binding
 
 External evidence root:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/maintenance-fixtures-f2-f4-0383`.
+`$GLEAPH_EVIDENCE/adr0097/maintenance-fixtures-f2-f4-0383`.
 
 - `width-implementation/baseline.json` and `before/` freeze the pre-implementation dirty source,
   completed 0384 closure, original lock, protected paths and continuing command-ledger prefix.
@@ -88,7 +88,7 @@ received the affected crate's complete 701-test runtime pass.
 
 ## Terminal validation
 
-Commands use worktree `/Users/yota/dev/gleaph-spill`, except canbench from
+Commands use worktree `$REPO`, except canbench from
 `crates/ic-stable-lara`. Transcript names below are under the external evidence root.
 
 | Command | Result / transcript |
@@ -102,7 +102,7 @@ Commands use worktree `/Users/yota/dev/gleaph-spill`, except canbench from
 | `canbench bench_r_fs_tkbfs_` | PASS, exactly three cases; `width-allocator-candidate-final-split.log`, 81.89s including build |
 | `canbench bench_r_fs_lbin_` | PASS, exactly two cases; `width-allocator-candidate-final-release.log`, 4.63s |
 | `git diff --check` and exact manifest/protected-byte verification | PASS; `width-allocator-diff-check-final.log` / `width-allocator-checkpoint-final.log`. The earlier diff check caught and corrected an owned Markdown trailing-space line |
-| `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0385-free-span-publication-preflight.md --phase final` | NOT COMPLETE / FAIL; `width-allocator-plan-final.log`: validation/design completion remains pending; no waiver of failed gates |
+| `python3 $AUTHOR_SKILLS/validate_plan.py plans/0385-free-span-publication-preflight.md --phase final` | NOT COMPLETE / FAIL; `width-allocator-plan-final.log`: validation/design completion remains pending; no waiver of failed gates |
 
 Neither failed Clippy nor failed workspace formatting is a passed gate. Their unrelated paths
 require separately authorized ownership before repair; this slice is paused rather than widening

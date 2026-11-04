@@ -384,7 +384,7 @@ Verdicts against §9 decision inputs:
   dominates traversal, re-encoding query-side lists as varint is the first optimization lever.
 
 FTS5-on-VFS comparison arm (feasibility spike, findings archived at
-[artifacts/2026-08-24-ic-sqlite-vfs-spike-findings.md](artifacts/2026-08-24-ic-sqlite-vfs-spike-findings.md)):
+artifacts/2026-08-24-ic-sqlite-vfs-spike-findings.md (measurement dump, not retained)):
 **practical**. `ic-sqlite-vfs` 2.0.0 builds for wasm32-unknown-unknown out of the box with
 `sqlite-precompiled` (audited: all wasm imports are `ic0.*`, zero WASI/env), FTS5 is baked into
 the artifact, MSRV 1.95.0, dual MIT/Apache-2, no rusqlite/libsqlite3-sys transitive pins; it
@@ -408,7 +408,7 @@ index equivalent units; `cache_size=-2048`). Corpus identical to the custom arm'
 | Ingest M=2000 docs | 244.27 M instr (~122 k/doc) | **188.80 M** instr (`bench_build_segment_m2000`, ~94 k/doc) | custom ≈23% cheaper¹ |
 | m3 OR top-10 by rank | 34.84 M instr | **17.29 M** varint + ported driver + lazy tf scoring (history: 15.78 M pre-LUT model, 74.23 M original frame) | custom ~2× cheaper² |
 | Term lookup top-100 rowids / ranked top-100 | unscored **261.08 K**; scored (bm25 rank) **34.38 M** — `bench_fts5_query_term_rank_top100_scored` | unscored **205.81 K** (`_unscored`); scored **4.00 M** (`bench_query_term_top100`) — plan 0295/0296, see ⁵ | custom leads both pairs (~1.3× unscored, ~8.6× scored)⁵ |
-| Storage @ M=2000 | 376,832 B logical DB image | **141,355 B** set-mode / 193,109 B freq-mode (incl. dict 42,107 B + block-max 12,856 B; [artifact](artifacts/2026-08-24-storage-parity.txt)) | custom 2.0–2.7× smaller⁴ |
+| Storage @ M=2000 | 376,832 B logical DB image | **141,355 B** set-mode / 193,109 B freq-mode (incl. dict 42,107 B + block-max 12,856 B; artifact (measurement dump, not retained)) | custom 2.0–2.7× smaller⁴ |
 
 ¹ FTS5 ingest includes its internal tokenization; the custom bench starts from unit-id streams
 (analyzer lives above this crate) — disclosed asymmetry favoring the custom figure.
@@ -427,9 +427,9 @@ FTS5 was therefore entirely encoding choice + driver quality; with both fixed, t
 **RISE extraction spike (2026-08-24 UTC)** validated this path beforehand: RISE's WAND / BMW /
 BM-MaxScore layer extracts to **1,072 LOC, std-only, zero nightly**, compiling for
 wasm32-unknown-unknown with brute-force-verified correctness on stable Rust
-([report](artifacts/2026-08-24-rise-extraction-report.md), dependency inventory:
-[inventory](artifacts/2026-08-24-rise-extraction-inventory.md),
-[oracle snapshot](rise-queries-min-snapshot/PROVENANCE.md)); whole-crate vendoring remains a
+(report (measurement dump, not retained), dependency inventory:
+inventory (measurement dump, not retained),
+[oracle snapshot](artifacts/rise-queries-min-snapshot/PROVENANCE.md)); whole-crate vendoring remains a
 no-go (rayon/memmap2/epserde dependency tree), verbatim reuse would additionally require an
 ordered-map fix upstream-side (`query_freqs()` iterates a `HashMap` — non-deterministic term
 order under replicated execution) — our reference port sidesteps both by keeping integer scores
@@ -463,7 +463,7 @@ M=10 000 with dense df = 9 512 (5× the FTS5 figure's corpus); m3 ranked workloa
 Both include real encoder outputs, headers, dictionary, and block-max tables over the full
 expanded corpus (units=3003, postings set/tf = 63,766/75,275). SMI fields on both arms read
 structural-zero (bucketed memory-manager growth outside closures); byte figures above are the
-honest storage numbers ([parity artifact](artifacts/2026-08-24-storage-parity.txt)).
+honest storage numbers (parity artifact (measurement dump, not retained)).
 
 Remaining caveats: probe-term bands differ slightly ({0,84,1000} vs {53,83,1000}) — same
 workload class, not identical lists; both arms exclude host-side memory-op internals equally

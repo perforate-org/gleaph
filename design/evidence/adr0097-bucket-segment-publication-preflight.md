@@ -604,7 +604,7 @@ No stage, commit or push occurred.
 ## Evidence binding
 
 External evidence root:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/maintenance-fixtures-f2-f4-0383`.
+`$GLEAPH_EVIDENCE/adr0097/maintenance-fixtures-f2-f4-0383`.
 
 `segment-implementation/baseline.json`, `before/`, `dirty-before.patch` and `ledger-before.json`
 bind the pre-existing dirty state. Comparisons use those bytes, not HEAD alone.
@@ -1654,7 +1654,7 @@ Clippy remains FAIL, full Rust validation is not claimed, and output-scratch OOM
 a production prerequisite.
 
 Decoded split's exact ordinary command `canbench bench_r_fs_tkbfs_256 --csv --runtime-path
-/Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic`, cwd `V/cases/decoded/
+$REPO/crates/ic-stable-lara/.canbench/pocket-ic`, cwd `V/cases/decoded/
 bench_r_fs_tkbfs_256`, timed out at cap15/124/15.06s with an empty log and no CSV. Immediate after
 receipt binds unchanged actual inputs/exit before deliberately rejecting success (after command
 exit1); no successful capture is minted. Decoded bin is NOT RUN after the stop boundary. There are
@@ -1719,7 +1719,7 @@ approve the slower representation; overall performance HOLD remains.
 
 ## Validation
 
-Worktree: `/Users/yota/dev/gleaph-spill`. [Current0393 closure](#validation-closure-0393) records the
+Worktree: `$REPO`. [Current0393 closure](#validation-closure-0393) records the
 actual final lint/runtime/format/review and document gates; acceptance itself supplied no pass.
 Rows below preserve the earlier final results and old performance HOLD label on their exact nine
 Rust hashes. Those historical failed/incomplete executions stay failed/incomplete; separate current
@@ -1739,7 +1739,7 @@ results close the required segment gates.
 | Corrected source/diagnostic/test closure | PASS; `segment-prior-source-closure.log`, `prior-values-inline/closure.json`; prior correction receipts preserved |
 | Independent test-only retention review | INCOMPLETE; `segment-prior-test-review.log`, exit124 at100s waiting on delegated review; no verdict, no retry |
 | Preservation checkpoint and `git diff --check` | PASS; `segment-prior-preservation-v6-final.log`, `checkpoint-v6-final.json`; v4 production restored, one new test, all earlier receipts preserved |
-| `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0386-bucket-segment-publication-preflight.md --phase final` | FAIL: pending `independent-review-corrections` / `validation-and-design` and open criteria5/6; `segment-prior-plan-final-closure.log` records the exact errors |
+| `python3 $AUTHOR_SKILLS/validate_plan.py plans/0386-bucket-segment-publication-preflight.md --phase final` | FAIL: pending `independent-review-corrections` / `validation-and-design` and open criteria5/6; `segment-prior-plan-final-closure.log` records the exact errors |
 
 Review checks the ready publisher, deletion of duplicate paths, original test-body preservation and
 exact diagnostic mapping. The Rust production-prefix delta is +436 lines; this includes fixture-only

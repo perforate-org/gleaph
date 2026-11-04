@@ -116,7 +116,7 @@ Wasmの各回途中を直接観測したという意味ではない。
 ### 再現条件と検証
 
 基点は`spill-swap`のHEAD `880ad86a024e30953bbc134ad946b2c2e7b6da67`。
-`E=/Users/yota/.local/share/gleaph/evidence/adr0097/update-driven-reuse-0375`に固定入力、差分、全出力、コマンド台帳を保存した。
+`E=$GLEAPH_EVIDENCE/adr0097/update-driven-reuse-0375`に固定入力、差分、全出力、コマンド台帳を保存した。
 0374の完了記録・計測Wasmは不変。今回の所有範囲を除く269 dirty pathsをhashで保護する。
 
 - 測定ソースSHA256: `730b08ee2aba713206d4c22d885f55174c71c9baa7975f333aa8b561338ebae5`。
@@ -133,7 +133,7 @@ Wasmの各回途中を直接観測したという意味ではない。
 | `rustfmt --edition 2024 --config skip_children=true --check`（fold.rsのみ） | passed、`format-final.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0、既存39警告箇所と一致、新規0。`lint-review.json` |
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench -- --nocapture fold_economics repeated_fold continuous_spill update_reuse` | 14 passed / 620 filtered、`native-final.log` |
-| `canbench ur_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/.canbench/pocket-ic`（E/canbench-current） | 8/8条件、134 scopes、build込み107.05秒。`canbench-final.log` |
+| `canbench ur_ --csv --show-canister-output --runtime-path $REPO/.canbench/pocket-ic`（E/canbench-current） | 8/8条件、134 scopes、build込み107.05秒。`canbench-final.log` |
 | `python3 E/analyze.py` / `python3 E/audit.py` | passed、call数・区間履歴・native/IC状態・保護hashを照合 |
 | `lizard --csv -i -1`（凍結before/current fold.rs） | passed、`lizard-summary.json` |
 | 独立Standards / Specレビュー | 両者APPROVE（101.06秒 / 116.00秒）。`review-standards-v1.md` / `review-spec-v1.md` |

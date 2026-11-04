@@ -27,7 +27,7 @@ FreeSpan is still byte-frozen in the checkout, while the new map candidate is se
 That scalar lookup/nonwriting reservation trade-off is not a waiver for the new engine, full A0/A1
 or landing. The reported admission review was read-only and was not rerun here.
 
-Admission execution is closed at `/tmp/spill-admission-f297-6g1p_any/`. Plan0339, its executed
+Admission execution is closed at `$TMPDIR/spill-admission-f297-6g1p_any/`. Plan0339, its executed
 snapshot/check, ledger and manifests retain their original contents, including historical
 review-pending fields. The new acceptance is recorded here with separate prose-check provenance.
 Commands in that execution were serialized; tests used normal scheduling, without thread overrides.
@@ -78,7 +78,7 @@ behavior. Neither this revision nor Stage A approval would approve permanent ret
 
 All six Q-relative conditions pass (split strictly improves; others do not regress); **all six original ceilings fail**. Scalar aggregate913027 (Q914080) is reference-only. No tolerance, averaging, aggregate or budget waiver, per-read IC price, allocation/peak-memory, codegen or full-suite claim follows. Raw canbench display rounds counts and compares with saved YAML, not Q; its `+41.34%/+41.37%` is not an R−Q delta.
 
-**Post-reboot evidence.** Original trial roots were `/tmp/spill-position-{native-3c1218f9,sensitivity-10d67f30,scalar-fa2501ec,lara-62228f64,final-3a10e7bf}`; they are now absent. Exact retained text and surviving binaries were copied with hash comparison to `~/.local/share/gleaph/evidence/adr0097/recovery-R-eda0b174/` (23 selected files, not a full archive/seal). The positive native2284496B/`92e44ab9…` binary remains missing, although its exact stdout/stderr and source binding survive. The current/copied map native2284496B/`e44583d9…` is the intentional fault, not correct R. Map Wasm704575B/`afe805fc…`, LARA Wasm5034468B/`98019392…`, and FreeSpan native39471200B/`04cc0aa2…` retain their R bindings. Validation trials restored source Q, not target artifacts; retention does not relabel those epochs. Used lock`f5d323d0…` differs from checkout`15d08391…`. Original R CSVs, full prior manifests and full FreeSpan stdout were not recovered; content-identical Q CSV is not R provenance.
+**Post-reboot evidence.** Original trial roots were `$TMPDIR/spill-position-{native-3c1218f9,sensitivity-10d67f30,scalar-fa2501ec,lara-62228f64,final-3a10e7bf}`; they are now absent. Exact retained text and surviving binaries were copied with hash comparison to `~/.local/share/gleaph/evidence/adr0097/recovery-R-eda0b174/` (23 selected files, not a full archive/seal). The positive native2284496B/`92e44ab9…` binary remains missing, although its exact stdout/stderr and source binding survive. The current/copied map native2284496B/`e44583d9…` is the intentional fault, not correct R. Map Wasm704575B/`afe805fc…`, LARA Wasm5034468B/`98019392…`, and FreeSpan native39471200B/`04cc0aa2…` retain their R bindings. Validation trials restored source Q, not target artifacts; retention does not relabel those epochs. Used lock`f5d323d0…` differs from checkout`15d08391…`. Original R CSVs, full prior manifests and full FreeSpan stdout were not recovered; content-identical Q CSV is not R provenance.
 
 Selected exports are the original [source patch](sources/adr0097-map-split-position-R-source.patch), [scalar measurement-command output](sources/adr0097-map-split-position-R-scalar.stdout), [LARA measurement-command output](sources/adr0097-map-split-position-R-allocator.stdout), and [fresh final-plan refusal](sources/adr0097-map-split-position-R-plan-final.txt). The two measurement outputs preserve exact integers and original comparisons from Pi tool records `e75ddbf8`/`13384308`, not rounded canbench display or regenerated CSV. The refusal is actual fresh stderr: exit1 for pending `bounded-proof` and unchecked criteria5/6, not copied Q evidence. A fresh post-reboot pre-edit snapshot protects this patch only; it cannot prove the lost historical manifests unchanged.
 
@@ -91,12 +91,12 @@ Selected exports are the original [source patch](sources/adr0097-map-split-posit
 **Historical source: Q `51a32c32bfec364d3d3bba880f9e0327929ca9741805fc93326b1bbf429c8229`; scoped directory-reader checks complete, performance and acceptance BLOCKED.** Q adds the private `DirEntry::decode` method and `canonical_dir_entry_single_read_contract` to W. The existing `DirEntry` type owns directory decoding: canonical `read_dir_entry` changes from two 8 B backing reads to one 16 B read; prepared `directory` retains its 16 B prospective `EditImage` request. In-page entry decoding, encoding, locator/selected tuple, minimum guard, count, admission, publication, layout and borrow authority are unchanged. No second editor, cache, allocator or publication path is introduced.
 
 Source-bound evidence:
-- `/tmp/spill-directory-green-93413c40`: 21 unique tests passed, zero failed; all 42 diagnostic records match W with multiplicity preserved: 5 `SCALAR_WORK`, 33 `IMAGE_READ_CASE`, 4 `FIRST_COVER_CASE`. Archived native: 2286768 B / `a7a040c6…`.
-- `/tmp/spill-directory-decode-d09859c2`: shared field-swap fault reaches the direct `DirEntry` equality failure at `lib.rs:2062:9`; later backing/get/Traffic assertions are unreached. This is not an endian mutant.
-- `/tmp/spill-directory-bypass-94b3042b`: canonical-only prepared-directory fault reaches the second-batch unwrap at `lib.rs:2343:45`, `Edit { at: 1, source: Corrupt }`; later checks are unreached. These are two fault invocations in two functions, not E's inherited campaign.
-- `/tmp/spill-directory-scalar-6e961e07`: missing128296, replace149000, tail561354, split70497, all equal to E. Original ceilings are exceeded by42624/71424/263183/39567 respectively. Aggregate914080 is reference-only.
-- `/tmp/spill-directory-lara-c0d06788`: total2147387 and named2146426, each37242 below E and619811 above its original ceiling; total-minus-named remains961. All six preregistered E-relative conditions pass; all six original ceilings fail. No tolerance or aggregate trade-off applies.
-- `/tmp/spill-directory-final-245830a7`: source formatting, scoped whitespace and map lib/tests/canbench clippy exit0; FreeSpan27 passes with the same names as E (652 filtered). Admission diagnostics are in stderr, not stdout; there is no `ADMISSION_PASS`. Clippy reports the same unused-config-key warning twice.
+- `$TMPDIR/spill-directory-green-93413c40`: 21 unique tests passed, zero failed; all 42 diagnostic records match W with multiplicity preserved: 5 `SCALAR_WORK`, 33 `IMAGE_READ_CASE`, 4 `FIRST_COVER_CASE`. Archived native: 2286768 B / `a7a040c6…`.
+- `$TMPDIR/spill-directory-decode-d09859c2`: shared field-swap fault reaches the direct `DirEntry` equality failure at `lib.rs:2062:9`; later backing/get/Traffic assertions are unreached. This is not an endian mutant.
+- `$TMPDIR/spill-directory-bypass-94b3042b`: canonical-only prepared-directory fault reaches the second-batch unwrap at `lib.rs:2343:45`, `Edit { at: 1, source: Corrupt }`; later checks are unreached. These are two fault invocations in two functions, not E's inherited campaign.
+- `$TMPDIR/spill-directory-scalar-6e961e07`: missing128296, replace149000, tail561354, split70497, all equal to E. Original ceilings are exceeded by42624/71424/263183/39567 respectively. Aggregate914080 is reference-only.
+- `$TMPDIR/spill-directory-lara-c0d06788`: total2147387 and named2146426, each37242 below E and619811 above its original ceiling; total-minus-named remains961. All six preregistered E-relative conditions pass; all six original ceilings fail. No tolerance or aggregate trade-off applies.
+- `$TMPDIR/spill-directory-final-245830a7`: source formatting, scoped whitespace and map lib/tests/canbench clippy exit0; FreeSpan27 passes with the same names as E (652 filtered). Admission diagnostics are in stderr, not stdout; there is no `ADMISSION_PASS`. Clippy reports the same unused-config-key warning twice.
 
 The validation attempts ended by restoring W; the later retention changes source, not artifact provenance. Configured map Wasm is Q, 704719 B / `35190068…`; configured LARA Wasm is Q, 5034763 B / `295aaca6…`. The debug map native remains the bypass mutant, source `41bc3bd9…` / artifact `08f902a9…`, not correct Q or W. The FreeSpan native is Q-bound, 39490816 B / `ce882aab…`. Actual paths, source/copy hashes, used locks and complete streams remain in the named roots. Source restoration never restores or relabels target artifacts.
 
@@ -124,13 +124,13 @@ or unwind/reuse guarantee.
 
 **Evidence (source-bound roots; raw copies are selected evidence, not a full archive or seal):**
 initial **20 unique tests /33 image cases / four phases / all5 COMPLETE E-identical work records**
-at `/tmp/spill-cover-witness-f483e684` (native **2283728**, sha `d8e2edbf…`); two **W-specific
+at `$TMPDIR/spill-cover-witness-f483e684` (native **2283728**, sha `d8e2edbf…`); two **W-specific
 faults of the one unchanged function** reaching the FIRST callback assertion — fill
-`/tmp/spill-W-cover-cb9aec28-fill` (**only** `inline-first`, `[]` vs `[(256, 8)]`) and zero
-`/tmp/spill-W-cover-cb9aec28-zero` (first three phases complete, **all4 markers**, `[(376, 0)]` vs
+`$TMPDIR/spill-W-cover-cb9aec28-fill` (**only** `inline-first`, `[]` vs `[(256, 8)]`) and zero
+`$TMPDIR/spill-W-cover-cb9aec28-zero` (first three phases complete, **all4 markers**, `[(376, 0)]` vs
 `[]`); the later failing-phase offset/descriptor/bytes/capacity/backing assertions are **unreached**
 and there is **no independent Heap kill**; scoped format/lint at
-`/tmp/spill-W-final-58f5ec12-{format,map_clippy}` — **scoped lint/format complete; no extra W
+`$TMPDIR/spill-W-final-58f5ec12-{format,map_clippy}` — **scoped lint/format complete; no extra W
 runtime/doctest/FreeSpan gate, no W IC run, no binary relabeling.** Durable raw copies:
 [W patch](sources/adr0097-map-first-cover-W-source.patch) ·
 [F patch](sources/adr0097-map-first-cover-F-source.patch) ·
@@ -158,28 +158,28 @@ fail.** Zero heap/stable growth is not zero allocation; no per-check/frame/codeg
 these totals; detailed E/original numbers remain owned by the existing E matrix.
 
 **Identity/scope:** the W-positive native is **2283728 / d8e2edbf…**. F's native is
-**2283920 / 573147d0…** (`/tmp/spill-F-native-2be88a3a`); G's is **2283920 / 8c27f7ba…**
-(`/tmp/spill-G-native-6a0c5ef9`). F's scalar Wasm is **707449 / 57540000…**
-(`/tmp/spill-F-scalar-42f785a6`); G's is **707192 / 064c44e2…**
-(`/tmp/spill-G-scalar-90308710`). Their path/source/copy bindings remain in those roots;
+**2283920 / 573147d0…** (`$TMPDIR/spill-F-native-2be88a3a`); G's is **2283920 / 8c27f7ba…**
+(`$TMPDIR/spill-G-native-6a0c5ef9`). F's scalar Wasm is **707449 / 57540000…**
+(`$TMPDIR/spill-F-scalar-42f785a6`); G's is **707192 / 064c44e2…**
+(`$TMPDIR/spill-G-scalar-90308710`). Their path/source/copy bindings remain in those roots;
 **source restoration does not restore target binaries**.
 
 **History preserved (not replayed):** the omitted cover SETUP/unexecuted draft and retracted success
-claim (`/tmp/spill-cover-stop-edbdd116`; old `ed25` root absent); the W-native semicolon/newline
+claim (`$TMPDIR/spill-cover-stop-edbdd116`; old `ed25` root absent); the W-native semicolon/newline
 drift and the **W-format terminal-LF omission (valid observation, not exact fidelity — separate from
-the fatal G-park SyntaxError)**; F parked at `/tmp/spill-F-park-dc41aadf`; G's first park left only
-an empty root after a corrupted-assertion SyntaxError; `/tmp/spill-G-park-4e8ebea8` actually restored
+the fatal G-park SyntaxError)**; F parked at `$TMPDIR/spill-F-park-dc41aadf`; G's first park left only
+an empty root after a corrupted-assertion SyntaxError; `$TMPDIR/spill-G-park-4e8ebea8` actually restored
 W. Old failures/roots/receipts immutable. **Partial integer samples and fresh budgets do NOT prove
 historical600s/120s compliance.**
 
-The first W documentation attempt (`/tmp/spill-W-doc-7689da9d`) copied five exports and updated
+The first W documentation attempt (`$TMPDIR/spill-W-doc-7689da9d`) copied five exports and updated
 this report, then stopped at a nonmatching plan edit; no plan/ADR edit or validator ran. Its setup
 recorded seven expected protected hashes without checking them. Independent review subsequently
 verified the before-images, immutable exports and foreign state; that is not a retroactive setup
-check. A second attempt (`/tmp/spill-W-doc-65ac6168`) verified its setup and applied eight plan
+check. A second attempt (`$TMPDIR/spill-W-doc-65ac6168`) verified its setup and applied eight plan
 hunks, but sent the ninth as a no-op with an extra `newText2` key. It stopped without ADR/report
 edits or validator execution. Both old roots' `receipt.txt` files are setup-only. The separate
-remainder is recorded at `/tmp/spill-W-doc-9a49a7db`; the sixth durable is the structural refusal,
+remainder is recorded at `$TMPDIR/spill-W-doc-9a49a7db`; the sixth durable is the structural refusal,
 not a fourth copy. Neither stopped attempt is retroactively completed by the remainder.
 
 ## Frozen-E execution checkpoint
@@ -256,12 +256,12 @@ retained, not repaired. Prior provider/schema/tooling/archive/budget failures re
 their existing records rather than a recopied chronology.
 
 **Evidence (retained local roots — local artifacts are NOT a complete durable export or seal):**
-minimum-witness `/tmp/spill-minimum-witness-da94bf18`; minimum-format
-`/tmp/spill-minimum-format-478ed621`; T1 guard-negative `/tmp/spill-minimum-guard-a75508ca`;
-initial E `/tmp/spill-E-native-0f0a353b`; scalar `/tmp/spill-E-scalar-cd729826`; LARA
-`/tmp/spill-E-lara-bb5b847d`; first-key negatives `/tmp/spill-E-firstkey-0d271f2b-{guard,zero}`;
-six inherited `/tmp/spill-E-inherited-f1e94af5-{count,resource,early,disjoint,backed,left-fill}`;
-six final controls `/tmp/spill-E-final-48c5db75-{format,map_clippy,lara_clippy,map,free,doc}` —
+minimum-witness `$TMPDIR/spill-minimum-witness-da94bf18`; minimum-format
+`$TMPDIR/spill-minimum-format-478ed621`; T1 guard-negative `$TMPDIR/spill-minimum-guard-a75508ca`;
+initial E `$TMPDIR/spill-E-native-0f0a353b`; scalar `$TMPDIR/spill-E-scalar-cd729826`; LARA
+`$TMPDIR/spill-E-lara-bb5b847d`; first-key negatives `$TMPDIR/spill-E-firstkey-0d271f2b-{guard,zero}`;
+six inherited `$TMPDIR/spill-E-inherited-f1e94af5-{count,resource,early,disjoint,backed,left-fill}`;
+six final controls `$TMPDIR/spill-E-final-48c5db75-{format,map_clippy,lara_clippy,map,free,doc}` —
 with source and lock snapshots in the execution roots; explicit toolchain/version captures are
 in the scalar and LARA IC roots. The failed T formatting attempt never reached Cargo, so its
 checkout-lock capture is not an actual-used Cargo lock. Scoped finals: **19/27/5 (one E
@@ -282,11 +282,11 @@ patch covering the test and the reuse — **not** a T1→E production-only patch
 `bounded-proof` pending and criteria5/6 — plan0340 is not completed). No binary was recreated,
 recopied after live overwrite, or exported wholesale.
 
-**Documentation attempt and continuation:** `/tmp/spill-E-doc-cfd23c4b` preserves the first
+**Documentation attempt and continuation:** `$TMPDIR/spill-E-doc-cfd23c4b` preserves the first
 status-sync attempt. Its validator exited1 with exactly the three expected errors on stderr and
 empty stdout. The reviewer-supplied checker wrongly required empty stderr and stopped before
 exporting the refusal or recording scope completion. That failure and the partial documents are
-not retroactively repaired. The fresh `/tmp/spill-E-doc-8036ba1e` continuation corrects the
+not retroactively repaired. The fresh `$TMPDIR/spill-E-doc-8036ba1e` continuation corrects the
 remaining prose and restores the original “single corrected-source” measurement qualifier in
 criterion5; its new source-bound validator refusal and scope evidence are separate. No Rust or
 IC validation is repeated, and none of these document checks closes the pending cost gates.
@@ -348,10 +348,10 @@ reader150540** remains a historical failed directional prediction — not D's di
 persisted-YAML delta columns are different comparisons. Zero page growth is not zero allocation.
 
 **Evidence (retained local roots; local artifacts are not a complete durable export or seal):**
-initial D `/tmp/spill-D-native-7410251a`; left-fill `/tmp/spill-D-left-fill-e18ab287`; scalar
-`/tmp/spill-D-scalar-1cb0d853`; LARA `/tmp/spill-D-lara-d421ea32`; five inherited sensitivities
-`/tmp/spill-D-five-8ef154dc-{count,resource,early,disjoint,backed}`; six final controls
-`/tmp/spill-D-final-86de9452-{format,map_clippy,lara_clippy,map,free,doc}`. Durable copies:
+initial D `$TMPDIR/spill-D-native-7410251a`; left-fill `$TMPDIR/spill-D-left-fill-e18ab287`; scalar
+`$TMPDIR/spill-D-scalar-1cb0d853`; LARA `$TMPDIR/spill-D-lara-d421ea32`; five inherited sensitivities
+`$TMPDIR/spill-D-five-8ef154dc-{count,resource,early,disjoint,backed}`; six final controls
+`$TMPDIR/spill-D-final-86de9452-{format,map_clippy,lara_clippy,map,free,doc}`. Durable copies:
 [scalar CSV](sources/adr0097-map-precover-D-scalar.csv) ·
 [LARA CSV](sources/adr0097-map-precover-D-allocator.csv) ·
 [source delta](sources/adr0097-map-precover-D-source.patch) ·
@@ -583,7 +583,7 @@ subsequent invocations. Initial native map `cbde62ce…` and final `5ede72df…`
 
 The same plan retains three completed TODOs and four checked criteria; `bounded-proof` and
 criteria5/6 remain pending/unchecked. The final structural validator refuses exactly those items,
-not a falsely green plan. Raw root: `/tmp/spill-map-read-9436-j1wy264j/`; this attempt's manifest,
+not a falsely green plan. Raw root: `$TMPDIR/spill-map-read-9436-j1wy264j/`; this attempt's manifest,
 source snapshots, commands, failures, artifacts and durables are separate from all13 protected
 historical manifests/1021 entries. HEAD/staging, foreign inputs, completed0339, prior ceilings and
 the original main-reference failure remain unchanged. Shared main was not queried or modified.
@@ -707,7 +707,7 @@ mechanical fragments (fail-closed artifact capture with recorded-cwd authority a
 restoration-under-capture-raise on temp-only lock/CSV sentinels; exact whole-block in-memory
 count-mutant with byte-identical inverse; qualified single-row CSV lookup with duplicate/
 missing errors and authoring-fixed ceiling keys; saved stdout/stderr native matcher) — **PASS
-in0.0244s**, receipt `/tmp/spill-tooling-preflight-f297-t1/receipt.json` (sha
+in0.0244s**, receipt `$TMPDIR/spill-tooling-preflight-f297-t1/receipt.json` (sha
 `8761e77e0720cab70088ef91091518a5cf8c50d94924b5e32dfda7cacc6d9c0b`). Remaining validation for
 frozen C awaits separate review and a fresh budget, with source mutation limited to the five
 previously approved temporary sensitivities and exact-C restoration; g1's ledger and its
@@ -941,7 +941,7 @@ The small source increase centralizes header mapping at its existing owner and c
 borrowing; no public API, container or editor was added. The source projection excludes unchanged
 test nodes/seeder and is not compiler analysis. No metric gaming or speed claim follows.
 
-Raw evidence is `/tmp/spill-map-correction-be81-1611h8iy/`. The
+Raw evidence is `$TMPDIR/spill-map-correction-be81-1611h8iy/`. The
 [run record](sources/adr0097-map-correction-run.json) and [new ledger](sources/adr0097-map-correction-ledger.json)
 close at230.668119/600s, with60.072337/120s final use. Twelve Rust/format/IC invocations completed;
 only the two intended mutations returned101. No unexpected compile/command failure or timeout.
@@ -982,7 +982,7 @@ only its obsolete allocator comment changed. Scalar `OutOfMemory` wording now in
   shared97-entry seeder is byte-identical. Baseline measurement-only map source was `ae76d90f…`.
 - FreeSpan remains `35b7b008…`; approved admission map `41873db3…` is the comparison snapshot,
   not the new candidate's approval. HEAD remains `f297706ab…`.
-- Raw execution: `/tmp/spill-map-f297-cecc5rw_/`. The
+- Raw execution: `$TMPDIR/spill-map-f297-cecc5rw_/`. The
   [run record](sources/adr0097-map-run.json), [source audit](sources/adr0097-map-source-verification.json),
   [measurements](sources/adr0097-map-measurements.json) and [ledger](sources/adr0097-map-ledger.json)
   are separate from every prior checkpoint.
@@ -1331,7 +1331,7 @@ formatting diff corrected those checks without rerunning Rust. An untracked-evid
 check also found an extra EOF blank in a copied green log; durable log-only normalization records
 both raw/durable hashes and preserves the original logs. Context-bearing raw patches are retained;
 durable patch derivatives use zero-context hunks (`git apply --unidiff-zero`). Raw evidence remains
-at `/tmp/spill-admission-f297-6g1p_any/`; durable artifacts use `adr0097-admission-*`.
+at `$TMPDIR/spill-admission-f297-6g1p_any/`; durable artifacts use `adr0097-admission-*`.
 
 Each CSV was harvested and the foreign CSV restored and hash-checked before the next invocation,
 including cleanup in the runner's `finally` path. As-used lock `f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`
@@ -1398,7 +1398,7 @@ comments mentioning that number.
 | Same file, `collect_leaf_block_ids`, edge/property native resolvers | Existing root/depth traversal concepts. Inventory must include all reachable interiors as well as leaves in both streams before publication. Width33 property fanout differs from topology fanout. Source metadata checks promised by GAP002 are not established by this audit. |
 | [`graph/compact.rs`](../../crates/ic-stable-lara/src/labeled/graph/compact.rs), `bucket_resident_region`, `combined_span_region_len` | Physical root ownership is already centralized, distinct from logical high-water. Existing demotion recomputes an edge-only avoidance range instead; it must consume this owner rather than duplicate geometry. |
 | Same file, `materialize_labeled_vertex_edge_plan`, `rewrite_vertex_edge_span_with_policy`, `commit_vertex_edge_span_layout` | Three vertex-commit call sites share raw physical publication but not an outer prepare boundary. Rewrite around lines 936–1023 may relocate and restart; relocation loops around 1356–1370 and 1381–1394 may publish an earlier peer before later failure. Disjoint relocation publishes the pin before the loops. Prepare the entire outer call, not each vertex independently. |
-| [`graph/leaf_pin.rs`](../../crates/ic-stable-lara/src/labeled/graph/leaf_pin.rs), placement/pin helpers; [`lara/edge/row_layout.rs`](../../crates/ic-stable-lara/src/lara/edge/row_layout.rs), count owner | Read current occupied ranges and distinguish existing pin, nonpublishing expansion reservation, new leaf cover and unpinned spans. The rewrite's final placement must be computed against a planned peer layout, using these existing geometry rules rather than first installing the new pin. |
+| [`graph/leaf_pin.rs`), placement/pin helpers; [`lara/edge/row_layout.rs`](../../crates/ic-stable-lara/src/lara/edge/row_layout.rs), count owner | Read current occupied ranges and distinguish existing pin, nonpublishing expansion reservation, new leaf cover and unpinned spans. The rewrite's final placement must be computed against a planned peer layout, using these existing geometry rules rather than first installing the new pin. |
 | [`labeled/bucket_store.rs`](../../crates/ic-stable-lara/src/labeled/bucket_store.rs), `write_label_bucket_row_adaptive{,_with_scratch}` | Small rows write per slot; larger rows allocate/encode scratch during publication. Its wire/validation rule stays at this owner; physical preparation must not duplicate it or assume there is no fallible work in the callee. |
 | [`graph/promote.rs`](../../crates/ic-stable-lara/src/labeled/graph/promote.rs), `transcribe_and_publish_tree` | Useful existing ownership precedent: unpublished allocations, retirement reservation and last recoverable reservation before publication. Not proof that every shared rewrite or demotion path is already atomic. |
 | [`lara/edge/span.rs`](../../crates/ic-stable-lara/src/lara/edge/span.rs), `allocate_span_avoiding` / `release_span` | Takes from the free list before checking slot end; avoided candidates are returned through fallible release, otherwise tail allocation publishes capacity. Bare addresses carry no cancellation rights. Both facades use lossy zero/zero `GrowFailed` projections. The selected future path must not call them inside preparation. |
@@ -1512,7 +1512,7 @@ contingency, final120s. All accepted tests and all four batch/borrow obligations
 The corruption witness now poisons only page2's flags and requires edit0 staged before edit1 reaches
 the shared selected-page ACTIVE check; an earlier guard is not substitute evidence.
 
-P2 provenance is separate under `/tmp/spill-scalar-design-f297-7_msi5x1/`, preserving the reviewed
+P2 provenance is separate under `$TMPDIR/spill-scalar-design-f297-7_msi5x1/`, preserving the reviewed
 40-file acquisition root and original failed reference gate. Revised
 [Draft snapshot](sources/adr0097-acquisition-scalar-plan.txt),
 [structural receipt](sources/adr0097-acquisition-scalar-check.txt) and
@@ -1684,7 +1684,7 @@ historical failed validations retain their original provenance.
 ### Acquisition checkpoint provenance
 
 The present acceptance/status changes and acquisition decision have separate provenance under
-`/tmp/spill-acquisition-decision-f297-mcworwje/`; its `before/` copies preserve the prior report,
+`$TMPDIR/spill-acquisition-decision-f297-mcworwje/`; its `before/` copies preserve the prior report,
 ADR0088 and completed plan0339, and `start.json` pins source/status/reference/history hashes.
 The old admission `completion.json` still says review pending: it describes that execution's closure,
 not this later verdict. No executed artifact or prior manifest was rewritten to manufacture approval.
@@ -1711,11 +1711,11 @@ admission implementation, its later bounded approval or the new Draft. Their his
 status is preserved.
 
 The reviewed 12:00:21 draft and its original passing structural check remain in
-`/tmp/spill-demotion-design-f297-i2l1uy33/`; its manifest and administrative filename/whitespace
+`$TMPDIR/spill-demotion-design-f297-i2l1uy33/`; its manifest and administrative filename/whitespace
 corrections are unchanged. A passing structural check did not preclude REQUEST CHANGES.
 
 Before revision, byte-for-byte copies of the reviewed documents/plan were saved under
-`/tmp/spill-demotion-revise-f297-32aisjkk/reviewed/`, with hashes in `start.json`. The old durable plan
+`$TMPDIR/spill-demotion-revise-f297-32aisjkk/reviewed/`, with hashes in `start.json`. The old durable plan
 snapshot/check are not overwritten. New `-r1` artifacts identify the revised plan. Source-bound size
 arithmetic is recorded separately in that revision root, not as execution evidence.
 
@@ -1732,7 +1732,7 @@ commit or merge occurred in r1. HEAD/main and the foreign files remained unchang
 acceptance was restricted to further interface design, not implementation or policy approval.
 
 For this interface checkpoint, exact r1 files were preserved under
-`/tmp/spill-a0-interface-f297-jtjersgv/r1/` before editing; `start.json` pins that history, protected
+`$TMPDIR/spill-a0-interface-f297-jtjersgv/r1/` before editing; `start.json` pins that history, protected
 paths, source owners and prior manifests. New `-r2` snapshot/check files do not overwrite r1.
 Only the existing report/ignored plan and these two provenance artifacts change from r1. The source
 inventory records 25 free-span and 10 map unit tests, not executed test results. The new admission

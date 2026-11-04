@@ -219,7 +219,7 @@ final checks. No more observation is required for this slice. The prior survey's
 **726-second breach remains disclosed** in the previous report; this new budget does not erase it.
 
 Raw complete logs, initial/corrected probes, snapshots, locks, wasm files, traces, Lizard CSVs,
-patches and SHA256 manifest remain under `/tmp/spill-p2-16k-7735.fmxSXg/`. Diagnostic snapshots and
+patches and SHA256 manifest remain under `$TMPDIR/spill-p2-16k-7735.fmxSXg/`. Diagnostic snapshots and
 patches are not changes to stack onto the branch. Workspace historical CSV/YAML, benchmark source,
 foreign files and main remain unchanged. There is no new full survey/persistence, independent
 review, space/PocketIC validation, broader atomicity acceptance, or landing approval.

@@ -89,13 +89,13 @@ Native library test count is 679 → 681; no new PocketIC constructors or instal
 
 ## Validation and provenance
 
-Worktree: `/Users/yota/dev/gleaph-spill`, `spill-swap`, HEAD
+Worktree: `$REPO`, `spill-swap`, HEAD
 `1d3202bc35e098b1220fecf9401503fb83abb19c` plus the scoped working diff and pre-existing dirty files.
 All pre-edit Lara Rust sources were hash-matched to 0365. The baseline was not rerun; insertion
 code and benchmark fixtures were not edited.
 
 Evidence directory:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/contiguous-spill-traversal-0366`.
+`$GLEAPH_EVIDENCE/adr0097/contiguous-spill-traversal-0366`.
 It contains complete logs, `commands.json` with exact commands/timeouts/monotonic durations,
 `comparison.csv/json`, baseline binding, source hashes, the measured Wasm, scope checks and Lizard CSVs.
 

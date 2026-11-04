@@ -273,7 +273,7 @@ retained outcomes and Router integration are implemented separately.
 
 ## 8. Probe results and disposition
 
-[Diagnostic source](artifacts/2026-09-13-property-value-separation-probe.rs), exact
+Diagnostic source (measurement dump, not retained), exact
 `ic-stable-structures = 0.7.2`. Two native tests passed over 24 configurations and emitted 1272
 measurement rows. The baseline includes the implemented store's one-byte envelope, but neither
 implementation decodes Graph Values. Counts below are native Memory-interface operations, not
@@ -379,7 +379,7 @@ From the repository root, use an isolated manifest rather than a new workspace m
 
 ```sh
 repo="$PWD"
-probe="$(mktemp -d /tmp/gleaph-value-separation-probe-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-value-separation-probe-XXXXXX)"
 printf '%s\n' \
   '[package]' 'name = "gleaph-property-value-separation-probe"' 'version = "0.0.0"' \
   'edition = "2024"' 'publish = false' '[lib]' \
@@ -397,7 +397,7 @@ rustfmt --edition 2024 --check design/investigations/artifacts/2026-09-13-proper
 size for large gets, and new-value size for replacements/boundary/churn cases. The paired
 `MEASURE_HEADER` defines all columns. Construction, diagnostics, audits and assertions are excluded
 from operation counters. Full logs and extracted CSV for the verified run are under
-`/tmp/gleaph-value-separation-probe-mukvyfg1/`; the source reproduces them without that directory.
+`$TMPDIR/gleaph-value-separation-probe-mukvyfg1/`; the source reproduces them without that directory.
 
 Final native validation: **2 passed**, 1.47s build + 4.82s runtime. Scoped Clippy passed (0.37s),
 artifact rustfmt check passed. This is a same-assistant experiment/review, not independent/security

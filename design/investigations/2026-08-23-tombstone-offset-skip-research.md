@@ -51,7 +51,7 @@ does not allocate a result vector.
 
 Primary audit command: `canbench --csv --hide-results offset_live1024` from
 `crates/ic-stable-lara`, after removing the temporary prototypes. The exact CSV and command are in
-[`artifacts/0283-tombstone-offset-canbench.txt`](artifacts/0283-tombstone-offset-canbench.txt).
+`artifacts/0283-tombstone-offset-canbench.txt` (measurement dump, not retained).
 Heap and stable-memory deltas were zero.
 
 | Density | Extent | Order | Offset | Instructions |
@@ -104,7 +104,7 @@ candidate already cleared the query gate. All fixed-block, two-level, selector-o
 prototype code and benchmark exports were removed after capturing evidence.
 
 The exact temporary source is retained as
-[`artifacts/0283-tombstone-offset-prototype.patch`](artifacts/0283-tombstone-offset-prototype.patch).
+`artifacts/0283-tombstone-offset-prototype.patch` (measurement dump, not retained).
 It proves that both candidates ran the canonical one-bucket stable read/decode/liveness/checksum
 path. Before each measured closure, fixed-block and two-level selection were checked for every one
 of the 1,024 live ordinals in both orders, the explicit 31 / 32 / 33 / 959 / 960 / 991 / 1,023
@@ -207,7 +207,7 @@ Completed research and retained-diff runs:
 - `git diff --no-index --check /dev/null
   design/investigations/2026-08-23-tombstone-offset-skip-research.md` (exit 1 because the file is
   new; no whitespace diagnostics);
-- `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py
+- `python3 $AUTHOR_SKILLS/validate_plan.py
   plans/0283-tombstone-offset-skip-research.md --phase final`.
 
 Completed final-audit reproduction:
@@ -224,7 +224,7 @@ Completed final-audit reproduction:
 - `cargo clippy -p ic-stable-lara --lib --features canbench -- -D warnings`;
 - `git apply --check
   design/investigations/artifacts/0283-tombstone-offset-prototype.patch`;
-- `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py
+- `python3 $AUTHOR_SKILLS/validate_plan.py
   plans/0283-tombstone-offset-skip-research.md --phase final`;
 - exact prototype patch capture against the retained post-preflight benchmark source;
 - removal of every temporary helper, import, export, benchmark name, and generated CSV from the
@@ -232,7 +232,7 @@ Completed final-audit reproduction:
 
 Plan 0283's terminal document, scope-manifest, patch-application, absence, and final-validator
 evidence is retained in
-[`artifacts/0283-final-validation.txt`](artifacts/0283-final-validation.txt).
+`artifacts/0283-final-validation.txt` (measurement dump, not retained).
 
 `cargo fmt --all -- --check` was rerun but is not a workspace pass: it reports only unrelated dirty
 formatting in the `gpui-graph` paint benchmark, Graph canonical export/catalog/query files,

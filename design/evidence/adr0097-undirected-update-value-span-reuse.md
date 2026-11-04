@@ -57,7 +57,7 @@ fitでは、tail増分82BがPの要求だけに一致する。Cの全34Bは旧P�
 
 ### 実行した検証と、変更しなかった境界
 
-作業先Rは`/Users/yota/dev/gleaph-spill`、branchは`spill-swap`、HEADは`880ad86a024e30953bbc134ad946b2c2e7b6da67`。Eは`/Users/yota/.local/share/gleaph/evidence/adr0097/undirected-update-reuse-0377/`である。Eの`run.py`で各コマンドを上限300秒、累計590秒以内に制限し、`commands.json`へ記録した。
+作業先Rは`$REPO`、branchは`spill-swap`、HEADは`880ad86a024e30953bbc134ad946b2c2e7b6da67`。Eは`$GLEAPH_EVIDENCE/adr0097/undirected-update-reuse-0377/`である。Eの`run.py`で各コマンドを上限300秒、累計590秒以内に制限し、`commands.json`へ記録した。
 
 | コマンド・対象（Rから実行） | 結果・ログ |
 |---|---|

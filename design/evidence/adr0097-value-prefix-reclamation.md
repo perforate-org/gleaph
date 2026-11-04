@@ -102,7 +102,7 @@ On the restored source, the scoped `inline_property_bytes_compaction_` filter pa
   serialization, deduplication and one-item draining. This empty-graph control does not itself prove
   reclamation of a displaced prefix. The filter included it in addition to the two planned controls.
 
-Evidence root (`E`): `/Users/yota/.local/share/gleaph/evidence/adr0097/value-prefix-reclamation-0370`.
+Evidence root (`E`): `$GLEAPH_EVIDENCE/adr0097/value-prefix-reclamation-0370`.
 The source is HEAD `24467b17b375b2a7bc462818ef278553a52993fc` plus the preserved dirty spill worktree.
 `before.json`, `protected.json`, `worktree-before.patch`, `source.json` and source snapshots bind the
 observed state; `probe.rs`, `probe.patch`, `probe-result.json` and `reclamation-probe.log` preserve

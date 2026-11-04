@@ -40,7 +40,7 @@ Graphのdelete入口の `EdgeNotFound` とは異なる。
 
 ## 検査結果：native runtime は成功、Cargo timeout は未完了
 
-証拠は `/Users/yota/.local/share/gleaph/evidence/adr0097/maintenance-fixtures-f1-f5-0382/` にある。
+証拠は `$GLEAPH_EVIDENCE/adr0097/maintenance-fixtures-f1-f5-0382/` にある。
 基準HEADは `ec33243aad441a627d372a448c458d80e6688733`。`commands.json` は各コマンドの
 引数・時間上限・実時間・exit・入力hash・lock復元を記録する。Rustは通常の共有targetを使い、
 記録済みcommon lockを借用した後、元のlockに戻す。

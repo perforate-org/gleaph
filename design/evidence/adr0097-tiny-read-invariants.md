@@ -69,13 +69,13 @@ public API、型、依存、保存形式は増やしていない。Graph側のlo
 
 ## 方法：正しさと命令数を別々に確認した
 
-証跡は`/Users/yota/.local/share/gleaph/evidence/adr0097/tiny-read-invariants-0380/`にある。
+証跡は`$GLEAPH_EVIDENCE/adr0097/tiny-read-invariants-0380/`にある。
 初回の`red-counterpart.log`、`red-visitors.log`が修正前の赤信号を記録する。
 再調査の`resume-r1/initial.json`は旧証跡106ファイルと283 dirty pathsを固定した。
 Rust実行では0378の共通lockを借り、終了時に元の`Cargo.lock`を復元して両方のhashを確認した。
 結果はその依存解決に対するものであり、元のlockを直接ビルドした結果ではない。
 
-以下は性能修正時に再実行した結果である。ログの位置は`resume-r1/`内、作業場所は`/Users/yota/dev/gleaph-spill`である。
+以下は性能修正時に再実行した結果である。ログの位置は`resume-r1/`内、作業場所は`$REPO`である。
 今回変更したのはGraphのnative test本文だけで、LARAソースと性能測定のWasmは同一のまま。今回のGraph実行結果は後述する。
 
 | コマンド・対象 | 結果 | ログ |

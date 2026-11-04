@@ -143,9 +143,9 @@ policy captureのruntime検証を終えたとは扱わない。
 
 ## 実行した検査と撤回を、同じsourceに結び付けた
 
-証拠は `/Users/yota/.local/share/gleaph/evidence/adr0097/maintenance-fixtures-f2-f4-0383/` にある。
+証拠は `$GLEAPH_EVIDENCE/adr0097/maintenance-fixtures-f2-f4-0383/` にある。
 基準HEADは `4952323c21c073652a0c7c495fb2471cd2d43918`、worktreeは
-`/Users/yota/dev/gleaph-spill`、branchは `spill-swap`。
+`$REPO`、branchは `spill-swap`。
 `commands.json` が引数、時間上限、exit、source hashとlock借用・復元を記録する。
 通常の共有targetと記録済みcommon lockを使った。canonical lockの検証ではない。
 

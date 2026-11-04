@@ -39,16 +39,16 @@ observe the equivalent old-span retirement and retirement-reservation failure co
 
 Relevant committed locations:
 
-- [`batch_write.rs:1205`](../../crates/ic-stable-lara/src/labeled/graph/batch_write.rs#L1205): common
+- [`batch_write.rs:1205`](../../crates/graph/src/facade/batch_write.rs#L1205): common
   retirement-capacity reservation for New, GrowInPlace and Reallocated allocations.
-- [`batch_write.rs:3164`](../../crates/ic-stable-lara/src/labeled/graph/batch_write.rs#L3164): shared
+- [`batch_write.rs:3164`](../../crates/graph/src/facade/batch_write.rs#L3164): shared
   publication after the Slab/SlabHoles commit paths.
-- [`batch_write.rs:3448`](../../crates/ic-stable-lara/src/labeled/graph/batch_write.rs#L3448):
+- [`batch_write.rs:3448`](../../crates/graph/src/facade/batch_write.rs#L3448):
   RelocatedSlab publication.
-- [`batch_write.rs:3907`](../../crates/ic-stable-lara/src/labeled/graph/batch_write.rs#L3907):
+- [`batch_write.rs:3907`](../../crates/graph/src/facade/batch_write.rs#L3907):
   ExpandedSlab publication.
-- [`batch_write_test.rs:270`](../../crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs#L270)
-  and [`:313`](../../crates/ic-stable-lara/src/labeled/graph/batch_write_test.rs#L313): successful
+- `batch_write_test.rs:270` (test module merged)
+  and `:313` (test module merged): successful
   new-span writes/readback do not establish retirement of an existing non-tail source.
 
 **Static counterexamples:** replacing the RelocatedSlab publisher call with a direct descriptor
@@ -89,7 +89,7 @@ validation was inaccurate and is corrected here. This does not add a runtime cla
 ## Review receipts and next step
 
 Raw evidence:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/value-span-review-14430cc62`.
+`$GLEAPH_EVIDENCE/adr0097/value-span-review-14430cc62`.
 `standards-v2.md` and `spec-v2.md` preserve the independent reports; their JSONL transcripts and
 receipts record read-only commands, normal exit and elapsed time. Each reviewer used 15 read-only
 shell calls and completed within four minutes. No reviewer edited source or ran validation.

@@ -177,7 +177,7 @@ Source: HEAD `24467b17b375b2a7bc462818ef278553a52993fc` plus the preserved 0368 
 benchmark-only extension. The only changed Rust path is
 `crates/ic-stable-lara/src/labeled/graph/traverse/bench/fold.rs`.
 
-Evidence root (`E`): `/Users/yota/.local/share/gleaph/evidence/adr0097/value-only-fold-0369`.
+Evidence root (`E`): `$GLEAPH_EVIDENCE/adr0097/value-only-fold-0369`.
 `before.json`, the before/current source snapshots, `extension.patch` and `protected.json` separate
 this change from the 266 frozen dirty paths. All original 265 protected paths remain in that set;
 the additional protected path is the parent bench module. Index and original Cargo.lock are unchanged.
@@ -207,10 +207,10 @@ Cargo/canbench temporarily use the verified common lock and restore original byt
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench fold_economics -- --nocapture` | passed: 4 tests, 611 filtered; runtime 1.21s; `native-1.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0; `clippy-1.log` |
 | `python3 E/review.py` | passed; no new-scope warnings/errors, 41 distinct warnings verified against exact HEAD excerpts; `review.log` |
-| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` from `E/canbench` | passed: 20 exports / 144 scopes, 89.90s including build; `canbench-1.log` |
+| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` from `E/canbench` | passed: 20 exports / 144 scopes, 89.90s including build; `canbench-1.log` |
 | `python3 E/analyze.py` | passed: all 36 IC snapshots equal native, exact geometry/capacity and arithmetic checks; `analyze.log` |
 | `python3 E/completion_checks.py` | passed: exact scope, protected/source/Wasm/lock/index, whitespace, links and numeric tables; `completion-checks.log` |
-| `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0369-value-only-fold-economics.md --phase final` | passed; `plan-final.log` |
+| `python3 $AUTHOR_SKILLS/validate_plan.py plans/0369-value-only-fold-economics.md --phase final` | passed; `plan-final.log` |
 
 The four existing `fold_economics_{8,33}_{64,256}` tests now cover three isolated representations:
 exact slots/targets/values in both orders, peer preservation, independent fold effects, retained edge

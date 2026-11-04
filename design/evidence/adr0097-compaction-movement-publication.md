@@ -168,7 +168,7 @@ allowance and a protected **120-second final reserve**. [Ledger](sources/adr0097
 Total: **89.116 / 600 seconds**, **510.884 unused**. This separate slice does not erase the earlier
 approximately 726-second breach.
 
-Commands use the normal target from `/Users/yota/dev/gleaph-spill`:
+Commands use the normal target from `$REPO`:
 
 | Command | Result |
 | --- | --- |
@@ -196,7 +196,7 @@ benchmark/config source, both foreign files and main match starting hashes. No p
 clean, stash, reset, reference edit, cold target, GUI fallback or merge occurred.
 
 Raw logs, snapshots, patches, full traces, Lizard CSVs and SHA256 manifest are retained under
-`/tmp/spill-moves-d4c-aivo_i73/`. Durable log copies trim terminal blank lines only; ledger hashes
+`$TMPDIR/spill-moves-d4c-aivo_i73/`. Durable log copies trim terminal blank lines only; ledger hashes
 refer to raw logs. One evidence-copy reporting lookup used a nonexistent ledger key after copies
 and lock restoration; summing the recorded runs corrected reporting without rerunning validation.
 

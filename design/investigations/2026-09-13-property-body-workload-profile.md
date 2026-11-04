@@ -26,7 +26,7 @@ adoption decision, not another favorable synthetic benchmark presented as real t
 ## 1. Corpora and storage ownership
 
 The profile consumes the actual **typed load artifacts**, not YAML text size, a JSON row's size or
-the entire graph manifest. [Diagnostic source](artifacts/2026-09-13-property-body-workload-profile.rs)
+the entire graph manifest. Diagnostic source (measurement dump, not retained)
 uses the owning [`Value::to_binary_bytes`](../../crates/gql-value/src/impls.rs) after the same
 [canonical Value serde](../../crates/gql-value/src/serde_support.rs) used by the CLI. It does not copy
 a codec or depend on Graph internals.
@@ -63,7 +63,7 @@ Sources:
   vectors and returned element IDs are not counted as canonical property bodies merely because
   they appear elsewhere in a JSON document or result.
 
-The [retained histograms](artifacts/2026-09-13-property-body-workload-profile.json) contain all 266
+The retained histograms (measurement dump, not retained) contain all 266
 scope/label/property/encoded-length bins and input file hashes. No deployed database or browser
 traffic was sampled. A valid input artifact is not proof of a successful installation or current
 on-chain state.
@@ -195,7 +195,7 @@ Chunk - Whole = -63914*r_s -2433437*w_s
 ```
 
 These coefficients are differences of exact
-[persisted canbench counters](artifacts/2026-09-13-property-body-btree-canbench-results.yml), not fitted
+persisted canbench counters (measurement dump, not retained), not fitted
 latency/Graph costs or an instruction-limit proof. They combine independent measured fixture shapes;
 real tree population, locality, message boundaries, decoding, policy and index work are not modeled.
 
@@ -236,7 +236,7 @@ From repository root, with cached Rust/Node dependencies (no deployment or netwo
 
 ```sh
 repo="$PWD"
-probe="$(mktemp -d /tmp/gleaph-body-workload-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-body-workload-XXXXXX)"
 GLEAPH_DEMO_OUTPUT_ROOT="$probe/social-1x1" SOCIAL_DEMO_USER_SCALE=1 SOCIAL_DEMO_POST_SCALE=1 node demo/social/scripts/build-config.mjs
 GLEAPH_DEMO_OUTPUT_ROOT="$probe/social-5x20" SOCIAL_DEMO_USER_SCALE=5 SOCIAL_DEMO_POST_SCALE=20 node demo/social/scripts/build-config.mjs
 printf '%s\n' \
@@ -278,7 +278,7 @@ uses the Value crate's normal default features plus serde; production codecs wer
 Lizard 1.23.0: five functions, max CCN 9, aggregate CCN 20, function NLOC 93. No five-argument helper,
 new production module or dependency, stable collection, PocketIC constructor or canister install.
 
-Evidence: `/tmp/gleaph-body-workload-t1lwzwde/` contains isolated manifest/lock, generated artifacts,
+Evidence: `$TMPDIR/gleaph-body-workload-t1lwzwde/` contains isolated manifest/lock, generated artifacts,
 logs, input snapshots/hashes, analysis checks and same-assistant review. No independent/security
 review or live workload evidence is implied. No workspace tests, Graph builds, PocketIC or new
 canbench were needed or run: existing complete instruction evidence was consumed unchanged. No

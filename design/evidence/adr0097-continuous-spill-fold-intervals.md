@@ -123,7 +123,7 @@ Graph/Routerやcanister間呼出しの性能ではない。本番コード、sto
 
 基点は`spill-swap`のHEAD `880ad86a024e30953bbc134ad946b2c2e7b6da67`。
 既存dirty stateを固定し、今回の差分を`E/extension.patch`に保存した。
-`E=/Users/yota/.local/share/gleaph/evidence/adr0097/continuous-spill-0374`。
+`E=$GLEAPH_EVIDENCE/adr0097/continuous-spill-0374`。
 原出力、全コマンドのcwd・引数・時間・終了状態は各`.log`と`commands.json`に残す。
 
 - Wasm: 6,802,267 bytes、SHA256 `ccda8ec80dcdfba265bc69f5e3fd798bd358203386bb2592c001ef21173ef5cf`。
@@ -142,7 +142,7 @@ Specレビューの再開後は`E/resume-1/run.py`と別台帳を用い、同じ
 | `rustfmt --edition 2024 --config skip_children=true --check`（fold.rsのみ） | passed、`format-short-names.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0、既存39警告箇所と一致、新規0。`clippy-short-names.log` / `lint-review.json` |
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench -- --nocapture fold_economics repeated_fold continuous_spill` | 12 passed / 620 filtered、`native-short-names.log` / `native-result.json` |
-| `canbench cs_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/.canbench/pocket-ic`（E/canbench-current） | 32/32条件、440 scopes、build込み107.54秒。`canbench-short-names.log` |
+| `canbench cs_ --csv --show-canister-output --runtime-path $REPO/.canbench/pocket-ic`（E/canbench-current） | 32/32条件、440 scopes、build込み107.54秒。`canbench-short-names.log` |
 | `python3 E/analyze.py` | passed、call数・832 native / 192 IC snapshotの対応・page増分・hashを照合。`measured.json` / `capacity.json` |
 | `lizard --csv -i -1`（保存したbefore/current fold.rs） | passed、`lizard-before.log` / `lizard-current.log` / `lizard-summary.json` |
 | 独立Standardsレビュー | APPROVE、147.50秒。`review-standards-v1.md` |

@@ -74,7 +74,7 @@ prepared queryの対象は、socialの[home/alice](../../demo/social/prepared/al
 
 作業対象は`gleaph-spill`の`spill-swap`、HEADは`880ad86a024e30953bbc134ad946b2c2e7b6da67`。既存のdirtyな272パスと0375の完了記録は変更対象から外した。
 
-証跡は`/Users/yota/.local/share/gleaph/evidence/adr0097/query-update-workload-0376/`に置く。`inventory.py`はGit管理下と非ignoredのdemoファイルから、`.gql/.toml/.jsonl/.mjs/.yaml/.yml/.md`を列挙する（`public/`は除外）。demoの165ファイルと、追跡した実装・テストのhashは`inventory.json`に保存した。165は列挙数であり、全文を意味解析した件数ではない。
+証跡は`$GLEAPH_EVIDENCE/adr0097/query-update-workload-0376/`に置く。`inventory.py`はGit管理下と非ignoredのdemoファイルから、`.gql/.toml/.jsonl/.mjs/.yaml/.yml/.md`を列挙する（`public/`は除外）。demoの165ファイルと、追跡した実装・テストのhashは`inventory.json`に保存した。165は列挙数であり、全文を意味解析した件数ではない。
 
 prepared queryは全文を読み、seedはJSON行として集計した。keyword検索は候補の確認用で、GQL parserや操作回数の集計には使っていない。実装はSETの分岐、共通commit、counterpart、fold、admission、allocatorの順に追った。アプリのscriptやデモ自体は実行していない。
 

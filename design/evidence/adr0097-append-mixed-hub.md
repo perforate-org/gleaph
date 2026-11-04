@@ -5,7 +5,7 @@
 The preceding 631/0 result covered reads/deletes, not insertion after conversion. The new
 real 67-row bucket-to-tail-bypass lifecycle test failed on its first graph-API append:
 4-byte run length remained 62 instead of 63, and 10-byte run length remained 66 instead of 67
-(`/tmp/spill-append/red.log`). This confirms the owning insertion decision chose slab space
+(`$TMPDIR/spill-append/red.log`). This confirms the owning insertion decision chose slab space
 instead of extending the retained run; the source trace was not treated as runtime evidence.
 
 `c632f5fc5` fixes `EdgeStore::insert_edge_inner`: an active run disallows speculative slab
@@ -42,7 +42,7 @@ The two benchmark bodies, `seed_mixed_label_hub`, `bench_graph`, BenchEdge and i
 implementations, and the 33/50 constants are byte-identical to `9a64049f4`. The fixture uses
 10-byte BenchEdge rows, two vertices, 33 labels starting at 10000, 50 Insertion rows per label
 and uniform(1<<20). This is not the single-label 51-scan fixture. Parity hashes are retained in
-`/tmp/spill-append/mixed-parity.json`.
+`$TMPDIR/spill-append/mixed-parity.json`.
 
 Actual paths differ:
 
@@ -94,7 +94,7 @@ The reviewed full YAML at `3ea7dc739` is preserved byte-for-byte. Its 189-name c
 results were persisted; another complete unfiltered run is deferred while mixed-hub acceptance
 and the broader investigation remain open. Space, PocketIC, structural/atomicity review and
 other landing gates are not revalidated here. Commands, exact CSVs, counters, reproducible
-probe and rejected patch are preserved in `/tmp/spill-append/` and `/tmp/mixed-hub/`.
+probe and rejected patch are preserved in `$TMPDIR/spill-append/` and `$TMPDIR/mixed-hub/`.
 
 ## All-label read and reverse conversion: runtime correction
 
@@ -186,7 +186,7 @@ compaction policy was introduced. Arena exhaustion and other outer-write atomici
   experiment; the small differences from previous branch figures are not assigned a cause.
 
 Main-side counters are unavailable under the authorized reference constraint. The existing
-`/private/tmp/lara-ntbp-main` at `9a64049f4` has modified `Cargo.lock` and `graph.rs`, plus an
+`/private$TMPDIR/lara-ntbp-main` at `9a64049f4` has modified `Cargo.lock` and `graph.rs`, plus an
 untracked `tmp_ntbp.rs`. The reviewer main checkout is also dirty. Other listed worktrees are
 at different revisions. Neither checkout nor its foreign files was modified. No new optimization
 was attempted without the required same-fixture main comparison. The nonzero-value batch paths
@@ -194,7 +194,7 @@ and `0b6673a0d` remain separate and unvalidated by these measurements.
 
 The complete YAML, workspace full CSV and benchmark source hashes are unchanged. Raw red/green
 logs, diagnostic source, patches, caller searches, reference statuses and focused CSVs are in
-`/tmp/spill-all-label/`. The capacity probes are deliberately outside production tests: they
+`$TMPDIR/spill-all-label/`. The capacity probes are deliberately outside production tests: they
 remain failing counterexamples, not ignored tests or assertions weakened to bless rejection.
 This slice was blocked on promotion correctness/integration, not ready for main landing.
 The subsequent [bucket-promotion prerequisite](adr0097-promotion-prerequisite.md) corrects the

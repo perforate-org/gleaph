@@ -173,7 +173,7 @@ metric or a reason for unrelated refactoring.
 
 ## Reproduction and validation receipts
 
-Evidence root (`E`): `/Users/yota/.local/share/gleaph/evidence/adr0097/value-span-retirement-0371`.
+Evidence root (`E`): `$GLEAPH_EVIDENCE/adr0097/value-span-retirement-0371`.
 `before.json`, `protected.json`, `before/`, `current/`, `source.patch` and `source.json` separate this
 repair from the existing dirty worktree. The benchmark parent/child, allocator source and persisted
 benchmark artifacts are protected. The scoped patch comprises four code files and six documents;
@@ -201,11 +201,11 @@ tracing, background validation or `--persist` is used. Canbench runs from `E/can
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench -- --nocapture labeled::graph::values::tests labeled::graph::batch_write labeled::graph::compact::tests labeled::graph::insert::tests fold_economics` | passed 167, filtered 451; runtime 2.58s; `tests-final.log` |
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench labeled::graph::insert::g6_zero_read_tests::g6_tiny_insert_reads_no_edge_bytes -- --exact` | passed 1, filtered 617; `insert-read-control.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0; 41 pre-existing Rust warnings, 0 unmatched; `clippy.log`, `lint-review.json` |
-| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` | passed 20 exports/144 scopes, 86.52s including build; `canbench.log` |
+| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` | passed 20 exports/144 scopes, 86.52s including build; `canbench.log` |
 | Lizard on the explicit before/current snapshots | passed; `lizard-base.log`, `lizard-final.log`, `complexity-summary.json` |
 | `python3 E/analyze.py` | passed; 164-row comparison, 36 IC/native snapshot comparisons and complexity; `analyze-final.log` |
 | `python3 E/completion_checks.py` | exact scope, protected hashes, source/Wasm/lock/index/HEAD, numeric tables, links and whitespace; `completion-checks.log`, `completion.json` |
-| `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0371-value-span-retirement.md --phase final` | final structural receipt: `plan-final.log` |
+| `python3 $AUTHOR_SKILLS/validate_plan.py plans/0371-value-span-retirement.md --phase final` | final structural receipt: `plan-final.log` |
 
 The first analysis-script invocation used an incorrect export name; it failed before writing results.
 `analyze-final.log` uses the actual CSV names. No benchmark rerun was needed for that script fix.

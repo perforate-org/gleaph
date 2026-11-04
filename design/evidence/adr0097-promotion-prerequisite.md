@@ -16,7 +16,7 @@ One interior-block builder serves both target streams. Existing property sizing 
 
 ## Runtime evidence
 
-Artifacts and reproduction sources: `/tmp/promotion-prereq/`.
+Artifacts and reproduction sources: `$TMPDIR/promotion-prereq/`.
 
 - `final-tests.rs` is the committed seven-test fixture. `final-red.log` runs it against `promote-before.rs`: **1 passed / 6 failed**, exit 101. The old promoter mutates rejection states, renumbers or rejects hole-bearing runs, and fails allocation cleanup assertions.
 - Final library: `timeout 120 cargo test -p ic-stable-lara --lib`, **644 passed / 0 failed**, exit 0 (`library-final.log`). This includes all seven promotion cases.

@@ -3,7 +3,7 @@
 Date: 2026-09-17
 Status: Investigation — no behavior change, no gates run, no code changed
 Source: [Orkut feedback triage](2026-09-17-lara-orkut-feedback-triage.md) (from
-`/Users/yota/dev/lara/docs/orkut-compare-2026-09-17/v1/feedback-to-gleaph.md`)
+`$LARA_REPO/docs/orkut-compare-2026-09-17/v1/feedback-to-gleaph.md`)
 Baseline: `95d791087` (all canbench numbers below are quoted from the committed
 `crates/ic-stable-lara/canbench_results.yml` at this HEAD; `canbench_results.yml`
 itself is unmodified in the worktree)
@@ -347,7 +347,7 @@ committed baselines stand.
 
 ## A result — HEAD isolation: latent production-path bug (2026-09-17)
 
-Isolation worktree `/tmp/gleaph-head` (detached HEAD `95d791087`, throwaway
+Isolation worktree `$TMPDIR/gleaph-head` (detached HEAD `95d791087`, throwaway
 instrumentation only — main repo untouched): the full-path 4B growth 0→8192
 fails **identically at HEAD** (target=5727, tree bucket, stored=degree=5728).
 Verdict: **latent HEAD bug, not an in-flight regression.**
@@ -447,7 +447,7 @@ Consequences (updated):
 ## S3 result — workload degree census (measured 2026-09-17)
 
 Method: out-degree census over the recorded Orkut inputs
-(`/Users/yota/dev/lara-runs/0039-v1-f22d4e993c15b24e/orkut-bin/mid-10M.input`,
+(`$LARA_RUNS/0039-v1-f22d4e993c15b24e/orkut-bin/mid-10M.input`,
 sha256 `5a48a1fd…`, 10,000,001 lines = 1 header `3072627 10000000` + 10M shuffled
 directed edges; shuffle = FNV-1a64(pair, seed=20260917) per the v1 phase1-input
 record; order verified non-decreasing over the first 200K keys). Header excluded.

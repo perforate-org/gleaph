@@ -142,7 +142,7 @@ They do not turn successful compaction preservation into general Tree-CSR accept
 
 ## Validation and complexity
 
-Repository cwd: `/Users/yota/dev/gleaph-spill`; ordinary configured target, sequential commands.
+Repository cwd: `$REPO`; ordinary configured target, sequential commands.
 The [ledger](sources/adr0097-tree-compaction-ledger.json) and
 [runner](sources/adr0097-tree-compaction-runner.py) record one cumulative 600-second budget,
 checking remaining time and protecting 120 seconds before every non-final command. There was
@@ -194,7 +194,7 @@ supporting evidence, not independent approval or performance measurement.
 - Base: `56d381b3fe32d345c8f040fd4de833baee5d3a6b`.
 - Final implementation: `90757825cc47cde1c97c4734a452a3be845f9294`.
 - Main: `9a64049f47fc07542446d651d4b09421636b73c5`, unchanged and unmerged.
-- Raw root: `/tmp/spill-tree-56d-brf3un5q/`, with original setup sources/logs, corrected witness
+- Raw root: `$TMPDIR/spill-tree-56d-brf3un5q/`, with original setup sources/logs, corrected witness
   patch, before/candidate/mutation/final sources, per-command locks, source hashes, Lizard
   snapshots, the final plan snapshot, verification and SHA256 manifest.
 - [Run metadata](sources/adr0097-tree-compaction-run.json) maps preserved logs/patches and
@@ -209,7 +209,7 @@ supporting evidence, not independent approval or performance measurement.
   the earlier report only gains bounded approval status and a correctness-follow-up link.
 
 The structural final plan check passed (exit 0, 0.057s):
-`python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0335-tree-compaction-admission.md --phase final`.
+`python3 $AUTHOR_SKILLS/validate_plan.py plans/0335-tree-compaction-admission.md --phase final`.
 Its [terminal result](sources/adr0097-tree-compaction-plan-final.txt) is preserved separately
 from the historical failing plan logs.
 Remaining gates include independent review, tree writer/header-validation prerequisites,

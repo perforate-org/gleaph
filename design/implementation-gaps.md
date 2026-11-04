@@ -522,7 +522,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
-- **Status:** Resolved 2026-11-03 ([ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
+- **Status:** Resolved 2026-11-03 ([ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
   The last one was a real defect: a bucket's spill fold took its room from a region that was derived
   from the regions that exist, so a leaf-mate whose rows all lived in its run contributed no region
   and the fold wrote rows over that mate's edge start - one row landed on the guard vertex's base and
@@ -678,7 +678,7 @@ defect from being rediscovered without its prior reasoning.
   - That is the argument for doing the slice and the growth bound together rather than the bound
     first: placement has to hand each vertex a slice wide enough for its span, and only then can
     growth be clamped to the slice without starving legitimate buckets. The clamp was reverted.
-  - **Decision recorded in [ADR 0098](../adr/0098-the-vertex-slice-owns-its-growth-bound.md).** The
+  - **Decision recorded in [ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md).** The
     owner is `LeafSlice`, which ADR 0088 already names for exactly this, so the ADR rejects a new
     `VertexArena` layer and instead routes the write window, the fold and the bucket successor
     through the slice. It also records why a bound-only clamp is insufficient (the stack-overflowing
@@ -1743,7 +1743,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### Historical landing evidence — selected pre/post-5i rows
 
-Main values below are rounded console totals from `/tmp/bench-main-full.log`, not exact
+Main values below are rounded console totals from `$TMPDIR/bench-main-full.log`, not exact
 persisted measurements. The earlier parser dropped the B suffix; those entries are corrected
 below using the recovered 189-name comparison. Pre/post columns describe 5i, not current HEAD.
 The earlier claims that this was a complete >5% list and that exactly one row changed were
@@ -1986,7 +1986,7 @@ path is `out_edges_iter -> on_slab_edges_with_layout`: bypass `stored_degree` in
 rows, while prefix sizing uses the slab window. This exposes a separate prefix-extent
 contract problem, now fixed in `bbe4d04e5` with the strengthened fixture committed. The old
 failing fixture and output were preserved at
-`/tmp/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
+`$TMPDIR/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
 sidecar spill preconditions are included; sidecar checks pass.
 
 Historical validation before the extent fix: **630 passed / 1 failed**. Scoped formatting
@@ -2006,7 +2006,7 @@ lower diagnostic H2 numbers. Commands from `crates/ic-stable-lara`: `timeout 300
 bench_l_s2_h_pt_d_1024 --csv` (54 seconds), then `timeout 120 canbench
 bench_l_s2_h_scn_d_1024 --csv` (5 seconds) and `timeout 120 canbench
 bench_l_s2_h_del_1024 --csv` (4 seconds). All exited 0. Logs, exact CSVs, standard-library
-source evidence and red/green results are in `/tmp/spill-corrections/`.
+source evidence and red/green results are in `$TMPDIR/spill-corrections/`.
 
 #### Completed correctness and production follow-up
 
@@ -2044,7 +2044,7 @@ Final native counters: each no-delete 51-scan workload has 1,734 header reads / 
 1,632 spill payload reads / 521,730 bytes, 52,224 live decodes/callbacks and zero dead decodes.
 Matching removal has 9,949 header reads / 39,796 bytes, 8,416 payload reads / 2,692,970 bytes,
 131,328 live / 130,816 dead decodes and 131,328 predicate visits. Prefix and compaction phases
-remain separately recorded in `/tmp/spill-perf/native-final.log`.
+remain separately recorded in `$TMPDIR/spill-perf/native-final.log`.
 
 Validation: **631 passed / 0 failed**, library clippy `-D warnings` and touched-file formatting
 checks passed. Final focused point/scan/delete commands all passed, without persistence.
@@ -2059,7 +2059,7 @@ matching scope is the comparable loop. Final scan totals are below rounded main 
 **66 -> 41 pages remains historical, not remeasured in this slice**.
 
 Raw commands, patches, native probes/logs, focused/full CSVs and all-name comparison are in
-`/tmp/spill-extent/` and `/tmp/spill-perf/`. Durable final name-by-name evidence is
+`$TMPDIR/spill-extent/` and `$TMPDIR/spill-perf/`. Durable final name-by-name evidence is
 [evidence/adr0097-final-read-comparison.csv](evidence/adr0097-final-read-comparison.csv).
 The benchmark source hash is unchanged; the YAML changed only through the complete final run.
 Main is untouched and unmerged.
@@ -2071,7 +2071,7 @@ capacity audit or authorize landing.
 
 Durable instruction evidence: [ADR 0097 read-granularity CSV](evidence/adr0097-read-granularity.csv)
 records exact current/H1/H2 totals and matching scopes at the diagnostic source revision.
-Reproduction artifacts: `/tmp/remove-scan-diagnostic/` contains the installer, native probe,
+Reproduction artifacts: `$TMPDIR/remove-scan-diagnostic/` contains the installer, native probe,
 bounds test, H1/H2 patches, raw native logs and exact canbench CSVs, original rounded-main log,
 reviewer comparison, checksums and `README.md` with commands. `main` was not edited or rerun.
 
@@ -2471,7 +2471,7 @@ acceptance remain separate. See the movement-publication correction above.
 - **Expected or needed behavior:** grow the log's entry region lazily (per touched leaf, or with a
   high-water counter) so tiny/slab-only graphs commit no log entries; re-tune the bucket-row slack
   with a measured insert-vs-rewrite trade; then re-run the audit probe
-  (`/tmp/space_audit_probe.rs`) to confirm the delta.
+  (`$TMPDIR/space_audit_probe.rs`) to confirm the delta.
 - **Post-swap measurement (F8, 2026-09-20), same shape and same probe on both sides**
   (segment 16, `InitialCapacities::uniform(256)`, 5000 vertices x 1 edge, 5000 buckets, all tiny:
   cover 0, resident 0, zero overflow usage; pages are `Memory::size()` over `FailpointMemory`,
@@ -2531,7 +2531,7 @@ them were restored from the still-reachable dangling stash commit `c2fae9e5b` (`
 foreign content had been committed: the one shared file committed here (`design/adr/README.md`)
 contains only this workstream's ADR 0096 row.
 **Discipline for this worktree:** never `git stash` (or any tree-wide state operation) while other
-agents have uncommitted work; bisect with file copies instead (`/tmp/...`), as the rest of this
+agents have uncommitted work; bisect with file copies instead (`$TMPDIR/...`), as the rest of this
 session did.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
@@ -2540,7 +2540,7 @@ session did.
   deletion 2026-09-20 (ADR 0097)**: the fold-prelude path and the whole log-fold machinery are gone,
   and a per-bucket run is compacted into its own prefix (with a span-growth retry), so no fold can
   extend a vertex cover over a leaf mate. **The second path is still open and pre-existing**: the
-  GAP-006 audit probe's skew phase (`/tmp/space_audit_probe.rs`, the 160/48/24/12/8/3/1-degree shape
+  GAP-006 audit probe's skew phase (`$TMPDIR/space_audit_probe.rs`, the 160/48/24/12/8/3/1-degree shape
   in a `segment16` graph) trips the same `assert_no_labeled_leaf_mate_overlap` guard at
   `leaf_pin.rs:534` ("leaf-mate edge spans overlap in leaf 328: vid 5255 reserves up to 1384 but vid
   5248 starts at 1184") on `main` **and** on the `spill-swap` head, so the swap neither causes nor
@@ -2676,8 +2676,8 @@ session did.
     "releases the old edge span (via the vertex-span rewrite)", so the vertex is re-laid with the
     tree bucket contributing `bucket_physical_resident_slots` (its root region) — no Phase-1
     restructuring needed.
-  - Working files from this pass: `/tmp/promote_postpublish_attempt.rs` (post-publish rewrite) and
-    `/tmp/compact_treeprep_attempt.rs` (tree-aware planning + positions, which then hits the
+  - Working files from this pass: `$TMPDIR/promote_postpublish_attempt.rs` (post-publish rewrite) and
+    `$TMPDIR/compact_treeprep_attempt.rs` (tree-aware planning + positions, which then hits the
     materialization panic).
 - **Class-level reframing (2026-09-20) and the structural step:** every ①/② failure above is one bug
   class — *a mode-specific field (`degree`, `stored_slots`, `edge_start`) read inside the mode-blind
@@ -2695,7 +2695,7 @@ session did.
   so the post-promotion re-lay still fails with `CollectAllocationOverflow` after four relocations.
   Next attempt: give that path the materializer's tree branch (move the root bytes by anchor), then
   add the promotion's Phase 3e (re-base the cover on the SSOT + `rewrite_vertex_edge_span(..., force_slack_grow = true)`)
-  and the two regression tests. Working copies: `/tmp/ssot_{compact,promote,bucket,leaf_pin,graph}.rs`.
+  and the two regression tests. Working copies: `$TMPDIR/ssot_{compact,promote,bucket,leaf_pin,graph}.rs`.
 - **Space-first attempt (2026-09-20, C = reserve the root inside the vertex span):** Phase 1 now
   reserves `combined_root_len` through
   `rewrite_vertex_edge_span(vid, Some(bucket_index), combined_root_len, …)` and writes the root at
@@ -2714,7 +2714,7 @@ session did.
   also keeps the vertex's span start (and therefore the cover arithmetic) exactly where it was; the
   single post-promotion layout pass then only *shrinks* the vertex's share to shed the dead tail
   (root bytes move by anchor, the vertex's other buckets shift down). Implemented that way
-  (`/tmp/d_promote.rs`, `/tmp/d_compact.rs`): Phase 1 allocates nothing, Phase 3e re-bases the cover
+  (`$TMPDIR/d_promote.rs`, `$TMPDIR/d_compact.rs`): Phase 1 allocates nothing, Phase 3e re-bases the cover
   on the resident SSOT and re-lays.
   **Root cause of that failure (found 2026-09-20):** `calculate_label_edge_span_positions` (the
   degree-weighted positions helper used by the *planning* path) computes its slot budget as
@@ -2744,11 +2744,11 @@ session did.
     `edge_inline_propertys_survive_rewrite_with_tombstones` (`left: [(0, 20), (0, 30)]` — property
     values zeroed); plus `cascade_at_2_20_plus_1_deepens` (`promote: CollectAllocationOverflow`) and
     the known ② `batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run`.
-  Working copies of the passing shape: `/tmp/final_*.rs` (superseding `/tmp/d_*`).
+  Working copies of the passing shape: `$TMPDIR/final_*.rs` (superseding `$TMPDIR/d_*`).
   **Leaf-slide variant works (2026-09-20):** an earlier attempt at this looked broken because a
   script splice had landed Phase 3e *inside* Phase 1 (so the slide ran before the descriptor flip and
   the promotion looked like a no-op); rebuilding the function from the known-good shape
-  (`/tmp/c_promote.rs`) with Phase 3e at the end — Phase 1 root-in-place, transcription, flip, release,
+  (`$TMPDIR/c_promote.rs`) with Phase 3e at the end — Phase 1 root-in-place, transcription, flip, release,
   then `rebalance_labeled_leaf_weighted_slide(vid)` — makes **both regression tests pass** and drops
   the suite to **603 passed / 9 failed** (from 13). The leaf re-tile absorbs the shed prefix slots into
   the neighbours' shares, which is exactly what fixes the audit-model pair
@@ -2778,7 +2778,7 @@ session did.
   resident-region SSOT + planning positions fix (`79ca06e24`) keeps the whole suite green (611/0) and
   all three pass; they fail only once the promotion/leaf-tiling rework is applied on top, so they
   belong to that rework's blast radius and must be explained (or the rework corrected) rather than
-  patched in place. Working copies of the rework: `/tmp/best_*.rs`; the SSOT increment is now
+  patched in place. Working copies of the rework: `$TMPDIR/best_*.rs`; the SSOT increment is now
   committed.
   **Compaction-aware budget applied (2026-09-20):** `bucket_rewrite_content_slots(bucket, compact)`
   (compact → slab `degree` / tree root / tiny 0; non-compact → the resident region) next to the
@@ -2788,7 +2788,7 @@ session did.
   data-assertion tests (`edge_inline_propertys_survive_rewrite_with_tombstones`,
   `directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew`) are the rework's last
   unexplained piece; the other six are the four promotion contract tests and the two
-  expectation/policy tests. Working copies: `/tmp/best2_*.rs`.
+  expectation/policy tests. Working copies: `$TMPDIR/best2_*.rs`.
   Narrowed further (2026-09-20): in `edge_inline_propertys_survive_rewrite_with_tombstones` the
   **property values read back correctly** (20, 30) while the **edge targets read back as 0** — so the
   values slab is fine and the *edge* copy is what breaks. The call takes the **disjoint** branch
@@ -2819,7 +2819,7 @@ session did.
   resident-slot position helper disagreeing now that the inline fast paths are gone; or the
   materializer's `raw` for a log-free slab bucket being the *prefix* while the plan budgeted the
   packed run). Do **not** re-derive those two expectations before that is explained. Copies:
-  `/tmp/unified_compact.rs` (unified layout code to pair with HEAD's other files).
+  `$TMPDIR/unified_compact.rs` (unified layout code to pair with HEAD's other files).
   **Last duplicate found (2026-09-20):** `rebalance_vertex_edge_span` (~2487-2660) is a *fourth* span
   layout implementation — its own snapshot loop (`stored_slots_raw` per bucket), its own
   `calculate_label_edge_span_positions_by_resident_slots` call, its own publish loop
@@ -2828,7 +2828,7 @@ session did.
   nothing for it. Consolidation therefore has one more step beyond the rewrite: route
   `rebalance_vertex_edge_span` through the same plan + materialize + commit pair (or delete it in
   favour of the rewrite it duplicates), then re-check the two invariants — only then is the
-  expectation question meaningful. Copies: `/tmp/unified_compact.rs`.
+  expectation question meaningful. Copies: `$TMPDIR/unified_compact.rs`.
   **Delegation attempt (2026-09-20):** replacing `rebalance_vertex_edge_span`'s body with a call to
   `rewrite_vertex_edge_span` (deleting 137 more lines) breaks **24** tests — the two functions do not
   share semantics yet: the rebalance path must not release the vertex footprint
@@ -2848,7 +2848,7 @@ session did.
   overflow-only compaction — ordering) and
   `directed_insert_deferred_materialize_via_wrapper_retry_after_drain` (`width published | left: 0 |
   right: 8`). Next: settle the single span-budget policy for both callers; that should collapse most
-  of the 24. Copy `/tmp/delegated_compact.rs`.
+  of the 24. Copy `$TMPDIR/delegated_compact.rs`.
   **Root cause of those 22 (2026-09-20):** `Store(CollectAllocationOverflow)` is not an allocation
   cap. `bucket_store.rs`'s partition search (`find_*` over bucket slots) returns it when
   `read_label_bucket_slot(slot)` finds **no descriptor** at the slot it computed from
@@ -2859,7 +2859,7 @@ session did.
   *anchor/placement* differences, not budgets. Also tested and ruled out: making the materializer
   compact-aware (`compact` now flows into it: log-free slab packs live slots via
   `pack_live_edge_slots`, log-backed drops superseded prefix slots) does not move any of the 24 —
-  saved as `/tmp/unified2_compact.rs` (609/2, same two invariants). Next: compare the plan's published
+  saved as `$TMPDIR/unified2_compact.rs` (609/2, same two invariants). Next: compare the plan's published
   anchors against the two deleted implementations' anchors for one failing fixture, and pin the
   contract the readers rely on (`base_slot_start` + bucket index) before re-attempting the delegation.
   **The reader contract (verified 2026-09-20, `bucket.rs`):** `vertex.base_slot_start()` is the origin
@@ -2904,8 +2904,8 @@ session did.
   placement helpers and the materializer, then re-run; the four assertion-level failures
   (`labeled_relocate_commit_order`, `labeled_segment_relocate_releases_single_footprint`,
   `labeled_segment_slide_coalesces_adjacent_free`, `vertex_edge_span_rewrite_weights_slack_by_label_degree`)
-  need individual review afterwards. Copies: `/tmp/delegated_logfix_compact.rs`,
-  `/tmp/delegated_logfix_init.rs` (597/14).
+  need individual review afterwards. Copies: `$TMPDIR/delegated_logfix_compact.rs`,
+  `$TMPDIR/delegated_logfix_init.rs` (597/14).
   **Correction and next layer (same day):** the placement helpers do **not** miss the log —
   `plan_labeled_leaf_relocation` and `rebalance_labeled_leaf_weighted_slide_in_block` both already
   add `overflow_log_chain_len`. So the remaining ~10 `CollectAllocationOverflow` failures sit in
@@ -2947,8 +2947,8 @@ session did.
   one bounded measurement: for `mixed_label_hub_20_labels_500_edges_each` print `min_required`,
   `old_alloc`, whether the vertex is in a pinned leaf and how many relocations each attempt needs —
   then decide whether the insert path must tolerate the same fallback (and what it does with a cover
-  bigger than the owned range) or must genuinely grow. Copies: `/tmp/delegated_logfix2_compact.rs`,
-  `/tmp/delegated_logfix2_init.rs` (598/13).
+  bigger than the owned range) or must genuinely grow. Copies: `$TMPDIR/delegated_logfix2_compact.rs`,
+  `$TMPDIR/delegated_logfix2_init.rs` (598/13).
   **Landed (2026-09-20, `d7265949d`): partial unification on HEAD.** `rebalance_vertex_edge_span` no
   longer carries its own snapshot, position and publish loops: it materializes with
   `materialize_labeled_vertex_edge_plan` and publishes through `commit_vertex_edge_span_layout`, keeping
@@ -2992,7 +2992,7 @@ session did.
   outstanding from the same family: the planner computes and returns `positions` that no caller uses
   (dead work; drop it when the full delegation lands), and `preferred_extra` still only *sizes* the span
   for the paths that do not pass a bucket index.
-  **Unified rewrite re-attempted on the new base (2026-09-20, saved `/tmp/unified_on_newbase_compact.rs`):**
+  **Unified rewrite re-attempted on the new base (2026-09-20, saved `$TMPDIR/unified_on_newbase_compact.rs`):**
   with the landed pieces (`bucket_resident_rows`, `fold_logs`, preference wiring) the rewrite's publish
   section (236 lines, all four inline branches) collapses into
   `materialize_labeled_vertex_edge_plan(leaf, &buckets, true, compact)` +
@@ -3020,8 +3020,8 @@ session did.
   the leaf-pin growth retries, and the `in_window_layout` the plan receives. Next: one surgical print in
   that preflight plus one at the plan's `in_window_layout` reject, run only
   `compact_vertex_edge_span_shrinks_vertex_edge_span`, and do not sweep the crate with instrumentation.
-  Attempts saved: `/tmp/unified_on_newbase_compact.rs` (608/3) and
-  `/tmp/unified_on_newbase2_compact.rs` (608/3 with the tiny-resident change) — neither is green, so
+  Attempts saved: `$TMPDIR/unified_on_newbase_compact.rs` (608/3) and
+  `$TMPDIR/unified_on_newbase2_compact.rs` (608/3 with the tiny-resident change) — neither is green, so
   neither is landable; the tree is back at 611/0.
   **LANDED (2026-09-20, `8f137196d`): the rewrite has one publish path.** The three failures above were
   the tiny resident term after all — the first attempt kept `.max(bucket.degree())` outside the tiny
@@ -3037,7 +3037,7 @@ session did.
   `bench_l_ins_*` per-bench deltas are ≤1.90% on ≈370-instruction micro benches, so a repeat run before
   treating it as a regression. Still open: delegation of `rebalance_vertex_edge_span` itself
   (`for_growth` vs `for_rebalance`), promotion rework, and unfiltered `canbench --persist`.
-  **Delegation re-tried on the unified base (2026-09-20, saved `/tmp/delegated_on_unified_compact.rs`,
+  **Delegation re-tried on the unified base (2026-09-20, saved `$TMPDIR/delegated_on_unified_compact.rs`,
   597/14):** with the single publish path in place the shim is 115 lines shorter than the fourth
   implementation, but the failure set is the same shape as before, so the blockers are the two base
   resolution policies, not the publish mechanics: `resolve_labeled_edge_base_for_growth` returns
@@ -3211,7 +3211,7 @@ session did.
   whether a missing span is fatal), then the delegation of `rebalance_vertex_edge_span` (115 lines) and the
   three assertion-level tests that encode the old placement.
   **Resolver unification attempted and reverted (2026-09-20, saved
-  `/tmp/unified_resolver_attempt_compact.rs`).** The attempt introduced `SpanResolutionPolicy { Required,
+  `$TMPDIR/unified_resolver_attempt_compact.rs`).** The attempt introduced `SpanResolutionPolicy { Required,
   SlackMayBeDropped }`, one `resolve_labeled_edge_base` plus a policy tail
   (`tail_append` for a required span while a relocation is in flight, the current cover for slack, an error
   otherwise), and kept the two public wrappers with their existing signatures. It compiles and 613 green
@@ -3300,7 +3300,7 @@ session did.
   only the request passed in (`relocate_labeled_leaf_physical_block` gains a floor-carrying variant; the
   plain entry point keeps passing 0).
   **(A) attempted, half of it landed as diagnosis (2026-09-20, saved
-  `/tmp/classA_classC_attempt_{compact,batch_write}.rs`).** Threading the requesting vertex's span into
+  `$TMPDIR/classA_classC_attempt_{compact,batch_write}.rs`).** Threading the requesting vertex's span into
   `plan_labeled_leaf_relocation` (its share becomes `max(resident, requested_floor)`) worked for the 20- and
   33-label hubs but left `mixed_label_hub_50_labels_1000_edges_each` failing: the *re-tiling* also assigns
   each vertex only its resident share (`rebalance_labeled_leaf_weighted_slide_in_block` computes `span_slots`
@@ -3314,8 +3314,8 @@ session did.
   "resolve_labeled_edge_base_for_rebalance: leaf not pinned; pinning before allocating" then
   "labeled_edge_base_from_first_bucket: src=VertexId(0) has no buckets". Making that hook observable in tests
   under a cfg would have saved the instrumentation round; worth doing if class C recurs.
-  **(A) exact remaining edits (2026-09-20, partial state in `/tmp/classA_partial_{compact,batch_write}.rs`,
-  superseded by the earlier `/tmp/classA_classC_attempt_*`).** Both halves are known; only the edit order
+  **(A) exact remaining edits (2026-09-20, partial state in `$TMPDIR/classA_partial_{compact,batch_write}.rs`,
+  superseded by the earlier `$TMPDIR/classA_classC_attempt_*`).** Both halves are known; only the edit order
   needs care:
 
   1. `plan_labeled_leaf_relocation(&self, src, requested_floor: u32)` — in its vertex loop, after the bucket
@@ -3341,7 +3341,7 @@ session did.
   growth succeeds whenever memory allows, and the never-fail fallback stops being load-bearing for the hub
   fixtures.
 
-  **(A) implemented in full, one fixture left (2026-09-20, saved `/tmp/classA_full_{compact,batch_write}.rs`
+  **(A) implemented in full, one fixture left (2026-09-20, saved `$TMPDIR/classA_full_{compact,batch_write}.rs`
   → 613 passed / 1 failed).** All five edits from the list above are applied and compile: block sizing honours
   the request, the relocation entry point carries the floor (the plain wrapper and the plain slide caller
   `rebalance_labeled_leaf_weighted_slide` pass 0), the resolvers drive relocation with the span they are
@@ -3363,7 +3363,7 @@ session did.
   broken the tree twice (the earlier crate-wide sweep touched a foreign file). Method that worked instead, in
   order of preference: (1) the existing `log_collect_overflow` hook, which named class C's site in one run but
   is silent here, meaning the residue comes from a plain `ok_or`/`map_err`; (2) **bisection on the two class-A
-  halves** — restore `/tmp/classA_full_compact.rs`, remove the slide half (step 5) and run
+  halves** — restore `$TMPDIR/classA_full_compact.rs`, remove the slide half (step 5) and run
   `mixed_label_hub_50_labels_1000_edges_each` (≈73 s), then remove the sizing half (steps 1–2) as well and run
   again; whichever half's removal changes the failure names the residue's dependency; (3) if a site must be
   identified directly, wrap only the *few* sites on the path (`rgba`-free: read the failing function's
@@ -3396,7 +3396,7 @@ session did.
   So: class A is not a growth-sizing problem at all; it is the slack policy applied to the insert path. The
   one-line shape is the plan's `new_alloc` expression — when the content fits (`old_alloc >= min_required`) and
   growth cannot be placed, keep `old_alloc` instead of failing — i.e. `force_slack_grow` downgrades to an
-  in-place rewrite. Tree back at 614/0; `/tmp/classA_full_*` is superseded.
+  in-place rewrite. Tree back at 614/0; `$TMPDIR/classA_full_*` is superseded.
   **Landed (2026-09-20, `db04af585`): spare capacity is a hint, never a reason to allocate.** Both sizing
   paths now check `force_slack_grow && old_alloc >= min_required && try_labeled_vertex_edge_base_in_pinned_leaf(src,
   new_alloc).is_none()` and keep `old_alloc` in that case, so the wider span is taken only when the current
@@ -3406,8 +3406,8 @@ session did.
   delegation: a regression that a slack request never changes the leaf's physical block length (a single site
   makes that a precise unit assertion; today the observable is spread over two paths).
   **Delegation reaches 611/3 with policy threading (2026-09-20, saved
-  `/tmp/delegation_policy_611_3_compact.rs`; the earlier policy-less shim is
-  `/tmp/delegation_nopolicy_compact.rs` at 604/10).** The shim itself (−152 lines) was never the
+  `$TMPDIR/delegation_policy_611_3_compact.rs`; the earlier policy-less shim is
+  `$TMPDIR/delegation_nopolicy_compact.rs` at 604/10).** The shim itself (−152 lines) was never the
   blocker: what the hub fixtures needed was the maintenance *policy*, and once the rewrite carries a policy
   (`resolve_labeled_edge_base_for_policy`, `rewrite_vertex_edge_span_with_policy`, planner parameter) and the
   shim passes `SlackMayBeDropped`, every hub fixture passes (604/10 → 611/3). The three residuals are precise:
@@ -3443,14 +3443,14 @@ session did.
   I1-compliant.
   **Handover state for the delegation (2026-09-20, end of session).** Verified by running each state:
 
-  * `/tmp/delegation_nopolicy_compact.rs` — shim only, no policy threading: **604/10**.
+  * `$TMPDIR/delegation_nopolicy_compact.rs` — shim only, no policy threading: **604/10**.
   * the policy-threaded state (shim passes `SlackMayBeDropped`, `resolve_labeled_edge_base_for_policy`,
     planner parameter, `rewrite_vertex_edge_span_with_policy` + `Required` wrapper): **611/3** — this is the
     state to reconstruct; it was **not saved under a correct name** (the file called
-    `/tmp/delegation_policy_611_3_compact.rs` is actually the later, regressed one, now renamed
-    `/tmp/delegation_foldthread_598_16_misnamed_compact.rs`). Reconstruction is mechanical: re-apply the four
+    `$TMPDIR/delegation_policy_611_3_compact.rs` is actually the later, regressed one, now renamed
+    `$TMPDIR/delegation_foldthread_598_16_misnamed_compact.rs`). Reconstruction is mechanical: re-apply the four
     policy edits listed above to HEAD, and do *not* thread `fold_logs` yet.
-  * `/tmp/delegation_foldthread_tiling_598_16_compact.rs` — policy threading **plus** `fold_logs = false` for
+  * `$TMPDIR/delegation_foldthread_tiling_598_16_compact.rs` — policy threading **plus** `fold_logs = false` for
     the shim plus the tiling-width separation (tiling reserves `bucket_resident_rows` while the published width
     stays the materialized prefix): **598/16**, i.e. the tiling fix did not recover the fold-preserving
     behaviour either. So the two one-step-compaction failures need a different treatment than a flag and a
@@ -3463,7 +3463,7 @@ session did.
   After reconstructing 611/3, the remaining three failures are: those two one-step-compaction expectations and
   `vertex_edge_span_rewrite_weights_slack_by_label_degree` (re-derive as a distribution test, since slack is
   now only taken when the window hosts it). Tree is at 614/0.
-  **Reconstructed and saved correctly (2026-09-20):** `/tmp/delegation_policy_v2_compact.rs` is the verified
+  **Reconstructed and saved correctly (2026-09-20):** `$TMPDIR/delegation_policy_v2_compact.rs` is the verified
   **611/3** state — delegation shim (−152 lines) + policy threading (`resolve_labeled_edge_base_for_policy`,
   planner parameter, `rewrite_vertex_edge_span_with_policy` with the public `Required` wrapper, and the shim
   passing `SlackMayBeDropped`), with no `fold_logs` threading. HEAD stays 614/0 with the delegation reverted;
@@ -3488,9 +3488,9 @@ session did.
   (and the fold-planned callers that fold themselves) and `true` everywhere else, then forward it to
   `rewrite_vertex_edge_span_with_policy`. The tiling-width separation (`bucket_resident_rows` for the reserved
   span, materialized prefix for the published width) is still required for that path and is preserved in
-  `/tmp/delegation_foldthread_tiling_598_16_compact.rs`.
+  `$TMPDIR/delegation_foldthread_tiling_598_16_compact.rs`.
   **Per-caller log policy landed the fix (2026-09-20): delegation now at 612/2, saved as
-  `/tmp/delegation_foldpercall_612_2_{compact,values,batch_write}.rs`.** `rebalance_vertex_edge_span` takes a
+  `$TMPDIR/delegation_foldpercall_612_2_{compact,values,batch_write}.rs`.** `rebalance_vertex_edge_span` takes a
   `fold_logs` argument; the two `Some(bucket_index), log_len` callers (stepped compaction and the fold-planned
   path) pass `false` and everything else (maintenance, values, batch, tests) passes `true`; the rewrite pair
   forwards it to the commit, and the tiling reserves `bucket_resident_rows` (prefix + log) for the
@@ -3513,7 +3513,7 @@ session did.
   non-folding publish (`fold_logs = false` + prefix-only materialization + preserved `overflow_log_head` +
   the wider tiling reservation) leaves a row unreachable: either the fold that follows overwrites it, or the
   head is cleared while the row was never written. That is the same class as the `release_segment` hazard (I2)
-  and must be explained before any of `/tmp/delegation_foldpercall_612_2_*` is landed — otherwise the
+  and must be explained before any of `$TMPDIR/delegation_foldpercall_612_2_*` is landed — otherwise the
   delegation would convert a moved row into a missing row. Next step is a *targeted* read of
   `compact_vertex_edge_span_one_step`'s own fold (what it writes, where, and whether it clears the head) plus
   the commit's non-folding publish for the same bucket, not another parameter. HEAD stays 614/0; the 612/2
@@ -3548,7 +3548,7 @@ session did.
   re-derive `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones` — the observed behaviour there is
   `EdgeMoved { old_slot_index: 1, new_slot_index: 0 }` and the row remains visible — documenting in ADR 0096 §5
   that the fold is publish-owned, exactly as the log-ownership row already says for the rewrite path. The
-  `fold_logs=false` machinery (`/tmp/delegation_foldpercall_612_2_*`) is therefore superseded and must not be
+  `fold_logs=false` machinery (`$TMPDIR/delegation_foldpercall_612_2_*`) is therefore superseded and must not be
   landed as-is. HEAD is 614/0.
   **Stepped-test re-derivation plan (2026-09-20, session close).** The enum settles the intent:
   `OverflowRewrite(Vec<EdgeSlotMove>)` is documented as "one overflow suffix was folded; `moves` lists
@@ -3562,10 +3562,10 @@ session did.
   (asserting its moves are non-empty), and finally call `compact_vertex_edge_span_one_step(hub, 0, 0, insertion)`.
   The assertions after the survivor check (a second `compact_vertex_edge_span_one_step` call and its
   expectations) must be re-derived in the same pass — they were not read. State to start from:
-  `cp /tmp/delegation_policy_v2_compact.rs crates/ic-stable-lara/src/labeled/graph/compact.rs` (611/3), then edit
+  `cp $TMPDIR/delegation_policy_v2_compact.rs crates/ic-stable-lara/src/labeled/graph/compact.rs` (611/3), then edit
   that test, then `vertex_edge_span_rewrite_weights_slack_by_label_degree` as a distribution property. HEAD is
   614/0 and everything from this session is committed.
-  **Delegation at 613/1, saved as `/tmp/delegation_613_1_compact.rs` (2026-09-20, session close).** Both stepped
+  **Delegation at 613/1, saved as `$TMPDIR/delegation_613_1_compact.rs` (2026-09-20, session close).** Both stepped
   tests are re-derived and pass — the publish owning the fold means the first step folds the suffix and then
   reports the compaction move it performs, so `overflow_rewrite_compacts_only_log_suffix_before_slab_tombstones`
   now asserts `EdgeMoved { old_slot_index: 1, new_slot_index: 0 }` (survivor visible at slot 0) followed by
@@ -3588,19 +3588,19 @@ session did.
   fourth implementation's placement.
   had to be reverted).
   delegation, and it needs these 14 resolved first.
-  `/tmp/delegated_compact.rs`.
+  `$TMPDIR/delegated_compact.rs`.
   (`old_alloc=2 new_alloc=18 old_base=2608 new_base=2608 moved=true leaf=(256, 3664)`, all in-block),
   and the error is raised **before `commit_vertex_edge_span_layout` reaches its positions step** —
   i.e. inside `rewrite_vertex_edge_span`'s non-disjoint inline branch (the one that builds
   `per_bucket`/`raw`). Next instrumentation target is that branch (its `slab_only_bulk` predicate
-  evaluation, `per_bucket` collection, and `raw` sizing), not the planning or the commit. Working copies: `/tmp/c_{compact,promote,bucket,leaf_pin,graph}.rs` (C + normalization) and
-  the same files with C alone is `/tmp/ssot_*`.
+  evaluation, `per_bucket` collection, and `raw` sizing), not the planning or the commit. Working copies: `$TMPDIR/c_{compact,promote,bucket,leaf_pin,graph}.rs` (C + normalization) and
+  the same files with C alone is `$TMPDIR/ssot_*`.
   For reference, the only *self-consistent and complete* variant today is the root-at-prefix-base
   reuse (B): it passes every geometry test, but holds up to `T_PROMOTE` slots (4 KiB) per promoted
   bucket as claimed slack until the leaf is relocated, which is exactly the space cost this
   requirement rejects.
-  Working copy saved at `/tmp/promote_inspan_attempt.rs`; regression test at
-  `/tmp/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
+  Working copy saved at `$TMPDIR/promote_inspan_attempt.rs`; regression test at
+  `$TMPDIR/tree_promo_test.rs` (`tree_promotion_leaves_the_vertex_cover_tiled_with_its_leaf`, fails on
   HEAD with the exact guard message).
 - **Prescribed fix (ADR 0088 §3, no design decision left):** the tree promotion must reserve the
   combined root region through the vertex/leaf tiling (the same `rewrite_vertex_edge_span` /
@@ -3612,7 +3612,7 @@ session did.
   in-pinned-leaf release caveat documented at Phase 3c, and `force_tree_mode_for_test`'s
   `force_bucket_to_stored_slots` fixture which prepares the slab prefix.
   Then add the skewed-leaf regression (256 vertices, degrees 1..2048, segment 16) — the reverted
-  attempt already has one at `/tmp/tree_promo_test.rs` — re-run the skewed-leaf audit, and resume
+  attempt already has one at `$TMPDIR/tree_promo_test.rs` — re-run the skewed-leaf audit, and resume
   the production balance evaluation. Budget the three interactions listed above as part of the
   slice: they are the reason this is not a drive-by patch. Until then, treat the
   K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
@@ -4017,10 +4017,10 @@ session did.
   `compact.rs` leaf-relocate footprint sizing, per-insert counts bumps in
   `labeled/graph/insert.rs:495,814` (the same ownership the Tree-CSR workstream
   had; that workstream landed in `main` before this entry was closed).
-- **Evidence:** [2026-09-17 investigation, §A result](../investigations/2026-09-17-lara-improvement-investigation.md);
+- **Evidence:** [2026-09-17 investigation, §A result](investigations/2026-09-17-lara-improvement-investigation.md);
   repro shape `thresh_hub_grow_8192` (M1 bench, worktree `labeled/bench.rs`);
   native repro `head_repro_full_path_growth` in the kept isolation worktree
-  `/tmp/gleaph-head` (detached HEAD + throwaway eprintln tracing in
+  `$TMPDIR/gleaph-head` (detached HEAD + throwaway eprintln tracing in
   `bucket_store.rs`/`span.rs`): `cargo test -p ic-stable-lara --features canbench
   --lib head_repro`. Unit-level promote paths are healthy (23/23 promote tests pass) —
   the failure is steady-growth + cascade interplay, untested until now (4B benches
@@ -4366,7 +4366,7 @@ session did.
 - **Owner:** Router federation merge (`crates/router/src/federation/merge.rs`
   `FederatedMergeMode::UnionRows` → `GqlWireRows::merge_optional_batch_blobs`)
   together with the future per-shard cursor-stream fan-out described in
-  [ADR 0081 §Decision 3](../adr/0081-index-ordered-order-by-delivery.md).
+  [ADR 0081 §Decision 3](adr/0081-index-ordered-order-by-delivery.md).
 - **Observed behavior:** Every current index read path delivers one globally ordered
   hit stream (native single posting map; single index canister per logical graph via
   `RouterIndexLookup::require_single_target`), so ADR 0081's R-way merge degenerates to
@@ -4616,7 +4616,7 @@ session did.
   per the plan 0296 quickstart contract — including management-canister deployment of
   Account/Provision from local wasm artifacts and a launcher that persists independently of
   the starting process.
-- **Evidence:** `/tmp/gq-netstart2.log` through `/tmp/gq-netstart4.log` in the 0296 slice
+- **Evidence:** `$TMPDIR/gq-netstart2.log` through `$TMPDIR/gq-netstart4.log` in the 0296 slice
   session; fix for the related staging defect (v15 tarballs nest the binaries under a
   versioned directory) landed as `normalize_extracted_launcher` in `crates/cli/src/network.rs`
   with unit tests (`normalize_stages_nested_launcher_and_companion`,
@@ -5580,7 +5580,7 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   `gleaph-gql-ic-wire`, each with candid + serde impls; `Principal` is candid-native), so a
   canister can return prepared rows directly over its candid interface.
 - **Evidence:** `crates/codegen/src/rust/canister.rs` (`canister_param_rust_type` emits
-  `gleaph_cdk::GqlRecord`); scratch compile at `/tmp/gleaph-exotic-check` with the
+  `gleaph_cdk::GqlRecord`); scratch compile at `$TMPDIR/gleaph-exotic-check` with the
   `exotic_manifest.json` (Int256/Uint256/Decimal/Principal/Float16/Float256 params and rows)
   compiles and round-trips a `PreparedResponse<FindExoticRow>` through `candid::encode_one` /
   `candid::decode_one`.
@@ -7193,7 +7193,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 - **Expected or needed behavior:** A new inter-canister chokepoint added inside the segment must
   fail loudly at its acquisition boundary. The canonical segment must trap and roll back the
   whole message (Property 5) when a chokepoint is reached from inside the segment.
-- **Resolution (design):** Adopted [`CanonicalSegmentGuard`](../adr/0091-path-independent-canonical-segment-guard.md)
+- **Resolution (design):** Adopted [`CanonicalSegmentGuard`](adr/0091-path-independent-canonical-segment-guard.md)
   (RAII thread-local depth counter + Drop balance check + chokepoint-side
   `assert_no_canonical_segment(...)` trap). The guard is entered at the first statement of
   `apply_canonical_mutation_segment`; the existing `ExecuteCtx::new` (referred to as
@@ -7223,11 +7223,11 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   the second-chokepoint trigger named in ADR 0029 §8. ADR 0091 Decision 4 (PR-review
   checklist) remains the only manual guard for future drift; the runtime guard is the
   single-line `assert_no_canonical_segment(...)` at the chokepoint acquisition boundary.
-- **Related contracts:** [ADR 0091](../adr/0091-path-independent-canonical-segment-guard.md)
-  (new); [ADR 0029 §8](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
-  (referenced from ADR 0091); [ACID roadmap Phase 1](../architecture/acid-roadmap.md) exit
+- **Related contracts:** [ADR 0091](adr/0091-path-independent-canonical-segment-guard.md)
+  (new); [ADR 0029 §8](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
+  (referenced from ADR 0091); [ACID roadmap Phase 1](architecture/acid-roadmap.md) exit
   criteria (updated to cite ADR 0091); [`MutationToken` /
-  `ReadMode::AtLeast` doc comments](../../crates/graph-kernel/src/plan_exec.rs) (clarified
+  `ReadMode::AtLeast` doc comments](../crates/graph-kernel/src/plan_exec.rs) (clarified
   scope; see `gleaph-mvcc-and-ic-atomicity.md` and `gleaph-mvcc-design-review.md` for the
   underlying review).
 
@@ -7469,7 +7469,7 @@ accept ≈ +17 % on that single workload as the price of one implementation. The
 614/0.
 
 **Scope-level bisect (2026-09-20): the dominant `ins` cost is the I2 drain walk, not the delegation.** Parsing
-`canbench ins` per bench and per scope (saved run at `/tmp/ins_run.txt`) gives 82 regressed lines; the largest are
+`canbench ins` per bench and per scope (saved run at `$TMPDIR/ins_run.txt`) gives 82 regressed lines; the largest are
 all in **`labeled_leaf_release_log_segment`**: +1627.87 % (`bench_l_ins_mv_l32_2048`), +580 % (the three
 `bench_l_nt_bp_ins_*`), +454 % (`bench_l_ins_fresh_256`), +322 %/+316 %/+306 % (the three
 `bench_labeled_stage2_hub_insert_grow_*`), +281 % (`bench_l_s2_h_ins_1024`, `bench_l_ins_sb_1024`,
@@ -8321,7 +8321,7 @@ written down, the allocator's first two slices are implemented and tested, and t
 ## Delegation record: the swap is being implemented outside this checkout (2026-09-20)
 
 The log-to-spill swap is delegated to the Herdr agent `gleaph-lara-impl` (pane `w1:pS`, kind `pi`, cwd
-`/Users/yota/dev/gleaph`), which was renamed from an unnamed pane for this purpose via
+`$REPO`), which was renamed from an unnamed pane for this purpose via
 `herdr agent rename w1:pS gleaph-lara-impl` (the name had not reached Herdr's server state before that, which is why
 `herdr agent get gleaph-lara-impl` initially returned `agent_not_found` while `herdr agent list` showed only
 `vecdeque-impl` and the reference-repo `lara-impl` in `w2:p2`).

@@ -34,8 +34,8 @@ measurements of the frozen0357 source revision only. Bulk edge SET is still unav
 
 ## Compared owners and memory boundary
 
-The [B-tree source](artifacts/2026-09-13-property-body-btree-probe.rs) and
-[extent source](artifacts/2026-09-13-property-body-extent-probe.rs) retain one storage algorithm per
+The [B-tree source](../../crates/graph/src/facade/stable/property_store_probe/body_probe.rs) and
+[extent source](../../crates/graph/src/facade/stable/property_store_probe/body_extent_probe.rs) retain one storage algorithm per
 owner. Native uses the existing counted VectorMemory; Wasm uses the existing
 [variable memory manager](../../crates/ic-stable-variable-memory-manager/src/lib.rs) over direct
 `Ic0StableMemory`, **without native instrumentation wrappers**. This is the manager selected by
@@ -61,7 +61,7 @@ PropertyStore directory or an upgrade-surviving identity registry.
 
 ## Measurement contract
 
-The [complete result artifact](artifacts/2026-09-13-property-body-extent-canbench-results.yml) contains
+The complete result artifact (measurement dump, not retained) contains
 **91 query benchmarks**:
 
 - 48 existing B-tree control names/operations, remeasured on managed memory;
@@ -69,7 +69,7 @@ The [complete result artifact](artifacts/2026-09-13-property-body-extent-canbenc
 - 15 hot cases: initial growth and post-warm local-reload growth/shrink for each of five owners;
 - 20 fragmented-allocation cases: F8/F128 × no-fit/already-coalesced × five owners.
 
-The prior [48-case raw-backend results](artifacts/2026-09-13-property-body-chunk-size-results.yml)
+The prior 48-case raw-backend results (measurement dump, not retained)
 remain unchanged. They are **not** matched baselines for this run. Backend/translation and compiled
 fixture context changed; differences against that artifact are not isolated manager-overhead measurements.
 
@@ -227,14 +227,14 @@ lock/workload artifacts, closed plans and unrelated work. No staging/commit or d
 ## Reproduction and provenance
 
 This is the canonical reproduction of the **measured0357 managed IC revision**. Extract the
-[frozen measured sources](artifacts/2026-09-13-property-body-0357-sources.tar.gz), rather than silently
+frozen measured sources (measurement dump, not retained), rather than silently
 compiling the later native-only key/preparation changes. Updated raw-native checks can instead point
 the lib path at the working artifact; that is not reproduction of these historical IC instructions.
 Run from repository root:
 
 ```sh
 root="$PWD"
-probe="$(mktemp -d /tmp/gleaph-body-managed-repro-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-body-managed-repro-XXXXXX)"
 tar -xzf "$root/design/investigations/artifacts/2026-09-13-property-body-0357-sources.tar.gz" -C "$probe"
 python3 - "$probe" <<'PY'
 import hashlib, json, pathlib, sys
@@ -295,7 +295,7 @@ SHA256 of the measured0357 revision (the two sources are archive members, not th
 - Manager source: `2d5d29ddada0d4c5a336f89207d0483178e80e7873d58b00ccd70b05ea5acbac`.
 - Measured Wasm: `5e6650ce23e9f0f82a6ff56804d5f5fe6ca2a0e8169079af66010b7670d14f64` (1323548 bytes).
 
-Evidence directory: `/tmp/gleaph-extent-ic-qp2ogkcj/`, including draft plan, initial snapshots,
+Evidence directory: `$TMPDIR/gleaph-extent-ic-qp2ogkcj/`, including draft plan, initial snapshots,
 native/lint/smoke/full-canbench logs, CSV/YAML, manifest/lock/config, source/fixture/numeric checks,
 Lizard and final review/plan records. Full raw source is measured directly, not a rewritten allocator.
 

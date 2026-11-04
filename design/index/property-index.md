@@ -407,7 +407,7 @@ sortable encoding, one transition contract:
   (the posting identity) plus the top-level ancestor (`stats`).
   `IndexedVertexMembership` carries `field_path` (the canonical dotted path; empty for flat)
   and `ancestor_property_id` (zero for flat). Graph resolves dispatch by the ancestor id because
-  it owns no property-name catalog ([ADR 0023](../adr/0023-router-owned-index-definitions.md)).
+  it owns no property-name catalog ([ADR 0023](../adr/0023-federated-index-consistency-upgrade-compaction.md)).
 - **Shared resolver.** Graph walks stored sidecar `Value::Record` values along the declared path
   through one shared dotted-path resolver (`crates/graph/src/property/dotted_path.rs`, also used
   by edge inline struct encoding). A missing field or non-record intermediate yields "no value" —

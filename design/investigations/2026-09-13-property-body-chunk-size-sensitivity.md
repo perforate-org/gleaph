@@ -19,7 +19,7 @@ size, directory threshold, production format, total-work budget or allocator is 
 
 ## Same owner, additional axes
 
-The [shared probe](artifacts/2026-09-13-property-body-btree-probe.rs) gains only fixture calls: P=16384
+The [shared probe](../../crates/graph/src/facade/stable/property_store_probe/body_probe.rs) gains only fixture calls: P=16384
 and P=65536, both D=0. `Chunk::check_width` still enforces P in the existing codec. `Bound::Unbounded`
 selects the library's default 1024 B node geometry, not uncapped chunk contents. The library remains
 exact `ic-stable-structures 0.7.2`; no store, allocator, schema, helper, backend or algorithm is copied.
@@ -41,10 +41,10 @@ complete range reads, previous-value acquisition and setup/measurement boundarie
   large replacement/shrink. Position-bearing payloads make chunk reordering observable.
 
 Seven native configurations produce **260 rows** (7×36 plus 8 Whole point controls); the original
-188 rows are exactly unchanged. The [native CSV](artifacts/2026-09-13-property-body-chunk-size-native.csv)
+188 rows are exactly unchanged. The native CSV (measurement dump, not retained)
 retains every case, including original declared-geometry penalties.
 
-The [complete IC result artifact](artifacts/2026-09-13-property-body-chunk-size-results.yml) has
+The complete IC result artifact (measurement dump, not retained) has
 **48 cases**: the original 32 plus two caps × eight cases (64 KiB/1 MiB read/rewrite/shrink, neighbor
 read/rewrite). All original 32 instruction/heap/stable counters remain identical. No old case was
 replaced. Native density/neighbor fixtures retain below-cap 65 B/4 KiB coverage; no extra IC
@@ -177,11 +177,11 @@ measurement control, not an accepted bounded production implementation.
 
 Use the isolated manifest/config recipe in the
 [original IC reproduction](2026-09-13-property-body-btree-comparison.md#reproduction-and-validation)
-and the same [transitive lock](artifacts/2026-09-13-property-body-btree-canbench.Cargo.lock). The shared
+and the same transitive lock (measurement dump, not retained). The shared
 source now runs seven native configurations and 48 IC cases. Keep a new output directory; do not
 replace the historical 32-case YAML with expanded results.
 
-Exact evidence directory: `/tmp/gleaph-body-chunk-size-f3t1g3lj/`.
+Exact evidence directory: `$TMPDIR/gleaph-body-chunk-size-f3t1g3lj/`.
 From repository root (`probe` set to that directory):
 
 ```sh
@@ -189,9 +189,9 @@ cargo test --offline --locked --manifest-path "$probe/Cargo.toml" --target-dir "
 cargo clippy --offline --locked --manifest-path "$probe/Cargo.toml" --target-dir "$PWD/target" --lib --tests -- -D warnings
 cargo clippy --offline --locked --manifest-path "$probe/Cargo.toml" --target-dir "$PWD/target/canbench" --target wasm32-unknown-unknown --release --lib -- -D warnings
 rustfmt --edition 2024 --check design/investigations/artifacts/2026-09-13-property-body-btree-probe.rs
-(cd "$probe" && canbench --persist --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph/crates/ic-stable-lara/.canbench/pocket-ic)
+(cd "$probe" && canbench --persist --csv --show-canister-output --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic)
 python3 "$probe/final_checks.py"
-python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0355-property-body-chunk-size-sensitivity.md --phase final
+python3 $AUTHOR_SKILLS/validate_plan.py plans/0355-property-body-chunk-size-sensitivity.md --phase final
 ```
 
 Both existing native tests passed, with the two new caps also running complete malformed/budget

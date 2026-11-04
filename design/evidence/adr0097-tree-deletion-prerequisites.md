@@ -21,7 +21,7 @@ PocketIC, performance and landing are not approved.
 
 ## Runtime evidence
 
-All commands ran in `/Users/yota/dev/gleaph-spill` with the normal target directory,
+All commands ran in `$REPO` with the normal target directory,
 through one serialized 600-second ledger protecting 120 seconds before every non-final
 command. No timeout, reset, process control, cold target, benchmark or persistence run occurred.
 Seven recorded commands charged **36.611981041845866 / 600 seconds**, with zero startup
@@ -223,7 +223,7 @@ compatibility decoder, handler fix or queue behavior change was added here.
 
 ## Artifacts and reproduction
 
-Raw evidence: `/tmp/spill-tree-delete-7ca-nrvy2ffs/`. Durable files use prefix
+Raw evidence: `$TMPDIR/spill-tree-delete-7ca-nrvy2ffs/`. Durable files use prefix
 [`sources/adr0097-tree-delete-`](sources/adr0097-tree-delete-run.json).
 The run metadata maps hashes, source revisions, commands, transforms and preserved files.
 Raw logs are untouched; durable log copies only strip trailing line whitespace and terminal

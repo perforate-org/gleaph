@@ -59,8 +59,8 @@ All Rust/canbench/rustfmt commands used one sequential
 600-second cumulative command budget. Non-final commands protected a 120-second final reserve.
 Normal configured targets were used; no clean, cold target, wrapper retry or persistence.
 
-Cargo commands ran from `/Users/yota/dev/gleaph-spill`. Canbench ran from
-`/Users/yota/dev/gleaph-spill/crates/ic-stable-lara`.
+Cargo commands ran from `$REPO`. Canbench ran from
+`$REPO/crates/ic-stable-lara`.
 
 | Command | Cap | Exit / elapsed | Result |
 | --- | ---: | --- | --- |
@@ -134,7 +134,7 @@ The existing [zero-context lock patch](sources/adr0097-crossover-as-used-lock.pa
 those as-used bytes. The foreign brief/CSV, canonical YAML, both benchmark source files,
 canbench config and main pin were preserved. `git diff --check` passed.
 
-Raw artifacts are under `/tmp/spill-read-af063-obmxdo77/`, with a SHA256 manifest. At this
+Raw artifacts are under `$TMPDIR/spill-read-af063-obmxdo77/`, with a SHA256 manifest. At this
 checkpoint, plan `0334-compaction-bounded-read.md` was **partially complete, not approved**.
 Both saved validation logs fail: [draft](sources/adr0097-bounded-read-plan-draft.txt) reports
 `ERROR: Completion Criteria item 6 must be unchecked in draft phase`; [final](sources/adr0097-bounded-read-plan-final.txt)

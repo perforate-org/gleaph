@@ -34,7 +34,7 @@ Phase E implementation and PocketIC e2e cover **directed** leading `EdgeIndexSca
 | **graph-index key uses ambiguous `label_id`** | Catalog vs LARA wire mismatch on postings / lookup. | Wire-native `wire_label_id` in graph-index keys and seeds. |
 | **Planner stats are direction-blind** | Property-only `is_edge_property_indexed`. | `is_edge_property_indexed_for` + storage-class subset rule. |
 
-Gleaph GQL ([`EdgeDirection`](../../crates/gql/src/types.rs)) defines **seven** edge directions
+Gleaph GQL ([`EdgeDirection`](../../crates/gql/src/parser/types.rs)) defines **seven** edge directions
 (full bracket and simplified slash forms normalize to the same enum). Administrators expect
 `CREATE INDEX` `FOR` patterns use the **same bracket edge syntax** as `MATCH` / `INSERT` (slash
 forms are query/DML-only; see §1).

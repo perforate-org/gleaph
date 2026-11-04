@@ -223,7 +223,7 @@ handle that the parent range helper does not return. No obsolete production path
 ## Reproduction and validation
 
 Evidence root:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/fold-economics-0368` (`E` below).
+`$GLEAPH_EVIDENCE/adr0097/fold-economics-0368` (`E` below).
 Base: `24467b17b375b2a7bc462818ef278553a52993fc`, plus this benchmark-only source patch and the protected
 pre-existing worktree state. `before.json`, `protected.json`, source snapshots, `measured.json` and
 `completion.json` bind those states separately. Main is not a comparison input and was not edited.
@@ -249,9 +249,9 @@ baseline rebuild, instruction tracing, background validation or persisted benchm
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench fold_economics -- --nocapture` | passed: 4 tests, 611 filtered; `native-final.log` |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0; no new-scope warnings/errors; `clippy-final.log` |
 | `python3 E/review.py` | passed: 41 distinct existing Rust warnings verified against exact HEAD excerpts; complexity/source/protected checks; `review.log` |
-| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` from `E/canbench` | passed: 12 exports, 100 scopes, all output/reuse assertions; `canbench-1.log`, about 81s including build |
+| `canbench bench_t_fold_ --csv --show-canister-output --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` from `E/canbench` | passed: 12 exports, 100 scopes, all output/reuse assertions; `canbench-1.log`, about 81s including build |
 | Exact source/protected/lock/index/whitespace and document numeric checks | passed; `completion-checks.log` |
-| `python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0368-fold-economics.md --phase final` | passed; `plan-final.log` |
+| `python3 $AUTHOR_SKILLS/validate_plan.py plans/0368-fold-economics.md --phase final` | passed; `plan-final.log` |
 
 The initial native compile rejected two incorrect diagnostic accessor assumptions; only the new
 snapshot code was corrected. An initial clippy warning in the new oracle was corrected to use

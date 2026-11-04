@@ -143,13 +143,13 @@ edge/value range change.
 
 ## Validation and provenance
 
-Worktree: `/Users/yota/dev/gleaph-spill`, branch `spill-swap`, base
+Worktree: `$REPO`, branch `spill-swap`, base
 `b96ecad6df708a44e182ba7fc98dadd3e2699bf2` plus this uncommitted diff. The main worktree was not edited.
 The exact Rust scope is eighteen paths in `rust-paths.json`; documentation scope is ADR 0050 and this
 file. Pre-existing dirty paths are separately protected by 267 SHA256 entries in `protected.json`.
 
 Evidence root:
-`/Users/yota/.local/share/gleaph/evidence/adr0097/selected-hybrid-range-reads-0367`.
+`$GLEAPH_EVIDENCE/adr0097/selected-hybrid-range-reads-0367`.
 `commands.json` contains exact commands, directories, timeouts, exit codes and elapsed times; logs are
 not overwritten. All Rust/build/canbench commands use its bounded `run.py` wrapper, at most 300 seconds
 per command and 590 seconds cumulatively. The common lock is borrowed for execution and restored
@@ -164,12 +164,12 @@ benchmark update was performed.
 | `cargo clippy --locked --offline -p ic-stable-lara -p gleaph-graph --lib -- -D warnings` | passed; `scoped-clippy-completion.log` |
 | `cargo check --locked --offline -p gleaph-graph --lib` | passed; `graph-check.log`; final Graph compilation also covered by clippy/tests |
 | `cargo test --locked --offline -p gleaph-graph --lib inline_property_predicate` | 11 passed; `graph-predicate-completion.log` |
-| `canbench bench_t_v_ --csv --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0, 12 totals; `traverse-completion.log/.csv` |
-| `canbench bench_t_range_ --csv --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0, 14 totals and 42 scopes; `range-completion.log/.csv` |
+| `canbench bench_t_v_ --csv --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0, 12 totals; `traverse-completion.log/.csv` |
+| `canbench bench_t_range_ --csv --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0, 14 totals and 42 scopes; `range-completion.log/.csv` |
 | Lizard 1.24.0 `--csv -i -1`, baseline/current snapshots of eighteen Rust files | passed; `lizard-completion.log`, `lizard-summary.log`, CSVs and `complexity-summary.json` |
 
 Canbench runs from the external evidence `canbench/` directory. Its build command is
-`cd /Users/yota/dev/gleaph-spill/crates/ic-stable-lara && CARGO_TARGET_DIR=../../target/canbench cargo build --locked --offline --release --target wasm32-unknown-unknown --features canbench`.
+`cd $REPO/crates/ic-stable-lara && CARGO_TARGET_DIR=../../target/canbench cargo build --locked --offline --release --target wasm32-unknown-unknown --features canbench`.
 Saved comparison input: `../contiguous-spill-traversal-0366/traverse.csv` relative to the evidence root.
 
 Intermediate failures remain recorded: the constant-size chunk clippy finding was corrected using

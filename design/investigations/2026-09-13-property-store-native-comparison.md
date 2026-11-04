@@ -3,7 +3,7 @@
 Status: Experimental — native checkpoint completed; production unselected.
 Follow-up verified2026-09-17 22:24:02 UTC +0000: [managed full-store IC comparison](2026-09-17-property-store-managed-comparison.md).
 Native numbers and historical source hashes below remain the0358 measurements; the
-[frozen0358 sources](artifacts/2026-09-17-property-store-0358-sources.tar.gz) retain that revision.
+frozen0358 sources (measurement dump, not retained) retain that revision.
 The shared working source now also supports managed IC, with all native numeric rows reproduced.
 Investigation started2026-09-13. Native verification: **2026-09-14 01:10:06 UTC +0000**.
 Repository anchor: `95d7910878a5ee8af95af878f2b0df952edd70dc`.
@@ -11,7 +11,7 @@ Repository anchor: `95d7910878a5ee8af95af878f2b0df952edd70dc`.
 ## Result
 
 The [comparison contract](2026-09-13-property-store-comparison-design.md) is implemented in a
-[Graph-owned prototype](artifacts/2026-09-13-property-store-probe.rs), included as a native test-only Graph child. It compares actual
+[Graph-owned prototype](../../crates/graph/src/facade/stable/property_store_probe/mod.rs), included as a native test-only Graph child. It compares actual
 VertexPropertyStore/EdgePropertyStore operations against directory+B-tree4/16/64KiB and
 directory+custom extents. The question is **body storage through the existing B-tree versus custom
 contiguous extents**, not alternative free-index algorithms.
@@ -68,7 +68,7 @@ single-property move API or a claim about whole-edge/multi-property transactions
 
 ## Reading the artifact
 
-[CSV](artifacts/2026-09-13-property-store-native.csv): **2640 region rows /1320 operation samples**.
+CSV (measurement dump, not retained): **2640 region rows /1320 operation samples**.
 `kind`0=Direct,1=chunks,2=extent; `cap` is the chunk cap or0. `occurrence` is the per-configuration/case
 ordinal, not traffic frequency. Rows are sorted by key width/kind/cap/case/occurrence/region.
 
@@ -206,8 +206,8 @@ possible mechanism, but internal phase attribution was not measured. This advers
 
 ## Validation and source review
 
-Final native logs are under `/tmp/gleaph-property-store-native-p9dk3h0c/` (pointer
-`/tmp/gleaph-property-store-native-current`). The pre-edit66-file snapshot, supplementary unchanged-
+Final native logs are under `$TMPDIR/gleaph-property-store-native-p9dk3h0c/` (pointer
+`$TMPDIR/gleaph-property-store-native-current`). The pre-edit66-file snapshot, supplementary unchanged-
 HEAD test snapshot, and preimplementation test map precede their respective edits. Review later
 added owner-only scope foils, both-side move preflight, relocation/reference assertions and explicit
 external payload accounting; they are not falsely described as original red tests.
@@ -268,7 +268,7 @@ Bulk edge SET remains unavailable.
 ## Reproduction and provenance
 
 From the repository root, run the scoped commands above. The Graph test includes the canonical raw
-sources. The existing standalone manifest is `/tmp/gleaph-extent-ic-qp2ogkcj/Cargo.toml`; its recipe is
+sources. The existing standalone manifest is `$TMPDIR/gleaph-extent-ic-qp2ogkcj/Cargo.toml`; its recipe is
 in the [body-only report](2026-09-13-property-body-extent-canbench.md). To test the updated raw sources,
 keep its lib path pointed at the working artifact and run ordinary offline/locked native cargo test
 and Clippy with the repository's shared target. Do not run its Wasm benchmarks as part of this slice.
@@ -291,7 +291,7 @@ encoded map-byte arithmetic, external payload/spans, region sums/projections and
 
 Old260 B-tree +36 extent numeric rows match byte-for-byte as parsed CSV values in both final Graph
 and standalone runs. Historical raw/managed results and locks are unchanged. The measured0357
-sources are frozen in [the provenance archive](artifacts/2026-09-13-property-body-0357-sources.tar.gz),
+sources are frozen in the provenance archive (measurement dump, not retained),
 with `sha256.json`. The archive is never a second active compiled owner or fallback. Exact historical
 IC reproduction must extract those measured sources, not compile the updated revision and
 claim it reproduces0357 codegen. Canonical-key encoding and preparation changes may affect allocation

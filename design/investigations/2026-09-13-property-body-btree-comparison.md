@@ -11,7 +11,7 @@ Native reuse update (2026-09-14 01:10:06 UTC +0000): the [full PropertyStore com
 adds real key widths, Value codec, directories and moves. The shared body source gained canonical-key
 and private prepare/publication support;260+36 raw rows still reproduce. Historical IC numbers are
 not measurements of this changed codegen. Exact0357 source bytes are retained in the
-[provenance archive](artifacts/2026-09-13-property-body-0357-sources.tar.gz); use the linked managed
+provenance archive (measurement dump, not retained); use the linked managed
 report's frozen-source recipe for its IC reproduction. No production implementation is selected.
 
 ## Decision boundary
@@ -59,7 +59,7 @@ records the earlier32-case raw revision; neither old32/48-case YAML is overwritt
 
 ## What was compared
 
-[Diagnostic source](artifacts/2026-09-13-property-body-btree-probe.rs), exact
+[Diagnostic source](../../crates/graph/src/facade/stable/property_store_probe/body_probe.rs), exact
 `ic-stable-structures = "=0.7.2"`, native VectorMemory. Five configurations:
 
 | Name | Actual per-entry body cap | Storable declaration | B-tree node page selection |
@@ -267,7 +267,7 @@ From repository root:
 
 ```sh
 repo="$PWD"
-probe="$(mktemp -d /tmp/gleaph-body-btree-compare-XXXXXX)"
+probe="$(mktemp -d $TMPDIR/gleaph-body-btree-compare-XXXXXX)"
 printf '%s\n' \
   '[package]' 'name = "gleaph-property-body-btree-probe"' 'version = "0.0.0"' \
   'edition = "2024"' 'publish = false' '[lib]' \
@@ -289,7 +289,7 @@ max CCN 9, aggregate CCN 60, function NLOC 525; this new diagnostic has no sourc
 production complexity delta. Helpers own concrete measurement, storage or fixture phases; no new
 production API or signatures with five or more meaningful inputs were added.
 
-Evidence: `/tmp/gleaph-body-btree-compare-jqnamg2j/` contains manifest/lock, native/Clippy transcripts,
+Evidence: `$TMPDIR/gleaph-body-btree-compare-jqnamg2j/` contains manifest/lock, native/Clippy transcripts,
 188-row CSV, snapshots, checks and same-assistant review. This is not independent/security approval.
 The source and commands reproduce the experiment without that evidence directory. No workspace
 manifest/lock, production Rust/storage or previous probe was changed; no staging or commit.
@@ -335,7 +335,7 @@ policy, journal/outbox, Candid request decoding or cross-canister execution is i
 
 ### Instruction results
 
-Exact counters from the [complete 32-case artifact](artifacts/2026-09-13-property-body-btree-canbench-results.yml):
+Exact counters from the complete 32-case artifact (measurement dump, not retained):
 
 | Input bytes | Operation | Whole instructions | C4096/default instructions | Chunk / Whole |
 | ---: | --- | ---: | ---: | ---: |
@@ -415,7 +415,7 @@ follow-up and managed IC comparison are complete; production integration remains
 
 ### Reproduction and validation
 
-The [retained raw-run lockfile](artifacts/2026-09-13-property-body-btree-canbench.Cargo.lock) records
+The retained raw-run lockfile (measurement dump, not retained) records
 this historical checkpoint. For the shared source, use the
 [canonical managed reproduction](2026-09-13-property-body-extent-canbench.md#reproduction-and-provenance)
 and its new lock; the old lock lacks the manager dependency. The measured raw-run compiler was rustc `1.100.0-nightly (c656540d6 2026-08-21)`, LLVM 23.1.0, canbench 0.7.0.
@@ -453,7 +453,7 @@ compilation gates; no storage rule was copied into a second implementation.
 Source SHA-256 for the recorded 32-case run, before wider-chunk fixture additions:
 `b727c1a8d417fe264ef285e03815f8fafdf5d43988a06db2f0dd7e061ef0c01e`.
 Wasm SHA-256: `c529186ec657b20b3e6612b79d95c1a95e6a09e2a37e877e3e982dbdf6cbde71` (743200 B).
-Evidence: `/tmp/gleaph-body-canbench-x0i5_yaj/`, including raw page logs, manifest/config/lock,
+Evidence: `$TMPDIR/gleaph-body-canbench-x0i5_yaj/`, including raw page logs, manifest/config/lock,
 validation, snapshots and same-assistant review. No independent/security approval, production
 layout/activation, staging or commit is implied.
 

@@ -125,7 +125,7 @@ No framework or unrelated complexity refactor is introduced.
 
 ## Reproduction and receipts
 
-Evidence root (`E`): `/Users/yota/.local/share/gleaph/evidence/adr0097/batch-value-span-0372`.
+Evidence root (`E`): `$GLEAPH_EVIDENCE/adr0097/batch-value-span-0372`.
 Base HEAD: `14430cc622394028503702905db42ad11d6ff029`, branch `spill-swap`.
 Plan: `plans/0372-batch-value-span-regressions.md` (ignored). `initial.json`, `protected.json` and
 `before/` separate this slice from 269 initially dirty paths, including 265 protected paths.
@@ -144,7 +144,7 @@ PocketIC 13.0.0, Lizard 1.24.0, Apple M2 Pro / Darwin arm64.
 | `cargo test --locked --offline -p ic-stable-lara --lib --features canbench -- --nocapture labeled::graph::values::tests labeled::graph::batch_write labeled::graph::compact::tests labeled::graph::insert::tests fold_economics` | exit 0, 173 passed; `affected-rereview.log` |
 | Eight focused source mutations | runtime exit 101 each; logs above, exact source snapshots; wrong-offset control passes the old oracle |
 | `cargo clippy --locked --offline -p ic-stable-lara --lib --tests --features canbench --message-format=json` | exit 0; 45 emitted diagnostics at 39 distinct existing locations, zero unmatched after mapping changed line numbers against the 41-location baseline; `lint-rereview.json` |
-| `canbench bench_l_b_uo_hf_256 --csv --show-canister-output --runtime-path /Users/yota/dev/gleaph-spill/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0 twice, one export each; `canbench-base.log`, `canbench-current.log`; fresh evidence directories, no `--persist` |
+| `canbench bench_l_b_uo_hf_256 --csv --show-canister-output --runtime-path $REPO/crates/ic-stable-lara/.canbench/pocket-ic` | exit 0 twice, one export each; `canbench-base.log`, `canbench-current.log`; fresh evidence directories, no `--persist` |
 | Lizard before/current snapshots | exit 0; `lizard-base.log`, `lizard-rereview.log`; original production summary in `lizard-summary.json` |
 
 Preserved baseline Wasm SHA256:

@@ -31,7 +31,7 @@ of a production incident, an ordinary-GQL lost-callback runtime reproduction, or
 
 ## Fixture and controls
 
-The [probe](artifacts/2026-09-22-scalar-journal-retention-probe.rs) temporarily attaches as a child of
+The probe (measurement dump, not retained) temporarily attaches as a child of
 [`adr0057_durable_bulk_load.rs`](../../crates/pocket-ic-tests/tests/adr0057_durable_bulk_load.rs), reusing
 its existing setup, command, value-encoding, and canonical-query helpers.
 
@@ -156,7 +156,7 @@ Total long-command observation: **182.07 s**. Compiler: `rustc 1.100.0-nightly (
 Manifest/future-compatibility notices and the existing CLI unused-field warning remain in transcripts.
 Elapsed totals include runner/process teardown, not merely Cargo's build and test timings.
 
-Evidence pointer: `/tmp/gleaph-scalar-retention-current`, containing snapshots, full transcripts,
+Evidence pointer: `$TMPDIR/gleaph-scalar-retention-current`, containing snapshots, full transcripts,
 command JSON, measured-source hashes, the removed attachment diff and scope/document checks.
 No dependency, production Rust, stable region, codec, API, benchmark artifact, HEAD/index, or unrelated
 diff was changed. The investigation and reproduction artifact are new; relevant design caveats were
@@ -262,7 +262,7 @@ is not zero allocation, and no total in-flight state/admission bound is claimed.
 journal bytes or memory-region policy changed. The retained benchmark Wasm and its hash are in the
 evidence directory; saved `canbench_results.yml` is unchanged.
 
-Evidence pointer: `/tmp/gleaph-scalar-retirement-current`. All 0367 long commands terminated normally;
+Evidence pointer: `$TMPDIR/gleaph-scalar-retirement-current`. All 0367 long commands terminated normally;
 aggregate observed time is **525.47 s**, including intentional red/mutant and fixture-compile runs.
 The source diff, initial snapshots, full logs/command JSON, hash restoration proof, historical
 failure comparison and measured Wasm are retained. Review is by the same assistant, not independent
@@ -365,7 +365,7 @@ retains the immutable journal throughout retry. The final affected suites above 
 validation was retried after exhausting the budget; no skip-build, cold target, serial substitute,
 external terminal or benchmark persistence was used.
 
-Evidence pointer: `/tmp/gleaph-router-scalar-fence-current` (a pointer file). Initial dirty-worktree
+Evidence pointer: `$TMPDIR/gleaph-router-scalar-fence-current` (a pointer file). Initial dirty-worktree
 snapshots, full command logs/JSON, final source hashes, scope diff and closeout review are retained
 there. Benchmark hashes describe attempted source, not a measured Wasm. The only Rust change after
 runtime validation corrects one dispatch-helper doc-comment line; validated-source and final-source
@@ -442,7 +442,7 @@ that closeout and is addressed below; exact receipt retention, scalar Active/Ret
 acknowledged retirement remain open. Neither 0367's scan failures nor 0364's separate gates were
 rerun or repaired by that checkpoint.
 
-Evidence pointer: `/tmp/gleaph-router-scalar-fence-completion-current`. It retains the fresh
+Evidence pointer: `$TMPDIR/gleaph-router-scalar-fence-completion-current`. It retains the fresh
 2,438-file baseline, added-test diff, full command logs/JSON, exact mutant-restoration proof, measured
 source snapshots and Router Wasm/hash, scoped Lizard output, review and final checks. Source/test
 review is by the same assistant, not independent validation or security approval.
@@ -522,7 +522,7 @@ Client-key-only count/phase reads and same-ID lease reclaim remain audit obligat
 ledger. No new attempt generation or permanent tombstone was added. The lost-capture Graph-GC
 re-execution defect remains open.
 
-Evidence pointer: `/tmp/gleaph-router-preparation-identity-current` (2,438-file baseline, exact source
+Evidence pointer: `$TMPDIR/gleaph-router-preparation-identity-current` (2,438-file baseline, exact source
 patch/hashes, all terminal logs, measured Wasm, scoped Lizard comparison and final plan/preservation
 checks). Review is by the same assistant, not independent validation or security/performance approval.
 

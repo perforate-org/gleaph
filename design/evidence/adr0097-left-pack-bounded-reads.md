@@ -226,7 +226,7 @@ stdlib module during runner import. It was renamed; no Rust ran in that failure.
 the full tool cap, not a fabricated measured duration. Resource observations from that script
 remain labeled observations. No timeout occurred in this turn's Rust/canbench commands.
 
-Raw root: `/tmp/spill-owner-7e946-or50uro5/`, with SHA256 manifest. Durable logs trim terminal
+Raw root: `$TMPDIR/spill-owner-7e946-or50uro5/`, with SHA256 manifest. Durable logs trim terminal
 blank lines only; raw logs and ledger hashes remain unchanged. The pinned lock is
 `15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2`; compilation used
 `f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`.

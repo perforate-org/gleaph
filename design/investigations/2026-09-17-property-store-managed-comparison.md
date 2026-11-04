@@ -19,13 +19,13 @@ one might draw from body-only replacement measurements:
 No workload-weighted winner or production adoption is selected. These are IC instructions, not
 wall-clock latency, throughput, peak heap or a whole-Graph transaction cost.
 
-[Scalar cost attribution](2026-09-17-property-store-scalar-cost.md) identifies the additional directory
+Scalar cost attribution (record not retained) identifies the additional directory
 lookup as the dominant small-value cost. It preserves these results and storage algorithms; its final
 current-worktree native rerun is blocked by concurrent LARA changes.
 
-Artifacts: [210 full-store rows](artifacts/2026-09-17-property-store-canbench.csv),
-[complete301-case canbench results](artifacts/2026-09-17-property-store-canbench-results.yml),
-[exact lock](artifacts/2026-09-17-property-store-canbench.Cargo.lock).
+Artifacts: 210 full-store rows (measurement dump, not retained),
+complete301-case canbench results (measurement dump, not retained),
+exact lock (measurement dump, not retained).
 
 ## Boundary and measurement
 
@@ -35,9 +35,9 @@ small cells, external S≤1MiB,2MiB selected-byte allowance and complete enumera
 the envelope. Direct remains the unbounded-admission reference, not a candidate with hidden length
 metadata or extra preflight lookups.
 
-The [isolated harness](artifacts/2026-09-17-property-store-canbench.rs) source-includes the actual
+The isolated harness (measurement dump, not retained) source-includes the actual
 Graph key/store/validator files. It does not compile the Graph canister or expose its private APIs.
-The [shared implementation](artifacts/2026-09-13-property-store-probe.rs) uses the same algorithms as
+The [shared implementation](../../crates/graph/src/facade/stable/property_store_probe/mod.rs) uses the same algorithms as
 native tests, with the existing body-memory alias selecting counted VectorMemory or VirtualMemory
 on Ic0StableMemory. Native alias rejection remains; the private Wasm constructor supplies distinct
 IDs itself. There is no arbitrary supplied-Wasm-memory alias-detection API.
@@ -47,7 +47,7 @@ policies. Direct owns region0; chunks own directory0/body1; extent owns director
 All are included in actual physical backing. No region equalizes costs artificially, and no Graph
 production MemoryId or64-page property policy is changed.
 
-The [fixtures](artifacts/2026-09-17-property-store-canbench-cases.rs) include21 cases per owner/key.
+The [fixtures](../../crates/graph/src/facade/stable/property_store_probe/benches.rs) include21 cases per owner/key.
 They verify exact pre/post Values via canonical bytes, all directory/body ownership, guards, extent
 partition/free index, and correct relocation addresses. NULL, NaN, composite, Unicode and Principal
 values appear in the mixed-scalar cases. Small-only sanity does not prewarm external bodies.
@@ -195,12 +195,12 @@ would fail all-region page equations. No unresolved blocker within this experime
 
 ## Reproduction and provenance
 
-The working prototype now includes the [prepared-change experiment](2026-09-18-property-store-prepared-change.md).
+The working prototype now includes the prepared-change experiment (record not retained).
 This report's301-case result and hashes remain pinned to0359. The reproduction below extracts its
-[eight original source inputs](artifacts/2026-09-18-property-store-0359-sources.tar.gz); the current
+eight original source inputs (measurement dump, not retained); the current
 source harness instead exports313 cases and must not be mistaken for this historical measurement.
 
-[0358 frozen sources](artifacts/2026-09-17-property-store-0358-sources.tar.gz) preserve the pre-sharing
+0358 frozen sources (measurement dump, not retained) preserve the pre-sharing
 native revision and its hash manifest; they are not an active fallback. The0357 archive/results remain
 unchanged. The91 body-only controls in this new artifact use the updated source/compiler/codegen;
 they do not overwrite or reclassify historical0357 results. No instruction deltas against those old
@@ -212,7 +212,7 @@ repository SIMD flags. The canbench2021 clock is not the verification date. Run 
 
 ```sh
 root="$PWD"
-p="$(mktemp -d /tmp/gleaph-property-store-repro-XXXXXX)"
+p="$(mktemp -d $TMPDIR/gleaph-property-store-repro-XXXXXX)"
 mkdir "$p/source"
 tar -xzf design/investigations/artifacts/2026-09-18-property-store-0359-sources.tar.gz -C "$p/source"
 python3 - "$p/source" <<'PY'
@@ -280,7 +280,7 @@ SHA256:
 |0358 source archive | `4a2edd8afbff9757603c4b110836f3aa8dcf95c4910f6a24d7bf8386054dfb20` |
 | Measured Wasm (16089677 bytes) | `25275dc60d99177bf9e7ea0820810c661acc4b9dadca604fa72c991e4a7c0a8b` |
 
-Evidence: `/tmp/gleaph-property-store-ic-irkcps5c/`: snapshots, source/lock diffs, complete logs,
+Evidence: `$TMPDIR/gleaph-property-store-ic-irkcps5c/`: snapshots, source/lock diffs, complete logs,
 manifest/config/lock, checked extraction, Lizard, review and plan validation. No staging/commit.
 
 ## Remaining decisions

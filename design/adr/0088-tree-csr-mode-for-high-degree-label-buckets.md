@@ -2129,7 +2129,7 @@ Wasm grows6/12B; scalar/preparation frames remain208/160B with2/40 locals. Fresh
 relocation34→0B is source-derived, not an isolated IC price or proof of the LARA gain's cause.
 LARA still includes unchanged pending admission work, not clean-commit integration. Source, raw
 streams, frozen compiler-output copies, CSVs and receipt are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/bulk-insert-order-0353/`.
+`$GLEAPH_EVIDENCE/adr0097/bulk-insert-order-0353/`.
 
 **Rejected experiment: lookup-local directory pairs (Plan0356).** An aligned32B directory buffer
 shared by binary search and the below-minimum insertion fallback preserved selected validation and
@@ -2162,7 +2162,7 @@ is relaxed and no general regression tolerance is introduced: split and both LAR
 missing, replacement and tail remained open. Retained acceptance reached3/6 at0352.
 
 Source, bound Wasm/CSV, tests and the original rejection remain under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/interior-bulk-0352/`; `adoption/receipt.json` records
+`$GLEAPH_EVIDENCE/adr0097/interior-bulk-0352/`; `adoption/receipt.json` records
 the superseding decision. The unchanged source/input/artifact hashes permit reuse of those IC
 measurements, not a new run. Map/LARA Wasm grew6807/13260B; heap/stable page deltas stay zero. The map
 preparation frame grows144→160B while its40 locals and scalar208B frame stay unchanged. The three
@@ -2190,7 +2190,7 @@ remained208/144B and heap/stable page deltas were zero. LARA retains the same pe
 work, not clean-commit integration. At the0351 close, the entire lib.rs was restored to `7ea423ad`;
 0352 also retained that order;0353 re-evaluates it with bulk movement. Sources, both mutants, raw
 streams, artifacts, CSVs and restoration are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/insert-address-order-0351/`.
+`$GLEAPH_EVIDENCE/adr0097/insert-address-order-0351/`.
 
 **Rejected: unmaterialized scratch.** Plan0350 tested a private `Scratch::Empty` state with
 logical inline capacity but no initialized payload. Empty/Inline shared one non-heap reservation
@@ -2208,7 +2208,7 @@ This confirms deferred initialization reached codegen, not an isolated per-store
 attribution of the other regressions. At the0350 close, the entire lib.rs, including tests, was
 restored to7ea423ad (commit4062d5d50), with Inline/Heap only and original acceptance1/6.
 Candidate/red sources, bound artifacts, CSVs, restoration and review are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/empty-scratch-0350/`.
+`$GLEAPH_EVIDENCE/adr0097/empty-scratch-0350/`.
 
 **Rejected: preparation input-shape specialization.** Plan0349 tested a private borrowed
 `AsRef<[Edit]> + ?Sized` input so scalar `[Edit; 1]` and batch `[Edit]` retained their types
@@ -2226,7 +2226,7 @@ produce a net instruction reduction and do not isolate the cost of length handli
 The candidate remains archived, not implemented. At the0349 close, lib.rs was restored byte-for-byte
 to7ea423ad (commit4062d5d50), including the slice-only signature; acceptance at that checkpoint was1/6.
 Source/artifact bindings, raw CSVs, mutant, restoration and inspection are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/prepare-input-0349/`.
+`$GLEAPH_EVIDENCE/adr0097/prepare-input-0349/`.
 
 **Experimental: cover descriptor view reuse (0348 checkpoint; original acceptance then1/6).**
 `EditImage::cover` obtains its final descriptor view from the existing grow/non-grow
@@ -2249,7 +2249,7 @@ map/LARA Wasm sizes increase134/216B. Only split satisfies its original ceiling;
 five remain unmet. The LARA control retains the same pending admission changes and is
 not clean-commit integration evidence. Source/build bindings, CSVs, native logs, mutant
 and codegen evidence are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/cover-view-0348/`.
+`$GLEAPH_EVIDENCE/adr0097/cover-view-0348/`.
 
 **Experimental: split right bulk copy (measured46dfcf02 checkpoint; split ceiling met).**
 `EditPlan::split_page` replaces its right per-entry redistribution with one prospective
@@ -2274,7 +2274,7 @@ The first source38b1d7ae remains a failed non-regression attempt: its dynamic re
 expression caused a common-reader codegen regression. The final width selects the already
 validated array capacity or capacity minus one entry (528/512), preserving exact source
 bounds without changing the reader or its empty-read contract. Both attempts and bindings
-are under `/Users/yota/.local/share/gleaph/evidence/adr0097/split-right-bulk-0347/`.
+are under `$GLEAPH_EVIDENCE/adr0097/split-right-bulk-0347/`.
 
 **Experimental: split left-window move (measured c2e5c751 checkpoint).**
 `EditPlan::split_page` retains both pre-covers and consumes right-half sources before
@@ -2296,7 +2296,7 @@ The first source615fc80d result remains rejected: split46643 improved, but three
 rows regressed by2 instructions per scalar call. Its common preparation frame grew
 144→160B; the refined split call boundary restores144B. These are compiled-frame
 observations, not peak-stack measurements. Both epochs and source/artifact bindings are
-preserved under `/Users/yota/.local/share/gleaph/evidence/adr0097/split-left-window-0346/`.
+preserved under `$GLEAPH_EVIDENCE/adr0097/split-left-window-0346/`.
 
 **Experimental: edit-scoped lookup readers (measured85a3d1a8 checkpoint).**
 `apply_edit` selects a byte-reader callback once per intent and delegates selection and validation
@@ -2317,7 +2317,7 @@ instructions; LARA total/named measured2018134/2017173. All six improve against 
 bench e63a23bd; LARA retains its separately bound lib515b control. These results support this
 reader-routing change, not a component-cost decomposition or acceptance waiver. Raw CSVs and
 source/build bindings are under
-`/Users/yota/.local/share/gleaph/evidence/adr0097/lookup-metadata-0345/`.
+`$GLEAPH_EVIDENCE/adr0097/lookup-metadata-0345/`.
 
 **Experimental interface: borrowed write windows (introduced in plan0343).** Private `Scratch::resize_reserved`
 returns the exact resized view and private `EditImage::cover` returns exactly the requested
@@ -2336,9 +2336,9 @@ example plus four ownership compile-fail cases). The separately approved cold ru
 archived-f5 lock bytes, restored original lock15, and preserved all125 input pins and absences;
 7.608s elapsed is native execution evidence, not IC instruction pricing. The source-bound receipt
 and full logs are in
-`/Users/yota/.local/share/gleaph/evidence/adr0097/lookup-native-cef3-seq288-user/`.
+`$GLEAPH_EVIDENCE/adr0097/lookup-native-cef3-seq288-user/`.
 The earlier022f attempt remains a separate, failed clippy epoch. cef3 candidate canbench-feature compilation, candidate Wasm and IC measurement HAVE run and are
-separately bound: `/Users/yota/.local/share/gleaph/evidence/adr0097/direct-canbench-cef3-seq426-user/`
+separately bound: `$GLEAPH_EVIDENCE/adr0097/direct-canbench-cef3-seq426-user/`
 (receipt `8e04613c…`, six-row table `e0e840af…`) measured all six rows with **all six original
 ceilings FAIL**, and those IC results are historical cef3, not the present candidate. Retained e545 source and Wasm
 `835d503b…` are another IC-unmeasured epoch, not a build of cef3. All six original ceilings remain
