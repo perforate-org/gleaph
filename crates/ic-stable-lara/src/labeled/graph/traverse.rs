@@ -3664,9 +3664,12 @@ where
             BucketSearch::Found { bucket, .. } => bucket,
             BucketSearch::Missing { .. } => return Ok(false),
         };
+        // A tree bucket needs the batch path as much as a spilled one does: its values live in the
+        // property root, so a per-edge reader walks that tree once per row. The batch visitor handles
+        // tree mode by diverting to the property-aware walk, so it is eligible here too.
         Ok(bucket.degree() > 0
             && bucket.inline_property_byte_width() > 0
-            && bucket.edge_run().is_some())
+            && (bucket.edge_run().is_some() || bucket.is_tree_mode()))
     }
 
     /// Visits outgoing inline property bytes for one label as batches without materializing edge rows.
