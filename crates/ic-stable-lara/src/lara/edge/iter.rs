@@ -121,7 +121,7 @@ impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
     ) -> Result<Self, LaraOperationError> {
         let nbytes = (stored as usize)
             .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
             Some(OutEdgeSlabChunk {
                 buf: Vec::new(),

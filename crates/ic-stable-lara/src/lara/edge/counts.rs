@@ -145,11 +145,11 @@ impl SegmentEdgeCounts {
             actual: self
                 .actual
                 .checked_add(actual)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                .ok_or(LaraOperationError::overflow())?,
             total: self
                 .total
                 .checked_add(total)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                .ok_or(LaraOperationError::overflow())?,
         })
     }
 
@@ -302,10 +302,10 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         let offset = index
             .checked_mul(ENTRY_BYTES)
             .and_then(|n| n.checked_add(DATA_OFFSET))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let end = offset
             .checked_add(ENTRY_BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if self
             .memory
             .size()
@@ -353,8 +353,7 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
             PhysicalCountProjection::LeafBlock(len) => Some(
                 SegmentEdgeCounts {
                     actual: source.actual,
-                    total: i64::try_from(len)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                    total: i64::try_from(len).map_err(|_| LaraOperationError::overflow())?,
                 }
                 .as_le_bytes(),
             ),

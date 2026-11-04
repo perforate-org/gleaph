@@ -168,11 +168,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let chunk = super::OUT_EDGE_SLAB_CHUNK_SLOTS;
         let size = (used.min(chunk) as usize)
             .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(size)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         bytes.resize(size, 0);
         Ok((used, bytes))
     }
@@ -219,7 +219,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         let mut out = Vec::new();
         out.try_reserve_exact(used as usize)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for index in 0..used {
             out.push(self.spill_edge_at(run, index)?);
         }
@@ -351,7 +351,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let chunk = super::OUT_EDGE_SLAB_CHUNK_SLOTS;
         let mut out = Vec::new();
         out.try_reserve_exact(used as usize)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for start in (0..used).step_by(chunk as usize) {
             let count = (used - start).min(chunk) as usize;
             if !self
@@ -392,7 +392,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 let rm_slot = v
                     .base_slot_start()
                     .checked_add(u64::from(offset))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 self.write_slot(rm_slot, E::tombstone_edge())
                     .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             }

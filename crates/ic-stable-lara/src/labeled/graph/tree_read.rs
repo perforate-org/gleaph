@@ -517,7 +517,7 @@ impl PropertyLeafCache {
                 let leaf_index = slot / k;
                 let first = leaf_index
                     .checked_mul(k)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
                 graph
                     .ltb()

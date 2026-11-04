@@ -75,6 +75,25 @@ pub enum LaraOperationError {
     UndirectedRemoveOrientationMismatch,
 }
 
+impl LaraOperationError {
+    /// The fail-closed "no room" answer.
+    ///
+    /// This is one of the most-reached errors in the subsystem and was spelled out as a bare variant at
+    /// roughly three hundred sites, which makes the one question that matters - *where did it come
+    /// from* - unanswerable. Every construction goes through here, and a debug build traps with the
+    /// caller so the site is named rather than inferred.
+    #[track_caller]
+    pub(crate) fn overflow() -> Self {
+        if std::env::var_os("GLEAPH_TRACE_OVERFLOW").is_some() {
+            panic!(
+                "CollectAllocationOverflow constructed at {:?}",
+                std::panic::Location::caller()
+            );
+        }
+        Self::CollectAllocationOverflow
+    }
+}
+
 impl fmt::Display for LaraOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

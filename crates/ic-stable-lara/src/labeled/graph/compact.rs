@@ -3466,13 +3466,13 @@ impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
         src: VertexId,
     ) -> Result<Self, LabeledOperationError> {
         if u32::from(src) >= owner.vertices.len() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let header = owner.edges.header();
         let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(src, header.segment_size.max(1));
         let count_index = owner.edges.vertex_segment_counts_index(src)?;
         if u64::from(leaf) >= owner.edges.span_meta_store().len() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let source = Self {
             owner,
@@ -3497,7 +3497,7 @@ impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
         let mut configuration = header;
         configuration.elem_capacity = self.header.elem_capacity;
         if header.elem_capacity < self.header.elem_capacity || configuration != self.header {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let source = Self { header, ..self };
         source.validate()?;
@@ -3519,7 +3519,7 @@ impl<'a, E: CsrEdge, M: Memory> PhysicalLayoutSource<'a, E, M> {
                 self.pin,
             )
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         Ok(())
     }
@@ -3545,7 +3545,7 @@ impl CanonicalPhysicalVertex {
         let mut buckets = Vec::new();
         buckets
             .try_reserve_exact(self.buckets.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         buckets.extend_from_slice(&self.buckets);
         Ok(Self {
             src: self.src,
@@ -3573,7 +3573,7 @@ impl CanonicalPhysicalVertex {
         if owner.vertices.get(self.src) != self.vertex
             || owner.leaf_span_buckets(&self.vertex)? != self.buckets
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         Ok(())
     }
@@ -3634,19 +3634,19 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
                 .zip(&canonical.buckets)
                 .any(|(new, old)| new.bucket_label_key() != old.bucket_label_key())
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let end = crate::slab_index::checked_add_slot_exclusive_end(
             placement.start,
             u64::from(placement.slots),
         )
         .filter(|end| *end <= header.elem_capacity)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
         let positions = if canonical.vertex.is_default_edge_labeled() {
             let mut positions = Vec::new();
             positions
                 .try_reserve_exact(1)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .map_err(|_| LaraOperationError::overflow())?;
             positions.push(placement.start);
             positions
         } else {
@@ -3661,7 +3661,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
         let transcribed = match input {
             PhysicalCopyInput::Buffered(bytes) => {
                 if bytes.len() != desired.len() {
-                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    return Err(LaraOperationError::overflow().into());
                 }
                 Some(bytes)
             }
@@ -3670,11 +3670,11 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
         let mut final_buckets = Vec::new();
         final_buckets
             .try_reserve_exact(desired.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let mut payloads = Vec::new();
         payloads
             .try_reserve_exact(desired.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let mut supplied = transcribed.map(Vec::into_iter);
         for ((old, new), position) in canonical.buckets.iter().zip(desired).zip(positions) {
             let region = bucket_content_region(&new);
@@ -3684,13 +3684,13 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
                     .is_none_or(|bound| bound > end)
                     || position < placement.start
                 {
-                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    return Err(LaraOperationError::overflow().into());
                 }
                 let old_region = bucket_content_region(old);
                 if let Some(bytes) = bytes {
                     if bytes.len() != LabeledLaraGraph::<E, M>::edge_bytes_for_len(slots as usize)?
                     {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     payloads.push(PhysicalSlabPayload::Buffered {
                         source: None,
@@ -3698,17 +3698,16 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
                         bytes,
                     });
                 } else {
-                    let (start, old_slots) =
-                        old_region.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let (start, old_slots) = old_region.ok_or(LaraOperationError::overflow())?;
                     if old_slots != slots {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     if supplied.is_some() {
                         let len = LabeledLaraGraph::<E, M>::edge_bytes_for_len(slots as usize)?;
                         let mut bytes = Vec::new();
                         bytes
                             .try_reserve_exact(len)
-                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                            .map_err(|_| LaraOperationError::overflow())?;
                         bytes.resize(len, 0);
                         owner.edges.read_slots_contiguous(start, &mut bytes);
                         payloads.push(PhysicalSlabPayload::Buffered {
@@ -3725,7 +3724,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
                     }
                 }
             } else if bytes.is_some() {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
             final_buckets.push(new.with_edge_range(position, new.stored_slots_raw()));
         }
@@ -3735,7 +3734,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
             .find(|bucket| !bucket.is_tiny_mode())
             .is_some_and(|bucket| bucket.edge_start() != placement.start)
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let final_vertex = if canonical.vertex.is_default_edge_labeled() {
             canonical.vertex.with_base_slot_start(placement.start)
@@ -3775,7 +3774,7 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
         self.source.validate()?;
         self.canonical.validate(self.source.owner)?;
         if !self.payload.validate_source() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         Ok(())
     }
@@ -3862,7 +3861,7 @@ impl<E: CsrEdge, M: Memory> PhysicalLayoutPreparation<'_, E, M> {
                 .as_ref()
                 .is_some_and(|image| !image.validate_source())
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let allocator = self.allocator.ready().map_err(|_| {
             LaraOperationError::RebalanceFailed(crate::GrowFailed {
@@ -4031,12 +4030,12 @@ fn next_vertex_edge_span_allocation(
         .checked_mul(5)
         .and_then(|value| value.checked_add(3))
         .map(|value| value / 4)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let growth = segment_size.max(geometric_headroom);
     old_alloc
         .checked_add(growth)
         .map(|grown| grown.max(min_required).max(segment_size))
-        .ok_or(LaraOperationError::CollectAllocationOverflow)
+        .ok_or(LaraOperationError::overflow())
 }
 
 #[allow(clippy::needless_return)]
@@ -4319,15 +4318,15 @@ where
         let first = source
             .leaf
             .checked_mul(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let last = first
             .checked_add(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(source.vertex_len);
         let mut canonical = Vec::new();
         canonical
             .try_reserve_exact((last - first) as usize)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for ordinal in first..last {
             canonical.push(CanonicalPhysicalVertex::capture(
                 self,
@@ -4349,13 +4348,13 @@ where
         let mut retired = Vec::new();
         retired
             .try_reserve_exact(canonical.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let (allocator, block, count_projection) = match &operation {
             PhysicalLayoutOperation::VertexRewrite { placement, .. } => {
                 let row = canonical
                     .iter()
                     .find(|row| row.src == src)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if row.vertex.stored_slots > 0
                     && let Some(bucket) = row.buckets.iter().find(|bucket| !bucket.is_tiny_mode())
                 {
@@ -4371,14 +4370,14 @@ where
                             placement.start,
                             u64::from(placement.slots),
                         )
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                         for (start_slot, len) in Self::vertex_edge_span_retire_intervals(
                             old_base,
                             row.vertex.stored_slots,
                             &row.buckets,
                         )? {
                             let old_end = checked_add_slot_index(start_slot, len)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                .ok_or(LaraOperationError::overflow())?;
                             // The retained destination owns its entire cover, not just
                             // the copied prefix. Free holes remain the allocator's rule.
                             for (start, end) in [
@@ -4407,7 +4406,7 @@ where
                 let allocator = self
                     .edges
                     .prepare_physical_span_edit(PhysicalSpanSelection::NoAllocation, &retired)?
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 let projection = Some(PhysicalCountProjection::VertexSpan {
                     old: row.vertex.stored_slots,
                     new: placement.slots,
@@ -4418,12 +4417,12 @@ where
             PhysicalLayoutOperation::LeafSlide { destination, .. } => match destination {
                 LeafPhysicalDestination::Current(range) => {
                     if Some(*range) != pinned {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     let allocator = self
                         .edges
                         .prepare_physical_span_edit(PhysicalSpanSelection::NoAllocation, &[])?
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     (
                         allocator,
                         Some(*range),
@@ -4436,7 +4435,7 @@ where
                             old.start_slot,
                             old.len,
                         )
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                         self.edges.prepare_physical_span_edit(
                             PhysicalSpanSelection::ExactPrefixAt(start, *len - old.len),
                             &[],
@@ -4453,7 +4452,7 @@ where
                             range.start_slot,
                             range.len,
                         )
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                         header.elem_capacity = header.elem_capacity.max(end);
                         (
                             allocator,
@@ -4489,21 +4488,21 @@ where
                                 PhysicalSpanSelection::BestFit(*len),
                                 &retired,
                             )?
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                         if allocator.selected_span().is_some_and(|whole| {
                             whole
                                 .start_slot
                                 .checked_add(whole.len)
                                 .is_none_or(|end| end > header.elem_capacity)
                         }) {
-                            return Err(LaraOperationError::CollectAllocationOverflow.into());
+                            return Err(LaraOperationError::overflow().into());
                         }
                         let start_slot = allocator
                             .taken_span()
                             .map_or(header.elem_capacity, |span| span.start_slot);
                         let end =
                             crate::slab_index::checked_add_slot_exclusive_end(start_slot, *len)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                .ok_or(LaraOperationError::overflow())?;
                         header.elem_capacity = header.elem_capacity.max(end);
                         (
                             allocator,
@@ -4520,7 +4519,7 @@ where
         let mut positioned = Vec::new();
         positioned
             .try_reserve_exact(canonical.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         match &operation {
             PhysicalLayoutOperation::VertexRewrite { placement, .. } => {
                 if placement.slots > 0 {
@@ -4528,11 +4527,11 @@ where
                         placement.start,
                         u64::from(placement.slots),
                     )
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                     if let Some(pin) = pinned
                         && (placement.start < pin.start_slot || end > pin.start_slot + pin.len)
                     {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     for mate in canonical
                         .iter()
@@ -4545,9 +4544,9 @@ where
                                 bucket.edge_start(),
                                 u64::from(mate.vertex.stored_slots),
                             )
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                             if placement.start < mate_end && bucket.edge_start() < end {
-                                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                                return Err(LaraOperationError::overflow().into());
                             }
                         }
                     }
@@ -4555,22 +4554,22 @@ where
                 let index = canonical
                     .iter()
                     .position(|row| row.src == src)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 positioned.push((index, *placement));
             }
             PhysicalLayoutOperation::LeafSlide { .. } => {
-                let range = block.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let range = block.ok_or(LaraOperationError::overflow())?;
                 let leaf_end =
                     crate::slab_index::checked_add_slot_exclusive_end(range.start_slot, range.len)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                 let mut residents = Vec::new();
                 residents
                     .try_reserve_exact(canonical.len())
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    .map_err(|_| LaraOperationError::overflow())?;
                 let mut indexes = Vec::new();
                 indexes
                     .try_reserve_exact(canonical.len())
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    .map_err(|_| LaraOperationError::overflow())?;
                 let mut total = 0u64;
                 for (index, row) in canonical.iter().enumerate() {
                     if (row.vertex.degree() == 0 && row.vertex.stored_slots == 0)
@@ -4586,14 +4585,14 @@ where
                     })?;
                     total = total
                         .checked_add(u64::from(resident))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     residents.push(resident);
                     indexes.push(index);
                 }
                 let gaps = range
                     .len
                     .checked_sub(total)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 let starts = Self::calculate_labeled_leaf_vertex_positions(
                     range.start_slot,
                     &residents,
@@ -4607,9 +4606,9 @@ where
                     };
                     let width = u32::try_from(
                         end.checked_sub(starts[i])
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                            .ok_or(LaraOperationError::overflow())?,
                     )
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    .map_err(|_| LaraOperationError::overflow())?;
                     positioned.push((
                         index,
                         VertexPhysicalPlacement::new(starts[i], width, None, 0),
@@ -4646,22 +4645,22 @@ where
         });
         let mut rows = Vec::new();
         rows.try_reserve_exact(positioned.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let mut images = Vec::new();
         images
             .try_reserve_exact(positioned.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for (index, placement) in positioned {
             let row = &canonical[index];
             let mut desired = Vec::new();
             desired
                 .try_reserve_exact(row.buckets.len())
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .map_err(|_| LaraOperationError::overflow())?;
             desired.extend_from_slice(&row.buckets);
             let mut transcribed = Vec::new();
             transcribed
                 .try_reserve_exact(row.buckets.len())
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .map_err(|_| LaraOperationError::overflow())?;
             transcribed.resize_with(row.buckets.len(), || None);
             let component = if matches!(operation, PhysicalLayoutOperation::VertexRewrite { .. }) {
                 PreparedVertexPhysicalCopy::reserve_desired(
@@ -4699,7 +4698,7 @@ where
                         row.vertex.with_stored_slots(placement.slots)
                     }
             {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
             rows.push(component.writers);
             images.push(component.payload);
@@ -4719,7 +4718,7 @@ where
         };
         let slab = self.edges.prepare_physical_image(header, images)?;
         if !slab.validate_source() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         source.validate()?;
         for row in &canonical {
@@ -4768,10 +4767,10 @@ where
                 let skip = free_at_base.len.min(cur_len);
                 cur_base = cur_base
                     .checked_add(skip)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 cur_len = cur_len
                     .checked_sub(skip)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 continue;
             }
             let mut lo = 1u64;
@@ -4781,31 +4780,27 @@ where
                 let mid = lo + (hi - lo) / 2;
                 if self.edges.release_span(cur_base, mid).is_ok() {
                     best = mid;
-                    lo = mid
-                        .checked_add(1)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    lo = mid.checked_add(1).ok_or(LaraOperationError::overflow())?;
                 } else if mid == 0 {
                     break;
                 } else {
-                    hi = mid
-                        .checked_sub(1)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    hi = mid.checked_sub(1).ok_or(LaraOperationError::overflow())?;
                 }
             }
             if best > 0 {
                 cur_base = cur_base
                     .checked_add(best)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 cur_len = cur_len
                     .checked_sub(best)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
             } else {
                 cur_base = cur_base
                     .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 cur_len = cur_len
                     .checked_sub(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
             }
         }
         Ok(())
@@ -4822,7 +4817,7 @@ where
             return Ok(Vec::new());
         }
         let span_end = checked_add_slot_index(span_start, u64::from(span_len))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
 
         // Plan 0319 §Step 3: for tree-mode buckets, the LEG span is
         // the **physical root region** (a u32 block_id array), NOT
@@ -4836,7 +4831,7 @@ where
         let mut bucket_intervals: Vec<(u64, u64)> = Vec::new();
         bucket_intervals
             .try_reserve_exact(buckets.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         bucket_intervals.extend(
             buckets
                 .iter()
@@ -4864,18 +4859,17 @@ where
         let mut merged_buckets: Vec<(u64, u64)> = Vec::new();
         merged_buckets
             .try_reserve_exact(bucket_intervals.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for (start, len) in bucket_intervals {
-            let end = checked_add_slot_index(start, len)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let end = checked_add_slot_index(start, len).ok_or(LaraOperationError::overflow())?;
             if let Some((last_start, last_len)) = merged_buckets.last_mut() {
                 let last_end = checked_add_slot_index(*last_start, *last_len)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if start <= last_end {
                     if end > last_end {
                         *last_len = end
                             .checked_sub(*last_start)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                     }
                     continue;
                 }
@@ -4888,27 +4882,27 @@ where
             .len()
             .checked_mul(2)
             .and_then(|n| n.checked_add(1))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         intervals
             .try_reserve_exact(interval_count)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let mut cursor = span_start;
         for (bucket_start, bucket_len) in merged_buckets {
             if cursor < bucket_start {
                 let gap_len = bucket_start
                     .checked_sub(cursor)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 intervals.push((cursor, gap_len));
             }
             intervals.push((bucket_start, bucket_len));
             cursor = checked_add_slot_index(bucket_start, bucket_len)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
                 .max(cursor);
         }
         if cursor < span_end {
             let tail_len = span_end
                 .checked_sub(cursor)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             intervals.push((cursor, tail_len));
         }
 
@@ -5214,7 +5208,7 @@ where
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         if let Some((new_base, new_alloc)) = in_window_layout {
             if new_alloc < min_required {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
             let old_alloc = vertex.stored_slots;
             let old_base = buckets
@@ -5403,7 +5397,7 @@ where
         for resident in resident_slots {
             total_weight = total_weight
                 .checked_add(u64::from(*resident))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
 
         const P: u128 = 100_000_000;
@@ -5414,33 +5408,32 @@ where
         } else {
             gaps_u
                 .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
                 .checked_div(tw)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
         };
 
         let mut cursor_fp = u128::from(leaf_start)
             .checked_mul(P)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let mut out = Vec::new();
         out.try_reserve_exact(resident_slots.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         for resident in resident_slots {
-            let start = u64::try_from(cursor_fp / P)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let start = u64::try_from(cursor_fp / P).map_err(|_| LaraOperationError::overflow())?;
             out.push(start);
             let resident = u128::from(*resident);
             let start_fp = u128::from(start)
                 .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             cursor_fp = start_fp
                 .checked_add(
                     resident
                         .checked_mul(P)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                        .ok_or(LaraOperationError::overflow())?,
                 )
                 .and_then(|cursor| cursor.checked_add(step_fp.checked_mul(resident)?))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         Ok(out)
     }
@@ -5486,7 +5479,7 @@ where
         let new_len = target
             .new_len
             .checked_add(extra_slots)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let mut preparation = self.prepare_physical_layout_from(
             src,
             source,
@@ -5732,22 +5725,22 @@ where
         let mut live_log_sources: Vec<(u32, u32)> =
             Vec::with_capacity(self.edges.spill_used_len(run) as usize);
         for (log_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
-            let log_offset = u32::try_from(log_offset)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let log_offset =
+                u32::try_from(log_offset).map_err(|_| LaraOperationError::overflow())?;
             let old_slot_index = bucket
                 .stored_slots()
                 .checked_add(log_offset)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.edges.spill_edge_at(run, index)?;
             if edge.is_tombstone_edge() {
                 continue;
             }
-            let live_log_offset = u32::try_from(live_log_edges.len())
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let live_log_offset =
+                u32::try_from(live_log_edges.len()).map_err(|_| LaraOperationError::overflow())?;
             let new_slot_index = bucket
                 .stored_slots()
                 .checked_add(live_log_offset)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if old_slot_index != new_slot_index {
                 moves.push(EdgeSlotMove {
                     label_id: bucket.bucket_label_key(),
@@ -5759,8 +5752,8 @@ where
             live_log_sources.push((index, new_slot_index));
         }
 
-        let live_log_count = u32::try_from(live_log_edges.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        let live_log_count =
+            u32::try_from(live_log_edges.len()).map_err(|_| LaraOperationError::overflow())?;
         let new_stored_slots = bucket
             .stored_slots()
             .checked_add(live_log_count)
@@ -5773,19 +5766,19 @@ where
         let successor = self.bucket_successor_start(&vertex, bucket_index)?;
         let available = successor.saturating_sub(bucket.edge_start());
         if available < u64::from(new_stored_slots) {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
 
         for (log_offset, edge) in live_log_edges.into_iter().enumerate() {
-            let log_offset = u64::try_from(log_offset)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let log_offset =
+                u64::try_from(log_offset).map_err(|_| LaraOperationError::overflow())?;
             let out_slot = checked_add_slot_index(
                 bucket.edge_start(),
                 u64::from(bucket.stored_slots())
                     .checked_add(log_offset)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                    .ok_or(LaraOperationError::overflow())?,
             )
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
             self.edges
                 .write_slot(out_slot, edge)
                 .map_err(LabeledOperationError::from)?;
@@ -5864,7 +5857,7 @@ where
         let (mut byte_cursor, mut buffered_bytes) = (0, 0);
         for old_slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = if prefetch {
                 if byte_cursor == buffered_bytes {
                     // Prefetch only initialized slots, also stopping at the address limit.
@@ -5895,7 +5888,7 @@ where
             }
             next_live = next_live
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         Ok(None)
     }
@@ -5937,7 +5930,7 @@ where
         let mut last_live_slot: Option<u32> = None;
         for slot_index in resume_slot_index..bucket.stored_slots() {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = edges.read_slot(edge_slot);
             if edge.is_tombstone_edge() || edge.is_deleted_slot() {
                 if first_hole.is_none() {
@@ -5977,9 +5970,9 @@ where
         E: CsrEdgeTombstone,
     {
         let hole = checked_add_slot_index(bucket.edge_start(), u64::from(swap.hole_slot))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let vacated = checked_add_slot_index(bucket.edge_start(), u64::from(swap.vacated_slot))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let width = bucket.inline_property_byte_width();
         if width > 0 {
             // ADR 0099: the moved row's value block goes where the row goes. The window shift this
@@ -6008,9 +6001,9 @@ where
         E: CsrEdgeTombstone,
     {
         let from = checked_add_slot_index(bucket.edge_start(), u64::from(moved.old_slot_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let to = checked_add_slot_index(bucket.edge_start(), u64::from(moved.new_slot_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let edge = self.edges.read_slot(from);
         self.edges
             .write_slot(to, edge)
@@ -6081,7 +6074,7 @@ where
     {
         #[cfg(test)]
         if take_forced_compact_vertex_edge_span_step_error() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         self.ensure_vertex(vid)?;
         let vertex = self.vertices.get(vid);
@@ -6104,8 +6097,8 @@ where
                 .enumerate()
                 .find(|(_, bucket)| bucket.edge_run().is_some())
         {
-            let bucket_index = u32::try_from(bucket_index)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let bucket_index =
+                u32::try_from(bucket_index).map_err(|_| LaraOperationError::overflow())?;
             match self.compact_label_bucket_overflow_to_slab(vid, bucket_index, *bucket) {
                 Ok(moves) => {
                     return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
@@ -6169,7 +6162,7 @@ where
         let bucket = self
             .buckets
             .read_label_bucket_slot(slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         // Whole-span work can reach any sibling, regardless of the triggering label.
         // Admit slab logical compaction once, before selection, fallback and finalization:
         // tiny rows are descriptor-resident; tree stored_slots is logical LTB extent,
@@ -6294,7 +6287,7 @@ where
     ) -> Result<Vec<u64>, LabeledOperationError> {
         let mut out = Vec::new();
         out.try_reserve_exact(buckets.len())
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         if buckets.is_empty() {
             return Ok(out);
         }
@@ -6334,10 +6327,10 @@ where
             out.push(u64::from(resident));
             effective_live = effective_live
                 .checked_add(u64::from(resident))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             total_weight = total_weight
                 .checked_add(u64::from(bucket.degree()).saturating_add(1))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         let gaps = u64::from(span_slots)
             .checked_sub(effective_live)
@@ -6356,20 +6349,19 @@ where
         } else {
             gaps_u
                 .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
                 .checked_div(tw)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
         };
 
         let mut cursor_fp = u128::from(start_slot)
             .checked_mul(P)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         // Place precisely the physical widths admitted above, not degree or run rows.
         let mut leading_tiny = true;
         for (bucket, width_or_start) in buckets.iter().zip(out.iter_mut()) {
             let resident = u128::from(*width_or_start);
-            let start = u64::try_from(cursor_fp / P)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let start = u64::try_from(cursor_fp / P).map_err(|_| LaraOperationError::overflow())?;
             *width_or_start = start;
             // Leading anchors own no slots or gap before the first resident origin.
             if leading_tiny && bucket.is_tiny_mode() {
@@ -6378,19 +6370,19 @@ where
             leading_tiny = false;
             let start_fp = u128::from(start)
                 .checked_mul(P)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             cursor_fp = start_fp
                 .checked_add(
                     resident
                         .checked_mul(P)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                        .ok_or(LaraOperationError::overflow())?,
                 )
                 .and_then(|cursor| {
                     let weight = u128::from(bucket.degree()).checked_add(1)?;
                     let gap = step_fp.checked_mul(weight)?;
                     cursor.checked_add(gap)
                 })
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         Ok(out)
     }
@@ -6576,8 +6568,8 @@ where
         bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let width = bucket.inline_property_byte_width();
         for (slot_index, bytes) in saved.iter().enumerate() {
-            let slot_index = u32::try_from(slot_index)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let slot_index =
+                u32::try_from(slot_index).map_err(|_| LaraOperationError::overflow())?;
             let offset = super::super::invariants::inline_property_bytes_byte_offset_at_slot(
                 &bucket, slot_index,
             )?;
@@ -6766,7 +6758,7 @@ where
         }
         let grown = len
             .checked_add(fold)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let grown_bucket = bucket.with_stored_slots(grown);
         // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
         // span bring their value blocks with them. The move *is* the plane's operation (it grows the

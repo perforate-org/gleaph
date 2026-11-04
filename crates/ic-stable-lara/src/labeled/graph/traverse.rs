@@ -2515,7 +2515,7 @@ where
             let high = first
                 .max(last)
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             self.read_bucket_inline_property_bytes_range_into(
                 bucket,
                 low..high,
@@ -3111,7 +3111,7 @@ where
                         bucket.edge_start(),
                         u64::from(slot_index),
                     )
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                     self.edges.read_slot(physical)
                 } else {
                     if bucket.edge_run().is_none() {
@@ -3336,14 +3336,14 @@ impl ContiguousBucketRun {
             .edge_start()
             .saturating_sub(self.base)
             .checked_add(u64::from(slot))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let byte_off = usize::try_from(rel)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            .map_err(|_| LaraOperationError::overflow())?
             .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let byte_end = byte_off
             .checked_add(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         raw.get(byte_off..byte_end)
             .ok_or_else(|| LaraOperationError::CollectAllocationOverflow.into())
     }

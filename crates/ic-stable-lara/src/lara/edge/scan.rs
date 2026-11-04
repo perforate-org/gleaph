@@ -96,11 +96,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let count = range.end - range.start;
         let byte_len = (count as usize)
             .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         bytes.clear();
         bytes
             .try_reserve_exact(byte_len)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         bytes.resize(byte_len, 0);
         let slab_rows = range.end.min(prefix).saturating_sub(range.start);
         let slab_bytes = slab_rows as usize * E::BYTES;
@@ -108,7 +108,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let start = row
                 .base_slot_start()
                 .checked_add(u64::from(range.start))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             self.read_slots_contiguous(start, &mut bytes[..slab_bytes]);
         }
         if slab_rows < count {
@@ -267,7 +267,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let live = v.degree();
             let nbytes = (stored as usize)
                 .checked_mul(E::BYTES)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
                 Some(OutEdgeSlabChunk {
                     buf: Vec::new(),
@@ -293,7 +293,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let slab_count = self.initialized_slab_slots(&v)?;
         let nbytes_slab = (slab_count as usize)
             .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let slab_chunk = if nbytes_slab >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
             Some(OutEdgeSlabChunk {
                 buf: Vec::new(),

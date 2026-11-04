@@ -581,12 +581,12 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         let bytes = item.to_bytes_checked().into_owned();
         let end = address
             .checked_add(bytes.len() as u64)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let backed = self
             .memory
             .size()
             .checked_mul(crate::WASM_PAGE_SIZE)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if end > backed {
             return Err(LaraOperationError::CollectAllocationOverflow);
         }

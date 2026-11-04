@@ -43,7 +43,7 @@ where
     ) -> Result<(), LabeledOperationError> {
         let first = u32::from(src)
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         for idx in first..self.vertices.len() {
             let vid = VertexId::from(idx);
             let successor = self.vertices.get(vid);
@@ -165,7 +165,7 @@ where
             let write = self.vertices.prepare_set(src, &cleared)?;
             source.validate()?;
             if self.vertices.get(src) != vertex || !counts.validate_source() {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
             write.write();
             counts.write();
@@ -188,7 +188,7 @@ where
         let mut preparation = plan.reserve()?;
         source.validate()?;
         if !counts.validate_source() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         preparation.ready()?.publish();
         counts.write();

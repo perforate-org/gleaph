@@ -1231,8 +1231,7 @@ where
                 .bump_vertex_segment_counts(
                     vid,
                     0,
-                    i64::try_from(block_len)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                    i64::try_from(block_len).map_err(|_| LaraOperationError::overflow())?,
                 )
                 .map_err(LabeledOperationError::from)?;
         }
@@ -1266,7 +1265,7 @@ where
         // data-loss bug class). The first-edge placement path never reaches this — it
         // uses `find_free` directly and relocates on `None` — so fail loud instead of
         // handing back an overlapping base. Callers needing room must relocate first.
-        Err(LaraOperationError::CollectAllocationOverflow.into())
+        Err(LaraOperationError::overflow().into())
     }
 
     pub(super) fn labeled_leaf_geometry_stored_slots(&self, leaf: u32) -> u64 {
@@ -1315,7 +1314,7 @@ where
             let header = self.edges.header();
             let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, header.segment_size.max(1));
             checked_add_slot_index(leaf_start, vertex_offset)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
         } else {
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             let Some(bucket) = buckets.iter().find(|bucket| !bucket.is_tiny_mode()) else {
@@ -1324,7 +1323,7 @@ where
             bucket.edge_start()
         };
         let end = checked_add_slot_index(base, u64::from(new_alloc))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if end > leaf_end {
             return Ok(None);
         }
@@ -1351,9 +1350,9 @@ where
     ) -> Result<u32, LabeledOperationError> {
         let (leaf_start, leaf_len) = self
             .labeled_leaf_physical_range(vid)?
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
+        let leaf_end =
+            checked_add_slot_index(leaf_start, leaf_len).ok_or(LaraOperationError::overflow())?;
         let vertex = self.vertices.get(vid);
         let base = if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             self.ensure_labeled_leaf_edge_physical_pin(vid)?
@@ -1386,8 +1385,8 @@ where
             return Ok(false);
         }
         let delta = new_len.saturating_sub(old_len);
-        let adjacent_free_start = checked_add_slot_index(old_start, old_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let adjacent_free_start =
+            checked_add_slot_index(old_start, old_len).ok_or(LaraOperationError::overflow())?;
         let Some(right_free) = self
             .edges
             .free_span_store()
@@ -1402,7 +1401,7 @@ where
             .edges
             .free_span_store()
             .take_prefix_at(adjacent_free_start, delta)
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            .map_err(|_| LaraOperationError::overflow())?
             .is_none()
         {
             return Ok(false);
@@ -1421,8 +1420,8 @@ where
             return Ok(false);
         };
         let leaf_end = leaf_start + leaf_len;
-        let end = checked_add_slot_index(start, u64::from(len))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let end =
+            checked_add_slot_index(start, u64::from(len)).ok_or(LaraOperationError::overflow())?;
         Ok(start >= leaf_start && end <= leaf_end)
     }
 
@@ -1504,24 +1503,23 @@ where
             None => {
                 let buckets = self
                     .read_vertex_label_buckets(&vertex)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    .map_err(|_| LaraOperationError::overflow())?;
                 if buckets.iter().all(|bucket| bucket.is_tiny_mode()) {
                     return Ok(());
                 }
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
         };
-        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let leaf_end =
+            checked_add_slot_index(leaf_start, leaf_len).ok_or(LaraOperationError::overflow())?;
 
         let base = vertex.base_slot_start();
         for offset in 0..u64::from(vertex.degree()) {
-            let slot = checked_add_slot_index(base, offset)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let slot = checked_add_slot_index(base, offset).ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             // ADR 0096 §5: tiny buckets hold no slab bytes; there is no span
             // to contain. (An unpinned leaf with only tiny buckets returns
             // Ok below — promotion/maintenance pins it once spans exist.)

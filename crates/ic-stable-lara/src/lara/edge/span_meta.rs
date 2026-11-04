@@ -244,10 +244,10 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         let offset = index
             .checked_mul(ENTRY_SIZE)
             .and_then(|n| n.checked_add(DATA_OFFSET))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let end = offset
             .checked_add(ENTRY_SIZE)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if self
             .memory
             .size()

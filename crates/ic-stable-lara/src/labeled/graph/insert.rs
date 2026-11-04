@@ -133,9 +133,9 @@ where
                     vertex.base_slot_start(),
                     u64::from(vertex.stored_degree()),
                 )
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .ok_or(LaraOperationError::overflow())?
             } else {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             });
         }
         self.vertices
@@ -495,7 +495,7 @@ where
                             bucket.edge_start(),
                             u64::from(bucket.stored_slots()),
                         )
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                         debug_assert!(write_slot < successor_start);
                         self.edges.write_slot(write_slot, attempt_edge.clone())?;
                         let logical_slot = bucket.stored_slots();
@@ -510,7 +510,7 @@ where
                         let next_num_edges = hdr
                             .num_edges
                             .checked_add(1)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                         self.edges.set_num_edges(next_num_edges);
                         self.edges
                             .bump_vertex_segment_counts(src, 1, 0)
@@ -767,7 +767,7 @@ where
         let mut reused_slot = None;
         for slot_index in 0..bucket.stored_slots() {
             let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if self.edges.read_slot(physical_slot).is_tombstone_edge() {
                 reused_slot = Some(slot_index);
                 break;
@@ -789,14 +789,14 @@ where
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
         }
         let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(reused_slot))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.edges.write_slot(physical_slot, edge.clone())?;
         self.publish_bucket_descriptor(bucket_slot, bucket)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.edges.set_num_edges(next_num_edges);
         self.edges
             .bump_vertex_segment_counts(src, 1, 0)
@@ -823,7 +823,7 @@ where
         log_collect_overflow(
             "ensure_labeled_bucket_edge_span_room: new bucket span placement failed",
         );
-        Err(LaraOperationError::CollectAllocationOverflow.into())
+        Err(LaraOperationError::overflow().into())
     }
 
     pub(super) fn find_or_create_bucket(
@@ -868,7 +868,7 @@ where
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(bucket_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             // Fresh descriptor (degree 0, no log, no values) always satisfies
             // the tiny pre-checks; failure here means the creation path itself
             // changed shape and must be re-examined, never ignored.
@@ -886,7 +886,7 @@ where
         let bucket = self
             .buckets
             .read_label_bucket_slot(bucket_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.cache_bucket_lookup(src, label_id, &vertex, bucket_slot);
         Ok((bucket_slot, bucket))
     }
@@ -1036,7 +1036,7 @@ where
             bucket
                 .degree()
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                .ok_or(LaraOperationError::overflow())?,
         );
         let grown = if hole.is_some() {
             grown
@@ -1045,7 +1045,7 @@ where
                 bucket
                     .tiny_used_width()
                     .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                    .ok_or(LaraOperationError::overflow())?,
             )
         };
         let mut slot = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
@@ -1061,7 +1061,7 @@ where
         let next_num_edges = hdr
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.edges.set_num_edges(next_num_edges);
         Ok(Some(ScalarInsertLocation {
             logical_slot,
@@ -1102,7 +1102,7 @@ where
                 Err(other) => return Err(other),
             }
         }
-        Err(LaraOperationError::CollectAllocationOverflow.into())
+        Err(LaraOperationError::overflow().into())
     }
 
     /// Promotes a tiny-mode bucket to slab (ADR 0096 §4): reserve, transcribe,
@@ -1131,7 +1131,7 @@ where
         let degree = bucket.degree();
         let span_len = degree
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         // --- Reserve + commit, fail-closed (ADR 0096 §4, R2b) ---
         // Vertex-span tiling is load-bearing (occupied spans, audit, release
         // all read vertex spans as contiguous cover): spans extend the cover
@@ -1162,14 +1162,14 @@ where
             let end = bucket
                 .edge_start()
                 .checked_add(u64::from(bucket.stored_slots_raw()))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             content_end = Some(content_end.map_or(end, |prev| prev.max(end)));
         }
         let (span_base, new_stored, total_delta) = match (cover_base, content_end) {
             (Some(base), Some(content)) => {
                 let span_end = content
                     .checked_add(u64::from(span_len))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 // Freeness: mates-disjoint (tiny-skipped occupancy).
                 let mates_free = self
                     .labeled_leaf_occupied_spans(src, src)
@@ -1181,14 +1181,14 @@ where
                     Some((block_start, block_len)) => {
                         let block_end = block_start
                             .checked_add(block_len)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                         content >= block_start && span_end <= block_end
                     }
                     None => false,
                 };
                 let pinned = self.labeled_leaf_physical_range(src)?.is_some();
                 if !mates_free || (pinned && !floor_covers) {
-                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    return Err(LaraOperationError::overflow().into());
                 }
                 if span_end > self.edges.header().elem_capacity {
                     self.edges.set_elem_capacity(span_end)?;
@@ -1197,9 +1197,8 @@ where
                 // exactly when reaching the end.
                 let grown = span_end
                     .checked_sub(base)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let grown = u32::try_from(grown)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
+                let grown = u32::try_from(grown).map_err(|_| LaraOperationError::overflow())?;
                 let new_stored = vertex.stored_slots.max(grown);
                 let delta = i64::from(new_stored) - i64::from(vertex.stored_slots);
                 (content, new_stored, if floor_covers { 0 } else { delta })
@@ -1260,7 +1259,7 @@ where
                             let end = mbucket
                                 .edge_start()
                                 .checked_add(u64::from(mbucket.stored_slots_raw()))
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                .ok_or(LaraOperationError::overflow())?;
                             mcontent = Some(mcontent.map_or(end, |prev| prev.max(end)));
                         }
                         let (Some(mb), Some(mc)) = (mbase, mcontent) else {
@@ -1268,34 +1267,32 @@ where
                         };
                         let slack = mb
                             .checked_add(u64::from(mvertex.stored_slots))
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                            .ok_or(LaraOperationError::overflow())?
                             .saturating_sub(mc);
                         if slack < u64::from(span_len) {
                             continue;
                         }
                         let new_mate_stored = u32::try_from(
-                            mc.checked_sub(mb)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                            mc.checked_sub(mb).ok_or(LaraOperationError::overflow())?,
                         )
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                        .map_err(|_| LaraOperationError::overflow())?;
                         self.vertices
                             .set(mate, &mvertex.with_stored_slots(new_mate_stored));
                         stolen = Some((mc, vertex.stored_slots.max(span_len)));
                         break;
                     }
-                    let (base, new_stored) =
-                        stolen.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let (base, new_stored) = stolen.ok_or(LaraOperationError::overflow())?;
                     // Defense in depth: the stolen range must be mates-disjoint
                     // post-shrink (tiling guarantees it; fail closed if drifted).
                     let span_end = base
                         .checked_add(u64::from(span_len))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     let still_free = self
                         .labeled_leaf_occupied_spans(src, src)
                         .iter()
                         .all(|(s, e)| span_end <= *s || base >= *e);
                     if !still_free {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     (base, new_stored, 0)
                 }
@@ -1314,13 +1311,13 @@ where
             }
             let slot = span_base
                 .checked_add(u64::from(transcribed))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             self.edges
                 .write_slot_bytes(slot, record)
                 .map_err(LabeledOperationError::from)?;
             transcribed = transcribed
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         debug_assert_eq!(
             transcribed, degree,
@@ -1365,7 +1362,7 @@ where
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.is_tiny_mode()
                 || bucket.is_tree_mode()
                 || bucket.inline_property_byte_width() != 0
@@ -1376,7 +1373,7 @@ where
             let (prefix, spill) = self.edges.initialized_row_slots(&bucket)?;
             let stored = prefix
                 .checked_add(spill)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let updated = vertex
                 .with_homogeneous_bypass_label(bucket.bucket_label_key())
                 .with_base_slot_start(bucket.edge_start())
@@ -1388,7 +1385,7 @@ where
             } else {
                 updated
                     .try_with_bypass_spill_run(bucket.edge_spill_run())
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                    .map_err(|_| LaraOperationError::overflow())?
             }
         } else {
             if vertex.inline_property_bytes_allocated_bytes() != 0 {
@@ -1410,7 +1407,7 @@ where
         let mut preparation = plan.reserve()?;
         source.validate()?;
         if !counts.validate_source() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         preparation.ready()?.publish();
         counts.write();

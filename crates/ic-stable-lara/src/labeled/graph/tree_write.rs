@@ -199,11 +199,11 @@ where
     // Common accounting fields.
     let next_stored = stored_slots
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let next_degree = bucket
         .degree
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
 
     if tail_offset == 0 {
         // No tail room → mint a new LTB block and append its
@@ -418,7 +418,7 @@ where
                         let new_combined_len = old_edge_root_len
                             .checked_add(old_prop_root_len)
                             .and_then(|v| v.checked_add(1))
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                         let old_combined_len = old_edge_root_len + old_prop_root_len;
                         let avoid = super::leaf_arena::SourceRegion::new(
                             old_combined_start,
@@ -564,7 +564,7 @@ where
         let next_num_edges = hdr
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         graph.edges().set_num_edges(next_num_edges);
         Ok(next_stored - 1)
     }
@@ -1140,7 +1140,7 @@ where
         header.tombstone_count = header
             .tombstone_count
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         graph.ltb().write_block_header(block_id, &header);
         // 3. Write the property value at the reused position (w > 0).
         //    The tree property stream is tombstone-inclusive 1:1
@@ -1196,7 +1196,7 @@ where
         let next_degree = bucket
             .degree
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let new_bucket = bucket
             .with_degree_field(next_degree)
             .with_stored_slots(bucket.stored_slots())
@@ -1227,7 +1227,7 @@ where
         let next_num_edges = hdr
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         graph.edges().set_num_edges(next_num_edges);
         return Ok(Some(reused_slot));
     }
@@ -1296,7 +1296,7 @@ where
     let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots()), 1)?;
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     debug_assert_eq!(
         new_edge_root_len,
         physical_root_len_ceil(u64::from(next_stored), 1).expect("root len"),
@@ -1311,7 +1311,7 @@ where
     let new_property_root_len: u32 = if property_root_grows {
         old_property_root_len
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
     } else {
         old_property_root_len
     };
@@ -1526,7 +1526,7 @@ where
     let next_num_edges = hdr
         .num_edges
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     graph.edges().set_num_edges(next_num_edges);
     Ok(next_stored - 1)
 }
@@ -1691,7 +1691,7 @@ where
                     let old_combined_len = old_edge_root_len + old_prop_root_len;
                     let new_combined_len = old_combined_len
                         .checked_add(1)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     let old_combined_start = bucket.edge_start();
                     let avoid = super::leaf_arena::SourceRegion::new(
                         old_combined_start,
@@ -1796,7 +1796,7 @@ where
         let next_num_edges = hdr
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         graph.edges().set_num_edges(next_num_edges);
         return Ok(next_stored - 1);
     }
@@ -1836,7 +1836,7 @@ where
     let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots()), depth)?;
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let old_combined_len = old_edge_root_len
         .checked_add(old_prop_root_len)
         .expect("old combined span overflow");
@@ -2005,7 +2005,7 @@ where
     let next_num_edges = hdr
         .num_edges
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     graph.edges().set_num_edges(next_num_edges);
     Ok(next_stored - 1)
 }
@@ -2081,7 +2081,7 @@ where
     header.tombstone_count = header
         .tombstone_count
         .checked_add(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     graph.ltb().write_block_header(block_id, &header);
     // 4. Decrement degree (stored_slots unchanged — tombstones are
     //    physical slots that may be reused later, even though the
@@ -2089,7 +2089,7 @@ where
     let next_degree = bucket
         .degree
         .checked_sub(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let new_bucket = bucket
         .with_degree_field(next_degree)
         .with_stored_slots(bucket.stored_slots())
@@ -2114,7 +2114,7 @@ where
     let next_num_edges = hdr
         .num_edges
         .checked_sub(1)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     graph.edges().set_num_edges(next_num_edges);
     Ok(Some(current))
 }
@@ -2153,7 +2153,7 @@ where
     };
     let span_start = edge_start;
     let span_end = crate::slab_index::checked_add_slot_exclusive_end(edge_start, u64::from(len))
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let physical_end = physical_start + physical_len;
     Ok(span_start >= physical_start && span_end <= physical_end)
 }
@@ -2458,7 +2458,7 @@ where
         let kp = property_slots_per_block(graph, w)?;
         let next = stored_slots
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let l_p_new = u64::from(next.div_ceil(kp));
         let d_required = property_depth_for_leaves(l_p_new, kp, stored_slots)?;
         if d_required > bucket.tree_mode_property_depth() {
@@ -2489,7 +2489,7 @@ where
         let old_len_u64 = property_root_entry_count(u64::from(stored_slots.div_ceil(kp)), d_prop);
         let next = stored_slots
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let new_len_u64 = property_root_entry_count(u64::from(next.div_ceil(kp)), d_prop);
         let old_len = u32::try_from(old_len_u64).map_err(|_| {
             LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
@@ -2996,7 +2996,7 @@ where
         );
         let slab_len = (u64::from(degree))
             .checked_mul(u64::from(w))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let prop_start = match graph.values().allocate_byte_span(slab_len) {
             Ok(s) => s,
             Err(e) => {
@@ -3046,7 +3046,7 @@ where
                 .release_span(new_edge_start, u64::from(degree));
             let slab_len = (u64::from(degree))
                 .checked_mul(u64::from(w))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let _ = graph
                 .values()
                 .release_byte_span(new_property_offset, slab_len);

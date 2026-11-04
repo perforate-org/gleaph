@@ -336,7 +336,7 @@ where
             let first = self
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             crate::labeled::slot_index::checked_add_slot_index(
                 first.edge_start(),
                 u64::from(vertex.stored_slots),

@@ -201,10 +201,10 @@ where
                 let bucket = self
                     .buckets
                     .read_label_bucket_slot(bucket_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 let len = u64::from(bucket.inline_property_bytes_slab_slots())
                     .checked_mul(u64::from(bucket.inline_property_byte_width()))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if len > 0 {
                     spans.push((
                         bucket_slot,
@@ -223,12 +223,12 @@ where
         let mut plans = Vec::new();
         for (bucket_slot, bucket, old_offset, len) in spans {
             if old_offset < cursor {
-                return Err(LaraOperationError::CollectAllocationOverflow.into());
+                return Err(LaraOperationError::overflow().into());
             }
             if old_offset == cursor {
                 cursor = cursor
                     .checked_add(len)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 continue;
             }
             let Some(free_index) = available
@@ -243,7 +243,7 @@ where
                 available[free_index].start_slot = available[free_index]
                     .start_slot
                     .checked_add(len)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 available[free_index].len -= len;
             }
             plans.push(SpanPlan {
@@ -272,7 +272,7 @@ where
             available = coalesced;
             cursor = cursor
                 .checked_add(len)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         if plans.is_empty() {
             return Ok(LabeledInlinePropertyBytesCompactionResult::default());
@@ -328,14 +328,14 @@ where
             }
             allocated_bytes = allocated_bytes
                 .checked_add(vertex.inline_property_bytes_allocated_bytes())
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             for bucket in self.read_vertex_label_buckets(&vertex)? {
                 let bytes = u64::from(bucket.degree())
                     .checked_mul(u64::from(bucket.inline_property_byte_width()))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 live_bytes = live_bytes
                     .checked_add(bytes)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
             }
         }
         let allocator = self.values.allocator_stats();
@@ -440,8 +440,7 @@ where
             .iter()
             .map(|b| self.bucket_resident_inline_property_bytes_for(src, b))
             .try_fold(0u64, |acc, bytes| {
-                acc.checked_add(bytes)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)
+                acc.checked_add(bytes).ok_or(LaraOperationError::overflow())
             })?;
         if vertex.inline_property_bytes_allocated_bytes() == total {
             debug_assert_eq!(
@@ -530,8 +529,7 @@ where
                 .into_iter()
                 .enumerate()
                 .map(|(slot, inline_property_bytes)| {
-                    let slot = u32::try_from(slot)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    let slot = u32::try_from(slot).map_err(|_| LaraOperationError::overflow())?;
                     Ok((slot, inline_property_bytes))
                 })
                 .collect();
@@ -549,8 +547,7 @@ where
         let mut out = Vec::with_capacity(edges.len());
         for (ordinal, edge) in edges.into_iter().enumerate() {
             let slot_index = edge.edge_slot_index_raw();
-            let ordinal = u32::try_from(ordinal)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let ordinal = u32::try_from(ordinal).map_err(|_| LaraOperationError::overflow())?;
             let value = self.read_bucket_inline_property_bytes_for_slot(
                 bucket,
                 ordinal,
@@ -676,7 +673,7 @@ where
                     .ok_or(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index })?;
                 prefix
                     .checked_add(row)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                    .ok_or(LaraOperationError::overflow())?
             } else {
                 slot_index
             }
@@ -685,7 +682,7 @@ where
         };
         let end = ordinal
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.read_bucket_inline_property_bytes_range_into(bucket, ordinal..end, buf)
     }
 
@@ -701,13 +698,13 @@ where
         let count = ordinals
             .end
             .checked_sub(ordinals.start)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let bytes = (count as usize)
             .checked_mul(width)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if bytes > buf.len() {
             buf.try_reserve_exact(bytes - buf.len())
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .map_err(|_| LaraOperationError::overflow())?;
         }
         buf.resize(bytes, 0);
         if bytes == 0 {
@@ -801,7 +798,7 @@ where
         if slot_index >= bucket.stored_slots() {
             let row = slot_index
                 .checked_sub(bucket.stored_slots())
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let run = self
                 .values
                 .spill_mint(bucket.values_spill_run())
@@ -918,7 +915,7 @@ where
             let updated = self
                 .buckets
                 .read_label_bucket_slot(bucket_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             return Ok(updated);
         }
         Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -984,7 +981,7 @@ where
         let account = vertex
             .inline_property_bytes_allocated_bytes()
             .checked_add(total)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let updated_vertex = vertex.try_with_inline_property_bytes_allocated_bytes(account)?;
         Ok((updated_vertex, bucket))
     }
@@ -1042,7 +1039,7 @@ where
             return Err(LabeledOperationError::InlinePropertyMaterializationInvalidSource);
         }
         crate::slab_index::checked_add_byte_offset(offset, cursor.total_bytes())
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let updated = bucket
             .with_inline_property_byte_width(cursor.width)
             .with_inline_property_bytes_offset(offset)
@@ -1090,7 +1087,7 @@ where
             .prepare_retire_byte_span(offset, cursor.total_bytes())?;
         let rollback = retirement
             .ready()
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            .map_err(|_| LaraOperationError::overflow())?;
         let fill = vec![fill_byte; cursor.total_bytes() as usize];
         let reserved = self.values.append_byte_span(cursor.total_bytes())?;
         assert_eq!(reserved, offset, "inline reservation moved after admission");
@@ -1163,11 +1160,11 @@ where
         let publication = self.prepare_materialize_publication(cursor, offset)?;
         let end = position
             .checked_add(Self::INLINE_MATERIALIZE_BYTE_BUDGET)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(cursor.total_bytes());
         let destination = offset
             .checked_add(position)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.values.write_bytes(
             destination,
             &vec![cursor.fill_byte; (end - position) as usize],
@@ -1273,7 +1270,7 @@ where
             || bucket.inline_property_bytes_slab_slots() != bucket.degree()
             || ordinal >= bucket.inline_property_bytes_slab_slots()
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
 
         let old_slots = bucket.inline_property_bytes_slab_slots();
@@ -1282,19 +1279,19 @@ where
         let destination = bucket
             .inline_property_bytes_offset()
             .checked_add(u64::from(ordinal) * u64::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let trailing_bytes = if trailing_slots > 0 {
             let trailing_bytes = u64::from(trailing_slots)
                 .checked_mul(u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let source = bucket
                 .inline_property_bytes_offset()
                 .checked_add(u64::from(ordinal + 1) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let mut bytes = vec![
                 0u8;
                 usize::try_from(trailing_bytes)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                    .map_err(|_| LaraOperationError::overflow())?
             ];
             self.values.read_bytes(source, &mut bytes);
             bytes
@@ -1307,7 +1304,7 @@ where
         let retired_offset = bucket
             .inline_property_bytes_offset()
             .checked_add(u64::from(new_slots) * u64::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.values
             .reserve_retired_byte_spans(1)
             .map_err(LabeledOperationError::from)?;
@@ -1315,7 +1312,7 @@ where
         let allocated = vertex
             .inline_property_bytes_allocated_bytes()
             .checked_sub(u64::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let updated_vertex = vertex
             .try_with_inline_property_bytes_allocated_bytes(allocated)
             .map_err(LabeledOperationError::from)?;
@@ -1367,7 +1364,7 @@ where
                 let bucket = self
                     .buckets
                     .read_label_bucket_slot(bucket_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 return self.ensure_bucket_inline_property_byte_width_on_slot(
                     src,
                     bucket_slot,
@@ -1412,7 +1409,7 @@ where
                     let updated = self
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     return Ok(updated);
                 }
                 Ok(bucket.with_inline_property_byte_width(inline_property_byte_width))
@@ -1492,14 +1489,14 @@ where
         let new_alloc = vertex
             .inline_property_bytes_allocated_bytes()
             .checked_add(needed_bytes - had_bytes)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let updated_vertex = vertex
             .try_with_inline_property_bytes_allocated_bytes(new_alloc)
             .map_err(LabeledOperationError::from)?;
         let old_offset = bucket.inline_property_bytes_offset();
         let span_ends_at_tail = old_offset
             .checked_add(had_bytes)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             == self.values.header().slab_occupied_tail;
 
         if had_bytes == 0 {
@@ -1525,11 +1522,8 @@ where
         {
             bucket = bucket.with_inline_property_bytes_slab_slots(needed_slots);
         } else {
-            let mut bytes = vec![
-                0;
-                usize::try_from(needed_bytes)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-            ];
+            let mut bytes =
+                vec![0; usize::try_from(needed_bytes).map_err(|_| LaraOperationError::overflow())?];
             self.values
                 .read_bytes(old_offset, &mut bytes[..had_bytes as usize]);
             self.values
@@ -1573,7 +1567,7 @@ where
                 return Ok(false);
             }
             let edge_slot = checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let current = self.edges.read_slot(edge_slot);
             if current.is_tombstone_edge() {
                 return Ok(false);
@@ -1641,7 +1635,7 @@ where
                 return Ok(false);
             }
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let current = self.edges.read_slot(edge_slot);
             return Ok(!current.is_deleted_slot() && !current.is_tombstone_edge());
         }
@@ -1822,8 +1816,8 @@ where
             {
                 continue;
             }
-            let bucket_index = u32::try_from(bucket_index)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let bucket_index =
+                u32::try_from(bucket_index).map_err(|_| LaraOperationError::overflow())?;
             let slot_inline_property_bytes = self
                 .collect_bucket_inline_property_bytes_slots_asc_order(
                     src,

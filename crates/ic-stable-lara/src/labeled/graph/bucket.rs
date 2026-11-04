@@ -87,13 +87,13 @@ where
         let segment_size = header.segment_size.max(1);
         let start = leaf
             .checked_mul(segment_size)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if start >= self.vertices.len() {
             return Ok(Vec::new());
         }
         let end = start
             .checked_add(segment_size)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(self.vertices.len());
         let mut identities = Vec::new();
         for vid_u in start..end {
@@ -129,13 +129,13 @@ where
         let segment_size = header.segment_size.max(1);
         let start = leaf
             .checked_mul(segment_size)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if start >= self.vertices.len() {
             return Ok(Vec::new());
         }
         let end = start
             .checked_add(segment_size)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(self.vertices.len());
         let mut descriptors = Vec::new();
         for vid_u in start..end {
@@ -194,7 +194,7 @@ where
         let leaf = Self::leaf_index_for_vid(src, header.segment_size);
         let idx_u32 = leaf
             .checked_add(header.segment_count)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let _idx = u64::from(idx_u32);
         if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
             return Ok(());
@@ -258,10 +258,10 @@ where
 
         let start_vid = leaf
             .checked_mul(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let end_vid = start_vid
             .checked_add(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(self.vertices.len());
         for vid_u in start_vid..end_vid {
             let vid = VertexId::from(vid_u);
@@ -317,7 +317,7 @@ where
         let start = vertex.base_slot_start();
         let range_end = start
             .checked_add(u64::from(deg))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
 
         if let Some(cache) = self.last_bucket_lookup.get()
             && cache.vid == src
@@ -328,7 +328,7 @@ where
                 let bucket = self
                     .buckets
                     .read_label_bucket_slot(cache.slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if bucket.bucket_label_key() == label_id {
                     return Ok(BucketSearch::Found {
                         slot: cache.slot,
@@ -343,7 +343,7 @@ where
                 let bucket = self
                     .buckets
                     .read_label_bucket_slot(cache.slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if bucket.bucket_label_key() == cache.bucket_key {
                     return Ok(BucketSearch::Missing { insert_index: deg });
                 }
@@ -355,7 +355,7 @@ where
                     let bucket = self
                         .buckets
                         .read_label_bucket_slot(next_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     if bucket.bucket_label_key() == label_id {
                         self.cache_bucket_lookup(src, label_id, vertex, next_slot);
                         return Ok(BucketSearch::Found {
@@ -368,11 +368,11 @@ where
                 let prev_slot = cache
                     .slot
                     .checked_sub(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 let bucket = self
                     .buckets
                     .read_label_bucket_slot(prev_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if bucket.bucket_label_key() == label_id {
                     self.cache_bucket_lookup(src, label_id, vertex, prev_slot);
                     return Ok(BucketSearch::Found {
@@ -393,7 +393,7 @@ where
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(cache.slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key() == label_id {
                 self.last_bucket_lookup.set(Some(cache));
                 return Ok(BucketSearch::Found {
@@ -407,7 +407,7 @@ where
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(start)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             return Ok(match label_id.cmp(&bucket.bucket_label_key()) {
                 Ordering::Less => BucketSearch::Missing { insert_index: 0 },
                 Ordering::Equal => {
@@ -424,7 +424,7 @@ where
             let b0 = self
                 .buckets
                 .read_label_bucket_slot(start)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             match label_id.cmp(&b0.bucket_label_key()) {
                 Ordering::Less => return Ok(BucketSearch::Missing { insert_index: 0 }),
                 Ordering::Equal => {
@@ -435,13 +435,11 @@ where
                     });
                 }
                 Ordering::Greater => {
-                    let slot1 = start
-                        .checked_add(1)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let slot1 = start.checked_add(1).ok_or(LaraOperationError::overflow())?;
                     let b1 = self
                         .buckets
                         .read_label_bucket_slot(slot1)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     return Ok(match label_id.cmp(&b1.bucket_label_key()) {
                         Ordering::Less => BucketSearch::Missing { insert_index: 1 },
                         Ordering::Equal => {
@@ -464,13 +462,13 @@ where
             let buckets = self
                 .buckets
                 .read_label_bucket_slots_contiguous(start, deg)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             return Ok(
                 match buckets.binary_search_by_key(&label_id, |bucket| bucket.bucket_label_key()) {
                     Ok(index) => {
                         let slot = start
                             .checked_add(index as u64)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                            .ok_or(LaraOperationError::overflow())?;
                         let bucket = buckets[index];
                         self.cache_bucket_lookup(src, label_id, vertex, slot);
                         BucketSearch::Found { slot, bucket }
@@ -488,19 +486,17 @@ where
             let mid = lo + (hi - lo) / 2;
             let slot = start
                 .checked_add(u64::from(mid))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key() == label_id {
                 self.cache_bucket_lookup(src, label_id, vertex, slot);
                 return Ok(BucketSearch::Found { slot, bucket });
             }
             if bucket.bucket_label_key() < label_id {
-                lo = mid
-                    .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                lo = mid.checked_add(1).ok_or(LaraOperationError::overflow())?;
             } else {
                 hi = mid;
             }
@@ -580,7 +576,7 @@ where
     ) -> Result<u32, LabeledOperationError> {
         let d = bucket_slot
             .checked_sub(vertex.base_slot_start())
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         u32::try_from(d).map_err(|_| LaraOperationError::CollectAllocationOverflow.into())
     }
 
@@ -622,7 +618,7 @@ where
         Ok(self
             .buckets
             .read_label_bucket_slots_contiguous(start, deg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?)
+            .ok_or(LaraOperationError::overflow())?)
     }
 
     /// Resolves every label bucket of one vertex through `resolve`, producing the
@@ -659,13 +655,13 @@ where
         }
         let deg = vertex.degree();
         if hi > deg {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let n = hi - lo;
         let start = vertex
             .base_slot_start()
             .checked_add(u64::from(lo))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.buckets
             .read_label_bucket_slots_contiguous(start, n)
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
@@ -687,10 +683,10 @@ where
         let seg = header.segment_size.max(1);
         let start_vid = leaf
             .checked_mul(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let end_vid = start_vid
             .checked_add(seg)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or(LaraOperationError::overflow())?
             .min(self.vertices.len());
         let mut stats = LeafBucketPlacementStats {
             bucket_mode_vertices: 0,
@@ -712,19 +708,19 @@ where
                 stats.total_stored_edge_slots = stats
                     .total_stored_edge_slots
                     .checked_add(u64::from(vertex.stored_slots))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) {
                     stats.total_edge_spill_rows = stats
                         .total_edge_spill_rows
                         .checked_add(u64::from(self.edges.spill_used_len(run)))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                 }
                 continue;
             }
             stats.bucket_mode_vertices = stats
                 .bucket_mode_vertices
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             for bucket in buckets {
                 // ADR 0096 §5: tiny buckets occupy zero physical geometry (no
@@ -736,11 +732,11 @@ where
                 stats.total_stored_edge_slots = stats
                     .total_stored_edge_slots
                     .checked_add(u64::from(bucket.stored_slots_raw()))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 stats.total_inline_property_bytes_slab_slots = stats
                     .total_inline_property_bytes_slab_slots
                     .checked_add(u64::from(bucket.inline_property_bytes_slab_slots()))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if bucket.inline_property_byte_width() > 0 {
                     stats
                         .inline_property_byte_widths
@@ -750,13 +746,13 @@ where
                     stats.total_edge_spill_rows = stats
                         .total_edge_spill_rows
                         .checked_add(u64::from(self.edges.spill_used_len(run)))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                 }
                 if bucket.values_run().is_some() {
                     stats.total_inline_property_bytes_overflow_log_slots = stats
                         .total_inline_property_bytes_overflow_log_slots
                         .checked_add(u64::from(self.bucket_values_run_rows(&bucket)))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                 }
             }
         }
@@ -839,7 +835,7 @@ where
         let cur = self
             .buckets
             .read_label_bucket_slot(cur_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.bucket_successor_start_after_bucket(vertex, bucket_index, &cur)
     }
 
@@ -854,13 +850,13 @@ where
         // empty. Skip forward to the next non-tiny bucket (usually one step).
         let mut next_ix = bucket_index
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         while next_ix < vertex.degree() {
             let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
             let next = self
                 .buckets
                 .read_label_bucket_slot(next_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if !next.is_tiny_mode() {
                 // Proportional slack placement does not guarantee strictly increasing
                 // `edge_start` across bucket slots; CSR slab-window geometry requires a
@@ -869,7 +865,7 @@ where
             }
             next_ix = next_ix
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
 
         if vertex.degree() == 0 {
@@ -884,13 +880,13 @@ where
             let candidate = self
                 .buckets
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if !candidate.is_tiny_mode() {
                 break candidate.edge_start();
             }
             base_ix = base_ix
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if base_ix == vertex.degree() {
                 break bucket.edge_start();
             }
@@ -921,19 +917,19 @@ where
         // through to the own-span tail below.
         let mut next_ix = bucket_index
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         while next_ix < vertex.degree() {
             let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
             let next = self
                 .buckets
                 .read_label_bucket_slot(next_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if !next.is_tiny_mode() {
                 return Ok(next.edge_start().max(bucket.edge_start()));
             }
             next_ix = next_ix
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
 
         crate::labeled::slot_index::checked_add_slot_index(
@@ -954,12 +950,12 @@ where
             // current edge_start. This keeps the two spans contiguous and non-overlapping.
             let next_ix = bucket_index
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
             let next = self
                 .buckets
                 .read_label_bucket_slot(next_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             return Ok(next.edge_start());
         }
 
@@ -974,12 +970,12 @@ where
         // be inserted with stored_slots=0 without consuming any reserved span.
         let prev_ix = bucket_index
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let prev_slot = Self::labeled_vertex_bucket_slot(vertex, prev_ix)?;
         let prev = self
             .buckets
             .read_label_bucket_slot(prev_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         // ADR 0096 §5: a tiny predecessor occupies zero slab slots — the new
         // bucket anchors at the tiny anchor itself, not anchor + degree.
         if prev.is_tiny_mode() {
@@ -1002,7 +998,7 @@ where
         }
         let span = vertex
             .label_bucket_descriptor_span()
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         vertex
             .base_slot_start()
             .checked_add(u64::from(span))

@@ -148,10 +148,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let len = u64::try_from(counts.total)
             .ok()
             .filter(|len| *len > 0)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let end = crate::slab_index::checked_add_slot_exclusive_end(pin.physical_start, len)
             .filter(|end| *end <= capacity)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         Ok(Some(super::free_span::FreeSpan {
             start_slot: pin.physical_start,
             len: end - pin.physical_start,
@@ -281,10 +281,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
         let prefix = v
             .initialized_slab_slots(spill_rows)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         prefix
             .checked_add(spill_rows)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         Ok((prefix, spill_rows))
     }
 

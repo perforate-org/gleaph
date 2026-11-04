@@ -105,7 +105,7 @@ where
             let grown = graph
                 .buckets()
                 .read_label_bucket_slot(grown_slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             graph.compact_label_bucket_overflow_to_slab(vid, bucket_index, grown)?;
             Ok(())
         }
@@ -171,7 +171,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         .header()
         .num_edges
         .checked_add(u64::from(pending.is_some()))
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     let edge_run = if bucket.edge_spill_run() == NO_SPILL_RUN {
         None
     } else {
@@ -180,7 +180,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     let prefix = graph.edges().initialized_slab_slots(&bucket)?;
     let resident = prefix
         .checked_add(edge_run.map_or(0, |run| graph.edges().spill_used_len(run)))
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     if resident < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
             current_alloc_space: resident,
@@ -206,8 +206,8 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     }
     let value_run = bucket.values_run();
     let depth = derive_depth(resident);
-    let edge_root_len = u32::try_from(derived_root_len(resident))
-        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+    let edge_root_len =
+        u32::try_from(derived_root_len(resident)).map_err(|_| LaraOperationError::overflow())?;
     let property_slots_per_block = if width == 0 {
         0
     } else {
@@ -236,14 +236,14 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         u64::from(property_leaves),
         property_depth,
     ))
-    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+    .map_err(|_| LaraOperationError::overflow())?;
     let combined_len = edge_root_len
         .checked_add(property_root_len)
-        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        .ok_or(LaraOperationError::overflow())?;
     // Construct all descriptor fields before reserving target storage. Only its root address
     // will change after allocation; the old descriptor and both source planes remain owned.
     let template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
-        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+        .map_err(|_| LaraOperationError::overflow())?
         .with_tree_mode(true)
         .with_tree_mode_property_depth(property_depth);
     let source = super::compact::PhysicalLayoutSource::capture(graph, vid)?;
@@ -320,7 +320,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 return Err(LabeledOperationError::BucketNotFound { vid, label });
             };
             let bucket_index = u32::try_from(slot.saturating_sub(vertex.base_slot_start()))
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .map_err(|_| LaraOperationError::overflow())?;
             // `Required`: the room must exist, so a rewrite that cannot place the wider
             // span fails instead of silently keeping the current one.
             let retiled = graph
@@ -374,7 +374,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         let source = source.bind_allocated_header(allocated_header)?;
         crate::slab_index::checked_add_slot_exclusive_end(new_start, u64::from(combined_len))
             .filter(|end| *end <= allocated_header.elem_capacity)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let base_header = BlockHeader {
             kind: BlockKind::Edge,
             bucket_label_key_wire: 0,
@@ -421,7 +421,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                     dst.fill(0);
                 } else {
                     if value.len() != usize::from(width) {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     dst.copy_from_slice(value);
                 }
@@ -449,7 +449,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 let result = (|| -> Result<(), LabeledOperationError> {
                     let slot = slot.raw();
                     if slot < next || slot >= source_extent {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        return Err(LaraOperationError::overflow().into());
                     }
                     while next < slot {
                         emit(next, &tombstone, &[])?;
@@ -470,7 +470,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             return Err(error);
         }
         if live != bucket.degree {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         while next < source_extent {
             emit(next, &tombstone, &[])?;
@@ -544,7 +544,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         if edge_root.len() != edge_root_len as usize * E::BYTES
             || property_root.len() != property_root_len as usize * E::BYTES
         {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         let target = template.with_base_slot_start(new_start);
         let mut publication = if canonical.vertex.is_default_edge_labeled() {
@@ -560,7 +560,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             let row = desired
                 .iter_mut()
                 .find(|row| row.bucket_label_key() == label)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             *row = target;
             TreePublication::Existing(
                 graph
@@ -572,7 +572,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         source.validate()?;
         canonical.validate(graph)?;
         if !counts.validate_source() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
+            return Err(LaraOperationError::overflow().into());
         }
         // The root lands in the bucket's own base, so writing it overwrites the
         // head of the source prefix. Every fallible step is therefore done; the

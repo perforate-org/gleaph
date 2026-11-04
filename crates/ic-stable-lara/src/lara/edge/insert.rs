@@ -39,7 +39,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             }
             let nbytes = stored
                 .checked_mul(E::BYTES)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let mut raw = vec![0u8; nbytes];
             self.edges.read_slots_contiguous(base, &mut raw);
             let mut out = Vec::with_capacity(live);
@@ -68,7 +68,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let slot = v
                 .base_slot_start()
                 .checked_add(i as u64)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.read_slot(slot);
             if !edge.is_deleted_slot() {
                 let slot_index = i as u32;
@@ -87,13 +87,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let run = self.spill_mint(v.spill_run())?;
         let used = self.spill_used_len(run);
         let mut spill_slot_index =
-            u32::try_from(slab_count).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            u32::try_from(slab_count).map_err(|_| LaraOperationError::overflow())?;
         for index in 0..used {
             let edge = self.spill_edge_at(run, index)?;
             if edge.is_deleted_slot() {
                 spill_slot_index = spill_slot_index
                     .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 continue;
             }
             out.push((
@@ -102,7 +102,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             ));
             spill_slot_index = spill_slot_index
                 .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
         }
         debug_assert_eq!(
             out.len(),
@@ -171,11 +171,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let next_num_edges = edge_layout
             .num_edges
             .checked_add(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let loc = v
             .base_slot_start()
             .checked_add(u64::from(v.stored_degree()))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         // A retained run fixes the prefix extent and every existing run ordinal. Capacity
         // beyond that prefix is not permission to append another initialized slab row.
         let has_space = v.spill_run() == crate::traits::NO_SPILL_RUN
@@ -185,9 +185,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .try_grow_packed_slab_by_one()
                 .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
             {
-                let write_end = loc
-                    .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let write_end = loc.checked_add(1).ok_or(LaraOperationError::overflow())?;
                 if write_end > self.header().elem_capacity {
                     self.set_elem_capacity(write_end)
                         .map_err(LaraOperationError::ResizeFailed)?;
@@ -220,7 +218,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
         slab_count
             .checked_add(spill_rows)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)
+            .ok_or(LaraOperationError::overflow())
     }
 
     pub(crate) fn remove_edge_slab_tombstone_matching<V, A, F>(
@@ -251,7 +249,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let next_global = edge_layout
                 .num_edges
                 .checked_sub(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             self.set_num_edges(next_global);
             self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
             return Ok(Some(removed_for_return));
@@ -267,7 +265,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         for i in 0..stored {
             let slot = base
                 .checked_add(u64::from(i))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.read_slot(slot);
             if edge.is_tombstone_edge() {
                 continue;
@@ -283,7 +281,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let rm_slot = base
             .checked_add(u64::from(local_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let removed = self.read_slot(rm_slot);
         self.write_slot(rm_slot, E::tombstone_edge())
             .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
@@ -291,7 +289,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let next_global = edge_layout
             .num_edges
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
         Ok(Some(removed))
@@ -319,7 +317,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let slot = v
                 .base_slot_start()
                 .checked_add(u64::from(stored_offset))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.read_slot(slot);
             if edge.is_deleted_slot() {
                 continue;
@@ -327,9 +325,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if seen == offset {
                 return Ok(Some(edge));
             }
-            seen = seen
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            seen = seen.checked_add(1).ok_or(LaraOperationError::overflow())?;
         }
         Ok(None)
     }
@@ -384,7 +380,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let rm_slot = v
             .base_slot_start()
             .checked_add(u64::from(slot_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let removed = self.read_slot(rm_slot);
         if removed.is_deleted_slot() {
             return Ok(None);
@@ -395,7 +391,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let next_global = edge_layout
             .num_edges
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
         self.bump_counts_leaf_with_layout(&edge_layout, vertices.log_leaf_vertex(vid), -1, 0)?;
         Ok(Some(removed))
@@ -424,7 +420,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let next_global = edge_layout
             .num_edges
             .checked_sub(u64::from(removed))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -i64::from(removed), 0)?;
         Ok(removed)

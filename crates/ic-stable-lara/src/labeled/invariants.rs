@@ -64,7 +64,7 @@ pub(crate) fn inline_property_bytes_byte_offset_at_slot(
     bucket
         .inline_property_bytes_offset()
         .checked_add(u64::from(slot_index) * u64::from(bucket.inline_property_byte_width()))
-        .ok_or(LaraOperationError::CollectAllocationOverflow)
+        .ok_or(LaraOperationError::overflow())
 }
 
 /// Resident value bytes charged to a bucket's inline property bytes slab span.

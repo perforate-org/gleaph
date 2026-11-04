@@ -49,7 +49,7 @@ where
         let next_global = hdr
             .num_edges
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.edges.set_num_edges(next_global);
         self.edges
             .bump_vertex_segment_counts(src, -1, 0)
@@ -97,7 +97,7 @@ where
         if slot_index >= slab_prefix_slots {
             let log_ordinal = slot_index
                 .checked_sub(slab_prefix_slots)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
                 return Ok(None);
             };
@@ -126,7 +126,7 @@ where
         }
 
         let rm_slot = checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let removed = self.edges.read_slot(rm_slot);
         if removed.is_deleted_slot() || removed.is_tombstone_edge() {
             return Ok(None);
@@ -166,7 +166,7 @@ where
         let slab_prefix_slots = self.edges.initialized_slab_slots(&vertex)?;
         for slot_index in 0..slab_prefix_slots {
             let edge_slot = checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.edges.read_slot(edge_slot);
             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                 continue;
@@ -193,7 +193,7 @@ where
             }
             let slot_index = slab_prefix_slots
                 .checked_add(ordinal)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = edge
                 .with_slot_index(slot_index)
                 .with_label_id(label_id.raw());
@@ -269,7 +269,7 @@ where
                     let updated = self
                         .buckets()
                         .read_label_bucket_slot(slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or(LaraOperationError::overflow())?;
                     if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
                         let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
                             self, src, slot, label_id, &updated,
@@ -356,7 +356,7 @@ where
         let next_num_edges = hdr
             .num_edges
             .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         self.edges.set_num_edges(next_num_edges);
         // No leaf `actual` bump: tiny edges occupy no leaf slots (mirrors
         // tiny insert, which bumps only the global census).
@@ -436,9 +436,7 @@ where
             if other.is_tiny_mode() {
                 continue;
             }
-            if u32::try_from(index).map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                == bucket_index
-            {
+            if u32::try_from(index).map_err(|_| LaraOperationError::overflow())? == bucket_index {
                 continue;
             }
             if cover_base.is_none() {
@@ -447,15 +445,15 @@ where
             let end = other
                 .edge_start()
                 .checked_add(u64::from(other.stored_slots_raw()))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             survivor_end = Some(survivor_end.map_or(end, |prev| prev.max(end)));
         }
         if let (Some(base), Some(end)) = (cover_base, survivor_end) {
             let new_stored = end
                 .checked_sub(base)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let new_stored = u32::try_from(new_stored)
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
+            let new_stored =
+                u32::try_from(new_stored).map_err(|_| LaraOperationError::overflow())?;
             self.vertices
                 .set(src, &vertex.with_stored_slots(new_stored));
         } else {
@@ -557,7 +555,7 @@ where
         let slab_prefix_slots = self.bucket_slab_prefix_slots(src, bucket);
         if slot_index < slab_prefix_slots {
             let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let edge = self.edges.read_slot(physical_slot);
             return Ok((!edge.is_tombstone_edge())
                 .then_some((BucketEdgeDeleteLocation::Slab { physical_slot }, edge)));
@@ -565,7 +563,7 @@ where
 
         let spill_index = slot_index
             .checked_sub(slab_prefix_slots)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
             return Ok(None);
         };
@@ -760,7 +758,7 @@ where
         let first_global = self
             .buckets
             .read_label_bucket_slot(vertex.base_slot_start())
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let span_end_exclusive = Self::vertex_label_edge_span_end_exclusive(vertex, &first_global)?;
         let buckets = self.read_vertex_label_buckets_range(vertex, lo, hi)?;
         if let Some(run) =
@@ -1038,7 +1036,7 @@ where
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             out.push(bucket.bucket_label_key());
         }
         Ok(out)
@@ -1280,7 +1278,7 @@ where
                         for slot_index in 0..slab_prefix_slots {
                             let edge_slot =
                                 checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                    .ok_or(LaraOperationError::overflow())?;
                             let edge = self.edges.read_slot(edge_slot);
                             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                                 continue;
@@ -1323,7 +1321,7 @@ where
                             let slot_index = bucket
                                 .stored_slots_raw()
                                 .checked_add(ordinal)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                .ok_or(LaraOperationError::overflow())?;
                             let edge_with_value = self.attach_edge_inline_property(
                                 src,
                                 &vertex,
@@ -1360,7 +1358,7 @@ where
                         for offset in 0..stored {
                             let edge_slot =
                                 checked_add_slot_index(bucket.edge_start(), u64::from(offset))
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                    .ok_or(LaraOperationError::overflow())?;
                             let edge = self.edges.read_slot(edge_slot);
                             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                                 continue;
@@ -1389,7 +1387,7 @@ where
                         for offset in 0..stored {
                             let edge_slot =
                                 checked_add_slot_index(bucket.edge_start(), u64::from(offset))
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                    .ok_or(LaraOperationError::overflow())?;
                             let edge = self.edges.read_slot(edge_slot);
                             if edge.is_tombstone_edge() {
                                 continue;

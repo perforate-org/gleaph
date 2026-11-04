@@ -157,7 +157,7 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
                 }
             }
             sum.checked_add(u64::from(row.physical))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)
+                .ok_or(LaraOperationError::overflow())
         })?;
         let mut retired = Vec::new();
         retired
@@ -187,7 +187,7 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
         let nbytes = usize::try_from(total)
             .ok()
             .and_then(|n| n.checked_mul(LabelBucket::BYTES))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(nbytes)
@@ -215,7 +215,7 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
             let offset = usize::try_from(cursor - base)
                 .ok()
                 .and_then(|n| n.checked_mul(LabelBucket::BYTES))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             for (index, bucket) in row.buckets.into_iter().enumerate() {
                 let lo = offset + index * LabelBucket::BYTES;
                 let encoded = &mut bytes[lo..lo + LabelBucket::BYTES];
@@ -223,7 +223,7 @@ impl<'a, V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePlan<'a, V, M>
             }
             cursor = cursor
                 .checked_add(u64::from(row.physical))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             rows.push((VertexId::from(row.ordinal), vertex));
         }
         let mut ranges = Vec::new();
@@ -258,13 +258,13 @@ impl<V: VertexAccess<LabeledVertex>, M: Memory> SegmentRewritePreparation<'_, V,
             .rows
             .iter()
             .find(|(owner, _)| *owner == id)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if index >= row.degree() {
             return Err(LaraOperationError::CollectAllocationOverflow);
         }
         row.base_slot_start()
             .checked_add(u64::from(index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)
+            .ok_or(LaraOperationError::overflow())
     }
 
     pub(crate) fn ready(&mut self) -> Result<ReadySegmentRewrite<'_, M>, LaraOperationError> {
@@ -482,10 +482,10 @@ impl<M: Memory> LabelBucketStore<M> {
             let mid = lo + (hi - lo) / 2;
             let slot = base_slot_start
                 .checked_add(u64::from(mid))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key().is_undirected() {
                 lo = mid + 1;
             } else {
@@ -495,10 +495,10 @@ impl<M: Memory> LabelBucketStore<M> {
         for i in lo..hi {
             let slot = base_slot_start
                 .checked_add(u64::from(i))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key().is_directed() {
                 return Ok(i);
             }
@@ -516,10 +516,10 @@ impl<M: Memory> LabelBucketStore<M> {
         for i in 0..degree {
             let slot = base_slot_start
                 .checked_add(u64::from(i))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key().is_directed() {
                 return Ok(i);
             }
@@ -540,10 +540,10 @@ impl<M: Memory> LabelBucketStore<M> {
         for i in (0..degree).rev() {
             let slot = base_slot_start
                 .checked_add(u64::from(i))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let bucket = self
                 .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             if bucket.bucket_label_key().is_undirected() {
                 return Ok(i.saturating_add(1));
             }
@@ -600,7 +600,7 @@ impl<M: Memory> LabelBucketStore<M> {
         let len = buckets
             .len()
             .checked_mul(LabelBucket::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(len)
@@ -687,15 +687,15 @@ impl<M: Memory> LabelBucketStore<M> {
         let nbytes = buckets
             .len()
             .checked_mul(LabelBucket::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         scratch.resize(nbytes, 0);
         for (i, bucket) in buckets.iter().enumerate() {
             let lo = i
                 .checked_mul(LabelBucket::BYTES)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let hi = lo
                 .checked_add(LabelBucket::BYTES)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             bucket.write_to(&mut scratch[lo..hi]);
         }
         self.slab
@@ -715,7 +715,7 @@ impl<M: Memory> LabelBucketStore<M> {
             selected.map_or(header.elem_capacity, |span| span.start_slot)
         };
         let end = crate::slab_index::checked_add_slot_exclusive_end(base, len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if let Some(span) = selected
             && span
                 .start_slot
@@ -784,7 +784,7 @@ impl<M: Memory> LabelBucketStore<M> {
         let start = (u32::from(vid) / segment_size) * segment_size;
         let raw_end = start
             .checked_add(segment_size)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         Ok((start, raw_end.min(vertices.len())))
     }
 
@@ -795,7 +795,7 @@ impl<M: Memory> LabelBucketStore<M> {
     ) -> Result<u32, LaraOperationError> {
         let len = vertex
             .label_bucket_descriptor_span()
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         if len != 0
             && crate::slab_index::checked_add_slot_exclusive_end(
                 vertex.base_slot_start(),
@@ -818,12 +818,12 @@ impl<M: Memory> LabelBucketStore<M> {
         let base = current_physical.max(needed_live).max(MIN_BUCKET_ROW_ALLOC);
         let prod = u64::from(base)
             .checked_mul(u64::from(BUCKET_ROW_GROW_NUM))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         let grown_u64 = prod.div_ceil(u64::from(BUCKET_ROW_GROW_DEN));
         let grown = u32::try_from(grown_u64).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         let max_physical = MAX_VERTEX_LABEL_BUCKETS
             .checked_add(u32::from(MAX_VERTEX_LABEL_BUCKET_SLACK))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         Ok(grown.max(needed_live).min(max_physical))
     }
 
@@ -832,7 +832,7 @@ impl<M: Memory> LabelBucketStore<M> {
         physical_span: u32,
     ) -> Result<u16, LaraOperationError> {
         LabeledVertex::bucket_slack_for_descriptor_span(live_rows, physical_span)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)
+            .ok_or(LaraOperationError::overflow())
     }
 
     fn plan_segment_rewrite<'a, V>(
@@ -876,7 +876,7 @@ impl<M: Memory> LabelBucketStore<M> {
                     Self::label_bucket_descriptor_span(vertex, source.header.elem_capacity)?;
                 let buckets = self
                     .read_label_bucket_slots_contiguous(vertex.base_slot_start(), vertex.degree())
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or(LaraOperationError::overflow())?;
                 if physical != 0 || !buckets.is_empty() || targets.contains(&id) {
                     source.descriptors.push((id, vertex, buckets.clone()));
                     rows.push(BucketRowRewrite {
@@ -950,7 +950,7 @@ impl<M: Memory> LabelBucketStore<M> {
     {
         let v = vertices.get_in_range(vid)?;
         let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
-        let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let buckets = buckets.ok_or(LaraOperationError::overflow())?;
         let index = buckets
             .binary_search_by_key(&bucket.bucket_label_key(), |candidate| {
                 candidate.bucket_label_key()
@@ -984,12 +984,12 @@ impl<M: Memory> LabelBucketStore<M> {
                 Vec::new()
             } else {
                 self.read_label_bucket_slots_contiguous(base, deg)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                    .ok_or(LaraOperationError::overflow())?
             };
             row.insert(insert_index as usize, bucket);
             let insert_at = base
                 .checked_add(u64::from(insert_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                .ok_or(LaraOperationError::overflow())?;
             let next_degree = v
                 .degree()
                 .checked_add(1)
@@ -1082,7 +1082,7 @@ impl<M: Memory> LabelBucketStore<M> {
             .rows
             .iter_mut()
             .find(|row| row.ordinal == u32::from(vid))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            .ok_or(LaraOperationError::overflow())?;
         row.vertex = final_row;
         row.buckets.clear();
         row.physical = 0;
