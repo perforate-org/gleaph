@@ -92,6 +92,30 @@ where
         Ok(self)
     }
 
+    /// Writes the value of a row that was **just appended**, in whichever plane it landed.
+    ///
+    /// The insert path's counterpart of [`Self::write_block_at`]: a row inside the prefix gets a slab
+    /// block, a row beyond it appends one to the run. The mirror means a run row always gets a block,
+    /// which the schema admission guarantees by rejecting a width-mismatched edge before any write.
+    pub(crate) fn write_after_insert(
+        mut self,
+        src: VertexId,
+        slot_index: u32,
+        edge: &E,
+    ) -> Result<Self, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.bucket = self.graph.write_edge_inline_property_after_insert(
+            src,
+            self.bucket_slot,
+            self.bucket,
+            slot_index,
+            edge,
+        )?;
+        Ok(self)
+    }
+
     /// Moves the run's first `fold` blocks into the span at `[first_slot, first_slot + fold)` and
     /// drops them from the run.
     ///

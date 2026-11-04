@@ -501,13 +501,10 @@ where
                         let logical_slot = bucket.stored_slots();
                         let value_slot = logical_slot;
                         let bucket = bucket.grow_packed_slab_by_one();
-                        let bucket = self.write_edge_inline_property_after_insert(
-                            src,
-                            bucket_slot,
-                            bucket,
-                            value_slot,
-                            &attempt_edge,
-                        )?;
+                        let bucket = self
+                            .value_plane(bucket_slot, bucket)
+                            .write_after_insert(src, value_slot, &attempt_edge)?
+                            .bucket();
                         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                         let hdr = self.edges.header();
                         let next_num_edges = hdr
@@ -565,13 +562,10 @@ where
                             if new_stored != bucket.stored_slots() {
                                 bucket = bucket.with_stored_slots(new_stored);
                             }
-                            let bucket = self.write_edge_inline_property_after_insert(
-                                src,
-                                bucket_slot,
-                                bucket,
-                                written_slot,
-                                &attempt_edge,
-                            )?;
+                            let bucket = self
+                                .value_plane(bucket_slot, bucket)
+                                .write_after_insert(src, written_slot, &attempt_edge)?
+                                .bucket();
                             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                             return Ok(Some(ScalarInsertLocation {
                                 logical_slot: written_slot,
@@ -590,13 +584,10 @@ where
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
                                 let value_slot = logical_slot.unwrap_or(bucket.stored_slots());
-                                let bucket = self.write_edge_inline_property_after_insert(
-                                    src,
-                                    bucket_slot,
-                                    bucket,
-                                    value_slot,
-                                    &attempt_edge,
-                                )?;
+                                let bucket = self
+                                    .value_plane(bucket_slot, bucket)
+                                    .write_after_insert(src, value_slot, &attempt_edge)?
+                                    .bucket();
                                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                             }
                             return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
@@ -1052,13 +1043,10 @@ where
         let slot = super::edge_slot::<E>(&mut slot);
         edge.write_to(slot);
         let grown = grown.with_tiny_slot(logical_slot, E::BYTES, slot);
-        let grown = self.write_edge_inline_property_after_insert(
-            src,
-            bucket_slot,
-            grown,
-            logical_slot,
-            &edge,
-        )?;
+        let grown = self
+            .value_plane(bucket_slot, grown)
+            .write_after_insert(src, logical_slot, &edge)?
+            .bucket();
         self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
