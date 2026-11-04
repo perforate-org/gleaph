@@ -396,13 +396,11 @@ where
             // them as edge slots would corrupt the free store.
             return Ok(());
         }
-        // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either. Releasing the
-        // edge span alone left the vertex charged for a value span no row could read.
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-            && let Ok(run) = self.values.spill_mint(bucket.values_spill_run())
-        {
-            let _ = self.values.spill_release(run);
-        }
+        // The value *span* is this function's to release; the values *run* is not. The degree-zero
+        // block in `commit_bucket_edge_delete` owns the runs because releasing one is meaningless
+        // without clearing the descriptor that names it - and releasing it here as well handed the
+        // same run to the free list twice, which is how a descriptor ended up naming an empty run
+        // (`MissingAscLogIndex` in the expand benchmark).
         if bucket.inline_property_bytes_slab_slots_allocated() > 0 {
             let _ = self.release_bucket_inline_property_bytes_span(src, bucket);
         }
