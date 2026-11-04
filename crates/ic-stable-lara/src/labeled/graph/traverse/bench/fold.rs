@@ -569,17 +569,15 @@ impl<const W: usize> FoldFixture<W> {
         &self,
         mode: RepeatedFold,
         initial_bucket: LabelBucket,
-        mut first_fold_runs: [(u32, u32); 2],
+        first_fold_runs: [(u32, u32); 2],
     ) {
-        if mode != RepeatedFold::Both {
-            first_fold_runs[0] = self.runs()[0];
-        }
-        if mode == RepeatedFold::Unfolded {
-            first_fold_runs[1] = self.runs()[1];
-        } else {
+        // The run-reuse probe runs in `repeated_workload`, right after the first fold frees those runs.
+        // Probing here would ask about space the workload has since reused, which the allocator never
+        // promised to keep free.
+        let _ = first_fold_runs;
+        if mode != RepeatedFold::Unfolded {
             self.assert_retired_prefix_reusable(initial_bucket);
         }
-        self.assert_reusable(first_fold_runs);
     }
 
     fn assert_retired_prefix_reusable(&self, before: LabelBucket) {
@@ -627,11 +625,19 @@ fn repeated_workload<const W: usize>(degree: u32, reads: u32, mode: RepeatedFold
     assert_eq!(fixture.scan_values(&mut scratch), degree as usize);
     let mut scanned = 0;
     let mut slots_unchanged = true;
+    let mut probed_first_fold = false;
     let result = bench_fn(|| {
         for round in ROUNDS {
             let _scope = bench_scope(round);
             fixture.append_round();
             slots_unchanged &= fixture.fold_round(mode).is_empty();
+            // Probe the runs the *first* fold freed while they are still the most recent release: later
+            // rounds reuse that space by design, so asking at the end of the workload whether a run freed
+            // several folds ago is still free is not something the allocator promises.
+            if !probed_first_fold {
+                fixture.assert_reusable(first_fold_runs);
+                probed_first_fold = true;
+            }
             scanned += fixture.scan_round(&mut scratch, reads);
         }
     });
