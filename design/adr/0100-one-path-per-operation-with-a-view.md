@@ -59,10 +59,15 @@ Two rules make the view the single path:
 - **Cost:** the views are thin and borrowing, so no new state and no allocation; the work is moving the
   dispatch, and the compiler finds the call sites.
 - **Migration order, each independently green:**
-  1. `BucketDescriptorPlane` - absorb `find_bucket`'s last-lookup cache. The cache is an optimisation, so a
-     stale entry must fall through, never fail (three sites already fixed this way in `6112e27c8`).
-  2. `BucketRowPlane` - insert first (the four `write_after_insert` call sites are already unified), then
-     read, then remove.
+  1. **`BucketRowPlane` first**, not the descriptor cache. Inspecting the cache after `6112e27c8`: its whole
+     surface is ten lines in `bucket.rs` (`last_bucket_lookup` plus one indexed array) and the three reads
+     that could fail closed already fall through, so a view there would add a layer without removing a
+     duplicate - the exact thing this ADR is meant to avoid. The row plane is where the four paths
+     (tiny / slab / spill run / tree) still dispatch at the call sites.
+     - insert first (the value-side dispatch is already unified by `write_after_insert`; the row-side one is
+       not), then read, then remove.
+  2. `BucketDescriptorPlane` only if a second descriptor path appears - a view is warranted by duplication,
+     not by symmetry.
   3. Retire the store helpers the views subsume, so the old path cannot be called at all.
 - **Acceptance:** the two ignored regressions become passing
   (`valueless_parallel_edges_promote_past_two_thousand_rows` is already un-ignored;
