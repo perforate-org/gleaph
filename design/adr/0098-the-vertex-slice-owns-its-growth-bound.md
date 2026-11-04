@@ -279,3 +279,11 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   each decide their own policy. The current failures come from a rule being restated at three layers.
 - **Acceptance:** value-less parallel edges promote past 2 048 rows; the 10 000-row
   `expand_skewed_noise_10k_a_500b` fixture builds; `canbench --persist` completes.
+- **The naive swap was measured and does not work:** replacing the derived end with the vertex's tile
+  cover in `LeafArena::slices` (`first_base + tile_width_with(first_base, 0)`, clamped to the extent)
+  breaks **24 tests**. The reason is the direction of the dependency: today `place` may put a region
+  anywhere in the gap and the cover is then *recomputed* from the regions it produced, so making the
+  cover the authority requires the cover to be **grown first** (a store take) and `place` to carve only
+  inside it - i.e. the order "declare, take, place" instead of "place, derive". Doing it in one line
+  inverts the order without providing the take, so the smaller cover simply stops admitting placements
+  the layout depends on.
