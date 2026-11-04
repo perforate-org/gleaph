@@ -204,11 +204,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             edge_inline_property_width: 0,
         });
     }
-    let value_run = if bucket.values_spill_run() == NO_SPILL_RUN {
-        None
-    } else {
-        Some(graph.values().spill_mint(bucket.values_spill_run())?)
-    };
+    let value_run = bucket.values_run();
     let depth = derive_depth(resident);
     let edge_root_len = u32::try_from(derived_root_len(resident))
         .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;

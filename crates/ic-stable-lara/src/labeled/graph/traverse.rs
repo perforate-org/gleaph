@@ -1984,10 +1984,9 @@ where
                 // ...and the bound must cover the run too: the accounting helper returns the backed
                 // span only, which clips the batch short of the run and makes the in-batch offsets
                 // read the wrong block.
-                let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
-                    Ok(run) => self.values.spill_used_len(run),
-                    Err(_) => 0,
-                };
+                let run_rows = bucket
+                    .values_run()
+                    .map_or(0, |run| self.values.spill_used_len(run));
                 let slot_bound = bucket
                     .inline_property_bytes_slab_slots()
                     .saturating_add(run_rows);
