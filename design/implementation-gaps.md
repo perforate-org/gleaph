@@ -82,6 +82,12 @@ defect from being rediscovered without its prior reasoning.
   shows today - most likely `#[track_caller]` reports the inlined outer location of a helper it calls. The
   next step is a plain call-stack (`std::backtrace::Backtrace::force_capture()` in the constructor) rather
   than another line guess.
+- **Backtrace taken, and it explains the earlier misses:** the capture fires inside **`insert_vertex_row`**,
+  i.e. on the *first* `overflow()` construction of the run, which some caller handles as a normal
+  "not there yet" answer. So panicking on construction traces the first benign occurrence, not the fatal
+  one - that is why none of the site-level probes matched the failure. The next attempt should panic only
+  when the error reaches the **outermost** insert (a marker in the facade's error conversion), or count
+  constructions and panic on the last one.
 - **Correction - the transcription is not it either:** instrumenting both transcription checks
   (`live != bucket.degree`, the value-width mismatch) and every `return Err(...CollectAllocationOverflow
   .into())` in `promote.rs` fires nothing either. So the variant is produced by a form not yet covered -
