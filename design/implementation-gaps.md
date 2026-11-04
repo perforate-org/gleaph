@@ -56,9 +56,11 @@ defect from being rediscovered without its prior reasoning.
   `MissingAscLogIndex { asc_log_index: 0 }`: an error about a plane the bucket does not own. It routes
   tree buckets to `tree_read::read_property_value_at_slot` now.
 - **Follow-up, open:** the benchmark now measures **6.77M instructions against a 2.11M baseline**
-  (+220%). The baseline was recorded before the fixture's hub bucket promoted, so part of the gap is the
-  tree path rather than a regression from this work - but it has to be settled, because a 3.2x expand for
-  a promoted bucket is not obviously acceptable.
+  (+220%), and the breakdown localises it: `plan_query_execute_ops` **5.75M (+420.7%)**, while
+  `plan_op_project` is +12.7% and `plan_query_materialize_value_rows` +3.3%. So the cost is the expand
+  operator reading the promoted bucket's values - per-row tree reads through the path this fix made
+  correct, where the traversal's tree arm walks the property tree a block at a time. The next question is
+  whether the expand can use that batch arm; a 5x expansion of the operator is not acceptable on its face.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS-OLD — a recorded benchmark now traps
 
