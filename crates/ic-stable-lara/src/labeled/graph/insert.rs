@@ -1153,15 +1153,18 @@ where
         let mut cover_base: Option<u64> = None;
         let mut content_end: Option<u64> = None;
         for bucket in buckets.iter() {
-            if bucket.is_tiny_mode() {
+            // The region, not `stored_slots`: a tree bucket's `stored_slots` is a logical row count and
+            // its LEG root array is what actually occupies slots, so adding that count to `edge_start`
+            // lands the new run **inside the root**. `bucket_content_region` is the SSOT for this
+            // geometry (it answers `None` for tiny, which needs no skip of its own).
+            let Some((start, len)) = super::compact::bucket_content_region(bucket) else {
                 continue;
-            }
+            };
             if cover_base.is_none() {
-                cover_base = Some(bucket.edge_start());
+                cover_base = Some(start);
             }
-            let end = bucket
-                .edge_start()
-                .checked_add(u64::from(bucket.stored_slots_raw()))
+            let end = start
+                .checked_add(u64::from(len))
                 .ok_or(LaraOperationError::overflow())?;
             content_end = Some(content_end.map_or(end, |prev| prev.max(end)));
         }

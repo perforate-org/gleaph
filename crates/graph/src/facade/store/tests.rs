@@ -523,7 +523,6 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
 /// tiny-insert branch adding one to a `degree` of `u32::MAX` - a vacated bucket slot read as `0xFF`, i.e.
 /// the second label's descriptor row names a slot that was never written.
 #[test]
-#[ignore = "GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX: the descriptor row names a vacated slot"]
 fn a_large_bucket_does_not_block_a_second_label() {
     let store = GraphStore::new();
     let hub = store
