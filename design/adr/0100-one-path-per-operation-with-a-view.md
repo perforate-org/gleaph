@@ -66,6 +66,14 @@ Two rules make the view the single path:
      (tiny / slab / spill run / tree) still dispatch at the call sites.
      - insert first (the value-side dispatch is already unified by `write_after_insert`; the row-side one is
        not), then read, then remove.
+     - **Scale, measured before starting:** `insert.rs` is **2 509 lines** with **21** `is_tiny_mode()` /
+       `is_tree_mode()` dispatch sites. This is not a rename; it is the module's central function being
+       split along the class boundary. It should be done with a fresh budget, in the order
+       "one operation, one branch, one test run", not at the end of a session.
+     - **The first cut:** a `BucketRowPlane::insert_row(src, label, edge)` that returns
+       `(slot, storage)` and owns the tiny / slab / run / tree choice, with the existing body moved into it
+       unchanged; call sites shrink to the call. Nothing else changes in the first cut, so the diff is
+       reviewable as a move.
   2. `BucketDescriptorPlane` only if a second descriptor path appears - a view is warranted by duplication,
      not by symmetry.
   3. Retire the store helpers the views subsume, so the old path cannot be called at all.
