@@ -458,7 +458,7 @@ where
                             // remaining steps do not apply to it. This replaces the retired
                             // log-full leaf rebalance: a per-bucket run has no shared area to empty.
                             super::promote::promote_bucket_to_tree_mode(self.graph, src, label_id)?;
-                            return self.graph.insert_edge_skip_leaf_cascade_impl(
+                            return self.insert_row(
                                 src,
                                 label_id,
                                 edge,

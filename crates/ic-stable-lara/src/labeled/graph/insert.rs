@@ -194,14 +194,15 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_impl(
-            src,
-            label_id,
-            edge,
-            placement,
-            ScalarLocationCapture::Ignore,
-        )
-        .map(|_| ())
+        super::row_plane::BucketRowPlane::new(self)
+            .insert_row(
+                src,
+                label_id,
+                edge,
+                placement,
+                ScalarLocationCapture::Ignore,
+            )
+            .map(|_| ())
     }
 
     pub(crate) fn insert_edge_skip_leaf_cascade_with_location(
@@ -214,33 +215,12 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_impl(
-            src,
-            label_id,
-            edge,
-            placement,
-            ScalarLocationCapture::Capture,
-        )
-    }
-
-    #[allow(clippy::needless_return)]
-    pub(super) fn insert_edge_skip_leaf_cascade_impl(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        edge: E,
-        placement: EdgePlacementPolicy,
-        location_capture: ScalarLocationCapture,
-    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
         super::row_plane::BucketRowPlane::new(self).insert_row(
             src,
             label_id,
             edge,
             placement,
-            location_capture,
+            ScalarLocationCapture::Capture,
         )
     }
 
@@ -312,7 +292,7 @@ where
         E: CsrEdgeTombstone,
     {
         let was_deferred = self.inline_property_bytes_compaction_deferred.replace(true);
-        let result = self.insert_edge_skip_leaf_cascade_impl(
+        let result = super::row_plane::BucketRowPlane::new(self).insert_row(
             src,
             label_id,
             edge,
@@ -632,7 +612,7 @@ where
             || (hole.is_none() && bucket.tiny_used_width() >= LabelBucket::tiny_capacity(E::BYTES))
         {
             self.promote_tiny_to_slab_with_growth(src, bucket_slot, &bucket)?;
-            return self.insert_edge_skip_leaf_cascade_impl(
+            return super::row_plane::BucketRowPlane::new(self).insert_row(
                 src,
                 label_id,
                 edge,
