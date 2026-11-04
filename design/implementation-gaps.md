@@ -77,6 +77,11 @@ defect from being rediscovered without its prior reasoning.
   real `u64` addition, so the only way it overflows is `stored_slots_raw` holding something other than a
   row count for the predecessor - which is where the next session should look (print
   `prev.edge_start()`, `prev.stored_slots_raw()`, `prev.is_tiny_mode()` at that line).
+  **Also ruled out:** printing the predecessor's `edge_start` / `stored_slots_raw` / `is_tiny_mode` at that
+  addition fires nothing, so the traced line is neither of the two `overflow()` calls this function text
+  shows today - most likely `#[track_caller]` reports the inlined outer location of a helper it calls. The
+  next step is a plain call-stack (`std::backtrace::Backtrace::force_capture()` in the constructor) rather
+  than another line guess.
 - **Correction - the transcription is not it either:** instrumenting both transcription checks
   (`live != bucket.degree`, the value-width mismatch) and every `return Err(...CollectAllocationOverflow
   .into())` in `promote.rs` fires nothing either. So the variant is produced by a form not yet covered -
