@@ -543,7 +543,7 @@ where
             .edges
             .collect_out_edges_slot_order(&acc, VertexId::from(0))
             .map_err(LabeledOperationError::from)?;
-        let log_chains = (bucket.values_spill_run() != crate::traits::NO_SPILL_RUN)
+        let log_chains = (bucket.values_run().is_some())
             .then(|| self.bucket_inline_property_bytes_log_chain(bucket));
         let mut out = Vec::with_capacity(edges.len());
         for (ordinal, edge) in edges.into_iter().enumerate() {
@@ -1259,7 +1259,7 @@ where
         if width == 0 {
             return Ok(None);
         }
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+        if bucket.values_run().is_some()
             || bucket.inline_property_bytes_slab_slots() != bucket.degree()
             || ordinal >= bucket.inline_property_bytes_slab_slots()
         {
@@ -1376,7 +1376,7 @@ where
                     && bucket.degree() == 0
                     && bucket.stored_slots() == 0
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-                    && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN;
+                    && bucket.values_run().is_none();
                 if !schema_unset {
                     return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
                         bucket_width: bucket.inline_property_byte_width(),
@@ -1741,9 +1741,7 @@ where
         &self,
         bucket: &LabelBucket,
     ) -> Option<Vec<u32>> {
-        if bucket.is_inline_property_bytes_allocated()
-            && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-        {
+        if bucket.is_inline_property_bytes_allocated() && bucket.values_run().is_some() {
             Some(self.bucket_inline_property_bytes_log_chain(bucket))
         } else {
             None
@@ -2450,7 +2448,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(graph.bucket_values_run_rows(&bucket) > 0);
-        assert!(bucket.values_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.values_run().is_some());
 
         let mut weights = Vec::new();
         graph
@@ -3584,7 +3582,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert!(bucket.values_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.values_run().is_some());
 
         graph
             .remove_edge_at_slot(VertexId::from(0), road, 0)
@@ -3712,7 +3710,7 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        assert!(bucket.values_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(bucket.values_run().is_some());
 
         let mut weights = Vec::new();
         graph
@@ -3831,7 +3829,7 @@ mod tests {
             "expected edge overflow log for wide values"
         );
         assert!(
-            bucket.values_spill_run() != crate::traits::NO_SPILL_RUN,
+            bucket.values_run().is_some(),
             "expected inline property bytes overflow log for 12-byte inline properties"
         );
 

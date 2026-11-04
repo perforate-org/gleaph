@@ -752,7 +752,7 @@ where
         if bucket.stored_slots() <= bucket.degree() {
             return Ok(None);
         }
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
+        if bucket.values_run().is_some() {
             return Ok(None);
         }
         let mut reused_slot = None;

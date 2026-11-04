@@ -6562,9 +6562,7 @@ where
             !bucket.is_tiny_mode(),
             "tiny bucket must not reach value-log fold"
         );
-        if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
-            || !bucket.is_inline_property_bytes_allocated()
-        {
+        if bucket.values_run().is_none() || !bucket.is_inline_property_bytes_allocated() {
             return Ok(bucket);
         }
         let run = self
@@ -6790,9 +6788,7 @@ where
         // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
         // span bring their value blocks with them. The move *is* the plane's operation (it grows the
         // prefix it fills), so it goes through the view rather than being spelled out here.
-        if grown_bucket.inline_property_byte_width() != 0
-            && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-        {
+        if grown_bucket.inline_property_byte_width() != 0 && bucket.values_run().is_some() {
             let published = self
                 .value_plane(bucket_slot, *bucket)
                 .fold_head_into_span(src, len, fold)?
@@ -9208,7 +9204,7 @@ mod tests {
         };
         let before = read_bucket();
         assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
-        assert!(before.values_spill_run() != crate::traits::NO_SPILL_RUN);
+        assert!(before.values_run().is_some());
 
         // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
         // ownership"), so the step folds that suffix inside its rewrite and then carries on with

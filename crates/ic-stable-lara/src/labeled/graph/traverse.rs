@@ -1899,7 +1899,7 @@ where
                 // bulk reads slab bytes, so tree diverts to LPB/slow; the
                 // `!is_tree_mode()` conjunct is that routing, not a mode guard.
                 if !bucket.is_tree_mode()
-                    && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
+                    && bucket.values_run().is_none()
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {
@@ -2147,7 +2147,7 @@ where
                         )
                         .map(|_| ());
                 }
-                if bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
+                if bucket.values_run().is_none()
                     && bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
                     && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
                 {

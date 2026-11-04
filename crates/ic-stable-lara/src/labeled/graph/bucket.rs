@@ -752,7 +752,7 @@ where
                         .checked_add(u64::from(self.edges.spill_used_len(run)))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
-                if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
+                if bucket.values_run().is_some() {
                     stats.total_inline_property_bytes_overflow_log_slots = stats
                         .total_inline_property_bytes_overflow_log_slots
                         .checked_add(u64::from(self.bucket_values_run_rows(&bucket)))
