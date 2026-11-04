@@ -82,6 +82,17 @@ defect from being rediscovered without its prior reasoning.
   **stale verifiers for a removed design**, not a defect in the current one. Rewriting them to the
   slot-addressed geometry is its own unit of work: 14 tests across five bench families, each of which
   currently asserts an allocator that no longer holds the values.
+- **Progress on the sweep:** the obsolete bench cases are deleted (`b03685d09`) - `value_fold_case!`,
+  `continuous_case!`, `assert_retired_prefix_reusable` and the `RepeatedFold::Values` mode all verified the
+  byte-span allocator or the values-only fold that ADR 0099 removed. The canbench feature suite went
+  **14 -> 6** failures (`repeated_fold_*` and `update_reuse_*` test mirrors still carry the same kind of
+  stale assertion), and `canbench --persist` now advances past every one of those families.
+- **The sweep is not finished, and it is one bench per round:** the next trap is
+  `materialize_owner_two_step_4800` (`labeled/bench.rs:4607`), which asserts
+  `materialize_inline_property_stream_step` answers `Resumed` - another pre-0099 expectation about how the
+  values plane streams. Each `canbench --persist` attempt costs about five minutes and reveals exactly one
+  more, so the remaining work is a systematic sweep of the lara bench verifiers against the ADR 0099
+  geometry rather than a single fix.
 - **Current state: 10 failures, all exercising a removed operation or the removed allocator.**
   | Tests | Cause |
   | --- | --- |
