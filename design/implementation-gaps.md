@@ -73,7 +73,9 @@ defect from being rediscovered without its prior reasoning.
   `visit_edges_for_label_impl`, `visit_edges_at_with_inline_property`) each divert tree buckets before
   it, so the caller that does not is the one to find. A lara-level repro exists: 1100 valued inserts
   into one bucket promote it (`tree=true`, `stored=1100`) and a slab/run read of any slot then reports
-  the same error, so the repro does not need canbench.
+  the same error, so the repro does not need canbench. The traversals are **not** the caller: on that
+  same promoted bucket `visit_edges_with_inline_property` and `visit_edges_at_with_inline_property`
+  both return `Ok` with 2-byte values, so the defect is in a non-traversal read path.
 - **Status:** Open.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
