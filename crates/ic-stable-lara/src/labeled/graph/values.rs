@@ -659,6 +659,14 @@ where
         log_chains: Option<&Vec<u32>>,
         buf: &mut Vec<u8>,
     ) -> Result<(), LabeledOperationError> {
+        // A tree bucket keeps its values in the property root inside the edge span, so the slab/run
+        // reader has nothing to say about it: reading it here answered "the run has no rows", which
+        // said nothing about the bucket. Route it to the plane that owns those values.
+        if bucket.is_tree_mode() {
+            let width = usize::from(bucket.inline_property_byte_width());
+            buf.resize(width, 0);
+            return super::tree_read::read_property_value_at_slot(self, bucket, slot_index, buf);
+        }
         let prefix = bucket.inline_property_bytes_slab_slots();
         let ordinal = if bucket.inline_property_byte_width() > 0 && slot_index >= prefix {
             if let Some(chain) = log_chains {
