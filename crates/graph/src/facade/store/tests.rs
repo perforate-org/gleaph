@@ -516,6 +516,41 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
 /// Together they pin the exact edge of the slice-ownership defect (ADR 0098, 2026-11-04 amendment):
 /// promotion works up to here and breaks on the next doubling, so a fix that moves the boundary instead
 /// of removing it is visible.
+/// A large bucket must not stop a second label from taking a descriptor row on the same vertex.
+///
+/// Reproduces `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX`: after 10 000 edges on one label, the fifth edge of a
+/// second label fails with `CollectAllocationOverflow`, and the recorded construction sites show the
+/// tiny-insert branch adding one to a `degree` of `u32::MAX` - a vacated bucket slot read as `0xFF`, i.e.
+/// the second label's descriptor row names a slot that was never written.
+#[test]
+#[ignore = "GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX: the descriptor row names a vacated slot"]
+fn a_large_bucket_does_not_block_a_second_label() {
+    let store = GraphStore::new();
+    let hub = store
+        .insert_vertex_named(["SecondLabelHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let a = store
+        .insert_vertex_named(["SecondLabelA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["SecondLabelB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    for i in 0..10_000u32 {
+        store
+            .insert_directed_edge_named(hub, a, Some("BigLabel"), Vec::<(&str, Value)>::new())
+            .unwrap_or_else(|error| panic!("big label insert {i} failed: {error:?}"));
+    }
+    for i in 0..500u32 {
+        store
+            .insert_directed_edge_named(hub, b, Some("SmallLabel"), Vec::<(&str, Value)>::new())
+            .unwrap_or_else(|error| panic!("small label insert {i} failed: {error:?}"));
+    }
+    assert_eq!(
+        store.directed_out_edges(hub).expect("out edges").len(),
+        10_500
+    );
+}
+
 #[test]
 fn valueless_parallel_edges_promote_at_two_thousand_rows() {
     let store = GraphStore::new();
