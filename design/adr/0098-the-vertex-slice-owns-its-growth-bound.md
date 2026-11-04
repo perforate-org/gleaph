@@ -293,6 +293,11 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   missing. That closes the search: the fix is the "declare the cover, take it, then place inside it"
   order at `LeafArena`/`LeafSlice`, exactly as this amendment says, and nothing in the rewrite or the
   promotion changes.
+- **Second naive variant measured: claiming inside `place` breaks 22 tests.** Making `LeafSlice::place`
+  take the range it hands out (`take_prefix_at(cursor, need)`, skipping candidates the store cannot give)
+  fails 22 tests, because some placements deliberately land inside the vertex's own **tile slack**, which
+  is not a free span at all. So neither end of the pair can be fixed alone: the cover must be taken
+  *once* when it is declared, and `place` then carves inside space the vertex already owns.
 - **The naive swap was measured and does not work:** replacing the derived end with the vertex's tile
   cover in `LeafArena::slices` (`first_base + tile_width_with(first_base, 0)`, clamped to the extent)
   breaks **24 tests**. The reason is the direction of the dependency: today `place` may put a region
