@@ -62,6 +62,12 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
   holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
   relocated or is the bound ADR 0098 declares being enforced too early?
+- **The error is flattened again:** the failure surfaces as
+  `ResizeFailed(GrowFailed { current_size: 5, delta: 0 })`, and `delta: 0` is
+  `validate_elem_capacity_grow_failed`'s marker for "the requested element capacity is invalid", not for a
+  memory grow. So the real cause is a capacity **validation** rejection, hidden behind a grow-failure
+  shape - the same anti-pattern as `release_span` before `1f716f06b`. Fixing that mapping is the cheapest
+  way to see what the insert actually asked for.
 - **Impact:** the 10 000-row expand fixtures and therefore `canbench --persist` remain blocked.
 
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
