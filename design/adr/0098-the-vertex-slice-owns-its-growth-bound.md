@@ -286,6 +286,13 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   `rebalance_vertex_edge_span` → `rewrite_vertex_edge_span` → `prepare_physical_layout`), long before the
   promotion ran. Promotion only trips over it because it is the first caller that releases part of that
   space. So the take belongs where the span is **rewritten/placed**, and the promotion needs no change.
+- **And the rewrite allocates nothing:** `PhysicalLayoutOperation::VertexRewrite` prepares with
+  `PhysicalSpanSelection::NoAllocation` plus the retired spans, i.e. it only retires - the new space is
+  expected to be already owned by the vertex. So the space a bucket grows into always comes from the leaf
+  arena's per-vertex placement (`LeafSlice::place` / `grow_region`), which is the one place a take is
+  missing. That closes the search: the fix is the "declare the cover, take it, then place inside it"
+  order at `LeafArena`/`LeafSlice`, exactly as this amendment says, and nothing in the rewrite or the
+  promotion changes.
 - **The naive swap was measured and does not work:** replacing the derived end with the vertex's tile
   cover in `LeafArena::slices` (`first_base + tile_width_with(first_base, 0)`, clamped to the extent)
   breaks **24 tests**. The reason is the direction of the dependency: today `place` may put a region
