@@ -236,13 +236,18 @@ where
                 continue;
             }
             if *start > cursor && start.saturating_sub(cursor) >= need && fits(cursor) {
+                self.claim_placement(cursor, need);
                 return Some(cursor);
             }
             if *end > cursor {
                 cursor = *end;
             }
         }
-        fits(cursor).then_some(cursor)
+        if !fits(cursor) {
+            return None;
+        }
+        self.claim_placement(cursor, need);
+        Some(cursor)
     }
     /// The vertex's tile width if one bucket's content became `content_after`: every
     /// bucket's `content + gap(content)`, with the bucket whose region starts at
@@ -267,6 +272,24 @@ where
         }
         total
     }
+    /// Claims anything in `[start, start + need)` that the leaf's free-span store still owns.
+    ///
+    /// The slice is derived from the vertices' regions, so it *contains* space the store still owns; a
+    /// placement that hands that space out without taking it gives the same slots two owners - this
+    /// bucket and whoever takes the free span later - and the later release is refused with
+    /// `OverlapPrevious` (ADR 0098's 2026-11-04 amendment). Part of a placement can also land in the
+    /// vertex's own tile slack, which is not a free span at all, so the claim is best-effort: it takes
+    /// what the store owns and leaves the rest alone.
+    fn claim_placement(&self, start: u64, need: u64) {
+        if need > 0 {
+            let _ = self
+                .graph
+                .edges
+                .free_span_store()
+                .take_prefix_at(start, need);
+        }
+    }
+
     /// Whether `[start, start + need)` lies inside this vertex's slice.
     ///
     /// The single capacity question (ADR 0088 E4): a caller that needs room must ask this rather

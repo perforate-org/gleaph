@@ -540,12 +540,11 @@ fn valueless_parallel_edges_promote_at_two_thousand_rows() {
 /// A bucket with ~2 048 valueless parallel edges must survive promotion.
 ///
 /// This is the reproduction for the slice-ownership defect recorded in ADR 0098's 2026-11-04 amendment:
-/// `LeafArena::slices` derives a vertex's slice as the gap to its neighbour, `place` carves out of that
-/// gap without taking it from the free-span store, and the promotion then releases a tail that lands
-/// inside a free span the store still owns (`OverlapPrevious`). The test stays `#[ignore]`d until the
-/// slice is an owned extent; it is the acceptance criterion for that change.
+/// `LeafArena::slices` derives a vertex's slice as the gap to its neighbour, and `place` handed that gap
+/// out without taking it from the free-span store, so the promotion later released a tail inside a free
+/// span the store still owned (`OverlapPrevious`). Claims are best-effort now: whatever the store owns is
+/// taken, the vertex's own tile slack is left alone.
 #[test]
-#[ignore = "ADR 0098 amendment: slices must be owned extents before this can pass"]
 fn valueless_parallel_edges_promote_past_two_thousand_rows() {
     let store = GraphStore::new();
     let hub = store
