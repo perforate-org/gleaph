@@ -118,6 +118,16 @@ defect from being rediscovered without its prior reasoning.
   lands inside a global free span, so some slice (or some region inside one) was handed out while the
   corresponding free span stayed in the store. The next read is the slice allocation path -
   `LeafArena::capture`'s slice extent and `bucket_free_spans` - not the per-vertex placement.
+- **Found it, by reading `slices()`:** a vertex's slice is **derived**, not owned. `LeafArena::slices`
+  walks the leaf's vertices, keeps each one's first bucket base, and gives each vertex
+  `[its first base, the next vertex's first base)` - with the last one running to the leaf extent end. So
+  the slice is the *gap between neighbouring vertices*, and `place` carves allocations out of that gap with
+  no call to the free-span store. Space inside the gap that is still on the free list therefore gets handed
+  out twice: once to this bucket, and once to whoever takes that free span - which is exactly the
+  `OverlapPrevious` the promotion reports when it releases the tail.
+  The fix is at that boundary: either `place` (and `grow_region`) must take what they hand out from the
+  free-span store, or a slice must be an **owned extent** allocated from the store rather than a gap
+  inferred from its neighbours. Either way it is a layout invariant for ADR 0098 to settle, not a tweak.
 - **Diagnosability shipped:** `EdgeStore::release_span` returns the allocator's `FreeSpanError` instead of
   flattening it to `GrowFailed { 0, 0 }` (`1f716f06b`), so this reads as `OverlapPrevious` with both spans
   rather than as a growth failure.
