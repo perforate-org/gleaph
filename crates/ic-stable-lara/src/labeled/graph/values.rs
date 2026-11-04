@@ -1196,6 +1196,15 @@ where
         }
     }
 
+    /// A bucket's value plane, borrowed for one operation. See [`BucketValuePlane`].
+    pub(super) fn value_plane(
+        &self,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+    ) -> super::value_plane::BucketValuePlane<'_, E, M> {
+        super::value_plane::BucketValuePlane::new(self, bucket_slot, bucket)
+    }
+
     pub(super) fn release_bucket_inline_property_bytes_span(
         &self,
         src: VertexId,
@@ -1615,7 +1624,9 @@ where
             // semantics) put it at the run's tail instead of at the row's index. An update writes the
             // row's own block.
             bucket = self
-                .write_edge_inline_property_at_existing_row(src, slot, bucket, slot_index, &edge)?;
+                .value_plane(slot, bucket)
+                .write_block_at(src, slot_index, &edge)?
+                .bucket();
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);

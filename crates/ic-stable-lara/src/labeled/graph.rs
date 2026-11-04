@@ -261,6 +261,7 @@ mod tree_write;
 
 pub(crate) use compact::SpanResolutionPolicy;
 pub use traverse::BucketEntryPosition;
+pub(crate) mod value_plane;
 pub(crate) mod values;
 
 pub(crate) use crate::traverse::EdgeSlotState;

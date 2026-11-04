@@ -673,19 +673,15 @@ where
         // releasing only the values run here is what left the planes one row apart on the next insert.
         let mut updated = updated;
         if updated.degree() == 0 {
-            if updated.edge_spill_run() == crate::traits::NO_SPILL_RUN
-                && updated.values_spill_run() != crate::traits::NO_SPILL_RUN
-            {
-                if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
-                    let _ = self.values.spill_release(run);
-                }
-                updated = updated.without_values_spill_run();
-            }
-            // `is_inline_property_bytes_allocated` folds "has rows" into its answer, so it reads
-            // false exactly when this release is needed; the descriptor's recorded slot count is the
-            // question to ask here.
-            if updated.inline_property_bytes_slab_slots_allocated() > 0 {
-                let _ = self.release_bucket_inline_property_bytes_span(src, &updated);
+            // The value plane is released through its own view, which pairs each release with the
+            // descriptor change that makes it consistent; the edge run stays until compaction sweeps it
+            // (see `deleting_every_row_keeps_the_run_until_compaction`).
+            if updated.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+                updated = self
+                    .value_plane(slot, updated)
+                    .release_run()
+                    .release_span(src)
+                    .bucket();
             }
         }
         let updated = if emptied {
