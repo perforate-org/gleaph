@@ -62,6 +62,14 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
   holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
   relocated or is the bound ADR 0098 declares being enforced too early?
+- **Located, by the constructor:** `GLEAPH_TRACE_OVERFLOW=1` names the site outright -
+  `labeled/graph/bucket.rs:1005`, `vertex_bucket_descriptor_row_end`'s
+  `label_bucket_descriptor_span().ok_or(..)`. Its caller already returns early for a default-labeled
+  vertex, and `LabeledVertex::label_bucket_descriptor_span` returns `None` only for a default-labeled one
+  or when `degree + bucket_slack_slots` overflows `u32` - so either the vertex is default-labeled through a
+  path that did not take the early return, or the degree it reports for a 10 000-row bucket is not 10 000.
+  That is the next read: print the vertex's `degree`, `bucket_slack_slots` and descriptor bits at that
+  site for the probe.
 - **Correction - the transcription is not it either:** instrumenting both transcription checks
   (`live != bucket.degree`, the value-width mismatch) and every `return Err(...CollectAllocationOverflow
   .into())` in `promote.rs` fires nothing either. So the variant is produced by a form not yet covered -
