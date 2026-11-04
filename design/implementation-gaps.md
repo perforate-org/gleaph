@@ -47,6 +47,21 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-LARA-FOLD-BENCH-RUN-PROBE — the fold-cost bench's reuse probe asks for a run the arena never frees
+
+- **Observed behavior:** `canbench "bench_t_fold_cost_33_256"` traps in `assert_reusable`
+  (`labeled/graph/traverse/bench/fold.rs:422`): `assert_eq!(reused.get(), id)` with `left: 299, right: 42`.
+- **Not caused by this branch:** the same command traps on `43c3add4e` (the landed tip before the late
+  changes in this session).
+- **What the numbers say:** replacing the assertion with "keep allocating until `id` comes back" shows the
+  allocator handing out `299, 556, 813, ...` - a fresh run every time, stride 257 - and never `42`. A run
+  that the fixture's bookkeeping records as released is therefore **not on the free list**, so the probe is
+  asking for something that was never freed (or was freed into a different class).
+- **Impact:** `canbench --persist` completes for `crates/graph` (artifact refreshed in `43fe89ce0`) but not
+  for `crates/ic-stable-lara`, so that crate's artifact still cannot be refreshed.
+- **Next:** read the fixture's `runs()` bookkeeping against what the bench actually releases - the probe's
+  expectation comes from the descriptor, and the descriptor is the thing that should be right.
+
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
 
 - **Status:** Open. Found while verifying `GAP-GRAPH-EXPAND-10K-BENCH-TRAPS` after the placement-claim fix
