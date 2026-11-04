@@ -249,6 +249,7 @@ mod iter;
 pub(crate) mod leaf_arena;
 mod promote;
 mod remove;
+mod row_plane;
 #[cfg(test)]
 mod spill_read_test;
 #[cfg(test)]

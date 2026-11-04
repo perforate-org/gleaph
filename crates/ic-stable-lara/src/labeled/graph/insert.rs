@@ -1,25 +1,21 @@
 //! Labeled graph `insert` implementation.
 
 #[cfg(target_family = "wasm")]
-fn log_collect_overflow(message: &str) {
+pub(super) fn log_collect_overflow(message: &str) {
     ic_cdk::println!("LARA CollectAllocationOverflow: {}", message);
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn log_collect_overflow(_message: &str) {}
+pub(super) fn log_collect_overflow(_message: &str) {}
 
 use crate::{
     VertexId,
     labeled::{
-        access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
-    lara::{
-        edge::{InsertLocation, segment_tree_leaf_count},
-        operation_error::LaraOperationError,
-    },
+    lara::{edge::segment_tree_leaf_count, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -27,7 +23,7 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketMode, BucketSearch, LabeledLaraGraph};
+use super::{BucketSearch, LabeledLaraGraph};
 
 /// Exact logical location produced by a successful scalar write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +61,7 @@ pub enum EdgePlacementPolicy {
 }
 
 #[derive(Clone, Copy)]
-enum ScalarLocationCapture {
+pub(super) enum ScalarLocationCapture {
     Ignore,
     Capture,
 }
@@ -228,7 +224,7 @@ where
     }
 
     #[allow(clippy::needless_return)]
-    fn insert_edge_skip_leaf_cascade_impl(
+    pub(super) fn insert_edge_skip_leaf_cascade_impl(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -239,397 +235,13 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(src)?;
-        let mut vertex = self.vertices.get(src);
-        let edge_inline_property_width = edge.edge_inline_property_byte_width();
-        let has_edge_inline_property = edge_inline_property_width != 0;
-        if vertex.is_default_edge_labeled() {
-            if has_edge_inline_property {
-                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                    bucket_width: 0,
-                    edge_inline_property_width,
-                });
-            }
-            if label_id == self.bypass_storage_label_for(&vertex)
-                && self.may_use_homogeneous_bypass(src)
-            {
-                match self.insert_homogeneous_bypass_edge(src, label_id, edge.clone()) {
-                    Err(LabeledOperationError::Store(LaraOperationError::SpillNeedsPromotion)) => {
-                        super::promote::promote_bypass_with_edge(self, src, &edge)?;
-                    }
-                    result => result?,
-                }
-                return Ok(None);
-            }
-            // A same-label insert into a bypass row that stopped being the tail
-            // must not extend its slab region: every such insert would rescan
-            // and rewrite all later rows' origins. Promote once so the insert —
-            // and every future one for this row — takes the bounded bucket path.
-            self.promote_bypass_to_bucket_mode(src)?;
-            vertex = self.vertices.get(src);
-        } else if vertex.degree() == 0
-            && self.is_homogeneous_bypass_label(label_id)
-            && self.may_use_homogeneous_bypass(src)
-            && !has_edge_inline_property
-        {
-            self.insert_homogeneous_bypass(src, label_id, edge)?;
-            return Ok(None);
-        }
-
-        if edge_inline_property_width != 0
-            && let BucketSearch::Missing { .. } = self.find_bucket(src, &vertex, label_id)?
-        {
-            // The dispatcher requires the bucket to be pre-declared
-            // with the right `inline_property_byte_width` before the
-            // first insert (this is a deliberate contract: the
-            // caller must establish the schema via
-            // `ensure_label_bucket_inline_property_byte_width` or
-            // a similar helper, not have the dispatcher infer it).
-            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                bucket_width: 0,
-                edge_inline_property_width,
-            });
-        }
-
-        // Plan 0318 §Step 3 cap wiring: enforce the per-vertex bucket
-        // count cap before the new-bucket create path runs. The
-        // pre-existing bucket path is a no-op (count unchanged).
-        super::check_vertex_bucket_count_cap(&vertex)?;
-
-        let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read, so a future mode cannot silently inherit a path.
-        // Width is only readable inside the Slab arm below (tiny payload and
-        // tree roots never reach a width read).
-        match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny buckets append inline (no slab/log/counts
-            // writes). The arm precedes every width read structurally: width
-            // bytes are payload on tiny (see §1 wire table) and must never be
-            // read as schema.
-            BucketMode::Tiny => self.insert_edge_tiny_mode(
-                src,
-                bucket_slot,
-                bucket,
-                label_id,
-                edge,
-                placement,
-                location_capture,
-            ),
-            // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
-            // bypass the slab-path entirely. Rope / PMA / placement /
-            // leaf-pin code does not see this branch.
-            BucketMode::Tree => {
-                // Width check lives INSIDE the Tree arm (§7.1): the tree callee
-                // validators below assume pre-matched widths (Plan 0326
-                // LPB-in-tree: schema is declared via the width APIs before
-                // inserting); a mismatch fails closed here, never in the Slab
-                // width path. This is also the only dispatcher-visible
-                // `w > 0 → tree` schema gate (the failing regression pins it).
-                if edge_inline_property_width != bucket.inline_property_byte_width() {
-                    return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                        bucket_width: bucket.inline_property_byte_width(),
-                        edge_inline_property_width,
-                    });
-                }
-                // Plan 0326 LPB-in-tree: tree mode + `w > 0` is wired
-                // through `tree_mode_insert_edge` (which writes the
-                // property row via the combined span realloc). The
-                // previous carve-out `if has_edge_inline_property` is
-                // REMOVED; the dispatcher accepts `w > 0` on a tree
-                // bucket as long as the edge's width matches the
-                // bucket's width (width mismatch is a typed error above
-                // at the `ensure_bucket_inline_property_schema_for_insert_with_materialize`
-                // call).
-                // Plan 0340 (ADR 0088 follow-up `tree-mode-tombstone-reuse`):
-                // Unordered tree buckets reuse an interior tombstone within
-                // the fixed tail-first window before tail-appending. Insertion
-                // tree buckets never reuse (ADR 0052 §6) — the gate is
-                // structural, enforced by the placement policy passed in.
-                if let Some(reused_slot) = super::tree_write::tree_mode_reuse_tombstone_slot(
-                    self,
-                    bucket_slot,
-                    &bucket,
-                    label_id,
-                    &edge,
-                    placement,
-                )? {
-                    return Ok(Some(ScalarInsertLocation {
-                        logical_slot: reused_slot,
-                        storage: ScalarInsertStorage::Slab,
-                    }));
-                }
-                let logical_slot = super::tree_write::tree_mode_insert_edge(
-                    self,
-                    src,
-                    bucket_slot,
-                    &bucket,
-                    label_id,
-                    &edge,
-                )?;
-                Ok(Some(ScalarInsertLocation {
-                    logical_slot,
-                    storage: ScalarInsertStorage::Slab,
-                }))
-            }
-            BucketMode::Slab => {
-                // Width check lives INSIDE the Slab arm (§7.1): tiny diverged
-                // into its arm and tree returns from its arm, so only slab
-                // widths (real schema) ever reach this read. The vertex row is
-                // re-read fresh by the slab path below; no stale row crosses
-                // the match.
-                if edge_inline_property_width != bucket.inline_property_byte_width() {
-                    // Plan 0320 §Step 2: width-addition (0→w) wiring.
-                    // The new helper handles 0→w on non-empty buckets
-                    // via `materialize_inline_property_stream`; other
-                    // mismatches stay fail-closed (typed error).
-                    bucket = self
-                        .ensure_bucket_inline_property_schema_for_insert_with_materialize(
-                            src,
-                            bucket_slot,
-                            bucket,
-                            edge_inline_property_width,
-                        )?;
-                    self.publish_bucket_descriptor(bucket_slot, bucket)?;
-                }
-                // Admission is based on logical resident width (prefix plus used run
-                // rows), not the bytes moved by a run-retaining relocation. A leaf
-                // slide must not be required to fold the run for this cap to apply.
-                //
-                // The additional `< u32::MAX` guard skips promotion for buckets
-                // that are already at the degree cap (e.g. `normal_label_bucket_insert_rejects_edge_len_overflow`).
-                // Those buckets fail with `RowDegreeOverflow` from the slab path
-                // instead of being routed to the tree path, which would otherwise
-                // try to mint `resident / B` LTB blocks and fail in a
-                // different way.
-                //
-                // Every edge width promotes: a tree block holds EDGES_PER_BLOCK
-                // records of `E::BYTES`, so the width only scales the block, it
-                // does not select a different path.
-                let resident = self.bucket_resident_rows(&bucket)?;
-                if (super::T_PROMOTE..u32::MAX).contains(&resident) {
-                    super::promote::promote_bucket_to_tree_mode(self, src, label_id)?;
-                    // Re-read the bucket: after promotion it is tree mode.
-                    let vertex = self.vertices.get(src);
-                    bucket = match self.find_bucket(src, &vertex, label_id)? {
-                        BucketSearch::Found { bucket, .. } => bucket,
-                        BucketSearch::Missing { .. } => {
-                            return Err(LabeledOperationError::BucketNotFound {
-                                vid: src,
-                                label: label_id,
-                            });
-                        }
-                    };
-                    if bucket.is_tree_mode() {
-                        // Plan 0340: reuse applies to a freshly-promoted Unordered
-                        // tree bucket too (promotion preserves tombstones).
-                        if let Some(reused_slot) =
-                            super::tree_write::tree_mode_reuse_tombstone_slot(
-                                self,
-                                bucket_slot,
-                                &bucket,
-                                label_id,
-                                &edge,
-                                placement,
-                            )?
-                        {
-                            return Ok(Some(ScalarInsertLocation {
-                                logical_slot: reused_slot,
-                                storage: ScalarInsertStorage::Slab,
-                            }));
-                        }
-                        let logical_slot = super::tree_write::tree_mode_insert_edge(
-                            self,
-                            src,
-                            bucket_slot,
-                            &bucket,
-                            label_id,
-                            &edge,
-                        )?;
-                        return Ok(Some(ScalarInsertLocation {
-                            logical_slot,
-                            storage: ScalarInsertStorage::Slab,
-                        }));
-                    }
-                }
-                self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
-                let vertex = self.vertices.get(src);
-                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-                // A single pass: the values fold that made this a retry loop is gone (ADR 0099).
-                #[allow(clippy::never_loop)]
-                for _attempt in 0..1u32 {
-                    let attempt_edge = edge.clone();
-                    let vertex = self.vertices.get(src);
-                    // ADR 0099: a full value run is no reason to fold the values plane - the
-                    // append grows the run itself, and folding it would leave the edge run's rows
-                    // pointing at blocks that moved.
-                    // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab
-                    // tombstone before appending to the slab tail or the overflow log.
-                    // The helper keeps the dense fast path O(1) and falls back to the
-                    // ordered path when the inline property bytes are log-backed
-                    // (ADR 0052 §9).
-                    if placement == EdgePlacementPolicy::Unordered
-                        && let Some(location) = self.try_reuse_unordered_slab_tombstone(
-                            src,
-                            bucket_slot,
-                            bucket,
-                            &attempt_edge,
-                        )?
-                    {
-                        return Ok(Some(location));
-                    }
-                    let successor_start = if vertex.degree() == 1 && !has_edge_inline_property {
-                        self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?
-                    } else {
-                        self.bucket_slab_window_end_exclusive_after_bucket(
-                            &vertex,
-                            bucket_index,
-                            &bucket,
-                        )?
-                    };
-                    let slack_span = successor_start.saturating_sub(bucket.edge_start());
-                    if bucket.edge_run().is_none()
-                        && bucket.stored_slots() > 0
-                        && slack_span > u64::from(bucket.stored_slots())
-                    {
-                        let write_slot = checked_add_slot_index(
-                            bucket.edge_start(),
-                            u64::from(bucket.stored_slots()),
-                        )
-                        .ok_or(LaraOperationError::overflow())?;
-                        debug_assert!(write_slot < successor_start);
-                        self.edges.write_slot(write_slot, attempt_edge.clone())?;
-                        let logical_slot = bucket.stored_slots();
-                        let value_slot = logical_slot;
-                        let bucket = bucket.grow_packed_slab_by_one();
-                        let bucket = self
-                            .value_plane(bucket_slot, bucket)
-                            .write_after_insert(src, value_slot, &attempt_edge)?
-                            .bucket();
-                        self.publish_bucket_descriptor(bucket_slot, bucket)?;
-                        let hdr = self.edges.header();
-                        let next_num_edges = hdr
-                            .num_edges
-                            .checked_add(1)
-                            .ok_or(LaraOperationError::overflow())?;
-                        self.edges.set_num_edges(next_num_edges);
-                        self.edges
-                            .bump_vertex_segment_counts(src, 1, 0)
-                            .map_err(LabeledOperationError::from)?;
-                        return Ok(Some(ScalarInsertLocation {
-                            logical_slot,
-                            storage: ScalarInsertStorage::Slab,
-                        }));
-                    }
-                    let access = LabelEdgeSpanAccess::with_bucket(
-                        &self.buckets,
-                        bucket_slot,
-                        bucket,
-                        successor_start,
-                        src,
-                    );
-                    let insert_result = match location_capture {
-                        ScalarLocationCapture::Ignore => {
-                            self.edges.insert_edge_without_logical_slot(
-                                &access,
-                                VertexId::from(0),
-                                attempt_edge.clone(),
-                            )
-                        }
-                        ScalarLocationCapture::Capture => {
-                            self.edges
-                                .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
-                        }
-                    };
-                    match insert_result {
-                        Ok(InsertLocation::Slab(written_slot)) if !has_edge_inline_property => {
-                            return Ok(Some(ScalarInsertLocation {
-                                logical_slot: written_slot,
-                                storage: ScalarInsertStorage::Slab,
-                            }));
-                        }
-                        Ok(InsertLocation::Slab(written_slot)) => {
-                            bucket = self
-                                .buckets
-                                .read_label_bucket_slot(bucket_slot)
-                                .ok_or_else(|| {
-                                    log_collect_overflow(
-                                        "insert_edge_skip_leaf_cascade: cannot re-read bucket after slab insert",
-                                    );
-                                    LaraOperationError::CollectAllocationOverflow
-                                })?;
-                            let new_stored =
-                                written_slot.saturating_add(1).max(bucket.stored_slots());
-                            if new_stored != bucket.stored_slots() {
-                                bucket = bucket.with_stored_slots(new_stored);
-                            }
-                            let bucket = self
-                                .value_plane(bucket_slot, bucket)
-                                .write_after_insert(src, written_slot, &attempt_edge)?
-                                .bucket();
-                            self.publish_bucket_descriptor(bucket_slot, bucket)?;
-                            return Ok(Some(ScalarInsertLocation {
-                                logical_slot: written_slot,
-                                storage: ScalarInsertStorage::Slab,
-                            }));
-                        }
-                        Ok(InsertLocation::Spill { logical_slot, .. }) => {
-                            if has_edge_inline_property {
-                                bucket = self
-                                    .buckets
-                                    .read_label_bucket_slot(bucket_slot)
-                                    .ok_or_else(|| {
-                                        log_collect_overflow(
-                                            "insert_edge_skip_leaf_cascade: cannot re-read bucket after spill insert",
-                                        );
-                                        LaraOperationError::CollectAllocationOverflow
-                                    })?;
-                                // A spilled row's slot is `stored_slots + its run index`, and the run
-                                // index of the row just appended is `used_len - 1`. Falling back to
-                                // `stored_slots` alone would name the run's first row instead of the
-                                // new one whenever the run was not empty (ADR 0099 mirror).
-                                let value_slot = match logical_slot {
-                                    Some(slot) => slot,
-                                    None => bucket.stored_slots().saturating_add(
-                                        self.bucket_values_run_rows(&bucket).saturating_sub(1),
-                                    ),
-                                };
-                                let bucket = self
-                                    .value_plane(bucket_slot, bucket)
-                                    .write_after_insert(src, value_slot, &attempt_edge)?
-                                    .bucket();
-                                self.publish_bucket_descriptor(bucket_slot, bucket)?;
-                            }
-                            return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
-                                logical_slot,
-                                storage: ScalarInsertStorage::Spill,
-                            }));
-                        }
-                        Err(LaraOperationError::SpillNeedsPromotion) => {
-                            // The bucket's run cannot serve another row (ADR 0097 §6): its class is
-                            // full at MAX_ROWS, or the arena cannot address the growth. Tree mode is
-                            // the chunked path with no fixed row ceiling, so promote and re-dispatch
-                            // through the mode dispatcher - exactly as the tiny->slab promotion
-                            // does, because the bucket is no longer slab mode and this loop's
-                            // remaining steps do not apply to it. This replaces the retired
-                            // log-full leaf rebalance: a per-bucket run has no shared area to empty.
-                            super::promote::promote_bucket_to_tree_mode(self, src, label_id)?;
-                            return self.insert_edge_skip_leaf_cascade_impl(
-                                src,
-                                label_id,
-                                edge,
-                                placement,
-                                location_capture,
-                            );
-                        }
-                        Err(e) => return Err(LabeledOperationError::from(e)),
-                    }
-                }
-                // ADR 0099: the values fold that used to retry here is gone, so this block runs
-                // once; reaching the end means the bucket could not place the row after promotion
-                // last attempt's outcome is reported: the spill still needs promotion.
-                Err(LaraOperationError::SpillNeedsPromotion.into())
-            }
-        }
+        super::row_plane::BucketRowPlane::new(self).insert_row(
+            src,
+            label_id,
+            edge,
+            placement,
+            location_capture,
+        )
     }
 
     /// Storage-owned pre-insert capacity preparation for a new label bucket.
@@ -741,7 +353,7 @@ where
     /// unchanged, and slab-backed inline property bytes are inserted at the
     /// reused slot's live ordinal with later bytes shifted up so their values
     /// are preserved (ADR 0052 §9).
-    fn try_reuse_unordered_slab_tombstone(
+    pub(super) fn try_reuse_unordered_slab_tombstone(
         &self,
         src: VertexId,
         bucket_slot: u64,
@@ -979,7 +591,7 @@ where
     /// full prefixes promote first (ADR 0096 §4); the pending edge then flows
     /// through the normal slab path via one recursion (depth 1: the
     /// post-promotion bucket is always slab).
-    fn insert_edge_tiny_mode(
+    pub(super) fn insert_edge_tiny_mode(
         &self,
         src: VertexId,
         bucket_slot: u64,
