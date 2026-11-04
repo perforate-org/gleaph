@@ -9,6 +9,9 @@ mod materialize;
 mod row;
 mod sort_keys;
 
+#[cfg(test)]
+pub(crate) use executor::test_support::{MockPropertyIndex, configure_test_index};
+
 pub use error::PlanQueryError;
 pub use executor::EdgeBinding;
 pub use executor::PlanQueryExecutor;

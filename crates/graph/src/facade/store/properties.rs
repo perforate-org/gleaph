@@ -1,5 +1,7 @@
 //! Property storage domain: primary stores plus derived index-maintenance events.
 
+use super::super::stable::edge_properties::EdgePropertyKey;
+use super::super::stable::vertex_properties::{VertexPropertyKey, validate_property_assignment};
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
 use crate::facade::store::index_build_admission::PlannedBuildEnvelope;
 use crate::property::{
@@ -104,42 +106,41 @@ impl GraphStore {
         record_index_pending: bool,
         mutation_id: MutationId,
     ) -> Result<Option<Value>, GraphStoreError> {
-        // Pure validation first so the fence commit that follows is infallible.
-        crate::property::ensure_property_id(property_id).map_err(|id| {
-            GraphStoreError::PropertyValue(
-                super::super::stable::vertex_properties::VertexPropertyStoreError::ReservedPropertyId(
-                    id,
-                ),
-            )
-        })?;
-        crate::property::ensure_persistable(&value).map_err(|error| {
-            GraphStoreError::PropertyValue(
-                super::super::stable::vertex_properties::VertexPropertyStoreError::InvalidValue(
-                    error,
-                ),
-            )
-        })?;
-        let prev =
-            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
-        let change =
-            PropertyValueChange::vertex(vertex_id, property_id, prev.as_ref(), Some(&value));
-        if record_index_pending {
-            let planned = preflight_property_index_ops(change)?;
-            if !planned.is_empty() {
-                commit_property_index_ops(
-                    mutation_id,
-                    index_build_subject_for_change(change)?,
-                    planned,
+        // Reject invalid input before a first access can initialize the stable map.
+        validate_property_assignment(property_id, &value)
+            .map_err(GraphStoreError::PropertyValue)?;
+        let previous = VERTEX_PROPERTIES.with_borrow_mut(|properties| {
+            let prepared = properties
+                .prepare_change(VertexPropertyKey::new(vertex_id, property_id), Some(&value))
+                .map_err(GraphStoreError::PropertyValue)?;
+            if record_index_pending {
+                let change = PropertyValueChange::vertex(
+                    vertex_id,
+                    property_id,
+                    prepared.previous(),
+                    Some(&value),
                 );
+                let planned = preflight_property_index_ops(change)?;
+                if !planned.is_empty() {
+                    commit_property_index_ops(
+                        mutation_id,
+                        index_build_subject_for_change(change)?,
+                        planned,
+                    );
+                }
             }
-        }
-        let out = VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))
-            .expect("vertex property was pre-validated and must be writable");
+            Ok::<_, GraphStoreError>(prepared.commit())
+        })?;
+        // Active/TEXT dispatch runs only after the exclusive primary-store borrow is released.
         if record_index_pending {
-            dispatch_property_index_ops(change);
+            dispatch_property_index_ops(PropertyValueChange::vertex(
+                vertex_id,
+                property_id,
+                previous.as_ref(),
+                Some(&value),
+            ));
         }
-        Ok(out)
+        Ok(previous)
     }
 
     /// Remove a vertex property and enqueue federated index maintenance when enabled.
@@ -149,24 +150,32 @@ impl GraphStore {
         property_id: PropertyId,
         mutation_id: MutationId,
     ) -> Result<Option<Value>, GraphStoreError> {
-        let prev =
-            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
-        if let Some(ref old) = prev {
-            let change = PropertyValueChange::vertex(vertex_id, property_id, Some(old), None);
-            let planned = preflight_property_index_ops(change)?;
-            if !planned.is_empty() {
-                commit_property_index_ops(
-                    mutation_id,
-                    index_build_subject_for_change(change)?,
-                    planned,
-                );
+        let previous = VERTEX_PROPERTIES.with_borrow_mut(|properties| {
+            let prepared = properties
+                .prepare_change(VertexPropertyKey::new(vertex_id, property_id), None)
+                .map_err(GraphStoreError::PropertyValue)?;
+            if let Some(old) = prepared.previous() {
+                let change = PropertyValueChange::vertex(vertex_id, property_id, Some(old), None);
+                let planned = preflight_property_index_ops(change)?;
+                if !planned.is_empty() {
+                    commit_property_index_ops(
+                        mutation_id,
+                        index_build_subject_for_change(change)?,
+                        planned,
+                    );
+                }
             }
-            let removed = VERTEX_PROPERTIES
-                .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
-            dispatch_property_index_ops(change);
-            return Ok(removed);
+            Ok::<_, GraphStoreError>(prepared.commit())
+        })?;
+        if let Some(old) = previous.as_ref() {
+            dispatch_property_index_ops(PropertyValueChange::vertex(
+                vertex_id,
+                property_id,
+                Some(old),
+                None,
+            ));
         }
-        Ok(None)
+        Ok(previous)
     }
 
     /// Write an edge property on a canonical handle and update local equality postings.
@@ -197,58 +206,45 @@ impl GraphStore {
         value: Value,
         mutation_id: MutationId,
     ) -> Result<Option<Value>, GraphStoreError> {
-        // Pure validation first so the fence commit that follows is infallible.
-        crate::property::ensure_property_id(property_id).map_err(|id| {
-            GraphStoreError::PropertyValue(
-                super::super::stable::vertex_properties::VertexPropertyStoreError::ReservedPropertyId(
-                    id,
-                ),
-            )
-        })?;
-        crate::property::ensure_persistable(&value).map_err(|error| {
-            GraphStoreError::PropertyValue(
-                super::super::stable::vertex_properties::VertexPropertyStoreError::InvalidValue(
-                    error,
-                ),
-            )
-        })?;
-        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
-            properties.get(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
-            )
-        });
-        let change = PropertyValueChange::edge(
+        validate_property_assignment(property_id, &value)
+            .map_err(GraphStoreError::PropertyValue)?;
+        let key = EdgePropertyKey::new(
             handle.owner_vertex_id,
             handle.label_id.raw(),
             handle.slot_index.raw(),
             property_id,
-            prev.as_ref(),
-            Some(&value),
         );
-        let planned = preflight_property_index_ops(change)?;
-        if !planned.is_empty() {
-            commit_property_index_ops(
-                mutation_id,
-                index_build_subject_for_change(change)?,
-                planned,
+        let previous = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+            let prepared = properties
+                .prepare_change(key, Some(&value))
+                .map_err(GraphStoreError::PropertyValue)?;
+            let change = PropertyValueChange::edge(
+                key.owner_vertex_id(),
+                key.label_id(),
+                key.slot_index(),
+                key.property_id(),
+                prepared.previous(),
+                Some(&value),
             );
-        }
-        let old = EDGE_PROPERTIES
-            .with_borrow_mut(|properties| {
-                properties.set(
-                    handle.owner_vertex_id,
-                    handle.label_id.raw(),
-                    handle.slot_index.raw(),
-                    property_id,
-                    value.clone(),
-                )
-            })
-            .expect("edge property was pre-validated and must be writable");
-        dispatch_property_index_ops(change);
-        Ok(old)
+            let planned = preflight_property_index_ops(change)?;
+            if !planned.is_empty() {
+                commit_property_index_ops(
+                    mutation_id,
+                    index_build_subject_for_change(change)?,
+                    planned,
+                );
+            }
+            Ok::<_, GraphStoreError>(prepared.commit())
+        })?;
+        dispatch_property_index_ops(PropertyValueChange::edge(
+            key.owner_vertex_id(),
+            key.label_id(),
+            key.slot_index(),
+            key.property_id(),
+            previous.as_ref(),
+            Some(&value),
+        ));
+        Ok(previous)
     }
 
     /// Co-write a preflighted set of initial properties at one canonical edge.
@@ -298,43 +294,47 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<Option<Value>, GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
-        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
-            properties.get(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
-            )
-        });
-        if let Some(ref old) = prev {
-            let change = PropertyValueChange::edge(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
+        let key = EdgePropertyKey::new(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            handle.slot_index.raw(),
+            property_id,
+        );
+        let previous = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+            let prepared = properties
+                .prepare_change(key, None)
+                .map_err(GraphStoreError::PropertyValue)?;
+            if let Some(old) = prepared.previous() {
+                let change = PropertyValueChange::edge(
+                    key.owner_vertex_id(),
+                    key.label_id(),
+                    key.slot_index(),
+                    key.property_id(),
+                    Some(old),
+                    None,
+                );
+                let planned = preflight_property_index_ops(change)?;
+                if !planned.is_empty() {
+                    commit_property_index_ops(
+                        mutation_id,
+                        index_build_subject_for_change(change)?,
+                        planned,
+                    );
+                }
+            }
+            Ok::<_, GraphStoreError>(prepared.commit())
+        })?;
+        if let Some(old) = previous.as_ref() {
+            dispatch_property_index_ops(PropertyValueChange::edge(
+                key.owner_vertex_id(),
+                key.label_id(),
+                key.slot_index(),
+                key.property_id(),
                 Some(old),
                 None,
-            );
-            let planned = preflight_property_index_ops(change)?;
-            if !planned.is_empty() {
-                commit_property_index_ops(
-                    mutation_id,
-                    index_build_subject_for_change(change)?,
-                    planned,
-                );
-            }
-            let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-                properties.remove(
-                    handle.owner_vertex_id,
-                    handle.label_id.raw(),
-                    handle.slot_index.raw(),
-                    property_id,
-                )
-            });
-            dispatch_property_index_ops(change);
-            return Ok(removed);
+            ));
         }
-        Ok(None)
+        Ok(previous)
     }
 
     /// Remove every edge property on a canonical handle.
@@ -399,6 +399,124 @@ impl GraphStore {
                 let _ = VERTEX_PROPERTIES.with_borrow_mut(|p| p.remove(vertex_id, property_id));
                 dispatch_property_index_ops(change);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::stable::vertex_properties::VertexPropertyStoreError;
+    use super::super::helpers::{build_edge_to, edge_storage_label, lara_label};
+    use super::*;
+    use ic_stable_lara::labeled::EdgePlacementPolicy;
+
+    #[derive(Clone, Debug)]
+    struct Unencodable;
+
+    impl std::fmt::Display for Unencodable {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("unencodable")
+        }
+    }
+
+    impl gleaph_gql::ExtensionValue for Unencodable {
+        fn type_name(&self) -> &str {
+            "unencodable"
+        }
+        fn clone_box(&self) -> Box<dyn gleaph_gql::ExtensionValue> {
+            Box::new(self.clone())
+        }
+        fn eq_ext(&self, other: &dyn gleaph_gql::ExtensionValue) -> bool {
+            other.as_any().is::<Self>()
+        }
+        fn cmp_ext(&self, other: &dyn gleaph_gql::ExtensionValue) -> Option<std::cmp::Ordering> {
+            other
+                .as_any()
+                .is::<Self>()
+                .then_some(std::cmp::Ordering::Equal)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn invalid_scalar_assignment_does_not_initialize_property_stores() {
+        let store = GraphStore::new();
+        let vertex = store.insert_vertex().unwrap();
+        let neighbor = store.insert_vertex().unwrap();
+        // Graph's ordinary insertion opens the sidecar store even for an empty property list.
+        // Seed real topology through LARA so this admission test starts with both stores unopened.
+        let label = lara_label(edge_storage_label(None, false));
+        let locations = store
+            .with_graph_mut(|graph| {
+                graph.insert_directed_edge_with_locations(
+                    vertex,
+                    neighbor,
+                    label,
+                    build_edge_to(neighbor),
+                    build_edge_to(vertex),
+                    EdgePlacementPolicy::Unordered,
+                    &|_| EdgePlacementPolicy::Unordered,
+                )
+            })
+            .unwrap();
+        let edge = super::super::handle::EdgeHandle::at_slot(
+            vertex,
+            label,
+            locations
+                .forward
+                .expect("inserted forward occurrence")
+                .logical_slot,
+        );
+        let property_pages = || {
+            super::super::super::stable::memory::stable_memory_stats()
+                .regions
+                .into_iter()
+                .filter(|region| {
+                    matches!(
+                        region.name.as_str(),
+                        "vertex_properties" | "edge_properties"
+                    )
+                })
+                .map(|region| region.logical_pages)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            property_pages(),
+            vec![0, 0],
+            "fixture must leave both owners unopened"
+        );
+        let assert_rejected = |result: Result<Option<Value>, GraphStoreError>,
+                               expected: &VertexPropertyStoreError| {
+            assert!(
+                matches!(result, Err(GraphStoreError::PropertyValue(ref actual)) if actual == expected),
+                "{result:?}"
+            );
+            assert_eq!(property_pages(), vec![0, 0]);
+        };
+        for (property, value, error) in [
+            (
+                PropertyId::default(),
+                Value::Null,
+                VertexPropertyStoreError::ReservedPropertyId(PropertyId::default()),
+            ),
+            (
+                PropertyId::from_raw(1),
+                Value::Extension(Box::new(Unencodable)),
+                VertexPropertyStoreError::InvalidValue(
+                    gleaph_gql::ValueBinaryError::InvalidExtensionType,
+                ),
+            ),
+        ] {
+            assert_rejected(
+                store.set_vertex_property(vertex, property, value.clone()),
+                &error,
+            );
+            assert_rejected(
+                store.commit_edge_property_write_at_canonical(edge, property, value, 0),
+                &error,
+            );
         }
     }
 }

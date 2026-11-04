@@ -31,3 +31,6 @@ sdk/canister/rust/target/
 crates/text-analyzer-spike/resources/
 crates/pocket-ic-tests/resources/
 wasm-out/
+
+# Lane worktrees: scratch checkouts under .lane/ (each was a duplicate of the repo).
+.lane/

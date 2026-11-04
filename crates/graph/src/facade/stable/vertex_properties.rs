@@ -114,6 +114,79 @@ impl Storable for StoredPropertyValue {
     }
 }
 
+/// Pure assignment admission, also usable before opening a lazily initialized store.
+pub(crate) fn validate_property_assignment(
+    property_id: PropertyId,
+    value: &Value,
+) -> Result<(), VertexPropertyStoreError> {
+    crate::property::ensure_property_id(property_id)
+        .map_err(VertexPropertyStoreError::ReservedPropertyId)?;
+    crate::property::ensure_persistable(value).map_err(VertexPropertyStoreError::InvalidValue)
+}
+
+/// The property identity used for validation comes from the exact storage key.
+pub(crate) trait PropertyKey: Storable + Ord + Clone {
+    fn property_id(&self) -> PropertyId;
+}
+
+impl PropertyKey for VertexPropertyKey {
+    fn property_id(&self) -> PropertyId {
+        self.property_id
+    }
+}
+
+/// Exclusive single-property preparation for the existing B-tree stores.
+///
+/// Acquires the previous value and checks assignment validity without effects. The caller may
+/// perform pure index planning, then publish its durable intent and consume `commit` synchronously.
+/// Dropping this value cancels without writes. This is not a B-tree search cursor or resource bound:
+/// insert/remove still perform their own search and decode their returned old value internally.
+pub(crate) struct PreparedPropertyChange<'a, K: PropertyKey, M: Memory> {
+    properties: &'a mut StableBTreeMap<K, StoredPropertyValue, M>,
+    key: K,
+    previous: Option<Value>,
+    new: Option<&'a Value>,
+}
+
+impl<'a, K: PropertyKey, M: Memory> PreparedPropertyChange<'a, K, M> {
+    pub(super) fn new(
+        properties: &'a mut StableBTreeMap<K, StoredPropertyValue, M>,
+        key: K,
+        new: Option<&'a Value>,
+    ) -> Result<Self, VertexPropertyStoreError> {
+        if let Some(value) = new {
+            validate_property_assignment(key.property_id(), value)?;
+        }
+        let previous = if crate::property::ensure_property_id(key.property_id()).is_ok() {
+            properties.get(&key).map(StoredPropertyValue::into_value)
+        } else {
+            None
+        };
+        Ok(Self {
+            properties,
+            key,
+            previous,
+            new,
+        })
+    }
+
+    pub(crate) fn previous(&self) -> Option<&Value> {
+        self.previous.as_ref()
+    }
+
+    /// No recoverable error is possible after the caller's durable intent fence. Unexpected
+    /// allocation/codec/storage failures trap; native panic does not roll stable writes back.
+    pub(crate) fn commit(self) -> Option<Value> {
+        if let Some(value) = self.new {
+            self.properties
+                .insert(self.key, StoredPropertyValue::V1(value.clone()));
+        } else if self.previous.is_some() {
+            self.properties.remove(&self.key);
+        }
+        self.previous
+    }
+}
+
 pub struct VertexPropertyStore<M: Memory> {
     properties: StableBTreeMap<VertexPropertyKey, StoredPropertyValue, M>,
 }
@@ -146,6 +219,14 @@ impl<M: Memory> VertexPropertyStore<M> {
         Self {
             properties: StableBTreeMap::init(memory),
         }
+    }
+
+    pub(crate) fn prepare_change<'a>(
+        &'a mut self,
+        key: VertexPropertyKey,
+        new: Option<&'a Value>,
+    ) -> Result<PreparedPropertyChange<'a, VertexPropertyKey, M>, VertexPropertyStoreError> {
+        PreparedPropertyChange::new(&mut self.properties, key, new)
     }
 
     pub fn get(&self, vertex_id: VertexId, property_id: PropertyId) -> Option<Value> {
@@ -420,6 +501,53 @@ mod tests {
         let reopened = VertexPropertyStore::init(memory);
 
         assert_eq!(reopened.get(vid, prop), Some(value));
+    }
+
+    #[test]
+    fn prepared_property_vertex_change_cancels_and_uses_latest_previous() {
+        let memory = VectorMemory::default();
+        let mut store = VertexPropertyStore::init(memory.clone());
+        let vertex = VertexId::from(7);
+        let property = PropertyId::from_raw(1);
+        let key = VertexPropertyKey::new(vertex, property);
+        let guard = VertexId::from(8);
+        store.set(guard, property, Value::Int64(99)).unwrap();
+        let mut previous = None;
+        for next in [
+            Some(Value::Null),
+            Some(Value::Text("old body".repeat(1024))),
+            Some(Value::Int64(55)),
+            None,
+            None,
+        ] {
+            let before = memory.borrow().clone();
+            let prepared = store.prepare_change(key, next.as_ref()).unwrap();
+            assert_eq!(prepared.previous(), previous.as_ref());
+            assert_eq!(
+                *memory.borrow(),
+                before,
+                "preparation must not write or grow"
+            );
+            drop(prepared);
+            assert_eq!(*memory.borrow(), before, "cancellation is not rollback");
+            assert_eq!(store.get(vertex, property), previous);
+            let prepared = store.prepare_change(key, next.as_ref()).unwrap();
+            assert_eq!(prepared.commit(), previous);
+            if previous.is_none() && next.is_none() {
+                assert_eq!(*memory.borrow(), before, "absent REMOVE is write-free");
+            }
+            assert_eq!(store.get(vertex, property), next);
+            assert_eq!(store.get(guard, property), Some(Value::Int64(99)));
+            previous = next;
+        }
+        let before = memory.borrow().clone();
+        let reserved = VertexPropertyKey::new(vertex, PropertyId::default());
+        assert!(matches!(
+            store.prepare_change(reserved, Some(&Value::Null)),
+            Err(VertexPropertyStoreError::ReservedPropertyId(id)) if id.raw() == 0
+        ));
+        assert_eq!(store.prepare_change(reserved, None).unwrap().commit(), None);
+        assert_eq!(*memory.borrow(), before);
     }
 
     #[test]

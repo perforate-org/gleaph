@@ -1,4 +1,6 @@
-use super::vertex_properties::{StoredPropertyValue, VertexPropertyStoreError};
+use super::vertex_properties::{
+    PreparedPropertyChange, PropertyKey, StoredPropertyValue, VertexPropertyStoreError,
+};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
@@ -71,6 +73,12 @@ impl EdgePropertyKey {
     }
 }
 
+impl PropertyKey for EdgePropertyKey {
+    fn property_id(&self) -> PropertyId {
+        self.property_id
+    }
+}
+
 impl Storable for EdgePropertyKey {
     const BOUND: Bound = Bound::Bounded {
         max_size: 14,
@@ -121,6 +129,14 @@ impl<M: Memory> EdgePropertyStore<M> {
         Self {
             properties: StableBTreeMap::init(memory),
         }
+    }
+
+    pub(crate) fn prepare_change<'a>(
+        &'a mut self,
+        key: EdgePropertyKey,
+        new: Option<&'a Value>,
+    ) -> Result<PreparedPropertyChange<'a, EdgePropertyKey, M>, VertexPropertyStoreError> {
+        PreparedPropertyChange::new(&mut self.properties, key, new)
     }
 
     pub fn get(
@@ -441,6 +457,48 @@ mod tests {
         let reopened = EdgePropertyStore::init(memory);
 
         assert_eq!(reopened.get(owner, 0, edge, weight), Some(Value::Int64(10)));
+    }
+
+    #[test]
+    fn prepared_property_edge_change_preserves_parallel_slot_on_cancel_and_remove() {
+        let memory = VectorMemory::default();
+        let mut store = EdgePropertyStore::init(memory.clone());
+        let owner = VertexId::from(7);
+        let property = PropertyId::from_raw(1);
+        let key = EdgePropertyKey::new(owner, 3, 0, property);
+        let old = Value::Text("edge body".repeat(1024));
+        store.set(owner, 3, 0, property, old.clone()).unwrap();
+        store.set(owner, 3, 1, property, Value::Int64(99)).unwrap();
+        let before = memory.borrow().clone();
+        let prepared = store.prepare_change(key, Some(&Value::Null)).unwrap();
+        assert_eq!(prepared.previous(), Some(&old));
+        assert_eq!(*memory.borrow(), before);
+        drop(prepared);
+        assert_eq!(*memory.borrow(), before);
+        assert_eq!(store.get(owner, 3, 0, property), Some(old.clone()));
+        assert_eq!(
+            store
+                .prepare_change(key, Some(&Value::Null))
+                .unwrap()
+                .commit(),
+            Some(old)
+        );
+        assert_eq!(store.get(owner, 3, 0, property), Some(Value::Null));
+        assert_eq!(
+            store.prepare_change(key, None).unwrap().commit(),
+            Some(Value::Null)
+        );
+        let before = memory.borrow().clone();
+        assert_eq!(store.prepare_change(key, None).unwrap().commit(), None);
+        assert_eq!(*memory.borrow(), before);
+        assert_eq!(store.get(owner, 3, 1, property), Some(Value::Int64(99)));
+        let reserved = EdgePropertyKey::new(owner, 3, 0, PropertyId::default());
+        assert!(matches!(
+            store.prepare_change(reserved, Some(&Value::Null)),
+            Err(VertexPropertyStoreError::ReservedPropertyId(id)) if id.raw() == 0
+        ));
+        assert_eq!(store.prepare_change(reserved, None).unwrap().commit(), None);
+        assert_eq!(*memory.borrow(), before);
     }
 
     #[test]

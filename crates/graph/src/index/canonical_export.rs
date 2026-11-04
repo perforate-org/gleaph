@@ -1505,6 +1505,7 @@ mod tests {
     use ic_stable_lara::labeled::LabeledOrientation;
     use std::cell::RefCell;
 
+    use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
     use crate::facade::{FederationRouting, GraphStoreError};
     use crate::index::lookup::PropertyIndexLookup;
@@ -2608,6 +2609,15 @@ mod tests {
             )
             .expect("target label");
         let property = PropertyId::from_raw(9_000_010);
+        let guard_property = PropertyId::from_raw(9_000_099);
+        let old = Value::Text("seeded old property".repeat(64));
+        let existing = store
+            .insert_vertex_with(
+                [VertexLabelId::from_raw(1)],
+                [(property, old.clone()), (guard_property, Value::Int64(99))],
+                0,
+            )
+            .expect("seed existing property and guard before sealing");
         let physical = PhysicalIndexId::new(900_021).unwrap();
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
@@ -2644,6 +2654,23 @@ mod tests {
             None,
             "canonical vertex property must be unchanged"
         );
+        for next in [Some(Value::Int64(8)), None] {
+            let result = match next {
+                Some(value) => store.set_vertex_property(existing, property, value),
+                None => store.remove_vertex_property(existing, property),
+            };
+            assert!(matches!(
+                result,
+                Err(GraphStoreError::IndexBuildAdmission(
+                    CanonicalExportError::RetryableSealing
+                ))
+            ));
+            assert_eq!(store.vertex_property(existing, property), Some(old.clone()));
+            assert_eq!(
+                store.vertex_property(existing, guard_property),
+                Some(Value::Int64(99))
+            );
+        }
         assert!(
             build_outbox_entries_for(physical).is_empty(),
             "Memory46 outbox must be unchanged"
@@ -2846,12 +2873,222 @@ mod tests {
             request.insertions[0],
             sortable_index_key(&Value::Int64(9)).unwrap()
         );
+        assert_eq!(
+            store
+                .set_vertex_property_with_mutation_id(vertex, property, Value::Int64(11), 103)
+                .unwrap(),
+            Some(Value::Int64(9)),
+        );
+        assert_eq!(
+            store
+                .remove_vertex_property_with_mutation_id(vertex, property, 104)
+                .unwrap(),
+            Some(Value::Int64(11)),
+        );
+        let entries = build_outbox_entries_for(physical);
+        assert_eq!(entries.len(), 4);
+        for (index, (mutation, old, new)) in [(103, 9, Some(11)), (104, 11, None)]
+            .into_iter()
+            .enumerate()
+        {
+            let (_, entry) = &entries[index + 2];
+            assert_eq!(entry.mutation_id, mutation);
+            let DerivedIndexOutboxOp::IndexBuildDml { request } = &entry.op else {
+                panic!("build DML");
+            };
+            assert_eq!(request.shard_sequence, index as u64 + 3);
+            assert_eq!(
+                request.subject,
+                gleaph_graph_kernel::index::IndexBuildSubject::Vertex {
+                    shard_id: 0,
+                    vertex_id: u32::from(vertex),
+                }
+            );
+            assert_eq!(
+                request.removals,
+                vec![sortable_index_key(&Value::Int64(old)).unwrap()]
+            );
+            assert_eq!(
+                request.insertions,
+                new.map(|v| sortable_index_key(&Value::Int64(v)).unwrap())
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            store.remove_vertex_property(vertex, property).unwrap(),
+            None
+        );
+        assert_eq!(store.vertex_property(vertex, property), None);
+        assert_eq!(
+            build_outbox_entries_for(physical),
+            entries,
+            "absent REMOVE emits no intent"
+        );
         let status = scope_status(physical).expect("status");
-        assert_eq!(status.admitted_through, 2);
-        ack_build_dml(physical, 1, 1).expect("ack first");
-        ack_build_dml(physical, 1, 2).expect("ack second");
+        assert_eq!(status.admitted_through, 4);
+        assert_eq!(status.drained_through, 0);
+        for sequence in 1..=4 {
+            ack_build_dml(physical, 1, sequence).expect("ack");
+        }
         abort_scope(physical, frozen.clone()).expect("abort");
         remove_scope(physical, &frozen).expect("cleanup");
+    }
+
+    #[test]
+    fn prepared_property_edge_fence_keeps_parallel_guard_and_exact_deltas() {
+        use gleaph_graph_kernel::index::{IndexBuildSubject, IndexedEdgeMembership};
+        let store = GraphStore::new();
+        configure_test_routing(&store);
+        let owner = store.insert_vertex().unwrap();
+        let neighbor = store.insert_vertex().unwrap();
+        let label = EdgeLabelId::from_raw(221);
+        let property = PropertyId::from_raw(9_000_030);
+        let edge = store
+            .insert_directed_edge(owner, neighbor, Some(label))
+            .unwrap();
+        let guard = store
+            .insert_directed_edge(owner, neighbor, Some(label))
+            .unwrap();
+        assert_ne!(edge.slot_index, guard.slot_index);
+        let occurrence = edge.occurrence(LabeledOrientation::Forward);
+        let guard = guard.occurrence(LabeledOrientation::Forward);
+        store
+            .set_edge_property(occurrence, property, Value::Int64(5))
+            .unwrap();
+        store
+            .set_edge_property(guard, property, Value::Int64(99))
+            .unwrap();
+        let physical = PhysicalIndexId::new(900_030).unwrap();
+        let frozen = scope(CanonicalExportTarget::Edge {
+            label_id: label,
+            property_id: property,
+            direction: EdgeIndexDirection::Outgoing,
+        });
+        register_scope(
+            physical,
+            frozen.clone(),
+            Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .unwrap();
+        let membership = IndexedEdgeMembership {
+            physical_index_id: physical,
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Building,
+            label_id: label.raw(),
+            property_id: property.raw(),
+            direction: EdgeIndexDirection::Outgoing,
+            field_path: String::new(),
+        };
+        let catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+            edge_indexes: vec![membership.clone()],
+            ..Default::default()
+        });
+        for (index, (old, new)) in [(5, Some(9)), (9, Some(11)), (11, None)]
+            .into_iter()
+            .enumerate()
+        {
+            let mutation = 201 + index as u64;
+            let previous = match new {
+                Some(value) => store.set_edge_property_with_mutation_id(
+                    occurrence,
+                    property,
+                    Value::Int64(value),
+                    mutation,
+                ),
+                None => store.remove_edge_property_with_mutation_id(occurrence, property, mutation),
+            }
+            .unwrap();
+            assert_eq!(previous, Some(Value::Int64(old)));
+            assert_eq!(
+                store.edge_property(occurrence, property).unwrap(),
+                new.map(Value::Int64)
+            );
+            assert_eq!(
+                store.edge_property(guard, property).unwrap(),
+                Some(Value::Int64(99))
+            );
+            let entries = build_outbox_entries_for(physical);
+            assert_eq!(entries.len(), index + 1);
+            let (_, entry) = &entries[index];
+            assert_eq!(entry.mutation_id, mutation);
+            let DerivedIndexOutboxOp::IndexBuildDml { request } = &entry.op else {
+                panic!("build DML");
+            };
+            assert_eq!(request.shard_sequence, index as u64 + 1);
+            assert_eq!(request.catalog_epoch, 1);
+            assert_eq!(
+                request.subject,
+                IndexBuildSubject::Edge {
+                    shard_id: 0,
+                    owner_vertex_id: u32::from(owner),
+                    label_id: edge.label_id.raw(),
+                    slot_index: edge.slot_index.raw(),
+                }
+            );
+            assert_eq!(
+                request.removals,
+                vec![sortable_index_key(&Value::Int64(old)).unwrap()]
+            );
+            assert_eq!(
+                request.insertions,
+                new.map(|value| sortable_index_key(&Value::Int64(value)).unwrap())
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+        let before = build_outbox_entries_for(physical);
+        assert_eq!(
+            store.remove_edge_property(occurrence, property).unwrap(),
+            None
+        );
+        assert_eq!(build_outbox_entries_for(physical), before);
+        assert_eq!(scope_status(physical).unwrap().admitted_through, 3);
+        let old = Value::Text("seeded edge body".repeat(64));
+        store
+            .set_edge_property(occurrence, property, old.clone())
+            .unwrap();
+        drop(catalog);
+        seal_scope(physical, frozen.clone(), 2).unwrap();
+        let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+            edge_indexes: vec![IndexedEdgeMembership {
+                phase: IndexMaintenancePhase::Sealing,
+                catalog_epoch: 2,
+                ..membership
+            }],
+            ..Default::default()
+        });
+        let before = build_outbox_entries_for(physical);
+        assert_eq!(before.len(), 4);
+        for next in [Some(Value::Int64(12)), None] {
+            let result = match next {
+                Some(value) => store.set_edge_property(occurrence, property, value),
+                None => store.remove_edge_property(occurrence, property),
+            };
+            assert!(matches!(
+                result,
+                Err(GraphStoreError::IndexBuildAdmission(
+                    CanonicalExportError::RetryableSealing
+                ))
+            ));
+            assert_eq!(
+                store.edge_property(occurrence, property).unwrap(),
+                Some(old.clone())
+            );
+            assert_eq!(
+                store.edge_property(guard, property).unwrap(),
+                Some(Value::Int64(99))
+            );
+            assert_eq!(build_outbox_entries_for(physical), before);
+            let status = scope_status(physical).unwrap();
+            assert_eq!(status.admitted_through, 4);
+            assert_eq!(status.drained_through, 0);
+        }
+        for sequence in 1..=4 {
+            ack_build_dml(physical, 1, sequence).unwrap();
+        }
+        abort_scope(physical, frozen.clone()).unwrap();
+        remove_scope(physical, &frozen).unwrap();
     }
 
     struct DrainingIndex {

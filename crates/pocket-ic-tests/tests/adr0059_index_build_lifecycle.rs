@@ -656,7 +656,9 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
     // Eligibility-gain fixture: carries the indexed property but not the
     // indexed label yet.
     let other = ensure_vertex_label(&env, "Other").raw();
-    for value in [10_i64, 20, 30] {
+    let scalar_vertex =
+        e2e_insert_vertex_with_label_and_property(&env, env.graph_source, person, age, 10);
+    for value in [20_i64, 30] {
         e2e_insert_vertex_with_label_and_property(&env, env.graph_source, person, age, value);
     }
     e2e_insert_vertex_with_label_and_property(&env, env.graph_source, other, age, 99);
@@ -700,6 +702,22 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
         "label gain on the indexed property is admitted while Building"
     );
 
+    // Scalar updates share the old value used by the actual Building intent fence.
+    // The second transition must remove 11, not reuse the original 10.
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (n:Person) WHERE n.age = 10 SET n.age = 11",
+        "adr0059_scalar_b",
+    );
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (n:Person) WHERE n.age = 11 SET n.age = 12",
+        "adr0059_scalar_c",
+    );
+    let mut changed = int_column(&env, "MATCH (n:Person) RETURN n.age AS v");
+    changed.sort();
+    assert_eq!(changed, vec![12, 15, 20, 30, 99]);
+
     // Drive into Sealing.
     loop {
         rounds += 1;
@@ -718,15 +736,30 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
         "adr0059_fence_loss",
     );
 
-    // Canonical state survived the rejection untouched: still four Person
-    // vertices (3 + 1 gained), including both pre-existing 30s and the gained
-    // 99.
+    for (query, key) in [
+        (
+            "MATCH (n:Person) WHERE n.age = 12 SET n.age = 13",
+            "adr0059_scalar_sealed_set",
+        ),
+        (
+            "MATCH (n:Person) WHERE n.age = 12 REMOVE n.age",
+            "adr0059_scalar_sealed_remove",
+        ),
+    ] {
+        gql_mutate_as_admin_expect_err(&env, query, key);
+        assert_eq!(
+            int_column(&env, "MATCH (n:Person) WHERE n.age = 12 RETURN n.age AS v"),
+            vec![12]
+        );
+    }
+
+    // The five Person vertices retain their canonical labels and values after rejection.
     let mut persons = int_column(&env, "MATCH (n:Person) RETURN n.age AS v");
     persons.sort();
     assert_eq!(
         persons,
-        vec![10, 15, 20, 30, 99],
-        "rejection left canonical labels unchanged"
+        vec![12, 15, 20, 30, 99],
+        "rejection left canonical labels and properties unchanged"
     );
 
     // Converge to Active despite the mid-build fence traffic.
@@ -760,6 +793,46 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
         eq99,
         vec![99],
         "Building-time eligibility gain converged into postings"
+    );
+    let physical = projected_physical_index(&env);
+    assert_eq!(
+        vertex_equal_postings(&env, physical, age, 12),
+        vec![gleaph_graph_kernel::index::PostingHit {
+            shard_id: SOURCE_SHARD,
+            vertex_id: scalar_vertex.local_vertex_id,
+        }]
+    );
+    for value in [10, 11, 13] {
+        assert!(
+            vertex_equal_postings(&env, physical, age, value).is_empty(),
+            "stale/rejected value must have no posting"
+        );
+        assert_eq!(
+            gql_query_as_admin(
+                &env,
+                &format!("MATCH (n:Person) WHERE n.age = {value} RETURN n.age AS v")
+            )
+            .row_count,
+            0,
+        );
+    }
+    assert_eq!(
+        int_column(&env, "MATCH (n:Person) WHERE n.age = 12 RETURN n.age AS v"),
+        vec![12]
+    );
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (n:Person) WHERE n.age = 12 REMOVE n.age",
+        "adr0059_scalar_active_remove",
+    );
+    assert!(vertex_equal_postings(&env, physical, age, 12).is_empty());
+    assert_eq!(
+        gql_query_as_admin(&env, "MATCH (n:Person) WHERE n.age = 12 RETURN n.age AS v").row_count,
+        0
+    );
+    assert_eq!(
+        int_column(&env, "MATCH (n:Person) WHERE n.age IS NULL RETURN 1 AS v"),
+        vec![1]
     );
 }
 

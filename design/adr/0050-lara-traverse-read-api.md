@@ -462,8 +462,9 @@ are part of this read optimization.
 
 [Focused measurements and contract tests](../evidence/adr0097-contiguous-spill-traversal.md).
 
-There is no separate full-bucket `Vec` API. A caller that needs materialization collects
-`visit_edges` output explicitly, making the allocation visible at the caller.
+Ordinary materialization collects `visit_edges` output explicitly. The bounded complete
+collectors below are the exception: they own allocation so an incomplete scan cannot publish a
+successful prefix or invoke an external callback before exhaustion has been established.
 
 All logical readers share the same corruption boundary. A missing label, an out-of-range logical
 slot, or a tombstone is a normal absence/state result according to the method contract. In
@@ -492,6 +493,152 @@ read_in_edge_slots_for_label*  -> reverse.visit_edges_at
 The `in`/reverse wrapper uses the destination vertex as the owner of the reverse bucket. It must
 preserve the same missing, tombstone, ordering, early-break, and inline-property return contracts;
 only the orientation and error wrapper differ.
+
+### Bounded complete topology collection (implemented)
+
+Verified: 2026-09-13 00:22:26 UTC +0000.
+
+`LabeledLaraGraph::collect_edge_topology_bounded(owner, label, max_slots)` returns all live
+`(BucketEntryPosition, E)` pairs in ascending logical-slot order, or an error without a partial
+result. Parallel edges remain separate; tombstones consume positions. The forward wrapper
+`collect_forward_edge_topology_bounded` only delegates and wraps errors. This is a LARA read
+capability, not a Graph mutation, Router admission rule, or bulk edge SET endpoint.
+
+For a nonempty label, the limit counts **physical slab/tree slots plus linked overflow entries**,
+including tombstones. The authoritative live count and stored extent are checked before result
+allocation or slab/tree payload reads. The log reader checks its remaining allowance before every
+entry read, requires the `-1` terminator, and rejects invalid pointers/cycles. An observed live-count
+mismatch is an error, not truncation. Missing labels and authoritative zero-live-count labels return
+an empty vector without scanning tombstones. Existing vertex-range errors remain errors; endpoint
+liveness/visibility and policies belong to Graph, not this topology reader.
+
+The collector uses descriptor fields directly, the existing constant-read bypass slab-geometry
+owner, and the physical-depth tree walker. It does not count a chain with the unbounded metadata
+API, construct a selected-slot replay, prefetch an entire leaf log table, or attach inline properties.
+All candidate data remains private until the complete read succeeds. No canonical write, physical
+remapping, await, or persistent cache is performed; ordinary visitor paths are unchanged.
+
+Resource accounting for caller limit `W`, slab slots `S`, and edge type `E`:
+
+- Result capacity is at most `W` pairs. Slab bytes are at most `S * E::BYTES`; head-first overflow
+  capacity is at most `min(W-S, allocated_log_entries)` edges. No vector grows past its reservation.
+  Consequently variable reader-owned workspace is bounded by
+  `W * (size_of::<(BucketEntryPosition,E)>() + max(E::BYTES,size_of::<E>()))`, plus bounded descriptor
+  lookup (at most `MAX_BUCKETS_PER_VERTEX`, currently 1024), fixed scratch, and the 4 KiB tree buffer.
+  Allocator overhead and allocations inside a custom edge codec are excluded.
+- Slab/log topology payload reads are at most `W * (E::BYTES + 4)` bytes. Four-byte trees read at
+  most `ceil(W/1024) * (4096 + 4 * physical_depth)` payload bytes; depth comes from the existing
+  descriptor, not structural depth inferred from degree. These formulas exclude fixed-size
+  per-access store headers/address translation and descriptor lookup. They are not exact total
+  `stable_read` or instruction counts.
+- This API has one physical-slot limit, **not an independent byte-budget parameter**. Graph must
+  choose its slot allowance using its concrete edge representation and workspace budget, then
+  separately bound property/policy reads, mutations, derived operations and response bytes.
+
+Six native contracts cover exact/one-short limits, parallel neighbors, source/label absence,
+invalid owners, slab and flag-encoded tombstones, hybrid property separation, live-count mismatch,
+physical depth 1/2 trees, unreadable roots beyond rejection, log termination and invalid links.
+A counting-memory test reads only 12 bytes (allocation cursor + link + four-byte edge) for a
+one-entry chain in a leaf with 64 allocated entries; the ordinary prefetch control reads the table.
+This is a native storage-owner observation, not a whole-Graph byte measurement. Bypass slab reads
+are exercised; overflow-backed bypass dispatch shares the existing geometry owner but has no new
+end-to-end lifecycle fixture in this slice.
+
+Focused, unpersisted `canbench bounded_topology` measured 36.64K instructions for 64 edges,
+405.58K for a complete 4096-slot slab, 260.22K for a complete 4097-slot tree, and 2.94K to reject a
+65,537-slot tree with `W=4096`. Setup and correctness assertions are outside measurement; result
+allocation and destruction are inside. All closures showed zero additional heap/stable pages,
+not zero temporary memory. `canbench tree_visit_stop` retained 11.83K first-stop costs and
+268.10K/4.11M full walks. These are topology measurements, not bulk SET throughput.
+
+The API adds no persistent bytes, layout, journal, edge identity, or migration/reinstall requirement.
+Returned positions are valid only within a mutation-free local segment, not across writes or awaits.
+Bounded sidecar properties, policy eligibility, whole-row preflight, canonical SET/outbox/outcome
+atomicity, and durable rejection/replay remain unimplemented bulk-edge requirements. The following
+inline-property collector extends this topology prerequisite without implementing those mutations.
+
+### Bounded complete inline-property collection (implemented)
+
+Verified: 2026-09-13 01:26:43 UTC +0000.
+
+`collect_edges_with_inline_property_bounded(owner, label, max_slots, max_value_bytes)` returns all
+ascending `(BucketEntryPosition, E, InlinePropertyBytes)` rows or an error without a partial result.
+`collect_forward_edges_with_inline_property_bounded` only delegates and wraps errors. The existing
+`InlinePropertyBytes` owns the width/byte-length invariant and small-value storage; generic `E` is
+not required to implement property attachment. Parallel neighbors and tombstone-reserved topology
+positions remain distinct. Missing/empty labels return no rows; bypass and width-zero labels return
+empty property values. Positions remain ephemeral within one mutation-free, no-await local segment.
+
+Execution and admission:
+
+1. Complete the bounded topology read above. Its slot limit and geometry/resource contract apply.
+   No property value is read by this phase; byte rejection may still pay the topology cost.
+2. For non-tree, positive-width buckets require `property_slab_slots + property_log_len == live_count`.
+   Slab/log properties follow **live ordinals**, not tombstone-inclusive edge slots. Tree properties
+   instead use physical slots, preserving holes in the independent tree stream.
+3. Before any property-value read or inline-result/value-buffer allocation, check the complete **body-byte**
+   requirement. For live rows `L` and width `w`, this is `L*w`, plus `M-w` if wide property-log blobs
+   exist, where `M=65535` is owned by the blob writer's existing u16-length format. Arithmetic or
+   allowance overflow returns `LaraOperationError::ReadByteLimitExceeded`.
+4. Wide blob retrieval decodes the whole body before checking it against the bucket width. The
+   reserve covers the worst final mismatched blob after preceding valid bodies; a mismatch errors
+   immediately. It is conservative: even a valid 32-byte log body needs this headroom. The bound
+   assumes blob encodings produced by the owning writer, not arbitrary corruption of B-tree lengths.
+5. Reconstruct exactly the descriptor's u8 property-log count, checking allocated indices and the
+   final `-1` terminator. The private reader never follows an extra link or prefetches the leaf table.
+   Count/pointer/cycle inconsistencies return `LogChainShort`, never a truncated successful chain.
+   Bulk-read the admitted slab prefix once, reuse one value buffer for tree/log reads, and assemble
+   private results with the existing small-value container. Ordinary visitors are not rerouted.
+
+`max_value_bytes` is **not total stable I/O, a heap ceiling, or an instruction meter**. It bounds
+selected value bodies, excluding fixed-width log cells/links, blob length prefixes, tree pointers,
+B-tree search metadata, address translation, allocator overhead and custom edge-codec allocations.
+Property-log length is at most `min(W,255)` for physical slot allowance `W`; each chain entry reads
+one four-byte link/eight-byte cell and each selected log value reads its fixed entry again. Tree
+property reads request exactly `w` payload bytes per live slot plus depth-bounded pointer resolution.
+B-tree search overhead must be considered separately from its admitted body size.
+
+A conservative reader-workspace bound adds the following to the topology bound above:
+`W * size_of::<(BucketEntryPosition,E,InlinePropertyBytes)>() + 2*B + w + 4*min(W,255)`, where
+`B=max_value_bytes`, plus at most `2*M+2` bytes of blob decoding/copy scratch when wide log blobs
+exist. The `2*B` allowance covers the slab scratch and owned result bodies; small values reside in
+`InlinePropertyBytes` itself. Fixed descriptor/search scratch and allocator/codec exclusions still
+apply. This deliberately overestimates buffers whose lifetimes do not overlap. Graph must choose
+numerical slot/value/workspace limits rather than treat a returned-row cap as a complete work cap.
+
+Six new native contracts cover zero/exact/one-short bounds, parallel values, live-ordinal slab/log
+mapping, missing/zero-width labels, property count inconsistencies, wide-blob headroom and a maximum
+width-mismatched blob, bounded chain termination, and tree property holes/unreadable roots. The tree
+fixture explicitly invokes the existing promotion primitive and seeds an encoded tombstone;
+property-bearing tree insertion/removal dispatcher support is **not** established by this fixture.
+The internal property resolver also rejects out-of-range slots with `EdgeSlotOutOfRange`, replacing
+its block-zero sentinel; see [ADR 0088](0088-tree-csr-mode-for-high-degree-label-buckets.md#tree-property-slot-bound-implemented).
+
+Focused, unpersisted `canbench bounded_inline` measured 45.33K instructions for 64 eight-byte values,
+2.29M for 4096 values, and 474.00K for a one-byte-short 4096-value rejection. The same source fixture
+initially cost 4.28M with per-value slab reads/allocations, then 3.86M with a slab bulk read; reusing
+`InlinePropertyBytes` small-value storage reduced it to 2.29M (about 46% below the initial attempt).
+The return container changed during this optimization; logical rows/bytes and measured allocation/
+destruction coverage did not. This is not a comparison against an existing deployed API. All three
+closures showed zero additional heap/stable pages, not zero memory. Topology controls retained
+36.64K/405.58K/260.22K/2.94K instruction results. These are read costs, not SET/policy throughput.
+
+No persistent layout, MemoryId, blob encoding, dependency, mutation algorithm or reinstall requirement
+changes. Graph sidecars remain unresolved: `StoredPropertyValue` is unbounded and the existing
+ic-stable-structures 0.7.2 getter extracts the entire encoded value before `Storable::from_bytes`.
+`ensure_persistable` checks encoding, not a byte cap; checking size after `get` cannot prove pre-read
+admission. Source inspection and a native primitive probe on 2026-09-13 additionally show that node
+loading reconstructs all overflow addresses before key search, even for a missing key or key-only
+iterator. A value-length accessor after node loading would not bound that preceding work. See the
+[sidecar read investigation](../investigations/2026-09-13-sidecar-bounded-read-options.md) for measured
+neighbor dependence. The [property-value separation design and experiment](../investigations/2026-09-13-property-value-separation-design.md)
+prioritizes bounded B-tree cells with independent large bodies. The native experiment verified on
+2026-09-13 06:23:23 UTC +0000 passed two tests over 24 configurations and removed unselected-body
+read/write coupling, but the fixed-block/replacement-body candidate is not selected for production
+because of short-body waste and high-water. Allocator, Graph directory/codec/workspace and whole-row
+write bounds remain unresolved. No production storage change or dependency fork is implemented. A sidecar-owner solution, policy limits, whole-row
+mutation/outbox/outcome preflight and retained positive/zero/rejected replay are still required
+before bulk edge SET can be exposed.
 
 ### 6a. Predicate, ordinal, and early termination are composed at the visitor
 

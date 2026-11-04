@@ -843,7 +843,7 @@ pub(crate) fn plan_op_name(op: &PlanOp) -> &'static str {
 }
 
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
 
 #[cfg(test)]
 mod tests_integration;

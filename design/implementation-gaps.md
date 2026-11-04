@@ -2365,34 +2365,76 @@ acceptance remain separate. See the movement-publication correction above.
 
 ### GAP-2026-09-22-001 — Recoverable plan execution can outlive Graph journal retention
 
-- **Status:** Open. Router count capture and actual-send checks are implemented prerequisites,
-  not complete scalar-result lifetime repair.
-- **Owner:** Graph's mutation-journal retention predicate in
-  `facade/stable/label_stats_delta.rs` and `facade/store/label_stats_delta.rs`; Router's
-  retained replay permission in `facade/store/idempotency.rs`.
-- **Observed behavior:** unfinished Router records have no age expiry, and pending bulk children
-  pin scalar row records. Graph PlanExecution evidence still uses `NotApplicable` retirement and
-  nine-day age GC. A Graph result lost before durable Router capture can therefore disappear while
-  the original mutation ID remains retryable; a fresh request can re-execute instead of replaying
-  the original positive or zero result.
-- **Expected behavior / impact:** the first durable canonical outcome must replay without
-  reselection. Router's terminal TTL, a timeout or a projection watermark cannot prove that an
-  unfinished identity is safe to forget.
-- **Evidence / contract:** [ADR 0027](adr/0027-graph-mutation-journal-retention.md) owns the retention
-  limitation; [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
-  specifies the implemented monotonic count capture and fresh individual/chunk send checks.
-- **Preparation prerequisite:** envelope publication, no-shard completion and routing release
-  now require the original reserved ID. Native tests pause actual index resolution, expire the
-  old terminal record through Router GC, reuse the same key/fingerprint and resume positive,
-  empty and error callbacks; all preserve the newer record. Matching-ID controls still progress.
-  [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity)
-  owns this rule. Key-only completed-count/phase response reads and same-ID lease reclaim remain
-  separate audit obligations; no wrong-response runtime reproduction is claimed.
-- **Next decision:** retain exact receipts, close canonical sends permanently, complete required
-  projections, and acknowledge scalar retirement before compaction/retirement-age GC. Delayed
-  work, Abort, lost acknowledgement, upgrade and active-evidence admission remain validation
-  obligations. The measured full-record read cost in ADR 0029 also requires a separate
-  existing-owner data-placement/decoding investigation; no production cap is approved.
+- **Status:** Open — runtime-reproduced correctness prerequisite. Discovered by source inspection
+  during bulk edge outcome design on 2026-09-22; the subsequent PocketIC probe failed the desired
+  positive and zero replay assertions. Graph replay/continuation and Router count-capture/send
+  prerequisites are implemented; end-to-end retention repair remains open.
+- **Owner:** Graph `facade/stable/label_stats_delta.rs::GraphMutationJournal::evict_expired` and
+  `facade/store/label_stats_delta.rs` own dedup-evidence retention; Router
+  `facade/store/idempotency.rs` owns the retained replay permission and bulk-row ownership pin.
+- **Observed behavior:** Router non-terminal PlanExecution records remain recoverable without an
+  age limit. Graph PlanExecution requires `NotApplicable` retirement and its journal is eligible
+  for age-only removal after nine days. `gql_run.rs::run_wire_plans_last_read_row_count` only
+  short-circuits a fresh request while the entry exists; bulk `classify_update_row` treats absent
+  dispatched evidence as unresolved,
+  which an explicit identical Append can resume using the saved mutation ID.
+- **Impact:** if Graph commits positive/zero but the callback fails before Router captures that
+  scalar outcome, Graph GC can erase dedup evidence while replay remains possible. Later property
+  or eligibility changes can then be overwritten by re-execution, or an old zero can become a write.
+  Router's pending-child pin does not protect Graph. This trace also exposes the unsound finite-TTL
+  rationale for longer-lived ordinary PlanExecution; no claim of a production incident is made.
+- **Expected behavior:** retain exact Graph evidence for as long as canonical re-dispatch is
+  permitted, or enforce a Graph-side fence that makes expired identities permanently inadmissible.
+  Never classify missing Graph evidence as proof of no write or solve indefinite recovery only by
+  increasing the constant.
+- **Evidence / contract:** [source trace and test coverage limit](investigations/2026-09-22-bulk-edge-set-outcomes.md#current-scalar-retention-gap),
+  [PocketIC reproduction and executable probe](investigations/2026-09-22-scalar-journal-retention-reproduction.md),
+  [ADR 0027](adr/0027-graph-mutation-journal-retention.md), and
+  [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md). In one real single-shard
+  fixture, both rows remained `CanonicalPending` after fault 11. At nine days plus one hour,
+  Graph GC removed all four entries, including an unrelated completed control. IDs 6/9 remained
+  pending on Router; identical retries overwrote a later property value and changed zero into
+  `Updated { next_offset: 1, updated_row_count: 1 }`. Exit 101 was the intended contract failure,
+  not a repair pass. The existing eight-day Router-only test remains unchanged.
+- **Implemented prerequisite:** scalar replay no longer republishes its journal. A shared Graph
+  poll-re-entry/attempt fence covers scalar and whole transport-batch requests; per-segment outbox
+  persistence preserves earlier derived intents when a continuation is stopped. Native tests and
+  the existing nine PocketIC update tests pass for that boundary. The broader scan target still
+  has seven failures also present in the earlier 0364 log. See the
+  [follow-up and cost limits](investigations/2026-09-22-scalar-journal-retention-reproduction.md#graph-replay-and-continuation-prerequisite).
+  Fresh post-GC calls remain unfenced; the 0366 red probe was not rerun or promoted as repaired.
+- **Router prerequisite:** mutation-ID-bound per-shard count capture is monotonic and precedes
+  projection; individual and later chunk sends check current durable permission. The existing
+  typed child pin closes sends after bulk child completion. The missing paused-target case is now
+  covered for individual and batch transport; the owning guard mutant fails it, and restored GQL
+  tests pass 53/53. Router clippy and both owner-cost cases completed in the resumed checkpoint;
+  initial store/client/PocketIC passes remain separately recorded. The fresh read costs about
+  4.89 M instructions for a 1 KiB request fingerprint and 125.74 M for 1 MiB because the read path
+  includes the full retained Candid record. This is a material measured cost, not a cheap/bounded
+  production check; component attribution and capacity acceptance remain unproven. Preserve the
+  safety check and evaluate request/control data placement and decoding at the existing owner before
+  expanding retained results. See the
+  [Router follow-up](investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-count-capture-and-actual-send-prerequisite).
+- **Preparation-write prerequisite implemented:** the three envelope/completion/release writers
+  now require the original reservation ID through the existing checked scalar-record owner. Native
+  actual-preparation tests reproduced all three stale writes after real Router expiry sweep/key reuse
+  against the old code; the repaired paths reject the old ID and preserve the new record. Same-ID
+  controls, owner idempotency/failure tests, scoped native/lint and the existing nine PocketIC update
+  contracts pass. See [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity)
+  and the [callback evidence](investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-preparation-callback-identity).
+  Full envelope publication costs about 13.18 M/258.33 M instructions at 1 KiB/1 MiB retained
+  fingerprint, including read and write; these are new operation samples, not the added ID-check
+  cost or a production approval. The three-write repair does not audit every response/status lookup:
+  `prepare_mutation_for_batch` and `attach_mutation_phase` still read completed count/phase by client
+  key. Cross-await result identity and same-ID routing-lease reclaim remain separate audit obligations;
+  no wrong-response runtime reproduction or attempt-generation fence is claimed.
+- **Next decision:** complete the coherent existing-owner lifetime/fence repair described by the
+  [boundary audit](investigations/2026-09-22-scalar-journal-retention-reproduction.md#enforcing-repair-boundary).
+  With the three preparation writes now ID-bound, add scalar Active/Retired evidence and exact
+  durable receipts, then required projection and acknowledged retirement, including ordinary and
+  transport-batch paths. Abort, retirement/lost acknowledgement, upgrade and active-evidence admission
+  remain validation gates. A pin or retirement RPC alone is not the repair; neither is the proposed
+  future bulk edge row family.
 
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
@@ -4222,6 +4264,15 @@ session did.
   large move/deletion each grows four physical pages; extent relocation retains high-water.
   Native2640+296 rows reproduce. No production integration, total-work/whole-row proof,
   update/upgrade lifecycle validation or workload-weighted winner follows.
+- **Outcome design (2026-09-22 09:41:27 UTC +0000; planned):**
+  [Durable outcomes and retry ownership](investigations/2026-09-22-bulk-edge-set-outcomes.md) proposes
+  a typed row family in the existing Graph/Router journals: positive and zero success, definitive
+  rejection, exact replay, separate input-row/matched-edge counts, Abort settlement and explicit
+  retirement. It requires a fresh actual-send gate and a fixed Router/Graph sender pair; a timeout
+  or missing journal is not cancellation. Existing variants do not represent this unchanged.
+  Exact encoding/API, endpoint/policy semantics, production bounds and whole-row commit remain
+  prerequisites. No code, new memory region, occurrence identity or runtime validation was added.
+  The independently discovered scalar retention mismatch is tracked as GAP-2026-09-22-001.
 - **Impact:** Bulk-load edge SET remains unavailable. The selected direction needs bounded local
   selection/SET and durable terminal replay, not a cross-message edge-reference registry. Bulk-load
   edge inserts and vertex SET/REMOVE contracts are unchanged; ordinary GQL edge `SET` remains

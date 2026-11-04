@@ -1209,42 +1209,6 @@ fn seed_initial_rows(
     Ok((all_rows, true))
 }
 
-async fn run_wire_plans(
-    store: &GraphStore,
-    plans: &[gleaph_gql_planner::PhysicalPlan],
-    requires_write_path: bool,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
-    mode: GqlCanisterExecutionMode,
-    execution: GqlExecutionContext,
-    seeds: Option<SeedBindingsWire>,
-    materialize: TransactionReadMaterialize,
-    mutation_id: Option<MutationId>,
-    check_journal: bool,
-) -> Result<TransactionBlockRun, GqlRunError> {
-    crate::edge_inline_property_schema::set_execution_resolved_labels(
-        execution.resolved_labels.clone(),
-    );
-    // The element-id encoding key is threaded as owned data (evaluator / materialization / canonical
-    // segment), never parked in ambient thread-local state across the `await`s below.
-    let run_result = run_wire_plans_inner(
-        store,
-        plans,
-        requires_write_path,
-        parameters,
-        index,
-        mode,
-        execution,
-        seeds,
-        materialize,
-        mutation_id,
-        check_journal,
-    )
-    .await;
-    crate::edge_inline_property_schema::clear_execution_resolved_labels();
-    run_result
-}
-
 /// ADR 0029 §1 canonical critical section for a single DML plan.
 ///
 /// This segment performs **only shard-local canonical writes**: it executes the plan's mutations
@@ -1386,6 +1350,11 @@ async fn apply_canonical_mutation_segment(
         );
         bench_scope_end!(_scope_incomplete_journal);
     }
+    if let Some(mutation_id) = mutation_id {
+        // A later plan may suspend and then be fenced. Commit this segment's derived intent
+        // alongside its canonical effects, rather than leaving it in heap until the bundle ends.
+        persist_pending_to_outbox(store, mutation_id);
+    }
     let _phase_t2 = current_instruction_counter();
     log_wire_phase(
         "apply_canonical_mutation_segment",
@@ -1406,29 +1375,7 @@ async fn run_wire_plans_inner(
     seeds: Option<SeedBindingsWire>,
     materialize: TransactionReadMaterialize,
     mutation_id: Option<MutationId>,
-    check_journal: bool,
 ) -> Result<TransactionBlockRun, GqlRunError> {
-    if check_journal
-        && let Some(mutation_id) = mutation_id
-        && let Some(journal) = store.mutation_journal_entry(mutation_id)
-    {
-        if journal.is_completed() {
-            return Ok(TransactionBlockRun {
-                last_query_rows: PlanQueryResult::default(),
-                last_read_row_count: journal.row_count() as usize,
-                last_read_plan_rows: Vec::new(),
-                label_stats_delta: LabelStatsDelta::default(),
-                emitted_delta_first_seq: journal.emitted_delta_first_seq(),
-                emitted_delta_last_seq: journal.emitted_delta_last_seq(),
-                hot_forward_vertices: journal.hot_forward_vertices().to_vec().clone(),
-                search_chain_receipt: None,
-            });
-        }
-        return Err(GqlRunError::Plan(format!(
-            "mutation {mutation_id} was already applied locally but did not complete; advance label stats projection instead"
-        )));
-    }
-
     crate::plan_wire_guard::validate_wire_plan_execution(
         match mode {
             GqlCanisterExecutionMode::CompositeQuery => {
@@ -1689,6 +1636,26 @@ async fn run_wire_plans_inner(
     })
 }
 
+fn replay_wire_plan(
+    journal: crate::facade::stable::label_stats_delta::GraphMutationJournalEntry,
+) -> Result<WirePlanRunResult, GqlRunError> {
+    if !journal.is_completed() {
+        return Err(GqlRunError::Plan(format!(
+            "mutation {} was already applied locally but did not complete; advance label stats projection instead",
+            journal.mutation_id()
+        )));
+    }
+    Ok(WirePlanRunResult {
+        row_count: usize::try_from(journal.row_count())
+            .map_err(|_| GqlRunError::Plan("journal row count overflows usize".into()))?,
+        rows_blob: None,
+        hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
+        emitted_delta_first_seq: journal.emitted_delta_first_seq(),
+        emitted_delta_last_seq: journal.emitted_delta_last_seq(),
+        search_chain_receipt: None,
+    })
+}
+
 /// Run pre-decoded wire plans from the router (no parse/plan on graph).
 pub async fn run_wire_plans_last_read_row_count(
     store: GraphStore,
@@ -1703,83 +1670,112 @@ pub async fn run_wire_plans_last_read_row_count(
     check_journal: bool,
     write_journal: bool,
 ) -> Result<WirePlanRunResult, GqlRunError> {
-    let element_id_key =
-        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
-    let _phase_t0 = current_instruction_counter();
-    let run_result = run_wire_plans(
-        &store,
-        plans,
-        bundle_requires_write,
-        parameters,
-        index,
-        mode,
-        execution,
-        seeds,
-        TransactionReadMaterialize::LastReadBindingsOnly,
-        mutation_id,
-        check_journal,
-    )
-    .await;
-    let _phase_t1 = current_instruction_counter();
-    log_wire_phase(
-        "run_wire_plans_last_read_row_count",
-        "run_wire_plans",
-        _phase_t1.saturating_sub(_phase_t0),
-    );
-    if let Some(mutation_id) = mutation_id {
-        bench_scope!("canonical_outbox_persist", _scope_outbox_persist);
-        persist_pending_to_outbox(&store, mutation_id);
-    }
-    let _phase_t2 = current_instruction_counter();
-    log_wire_phase(
-        "run_wire_plans_last_read_row_count",
-        "outbox_persist",
-        _phase_t2.saturating_sub(_phase_t1),
-    );
-    let run = run_result?;
-    if write_journal && let Some(mutation_id) = mutation_id {
-        bench_scope!("canonical_journal_commit", _scope_journal_commit);
-        store.commit_record_completed_mutation_journal(
-            mutation_id,
-            run.last_read_row_count as u64,
-            run.emitted_delta_first_seq,
-            run.emitted_delta_last_seq,
-            run.hot_forward_vertices.clone(),
-        );
-    }
-    let _phase_t3 = current_instruction_counter();
-    log_wire_phase(
-        "run_wire_plans_last_read_row_count",
-        "journal_commit",
-        _phase_t3.saturating_sub(_phase_t2),
-    );
-    let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
-        bench_scope!("canonical_result_encode", _scope_result_encode);
-        let materialized =
-            PlanQueryResult::try_from_plan_rows(&store, &element_id_key, &run.last_read_plan_rows)?;
-        let wire = crate::plan::ic_wire_from_plan_query_result(&materialized)
-            .map_err(|e| GqlRunError::Plan(e.to_string()))?;
-        Some(
-            wire.encode_blob()
-                .map_err(|e| GqlRunError::Plan(e.to_string()))?,
-        )
+    use std::ops::ControlFlow;
+    let replay_id = mutation_id.filter(|_| check_journal);
+    let run =
+        async {
+            if let Some(id) = replay_id
+            && let Some(journal) = store.mutation_journal_entry_for_replay(
+                id, &gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1::PlanExecution,
+            ).map_err(|error| GqlRunError::Plan(error.into()))?
+        {
+            return replay_wire_plan(journal);
+        }
+            crate::edge_inline_property_schema::set_execution_resolved_labels(
+                execution.resolved_labels.clone(),
+            );
+            let element_id_key = crate::element_id_encoding::resolve_or_host_fixture(
+                execution.element_id_encoding_key(),
+            );
+            let _phase_t0 = current_instruction_counter();
+            let run_result = run_wire_plans_inner(
+                &store,
+                plans,
+                bundle_requires_write,
+                parameters,
+                index,
+                mode,
+                execution,
+                seeds,
+                TransactionReadMaterialize::LastReadBindingsOnly,
+                mutation_id,
+            )
+            .await;
+            let _phase_t1 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_last_read_row_count",
+                "run_wire_plans",
+                _phase_t1.saturating_sub(_phase_t0),
+            );
+            if let Some(mutation_id) = mutation_id {
+                bench_scope!("canonical_outbox_persist", _scope_outbox_persist);
+                persist_pending_to_outbox(&store, mutation_id);
+            }
+            let _phase_t2 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_last_read_row_count",
+                "outbox_persist",
+                _phase_t2.saturating_sub(_phase_t1),
+            );
+            let run = run_result?;
+            if write_journal && let Some(mutation_id) = mutation_id {
+                bench_scope!("canonical_journal_commit", _scope_journal_commit);
+                store.commit_record_completed_mutation_journal(
+                    mutation_id,
+                    run.last_read_row_count as u64,
+                    run.emitted_delta_first_seq,
+                    run.emitted_delta_last_seq,
+                    run.hot_forward_vertices.clone(),
+                );
+            }
+            let _phase_t3 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_last_read_row_count",
+                "journal_commit",
+                _phase_t3.saturating_sub(_phase_t2),
+            );
+            let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
+                bench_scope!("canonical_result_encode", _scope_result_encode);
+                let materialized = PlanQueryResult::try_from_plan_rows(
+                    &store,
+                    &element_id_key,
+                    &run.last_read_plan_rows,
+                )?;
+                let wire = crate::plan::ic_wire_from_plan_query_result(&materialized)
+                    .map_err(|e| GqlRunError::Plan(e.to_string()))?;
+                Some(
+                    wire.encode_blob()
+                        .map_err(|e| GqlRunError::Plan(e.to_string()))?,
+                )
+            } else {
+                None
+            };
+            let _phase_t4 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_last_read_row_count",
+                "encode_rows",
+                _phase_t4.saturating_sub(_phase_t3),
+            );
+            Ok(WirePlanRunResult {
+                row_count: run.last_read_row_count,
+                rows_blob,
+                hot_forward_vertices: run.hot_forward_vertices,
+                emitted_delta_first_seq: run.emitted_delta_first_seq,
+                emitted_delta_last_seq: run.emitted_delta_last_seq,
+                search_chain_receipt: run.search_chain_receipt,
+            })
+        };
+    let result = if mode == GqlCanisterExecutionMode::Update {
+        store.guard_plan_continuation(replay_id, run).await
     } else {
-        None
+        Ok(ControlFlow::Continue(run.await))
     };
-    let _phase_t4 = current_instruction_counter();
-    log_wire_phase(
-        "run_wire_plans_last_read_row_count",
-        "encode_rows",
-        _phase_t4.saturating_sub(_phase_t3),
-    );
-    Ok(WirePlanRunResult {
-        row_count: run.last_read_row_count,
-        rows_blob,
-        hot_forward_vertices: run.hot_forward_vertices,
-        emitted_delta_first_seq: run.emitted_delta_first_seq,
-        emitted_delta_last_seq: run.emitted_delta_last_seq,
-        search_chain_receipt: run.search_chain_receipt,
-    })
+    // Also clean up when the guard drops a suspended execution on replay or expiry.
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
+    match result.map_err(|error| GqlRunError::Plan(error.into()))? {
+        ControlFlow::Break(journal) => replay_wire_plan(journal),
+        ControlFlow::Continue(result) => result,
+    }
 }
 
 fn persist_pending_to_outbox(store: &GraphStore, mutation_id: u64) {
@@ -1940,6 +1936,15 @@ mod tests {
             "mutation must create at least one vertex"
         );
 
+        // Native execution time is zero. A distinct durable timestamp makes republication
+        // observable even when the count and canonical state happen to stay unchanged.
+        use crate::facade::stable::GRAPH_MUTATION_JOURNAL;
+        use ic_stable_structures::Storable;
+        let mut recorded = journal;
+        recorded.set_recorded_at_ns(Some(123));
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|entries| entries.insert(recorded.clone()));
+        let before = recorded.to_bytes().into_owned();
+
         let second = pollster::block_on(run_wire_plan_last_read_row_count(
             store,
             &blob,
@@ -1961,6 +1966,170 @@ mod tests {
             initial_vertex_count,
             "completed-journal replay must not re-execute the mutation"
         );
+        assert_eq!(
+            store
+                .mutation_journal_entry(42)
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            before,
+            "completed replay must not republish the journal or reset its lifetime"
+        );
+    }
+
+    #[test]
+    fn wire_plan_continuation_observes_terminal_outcome_before_set() {
+        use crate::plan::query::{MockPropertyIndex, configure_test_index};
+        use gleaph_graph_kernel::{federation::ShardId, index::PostingHit};
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let program =
+            parser::parse("MATCH (v:ContinuationVertex) SET v.nick = 'old-request' RETURN v.nick")
+                .unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let mut plan =
+            gleaph_gql_planner::build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        assert!(matches!(plan.ops[0], PlanOp::NodeScan { .. }));
+        plan.ops[0] = PlanOp::IndexScan {
+            variable: "v".into(),
+            property: "age".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+            ordered_by_sort: None,
+        };
+        let prefix_program = parser::parse("INSERT (:ContinuationVertex {age: 5})").unwrap();
+        let prefix = gleaph_gql_planner::build_block_plan_with_schema(
+            prefix_program
+                .transaction_activity
+                .as_ref()
+                .unwrap()
+                .body
+                .as_ref()
+                .unwrap(),
+            None,
+            &NoSchema,
+        )
+        .unwrap();
+        let blobs = [
+            encode_block_plans(std::slice::from_ref(&plan), true).unwrap(),
+            encode_block_plans(&[prefix, plan], true).unwrap(),
+        ];
+        let parameters = BTreeMap::new();
+        let age = crate::test_labels::property_id_for_name("age");
+        let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[age]);
+        // The no-outcome control proves the same paused read really reaches SET if allowed.
+        for (ordinal, (with_prefix, saved_count)) in [
+            (false, None),
+            (false, Some(0)),
+            (false, Some(1)),
+            (true, None),
+            (true, Some(0)),
+            (true, Some(1)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let target = store
+                .insert_vertex_named(
+                    ["ContinuationVertex"],
+                    [
+                        ("age", Value::Int64(5)),
+                        ("nick", Value::Text("later-write".into())),
+                    ],
+                )
+                .unwrap();
+            let nick = store.property_id("nick").unwrap();
+            // Exclude setup postings; only the wire request may populate its own outbox rows.
+            drop(pending::take_pending_as_outbox());
+            let before_vertices = u32::from(store.vertex_count());
+            let id = 92_000 + ordinal as u64;
+            let index = MockPropertyIndex::default();
+            index.pause_equal_lookup.set(true);
+            index.equal_hits.borrow_mut().push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: u32::try_from(u64::from(target)).unwrap(),
+            });
+            let mut future = pin!(run_wire_plan_last_read_row_count(
+                store,
+                &blobs[usize::from(with_prefix)],
+                &parameters,
+                GqlCanisterExecutionMode::Update,
+                Some(&index),
+                GqlExecutionContext::default(),
+                None,
+                Some(id),
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(
+                future.as_mut().poll(&mut cx).is_pending(),
+                "the real wire read phase must suspend"
+            );
+            assert_eq!(index.equal_calls.borrow().len(), 1);
+            assert_eq!(
+                u32::from(store.vertex_count()),
+                before_vertices + u32::from(with_prefix)
+            );
+            assert!(
+                pending::take_pending_as_outbox().is_empty(),
+                "committed prefix postings must be durable before suspension/cancellation"
+            );
+            let prefix_intents: Vec<_> = store
+                .derived_index_outbox_peek(100)
+                .into_iter()
+                .filter(|(_, entry)| entry.mutation_id == id)
+                .collect();
+            assert_eq!(!prefix_intents.is_empty(), with_prefix);
+            let saved = saved_count.map(|count| {
+                store.commit_record_completed_mutation_journal_at(
+                    123,
+                    id,
+                    count,
+                    None,
+                    None,
+                    vec![],
+                );
+                store.mutation_journal_entry(id).unwrap()
+            });
+            index.pause_equal_lookup.set(false);
+            let Poll::Ready(Ok(result)) = future.as_mut().poll(&mut cx) else {
+                panic!("resumed wire execution must finish");
+            };
+            if let Some(saved) = saved {
+                assert_eq!(
+                    store
+                        .derived_index_outbox_peek(100)
+                        .into_iter()
+                        .filter(|(_, entry)| entry.mutation_id == id)
+                        .collect::<Vec<_>>(),
+                    prefix_intents,
+                    "replay must retain earlier durable intents, not publish them again"
+                );
+                assert_eq!(result.row_count as u64, saved.row_count());
+                assert_eq!(store.mutation_journal_entry(id).as_ref(), Some(&saved));
+                assert_eq!(
+                    store.vertex_property(target, nick),
+                    Some(Value::Text("later-write".into()))
+                );
+            } else {
+                assert_eq!(
+                    store.vertex_property(target, nick),
+                    Some(Value::Text("old-request".into()))
+                );
+                assert!(store.mutation_journal_entry(id).unwrap().is_completed());
+            }
+        }
     }
 
     fn local_claim(constraint: u16, value: &[u8]) -> UniqueClaimDispatch {

@@ -65,6 +65,8 @@ pub use std::rc::Rc;
 
 #[derive(Default)]
 pub struct MockPropertyIndex {
+    /// Manual-poll tests hold an equality lookup across a simulated callback boundary.
+    pub pause_equal_lookup: std::cell::Cell<bool>,
     pub equal_hits: RefCell<Vec<PostingHit>>,
     /// Per `(property_id, encoded value)` hits; overrides [`Self::equal_hits`] when set.
     pub equal_hits_by_key: RefCell<BTreeMap<(u32, Vec<u8>), Vec<PostingHit>>>,
@@ -146,6 +148,14 @@ impl PropertyIndexLookup for MockPropertyIndex {
         self.equal_calls
             .borrow_mut()
             .push((property_id, value.clone()));
+        std::future::poll_fn(|_| {
+            if self.pause_equal_lookup.get() {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        })
+        .await;
         if let Some(hits) = self.equal_hits_by_key.borrow().get(&(property_id, value)) {
             return Ok(hits.clone());
         }

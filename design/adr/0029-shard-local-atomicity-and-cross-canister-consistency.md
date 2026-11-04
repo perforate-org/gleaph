@@ -3,7 +3,7 @@
 Date: 2026-06-21
 Status: accepted
 Last revised: 2026-09-22
-Anchor timestamp: 2026-09-22 18:20:36 UTC +0000
+Anchor timestamp: 2026-09-22 17:29:35 UTC +0000
 
 ## Context
 
@@ -272,7 +272,7 @@ cost is approximately 4.89 M instructions with a 1 KiB request fingerprint and 1
 (one pending shard). This is material per-check cost, not a compact-header read or a production
 capacity approval. Preserve the fresh check; evaluate data placement/decoding under the existing
 record owner before expanding retained results, without duplicating authority in a shadow header.
-These samples do not establish latency, allocation or retained-state bounds.
+The linked report separates measurement from unproven latency, allocation and retained-state bounds.
 
 Inline success, inline error recovery, explicit retry reconciliation and background recovery use
 `capture_scalar_mutation_outcome`: validate the Graph journal ID/family, write the canonical count,
@@ -284,6 +284,7 @@ recovery never sends canonical DML.
 This uses existing records and codecs, not a new journal or permanent identity tombstone. Scalar
 Graph Active/Retired state, exact receipt retention, acknowledged release and admission/cost bounds
 remain open under [ADR 0027](0027-graph-mutation-journal-retention.md).
+See the [implementation and validation limits](../investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-count-capture-and-actual-send-prerequisite).
 
 #### Scalar preparation callback identity
 
@@ -304,11 +305,9 @@ old record through Router's real owners, reserve the same key and fingerprint wi
 then resume positive, empty and error responses. Each rejects the old ID and preserves the entire
 new record; same-ID controls reach envelope publication, zero completion and release. This is not
 real delayed-IC scheduling, Graph GC or a complete audit of response/status identity lookups.
-Envelope-publication samples cost approximately 13.18 M instructions with a 1 KiB request
-fingerprint and 258.33 M with 1 MiB, for one warmed record and one shard. These measure the whole
-record read/write operation, not added identity-check overhead or a before/after regression.
-Zero heap/stable page growth does not bound allocation or peak memory. The other two writers
-were not measured. Production cost and Graph outcome retention remain unapproved/unrepaired.
+The [callback follow-up](../investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-preparation-callback-identity)
+records the validation and separate envelope-publication cost samples; it does not approve production
+cost or repair Graph outcome retention.
 
 ### 5. Make read consistency explicit
 
