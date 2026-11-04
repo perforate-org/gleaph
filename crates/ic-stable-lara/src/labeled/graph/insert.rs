@@ -583,7 +583,16 @@ where
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
-                                let value_slot = logical_slot.unwrap_or(bucket.stored_slots());
+                                // A spilled row's slot is `stored_slots + its run index`, and the run
+                                // index of the row just appended is `used_len - 1`. Falling back to
+                                // `stored_slots` alone would name the run's first row instead of the
+                                // new one whenever the run was not empty (ADR 0099 mirror).
+                                let value_slot = match logical_slot {
+                                    Some(slot) => slot,
+                                    None => bucket.stored_slots().saturating_add(
+                                        self.bucket_values_run_rows(&bucket).saturating_sub(1),
+                                    ),
+                                };
                                 let bucket = self
                                     .value_plane(bucket_slot, bucket)
                                     .write_after_insert(src, value_slot, &attempt_edge)?
