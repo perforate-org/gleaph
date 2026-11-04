@@ -306,3 +306,24 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   inside it - i.e. the order "declare, take, place" instead of "place, derive". Doing it in one line
   inverts the order without providing the take, so the smaller cover simply stops admitting placements
   the layout depends on.
+
+## Documentation status (recorded 2026-11-04)
+
+Three sentences above describe the intended contract but not the code as it stands. They are listed here
+rather than rewritten because each is the *target* of the amendment above, not a stale description:
+
+- "The slice is the vertex's exclusive space" (E4, quoted in Context): `LeafArena::slices` derives a slice as
+  `[the vertex's first bucket base, the next vertex's first base)`, i.e. the gap between neighbours. The
+  amendment decides it becomes an owned extent; until then E4 is a claim about the target state.
+- "`LeafArena` ... is the only caller of the free-span store" (ADR 0088, quoted in Context):
+  `EdgeStore::release_span`, `allocate_span` and `reserve_for_releases` call it directly, and
+  `promote.rs` reaches `free_span_store()` itself. Unifying those behind `LeafArena` is part of the
+  amendment's work, and `release_span` returning the allocator's own error (`1f716f06b`) was a step toward
+  it.
+- "`LeafArena` owns the extent (creation, growth, relocation)": there is no per-vertex extent stored
+  anywhere; every question about one is answered by deriving it from the vertices' resident spans.
+
+One naming divergence is outside this ADR but worth recording next to it: `CollectAllocationOverflow` is
+used as the generic fail-closed answer at roughly three hundred sites, most of which are not allocation
+failures at all. `LaraOperationError::overflow` (`3df10ec80`) makes it traceable, but the name still
+promises something the variant does not deliver.
