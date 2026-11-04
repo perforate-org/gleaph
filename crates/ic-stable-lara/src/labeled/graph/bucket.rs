@@ -325,11 +325,12 @@ where
             && cache.degree == deg
         {
             if cache.bucket_key == label_id && (start..range_end).contains(&cache.slot) {
-                let bucket = self
-                    .buckets
-                    .read_label_bucket_slot(cache.slot)
-                    .ok_or(LaraOperationError::overflow())?;
-                if bucket.bucket_label_key() == label_id {
+                // The cache is an optimisation: a slot it names may since have been vacated (a
+                // relocation or promotion rewrites the vertex), and a stale hit must fall through to the
+                // slow path rather than become a hard failure.
+                if let Some(bucket) = self.buckets.read_label_bucket_slot(cache.slot)
+                    && bucket.bucket_label_key() == label_id
+                {
                     return Ok(BucketSearch::Found {
                         slot: cache.slot,
                         bucket,
@@ -339,24 +340,18 @@ where
             if let Some(slot_after_cache) = cache.slot.checked_add(1)
                 && slot_after_cache == range_end
                 && cache.bucket_key < label_id
+                && let Some(bucket) = self.buckets.read_label_bucket_slot(cache.slot)
+                && bucket.bucket_label_key() == cache.bucket_key
             {
-                let bucket = self
-                    .buckets
-                    .read_label_bucket_slot(cache.slot)
-                    .ok_or(LaraOperationError::overflow())?;
-                if bucket.bucket_label_key() == cache.bucket_key {
-                    return Ok(BucketSearch::Missing { insert_index: deg });
-                }
+                return Ok(BucketSearch::Missing { insert_index: deg });
             }
             if label_id > cache.bucket_key {
                 if let Some(next_slot) = cache.slot.checked_add(1)
                     && next_slot < range_end
+                    && let Some(bucket) = self.buckets.read_label_bucket_slot(next_slot)
+                    && bucket.bucket_label_key() == label_id
                 {
-                    let bucket = self
-                        .buckets
-                        .read_label_bucket_slot(next_slot)
-                        .ok_or(LaraOperationError::overflow())?;
-                    if bucket.bucket_label_key() == label_id {
+                    {
                         self.cache_bucket_lookup(src, label_id, vertex, next_slot);
                         return Ok(BucketSearch::Found {
                             slot: next_slot,

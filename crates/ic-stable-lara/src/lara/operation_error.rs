@@ -79,19 +79,34 @@ impl LaraOperationError {
     /// The fail-closed "no room" answer.
     ///
     /// This is one of the most-reached errors in the subsystem and was spelled out as a bare variant at
-    /// roughly three hundred sites, which makes the one question that matters - *where did it come
-    /// from* - unanswerable. Every construction goes through here, and a debug build traps with the
-    /// caller so the site is named rather than inferred.
+    /// roughly three hundred sites, which made the one question that matters - *where did it come from* -
+    /// unanswerable. Every construction goes through here and records its caller, so a failing run can be
+    /// asked which constructions preceded the error (`GLEAPH_TRACE_OVERFLOW=1` panics instead).
     #[track_caller]
     pub(crate) fn overflow() -> Self {
+        let site = std::panic::Location::caller();
+        GLEAPH_OVERFLOW_SITES.with(|sites| {
+            let mut sites = sites.borrow_mut();
+            if sites.len() < 64 {
+                sites.push(site);
+            }
+        });
         if std::env::var_os("GLEAPH_TRACE_OVERFLOW").is_some() {
-            panic!(
-                "CollectAllocationOverflow constructed at {:?}",
-                std::panic::Location::caller()
-            );
+            panic!("CollectAllocationOverflow constructed at {site:?}");
         }
         Self::CollectAllocationOverflow
     }
+}
+
+thread_local! {
+    /// Call sites of the `overflow()` constructions seen on this thread, oldest first.
+    static GLEAPH_OVERFLOW_SITES: std::cell::RefCell<Vec<&'static std::panic::Location<'static>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The `overflow()` call sites recorded on this thread, oldest first (at most 64).
+pub fn overflow_sites() -> Vec<&'static std::panic::Location<'static>> {
+    GLEAPH_OVERFLOW_SITES.with(|sites| sites.borrow().clone())
 }
 
 impl fmt::Display for LaraOperationError {
