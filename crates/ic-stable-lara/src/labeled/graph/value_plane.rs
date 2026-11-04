@@ -155,8 +155,15 @@ where
             .values
             .spill_drop_head(run, fold)
             .map_err(LabeledOperationError::from)?;
+        // An emptied run is **released**, not just unnamed: clearing the field alone returns the class to
+        // nobody, so the arena grows forever while every descriptor says it spilled nothing (the fold-cost
+        // bench caught exactly that - `GAP-LARA-FOLD-BENCH-RUN-PROBE`). On a failed release the field stays,
+        // which is the pairing `release_run` already states for the rest of this plane.
         self.bucket = if self.graph.values.spill_used_len(run) == 0 {
-            sized.without_values_spill_run()
+            match self.graph.values.spill_release(run) {
+                Ok(()) => sized.without_values_spill_run(),
+                Err(_) => sized,
+            }
         } else {
             sized
         };
