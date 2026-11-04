@@ -114,7 +114,12 @@ cut left behind - is gone, and the graph's two insert entry points plus the tiny
 after promotion ask `BucketRowPlane::insert_row` themselves. The view's own retry calls itself instead of
 bouncing back through the graph.
 
-What remains is **API, not a duplicate path**: `remove_edge_at_slot_with_move` and `read_edge_state` are
-public entry points that other modules (`bidirectional/deferred`) and the facade call, so they stay and
-delegate. Removing them was tried and fails to compile against those callers - which is the right outcome:
-the migration's goal was one *implementation*, not one *name*.
+Step 3 finished (`c2abc0254`): the graph exposes `row_plane()` and the in-crate callers
+(`bidirectional/deferred` 5, `bidirectional/counterpart` 3, `traverse` 4, `remove` 2, `tree_write` 2) reach
+insert, remove and read through it. That retired the delegating twins -
+`read_edge_state_internal`, `remove_edge_at_slot_with_move` and the internal insert wrapper - so there is one
+implementation and one door rather than a door beside a duplicate path.
+
+What stays is **API, not a path**: `insert_edge_skip_leaf_cascade`, `remove_edge_at_slot` and `read_edge`
+remain as the graph's public surface, each one line onto the view. The migration's goal was one
+*implementation*, not one *name*, and those three names are what the facade and other modules call.
