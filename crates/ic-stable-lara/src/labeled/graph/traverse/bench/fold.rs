@@ -585,40 +585,10 @@ impl<const W: usize> FoldFixture<W> {
         // Probing here would ask about space the workload has since reused, which the allocator never
         // promised to keep free.
         let _ = first_fold_runs;
-        if mode != RepeatedFold::Unfolded {
-            self.assert_retired_prefix_reusable(initial_bucket);
-        }
-    }
-
-    fn assert_retired_prefix_reusable(&self, before: LabelBucket) {
-        let offset = before.inline_property_bytes_offset();
-        let len = u64::from(before.inline_property_bytes_slab_slots()) * W as u64;
-        assert!(len > 0);
-        assert_ne!(self.bucket().1.inline_property_bytes_offset(), offset);
-        let stats = self.graph.values.allocator_stats();
-        let free = self.graph.values.free_byte_spans();
-        let pages = self.regions.each_ref().map(Memory::size);
-        let physical = self.physical.size();
-        let reused = self.graph.values.allocate_byte_span(len).unwrap();
-        assert_eq!(reused, offset);
-        assert_eq!(
-            self.graph.values.allocator_stats().slab_occupied_tail,
-            stats.slab_occupied_tail
-        );
-        assert_eq!(
-            self.graph.values.allocator_stats().free_bytes,
-            stats.free_bytes - len
-        );
-        self.graph
-            .values
-            .write_bytes(reused, &vec![0xee; len as usize])
-            .unwrap();
-        self.assert_rows(self.degree);
-        self.graph.values.retire_byte_span(reused, len).unwrap();
-        assert_eq!(self.graph.values.free_byte_spans(), free);
-        assert_eq!(self.graph.values.allocator_stats(), stats);
-        assert_eq!(self.regions.each_ref().map(Memory::size), pages);
-        assert_eq!(self.physical.size(), physical);
+        // ADR 0099: the byte-span allocator this checked (`allocate_byte_span`, `slab_occupied_tail`,
+        // `free_bytes`) no longer holds the values - they are addressed by row slot - so there is no
+        // retired prefix to probe. The reuse probe in `repeated_workload` covers the runs that are freed.
+        let _ = (mode, initial_bucket);
     }
 }
 
@@ -665,11 +635,9 @@ fn repeated_workload<const W: usize>(degree: u32, reads: u32, mode: RepeatedFold
 
 #[cfg(test)]
 fn check_repeated_fold<const W: usize>(degree: u32) {
-    for mode in [
-        RepeatedFold::Unfolded,
-        RepeatedFold::Values,
-        RepeatedFold::Both,
-    ] {
+    // ADR 0099 removed the values-only fold: a bucket's values mirror its edge run, so folding "values"
+    // without rows is not an operation any more and the mode that named it went with it.
+    for mode in [RepeatedFold::Unfolded, RepeatedFold::Both] {
         let mut fixture = FoldFixture::<W>::new(degree);
         let (_, initial_bucket) = fixture.bucket();
         let initial_tail = fixture.graph.values.allocator_stats().slab_occupied_tail;
@@ -695,8 +663,6 @@ fn check_repeated_fold<const W: usize>(degree: u32) {
                 .labeled_leaf_physical_range(fixture.src)
                 .unwrap()
                 .unwrap();
-            let vertex = fixture.graph.vertices().get(fixture.src);
-            let (_, bucket) = fixture.bucket();
             fixture.repeated_snapshot(&format!("{phase}_append_{round}"));
             if mode != RepeatedFold::Unfolded {
                 assert_eq!(
@@ -710,9 +676,6 @@ fn check_repeated_fold<const W: usize>(degree: u32) {
             }
             previous_edge = runs[0].0;
             assert!(fixture.fold_round(mode).is_empty());
-            if mode == RepeatedFold::Values {
-                fixture.assert_values_folded(vertex, bucket);
-            }
             fixture.assert_repeated_state(mode);
             if mode == RepeatedFold::Both && round >= 4 {
                 let (start, len) = fixture
@@ -943,13 +906,14 @@ impl<const W: usize> FoldFixture<W> {
         let consumer = fixture.bucket_for(CONSUMER).1;
         assert_eq!(consumer.inline_property_bytes_slab_slots(), 16);
         assert_eq!(fixture.runs_for(CONSUMER)[1], (NO_SPILL_RUN, 0));
-        let stats = fixture.graph.values.allocator_stats();
-        assert_eq!(stats.slab_occupied_tail, 49 * W as u64);
-        assert_eq!(
-            consumer.inline_property_bytes_offset() + 16 * W as u64,
-            stats.slab_occupied_tail
+        // ADR 0099: values are addressed by row slot, so the byte-span allocator's tail and free-byte
+        // accounting no longer describe this plane (they read `0` forever). The geometry that does hold is
+        // the one above: the target owns 32 slots, the consumer 16, and the consumer's span starts after
+        // the target's.
+        assert!(
+            consumer.inline_property_bytes_offset()
+                >= fixture.bucket().1.inline_property_bytes_offset() + 32 * W as u64
         );
-        assert_eq!(stats.free_bytes, 0);
         fixture
     }
 
@@ -1351,23 +1315,6 @@ fn fold_cost<const W: usize>(degree: u32) -> BenchResult {
     result
 }
 
-fn value_fold_cost<const W: usize>(degree: u32) -> BenchResult {
-    let fixture = FoldFixture::<W>::new(degree);
-    fixture.assert_rows(degree);
-    let before_vertex = fixture.graph.vertices().get(fixture.src);
-    let (_, before_bucket) = fixture.bucket();
-    let runs = fixture.runs();
-    let pre_fold_rows = fixture.arenas().map(|arena| arena.arena_rows());
-    let result = bench_fn(|| {
-        let _scope = bench_scope("value_fold");
-        fixture.fold_values();
-    });
-    fixture.assert_values_folded(before_vertex, before_bucket);
-    fixture.snapshot("values_folded");
-    fixture.assert_reusable_against(runs, pre_fold_rows);
-    result
-}
-
 fn workload<const W: usize>(fixture: FoldFixture<W>, phase: &str) -> BenchResult {
     fixture.assert_rows(fixture.degree);
     fixture.snapshot(phase);
@@ -1488,34 +1435,6 @@ macro_rules! fold_case {
     };
 }
 
-macro_rules! value_fold_case {
-    ($cost:ident, $after:ident, $width:literal, $degree:literal) => {
-        #[bench(raw)]
-        fn $cost() -> BenchResult {
-            value_fold_cost::<$width>($degree)
-        }
-        #[bench(raw)]
-        fn $after() -> BenchResult {
-            let fixture = FoldFixture::<$width>::new($degree);
-            let before_vertex = fixture.graph.vertices().get(fixture.src);
-            let (_, before_bucket) = fixture.bucket();
-            fixture.fold_values();
-            fixture.assert_values_folded(before_vertex, before_bucket);
-            workload(fixture, "values_folded")
-        }
-    };
-}
-
-value_fold_case!(bench_t_fold_vcost_8_64, bench_t_fold_values_8_64, 8, 64);
-value_fold_case!(bench_t_fold_vcost_8_256, bench_t_fold_values_8_256, 8, 256);
-value_fold_case!(bench_t_fold_vcost_33_64, bench_t_fold_values_33_64, 33, 64);
-value_fold_case!(
-    bench_t_fold_vcost_33_256,
-    bench_t_fold_values_33_256,
-    33,
-    256
-);
-
 fold_case!(
     bench_t_fold_cost_8_64,
     bench_t_fold_before_8_64,
@@ -1551,15 +1470,11 @@ fold_case!(
 
 macro_rules! repeated_case {
     ($width:literal, $degree:literal, $test:ident;
-     $($reads:literal => ($unfolded:ident, $values:ident, $both:ident)),+ $(,)?) => {
+     $($reads:literal => ($unfolded:ident, $both:ident)),+ $(,)?) => {
         $(
             #[bench(raw)]
             fn $unfolded() -> BenchResult {
                 repeated_workload::<$width>($degree, $reads, RepeatedFold::Unfolded)
-            }
-            #[bench(raw)]
-            fn $values() -> BenchResult {
-                repeated_workload::<$width>($degree, $reads, RepeatedFold::Values)
             }
             #[bench(raw)]
             fn $both() -> BenchResult {
@@ -1575,65 +1490,18 @@ macro_rules! repeated_case {
 }
 
 repeated_case!(8, 64, repeated_fold_8_64;
-    1 => (bench_t_repeat_unfolded_8_64_r1, bench_t_repeat_values_8_64_r1, bench_t_repeat_both_8_64_r1),
-    8 => (bench_t_repeat_unfolded_8_64_r8, bench_t_repeat_values_8_64_r8, bench_t_repeat_both_8_64_r8),
+    1 => (bench_t_repeat_unfolded_8_64_r1, bench_t_repeat_both_8_64_r1),
+    8 => (bench_t_repeat_unfolded_8_64_r8, bench_t_repeat_both_8_64_r8),
 );
 repeated_case!(8, 256, repeated_fold_8_256;
-    1 => (bench_t_repeat_unfolded_8_256_r1, bench_t_repeat_values_8_256_r1, bench_t_repeat_both_8_256_r1),
-    8 => (bench_t_repeat_unfolded_8_256_r8, bench_t_repeat_values_8_256_r8, bench_t_repeat_both_8_256_r8),
+    1 => (bench_t_repeat_unfolded_8_256_r1, bench_t_repeat_both_8_256_r1),
+    8 => (bench_t_repeat_unfolded_8_256_r8, bench_t_repeat_both_8_256_r8),
 );
 repeated_case!(33, 64, repeated_fold_33_64;
-    1 => (bench_t_repeat_unfolded_33_64_r1, bench_t_repeat_values_33_64_r1, bench_t_repeat_both_33_64_r1),
-    8 => (bench_t_repeat_unfolded_33_64_r8, bench_t_repeat_values_33_64_r8, bench_t_repeat_both_33_64_r8),
+    1 => (bench_t_repeat_unfolded_33_64_r1, bench_t_repeat_both_33_64_r1),
+    8 => (bench_t_repeat_unfolded_33_64_r8, bench_t_repeat_both_33_64_r8),
 );
 repeated_case!(33, 256, repeated_fold_33_256;
-    1 => (bench_t_repeat_unfolded_33_256_r1, bench_t_repeat_values_33_256_r1, bench_t_repeat_both_33_256_r1),
-    8 => (bench_t_repeat_unfolded_33_256_r8, bench_t_repeat_values_33_256_r8, bench_t_repeat_both_33_256_r8),
-);
-
-macro_rules! continuous_case {
-    ($width:literal, $degree:literal, $test:ident;
-     $($reads:literal => ($never:ident, $each:ident, $four:ident, $eight:ident)),+ $(,)?) => {
-        $(
-            #[bench(raw)]
-            fn $never() -> BenchResult {
-                continuous_spill_workload::<$width>($degree, $reads, ValueFoldPeriod::Never)
-            }
-            #[bench(raw)]
-            fn $each() -> BenchResult {
-                continuous_spill_workload::<$width>($degree, $reads, ValueFoldPeriod::Each)
-            }
-            #[bench(raw)]
-            fn $four() -> BenchResult {
-                continuous_spill_workload::<$width>($degree, $reads, ValueFoldPeriod::Four)
-            }
-            #[bench(raw)]
-            fn $eight() -> BenchResult {
-                continuous_spill_workload::<$width>($degree, $reads, ValueFoldPeriod::Eight)
-            }
-        )+
-        #[cfg(test)]
-        #[test]
-        fn $test() {
-            check_continuous_spill::<$width>($degree);
-        }
-    };
-}
-
-// cs_p{period}_{width}_{degree}_r{reads}: compact names respect IC export-name limits.
-continuous_case!(8, 64, continuous_spill_8_64;
-    1 => (cs_p0_8_64_r1, cs_p1_8_64_r1, cs_p4_8_64_r1, cs_p8_8_64_r1),
-    8 => (cs_p0_8_64_r8, cs_p1_8_64_r8, cs_p4_8_64_r8, cs_p8_8_64_r8),
-);
-continuous_case!(8, 256, continuous_spill_8_256;
-    1 => (cs_p0_8_256_r1, cs_p1_8_256_r1, cs_p4_8_256_r1, cs_p8_8_256_r1),
-    8 => (cs_p0_8_256_r8, cs_p1_8_256_r8, cs_p4_8_256_r8, cs_p8_8_256_r8),
-);
-continuous_case!(33, 64, continuous_spill_33_64;
-    1 => (cs_p0_33_64_r1, cs_p1_33_64_r1, cs_p4_33_64_r1, cs_p8_33_64_r1),
-    8 => (cs_p0_33_64_r8, cs_p1_33_64_r8, cs_p4_33_64_r8, cs_p8_33_64_r8),
-);
-continuous_case!(33, 256, continuous_spill_33_256;
-    1 => (cs_p0_33_256_r1, cs_p1_33_256_r1, cs_p4_33_256_r1, cs_p8_33_256_r1),
-    8 => (cs_p0_33_256_r8, cs_p1_33_256_r8, cs_p4_33_256_r8, cs_p8_33_256_r8),
+    1 => (bench_t_repeat_unfolded_33_256_r1, bench_t_repeat_both_33_256_r1),
+    8 => (bench_t_repeat_unfolded_33_256_r8, bench_t_repeat_both_33_256_r8),
 );
