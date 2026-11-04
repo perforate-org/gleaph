@@ -82,6 +82,19 @@ defect from being rediscovered without its prior reasoning.
   shows today - most likely `#[track_caller]` reports the inlined outer location of a helper it calls. The
   next step is a plain call-stack (`std::backtrace::Backtrace::force_capture()` in the constructor) rather
   than another line guess.
+- **The descriptor is coherent; the failure is the tiny-to-slab promotion looping.** Probes on the
+  failing shape show the row being created correctly (hub `v_base=1030`, `v_deg=2`, `v_slack=3`,
+  `bucket_slot=1030`, `stored_slots=5`) and the first four edges going into the tiny bucket normally
+  (capacity `TINY_PAYLOAD_BYTES / E::BYTES = 4`). The fifth edge is the one that must leave tiny mode, and
+  `promote_tiny_to_slab_with_growth` then fails: it **retries 64 times**, relocating the leaf on each
+  `CollectAllocationOverflow`, and finally answers with a generic overflow. So the question is narrower
+  than "descriptor names a vacated slot": the promotion of a 4-row bucket **beside a 10 000-row bucket on
+  the same vertex** cannot find a `(degree + 1)`-slot run, and the blind retry hides which reservation
+  refused.
+- **Next:** instrument `promote_tiny_to_slab`'s reservation (not the loop's outcome) to see whether the
+  vertex cover cannot extend, whether the leaf cannot grow, or whether the relocation makes no progress -
+  the bounded blind retry is itself the pattern to remove (a repeated failure inside one layer means that
+  layer's contract is wrong).
 - **The recorded-site histogram points at a poisoned descriptor:** after the failure, the sites recorded
   on that thread are a cluster in `bucket_store.rs`'s read/write helpers plus
   `insert.rs:1039/1048/1064` - the **tiny-bucket insert branch**: `degree.checked_add(1)` (1039),
