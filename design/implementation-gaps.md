@@ -75,7 +75,14 @@ defect from being rediscovered without its prior reasoning.
   into one bucket promote it (`tree=true`, `stored=1100`) and a slab/run read of any slot then reports
   the same error, so the repro does not need canbench. The traversals are **not** the caller: on that
   same promoted bucket `visit_edges_with_inline_property` and `visit_edges_at_with_inline_property`
-  both return `Ok` with 2-byte values, so the defect is in a non-traversal read path.
+  both return `Ok` with 2-byte values, so the defect is in a non-traversal read path. The batch visitor
+  is safe too: on the promoted bucket `visit_out_inline_property_batches_for_label_next` returns `Ok`,
+  and the deferred graph's in-direction reuses it on the reverse store.
+- **Reproduced on the merged tip:** the focused `canbench` run still traps after this ADR's work, so
+  whatever the caller is, it is not one of the traversal or batch arms. The remaining shape is a
+  descriptor that names a values run whose `asc_indices` is empty, which points at a release that left
+  the descriptor naming the run (an emptied bucket keeps both runs by design, and a promotion or a fold
+  is what releases them).
 - **Status:** Open.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
