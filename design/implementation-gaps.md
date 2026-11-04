@@ -70,6 +70,13 @@ defect from being rediscovered without its prior reasoning.
   question is whether `GraphStore::new()`'s default segment size is meant to hold a 10 000-row vertex -
   if not, the fixture is over budget and the bench needs a shape that spreads the noise, which is a bench
   correction rather than a code fix.
+- **Measured against that suspicion:** a unit probe inserting 10 000 directed edges from one source into
+  one label on `GraphStore::new()` **succeeds**, including the promotion it triggers. So a 10 000-row
+  vertex is not over budget - the bench's failure is **state-dependent**: its store already carries the
+  hub's reverse bucket with the same rows, and whichever promotion runs second is the one whose prefix
+  retirement the free-span store rejects (that rejection is flattened to `GrowFailed { current_size: 0,
+  delta: 0 }` by `EdgeStore::release_span`, which is itself worth fixing: the real `FreeSpanError` is
+  discarded). Reproduce with both buckets populated and read the underlying error.
 - **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
