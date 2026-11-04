@@ -47,6 +47,23 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
+
+- **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
+  fixture** - `target edge: Graph(Forward(Store(CollectAllocationOverflow)))` at
+  `crates/graph/src/bench/mod.rs:1185`, i.e. an insert of the tenth thousand rows into one bucket.
+- **Not caused by ADR 0099:** the same command traps on the pre-merge `spill-swap` tip
+  (`e6fd3d45e^1`).
+- **Impact:** `canbench --persist` cannot complete for `crates/graph`, so
+  `crates/graph/canbench_results.yml` still cannot be refreshed - the suite aborts at this bench, and the
+  same is true for the smaller `expand_inline_property_skewed_2k_a_100b` fix recorded above (which now
+  runs, but its neighbours do not).
+- **Next decision:** does the fixture exceed what the test graph's segment size can hold (the vertex has
+  to grow a span for ~10 000 rows), or is there a real fail-closed path that should relocate instead of
+  returning `CollectAllocationOverflow`? Build the same shape in a unit test and read which allocation
+  refuses.
+- **Status:** Open.
+
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
 
 - **Status:** Resolved 2026-11-04 (`7aa512a1b`). The benchmark runs again.
