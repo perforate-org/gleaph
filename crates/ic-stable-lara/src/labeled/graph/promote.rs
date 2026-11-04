@@ -789,7 +789,7 @@ pub mod tests {
         // non-tiny mode: tiny and tree contributions are excluded from leaf
         // `actual` (ADR 0096 §5), so switching them to slab re-admits exactly
         // that degree.
-        if existing.is_tiny_mode() || existing.is_tree_mode() {
+        if !existing.has_slab_row_prefix() {
             graph
                 .edges()
                 .bump_vertex_segment_counts(vid, i64::from(existing.degree), 0)

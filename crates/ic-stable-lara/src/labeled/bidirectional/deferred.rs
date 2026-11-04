@@ -1831,7 +1831,7 @@ where
             BucketSearch::Found { slot, bucket } => (slot, bucket),
             BucketSearch::Missing { .. } => return Err(invalid()),
         };
-        if bucket.is_tiny_mode() || bucket.is_tree_mode() {
+        if !bucket.has_slab_row_prefix() {
             return Err(invalid());
         }
         if bucket.inline_property_byte_width() != signal.width {

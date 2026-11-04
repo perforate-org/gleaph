@@ -832,7 +832,7 @@ where
         // Tiny buckets hold no value state by construction (ADR 0096 §5), and a tree bucket keeps its
         // values in the property root inside the edge span - `tree_write` owns them. Neither has a
         // slab/run plane for the mirror to keep in step.
-        if width == 0 || bucket.is_tiny_mode() || bucket.is_tree_mode() {
+        if width == 0 || !bucket.has_slab_row_prefix() {
             return Ok(bucket);
         }
         // One admission for both residencies, because the invariant is about the *row*, not about

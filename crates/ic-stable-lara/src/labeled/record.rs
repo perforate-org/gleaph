@@ -427,6 +427,17 @@ impl LabelBucket {
         (self.word & Self::TINY_MODE_BIT) != 0
     }
 
+    /// `true` when the bucket's rows live in its slab prefix - i.e. it is neither tiny nor a tree.
+    ///
+    /// The two exclusions are one rule seen from two sides: a tiny row carries its payload in the
+    /// descriptor itself, and a tree bucket keeps its values in the property root inside the edge span, so
+    /// neither has a slab prefix to address. Callers ask this once instead of restating "not tiny and not
+    /// tree" at each site, which is how the value plane and the row insert drifted apart before.
+    #[inline]
+    pub fn has_slab_row_prefix(self) -> bool {
+        !self.is_tiny_mode() && !self.is_tree_mode()
+    }
+
     /// Inline edge target at position `index` (0..3) for a tiny-mode bucket.
     ///
     /// Payload map (ADR 0096 §1): T0 ≡ `inline_property_bytes_slab_slots` value,
@@ -756,7 +767,7 @@ impl LabelBucket {
     pub fn try_with_edge_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
         // Tiny and tree rows cannot carry a run on the wire (bytes 27..34 hold their own payload
         // and depth marker), so a run on one of them is rejected rather than silently dropped.
-        if self.is_tiny_mode() || self.is_tree_mode() {
+        if !self.has_slab_row_prefix() {
             return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
         }
         if SpillRunId::mint(run, ArenaRows::EDGE).is_err() {
@@ -839,7 +850,7 @@ impl LabelBucket {
     /// not be the sentinel.
     #[inline]
     pub fn try_with_values_spill_run(self, run: u32) -> Result<Self, LabelBucketFieldError> {
-        if self.is_tiny_mode() || self.is_tree_mode() {
+        if !self.has_slab_row_prefix() {
             return Err(LabelBucketFieldError::SpillRunOnNonSlabBucket);
         }
         if SpillRunId::mint(run, ArenaRows::VALUES).is_err() {
