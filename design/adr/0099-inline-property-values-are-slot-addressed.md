@@ -733,3 +733,8 @@ largest case is unchanged.
 - The three `value_span_relocation_*` fixtures were deleted with the values-only fold they exercised.
   Their span-accounting coverage (retired span reclaimed, free-byte arithmetic, source preserved on a
   failed relocation) should be rebuilt on `ensure_bucket_inline_property_bytes_span`'s relocation path.
+  A first attempt measured the obstacle: the only remaining way to grow a prefix is
+  `fold_bucket_edge_spill_head_into_span`, and it needs the edge run to have **head-drop capacity** -
+  a freshly written run reports `spill_head_drop_capacity == 0` (its class is exactly full), so the fold
+  returns 0. A fixture therefore has to grow the run's class first (append past the class boundary) and
+  only then fold, which is why it is a fixture with its own setup rather than a two-line test.
