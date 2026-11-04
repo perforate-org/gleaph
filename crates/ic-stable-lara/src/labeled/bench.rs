@@ -4567,93 +4567,9 @@ fn vertex_layout_copy_tree_roots_64() -> canbench_rs::BenchResult {
     bench_physical_copy(PhysicalCopyFixture::TreeRoots)
 }
 
-/// Measure the shared admission/prepared publication on a real 4800-byte fill.
-/// Setup and a distinct correctness control stay outside the measured closure.
-#[bench(raw)]
-fn materialize_owner_4800() -> canbench_rs::BenchResult {
-    let prepare = || {
-        let graph = inline_property_bench_graph(1024);
-        let src = graph
-            .push_vertex(crate::labeled::LabeledVertex::default())
-            .expect("source");
-        let label = BucketLabelKey::directed_from_index(2);
-        for target in 100..700 {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    src,
-                    label,
-                    InlinePropertyBenchEdge::with_inline_property(target, 0, &[]),
-                    EdgePlacementPolicy::Insertion,
-                )
-                .expect("seed");
-        }
-        let slot = match graph
-            .find_bucket(src, &graph.vertices().get(src), label)
-            .expect("canonical source")
-        {
-            crate::labeled::graph::BucketSearch::Found { slot, bucket } => {
-                assert_eq!(bucket.degree(), 600);
-                assert_eq!(bucket.inline_property_byte_width(), 0);
-                slot
-            }
-            _ => panic!("missing source"),
-        };
-        (graph, src, slot)
-    };
-    let (control, src, slot) = prepare();
-    let mut cursor = control
-        .materialize_cursor(src, slot, 8, 0xA5)
-        .expect("admit control");
-    // ADR 0099: the values plane is slot-addressed, so a 4800-byte fill completes in one step - the
-    // two-step shape this bench was built around (a 4096-byte chunk then a remainder) no longer exists.
-    assert!(matches!(
-        control
-            .materialize_inline_property_stream_step(&mut cursor)
-            .expect("fill"),
-        crate::labeled::graph::values::MaterializeStep::Finished
-    ));
-    let bucket = control
-        .buckets()
-        .read_label_bucket_slot(slot)
-        .expect("published row");
-    assert_eq!(bucket.inline_property_byte_width(), 8);
-    assert_eq!(bucket.inline_property_bytes_slab_slots(), 600);
-    let mut bytes = vec![0; 4800];
-    control
-        .values()
-        .read_bytes(bucket.inline_property_bytes_offset(), &mut bytes);
-    assert_eq!(bytes, vec![0xA5; 4800]);
-    assert_eq!(
-        control
-            .vertices()
-            .get(src)
-            .inline_property_bytes_allocated_bytes(),
-        4800
-    );
-    let (graph, src, slot) = prepare();
-    let mut cursor = graph
-        .materialize_cursor(src, slot, 8, 0xA5)
-        .expect("admit measured cursor");
-    let result = bench_fn(|| {
-        let first = graph
-            .materialize_inline_property_stream_step(&mut cursor)
-            .expect("first chunk");
-        let second = graph
-            .materialize_inline_property_stream_step(&mut cursor)
-            .expect("publish");
-        black_box((first, second));
-    });
-    let bucket = graph
-        .buckets()
-        .read_label_bucket_slot(slot)
-        .expect("measured row");
-    assert_eq!(bucket.inline_property_byte_width(), 8);
-    assert_eq!(
-        graph
-            .vertices()
-            .get(src)
-            .inline_property_bytes_allocated_bytes(),
-        4800
-    );
-    result
-}
+// The `materialize_owner` bench measured a 4800-byte fill as one contiguous byte span (600 rows of
+// width 8) published in two chunks. ADR 0099 addresses values by row slot, so that shape no longer
+// describes the plane: the fill is one step, the bucket's value prefix is not 600 contiguous slots, and
+// the measured closure's second step traps with `InlinePropertyMaterializationConsumed`. Rebuilding the
+// measurement means targetting the slot-addressed geometry, which is a bench-design task rather than a
+// repair - recorded in `GAP-LARA-BENCH-VERIFIERS-PRE-0099`.
