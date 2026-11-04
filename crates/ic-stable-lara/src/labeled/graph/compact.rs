@@ -6623,10 +6623,7 @@ where
         let prefix = bucket_content_slots(bucket);
         if keep.is_empty() {
             // Nothing live: drop the run entirely and let the descriptor say so.
-            self.publish_bucket_descriptor(
-                bucket_slot,
-                bucket.with_edge_spill_run(crate::traits::NO_SPILL_RUN),
-            )?;
+            self.publish_bucket_descriptor(bucket_slot, bucket.without_edge_spill_run())?;
             self.edges
                 .spill_release(run)
                 .map_err(LabeledOperationError::from)?;
@@ -6651,10 +6648,13 @@ where
         };
         let published = match &fresh_values {
             Some((_, new_values)) => bucket
-                .with_edge_spill_run(fresh.get())
-                .try_with_values_spill_run(new_values.get())
+                .with_edge_run(Some(fresh))
+                .map_err(LabeledOperationError::from)?
+                .with_values_run(Some(*new_values))
                 .map_err(LabeledOperationError::from)?,
-            None => bucket.with_edge_spill_run(fresh.get()),
+            None => bucket
+                .with_edge_run(Some(fresh))
+                .map_err(LabeledOperationError::from)?,
         };
         self.publish_bucket_descriptor(bucket_slot, published)?;
         self.edges
