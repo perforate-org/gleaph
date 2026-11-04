@@ -2,7 +2,7 @@
 
 Date: 2026-11-03
 Status: Accepted (2026-11-03) - enforced at the two growth sites
-Last revised: 2026-11-03
+Last revised: 2026-11-04
 Anchor timestamp: 2026-11-03 00:10:16 UTC +0000
 
 Related: [ADR 0088](0088-tree-csr-mode-for-high-degree-label-buckets.md) defines the leaf-layout
@@ -248,3 +248,34 @@ arena's layout contract) and the original fixture.
   together.
 - `design/implementation-gaps.md`: close `GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS` once the reproduction
   is green, and keep the failed clamp experiment as the reason a bound-only change is not sufficient.
+
+## Amendment 2026-11-04: a slice is an owned extent, not a derived gap
+
+**Status: decided, not implemented.** The free-span handling lands with the implementation.
+
+E4 says the slice is the vertex's exclusive space. It is not: `LeafArena::slices` derives each slice as
+`[the vertex's first bucket base, the next vertex's first base)` (the last vertex running to the leaf
+extent end), so a slice is the **gap between neighbours**. `LeafSlice::place` and `grow_region` carve
+allocations out of that gap without calling the free-span store, so space that is still on the free list
+is handed out once to this bucket and again to whoever takes that free span.
+
+Measured: promotion of a **valueless** bucket at ~2 049 rows panics in
+`promote_bucket_to_tree_mode` because releasing the old prefix's tail is refused with
+
+```
+OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
+                  inserted: FreeSpan { start_slot: 4104, len: 1018 } }
+```
+
+- **Decision:** a slice becomes an **owned extent** allocated from the free-span store when the vertex is
+  placed. `place` and `grow_region` then carve inside space the vertex already owns, and a released tail
+  can no longer overlap a free span the store still holds.
+- **Why owned rather than "take on demand":** `place` is a pure, infallible function today (it answers
+  "does it fit" from resident spans). Making it consume the free store would make every placement
+  fallible and would still leave two questions to answer at each call site - what happens when the take
+  fails, and who releases on rollback. An owned extent answers both once, when the vertex is placed.
+- **Free-span view, in the same unit:** every take and release goes through one owner (`LeafArena`, which
+  ADR 0088 already designates as the only caller of the store) rather than through `EdgeStore` helpers that
+  each decide their own policy. The current failures come from a rule being restated at three layers.
+- **Acceptance:** value-less parallel edges promote past 2 048 rows; the 10 000-row
+  `expand_skewed_noise_10k_a_500b` fixture builds; `canbench --persist` completes.
