@@ -88,3 +88,27 @@ Every defect in the table was found by a test, and every one recurred in a sibli
 not cover. Tests find instances; a single path removes the family. The session's own record is the argument:
 the areas with a view stopped producing defects, and the areas with call-site dispatch kept producing them
 even after each individual site was fixed.
+
+## Progress (2026-11-04)
+
+The first three cuts landed, each as a move with every test unchanged:
+
+| Cut | What moved | Evidence |
+| --- | --- | --- |
+| `d30946552` | row insert (400 lines, 21 storage-class dispatch sites) into `BucketRowPlane::insert_row` | 705 / 1110 / 642, tests untouched |
+| `c19184d8b` | row remove (the tiny / tree / slab dispatch) into `BucketRowPlane::remove_row` | same |
+| `23a1a65a3` | row read (`read_row_state`, `read_row`) into `BucketRowPlane` | same |
+
+`BucketRowPlane` now owns the whole row lifecycle, so the three operations that decide what a row is
+cannot grow separate ideas of it. The graph's entry points delegate.
+
+The value-read slice is also in: `read_value_row` / `read_value_row_with_chains` / `read_value_range`
+resolve the storage class once (tree property root, slab prefix, spill run) and state the zero-width rule in
+one place, replacing the sixteen callers of `read_bucket_inline_property_bytes_for_slot`
+(`babf32061`, `179ad1d46`). The dense slab read keeps its place as **the** batch fast path with a stated
+precondition - an optimisation inside the plane, not an entry point a caller picks. Both the fold benches
+and the expand benches report no significant change.
+
+**Still open:** retiring the graph-side helpers the views subsume (step 3 of the migration order). Until that
+happens the old entry points still exist as delegations, which is deliberate - the delegation keeps each cut
+reviewable as a move.
