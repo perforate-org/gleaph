@@ -1,8 +1,8 @@
 # 0099. Inline property values are addressed by row slot
 
 Date: 2026-11-03
-Status: Proposed
-Last revised: 2026-11-03
+Status: Accepted
+Last revised: 2026-11-04
 Anchor timestamp: 2026-11-03 05:42:20 UTC +0000
 
 Related: [ADR 0052](0052-per-label-adjacency-order-and-tombstone-reuse.md) owns the swap-compaction
@@ -701,3 +701,35 @@ compaction publishes `stored_slots = degree` - the finalize that trims trailing 
 moving the values. That transition is the next thing to find; it is not in the fold, the rebuild or
 the delete, which is why all three fixes left the count unchanged at 53.
 
+## Outcome
+
+Implemented and merged. `ic-stable-lara` 705 tests and `gleaph-graph` 1107 tests pass, clippy is clean
+including the `canbench` feature, and formatting is clean.
+
+**Measured against the rank plane** (`spill-swap` before this change, same benches, same machine, focused
+`canbench` runs - not persisted, so these are comparison numbers rather than a baseline update):
+
+| bench | rank plane | slot plane | change |
+| --- | --- | --- | --- |
+| `bench_delete_w0_k128` | 9.81 M | 9.82 M | +0.1 % (a value-free bucket does no value work either way) |
+| `bench_delete_w8_k8` | 925.72 K | 419.07 K | **-54.7 %** |
+| `bench_delete_w8_k32` | 5.66 M | 4.07 M | **-28.1 %** |
+| `bench_delete_w8_k128` | 42.14 M | 42.84 M | +1.7 % (dominated by building the bucket, not the delete) |
+| `bench_graph_undirected_inline_update_fit_w2` | 340.93 K | 190.92 K | **-44.0 %** |
+| `bench_graph_undirected_inline_update_no_fit_w2` | 230.12 K | 101.13 K | **-56.0 %** |
+
+The update comparison is not apples-to-apples: its fixture now measures a run-resident update rather
+than a span-reaching one (see the progress notes), so part of that gain is the smaller operation.
+
+The superlinear delete cost this ADR was opened for is gone in the range it mattered: deleting from a
+bucket with `w = 8` costs half as much at eight live rows and a quarter less at thirty-two, and the
+largest case is unchanged.
+
+**Known follow-ups, none blocking:**
+
+- `crates/graph/canbench_results.yml` does not yet contain the benches added while this work was
+  measured (`bench_delete_w8_*`, `bench_graph_undirected_inline_update_*`). Refreshing it needs an
+  unfiltered `canbench --persist` per crate, which was not run.
+- The three `value_span_relocation_*` fixtures were deleted with the values-only fold they exercised.
+  Their span-accounting coverage (retired span reclaimed, free-byte arithmetic, source preserved on a
+  failed relocation) should be rebuilt on `ensure_bucket_inline_property_bytes_span`'s relocation path.
