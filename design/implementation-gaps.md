@@ -62,6 +62,14 @@ defect from being rediscovered without its prior reasoning.
   to grow a span for ~10 000 rows), or is there a real fail-closed path that should relocate instead of
   returning `CollectAllocationOverflow`? Build the same shape in a unit test and read which allocation
   refuses.
+- **Narrowed by reading the limits:** the tree is not the ceiling. `tree_csr` allows
+  `R_MAX * B^MAX_DEPTH = 1024 * 1024^3` rows per bucket and `derive_depth(10_000)` is depth 1, so a
+  promoted bucket can hold the fixture. What cannot is the **vertex's edge span**: 10 000 rows live on one
+  vertex (all noise edges share one source, and the hub's reverse bucket takes them all), and the vertex
+  slice's growth bound is what fails. Per ADR 0098 that bound belongs to the vertex slice, so the
+  question is whether `GraphStore::new()`'s default segment size is meant to hold a 10 000-row vertex -
+  if not, the fixture is over budget and the bench needs a shape that spreads the noise, which is a bench
+  correction rather than a code fix.
 - **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
