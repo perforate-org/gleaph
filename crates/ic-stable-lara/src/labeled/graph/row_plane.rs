@@ -25,7 +25,7 @@ use super::insert::{
     EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage, ScalarLocationCapture,
     log_collect_overflow,
 };
-use super::{BucketMode, BucketSearch, LabeledLaraGraph};
+use super::{BucketMode, BucketSearch, EdgeRemoval, LabeledLaraGraph, T_DEMOTE};
 
 /// The row plane of one bucket.
 pub(crate) struct BucketRowPlane<'a, E, M>
@@ -473,6 +473,82 @@ where
                 // last attempt's outcome is reported: the spill still needs promotion.
                 Err(LaraOperationError::SpillNeedsPromotion.into())
             }
+        }
+    }
+    /// Removes one row, reporting the bounded survivor slots that moved.
+    ///
+    /// ADR 0100: the storage-class dispatch is inside the operation, so callers cannot inherit a path
+    /// by accident. Moved unchanged from the graph's `remove_edge_at_slot_with_move`.
+    pub(super) fn remove_row(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.graph.ensure_vertex(src)?;
+        let vertex = self.graph.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return self
+                .graph
+                .remove_default_bypass_edge_at_slot(src, label_id, vertex, slot_index);
+        }
+        let BucketSearch::Found { slot, bucket } =
+            self.graph.find_bucket(src, &vertex, label_id)?
+        else {
+            return Ok(None);
+        };
+        // ADR 0096 §7: match-first dispatch — mode decides before any
+        // storage-class read, so a future mode cannot silently inherit a path.
+        match BucketMode::from_bucket(&bucket) {
+            // ADR 0096 §5: tiny buckets graduate to slab before deleting
+            // (promote-then-tombstone): deletes never move survivors inline in
+            // any mode or policy — positional stability across deletes is
+            // load-bearing (slot-keyed counterpart occurrences; moves-dropping
+            // remove APIs). Tiny has no tombstone representation, so the
+            // bucket takes the normal slab tombstone path. Moves are always
+            // empty (nothing moved), matching slab-delete reporting.
+            BucketMode::Tiny => self
+                .graph
+                .remove_tiny_edge_at_slot(src, slot, &bucket, slot_index),
+            // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
+            // take the tombstone-rewrite path; slab buckets keep the
+            // existing path. No other module under `graph/` branches on
+            // `bucket.is_tree_mode()`.
+            BucketMode::Tree => {
+                let removed = super::tree_write::tree_mode_remove_edge_at_slot(
+                    self.graph, slot, &bucket, slot_index,
+                )?;
+                // Plan 0319 §Step 2: after a successful tree-mode removal,
+                // check the degree-hysteresis trigger. If the updated
+                // `degree <= T_DEMOTE`, rebuild the bucket as a fresh
+                // slab. The trigger is best-effort: a successful removal
+                // must not be turned into an error, so a mid-demote
+                // failure is contained (`let _ =`). The next removal
+                // retries the trigger; until then the bucket stays in
+                // tree mode with the same `degree`.
+                if let Some(ref _removed_edge) = removed {
+                    let updated = self
+                        .graph
+                        .buckets()
+                        .read_label_bucket_slot(slot)
+                        .ok_or(LaraOperationError::overflow())?;
+                    if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
+                        let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
+                            self.graph, src, slot, label_id, &updated,
+                        );
+                    }
+                }
+                Ok(removed.map(|removed| EdgeRemoval {
+                    removed: removed.with_slot_index(slot_index),
+                    moves: Vec::new(),
+                }))
+            }
+            BucketMode::Slab => self
+                .graph
+                .remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index),
         }
     }
 }
