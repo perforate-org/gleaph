@@ -259,10 +259,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        Ok(match self.read_edge_state(owner, label, slot)? {
-            EdgeSlotState::Live(edge) => Some(edge),
-            EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
-        })
+        super::row_plane::BucketRowPlane::new(self).read_row(owner, label, slot)
     }
 
     /// Canonical topology point read: distinguishes missing, tombstoned and live
@@ -3064,27 +3061,13 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(owner)?;
-        let vertex = self.vertices.get(owner);
-        let bucket = if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(&vertex) {
-                return Ok(EdgeSlotState::Missing);
-            }
-            self.bypass_bucket_view(&vertex)?
-        } else {
-            let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)?
-            else {
-                return Ok(EdgeSlotState::Missing);
-            };
-            bucket
-        };
-        self.read_edge_state_at_slot(&bucket, slot.raw())
+        super::row_plane::BucketRowPlane::new(self).read_row_state(owner, label, slot)
     }
 
     /// Shared point-state owner for a resolved descriptor (including a read-only
     /// bypass projection). Mode selects addressing before interpreting any row.
     #[inline]
-    fn read_edge_state_at_slot(
+    pub(super) fn read_edge_state_at_slot(
         &self,
         bucket: &LabelBucket,
         slot_index: u32,

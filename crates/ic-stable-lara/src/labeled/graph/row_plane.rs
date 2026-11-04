@@ -26,6 +26,7 @@ use super::insert::{
     log_collect_overflow,
 };
 use super::{BucketMode, BucketSearch, EdgeRemoval, LabeledLaraGraph, T_DEMOTE};
+use crate::traverse::{BucketEntryPosition, EdgeSlotState};
 
 /// The row plane of one bucket.
 pub(crate) struct BucketRowPlane<'a, E, M>
@@ -550,5 +551,49 @@ where
                 .graph
                 .remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index),
         }
+    }
+    pub(super) fn read_row_state(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        slot: BucketEntryPosition,
+    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.graph.ensure_vertex(owner)?;
+        let vertex = self.graph.vertices.get(owner);
+        let bucket = if vertex.is_default_edge_labeled() {
+            if label != self.graph.bypass_storage_label_for(&vertex) {
+                return Ok(EdgeSlotState::Missing);
+            }
+            self.graph.bypass_bucket_view(&vertex)?
+        } else {
+            let BucketSearch::Found { bucket, .. } =
+                self.graph.find_bucket(owner, &vertex, label)?
+            else {
+                return Ok(EdgeSlotState::Missing);
+            };
+            bucket
+        };
+        self.graph.read_edge_state_at_slot(&bucket, slot.raw())
+    }
+
+    /// The live row at `slot`, or `None` for a tombstone or a missing position.
+    ///
+    /// The state form above is the contract; this is the shape most callers want.
+    pub(super) fn read_row(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        slot: BucketEntryPosition,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        Ok(match self.read_row_state(owner, label, slot)? {
+            EdgeSlotState::Live(edge) => Some(edge),
+            EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
+        })
     }
 }
