@@ -83,6 +83,12 @@ defect from being rediscovered without its prior reasoning.
   descriptor that names a values run whose `asc_indices` is empty, which points at a release that left
   the descriptor naming the run (an emptied bucket keeps both runs by design, and a promotion or a fold
   is what releases them).
+- **Already eliminated while narrowing it:** the emptied-bucket path released the same run twice (fixed)
+  and releasing a run without clearing the descriptor is now impossible through
+  `BucketValuePlane`, the borrowing view that owns the pair. Promotion and tiny-promotion were checked:
+  both publish a descriptor whose runs default to `NO_SPILL_RUN`, so they are not the source. That leaves
+  the materialisation fill (`fill_value_run_for_edge_spill`) and the bypass promotion as the untested
+  candidates.
 - **Status:** Open.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
