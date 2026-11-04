@@ -65,8 +65,7 @@ mod physical_layout_tests {
                 (68, 2, 3, vec![11u32, u32::MAX, 11])
             };
             graph
-                .buckets
-                .write_label_bucket_slot(
+                .publish_bucket_descriptor(
                     ordinal as u64,
                     LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, degree, width),
                 )
@@ -171,7 +170,7 @@ mod physical_layout_tests {
             .spill_write_row(run, 2, &u32::MAX.to_le_bytes())
             .unwrap();
         let source = populated.with_degree_field(bucket.degree() + 3);
-        graph.buckets.write_label_bucket_slot(0, source).unwrap();
+        graph.publish_bucket_descriptor(0, source).unwrap();
         graph.edges.bump_vertex_segment_counts(src, -1, 0).unwrap();
         graph
             .edges
@@ -242,7 +241,7 @@ mod physical_layout_tests {
             .vertices
             .set(VertexId::from(0), &LabeledVertex::from_parts(0, 3, 16, 0));
         let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 68, 2, 3);
-        graph.buckets.write_label_bucket_slot(3, peer).unwrap();
+        graph.publish_bucket_descriptor(3, peer).unwrap();
         graph
             .vertices
             .set(VertexId::from(1), &LabeledVertex::from_parts(3, 1, 8, 0));
@@ -338,8 +337,7 @@ mod physical_layout_tests {
             .set(peer, &LabeledVertex::from_parts(2, 1, 8, 0));
         let label = BucketLabelKey::from_raw(2);
         graph
-            .buckets
-            .write_label_bucket_slot(2, LabelBucket::from_parts(label, 124, 1, 1))
+            .publish_bucket_descriptor(2, LabelBucket::from_parts(label, 124, 1, 1))
             .unwrap();
         graph
             .edges
@@ -479,7 +477,7 @@ mod physical_layout_tests {
                 } else {
                     bucket.with_edge_spill_run(run)
                 };
-                graph.buckets.write_label_bucket_slot(0, bucket).unwrap();
+                graph.publish_bucket_descriptor(0, bucket).unwrap();
                 if assigned {
                     graph
                         .edges
@@ -700,7 +698,7 @@ mod physical_layout_tests {
             0,
         );
         for bucket in [tiny, tree, property] {
-            graph.buckets.write_label_bucket_slot(0, bucket).unwrap();
+            graph.publish_bucket_descriptor(0, bucket).unwrap();
             warm_physical_caches(&graph);
             let before = canonical_bytes(&m);
             let cache = cache_snapshot(&graph);
@@ -711,7 +709,7 @@ mod physical_layout_tests {
             assert_canonical_bytes(&m, &before);
             assert_eq!(cache_snapshot(&graph), cache);
         }
-        graph.buckets.write_label_bucket_slot(0, slab).unwrap();
+        graph.publish_bucket_descriptor(0, slab).unwrap();
         graph.enable_default_edge_bypass(owner).unwrap();
         let before = canonical_bytes(&m);
         graph.enable_default_edge_bypass(owner).unwrap();
@@ -867,8 +865,7 @@ mod physical_layout_tests {
                 .write_payload_partial(source_id, 0, &source_payload)
                 .unwrap();
             graph
-                .buckets
-                .write_label_bucket_slot(
+                .publish_bucket_descriptor(
                     0,
                     LabelBucket::from_parts(peer_label, 75, 1, 1).with_tree_mode(true),
                 )
@@ -1373,8 +1370,7 @@ mod physical_layout_tests {
         // what bounds the fold.
         let content_end = source.edge_start() + u64::from(source.stored_slots());
         graph
-            .buckets
-            .write_label_bucket_slot(
+            .publish_bucket_descriptor(
                 1,
                 LabelBucket::from_parts(
                     source.bucket_label_key(),
@@ -1813,8 +1809,7 @@ mod physical_layout_tests {
                     .vertices
                     .set(VertexId::from(0), &LabeledVertex::from_parts(0, 1, 9, 0)),
                 1 => graph
-                    .buckets
-                    .write_label_bucket_slot(
+                    .publish_bucket_descriptor(
                         0,
                         LabelBucket::from_parts(BucketLabelKey::from_raw(2), 100, 2, 4),
                     )
@@ -2017,8 +2012,7 @@ mod physical_layout_tests {
                     .write_slots_contiguous_bytes(origin, &raw)
                     .unwrap();
                 graph
-                    .buckets
-                    .write_label_bucket_slot(u64::from(ordinal), bucket)
+                    .publish_bucket_descriptor(u64::from(ordinal), bucket)
                     .unwrap();
                 graph.vertices.set(
                     vid,
@@ -2129,7 +2123,7 @@ mod physical_layout_tests {
             let src = VertexId::from(0);
             let original = graph.vertices.get(src);
             let bucket = graph.buckets.read_label_bucket_slot(0).unwrap();
-            graph.buckets.write_label_bucket_slot(255, bucket).unwrap();
+            graph.publish_bucket_descriptor(255, bucket).unwrap();
             graph.vertices.set(
                 src,
                 &original.try_with_bucket_row_and_slack(255, 1, 1).unwrap(),
@@ -2653,7 +2647,7 @@ mod physical_layout_tests {
                 .vertices
                 .set(src, &LabeledVertex::from_parts(0, 4, 32, 0));
             let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 192, 1, 2);
-            graph.buckets.write_label_bucket_slot(4, peer).unwrap();
+            graph.publish_bucket_descriptor(4, peer).unwrap();
             graph
                 .vertices
                 .set(VertexId::from(1), &LabeledVertex::from_parts(4, 1, 16, 0));
@@ -5837,8 +5831,7 @@ where
                 .with_stored_slots(new_stored_slots)
                 .without_edge_spill_run()
         };
-        self.buckets
-            .write_label_bucket_slot(bucket_slot, compacted)?;
+        self.publish_bucket_descriptor(bucket_slot, compacted)?;
         // The run's live rows now live in the prefix: release it (best-effort, like every other
         // span release on this path - a failed release leaks a class, never loses a row).
         let _ = self.edges.spill_release(run);
@@ -6675,8 +6668,7 @@ where
                 .map_err(LabeledOperationError::from)?,
             None => bucket.with_edge_spill_run(fresh.get()),
         };
-        self.buckets
-            .write_label_bucket_slot(bucket_slot, published)?;
+        self.publish_bucket_descriptor(bucket_slot, published)?;
         self.edges
             .spill_release(run)
             .map_err(LabeledOperationError::from)?;
@@ -6805,12 +6797,10 @@ where
                 .value_plane(bucket_slot, *bucket)
                 .fold_head_into_span(src, len, fold)?
                 .bucket();
-            self.buckets
-                .write_label_bucket_slot(bucket_slot, published)?;
+            self.publish_bucket_descriptor(bucket_slot, published)?;
             return Ok(fold);
         }
-        self.buckets
-            .write_label_bucket_slot(bucket_slot, grown_bucket)?;
+        self.publish_bucket_descriptor(bucket_slot, grown_bucket)?;
         Ok(fold)
     }
 

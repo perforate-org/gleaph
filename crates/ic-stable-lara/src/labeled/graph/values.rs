@@ -1432,7 +1432,7 @@ where
             bucket,
             inline_property_byte_width,
         )?;
-        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+        self.publish_bucket_descriptor(bucket_slot, bucket)?;
         Ok(())
     }
 
@@ -1446,8 +1446,7 @@ where
         bucket: LabelBucket,
     ) {
         let old_bytes = self.bucket_resident_inline_property_bytes(&previous);
-        self.buckets
-            .write_label_bucket_slot(bucket_slot, bucket)
+        self.publish_bucket_descriptor(bucket_slot, bucket)
             .expect("preflighted value-span descriptor publication failed");
         if old_bytes > 0
             && previous.inline_property_bytes_offset() != bucket.inline_property_bytes_offset()
@@ -1610,7 +1609,7 @@ where
                 .write_block_at(src, slot_index, &edge)?
                 .bucket();
         }
-        self.buckets.write_label_bucket_slot(slot, bucket)?;
+        self.publish_bucket_descriptor(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);
         Ok(true)
     }
@@ -4676,8 +4675,7 @@ mod tests {
             .with_inline_property_bytes_offset(reissued)
             .with_inline_property_bytes_slab_slots(5);
         graph
-            .buckets
-            .write_label_bucket_slot(peer_slot, peer_row)
+            .publish_bucket_descriptor(peer_slot, peer_row)
             .unwrap();
         let peer_vertex = graph
             .vertices()

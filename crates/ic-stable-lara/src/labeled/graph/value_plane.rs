@@ -12,7 +12,7 @@ use super::LabeledLaraGraph;
 use crate::VertexId;
 use crate::labeled::graph::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
-use crate::traits::{CsrEdge, CsrEdgeTombstone};
+use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
 use ic_stable_structures::Memory;
 
 /// See the module documentation.
@@ -253,14 +253,19 @@ where
         bucket_slot: u64,
         bucket: LabelBucket,
     ) -> Result<(), LabeledOperationError> {
+        // A run the bucket names must exist. An *owned but empty* run is legitimate (a freshly
+        // allocated class, or a bucket whose rows all sit in its prefix), so emptiness only breaks the
+        // descriptor when the bucket has rows the run is supposed to hold.
+        let rows_beyond_prefix = bucket.degree() > bucket.inline_property_bytes_slab_slots();
         if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
             let run = self
                 .values
                 .spill_mint(bucket.values_spill_run())
                 .map_err(LabeledOperationError::from)?;
             assert!(
-                self.values.spill_used_len(run) > 0,
-                "publishing label {:?} at slot {bucket_slot} naming values run {} with no rows",
+                !rows_beyond_prefix || self.values.spill_used_len(run) > 0,
+                "publishing label {:?} at slot {bucket_slot} with rows beyond its prefix but values run \
+                 {} has none",
                 bucket.bucket_label_key(),
                 bucket.values_spill_run()
             );
@@ -271,8 +276,9 @@ where
                 .spill_mint(bucket.edge_spill_run())
                 .map_err(LabeledOperationError::from)?;
             assert!(
-                self.edges.spill_used_len(run) > 0,
-                "publishing label {:?} at slot {bucket_slot} naming edge run {} with no rows",
+                bucket.degree() <= bucket.stored_slots() || self.edges.spill_used_len(run) > 0,
+                "publishing label {:?} at slot {bucket_slot} with rows beyond its prefix but edge run \
+                 {} has none",
                 bucket.bucket_label_key(),
                 bucket.edge_spill_run()
             );
