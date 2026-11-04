@@ -82,6 +82,17 @@ defect from being rediscovered without its prior reasoning.
   **stale verifiers for a removed design**, not a defect in the current one. Rewriting them to the
   slot-addressed geometry is its own unit of work: 14 tests across five bench families, each of which
   currently asserts an allocator that no longer holds the values.
+- **What rewriting them actually requires (learned by doing it, then reverting):**
+  1. `check_fold_economics`'s first block exercises the **values-only fold that ADR 0099 deleted** - a
+     bucket with edges in the span and values still in a run cannot exist now, so that block must go.
+  2. The assertion after `fold_edges()` encodes the pre-ADR contract "folding edges leaves the values plane
+     untouched"; post-ADR the values follow the rows, so it becomes `values_spill_run == NO_SPILL_RUN` and
+     `inline_property_bytes_slab_slots == degree`.
+  3. Every reuse probe must compare against the high-water mark captured **before** the freeing operation
+     (a release at the arena's tail shrinks `arena_rows`; measuring afterwards inverts the test).
+  Those three changes were made and the suite still failed on the same three families, so a fourth cause
+  remains: in `fold_economics::<8>(64)` the values run's class is **still not returned** even with the probe
+  measuring against the pre-free mark. That is what to chase next, with the three edits above as the base.
 - **The lara benchmark suite has 14 pre-existing verifier failures of its own:**
   `cargo test -p ic-stable-lara --lib --features canbench` gives **633 passed / 14 failed**, identically
   with and without the changes in this session (checked by stashing). The visible one is
