@@ -279,6 +279,13 @@ OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
   each decide their own policy. The current failures come from a rule being restated at three layers.
 - **Acceptance:** value-less parallel edges promote past 2 048 rows; the 10 000-row
   `expand_skewed_noise_10k_a_500b` fixture builds; `canbench --persist` completes.
+- **The promotion is the victim, not the culprit.** Reading the addresses back: the failing release is
+  `[4104, 5122)` and the free span it overlaps is `[4103, 5120)`, so the promoted bucket's prefix is
+  roughly `[3086, 5122)` - about 2 036 slots, i.e. the 2 048 rows - and the free span sits **inside** it.
+  The prefix therefore grew *over* a free span during the inserts (the growth path
+  `rebalance_vertex_edge_span` → `rewrite_vertex_edge_span` → `prepare_physical_layout`), long before the
+  promotion ran. Promotion only trips over it because it is the first caller that releases part of that
+  space. So the take belongs where the span is **rewritten/placed**, and the promotion needs no change.
 - **The naive swap was measured and does not work:** replacing the derived end with the vertex's tile
   cover in `LeafArena::slices` (`first_base + tile_width_with(first_base, 0)`, clamped to the extent)
   breaks **24 tests**. The reason is the direction of the dependency: today `place` may put a region
