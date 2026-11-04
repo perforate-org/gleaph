@@ -474,6 +474,13 @@ its edge row sat at the edge run's index 1 - every read or update at that slot w
 emptied bucket now gives up only its slab span, which is space rather than state. That took the graph
 failures 5 -> 2.
 
+**Measured why those two cannot simply be renumbered.** A fresh bucket in the test graphs never grows
+a prefix: inserting eight rows into a fresh bucket gives `stored_slots = 0` at capacity 256, 4096 and
+65536 alike, so every row spills and the slab stays empty. The `Measurement` fixture observes slab
+geometry (`slab_occupied_tail`, `inline_property_bytes_slab_slots`) that only exists once rows have been
+folded into the span, so re-expressing it means either folding the run in before the measured update, or
+measuring the run geometry instead - a redesign of the harness rather than an edit of its numbers.
+
 The last two are `updating_undirected_edge_inline_property_*`: they assert
 `slab_occupied_tail == canonical_prefix * 2` after inserting self-loop rows, which held when values were
 dense over live rows regardless of where those rows lived. Under the mirrored plane those rows spill, so
