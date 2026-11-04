@@ -83,6 +83,20 @@ defect from being rediscovered without its prior reasoning.
   `CollectAllocationOverflow`, which is the fail-closed answer when the backing memory cannot be grown.
   The next thing to check is therefore the canister's memory budget under `canbench` (and whether the
   bench allocates two full 10 500-row planes where one would do), not the promotion path.
+- **Correction, and the real defect:** the bench's edges are **valueless** (`insert_directed_edge_named`,
+  no inline bytes), and that is the shape that fails. A unit probe of 1 024 / 2 048 / 4 096 / 8 192 / 10 000
+  valueless parallel edges succeeds at 1 024 and 2 048 and then **panics in promotion** at
+  `promote.rs:638` (`source prefix tail retirement was reserved`). Surfacing the flattened error gives the
+  cause:
+  ```
+  OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
+                    inserted: FreeSpan { start_slot: 4104, len: 1018 } }
+  ```
+  The promotion releases the old prefix's tail as `[edge_start + combined_len, prefix)`, and that range
+  overlaps a free span left by an earlier promotion by exactly **one slot** - an off-by-one in
+  `combined_len` (the root length the promotion reserves) against what the previous promotion released.
+  So 10 000 rows *are* reachable; promotion of a valueless bucket breaks at ~2 049 rows because of this
+  slot arithmetic.
 - **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
