@@ -68,6 +68,12 @@ defect from being rediscovered without its prior reasoning.
   memory grow. So the real cause is a capacity **validation** rejection, hidden behind a grow-failure
   shape - the same anti-pattern as `release_span` before `1f716f06b`. Fixing that mapping is the cheapest
   way to see what the insert actually asked for.
+- **Where it can come from, by elimination:** every `validate_elem_capacity_grow_failed` call site is a
+  **creation** path (`lara/edge/init.rs`, `labeled/graph/init.rs`, `labeled/bucket_store.rs::new`), so a
+  per-insert failure means the insert is **creating** something - most plausibly a store/segment for the
+  new label's bucket (`ensure_labeled_leaf_block_pinned` / `create_extent`) - with an element capacity the
+  validator rejects. The next read is therefore the capacity the per-label creation path computes, not the
+  insert path.
 - **Impact:** the 10 000-row expand fixtures and therefore `canbench --persist` remain blocked.
 
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
