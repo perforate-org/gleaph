@@ -4650,10 +4650,9 @@ mod tests {
         ));
         assert!(cursor.is_consumed());
         for ordinal in (0..5).rev() {
-            let removed = graph
+            graph
                 .remove_edge_at_slot(src, BucketLabelKey::directed_from_index(2), ordinal)
                 .unwrap();
-            eprintln!("DEBUG5 removed ordinal {ordinal}: {:?}", removed.is_some());
         }
         assert_eq!(
             graph

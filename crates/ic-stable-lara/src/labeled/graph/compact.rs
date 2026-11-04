@@ -6738,10 +6738,7 @@ where
     {
         let run = match self.edges.spill_mint(bucket.edge_spill_run()) {
             Ok(run) => run,
-            Err(error) => {
-                eprintln!("FOLD-MINT slot={bucket_slot} => {error:?}");
-                return Ok(0);
-            }
+            Err(_) => return Ok(0),
         };
         let Some((start, len)) = bucket_content_region(bucket) else {
             return Ok(0);
@@ -6765,10 +6762,6 @@ where
             .write_slots_contiguous(start.saturating_add(u64::from(len)), &rows)
             .map_err(LabeledOperationError::from)?;
         if let Err(error) = self.edges.spill_drop_head(run, fold) {
-            eprintln!(
-                "FOLD-DROP slot={bucket_slot} fold={fold} used={} => {error:?}",
-                self.edges.spill_used_len(run)
-            );
             return Err(LabeledOperationError::from(error));
         }
         let grown = len

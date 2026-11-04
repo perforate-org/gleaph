@@ -637,7 +637,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                     )
                     .expect("source prefix tail retirement was reserved");
             }
-        } else {
+        } else if prefix > 0 {
+            // A bucket whose rows all spilled has no prefix to give back, and releasing a zero-length
+            // span is not a no-op the free-span store accepts (`GrowFailed { current_size: 0, delta: 0 }`)
+            // - which made promoting a fully spilled bucket panic right after it had moved its rows.
             graph
                 .edges()
                 .release_span(bucket.edge_start(), u64::from(prefix))
