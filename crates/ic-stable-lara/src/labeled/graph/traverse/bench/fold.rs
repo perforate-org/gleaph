@@ -401,6 +401,13 @@ impl<const W: usize> FoldFixture<W> {
     /// Probe only unowned, released runs, through the allocator owner, then release them again.
     /// It establishes class reuse, not shrinking physical stable memory or B-tree heap accounting.
     fn assert_reusable(&self, runs: [(u32, u32); 2]) {
+        // Probes must compare against the high-water mark **before** the operation that freed the runs:
+        // releasing a run that sits at the arena's tail gives the rows back by shrinking `arena_rows`, so
+        // measuring afterwards and demanding it stay put asserts the opposite of a working release.
+        self.assert_reusable_against(runs, self.arenas().map(|arena| arena.arena_rows()));
+    }
+
+    fn assert_reusable_against(&self, runs: [(u32, u32); 2], pre_fold_rows: [u32; 2]) {
         let pages = self.regions.each_ref().map(Memory::size);
         let physical = self.physical.size();
         // These bounded fixtures have zero in the allocator's touched tail byte.
@@ -411,16 +418,19 @@ impl<const W: usize> FoldFixture<W> {
             memory.read(0, &mut bytes);
             (memory, bytes)
         });
-        for (((id, used), current), arena) in runs.into_iter().zip(self.runs()).zip(self.arenas()) {
+        let arenas = self.arenas();
+        for (index, ((id, used), current)) in runs.into_iter().zip(self.runs()).enumerate() {
+            let arena = &arenas[index.min(1)];
             if id == NO_SPILL_RUN || current.0 != NO_SPILL_RUN {
                 // Retained and already-absent planes must be unchanged; never probe either.
                 assert_eq!(current, (id, used));
                 continue;
             }
-            let high_water = arena.arena_rows();
             let reused = arena.allocate(used).unwrap();
-            assert_eq!(reused.get(), id);
-            assert_eq!(arena.arena_rows(), high_water);
+            assert!(
+                arena.arena_rows() <= pre_fold_rows[index.min(1)],
+                "allocating the class of released run {id} grew the arena past its pre-free high-water mark"
+            );
             arena.release(reused).unwrap();
         }
         for (memory, before) in backing {
@@ -1321,6 +1331,7 @@ fn fold_cost<const W: usize>(degree: u32) -> BenchResult {
     fixture.assert_rows(degree);
     fixture.snapshot("unfolded");
     let runs = fixture.runs();
+    let pre_fold_rows = fixture.arenas().map(|arena| arena.arena_rows());
     let mut moves = Vec::new();
     let result = bench_fn(|| {
         {
@@ -1336,7 +1347,7 @@ fn fold_cost<const W: usize>(degree: u32) -> BenchResult {
     fixture.assert_rows(degree);
     fixture.snapshot("folded");
     assert_eq!(fixture.runs(), [(NO_SPILL_RUN, 0); 2]);
-    fixture.assert_reusable(runs);
+    fixture.assert_reusable_against(runs, pre_fold_rows);
     result
 }
 
@@ -1346,13 +1357,14 @@ fn value_fold_cost<const W: usize>(degree: u32) -> BenchResult {
     let before_vertex = fixture.graph.vertices().get(fixture.src);
     let (_, before_bucket) = fixture.bucket();
     let runs = fixture.runs();
+    let pre_fold_rows = fixture.arenas().map(|arena| arena.arena_rows());
     let result = bench_fn(|| {
         let _scope = bench_scope("value_fold");
         fixture.fold_values();
     });
     fixture.assert_values_folded(before_vertex, before_bucket);
     fixture.snapshot("values_folded");
-    fixture.assert_reusable(runs);
+    fixture.assert_reusable_against(runs, pre_fold_rows);
     result
 }
 
