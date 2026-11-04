@@ -47,6 +47,23 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
+
+- **Status:** Open. Found while verifying `GAP-GRAPH-EXPAND-10K-BENCH-TRAPS` after the placement-claim fix
+  (`09f5a14d9`) made the promotion survive 4 096 rows.
+- **Observed behavior:** 10 000 parallel edges on one label insert fine; the **fifth** edge of a *second*
+  label on the same vertex fails with `Graph(Forward(Store(CollectAllocationOverflow)))`. The bench's
+  fixture is exactly that shape (10 000 noise edges on one label, 500 match edges on another, both out of
+  the same hub), and it is why `canbench "expand_skewed_noise_10k_a_500b"` still traps.
+- **What that says:** the first bucket grows to ~10 000 slots and the vertex then cannot place a second
+  region - so the vertex slice's growth bound, not the bucket's, is the limit. `DEFAULT_SEGMENT_SIZE` is
+  **16**, i.e. sixteen vertices share a leaf, so the vertex has to grow across the leaf's extent (or
+  relocate it) for a second region to fit beside the first.
+- **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
+  holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
+  relocated or is the bound ADR 0098 declares being enforced too early?
+- **Impact:** the 10 000-row expand fixtures and therefore `canbench --persist` remain blocked.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
