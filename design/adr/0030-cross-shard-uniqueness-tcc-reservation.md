@@ -891,7 +891,7 @@ confirmed insert is unchanged from ADR 0029 §5.
 
 A bare timer is **not** sufficient evidence to reclaim, because a canonical write can have committed
 on a shard while its reply never reached the Router (the lost-reply case the current code already
-handles by consulting the graph shard, `gql.rs` `recover_mutation_outcome`). Elapsed time alone
+handles by consulting the graph shard, `gql.rs` `capture_scalar_mutation_outcome`). Elapsed time alone
 cannot distinguish "never committed" from "committed but reply lost"; force-expiring the latter would
 let a second element with the same value commit. Crucially, the proof must read the **pinned
 unique-effect outbox** (not the 9-day-evicting journal), so receipt *absence* genuinely means

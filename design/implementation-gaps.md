@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-11-02
-Anchor timestamp: 2026-11-02 15:24:46 UTC +0000
+Last updated: 2026-11-04
+Anchor timestamp: 2026-11-04 18:02:17 UTC +0000
 
 ## Status
 
@@ -2362,6 +2362,37 @@ acceptance remain separate. See the movement-publication correction above.
   one. Which of the two the compaction should carry - a bounded growth that reports
   "cannot compact yet" without mutating, or a required rewrite made atomic - is a policy
   call this slice should not make on its own.
+
+### GAP-2026-09-22-001 — Recoverable plan execution can outlive Graph journal retention
+
+- **Status:** Open. Router count capture and actual-send checks are implemented prerequisites,
+  not complete scalar-result lifetime repair.
+- **Owner:** Graph's mutation-journal retention predicate in
+  `facade/stable/label_stats_delta.rs` and `facade/store/label_stats_delta.rs`; Router's
+  retained replay permission in `facade/store/idempotency.rs`.
+- **Observed behavior:** unfinished Router records have no age expiry, and pending bulk children
+  pin scalar row records. Graph PlanExecution evidence still uses `NotApplicable` retirement and
+  nine-day age GC. A Graph result lost before durable Router capture can therefore disappear while
+  the original mutation ID remains retryable; a fresh request can re-execute instead of replaying
+  the original positive or zero result.
+- **Expected behavior / impact:** the first durable canonical outcome must replay without
+  reselection. Router's terminal TTL, a timeout or a projection watermark cannot prove that an
+  unfinished identity is safe to forget.
+- **Evidence / contract:** [ADR 0027](adr/0027-graph-mutation-journal-retention.md) owns the retention
+  limitation; [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-count-capture-and-actual-sends)
+  specifies the implemented monotonic count capture and fresh individual/chunk send checks.
+- **Preparation prerequisite:** envelope publication, no-shard completion and routing release
+  now require the original reserved ID. Native tests pause actual index resolution, expire the
+  old terminal record through Router GC, reuse the same key/fingerprint and resume positive,
+  empty and error callbacks; all preserve the newer record. Matching-ID controls still progress.
+  [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity)
+  owns this rule. Key-only completed-count/phase response reads and same-ID lease reclaim remain
+  separate audit obligations; no wrong-response runtime reproduction is claimed.
+- **Next decision:** retain exact receipts, close canonical sends permanently, complete required
+  projections, and acknowledge scalar retirement before compaction/retirement-age GC. Delayed
+  work, Abort, lost acknowledgement, upgrade and active-evidence admission remain validation
+  obligations. The measured full-record read cost in ADR 0029 also requires a separate
+  existing-owner data-placement/decoding investigation; no production cap is approved.
 
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
