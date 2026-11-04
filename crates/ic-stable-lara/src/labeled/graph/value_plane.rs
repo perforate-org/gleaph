@@ -92,6 +92,54 @@ where
         Ok(self)
     }
 
+    /// Moves the run's first `fold` blocks into the span at `[first_slot, first_slot + fold)` and
+    /// drops them from the run.
+    ///
+    /// This is the mirror in the other direction: rows that leave the edge run for the prefix take
+    /// their blocks with them. The prefix grows by `fold` here because that growth *is* the operation -
+    /// a caller that grew it separately could publish a prefix whose blocks were never written.
+    pub(crate) fn fold_head_into_span(
+        mut self,
+        src: VertexId,
+        first_slot: u32,
+        fold: u32,
+    ) -> Result<Self, LabeledOperationError> {
+        let width = self.bucket.inline_property_byte_width();
+        let grown = self
+            .bucket
+            .with_stored_slots(self.bucket.stored_slots().saturating_add(fold));
+        let sized =
+            self.graph
+                .ensure_bucket_inline_property_bytes_span(src, self.bucket_slot, grown)?;
+        let run = self
+            .graph
+            .values
+            .spill_mint(self.bucket.values_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        let mut values = vec![0u8; fold as usize * usize::from(width)];
+        self.graph
+            .values
+            .spill_read_range(run, 0..fold, width, &mut values)
+            .map_err(LabeledOperationError::from)?;
+        let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
+            &sized, first_slot,
+        )?;
+        self.graph
+            .values
+            .write_bytes(offset, &values)
+            .map_err(LabeledOperationError::from)?;
+        self.graph
+            .values
+            .spill_drop_head(run, fold)
+            .map_err(LabeledOperationError::from)?;
+        self.bucket = if self.graph.values.spill_used_len(run) == 0 {
+            sized.without_values_spill_run()
+        } else {
+            sized
+        };
+        Ok(self)
+    }
+
     /// Releases the values run and clears the field that names it.
     ///
     /// Best-effort like every other release on the delete path: a release that fails leaks a class
