@@ -97,6 +97,15 @@ defect from being rediscovered without its prior reasoning.
   `used_len` is 0. That narrows the defect to a path that empties a values run without clearing the
   descriptor - `spill_drop_head(run, used)` reaching zero, or a run released and re-minted empty - and it
   is a *state* bug, not a reader bug.
+- **Mechanisms eliminated by reading them:**
+  - `SpillRunStore::drop_head` cannot empty a run: it refuses (`HeadDropWouldReclass`) whenever the new
+    length would move the class, and `0` always does.
+  - `SpillRunStore::repack` asserts `!keep.is_empty()` ("an empty run is released, not repacked"), so it
+    cannot mint an empty run either.
+  - releasing a run without clearing the descriptor is now impossible through `BucketValuePlane`.
+  What is left is a run **allocated but never appended to** while its id is published. Every minting site
+  appends before publishing except the materialisation fill's loop
+  (`fill_value_run_for_edge_spill`), which is the next thing to check against an early `break`.
 - **Status:** Open.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
