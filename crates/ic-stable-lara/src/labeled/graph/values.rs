@@ -744,6 +744,8 @@ where
     ///
     /// Takes the bytes rather than an edge because the mirror gives every run row a block: a row
     /// inserted without inline bytes still owns one, so the caller may pass zeros.
+    /// Appends one block. Call it through [`BucketValuePlane::append_block`] (or the view's
+    /// `fill_to_edge_run_len`, which keeps the run in step with the edge run).
     pub(super) fn write_inline_property_bytes_to_log(
         &self,
         bucket: &LabelBucket,
@@ -774,6 +776,7 @@ where
     /// Unlike [`Self::write_edge_inline_property_after_insert`] this never appends: the row already
     /// owns a block, so a slot past the prefix is written at its own index in the values run. That
     /// distinction is the whole difference between inserting a row and updating one (ADR 0099).
+    /// The update side of the value plane. Call it through [`BucketValuePlane::write_block_at`].
     pub(super) fn write_edge_inline_property_at_existing_row(
         &self,
         src: VertexId,
@@ -808,6 +811,8 @@ where
         Ok(bucket)
     }
 
+    /// The insert side of the value plane. Call it through [`BucketValuePlane::write_after_insert`],
+    /// which owns the mirror's "a run row always gets a block" rule.
     pub(super) fn write_edge_inline_property_after_insert(
         &self,
         src: VertexId,
@@ -1179,6 +1184,8 @@ where
         super::value_plane::BucketValuePlane::new(self, bucket_slot, bucket)
     }
 
+    /// Releases the value span. Call it through [`BucketValuePlane::release_span`], which also
+    /// clears the descriptor fields that named it.
     pub(super) fn release_bucket_inline_property_bytes_span(
         &self,
         src: VertexId,
