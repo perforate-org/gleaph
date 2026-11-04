@@ -4,7 +4,7 @@ use crate::{GrowFailed, traits::CsrEdge};
 use ic_stable_structures::Memory;
 
 use super::EdgeStore;
-use super::free_span::{FreeSpan, FreeSpanPreparation, PhysicalSpanSelection};
+use super::free_span::{FreeSpan, FreeSpanError, FreeSpanPreparation, PhysicalSpanSelection};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn spans_overlap(a_start: u64, a_len: u64, b_start: u64, b_len: u64) -> bool {
@@ -96,14 +96,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         matches!(self.free_spans.take_prefix_at(base, extension), Ok(Some(_)))
     }
 
-    pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), GrowFailed> {
+    /// Gives `[start_slot, start_slot + len)` back to the free store.
+    ///
+    /// The allocator's refusal is returned as it is: it says *why* (an overlap with a neighbouring free
+    /// span, an ownership violation), and flattening it to a growth failure - which it is not - is what
+    /// made a promotion panic read as "the memory would not grow" instead of "these two spans overlap".
+    pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), FreeSpanError> {
         if len > 0 {
-            self.free_spans
-                .release(FreeSpan { start_slot, len })
-                .map_err(|_| GrowFailed {
-                    current_size: 0,
-                    delta: 0,
-                })?;
+            self.free_spans.release(FreeSpan { start_slot, len })?;
         }
         Ok(())
     }
