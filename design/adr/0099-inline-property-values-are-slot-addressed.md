@@ -725,6 +725,13 @@ The superlinear delete cost this ADR was opened for is gone in the range it matt
 bucket with `w = 8` costs half as much at eight live rows and a quarter less at thirty-two, and the
 largest case is unchanged.
 
+**One invariant moved into the type system.** A bucket's spill run was a `u32` whose `u32::MAX`
+sentinel meant "none" in 221 places, and a descriptor naming a run that had been released reads exactly
+like one naming a live run. `LabelBucket::values_run()` now returns `Option<SpillRunId>` (and
+`with_values_run` takes one), the value plane's view and its publish validation speak in that type, and
+the value-plane sentinel comparisons are gone. The edge plane still uses the raw field; the same shape
+applies there once it has a view of its own.
+
 **Known follow-ups, none blocking:**
 
 - `crates/graph/canbench_results.yml` does not yet contain the benches added while this work was
