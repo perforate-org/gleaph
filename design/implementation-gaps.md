@@ -97,6 +97,15 @@ defect from being rediscovered without its prior reasoning.
   `combined_len` (the root length the promotion reserves) against what the previous promotion released.
   So 10 000 rows *are* reachable; promotion of a valueless bucket breaks at ~2 049 rows because of this
   slot arithmetic.
+- **Read of the overlap:** the previous free span is `[4103, 5120)` (an earlier promotion's released
+  tail) and the span being released is `[4104, 5122)`. The second bucket's prefix therefore *extends two
+  slots past the first bucket's prefix end* while its tail still begins inside the first one's released
+  region - i.e. the promoted bucket grew into free space **without taking it off the free list**. That is
+  the defect: the in-place growth path has to consume the adjacent free span (or not release the tail it
+  has grown into), instead of assuming adjacency means ownership.
+- **Diagnosability shipped:** `EdgeStore::release_span` returns the allocator's `FreeSpanError` instead of
+  flattening it to `GrowFailed { 0, 0 }` (`1f716f06b`), so this reads as `OverlapPrevious` with both spans
+  rather than as a growth failure.
 - **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
