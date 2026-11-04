@@ -62,6 +62,13 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
   holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
   relocated or is the bound ADR 0098 declares being enforced too early?
+- **Two probes, two error shapes, both narrowed away:** with unnamed vertices the same shape reports
+  `ResizeFailed(GrowFailed { current_size: 5, delta: 0 })`; with named ones it reports a plain
+  `CollectAllocationOverflow`. Instrumenting `EdgeSlabStore::image_extent` (the one place that maps an
+  invalid header to `GrowFailed { current_size: memory.size(), delta: 0 }`) does **not** fire, so the
+  `ResizeFailed` shape is reached from a different `image_error()` site - a reservation failure, not a
+  header rejection. The remaining search is `CollectAllocationOverflow` inside the new-label bucket
+  creation path (bucket slot allocation, then leaf/segment placement).
 - **The error is flattened again:** the failure surfaces as
   `ResizeFailed(GrowFailed { current_size: 5, delta: 0 })`, and `delta: 0` is
   `validate_elem_capacity_grow_failed`'s marker for "the requested element capacity is invalid", not for a
