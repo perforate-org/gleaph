@@ -77,6 +77,12 @@ defect from being rediscovered without its prior reasoning.
   retirement the free-span store rejects (that rejection is flattened to `GrowFailed { current_size: 0,
   delta: 0 }` by `EdgeStore::release_span`, which is itself worth fixing: the real `FreeSpanError` is
   discarded). Reproduce with both buckets populated and read the underlying error.
+- **The shape itself does not fail.** A unit probe inserting 10 000 edges from one source and then 500 from
+  a second source into the same hub - the bench's exact shape - **succeeds** on `GraphStore::new()`. So the
+  bench's failure is **environmental**, not layout: inside the canister the same inserts hit
+  `CollectAllocationOverflow`, which is the fail-closed answer when the backing memory cannot be grown.
+  The next thing to check is therefore the canister's memory budget under `canbench` (and whether the
+  bench allocates two full 10 500-row planes where one would do), not the promotion path.
 - **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
