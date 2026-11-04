@@ -494,7 +494,17 @@ regardless of edge residency, and the mirror puts them in the run beside their r
 into the span does not help either (`fold_bucket_edge_spill_head_into_span` returns 0 here: there is no
 superior span room to grow into).
 
-So the last two fixtures measure a geometry this shape no longer has. Their redesign is to measure the
+**The first route was tried and closed.** Forcing the shape was measured too: after eight inserts,
+`rewrite_vertex_edge_span(v, None, 8, true, None)`, `rebalance_vertex_edge_span(v, None, 8, true)` and
+`rewrite_vertex_edge_span(v, None, 32, true, None)` all leave `stored_slots = 0` - the vertex's segment
+has no allocatable span in this leaf, so no test-graph shape produces a slab-resident bucket. The values
+stay correct through those calls, which is at least evidence that the rewrite paths no longer disturb the
+mirror.
+
+So the last two fixtures measure a geometry this shape no longer has. Their redesign is the remaining
+unit: re-express `check_undirected_inline_update_reuse` on the run plane (values-run growth across the
+update instead of `slab_occupied_tail` growth), which is about sixty lines of assertions in a fixture the
+bench `bench_graph_undirected_inline_update_*` measures. Their redesign is to measure the
 **run** (values-run growth across the update) or to build a shape whose bucket really owns span slots -
 not to move numbers.
 
