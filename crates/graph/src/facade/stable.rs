@@ -41,6 +41,10 @@ pub(crate) mod unique_effect_outbox;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
+// Isolated comparison uses the private storage codecs, without production dispatch or globals.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod property_store_probe;
+
 pub(crate) use memory::GRAPH_DEFAULT_EDGE_LABEL;
 
 thread_local! {
