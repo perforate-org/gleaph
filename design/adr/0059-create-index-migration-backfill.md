@@ -2,16 +2,17 @@
 
 Date: 2026-08-03
 Status: accepted
-Last revised: 2026-08-26
-Anchor timestamp: 2026-08-26 05:31:43 UTC +0000
+Last revised: 2026-09-18
+Anchor timestamp: 2026-09-18 02:03:28 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
 composition are implemented. Graph label gain/loss admission now uses the same exact
 label-scoped Building/Sealing fence as property DML, with six focused Graph regressions (including
-the public mutation-id-0 wrapper boundary). Focused
-PocketIC E2E and upgrade validation are not yet run and pre-release artifacts/ledgers are not yet
-regenerated. The Text build kind extension for `CREATE TEXT INDEX` backfill (§Text build kind,
+the public mutation-id-0 wrapper boundary). Scalar B-tree SET/REMOVE also retains storage-owned
+preparation across this fence; its [validation report](../investigations/2026-09-18-graph-scalar-property-preparation.md)
+records earlier native checks and the outstanding final validation gates. Upgrade validation and
+pre-release artifact/ledger regeneration are outside that preparation slice. The Text build kind extension for `CREATE TEXT INDEX` backfill (§Text build kind,
 2026-08-26) is **designed but not implemented**; its landing is tracked by plan 0297
 (`backfill-pull`) and the kernel target-variant slice.
 
@@ -165,6 +166,24 @@ The durable lifecycle is:
    re-driving the same exact seal envelope treats an already-`Active` scope under the same frozen
    identity and lifecycle epoch as an exact replay, so the drive converges without re-scanning and
    `Active` remains deliberately non-abortable and non-removable.
+
+### Graph scalar property admission
+
+For one vertex property or canonical edge sidecar SET/REMOVE, the property store issues an exclusive
+preparation bound to the exact key and immutable new Value. Pure storage-owned assignment validation
+runs before accessing a lazy property store, so invalid SET cannot initialize it. Preparation validates
+again at its own boundary and acquires the previous Value before Graph plans index transitions or
+resolves the build subject. Graph holds that
+preparation while reserving Building sequences and appending intent, then consumes its infallible
+commit. Active/TEXT dispatch uses the returned previous Value after releasing the property borrow.
+Preparation/cancellation on an initialized owner performs no writes; absent REMOVE performs no
+primary mutation or admission. Store initialization is separate from preparation.
+Unexpected post-fence failures trap rather than return a recoverable error; native panic is not rollback.
+
+This applies to the existing B-tree stores and does not change their codec, regions or memory policies.
+B-tree insert/remove still search and decode their returned old value internally. It is neither a
+bounded-body admission API nor extent activation, and it does not make independently prepared
+multi-property writes or slot moves composable.
 
 ### Graph label-transition admission
 
