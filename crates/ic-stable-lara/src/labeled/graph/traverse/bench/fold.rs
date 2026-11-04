@@ -1266,29 +1266,10 @@ fn check_update_reuse<const W: usize>() {
     }
 }
 
-macro_rules! update_reuse_case {
-    ($width:literal, $test:ident; $($name:ident => $period:ident),+ $(,)?) => {
-        $(
-            #[bench(raw)]
-            fn $name() -> BenchResult {
-                update_reuse_workload::<$width>(ValueFoldPeriod::$period)
-            }
-        )+
-        #[cfg(test)]
-        #[test]
-        fn $test() {
-            check_update_reuse::<$width>();
-        }
-    };
-}
-
-// Compact names leave the existing IC benchmark method-name budget intact.
-update_reuse_case!(8, update_reuse_8;
-    ur_0_8 => Never, ur_1_8 => Each, ur_4_8 => Four, ur_8_8 => Eight,
-);
-update_reuse_case!(33, update_reuse_33;
-    ur_0_33 => Never, ur_1_33 => Each, ur_4_33 => Four, ur_8_33 => Eight,
-);
+// `update_reuse_case!` measured how an updated bucket's value blocks reused the byte-span allocator
+// across `ValueFoldPeriod` variants. ADR 0099 addresses values by row slot, so those allocator statistics
+// (`slab_occupied_tail`, `free_bytes`) read zero and the fixtures' own assertions no longer describe the
+// plane - recorded in `GAP-LARA-BENCH-VERIFIERS-PRE-0099` with the rest of the pre-ADR verifiers.
 
 fn fold_cost<const W: usize>(degree: u32) -> BenchResult {
     let fixture = FoldFixture::<W>::new(degree);
