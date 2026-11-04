@@ -510,6 +510,33 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
     );
 }
 
+/// The boundary the promotion still handles: 2 048 valueless parallel edges on one bucket.
+///
+/// Companion to `valueless_parallel_edges_promote_past_two_thousand_rows`, which fails and is ignored.
+/// Together they pin the exact edge of the slice-ownership defect (ADR 0098, 2026-11-04 amendment):
+/// promotion works up to here and breaks on the next doubling, so a fix that moves the boundary instead
+/// of removing it is visible.
+#[test]
+fn valueless_parallel_edges_promote_at_two_thousand_rows() {
+    let store = GraphStore::new();
+    let hub = store
+        .insert_vertex_named(["PromoteAt2kHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let dst = store
+        .insert_vertex_named(["PromoteAt2kDst"], Vec::<(&str, Value)>::new())
+        .expect("dst");
+    for i in 0..2048u32 {
+        store
+            .insert_directed_edge_named(hub, dst, Some("PromoteAt2k"), Vec::<(&str, Value)>::new())
+            .unwrap_or_else(|error| panic!("insert {i} failed: {error:?}"));
+    }
+    assert_eq!(
+        store.directed_out_edges(hub).expect("out edges").len(),
+        2048
+    );
+    assert_eq!(store.directed_in_edges(dst).expect("in edges").len(), 2048);
+}
+
 /// A bucket with ~2 048 valueless parallel edges must survive promotion.
 ///
 /// This is the reproduction for the slice-ownership defect recorded in ADR 0098's 2026-11-04 amendment:
