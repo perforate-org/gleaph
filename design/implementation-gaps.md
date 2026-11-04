@@ -62,6 +62,19 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** read `LeafArena::ensure_room` and the growth ladder for the case "one bucket already
   holds ~10 000 slots and a second needs room": does the extent grow, and if it fails, is the leaf being
   relocated or is the bound ADR 0098 declares being enforced too early?
+- **Correction - the transcription is not it either:** instrumenting both transcription checks
+  (`live != bucket.degree`, the value-width mismatch) and every `return Err(...CollectAllocationOverflow
+  .into())` in `promote.rs` fires nothing either. So the variant is produced by a form not yet covered -
+  most likely the `ok_or(super::LaraOperationError::CollectAllocationOverflow)` / `.into()` shapes in
+  `compact.rs` / `deferred.rs`.
+- **The structural fix that ends this hunt:** give the variant a **constructor** -
+  `LaraOperationError::collect_overflow()` with `#[track_caller]` - and route every construction through
+  it, panicking with `Location::caller()` when it is built in debug. `CollectAllocationOverflow` is now
+  the one error in this subsystem that cannot be traced, because it is spelled out as a bare variant in
+  ~300 places and reused as a fail-closed placeholder where the real condition is something else. Every
+  other diagnosis in this session (the double release, the sentinel through the validating setter, the
+  flattened `release_span`, the flattened capacity check) came from making one error honest; this is that
+  step for the last one.
 - **Narrowed to the promotion's transcription, and by elimination not by guess:** every
   `ok_or(CollectAllocationOverflow)` in `labeled/` (**264 sites**) and in `lara/` (**36 sites**) was
   instrumented to panic, and every `.map_err(|_| CollectAllocationOverflow)` in `promote.rs` (4 sites) as
