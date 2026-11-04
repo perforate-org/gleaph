@@ -803,7 +803,27 @@ impl LabelBucket {
 
     /// Number of inline-property-bytes entries resident in the inline property bytes slab.
     #[inline]
+    /// Values are addressed by row slot (ADR 0099), so the value prefix width is the edge prefix
+    /// width - and zero when the bucket carries no values at all. The stored field is retained only
+    /// until the record layout drops it.
     pub fn inline_property_bytes_slab_slots(self) -> u32 {
+        if self.inline_property_byte_width() == 0 {
+            return 0;
+        }
+        // A tree bucket keeps its values in the property root inside the edge span, so it owns no
+        // value span at all; `stored_slots` there is the tree's logical extent, not a width.
+        if self.is_tree_mode() {
+            return 0;
+        }
+        self.stored_slots()
+    }
+
+    /// The value slots actually allocated in the value slab, as the descriptor records them.
+    ///
+    /// [`Self::inline_property_bytes_slab_slots`] answers "how many does this geometry need", which
+    /// after ADR 0099 is the edge prefix; this answers "how many are backed", which is what the
+    /// admission compares against and what the vertex is charged for.
+    pub fn inline_property_bytes_slab_slots_allocated(self) -> u32 {
         self.inline_property_bytes_slab_slots
     }
 
@@ -2343,7 +2363,11 @@ mod tests {
         assert_eq!(tree.degree, 7);
         assert_eq!(tree.stored_slots(), 11);
         assert_eq!(tree.inline_property_byte_width(), 32);
-        assert_eq!(tree.inline_property_bytes_slab_slots(), 9);
+        // ADR 0099: `inline_property_bytes_slab_slots` answers the geometry question, and a tree
+        // bucket owns no value span (its values sit in the property root inside the edge span), so
+        // the tree answer is 0 while the descriptor field - the allocated count - still round-trips.
+        assert_eq!(tree.inline_property_bytes_slab_slots(), 0);
+        assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 9);
         assert_eq!(tree.inline_property_bytes_log_len(), 4);
 
         let slab_again = tree.with_tree_mode(false);

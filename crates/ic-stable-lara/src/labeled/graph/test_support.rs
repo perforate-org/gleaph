@@ -561,12 +561,21 @@ pub(crate) fn retained_compaction_fixture(
         9
     );
     assert_ne!(source.values_spill_run(), crate::traits::NO_SPILL_RUN);
-    assert_eq!(source.inline_property_bytes_slab_slots(), 13);
+    // ADR 0099: the value prefix is the edge prefix, so this is `stored_slots` and not a live-rank
+    // count of 13.
+    assert_eq!(
+        source.inline_property_bytes_slab_slots(),
+        source.stored_slots()
+    );
+    // ADR 0099: one value block per spilled row, so the value run mirrors the edge run's length
+    // rather than holding a single block from before the rewrite.
     assert_eq!(
         graph
             .values
             .spill_used_len(graph.values.spill_mint(source.values_spill_run()).unwrap()),
-        1,
+        graph
+            .edges()
+            .spill_used_len(graph.edges().spill_mint(source.edge_spill_run()).unwrap()),
     );
     assert_eq!(buckets[1].edge_spill_run(), crate::traits::NO_SPILL_RUN);
     assert!(matches!(

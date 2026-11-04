@@ -1422,7 +1422,7 @@ mod physical_layout_tests {
             .collect();
 
         let folded = graph
-            .fold_bucket_edge_spill_head_into_span(0, &source, 2)
+            .fold_bucket_edge_spill_head_into_span(VertexId::from(0), 0, &source, 2)
             .unwrap();
 
         assert_eq!(folded, 2, "two spill rows move into the span");
@@ -5735,6 +5735,8 @@ where
         let mut moves = Vec::new();
         let run = self.edges.spill_mint(bucket.edge_spill_run())?;
         let mut live_log_edges = Vec::with_capacity(self.edges.spill_used_len(run) as usize);
+        let mut live_log_sources: Vec<(u32, u32)> =
+            Vec::with_capacity(self.edges.spill_used_len(run) as usize);
         for (log_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
             let log_offset = u32::try_from(log_offset)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -5760,6 +5762,7 @@ where
                 });
             }
             live_log_edges.push(edge.with_slot_index(new_slot_index));
+            live_log_sources.push((index, new_slot_index));
         }
 
         let live_log_count = u32::try_from(live_log_edges.len())
@@ -5794,10 +5797,42 @@ where
                 .map_err(LabeledOperationError::from)?;
         }
 
-        let compacted = bucket
-            .with_stored_slots(new_stored_slots)
-            .without_edge_spill_run();
         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
+        // prefix bring their value blocks with them, and clearing the edge run clears the values run
+        // in the same publication. A tombstoned run row is dropped with its value.
+        let width = bucket.inline_property_byte_width();
+        let values_run = bucket.values_spill_run();
+        let compacted = if width != 0 && values_run != crate::traits::NO_SPILL_RUN {
+            let sized = self.ensure_bucket_inline_property_bytes_span(
+                src,
+                bucket_slot,
+                bucket.with_stored_slots(new_stored_slots),
+            )?;
+            let values_run_id = self
+                .values
+                .spill_mint(values_run)
+                .map_err(LabeledOperationError::from)?;
+            let mut value = vec![0u8; usize::from(width)];
+            for (index, slot) in live_log_sources.iter().copied() {
+                self.values
+                    .spill_read(values_run_id, index, width, &mut value)
+                    .map_err(LabeledOperationError::from)?;
+                let offset = crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
+                    &sized, slot,
+                )
+                .map_err(LabeledOperationError::from)?;
+                self.values
+                    .write_bytes(offset, &value)
+                    .map_err(LabeledOperationError::from)?;
+            }
+            let _ = self.values.spill_release(values_run_id);
+            sized.without_edge_spill_run().without_values_spill_run()
+        } else {
+            bucket
+                .with_stored_slots(new_stored_slots)
+                .without_edge_spill_run()
+        };
         self.buckets
             .write_label_bucket_slot(bucket_slot, compacted)?;
         // The run's live rows now live in the prefix: release it (best-effort, like every other
@@ -5875,10 +5910,11 @@ where
     /// edges with width 0 or a dense, degree-sized value prefix. Other value
     /// layouts retain the order-preserving left-pack step (ADR 0052 §9).
     fn slab_bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+        // ADR 0099 withdrew the value clause this used to carry. It existed because values were
+        // addressed by live rank, so a swap had to shift a value window and could only do that on a
+        // dense, run-free plane; with the values plane addressed by slot, a swap moves the row's
+        // block into the hole and needs nothing of the kind.
         bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-            && (bucket.inline_property_byte_width() == 0
-                || (bucket.values_spill_run() == crate::traits::NO_SPILL_RUN
-                    && bucket.inline_property_bytes_slab_slots() == bucket.degree()))
     }
 
     /// Finds the first interior tombstone (a non-live slot with a later live row) and
@@ -5951,48 +5987,13 @@ where
         let vacated = checked_add_slot_index(bucket.edge_start(), u64::from(swap.vacated_slot))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let width = bucket.inline_property_byte_width();
-        if width > 0 && bucket.values_spill_run() == crate::traits::NO_SPILL_RUN {
-            let degree = bucket.degree();
-            let k_ord = swap.hole_ordinal;
-            let m_ord = degree
-                .checked_sub(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if k_ord < m_ord {
-                // The moved edge's value is the last live block (ordinal m_ord); it
-                // lands at the hole ordinal k_ord and the suffix [k_ord..m_ord) shifts
-                // one block right. The window is (degree - k_ord) blocks in ordinal
-                // space, never physical-slot arithmetic.
-                let window_blocks = m_ord
-                    .checked_sub(k_ord)
-                    .and_then(|d| d.checked_add(1))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_len = u64::from(window_blocks)
-                    .checked_mul(u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_len_usize = usize::try_from(byte_len)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                let window_offset =
-                    crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
-                        bucket, k_ord,
-                    )?;
-                let mut window = vec![0u8; byte_len_usize];
-                self.values.read_bytes(window_offset, &mut window);
-                let width_usize = usize::from(width);
-                let suffix_len = window.len() - width_usize;
-                let suffix_offset = window_offset
-                    .checked_add(u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                // Shift the suffix [k_ord..m_ord) one block right (to ordinals k_ord+1..=m_ord),
-                // then write the moved block at the hole ordinal.
-                self.values
-                    .write_bytes(suffix_offset, &window[..suffix_len])
-                    .expect(
-                        "swap value shift stays within the existing inline property bytes span",
-                    );
-                self.values
-                    .write_bytes(window_offset, &window[suffix_len..])
-                    .expect("swap value move stays within the existing inline property bytes span");
-            }
+        if width > 0 {
+            // ADR 0099: the moved row's value block goes where the row goes. The window shift this
+            // used to perform existed because values were addressed by rank and the swap had to keep
+            // the ranks in order; with one geometry it is a single block copy, and it works whichever
+            // plane holds the block.
+            let value = self.read_value_block_at_slot(bucket, swap.vacated_slot)?;
+            self.write_value_block_at_slot(bucket, swap.hole_slot, &value)?;
         }
         let edge = self.edges.read_slot(vacated);
         self.edges
@@ -6023,6 +6024,14 @@ where
         self.edges
             .write_slot(from, E::tombstone_edge())
             .map_err(LabeledOperationError::from)?;
+        // ADR 0099: a moved row takes its value block with it. Both planes are addressed by slot, so
+        // this is one block copy; before the planes were unified the values were addressed by rank
+        // and did not need to move, which is exactly why the moves and the values could disagree.
+        let width = bucket.inline_property_byte_width();
+        if width != 0 {
+            let value = self.read_value_block_at_slot(bucket, moved.old_slot_index)?;
+            self.write_value_block_at_slot(bucket, moved.new_slot_index, &value)?;
+        }
         Ok(())
     }
 
@@ -6223,7 +6232,7 @@ where
                     .map_or(region_end, |next| region_end.min(next));
                 let free = u32::try_from(limit.saturating_sub(content_end)).unwrap_or(u32::MAX);
                 if free > 0 {
-                    self.fold_bucket_edge_spill_head_into_span(slot, &finalized, free)?;
+                    self.fold_bucket_edge_spill_head_into_span(vid, slot, &finalized, free)?;
                 }
             }
         }
@@ -6595,42 +6604,6 @@ where
         Ok(bucket)
     }
 
-    /// Folds one bucket's values run into its slab.
-    ///
-    /// The caller needs those rows in the slab - a delete shifts the dense slab sequence, and a
-    /// full run needs slab room - and that is the only reason to fold. ADR 0097 §5 leaves nothing
-    /// leaf-level to sweep for: the per-leaf log this used to release is gone, so the leaf-wide
-    /// version of this forced the same copy on every run-backed bucket in the leaf (one delete
-    /// fanned out into ~56 leaf rewrites where main did one). db04af585's rule applies - relief is
-    /// not forced for rows that are not span content - so the fold is per bucket, at the one call
-    /// site that needs it.
-    pub(super) fn fold_bucket_values_run_into_slab(
-        &self,
-        src: VertexId,
-        bucket_slot: u64,
-        bucket: LabelBucket,
-    ) -> Result<LabelBucket, LabeledOperationError> {
-        let vertex = self.vertices.get(src);
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        self.fold_label_bucket_inline_property_bytes_log_to_slab(
-            src,
-            &vertex,
-            bucket_index,
-            bucket_slot,
-            bucket,
-        )
-    }
-
-    /// Rebuilds a bucket's edge spill run so its class matches the rows that are still live.
-    ///
-    /// A head drop cannot take a run below its class floor, so a bucket whose spill is mostly
-    /// tombstones keeps a run it does not need. Rebuilding mints a run sized to the live rows,
-    /// copies them in order, publishes the new id and only then releases the old run - the
-    /// descriptor never names a freed run.
-    ///
-    /// Unlike the fold, this moves ordinals: a logical row is `prefix_len + spill index`, so
-    /// packing the spill renumbers every row after the first hole. The moves are returned for the
-    /// caller to rekey through its observer; nothing here touches the sidecars.
     pub(super) fn rebuild_bucket_edge_spill(
         &self,
         bucket_slot: u64,
@@ -6668,15 +6641,46 @@ where
                 .map_err(LabeledOperationError::from)?;
             return Ok(Vec::new());
         }
+        // ADR 0099: the values plane mirrors the edge plane, so the same `keep` repacks the value
+        // run at the same indices. Both new ids are published in one descriptor write, and only
+        // then are the old runs released - the descriptor never names a freed run, and never names
+        // one plane's new run beside the other plane's old one.
         let fresh = self
             .edges
             .spill_repack(run, &keep)
             .map_err(LabeledOperationError::from)?;
+        let values_run = bucket.values_spill_run();
+        let fresh_values = if values_run == crate::traits::NO_SPILL_RUN {
+            None
+        } else {
+            let old = self
+                .values
+                .spill_mint(values_run)
+                .map_err(LabeledOperationError::from)?;
+            Some((
+                old,
+                self.values
+                    .spill_repack(old, &keep)
+                    .map_err(LabeledOperationError::from)?,
+            ))
+        };
+        let published = match &fresh_values {
+            Some((_, new_values)) => bucket
+                .with_edge_spill_run(fresh.get())
+                .try_with_values_spill_run(new_values.get())
+                .map_err(LabeledOperationError::from)?,
+            None => bucket.with_edge_spill_run(fresh.get()),
+        };
         self.buckets
-            .write_label_bucket_slot(bucket_slot, bucket.with_edge_spill_run(fresh.get()))?;
+            .write_label_bucket_slot(bucket_slot, published)?;
         self.edges
             .spill_release(run)
             .map_err(LabeledOperationError::from)?;
+        if let Some((old_values, _)) = fresh_values {
+            self.values
+                .spill_release(old_values)
+                .map_err(LabeledOperationError::from)?;
+        }
         let mut moves = Vec::new();
         for (destination, source) in keep.iter().copied().enumerate() {
             if destination as u32 != source {
@@ -6740,6 +6744,7 @@ where
     /// rebuild's job.
     pub(super) fn fold_bucket_edge_spill_head_into_span(
         &self,
+        src: VertexId,
         bucket_slot: u64,
         bucket: &LabelBucket,
         max_rows: u32,
@@ -6785,8 +6790,44 @@ where
         let grown = len
             .checked_add(fold)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let grown_bucket = bucket.with_stored_slots(grown);
+        // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
+        // span bring their value blocks with them. The value run's head is dropped by the same
+        // count, after the span write and before the descriptor publish.
+        if grown_bucket.inline_property_byte_width() != 0
+            && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+        {
+            let width = grown_bucket.inline_property_byte_width();
+            let values_run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            let mut values = vec![0u8; fold as usize * usize::from(width)];
+            self.values
+                .spill_read_range(values_run, 0..fold, width, &mut values)
+                .map_err(LabeledOperationError::from)?;
+            let sized =
+                self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, grown_bucket)?;
+            let offset =
+                crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(&sized, len)
+                    .map_err(LabeledOperationError::from)?;
+            self.values
+                .write_bytes(offset, &values)
+                .map_err(LabeledOperationError::from)?;
+            self.values
+                .spill_drop_head(values_run, fold)
+                .map_err(LabeledOperationError::from)?;
+            let published = if self.values.spill_used_len(values_run) == 0 {
+                sized.without_values_spill_run()
+            } else {
+                sized
+            };
+            self.buckets
+                .write_label_bucket_slot(bucket_slot, published)?;
+            return Ok(fold);
+        }
         self.buckets
-            .write_label_bucket_slot(bucket_slot, bucket.with_stored_slots(grown))?;
+            .write_label_bucket_slot(bucket_slot, grown_bucket)?;
         Ok(fold)
     }
 
@@ -9150,7 +9191,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_overflow_compaction_does_not_fold_inline_property_bytes_log() {
+    fn edge_overflow_compaction_folds_both_planes_together() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::directed_from_index(2);
@@ -9195,11 +9236,6 @@ mod tests {
         let before = read_bucket();
         assert!(before.edge_spill_run() != crate::traits::NO_SPILL_RUN);
         assert!(before.values_spill_run() != crate::traits::NO_SPILL_RUN);
-        let inline_property_bytes_state = (
-            before.inline_property_bytes_offset(),
-            before.inline_property_bytes_slab_slots(),
-            before.values_spill_run(),
-        );
 
         // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
         // ownership"), so the step folds that suffix inside its rewrite and then carries on with
@@ -9212,14 +9248,21 @@ mod tests {
 
         let after = read_bucket();
         assert_eq!(after.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        // ADR 0099 reverses what this fixture used to pin. The span publish's edge-log fold moves the
+        // rows into the span, and the values plane is indexed by the same slots, so the fold has to
+        // carry the blocks - leaving the values run behind would strand a block for every folded row.
+        assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(
-            (
-                after.inline_property_bytes_offset(),
-                after.inline_property_bytes_slab_slots(),
-                after.values_spill_run(),
-            ),
-            inline_property_bytes_state
+            after.inline_property_bytes_slab_slots(),
+            after.stored_slots(),
+            "the value prefix follows the edge prefix"
         );
+        for slot in 0..after.degree() {
+            let bytes = graph
+                .read_bucket_inline_property_bytes_for_slot(&after, slot, None)
+                .expect("every folded row keeps its value block");
+            assert_eq!(bytes.len(), 2, "slot {slot}");
+        }
     }
 
     #[test]
@@ -9524,18 +9567,21 @@ mod tests {
     }
 
     #[test]
-    fn unordered_swap_gate_rejects_value_log_and_non_dense_spans() {
+    fn unordered_swap_gate_asks_only_for_a_slab_bucket() {
         use crate::labeled::record::LabelBucket;
-        let value_log = LabelBucket::default()
+        // ADR 0099 withdrew the value clause: the swap used to shift a value window, which needed a
+        // dense, run-free plane; a slot-addressed plane moves one block per row, so a bucket with a
+        // value run or a sparse value span may swap like any other.
+        let value_run = LabelBucket::default()
             .with_inline_property_byte_width(2)
-            .with_inline_property_bytes_log_head(3)
             .with_degree_field(2)
-            .with_stored_slots(4);
+            .with_stored_slots(4)
+            .with_values_spill_run(7);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
-                &value_log
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+                &value_run
             ),
-            "a bucket with log-backed inline property bytes must fall back to left-pack (ADR §9)"
+            "a value run no longer stops a swap"
         );
         let non_dense = LabelBucket::default()
             .with_inline_property_byte_width(2)
@@ -9543,20 +9589,20 @@ mod tests {
             .with_degree_field(3)
             .with_stored_slots(4);
         assert!(
-            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &non_dense
             ),
-            "a non-dense value span must fall back to left-pack"
+            "a sparse value span no longer stops a swap"
         );
-        let width_zero = LabelBucket::default()
-            .with_inline_property_bytes_log_head(3)
+        let edge_run = LabelBucket::default()
             .with_degree_field(2)
-            .with_stored_slots(4);
+            .with_stored_slots(4)
+            .with_edge_spill_run(9);
         assert!(
-            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
-                &width_zero
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
+                &edge_run
             ),
-            "width-0 buckets may swap regardless of a value log head"
+            "the move still needs the row to be in the span it swaps within"
         );
     }
 

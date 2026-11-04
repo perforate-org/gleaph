@@ -306,6 +306,19 @@ where
     ))
 }
 /// Determines canonical ownership from a canonical occurrence and its resolved counterpart.
+/// Which endpoint owns the canonical row of an undirected edge.
+///
+/// The rule is the larger vertex id, and it lives here because it is the same decision
+/// [`canonical_from_counterpart`] makes for the undirected case - the graph layer used to restate the
+/// comparison next to its own handle helpers.
+pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
+    if u32::from(a) >= u32::from(b) { a } else { b }
+}
+
+/// Picks the canonical side of a resolved pair.
+///
+/// For a directed label the forward row is canonical; for an undirected one it is the larger
+/// endpoint ([`canonical_undirected_owner`]). Pure - it reads neither store.
 pub fn canonical_from_counterpart(
     source: CanonicalEdgeOccurrence,
     counterpart: CanonicalEdgeOccurrence,
@@ -320,10 +333,95 @@ pub fn canonical_from_counterpart(
     // (the row owner) and counterpart.owner (the neighbor, which for undirected is also an
     // endpoint). For a non-self undirected edge, one endpoint owns the forward row and the
     // other endpoint owns the counterpart forward row, so max(endpoint) is the right choice.
-    if source.owner_vertex_id >= counterpart.owner_vertex_id {
+    if canonical_undirected_owner(source.owner_vertex_id, counterpart.owner_vertex_id)
+        == source.owner_vertex_id
+    {
         source.handle()
     } else {
         counterpart.handle()
+    }
+}
+
+/// The two orientations of one bidirectional store, paired.
+///
+/// Counterpart resolution is a property of the **pair**: it reads one store to name a row in the
+/// other, and which of the two rows is canonical depends on both. Holding the graphs together here
+/// gives that rule one owner, so a call site says *what* it wants (the counterpart of this
+/// occurrence) instead of restating which two graphs are being paired - the argument pair that every
+/// caller used to spell out, and the one place where pairing the wrong two graphs would silently
+/// produce a plausible answer.
+///
+/// The rows remain the source of truth: nothing here is persisted, and a counterpart is derived by
+/// selecting the equal-neighbor occurrence rank in the other orientation.
+#[derive(Clone, Copy)]
+pub struct CounterpartResolver<'a, E: CsrEdgeTombstone, M: Memory> {
+    forward: &'a LabeledLaraGraph<E, M>,
+    reverse: &'a LabeledLaraGraph<E, M>,
+}
+
+impl<'a, E, M> CounterpartResolver<'a, E, M>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    /// Pairs one forward store with its reverse store.
+    pub const fn new(
+        forward: &'a LabeledLaraGraph<E, M>,
+        reverse: &'a LabeledLaraGraph<E, M>,
+    ) -> Self {
+        Self { forward, reverse }
+    }
+
+    /// The forward orientation of the pair.
+    pub const fn forward(self) -> &'a LabeledLaraGraph<E, M> {
+        self.forward
+    }
+
+    /// The reverse orientation of the pair.
+    pub const fn reverse(self) -> &'a LabeledLaraGraph<E, M> {
+        self.reverse
+    }
+
+    /// Resolves the paired row of `edge` in the other orientation.
+    pub fn of(
+        self,
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError> {
+        counterpart_of(self.forward, self.reverse, edge)
+    }
+
+    /// As [`Self::of`], verifying that both projections agree on the matching-row cardinality.
+    pub fn of_verified(
+        self,
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError> {
+        counterpart_of_verified(self.forward, self.reverse, edge)
+    }
+
+    /// Resolves the canonical handle (the row properties and derived indexes are keyed by).
+    pub fn canonical_handle(
+        self,
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<EdgeHandle, CounterpartLookupError> {
+        canonical_handle(self.forward, self.reverse, edge)
+    }
+
+    /// As [`Self::canonical_handle`], verifying the projections' cardinality.
+    pub fn canonical_handle_verified(
+        self,
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<EdgeHandle, CounterpartLookupError> {
+        canonical_handle_verified(self.forward, self.reverse, edge)
+    }
+
+    /// Picks the canonical side of a resolved pair. Pure: the rule depends on the label's
+    /// directedness and the two owners, not on either store.
+    pub fn canonical_from(
+        self,
+        source: CanonicalEdgeOccurrence,
+        counterpart: CanonicalEdgeOccurrence,
+    ) -> EdgeHandle {
+        canonical_from_counterpart(source, counterpart)
     }
 }
 

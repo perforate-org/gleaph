@@ -316,6 +316,9 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
                 .unwrap()
         })
     };
+    // ADR 0099: this shape's rows spill, so the values live in the buckets' spill runs and the value
+    // slab stays empty throughout. The observable geometry here is the mirror (one run block per row),
+    // not a span - `check_undirected_inline_update_reuse` measures the update against that.
     assert_eq!(stats().0.slab_occupied_tail, 0);
     let mut expected = BTreeMap::new();
     let mut insert = |src: VertexId, dst: VertexId, value: u16| {
@@ -341,17 +344,13 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     for i in 0..canonical_prefix {
         insert(high, high, 1000 + i);
     }
-    let canonical_bytes = u64::from(canonical_prefix) * 2;
-    assert_eq!(stats().0.slab_occupied_tail, canonical_bytes);
     for i in 0..8 {
         insert(low, low, 2000 + i);
     }
     let handle = insert(high, low, 5000);
     assert_eq!(handle.owner_vertex_id, high);
     assert_eq!(handle.slot_index.raw(), u32::from(canonical_prefix));
-    assert_eq!(stats().0.slab_occupied_tail, canonical_bytes + 18);
     insert(guard, guard, 6000);
-    assert_eq!(stats().0.slab_occupied_tail, canonical_bytes + 20);
     for i in 0..8 {
         insert(high, high, 3000 + i);
         insert(low, low, 4000 + i);
@@ -381,45 +380,30 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     let before_low = placement(low);
     let before_guard = placement(guard);
     assert_eq!(before_high.degree, u32::from(canonical_prefix) + 9);
-    assert_eq!(
-        before_high.inline_property_bytes_slab_slots,
-        u32::from(canonical_prefix)
-    );
-    assert_eq!(
-        (
-            before_low.degree,
-            before_low.inline_property_bytes_slab_slots
-        ),
-        (17, 9)
-    );
-    assert_eq!(
-        (
-            before_guard.degree,
-            before_guard.inline_property_bytes_slab_slots
-        ),
-        (1, 1)
-    );
-    // Exact rows beyond each slab prefix witness nonempty value runs; retired log fields do not.
-    assert!(before_high.degree > before_high.inline_property_bytes_slab_slots);
-    assert!(before_low.degree > before_low.inline_property_bytes_slab_slots);
+    assert_eq!(before_low.degree, 17);
+    assert_eq!(before_guard.degree, 1);
+    // ADR 0099: no bucket in this shape owns a value span - the rows spill, so the values live in the
+    // runs beside them and the mirror is the geometry to check.
+    for vertex in [high, low, guard] {
+        let placement = placement(vertex);
+        assert_eq!(
+            placement.inline_property_bytes_slab_slots, placement.stored_edge_slots,
+            "the value prefix is the edge prefix (ADR 0099)"
+        );
+    }
     let (before, reverse_before) = stats();
+    // The allocator's own invariant, which holds whichever plane the values landed in.
     assert_eq!(
-        before.free_bytes, 0,
-        "no earlier retired destination may mask reuse"
+        before.slab_occupied_tail,
+        before.allocated_bytes + before.free_bytes
     );
-    assert_eq!(before.slab_occupied_tail, canonical_bytes + 20);
-    assert_eq!(before.allocated_bytes, before.slab_occupied_tail);
-    let counterpart_bytes = 34;
-    let canonical_request = u64::from(before_high.degree) * 2;
-    assert_eq!(before.live_bytes, canonical_request + counterpart_bytes + 2);
-    let mut prefix = vec![0; canonical_bytes as usize];
-    store.with_graph_mut(|graph| graph.forward().values().read_bytes(0, &mut prefix));
-    let original_prefix: Vec<_> = (0..canonical_prefix)
-        .flat_map(|i| (1000 + i).to_le_bytes())
-        .collect();
+    // Live bytes are `degree * width` per bucket regardless of which plane holds them.
     assert_eq!(
-        prefix, original_prefix,
-        "known canonical source starts at byte zero"
+        before.live_bytes,
+        (u64::from(before_high.degree)
+            + u64::from(before_low.degree)
+            + u64::from(before_guard.degree))
+            * 2
     );
 
     let note = crate::test_labels::property_id_for_name("reuse_note");
@@ -452,13 +436,10 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     let (measurement, outcome) = ((), update());
     outcome.expect("paired update");
 
-    // Value-only folding must not move topology/slots or alter the guard's descriptor projection.
-    let mut expected_high = before_high;
-    expected_high.inline_property_bytes_slab_slots = before_high.degree;
-    let mut expected_low = before_low;
-    expected_low.inline_property_bytes_slab_slots = before_low.degree;
-    assert_eq!(placement(high), expected_high, "canonical values must fold");
-    assert_eq!(placement(low), expected_low, "counterpart values must fold");
+    // The paired update rewrites both rows' blocks in place: no span appears, and the placements are
+    // unchanged except for the values themselves.
+    assert_eq!(placement(high), before_high, "canonical slots are stable");
+    assert_eq!(placement(low), before_low, "counterpart slots are stable");
     assert_eq!(placement(guard), before_guard);
     expected.get_mut(&high).unwrap()[canonical_prefix as usize].2 = [8, 0];
     expected.get_mut(&low).unwrap()[8].2 = [8, 0];
@@ -482,53 +463,18 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     );
 
     let (after, reverse_after) = stats();
-    let fits = canonical_bytes >= counterpart_bytes;
-    let consumed = if fits { counterpart_bytes } else { 0 };
-    assert_eq!(
-        after.slab_occupied_tail,
-        before.slab_occupied_tail + canonical_request + counterpart_bytes - consumed
-    );
-    assert_eq!(after.free_bytes, canonical_bytes + 18 - consumed);
-    assert_eq!(after.largest_free_span, after.free_bytes);
-    assert_eq!(after.free_span_count, 1);
-    assert_eq!(after.live_bytes, before.live_bytes);
-    assert_eq!(after.allocated_bytes, after.live_bytes);
-    assert_eq!(
-        after.slab_occupied_tail,
-        after.allocated_bytes + after.free_bytes
-    );
-    assert_eq!(after.byte_capacity, before.byte_capacity);
+    // ADR 0099: the update rewrites blocks that already exist, so it allocates nothing and the slab
+    // statistics are exactly what they were.
+    assert_eq!(after, before, "the paired update allocates no value span");
     assert_eq!(reverse_after, reverse_before);
-    // Initial free=0 makes canonical retirement the only reusable destination. Check complete
-    // payloads at all three disjoint occupied regions, not just aggregate free accounting.
-    let counterpart_start = if fits {
-        0
-    } else {
-        before.slab_occupied_tail + canonical_request
-    };
-    for (vertex, start) in [
-        (high, before.slab_occupied_tail),
-        (low, counterpart_start),
-        (guard, canonical_bytes + 18),
-    ] {
-        let wanted: Vec<_> = expected[&vertex].iter().flat_map(|row| row.2).collect();
-        let mut actual = vec![0; wanted.len()];
-        store.with_graph_mut(|graph| graph.forward().values().read_bytes(start, &mut actual));
-        assert_eq!(actual, wanted, "payload at byte {start}");
-    }
+    assert_eq!(after.live_bytes, before.live_bytes);
     let summary = format!(
-        "UNDIRECTED_REUSE prefix={canonical_prefix} fit={fits} before_tail={} after_tail={} tail_delta={} before_free={} free={} consumed={} before_allocated={} allocated={} live={} p_degree={} c_degree={}",
-        before.slab_occupied_tail,
-        after.slab_occupied_tail,
-        after.slab_occupied_tail - before.slab_occupied_tail,
-        before.free_bytes,
-        after.free_bytes,
-        canonical_bytes + 18 + before.free_bytes - after.free_bytes,
-        before.allocated_bytes,
-        after.allocated_bytes,
-        after.live_bytes,
+        "UNDIRECTED_RUN_UPDATE prefix={canonical_prefix} slot={} degree_high={} degree_low={} live_bytes={} slab_tail={}",
+        handle.slot_index.raw(),
         before_high.degree,
         before_low.degree,
+        after.live_bytes,
+        after.slab_occupied_tail,
     );
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     {

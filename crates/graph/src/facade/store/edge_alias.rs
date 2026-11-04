@@ -1,12 +1,11 @@
-//! GraphStore counterpart-resolution implementation.
+//! GraphStore edge lookup by label/neighbor.
+//!
+//! Counterpart and canonical-handle resolution moved to [`super::counterpart`], which owns that
+//! pairing; this file only finds rows.
 
 use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::bidirectional::counterpart::{self, CounterpartLookupError},
-    labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
-};
+use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -71,83 +70,6 @@ impl GraphStore {
             })
             .map_err(GraphStoreError::from)
             .map(|()| found)
-    }
-
-    pub(crate) fn canonical_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
-            .unwrap_or(handle)
-    }
-
-    pub(crate) fn canonical_reverse_in_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Reverse)
-            .unwrap_or(handle)
-    }
-
-    pub(crate) fn canonical_edge_handle_for_sidecar(&self, handle: EdgeHandle) -> EdgeHandle {
-        let reverse = self.canonical_reverse_in_edge_handle(handle);
-        if reverse != handle {
-            return reverse;
-        }
-        self.canonical_edge_handle(handle)
-    }
-
-    /// Resolves a canonical handle through ADR 0048 CounterpartScan on the
-    /// ADR 0050 `traverse_next` logical-slot surface.
-    pub(crate) fn scan_only_canonical_edge_handle(
-        &self,
-        handle: EdgeHandle,
-        orientation: LabeledOrientation,
-    ) -> Result<EdgeHandle, CounterpartLookupError> {
-        // For directed edges the forward occurrence is canonical by definition.
-        // Avoid a read/rank/select of the reverse bucket for the overwhelmingly
-        // common forward lookup; reverse occurrences and undirected edges still
-        // use CounterpartScan below.
-        if handle.label_id.is_directed() && orientation == LabeledOrientation::Forward {
-            return Ok(handle);
-        }
-        self.scan_only_canonical_edge_handle_from_occurrence(handle.occurrence(orientation))
-    }
-
-    pub(crate) fn scan_only_canonical_edge_handle_from_occurrence(
-        &self,
-        occurrence: CanonicalEdgeOccurrence,
-    ) -> Result<EdgeHandle, CounterpartLookupError> {
-        GRAPH
-            .with_borrow(|graph| {
-                counterpart::canonical_handle(graph.forward(), graph.reverse(), occurrence)
-            })
-            .map(|canonical| {
-                EdgeHandle::at_slot(
-                    canonical.owner_vertex_id,
-                    canonical.label_id,
-                    canonical.slot_index.raw(),
-                )
-            })
-    }
-
-    /// Resolves the canonical sidecar handle for a [`CanonicalEdgeOccurrence`] and maps
-    /// [`CounterpartLookupError`] into the owning [`GraphStoreError`].
-    ///
-    /// This is the ADR 0048 CounterpartScan boundary used by the edge-property sidecar group.
-    pub(crate) fn canonical_edge_handle_from_occurrence(
-        &self,
-        occurrence: CanonicalEdgeOccurrence,
-    ) -> Result<EdgeHandle, GraphStoreError> {
-        self.scan_only_canonical_edge_handle_from_occurrence(occurrence)
-            .map_err(GraphStoreError::from)
-    }
-
-    /// Resolves the physical counterpart for a live occurrence. The caller supplies the orientation because a logical slot
-    /// alone cannot distinguish the forward and reverse stores.
-    pub(crate) fn counterpart_edge_occurrence(
-        &self,
-        occurrence: CanonicalEdgeOccurrence,
-    ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
-        GRAPH
-            .with_borrow(|graph| {
-                counterpart::counterpart_of(graph.forward(), graph.reverse(), occurrence)
-            })
-            .map_err(GraphStoreError::from)
     }
 
     pub(crate) fn find_outgoing_edge_with_bucket_label(

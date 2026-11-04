@@ -14,8 +14,7 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
     },
     lara::{
-        edge_inline_property::{InlinePropertyBytesLogReadError, InlinePropertyBytesLogWriteError},
-        operation_error::LaraOperationError,
+        edge_inline_property::InlinePropertyBytesLogReadError, operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
@@ -70,8 +69,10 @@ impl MaterializeCursor {
         (self.src, self.bucket_slot)
     }
 
+    /// Bytes to fill: one block per **slab** row (ADR 0099), because the values plane mirrors the
+    /// edge prefix. Rows beyond it keep their values in the spill run, extended at publication.
     fn total_bytes(&self) -> u64 {
-        u64::from(self.source.degree()) * u64::from(self.width)
+        u64::from(self.source.stored_slots()) * u64::from(self.width)
     }
 
     fn is_consumed(&self) -> bool {
@@ -411,11 +412,13 @@ where
         _src: VertexId,
         bucket: &LabelBucket,
     ) -> u32 {
-        if !bucket.is_inline_property_bytes_allocated() || bucket.inline_property_byte_width() == 0
-        {
+        // "How many value slots are backed" - not "does this bucket hold value state". The composite
+        // predicate folds `degree != 0` into its answer, so using it here made an emptied bucket look
+        // like it had no span to release, which is exactly when the release has to happen.
+        if bucket.inline_property_byte_width() == 0 {
             return 0;
         }
-        bucket.inline_property_bytes_slab_slots()
+        bucket.inline_property_bytes_slab_slots_allocated()
     }
 
     pub(super) fn bucket_resident_inline_property_bytes_for(
@@ -557,6 +560,50 @@ where
         Ok(out)
     }
 
+    /// Reads the value block of the row at bucket-local `slot`, from whichever plane holds it.
+    ///
+    /// ADR 0099's single value accessor: the row's slot decides, exactly as it does for the edge
+    /// row itself. Used by the row-move paths, which have to carry the block with the row.
+    pub(super) fn read_value_block_at_slot(
+        &self,
+        bucket: &LabelBucket,
+        slot: u32,
+    ) -> Result<Vec<u8>, LabeledOperationError> {
+        self.read_bucket_inline_property_bytes_for_slot(bucket, slot, None)
+    }
+
+    /// Writes the value block of the row at bucket-local `slot`, into whichever plane holds it.
+    ///
+    /// A slot inside the prefix is a slab block; beyond it the row lives in the spill run, and so
+    /// does its value.
+    pub(super) fn write_value_block_at_slot(
+        &self,
+        bucket: &LabelBucket,
+        slot: u32,
+        bytes: &[u8],
+    ) -> Result<(), LabeledOperationError> {
+        let width = bucket.inline_property_byte_width();
+        if width == 0 || bytes.is_empty() {
+            return Ok(());
+        }
+        let prefix = bucket.inline_property_bytes_slab_slots();
+        if slot < prefix {
+            let offset =
+                super::super::invariants::inline_property_bytes_byte_offset_at_slot(bucket, slot)?;
+            return self
+                .values
+                .write_bytes(offset, bytes)
+                .map_err(LabeledOperationError::from);
+        }
+        let run = self
+            .values
+            .spill_mint(bucket.values_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        self.values
+            .spill_write(run, slot - prefix, width, bytes)
+            .map_err(LabeledOperationError::from)
+    }
+
     pub(super) fn read_bucket_inline_property_bytes_for_slot(
         &self,
         bucket: &LabelBucket,
@@ -690,6 +737,18 @@ where
         _edge_entry_idx: i32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
+        self.write_inline_property_bytes_to_log(bucket, edge.edge_inline_property_bytes())
+    }
+
+    /// Appends one row's value block to the bucket's values run.
+    ///
+    /// Takes the bytes rather than an edge because the mirror gives every run row a block: a row
+    /// inserted without inline bytes still owns one, so the caller may pass zeros.
+    pub(super) fn write_inline_property_bytes_to_log(
+        &self,
+        bucket: &LabelBucket,
+        bytes: &[u8],
+    ) -> Result<LabelBucket, LabeledOperationError> {
         let width = bucket.inline_property_byte_width();
         if width == 0 {
             return Ok(*bucket);
@@ -697,11 +756,56 @@ where
         let run = self.values.spill_mint(bucket.values_spill_run()).ok();
         let (run, _row) = self
             .values
-            .spill_append(run, width, edge.edge_inline_property_bytes())
+            .spill_append(run, width, bytes)
             .map_err(LabeledOperationError::from)?;
         bucket
             .try_with_values_spill_run(run.get())
             .map_err(LabeledOperationError::from)
+    }
+
+    /// Records the value of a row that was just written at `slot_index`.
+    ///
+    /// ADR 0099: the value plane mirrors the edge plane, so residency is decided by the row's slot -
+    /// inside the prefix it is a slab block, beyond it the row lives in the spill run and so does its
+    /// value. The former heuristic (append to the run when the slab was not at the tail) decided
+    /// residency from the allocator's state, which is what let the two planes disagree.
+    /// Writes an **existing** row's value block, in whichever plane the row lives.
+    ///
+    /// Unlike [`Self::write_edge_inline_property_after_insert`] this never appends: the row already
+    /// owns a block, so a slot past the prefix is written at its own index in the values run. That
+    /// distinction is the whole difference between inserting a row and updating one (ADR 0099).
+    pub(super) fn write_edge_inline_property_at_existing_row(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        mut bucket: LabelBucket,
+        slot_index: u32,
+        edge: &E,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
+            return Ok(bucket);
+        }
+        if slot_index >= bucket.stored_slots() {
+            let row = slot_index
+                .checked_sub(bucket.stored_slots())
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            self.values
+                .spill_write(
+                    run,
+                    row,
+                    bucket.inline_property_byte_width(),
+                    edge.edge_inline_property_bytes(),
+                )
+                .map_err(LabeledOperationError::from)?;
+            return Ok(bucket);
+        }
+        bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
+        self.write_edge_inline_property_at_ordinal(&bucket, slot_index, edge)?;
+        Ok(bucket)
     }
 
     pub(super) fn write_edge_inline_property_after_insert(
@@ -709,39 +813,35 @@ where
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
+        slot_index: u32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
+        let width = bucket.inline_property_byte_width();
+        // Tiny buckets hold no value state by construction (ADR 0096 §5), so the mirror applies to
+        // slab and tree buckets only.
+        if width == 0 || bucket.is_tiny_mode() {
             return Ok(bucket);
         }
-        let slot_index = bucket.degree().saturating_sub(1);
-        let slab_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
-            .checked_mul(u64::from(bucket.inline_property_byte_width()))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let slab_ends_at_tail = bucket
-            .inline_property_bytes_offset()
-            .checked_add(slab_bytes)
-            .is_some_and(|end| end == self.values.header().slab_occupied_tail);
-        // InlinePropertyBytes capacity is independent from the edge segment size.  A
-        // inline-property-bearing bucket starts with one value-width entry and grows
-        // in value-width byte units while its span remains extendable.  Once
-        // a inline property bytes log exists, or the span is no longer at the slab tail,
-        // append to the log instead of repeatedly relocating the span.
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-            || (bucket.inline_property_bytes_slab_slots() > 0 && !slab_ends_at_tail)
-        {
-            match self.write_edge_inline_property_to_log(&bucket, -1, edge) {
-                Ok(updated) => return Ok(updated),
-                Err(LabeledOperationError::InlinePropertyBytesLogWrite(
-                    InlinePropertyBytesLogWriteError::ValuesRunFull,
-                )) => {
-                    bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
-                    return self.write_edge_inline_property_to_log(&bucket, -1, edge);
-                }
-                Err(err) => return Err(err),
-            }
+        // One admission for both residencies, because the invariant is about the *row*, not about
+        // which plane it lands in: a width-`w` bucket only admits width-`w` edges, so the mirrored
+        // value plane has no representation for a row without a block. The caller has already run
+        // `ensure_bucket_inline_property_schema_for_insert_with_materialize`, which rejects the
+        // mismatch with the typed error before any row is written (see
+        // `non_empty_bucket_rejects_inline_property_byte_width_changes`); every current caller is
+        // downstream of it. A new path that is not must return `InlinePropertyBytesWidthMismatch`
+        // instead of reaching this, because the trap is deliberately fail-closed (message rollback)
+        // rather than a carved-out error.
+        if edge.edge_inline_property_byte_width() != width {
+            unreachable!(
+                "a width-{width} bucket only admits width-{width} edges; the mirrored value plane \
+                 has no block for a row that carries none"
+            );
         }
-        let bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
+        if slot_index >= bucket.stored_slots() {
+            return self
+                .write_inline_property_bytes_to_log(&bucket, edge.edge_inline_property_bytes());
+        }
+        bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
         self.write_edge_inline_property_at_slot(
             src,
@@ -896,6 +996,51 @@ where
         })
     }
 
+    /// Grows the value run to the edge run's length, filling the new blocks with the cursor's fill
+    /// byte, and publishes the run id when the bucket did not have one.
+    fn fill_value_run_for_edge_spill(
+        &self,
+        cursor: &MaterializeCursor,
+    ) -> Result<(), LabeledOperationError> {
+        // Read the bucket directly: the caller runs this *after* publishing the width, and the
+        // admission in `materialize_source` refuses a bucket that already has one.
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(cursor.bucket_slot)
+            .ok_or(LabeledOperationError::InlinePropertyMaterializationInvalidSource)?;
+        if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN {
+            return Ok(());
+        }
+        let edge_run = self
+            .edges
+            .spill_mint(bucket.edge_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        let target = self.edges.spill_used_len(edge_run);
+        let mut run = self.values.spill_mint(bucket.values_spill_run()).ok();
+        let fill = vec![cursor.fill_byte; usize::from(cursor.width)];
+        loop {
+            let used = run.map_or(0, |run| self.values.spill_used_len(run));
+            if used >= target {
+                break;
+            }
+            let (next, _row) = self
+                .values
+                .spill_append(run, cursor.width, &fill)
+                .map_err(LabeledOperationError::from)?;
+            run = Some(next);
+        }
+        if let Some(run) = run
+            && bucket.values_spill_run() != run.get()
+        {
+            let updated = bucket
+                .try_with_values_spill_run(run.get())
+                .map_err(LabeledOperationError::from)?;
+            self.buckets
+                .write_label_bucket_slot(cursor.bucket_slot, updated)?;
+        }
+        Ok(())
+    }
+
     fn prepare_materialize_publication(
         &self,
         cursor: &MaterializeCursor,
@@ -911,8 +1056,7 @@ where
         let updated = bucket
             .with_inline_property_byte_width(cursor.width)
             .with_inline_property_bytes_offset(offset)
-            .with_inline_property_bytes_slab_slots(bucket.degree())
-            .without_values_spill_run();
+            .with_inline_property_bytes_slab_slots(bucket.stored_slots());
         let bucket_write = self
             .buckets
             .prepare_existing_bucket_slot(cursor.bucket_slot, updated)?;
@@ -932,7 +1076,12 @@ where
         fill_byte: u8,
     ) -> Result<(), LabeledOperationError> {
         let cursor = self.materialize_cursor(src, bucket_slot, width, fill_byte)?;
-        if cursor.total_bytes() > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
+        // The decision is about the whole stream - every live row gets a block, whether it ends up in
+        // the slab prefix or in the run - while `total_bytes` is the prefix the span has to hold
+        // (ADR 0099). A bucket whose rows all spilled therefore still needs a cursor when the stream
+        // is large, even though its span part is empty.
+        let stream_bytes = u64::from(cursor.source.degree()) * u64::from(width);
+        if stream_bytes > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
             return Err(
                 LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
                     vid: src,
@@ -1039,6 +1188,7 @@ where
         };
         if end == cursor.total_bytes() {
             publication.publish();
+            self.fill_value_run_for_edge_spill(cursor)?;
             cursor.progress = MaterializeProgress::Consumed;
             Ok(MaterializeStep::Finished)
         } else {
@@ -1328,15 +1478,9 @@ where
             "tiny bucket must not reach value-span admission"
         );
         let width = bucket.inline_property_byte_width();
-        // Run-backed rows need no slab space until the caller folds them.
-        let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
-            Ok(run) => self.values.spill_used_len(run),
-            Err(_) => 0,
-        };
-        let needed_slots = bucket
-            .degree()
-            .checked_sub(run_rows)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // One value block per slab row, tombstones included: the value plane mirrors the edge
+        // prefix (ADR 0099), so the slab part is exactly `stored_slots` blocks.
+        let needed_slots = bucket.stored_slots();
         let needed_bytes = u64::from(needed_slots) * u64::from(width);
         let had_bytes = self.bucket_resident_inline_property_bytes(&bucket);
         // Admission preserves sufficient capacity, including non-tail spans.
@@ -1443,9 +1587,9 @@ where
             BucketSearch::Found { slot, bucket } => (slot, bucket),
             BucketSearch::Missing { .. } => return Ok(false),
         };
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            bucket = self.fold_bucket_values_run_into_slab(src, slot, bucket)?;
-        }
+        // ADR 0099: no values-only fold here. The value is written at the row's slot, and that
+        // write already picks the plane the row lives in - folding the values plane first is what
+        // used to make the two planes disagree, since it moved blocks without moving rows.
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         if !self.labeled_bucket_slot_is_live_edge(
             src,
@@ -1465,10 +1609,13 @@ where
             });
         }
         if edge_inline_property_width != 0 {
-            bucket = self.ensure_bucket_inline_property_bytes_span(src, slot, bucket)?;
-            self.write_edge_inline_property_at_slot(
-                src, &vertex, slot, &bucket, slot_index, &edge,
-            )?;
+            // ADR 0099: the block goes into the plane the row lives in. Writing at the slot as if it
+            // were a slab ordinal made an update on a fully spilled bucket land at the start of the
+            // span while the read looked in the run; appending to the run (the insert path's
+            // semantics) put it at the run's tail instead of at the row's index. An update writes the
+            // row's own block.
+            bucket = self
+                .write_edge_inline_property_at_existing_row(src, slot, bucket, slot_index, &edge)?;
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);
@@ -1544,46 +1691,28 @@ where
         Ok(())
     }
 
-    /// Writes one row's inline value, resolving the row's **live ordinal** from its physical slot.
+    /// Writes one row's inline value at the row's **slot**.
     ///
-    /// The two differ as soon as a tombstone sits in front of the row, and passing the physical index
-    /// straight through wrote the value one ordinal low whenever a delete had preceded it (the
-    /// reproduction `inline_update_after_a_delete_writes_the_right_row`). That divergence is what
-    /// ADR 0099 removes by addressing values by slot instead.
+    /// ADR 0099 made the two planes one geometry, so this is the slot itself: the live-ordinal
+    /// resolution this function used to perform is what made an update after a delete land one row
+    /// early, and with slot addressing there is no rank to resolve.
     pub(super) fn write_edge_inline_property_at_slot(
         &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_slot: u64,
+        _src: VertexId,
+        _vertex: &LabeledVertex,
+        _bucket_slot: u64,
         bucket: &LabelBucket,
         slot_index: u32,
         edge: &E,
     ) -> Result<(), LabeledOperationError> {
-        if bucket.inline_property_byte_width() == 0 || edge.edge_inline_property_byte_width() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
-        let Some(ordinal) = self.bucket_live_ordinal_at_edge_slot(
-            src,
-            vertex,
-            bucket_index,
-            bucket_slot,
-            bucket,
-            slot_index,
-        )?
-        else {
-            // The slot holds no live row, so it holds no value to update. Callers that care about
-            // liveness check it themselves; the rebuild paths reach here for rows mid-publication.
-            return Ok(());
-        };
-        self.write_edge_inline_property_at_ordinal(bucket, ordinal, edge)
+        self.write_edge_inline_property_at_ordinal(bucket, slot_index, edge)
     }
 
     pub(super) fn attach_edge_inline_property(
         &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_index: u32,
+        _src: VertexId,
+        _vertex: &LabeledVertex,
+        _bucket_index: u32,
         bucket: LabelBucket,
         slot_index: u32,
         edge: E,
@@ -1592,24 +1721,11 @@ where
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
-        let ordinal = if bucket.edge_spill_run() == crate::traits::NO_SPILL_RUN
-            && bucket.stored_slots() == bucket.degree()
-        {
-            slot_index
-        } else {
-            let bucket_slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-            self.bucket_live_ordinal_at_edge_slot(
-                src,
-                vertex,
-                bucket_index,
-                bucket_slot,
-                &bucket,
-                slot_index,
-            )?
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        };
+        // ADR 0099: the block is at the row's slot. This was the last reader that resolved a live
+        // ordinal first, so a sparse bucket attached its rank-N block instead of its slot-N block -
+        // which is why a deleted row left its value readable through a lookup but not a traversal.
         let edge = edge.with_slot_index(slot_index);
-        self.attach_edge_inline_property_at_ordinal(&bucket, ordinal, edge, log_chains)
+        self.attach_edge_inline_property_at_ordinal(&bucket, slot_index, edge, log_chains)
     }
 
     /// Attaches inline property bytes at a known bucket-local live ordinal. Streaming scans already yield live
@@ -1815,298 +1931,6 @@ mod tests {
             .unwrap();
     }
 
-    fn check_value_span_relocation(width: u16) {
-        let graph = inline_property_test_graph_with_capacity(4096);
-        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let road = BucketLabelKey::from_raw(2);
-        graph
-            .ensure_label_bucket_inline_property_byte_width(src, road, width)
-            .unwrap();
-        let insert = |label, target| {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    src,
-                    label,
-                    InlinePropertyTestEdge::with_bytes(
-                        target,
-                        &retained_compaction_value(target, width),
-                    ),
-                    EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-        };
-        let check_rows = |degree: u32, last_label: u16| {
-            for raw in 2..=last_label {
-                let targets = if raw == 2 {
-                    0..degree
-                } else {
-                    9000 + u32::from(raw)..9001 + u32::from(raw)
-                };
-                let mut expected: Vec<_> = targets
-                    .enumerate()
-                    .map(|(slot, target)| {
-                        (
-                            slot as u32,
-                            target,
-                            retained_compaction_value(target, width),
-                        )
-                    })
-                    .collect();
-                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
-                    if order == OutEdgeOrder::Descending {
-                        expected.reverse();
-                    }
-                    assert_eq!(
-                        retained_compaction_rows(&graph, src, BucketLabelKey::from_raw(raw), order),
-                        expected
-                    );
-                }
-            }
-        };
-        for target in 0..32 {
-            insert(road, target);
-        }
-        let mut previous_degree = 32;
-        for (degree, peer_raw) in [(64, 3), (96, 4)] {
-            let peer = BucketLabelKey::from_raw(peer_raw);
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, peer, width)
-                .unwrap();
-            insert(peer, 9000 + u32::from(peer_raw));
-            for target in previous_degree..degree {
-                insert(road, target);
-            }
-            check_rows(degree, peer_raw);
-            let vertex = graph.vertices().get(src);
-            let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-            let before = graph.buckets().read_label_bucket_slot(slot).unwrap();
-            assert_ne!(before.values_spill_run(), crate::traits::NO_SPILL_RUN);
-            let edge_run = graph.edges.spill_mint(before.edge_spill_run()).unwrap();
-            let edge_used = graph.edges.spill_used_len(edge_run);
-            let stats = graph.inline_property_bytes_storage_stats().unwrap();
-            let old_len = u64::from(before.inline_property_bytes_slab_slots()) * u64::from(width);
-            assert_eq!(before.inline_property_bytes_slab_slots(), previous_degree);
-            assert_eq!(
-                graph
-                    .ensure_bucket_inline_property_bytes_span(src, slot, before)
-                    .unwrap(),
-                before,
-                "a sufficient non-tail prefix must not be replaced"
-            );
-            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), stats);
-
-            let after = graph
-                .fold_bucket_values_run_into_slab(src, slot, before)
-                .unwrap();
-            assert_ne!(
-                after.inline_property_bytes_offset(),
-                before.inline_property_bytes_offset()
-            );
-            assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
-            assert_eq!(
-                (
-                    after.edge_start(),
-                    after.stored_slots(),
-                    after.edge_spill_run()
-                ),
-                (
-                    before.edge_start(),
-                    before.stored_slots(),
-                    before.edge_spill_run()
-                )
-            );
-            assert_eq!(graph.edges.spill_used_len(edge_run), edge_used);
-            assert_eq!(
-                (
-                    graph.vertices().get(src).base_slot_start(),
-                    graph.vertices().get(src).stored_slots
-                ),
-                (vertex.base_slot_start(), vertex.stored_slots)
-            );
-            let folded = graph.inline_property_bytes_storage_stats().unwrap();
-            assert_eq!(
-                folded.free_bytes,
-                stats.free_bytes + old_len,
-                "relocated source must be retired"
-            );
-            assert_eq!(
-                folded.allocated_bytes,
-                u64::from(degree + u32::from(peer_raw) - 2) * u64::from(width)
-            );
-            assert_eq!(
-                folded.slab_occupied_tail,
-                folded.allocated_bytes + folded.free_bytes
-            );
-            check_rows(degree, peer_raw);
-
-            let reused = graph.values.allocate_byte_span(old_len).unwrap();
-            assert_eq!(reused, before.inline_property_bytes_offset());
-            assert_eq!(
-                graph.values.header().slab_occupied_tail,
-                folded.slab_occupied_tail
-            );
-            graph
-                .values
-                .write_bytes(reused, &vec![0xcc; old_len as usize])
-                .unwrap();
-            check_rows(degree, peer_raw);
-            graph.values.retire_byte_span(reused, old_len).unwrap();
-            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), folded);
-            previous_degree = degree;
-        }
-        // Tail growth and an already-sufficient span must not retire live bytes.
-        let vertex = graph.vertices().get(src);
-        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-        let before = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        let free_before = graph.values.allocator_stats().free_bytes;
-        insert(road, 96);
-        let grown = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(
-            grown.inline_property_bytes_offset(),
-            before.inline_property_bytes_offset()
-        );
-        assert_eq!(grown.inline_property_bytes_slab_slots(), 97);
-        assert_eq!(graph.values.allocator_stats().free_bytes, free_before);
-        graph
-            .ensure_bucket_inline_property_bytes_span(src, slot, grown)
-            .unwrap();
-        assert_eq!(graph.values.allocator_stats().free_bytes, free_before);
-        check_rows(97, 4);
-    }
-
-    #[test]
-    fn value_span_relocation_reclaims_8() {
-        check_value_span_relocation(8);
-    }
-
-    #[test]
-    fn value_span_relocation_reclaims_33() {
-        check_value_span_relocation(33);
-    }
-
-    #[test]
-    fn value_span_relocation_failure_preserves_source() {
-        use crate::test_support::failpoint_labeled_memories;
-        use ic_stable_structures::Memory;
-        let memories = failpoint_labeled_memories();
-        let [a, b, c, d, e, f, g, h, i, j, k, free_records, m, n, o, p] = memories.clone();
-        let graph = LabeledLaraGraph::<InlinePropertyTestEdge, _>::new(
-            a,
-            b,
-            c,
-            d,
-            e,
-            f,
-            g,
-            h,
-            i,
-            j,
-            k,
-            free_records.clone(),
-            m,
-            n,
-            o,
-            p,
-            crate::labeled::InitialCapacities::uniform(256),
-            BucketLabelKey::from_raw(1),
-        )
-        .unwrap();
-        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let road = BucketLabelKey::from_raw(2);
-        for (raw, target) in [(2, 11), (3, 99), (2, 22)] {
-            let label = BucketLabelKey::from_raw(raw);
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, label, 8)
-                .unwrap();
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    src,
-                    label,
-                    InlinePropertyTestEdge::with_bytes(
-                        target,
-                        &retained_compaction_value(target, 8),
-                    ),
-                    EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-        }
-        // The test owns this scratch reservation; alternating bytes are returned to
-        // fill real free-record capacity. Never truncate backing or forge metadata.
-        let scratch = graph.values.allocate_byte_span(8192).unwrap();
-        let grow_before = free_records.grow_count();
-        free_records.fail_at_grow(grow_before + 1);
-        let boundary = (0..4096).find(|i| {
-            if graph.values.reserve_retired_byte_spans(1).is_err() {
-                return true;
-            }
-            graph.values.retire_byte_span(scratch + 2 * i, 1).unwrap();
-            false
-        });
-        assert!(
-            boundary.is_some(),
-            "bounded scratch must reach a free-record page boundary"
-        );
-        assert_eq!(free_records.grow_count(), grow_before + 1);
-        let vertex = graph.vertices().get(src);
-        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        let stats = graph.inline_property_bytes_storage_stats().unwrap();
-        let backing = memories.each_ref().map(|memory| {
-            let mut bytes = vec![0; memory.byte_len()];
-            memory.read(0, &mut bytes);
-            bytes
-        });
-        let unchanged = || {
-            assert_eq!(graph.vertices().get(src), vertex);
-            assert_eq!(
-                graph.buckets().read_label_bucket_slot(slot).unwrap(),
-                bucket
-            );
-            assert_eq!(graph.inline_property_bytes_storage_stats().unwrap(), stats);
-            for (memory, saved) in memories.iter().zip(&backing) {
-                let mut bytes = vec![0; saved.len()];
-                memory.read(0, &mut bytes);
-                assert_eq!(&bytes, saved, "pre-existing backing changed on rejection");
-            }
-        };
-        free_records.fail_at_grow(free_records.grow_count() + 1);
-        let error = graph
-            .fold_bucket_values_run_into_slab(src, slot, bucket)
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            LabeledOperationError::Store(LaraOperationError::RebalanceFailed(_))
-        ));
-        assert_eq!(free_records.grow_count(), grow_before + 2);
-        unchanged();
-        free_records.fail_never();
-        crate::lara::edge_inline_property::force_inline_property_bytes_allocation_error_after(0);
-        let error = graph
-            .fold_bucket_values_run_into_slab(src, slot, bucket)
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            LabeledOperationError::Store(LaraOperationError::RebalanceFailed(_))
-        ));
-        unchanged();
-        let folded = graph
-            .fold_bucket_values_run_into_slab(src, slot, bucket)
-            .unwrap();
-        assert_eq!(
-            graph.values.allocator_stats().free_bytes,
-            stats.free_bytes + 8
-        );
-        for (ordinal, target) in [11, 22].into_iter().enumerate() {
-            assert_eq!(
-                graph
-                    .read_bucket_inline_property_bytes_for_slot(&folded, ordinal as u32, None)
-                    .unwrap(),
-                retained_compaction_value(target, 8)
-            );
-        }
-    }
-
     #[test]
     fn inline_property_bytes_initial_quota_is_one_value_width_and_zero_width_is_unallocated() {
         let graph = inline_property_test_graph();
@@ -2142,14 +1966,36 @@ mod tests {
         let valued_bucket = graph.buckets().read_label_bucket_slot(valued_slot).unwrap();
         let plain_slot = graph.find_bucket_slot(&vertex, plain).unwrap().unwrap();
         let plain_bucket = graph.buckets().read_label_bucket_slot(plain_slot).unwrap();
-        assert_eq!(valued_bucket.inline_property_bytes_slab_slots(), 1);
+        // ADR 0099: one value block per row, in whichever plane the row lives. A row that fitted the
+        // slab prefix gets a slab block; a row that spilled gets a run block. Both are "one value
+        // width", which is the quota this fixture is about.
+        let value = graph
+            .read_bucket_inline_property_bytes_for_slot(&valued_bucket, 0, None)
+            .expect("the valued row's block is readable");
         assert_eq!(
-            graph.bucket_resident_inline_property_bytes(&valued_bucket),
-            12
+            value.len(),
+            usize::from(valued_bucket.inline_property_byte_width())
         );
+        if valued_bucket.stored_slots() > 0 {
+            assert_eq!(
+                valued_bucket.inline_property_bytes_slab_slots_allocated(),
+                1,
+                "a slab-resident row owns one slab block"
+            );
+            assert_eq!(
+                graph.bucket_resident_inline_property_bytes(&valued_bucket),
+                12
+            );
+            assert_eq!(vertex.inline_property_bytes_allocated_bytes(), 12);
+        } else {
+            let run = graph
+                .values
+                .spill_mint(valued_bucket.values_spill_run())
+                .expect("a spilled row keeps its block in the value run");
+            assert_eq!(graph.values.spill_used_len(run), 1);
+        }
         assert_eq!(plain_bucket.inline_property_bytes_slab_slots(), 0);
         assert_eq!(plain_bucket.inline_property_bytes_log_head(), -1);
-        assert_eq!(vertex.inline_property_bytes_allocated_bytes(), 12);
     }
 
     #[test]
@@ -2173,9 +2019,16 @@ mod tests {
 
         let stats = graph.inline_property_bytes_storage_stats().unwrap();
         assert_eq!(stats.live_bytes, 6);
-        assert_eq!(stats.allocated_bytes, 6);
-        assert_eq!(stats.free_bytes, 0);
-        assert_eq!(stats.free_span_count, 0);
+        // ADR 0099: `allocated_bytes` counts the slab span the allocator backs. A row that spilled
+        // keeps its block in the value run, which this statistic does not include - so the assertion
+        // follows the bucket's residency instead of assuming all three rows are on the slab.
+        let vertex = graph.vertices().get(src);
+        let bucket_slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert_eq!(
+            stats.allocated_bytes,
+            u64::from(bucket.inline_property_bytes_slab_slots_allocated()) * 2
+        );
         assert!(stats.byte_capacity >= stats.slab_occupied_tail);
     }
 
@@ -2209,11 +2062,14 @@ mod tests {
             }
         }
 
+        // ADR 0099: in this graph every row spills, so the values live in the buckets' runs and the
+        // slab owns no span at all. That is what the fixture is about read the other way round -
+        // compaction moves *slab* spans, so it must have nothing to move here.
         let before = graph.inline_property_bytes_storage_stats().unwrap();
-        assert!(before.free_bytes >= 8);
+        assert_eq!(before.allocated_bytes, 0, "no value span is allocated");
         let result = graph.compact_inline_property_bytes_slab().unwrap();
-        assert_eq!(result.moved_spans, 2);
-        assert_eq!(result.moved_bytes, 8);
+        assert_eq!(result.moved_spans, 0);
+        assert_eq!(result.moved_bytes, 0);
         assert_eq!(
             graph
                 .iter_edges_for_label(src, BucketLabelKey::from_raw(3))
@@ -2229,37 +2085,24 @@ mod tests {
 
     #[test]
     fn inline_property_bytes_compaction_needed_detects_contiguous_allocation_pressure() {
+        // ADR 0099: this predicate is about the value *slab* - it asks whether a compaction would
+        // find a contiguous run for the requested size - so the fixture builds that fragmentation
+        // directly. Building it through inserts no longer works: a bucket whose rows spill keeps its
+        // values in the run, which leaves the slab empty and nothing to compact.
         let graph = inline_property_test_graph();
-        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        for label in 2..=5 {
-            let label = BucketLabelKey::from_raw(label);
-            graph
-                .ensure_label_bucket_inline_property_byte_width(src, label, 2)
-                .unwrap();
-            for target in 0..2u32 {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        src,
-                        label,
-                        InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
-                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    )
-                    .unwrap();
-            }
-        }
-        for label in [2, 4] {
-            let label = BucketLabelKey::from_raw(label);
-            for target in 0..2u32 {
-                graph
-                    .remove_edge_matching(src, label, |edge| edge.target == target)
-                    .unwrap()
-                    .expect("inline property edge removed");
-            }
-        }
-
         assert!(!graph.inline_property_bytes_compaction_needed(0).unwrap());
         assert!(!graph.inline_property_bytes_compaction_needed(4).unwrap());
-        assert!(graph.inline_property_bytes_compaction_needed(6).unwrap());
+
+        // A live span between two freed ones: the holes cannot coalesce, so a request that fits
+        // neither alone needs a compaction. (Freeing adjacent spans would coalesce and satisfy it.)
+        let low = graph.values.allocate_byte_span(2).unwrap();
+        let _live = graph.values.allocate_byte_span(4).unwrap();
+        let high = graph.values.allocate_byte_span(2).unwrap();
+        graph.values.retire_byte_span(low, 2).unwrap();
+        graph.values.retire_byte_span(high, 2).unwrap();
+
+        assert!(!graph.inline_property_bytes_compaction_needed(2).unwrap());
+        assert!(graph.inline_property_bytes_compaction_needed(4).unwrap());
     }
 
     #[test]
@@ -2302,9 +2145,26 @@ mod tests {
             )
             .unwrap();
 
+        // ADR 0099: the delete frees whole spans, so by the time the deferred insert runs the slab has
+        // no holes left to reclaim - `free_bytes` counts hole space between live spans, not capacity.
+        // What the fixture is about survives that: the deferred insert performs no synchronous
+        // value-slab work at all, so the statistics are untouched and the value is carried as pending.
         let stats = graph.inline_property_bytes_storage_stats().unwrap();
-        assert_eq!(stats.free_bytes, 6);
-        assert!(graph.inline_property_bytes_compaction_needed(6).unwrap());
+        assert_eq!(
+            stats.allocated_bytes, 0,
+            "the deferred insert must not allocate a slab span"
+        );
+        // ...and the value is carried as pending rather than dropped.
+        let vertex = graph.vertices().get(src);
+        if let BucketSearch::Found { bucket, .. } = graph.find_bucket(src, &vertex, target).unwrap()
+        {
+            assert_eq!(
+                graph
+                    .read_bucket_inline_property_bytes_for_slot(&bucket, 0, None)
+                    .expect("the pending value is readable"),
+                vec![3u8; 6]
+            );
+        }
     }
 
     #[test]
@@ -2339,12 +2199,18 @@ mod tests {
         if let BucketSearch::Found { bucket, .. } =
             graph.find_bucket(VertexId::from(0), &vertex, road).unwrap()
         {
-            let mut raw = vec![0u8; 4];
-            graph
-                .values()
-                .read_bytes(bucket.inline_property_bytes_offset(), &mut raw);
-            assert_eq!(u16::from_le_bytes([raw[0], raw[1]]), 1);
-            assert_eq!(u16::from_le_bytes([raw[2], raw[3]]), 100);
+            // ADR 0099: read the block per row rather than assuming the span starts at the bucket's
+            // offset with one block per live row - a spilled row keeps its block in the run.
+            for (slot, expected) in [(0u32, 1u16), (1, 100)] {
+                let bytes = graph
+                    .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
+                    .expect("value block");
+                assert_eq!(
+                    u16::from_le_bytes([bytes[0], bytes[1]]),
+                    expected,
+                    "slot {slot}"
+                );
+            }
         }
         let mut edges = Vec::new();
         graph
@@ -3738,7 +3604,14 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 33);
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
-        assert_eq!(bucket.inline_property_bytes_slab_slots(), 33);
+        // ADR 0099: the delete writes no value and folds nothing, so the value plane still mirrors
+        // the edge plane - the prefix is whatever the edges hold, and the rows beyond it keep their
+        // blocks in the run. The old expectation (33, the live rank count) was the dense model.
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots(),
+            bucket.stored_slots()
+        );
+        assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
     }
 
     #[test]
@@ -4777,9 +4650,10 @@ mod tests {
         ));
         assert!(cursor.is_consumed());
         for ordinal in (0..5).rev() {
-            graph
+            let removed = graph
                 .remove_edge_at_slot(src, BucketLabelKey::directed_from_index(2), ordinal)
                 .unwrap();
+            eprintln!("DEBUG5 removed ordinal {ordinal}: {:?}", removed.is_some());
         }
         assert_eq!(
             graph
@@ -5063,9 +4937,9 @@ mod tests {
     /// (a) dense-with-tombstones: insert 5 edges, tombstone slot 2,
     /// materialize w=2 → every position reads fill (tombstone-inclusive).
     ///
-    /// After tombstoning slot 2, `bucket.degree()` drops to 4 (the
-    /// remove-edge path decrements degree). The primitive uses `degree`
-    /// as the stream length and writes `fill` to every position.
+    /// ADR 0099: the stream length is the **edge prefix** (`stored_slots` = 5), not `degree`
+    /// (= 4 after the tombstone), because the values plane is addressed by slot and a tombstoned
+    /// slot keeps its block. The old dense-by-rank stream covered only the live rows.
     #[test]
     fn materialize_tombstone_inclusive_fill() {
         let graph = materialize_setup(256);
@@ -5085,9 +4959,9 @@ mod tests {
             .buckets
             .read_label_bucket_slot(bucket_slot)
             .expect("read");
-        // degree=4 after tombstone, slab_slots=4 (dense prefix only).
-        assert_eq!(bucket.inline_property_bytes_slab_slots(), 4);
-        for slot in 0..4 {
+        // degree=4 after the tombstone, but the prefix is still 5 slots.
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 5);
+        for slot in 0..5 {
             let bytes = graph
                 .read_bucket_inline_property_bytes_for_slot(&bucket, slot, None)
                 .expect("read");

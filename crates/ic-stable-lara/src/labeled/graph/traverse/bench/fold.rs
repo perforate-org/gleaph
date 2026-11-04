@@ -187,10 +187,16 @@ impl<const W: usize> FoldFixture<W> {
             .unwrap()
     }
 
+    /// Folds this bucket's spill run into its span, values included.
+    ///
+    /// ADR 0099: the values-only fold this used to call is gone - it moved the values plane without
+    /// the rows, which is the divergence that ADR removes. The paired fold moves both, so it is what
+    /// "folding values" now means.
     fn fold_values(&self) {
         let (slot, bucket) = self.bucket();
-        self.graph
-            .fold_bucket_values_run_into_slab(self.src, slot, bucket)
+        let _ = self
+            .graph
+            .fold_bucket_edge_spill_head_into_span(self.src, slot, &bucket, u32::MAX)
             .unwrap();
     }
 

@@ -396,6 +396,16 @@ where
             // them as edge slots would corrupt the free store.
             return Ok(());
         }
+        // ADR 0099: an emptied bucket owns no rows, so it owns no value plane either. Releasing the
+        // edge span alone left the vertex charged for a value span no row could read.
+        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
+            && let Ok(run) = self.values.spill_mint(bucket.values_spill_run())
+        {
+            let _ = self.values.spill_release(run);
+        }
+        if bucket.inline_property_bytes_slab_slots_allocated() > 0 {
+            let _ = self.release_bucket_inline_property_bytes_span(src, bucket);
+        }
         let span_len = bucket.stored_slots_raw();
         if span_len == 0 {
             return Ok(());
@@ -579,7 +589,7 @@ where
         src: VertexId,
         vertex: &LabeledVertex,
         slot: u64,
-        mut bucket: LabelBucket,
+        bucket: LabelBucket,
         slot_index: u32,
         location: BucketEdgeDeleteLocation,
     ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
@@ -591,7 +601,9 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(vertex, slot)?;
-        let Some(inline_property_bytes_ordinal) = self.bucket_live_ordinal_at_edge_slot(
+        // The value ordinal is only needed to prove the row is live now that the delete writes no
+        // value (ADR 0099).
+        let Some(_inline_property_bytes_ordinal) = self.bucket_live_ordinal_at_edge_slot(
             src,
             vertex,
             bucket_index,
@@ -602,18 +614,8 @@ where
         else {
             return Err(LaraOperationError::LogChainShort.into());
         };
-        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
-            // Only this bucket's rows are about to be shifted, so only this bucket is folded.
-            bucket = self.fold_bucket_values_run_into_slab(src, slot, bucket)?;
-        }
-        let inline_property_bytes_delete = self.plan_bucket_inline_property_bytes_delete(
-            src,
-            bucket,
-            inline_property_bytes_ordinal,
-        )?;
-        if let Some(plan) = inline_property_bytes_delete {
-            bucket = self.apply_bucket_inline_property_bytes_delete(src, plan);
-        }
+        // ADR 0099: deleting writes no value. The row is tombstoned below and a reader never asks
+        // for a tombstoned slot's value, so neither a fold nor a suffix shift happens here.
         self.commit_bucket_edge_delete(src, slot, bucket, slot_index, location)
     }
 
@@ -667,10 +669,32 @@ where
         if emptied && updated.stored_slots() > 0 {
             self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
         }
+        // ADR 0099: a bucket with no live rows gives up its value *span* - space, not state. Its runs
+        // are reusable tombstone holders that compaction sweeps (see
+        // `deleting_every_row_keeps_the_run_until_compaction`), so they stay in step with each other;
+        // releasing only the values run here is what left the planes one row apart on the next insert.
+        let mut updated = updated;
+        if updated.degree() == 0 {
+            if updated.edge_spill_run() == crate::traits::NO_SPILL_RUN
+                && updated.values_spill_run() != crate::traits::NO_SPILL_RUN
+            {
+                if let Ok(run) = self.values.spill_mint(updated.values_spill_run()) {
+                    let _ = self.values.spill_release(run);
+                }
+                updated = updated.without_values_spill_run();
+            }
+            // `is_inline_property_bytes_allocated` folds "has rows" into its answer, so it reads
+            // false exactly when this release is needed; the descriptor's recorded slot count is the
+            // question to ask here.
+            if updated.inline_property_bytes_slab_slots_allocated() > 0 {
+                let _ = self.release_bucket_inline_property_bytes_span(src, &updated);
+            }
+        }
         let updated = if emptied {
             updated
                 .with_inline_property_bytes_log_head(-1)
                 .with_inline_property_bytes_slab_slots(0)
+                .without_values_spill_run()
                 .with_edge_range(updated.edge_start(), 0)
         } else {
             updated
@@ -1937,12 +1961,23 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0099: residency follows the row's slot, so the value may be in the slab span or in the
+        // spill run depending on where the row landed. What the fixture needs to know is that the
+        // value is there and that removing the last row clears the whole plane.
+        let vertex_before = graph.vertices().get(VertexId::from(0));
+        let bucket_slot_before = graph
+            .find_bucket_slot(&vertex_before, road)
+            .unwrap()
+            .unwrap();
+        let bucket_before = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot_before)
+            .unwrap();
         assert_eq!(
             graph
-                .vertices()
-                .get(VertexId::from(0))
-                .inline_property_bytes_allocated_bytes(),
-            2
+                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
+                .unwrap(),
+            42u16.to_le_bytes().to_vec()
         );
 
         graph
@@ -1955,6 +1990,14 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        // The emptied bucket gives its value *span* back - that is the allocation this fixture is
+        // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
+        // run id may still be set.
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots_allocated(),
+            0,
+            "the emptied bucket releases its value span"
+        );
     }
 
     #[test]
@@ -1974,12 +2017,23 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
+        // ADR 0099: residency follows the row's slot, so the value may be in the slab span or in the
+        // spill run depending on where the row landed. What the fixture needs to know is that the
+        // value is there and that removing the last row clears the whole plane.
+        let vertex_before = graph.vertices().get(VertexId::from(0));
+        let bucket_slot_before = graph
+            .find_bucket_slot(&vertex_before, road)
+            .unwrap()
+            .unwrap();
+        let bucket_before = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot_before)
+            .unwrap();
         assert_eq!(
             graph
-                .vertices()
-                .get(VertexId::from(0))
-                .inline_property_bytes_allocated_bytes(),
-            2
+                .read_bucket_inline_property_bytes_for_slot(&bucket_before, 0, None)
+                .unwrap(),
+            42u16.to_le_bytes().to_vec()
         );
 
         let removed = graph
@@ -1994,6 +2048,14 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
         assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        // The emptied bucket gives its value *span* back - that is the allocation this fixture is
+        // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
+        // run id may still be set.
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots_allocated(),
+            0,
+            "the emptied bucket releases its value span"
+        );
     }
 
     // Delete redesign: tiny deletes tombstone inline (no promotion).

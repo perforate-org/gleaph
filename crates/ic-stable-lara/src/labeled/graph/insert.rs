@@ -454,21 +454,14 @@ where
                 self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
                 let vertex = self.vertices.get(src);
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-                for _attempt in 0..64u32 {
+                // A single pass: the values fold that made this a retry loop is gone (ADR 0099).
+                #[allow(clippy::never_loop)]
+                for _attempt in 0..1u32 {
                     let attempt_edge = edge.clone();
                     let vertex = self.vertices.get(src);
-                    if has_edge_inline_property
-                        && bucket.values_spill_run() != crate::traits::NO_SPILL_RUN
-                        && self
-                            .values
-                            .spill_mint(bucket.values_spill_run())
-                            .is_ok_and(|run| self.values.spill_run_is_full(run))
-                    {
-                        let vertex = self.vertices.get(src);
-                        let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                        bucket = self.fold_bucket_values_run_into_slab(src, bucket_slot, bucket)?;
-                        continue;
-                    }
+                    // ADR 0099: a full value run is no reason to fold the values plane - the
+                    // append grows the run itself, and folding it would leave the edge run's rows
+                    // pointing at blocks that moved.
                     // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab
                     // tombstone before appending to the slab tail or the overflow log.
                     // The helper keeps the dense fast path O(1) and falls back to the
@@ -506,11 +499,13 @@ where
                         debug_assert!(write_slot < successor_start);
                         self.edges.write_slot(write_slot, attempt_edge.clone())?;
                         let logical_slot = bucket.stored_slots();
+                        let value_slot = logical_slot;
                         let bucket = bucket.grow_packed_slab_by_one();
                         let bucket = self.write_edge_inline_property_after_insert(
                             src,
                             bucket_slot,
                             bucket,
+                            value_slot,
                             &attempt_edge,
                         )?;
                         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -574,6 +569,7 @@ where
                                 src,
                                 bucket_slot,
                                 bucket,
+                                written_slot,
                                 &attempt_edge,
                             )?;
                             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -593,10 +589,12 @@ where
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
+                                let value_slot = logical_slot.unwrap_or(bucket.stored_slots());
                                 let bucket = self.write_edge_inline_property_after_insert(
                                     src,
                                     bucket_slot,
                                     bucket,
+                                    value_slot,
                                     &attempt_edge,
                                 )?;
                                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -626,8 +624,8 @@ where
                         Err(e) => return Err(LabeledOperationError::from(e)),
                     }
                 }
-                // The retry loop is bounded; reaching here means the bucket still could not admit
-                // the row after repeated promotion and inline-property-bytes preparation, so the
+                // ADR 0099: the values fold that used to retry here is gone, so this block runs
+                // once; reaching the end means the bucket could not place the row after promotion
                 // last attempt's outcome is reported: the spill still needs promotion.
                 Err(LaraOperationError::SpillNeedsPromotion.into())
             }
@@ -766,7 +764,6 @@ where
         if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(None);
         }
-        let mut ordinal_before = 0u32;
         let mut reused_slot = None;
         for slot_index in 0..bucket.stored_slots() {
             let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
@@ -775,7 +772,6 @@ where
                 reused_slot = Some(slot_index);
                 break;
             }
-            ordinal_before += 1;
         }
         let Some(reused_slot) = reused_slot else {
             return Ok(None);
@@ -783,37 +779,12 @@ where
         let width = bucket.inline_property_byte_width();
         let has_inline_property = width != 0 && edge.edge_inline_property_byte_width() != 0;
         if has_inline_property {
-            let old_offset = bucket.inline_property_bytes_offset();
-            let trailing_slots = bucket.degree().saturating_sub(ordinal_before);
-            let trailing_len = u64::from(trailing_slots)
-                .checked_mul(u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let mut trailing = vec![
-                0u8;
-                usize::try_from(trailing_len).map_err(|_| {
-                    LaraOperationError::CollectAllocationOverflow
-                })?
-            ];
-            if trailing_len > 0 {
-                let source = old_offset
-                    .checked_add(u64::from(ordinal_before) * u64::from(width))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.values.read_bytes(source, &mut trailing);
-            }
+            // ADR 0099: the value of the row that fills the hole is written at the hole's own slot.
+            // The upward shift this used to perform existed because values were addressed by rank,
+            // where filling a middle hole renumbered every later row's value.
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
             bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
-            if trailing_len > 0 {
-                let destination = (u64::from(ordinal_before) + 1)
-                    .checked_mul(u64::from(width))
-                    .and_then(|offset| bucket.inline_property_bytes_offset().checked_add(offset))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.values
-                    .write_bytes(destination, &trailing)
-                    .map_err(LabeledOperationError::from)?;
-            }
-            // `ordinal_before` is the hole's live ordinal, so the ordinal primitive is the right
-            // form: resolving it from the physical slot would skip the hole being filled.
-            self.write_edge_inline_property_at_ordinal(&bucket, ordinal_before, edge)?;
+            self.write_edge_inline_property_at_ordinal(&bucket, reused_slot, edge)?;
         } else {
             bucket = bucket.after_slab_insert_reuse_tail_tombstone();
         }
@@ -1081,7 +1052,13 @@ where
         let slot = super::edge_slot::<E>(&mut slot);
         edge.write_to(slot);
         let grown = grown.with_tiny_slot(logical_slot, E::BYTES, slot);
-        let grown = self.write_edge_inline_property_after_insert(src, bucket_slot, grown, &edge)?;
+        let grown = self.write_edge_inline_property_after_insert(
+            src,
+            bucket_slot,
+            grown,
+            logical_slot,
+            &edge,
+        )?;
         self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr

@@ -3157,6 +3157,95 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// The two orientations, paired.
+    ///
+    /// Counterpart resolution reads one store to name a row in the other, so the pair - not either
+    /// store - owns it. Callers that need the counterpart row, or the canonical handle that
+    /// properties and derived indexes are keyed by, go through this instead of naming the two graphs
+    /// themselves.
+    pub fn counterparts(
+        &self,
+    ) -> crate::labeled::bidirectional::counterpart::CounterpartResolver<'_, E, M> {
+        crate::labeled::bidirectional::counterpart::CounterpartResolver::new(
+            &self.forward,
+            &self.reverse,
+        )
+    }
+
+    /// Updates one directed edge's inline property bytes across **both** orientations.
+    ///
+    /// This is the update counterpart of [`Self::insert_directed_edge`]: the pair is admitted as a
+    /// unit and written as a unit. Both rows are checked live before either write, the canonical row
+    /// is written first, and a counterpart that has gone missing or failed after that write traps -
+    /// the caller has already committed its fence, so an error there would let the IC skip the
+    /// message while keeping the reserved admission. The same discipline as the insert path, which
+    /// is the point: one owner decides what "both rows" means.
+    ///
+    /// `canonical` and `counterpart` are the two stores' rows of the same canonical edge; `edge` is
+    /// the new payload for both. Returns `false` when either row is not live.
+    pub fn update_directed_edge_inline_property(
+        &self,
+        canonical: crate::labeled::CanonicalEdgeOccurrence,
+        counterpart: crate::labeled::CanonicalEdgeOccurrence,
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        let exists =
+            |occurrence: crate::labeled::CanonicalEdgeOccurrence| match occurrence.orientation {
+                crate::labeled::LabeledOrientation::Forward => self
+                    .forward
+                    .edge_exists_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Forward),
+                crate::labeled::LabeledOrientation::Reverse => self
+                    .reverse
+                    .edge_exists_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Reverse),
+            };
+        let write =
+            |occurrence: crate::labeled::CanonicalEdgeOccurrence| match occurrence.orientation {
+                crate::labeled::LabeledOrientation::Forward => self
+                    .forward
+                    .update_edge_inline_property_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                        edge.clone(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Forward),
+                crate::labeled::LabeledOrientation::Reverse => self
+                    .reverse
+                    .update_edge_inline_property_at_slot(
+                        occurrence.owner_vertex_id,
+                        occurrence.label_id,
+                        occurrence.slot_index.raw(),
+                        edge.clone(),
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Reverse),
+            };
+        if !exists(canonical)? || !exists(counterpart)? {
+            return Ok(false);
+        }
+        if !write(canonical)? {
+            return Ok(false);
+        }
+        if counterpart == canonical {
+            return Ok(true);
+        }
+        match write(counterpart) {
+            Ok(true) => Ok(true),
+            other => panic!(
+                "counterpart row must remain updatable after its canonical row was written: {other:?}"
+            ),
+        }
+    }
+
     /// Removes one reverse-store edge at the given label-row slot.
     pub fn remove_reverse_edge_at_slot(
         &self,
@@ -8247,7 +8336,16 @@ mod tests {
             _ => panic!("missing pending source"),
         };
         assert_eq!(pending_forward.inline_property_byte_width(), 8);
-        assert_eq!(pending_forward.inline_property_bytes_slab_slots(), 600);
+        // ADR 0099: the published span holds the edge prefix's blocks; rows beyond it - here every
+        // one of them, since the bucket spilled - keep their blocks in the value run.
+        assert_eq!(
+            pending_forward.inline_property_bytes_slab_slots(),
+            pending_forward.stored_slots()
+        );
+        assert_ne!(
+            pending_forward.values_spill_run(),
+            crate::traits::NO_SPILL_RUN
+        );
         let pending_reverse = match graph
             .reverse()
             .find_bucket(dst, &graph.reverse().vertices().get(dst), label)
@@ -8279,22 +8377,31 @@ mod tests {
             };
             assert_eq!(bucket.inline_property_byte_width(), 8);
             assert_eq!(bucket.degree(), 601);
-            assert_eq!(bucket.inline_property_bytes_slab_slots(), 601);
-            let mut new_bytes = vec![0; 8];
-            owner.values().read_value_slot(
-                bucket.inline_property_bytes_offset() + 600 * 8,
-                8,
-                &mut new_bytes,
+            // ADR 0099: the published prefix is the edge prefix, and a row's block is read at its
+            // own slot - which for the rows past the prefix means the value run, not an offset
+            // arithmetic into the span.
+            assert_eq!(
+                bucket.inline_property_bytes_slab_slots(),
+                bucket.stored_slots()
             );
-            assert_eq!(new_bytes, vec![new_value; 8]);
-            for ordinal in 0..600 {
-                let mut bytes = vec![0xFF; 8];
-                owner.values().read_value_slot(
-                    bucket.inline_property_bytes_offset() + ordinal * 8,
-                    8,
-                    &mut bytes,
-                );
-                assert_eq!(bytes, vec![0; 8]);
+            let slots: Vec<_> = (0..=600u32).map(BucketEntryPosition::new).collect();
+            let mut values = Vec::new();
+            let _ = owner
+                .visit_edges_at_with_inline_property(
+                    vertex_id,
+                    label,
+                    &slots,
+                    OutEdgeOrder::Ascending,
+                    |_slot, item| {
+                        values.push(item.inline_property.bytes().to_vec());
+                        std::ops::ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(values.len(), 601);
+            assert_eq!(values[600], vec![new_value; 8]);
+            for (slot_index, bytes) in values.iter().take(600).enumerate() {
+                assert_eq!(*bytes, vec![0; 8], "slot {slot_index}");
             }
         }
         graph.maintenance(unbounded_budget()).unwrap();
@@ -8491,10 +8598,12 @@ mod tests {
         {
             crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
                 assert_eq!(bucket.inline_property_byte_width(), 8, "width published");
+                // ADR 0099: the published prefix is the edge prefix, not the count of pre-existing
+                // rows; the rest of those rows keep their blocks in the value run.
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
-                    n_w0,
-                    "slab_slots = w=0 edges (w=8 edge not yet inserted)"
+                    bucket.stored_slots(),
+                    "the value prefix is the edge prefix"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
@@ -8523,17 +8632,23 @@ mod tests {
                 assert_eq!(bucket.inline_property_byte_width(), 8);
                 assert_eq!(
                     bucket.inline_property_bytes_slab_slots(),
-                    n_w0 + 1,
-                    "slab_slots = w=0 + 1 w=8"
+                    bucket.stored_slots(),
+                    "the value prefix is the edge prefix"
                 );
                 assert_eq!(bucket.inline_property_bytes_log_head(), -1);
             }
             _ => panic!("expected Found bucket after retry"),
         }
         let v = graph.forward().vertices().get(src);
+        let published = match graph.forward().find_bucket(src, &v, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("expected Found bucket"),
+        };
+        // ADR 0099: the vertex is charged for the span the allocator backs - the edge prefix's
+        // blocks. Rows beyond it keep their blocks in the value run, which the spill arena owns.
         assert_eq!(
             v.inline_property_bytes_allocated_bytes(),
-            u64::from(n_w0 + 1) * 8
+            u64::from(published.inline_property_bytes_slab_slots_allocated()) * 8
         );
     }
 

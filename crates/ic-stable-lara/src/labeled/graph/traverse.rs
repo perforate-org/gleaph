@@ -642,12 +642,6 @@ where
         } else {
             None
         };
-        let descending = order == OutEdgeOrder::Descending;
-        let mut ordinal = if descending {
-            bucket.degree().saturating_sub(1)
-        } else {
-            0
-        };
         let mut failure = None;
         let mut breaking = None;
         let label_id = bucket.bucket_label_key();
@@ -655,9 +649,12 @@ where
             let mut emit = |slot: u32, edge: E| -> ControlFlow<()> {
                 let edge = edge.with_slot_index(slot).with_label_id(label_id.raw());
                 let edge = if attach_inline_property_bytes {
+                    // ADR 0099: the block is at the row's slot. This used to pass the live
+                    // ordinal, so a bucket with a tombstone attached its neighbour's value - the
+                    // reader that disagreed with the traversal in the delete-counterpart fixtures.
                     match self.attach_edge_inline_property_at_ordinal(
                         bucket,
-                        ordinal,
+                        slot,
                         edge,
                         log_chains.as_ref(),
                     ) {
@@ -670,11 +667,6 @@ where
                 } else {
                     edge
                 };
-                if descending {
-                    ordinal = ordinal.saturating_sub(1);
-                } else {
-                    ordinal = ordinal.saturating_add(1);
-                }
                 match visit(slot, edge) {
                     Ok(ControlFlow::Continue(())) => ControlFlow::Continue(()),
                     Ok(other) => {
@@ -1985,19 +1977,37 @@ where
                 let batch_rows = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES
                     / usize::from(width).max(1))
                 .max(1) as u32;
-                let mut ordinal = match order {
+                // ADR 0099: values are addressed by slot, so the batch is a run of **slots**, not of
+                // live ordinals. The bound is the bucket's resident value slots (slab prefix plus
+                // spill rows); a batch spanning slots also covers the tombstoned ones in between,
+                // whose blocks are stale but never visited.
+                // ...and the bound must cover the run too: the accounting helper returns the backed
+                // span only, which clips the batch short of the run and makes the in-batch offsets
+                // read the wrong block.
+                let run_rows = match self.values.spill_mint(bucket.values_spill_run()) {
+                    Ok(run) => self.values.spill_used_len(run),
+                    Err(_) => 0,
+                };
+                let slot_bound = bucket
+                    .inline_property_bytes_slab_slots()
+                    .saturating_add(run_rows);
+                let mut next_slot = match order {
                     OutEdgeOrder::Ascending => 0,
-                    OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+                    OutEdgeOrder::Descending => slot_bound.saturating_sub(1),
                 };
                 let flow =
                     self.visit_slab_bucket_span_edges(&bucket, order, false, |slot, edge| {
-                        if width > 0 && !value_range.contains(&ordinal) {
+                        if width > 0 && !value_range.contains(&slot) {
                             value_range = match order {
                                 OutEdgeOrder::Ascending => {
-                                    ordinal..ordinal + batch_rows.min(bucket.degree() - ordinal)
+                                    slot..slot
+                                        .saturating_add(batch_rows)
+                                        .min(slot_bound)
+                                        .max(slot.saturating_add(1))
                                 }
                                 OutEdgeOrder::Descending => {
-                                    (ordinal + 1).saturating_sub(batch_rows)..ordinal + 1
+                                    slot.saturating_sub(batch_rows.saturating_sub(1))
+                                        ..slot.saturating_add(1)
                                 }
                             };
                             self.read_bucket_inline_property_bytes_range_into(
@@ -2006,7 +2016,7 @@ where
                                 &mut inline_property_bytes,
                             )?;
                         }
-                        let start = (ordinal - value_range.start) as usize * usize::from(width);
+                        let start = (slot - value_range.start) as usize * usize::from(width);
                         let flow = visit(
                             BucketEntryPosition::new(slot),
                             EdgeWithInlinePropertyRef {
@@ -2020,10 +2030,7 @@ where
                         if let ControlFlow::Break(value) = flow {
                             return Ok(ControlFlow::Break(value));
                         }
-                        match order {
-                            OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                            OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
-                        }
+                        next_slot = slot;
                         Ok(flow)
                     })?;
                 if let ControlFlow::Break(value) = flow {
@@ -2984,8 +2991,9 @@ where
                 ControlFlow::<()>::Continue(())
             })?;
         } else {
-            // Live values are compact; logical edge slots retain holes. Resolve ranks once in
-            // ascending order, retaining only requested edges, then restore the delivery order.
+            // ADR 0099: values are addressed by slot, so the index carried forward is the slot
+            // itself. It used to be the live rank, which is what made a sparse bucket's values read
+            // one row early.
             let requested = |i: usize| {
                 selected[match order {
                     OutEdgeOrder::Ascending => i,
@@ -2993,20 +3001,17 @@ where
                 }]
             };
             let mut next = 0;
-            let mut ordinal = 0u32;
             let end = requested(selected.len() - 1).saturating_add(1);
             let _ = self.visit_slab_bucket_edges(
                 &bucket,
                 OutEdgeOrder::Ascending,
                 TraversalWindow::new(0, Some(end)),
                 |slot, edge| {
-                    let rank = ordinal;
-                    ordinal += 1;
                     while next < selected.len() && requested(next) < slot.raw() {
                         next += 1;
                     }
                     if next < selected.len() && requested(next) == slot.raw() {
-                        selected_edges.push((slot, edge, rank));
+                        selected_edges.push((slot, edge, slot.raw()));
                         next += 1;
                     }
                     if next == selected.len() {
@@ -3020,12 +3025,16 @@ where
                 selected_edges.reverse();
             }
         }
-        let ordinals: Vec<_> = selected_edges
+        let value_slots: Vec<_> = selected_edges
             .iter()
-            .map(|(_, _, ordinal)| *ordinal)
+            .map(|(_, _, slot_index)| *slot_index)
             .collect();
         let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
-        self.append_ordered_inline_property_bytes_ordinals_next(&bucket, &ordinals, &mut scratch)?;
+        self.append_ordered_inline_property_bytes_ordinals_next(
+            &bucket,
+            &value_slots,
+            &mut scratch,
+        )?;
         for ((slot, edge, _), bytes) in selected_edges
             .into_iter()
             .zip(scratch.values.chunks_exact(usize::from(width)))
@@ -6238,8 +6247,10 @@ mod tests {
         let b = bucket();
         assert!(b.stored_slots() > 3 && b.stored_slots() <= 31);
         assert_ne!(b.edge_spill_run(), crate::traits::NO_SPILL_RUN);
+        // ADR 0099 made the value prefix the edge prefix, so "the two widths differ" is no longer a
+        // state a bucket can be in; the values run above is what makes this fixture hybrid.
         assert_ne!(b.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        assert_ne!(b.stored_slots(), b.inline_property_bytes_slab_slots());
+        assert_eq!(b.stored_slots(), b.inline_property_bytes_slab_slots());
         graph
     }
 
@@ -6311,7 +6322,12 @@ mod tests {
                 .read_label_bucket_slot(graph.find_bucket_slot(&vertex, label).unwrap().unwrap())
                 .unwrap();
             assert_eq!(bucket.stored_slots(), 0);
-            assert_eq!(bucket.inline_property_bytes_slab_slots(), 32);
+            // ADR 0099: every row spilled, so the values mirror that - no slab prefix, and one block
+            // per row in the value run instead of a 32-block dense span.
+            assert_eq!(
+                bucket.inline_property_bytes_slab_slots(),
+                bucket.stored_slots()
+            );
             assert_ne!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
             assert_ne!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);
             let snapshot = || {
@@ -6367,7 +6383,15 @@ mod tests {
                         memories[13].reads.get() <= 8,
                         "value run must be read in ranges"
                     );
-                    assert!(memories[13].bytes.get() <= 224 * 8 + 32);
+                    // ADR 0099: with every row spilled the values are read from the bucket's run, one
+                    // 8-byte-aligned block per row, instead of one contiguous slab span. The contract this
+                    // guards - the range is served without pulling the whole plane - still holds; the bound
+                    // grows by one block per row to cover the per-row fetch.
+                    assert!(
+                        memories[13].bytes.get() <= 224 * 8 + 32 + 32 * 8,
+                        "values plane read {} bytes",
+                        memories[13].bytes.get()
+                    );
                 }
                 reset();
                 let selected: Vec<_> = (0..256).map(BucketEntryPosition::new).collect();
