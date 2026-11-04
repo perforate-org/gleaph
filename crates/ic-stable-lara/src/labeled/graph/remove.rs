@@ -68,7 +68,7 @@ where
         E: CsrEdgeTombstone,
     {
         Ok(matches!(
-            self.read_edge_state(
+            self.row_plane().read_row_state(
                 src,
                 label_id,
                 crate::labeled::BucketEntryPosition::new(slot_index)
@@ -215,21 +215,9 @@ where
         E: CsrEdgeTombstone,
     {
         Ok(self
-            .remove_edge_at_slot_with_move(src, label_id, slot_index)?
+            .row_plane()
+            .remove_row(src, label_id, slot_index)?
             .map(|removal| removal.removed))
-    }
-
-    /// Removes one edge and reports the bounded survivor slot shifts produced by overflow unlink.
-    pub(crate) fn remove_edge_at_slot_with_move(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slot_index: u32,
-    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        super::row_plane::BucketRowPlane::new(self).remove_row(src, label_id, slot_index)
     }
 
     /// Removes one edge from a tiny-mode bucket by promoting first (ADR 0096
@@ -2038,7 +2026,8 @@ mod tests {
         assert_eq!(graph.edges().header().num_edges, num_before - 1);
         // Survivor moves are always empty (nothing moved — tombstoned in place).
         let removal = graph
-            .remove_edge_at_slot_with_move(vid, label, 0)
+            .row_plane()
+            .remove_row(vid, label, 0)
             .unwrap()
             .expect("removed edge");
         assert_eq!(removal.removed.target, 10);

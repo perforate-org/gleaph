@@ -274,7 +274,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.read_edge_state_internal(owner, label, slot)
+        self.row_plane().read_row_state(owner, label, slot)
     }
 
     /// Visits live edges in ascending logical slot order, stopping when the visitor breaks.
@@ -440,7 +440,8 @@ where
         if info.degree == 1
             && ordinal == 0
             && let EdgeSlotState::Live(edge) =
-                self.read_edge_state(owner, label, BucketEntryPosition::new(0))?
+                self.row_plane()
+                    .read_row_state(owner, label, BucketEntryPosition::new(0))?
             && edge.neighbor_vid() == neighbor
         {
             return Ok(Some(BucketEntryPosition::new(0)));
@@ -3052,18 +3053,6 @@ where
     // Internal helpers
     // ------------------------------------------------------------------
 
-    fn read_edge_state_internal(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        slot: BucketEntryPosition,
-    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        super::row_plane::BucketRowPlane::new(self).read_row_state(owner, label, slot)
-    }
-
     /// Shared point-state owner for a resolved descriptor (including a read-only
     /// bypass projection). Mode selects addressing before interpreting any row.
     #[inline]
@@ -3207,7 +3196,8 @@ where
         request: &Self::Request,
         slot: Self::Slot,
     ) -> Result<Self::EdgeState, Self::Error> {
-        LabeledLaraGraph::read_edge_state(self, request.owner, request.label, slot)
+        self.row_plane()
+            .read_row_state(request.owner, request.label, slot)
     }
 
     fn visit_edges<B>(
@@ -3988,7 +3978,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             graph
-                .read_edge_state(src, label, BucketEntryPosition::new(1))
+                .row_plane()
+                .read_row_state(src, label, BucketEntryPosition::new(1))
                 .unwrap(),
             EdgeSlotState::Tombstone
         ));

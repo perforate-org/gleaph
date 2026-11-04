@@ -480,7 +480,7 @@ where
     ///
     /// ADR 0100: the storage-class dispatch is inside the operation, so callers cannot inherit a path
     /// by accident. Moved unchanged from the graph's `remove_edge_at_slot_with_move`.
-    pub(super) fn remove_row(
+    pub(crate) fn remove_row(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -552,7 +552,7 @@ where
                 .remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index),
         }
     }
-    pub(super) fn read_row_state(
+    pub(crate) fn read_row_state(
         &self,
         owner: VertexId,
         label: BucketLabelKey,
@@ -582,7 +582,7 @@ where
     /// The live row at `slot`, or `None` for a tombstone or a missing position.
     ///
     /// The state form above is the contract; this is the shape most callers want.
-    pub(super) fn read_row(
+    pub(crate) fn read_row(
         &self,
         owner: VertexId,
         label: BucketLabelKey,

@@ -3099,7 +3099,8 @@ where
 
         let removal = self
             .forward
-            .remove_edge_at_slot_with_move(src, label_id, slot_index)
+            .row_plane()
+            .remove_row(src, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         // Plan 0341: evaluate the bypass-row admission gate once per successful
         // bypass tombstone (the gate returns early for non-bypass rows).
@@ -3296,7 +3297,8 @@ where
 
         let removal = self
             .reverse
-            .remove_edge_at_slot_with_move(dst, label_id, slot_index)
+            .row_plane()
+            .remove_row(dst, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         // Plan 0341: evaluate the bypass-row admission gate once per successful
         // bypass tombstone (the gate returns early for non-bypass rows).
@@ -3364,7 +3366,8 @@ where
 
         let removal = self
             .forward
-            .remove_edge_at_slot_with_move(src, label_id, slot)
+            .row_plane()
+            .remove_row(src, label_id, slot)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         // Plan 0341: evaluate the bypass-row admission gate once per successful
         // bypass tombstone (the gate returns early for non-bypass rows).
@@ -5325,7 +5328,8 @@ mod tests {
             assert_eq!(rows, want);
             for (slot, target, _) in &want {
                 let state = graph
-                    .read_edge_state(vid, label, BucketEntryPosition::new(*slot))
+                    .row_plane()
+                    .read_row_state(vid, label, BucketEntryPosition::new(*slot))
                     .unwrap();
                 if *target == u32::MAX {
                     assert!(
@@ -5344,7 +5348,8 @@ mod tests {
         for slot in [T_PROMOTE, u32::MAX] {
             assert!(matches!(
                 graph
-                    .read_edge_state(vid, label, BucketEntryPosition::new(slot))
+                    .row_plane()
+                    .read_row_state(vid, label, BucketEntryPosition::new(slot))
                     .unwrap(),
                 EdgeSlotState::Missing
             ));

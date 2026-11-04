@@ -184,6 +184,15 @@ where
         Ok(())
     }
 
+    /// The row plane of this graph, borrowed for one operation.
+    ///
+    /// ADR 0100 rule 2: the view's constructor is the only way to reach a row operation, so a caller
+    /// cannot pick a storage class or a half of an invariant. This is that constructor where the caller is
+    /// the graph itself.
+    pub(crate) fn row_plane(&self) -> super::row_plane::BucketRowPlane<'_, E, M> {
+        super::row_plane::BucketRowPlane::new(self)
+    }
+
     pub(crate) fn insert_edge_skip_leaf_cascade(
         &self,
         src: VertexId,

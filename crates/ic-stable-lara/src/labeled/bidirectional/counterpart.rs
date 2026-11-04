@@ -155,7 +155,8 @@ where
     M: Memory,
 {
     let target = match graph
-        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .row_plane()
+        .read_row_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
     {
         EdgeSlotState::Live(row) => row.neighbor_vid(),
@@ -186,7 +187,8 @@ where
     M: Memory,
 {
     let target = match graph
-        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .row_plane()
+        .read_row_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
     {
         EdgeSlotState::Live(row) => row.neighbor_vid(),
@@ -453,7 +455,8 @@ where
 
     // Read the source row once. Every resolution path needs the live target vertex.
     let target = match source_graph
-        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .row_plane()
+        .read_row_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
     {
         EdgeSlotState::Live(row) => row.neighbor_vid(),

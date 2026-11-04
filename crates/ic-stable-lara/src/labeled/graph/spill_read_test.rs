@@ -623,7 +623,8 @@ fn assert_point_states(
     for (slot, target) in expected.iter().copied().enumerate() {
         let slot = slot as u32;
         let state = graph
-            .read_edge_state(owner, label, BucketEntryPosition::new(slot))
+            .row_plane()
+            .read_row_state(owner, label, BucketEntryPosition::new(slot))
             .unwrap();
         match (state, target) {
             (EdgeSlotState::Live(edge), Some(target)) => {
@@ -640,7 +641,8 @@ fn assert_point_states(
     for slot in [expected.len() as u32, u32::MAX] {
         assert!(matches!(
             graph
-                .read_edge_state(owner, label, BucketEntryPosition::new(slot))
+                .row_plane()
+                .read_row_state(owner, label, BucketEntryPosition::new(slot))
                 .unwrap(),
             EdgeSlotState::Missing
         ));
@@ -648,7 +650,8 @@ fn assert_point_states(
     }
     assert!(matches!(
         graph
-            .read_edge_state(
+            .row_plane()
+            .read_row_state(
                 owner,
                 BucketLabelKey::from_raw(99),
                 BucketEntryPosition::new(0)
@@ -794,7 +797,8 @@ fn point_state_slab_and_retained_bypass_preserve_all_memories() {
     let before = snapshot();
     let spill_slot = prefix + 1;
     let state = graph
-        .read_edge_state(owner, label, BucketEntryPosition::new(spill_slot))
+        .row_plane()
+        .read_row_state(owner, label, BucketEntryPosition::new(spill_slot))
         .unwrap();
     assert!(
         matches!(state, EdgeSlotState::Live(edge) if edge == Row(2000 + spill_slot, label.raw(), spill_slot)),
@@ -820,7 +824,9 @@ fn point_state_slab_and_retained_bypass_preserve_all_memories() {
         .set(owner, &vertex.with_stored_slots(used - 1));
     let corrupt = snapshot();
     assert!(matches!(
-        graph.read_edge_state(owner, label, BucketEntryPosition::new(0)),
+        graph
+            .row_plane()
+            .read_row_state(owner, label, BucketEntryPosition::new(0)),
         Err(LabeledOperationError::Store(
             crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow
         ))
@@ -918,7 +924,7 @@ fn point_state_tree_native_boundaries_and_errors_preserve_all_memories() {
         .unwrap();
     let corrupt = snapshot();
     assert!(
-        matches!(graph.read_edge_state(owner, label, BucketEntryPosition::new(0)), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)
+        matches!(graph.row_plane().read_row_state(owner, label, BucketEntryPosition::new(0)), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)
     );
     assert!(
         matches!(graph.edge_exists_at_slot(owner, label, 0), Err(LabeledOperationError::LtbBlock(crate::labeled::ltb_raw_block_store::BlockError::NotMinted { id })) if id == unminted)

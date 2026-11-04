@@ -3944,7 +3944,8 @@ mod tests {
         audit();
         let tail = bucket().degree - 1;
         graph
-            .remove_edge_at_slot_with_move(vid, label, tail)
+            .row_plane()
+            .remove_row(vid, label, tail)
             .expect("tree remove")
             .expect("slot in range");
         assert_eq!(bucket().degree, crate::labeled::graph::T_PROMOTE + 1);
@@ -3956,7 +3957,8 @@ mod tests {
         while bucket().degree > crate::labeled::graph::T_DEMOTE {
             let tail = bucket().degree - 1;
             graph
-                .remove_edge_at_slot_with_move(vid, label, tail)
+                .row_plane()
+                .remove_row(vid, label, tail)
                 .expect("remove tail")
                 .expect("slot in range");
         }
