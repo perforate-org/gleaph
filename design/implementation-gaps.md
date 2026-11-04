@@ -74,6 +74,11 @@ defect from being rediscovered without its prior reasoning.
 - **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
   releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
   already does for the values plane.
+- **The lara benchmark suite has 14 pre-existing verifier failures of its own:**
+  `cargo test -p ic-stable-lara --lib --features canbench` gives **633 passed / 14 failed**, identically
+  with and without the changes in this session (checked by stashing). The visible one is
+  `continuous_spill_*` asserting "a real peer claims the value tail" (0 vs 33). They are why
+  `canbench --persist` cannot complete for this crate either, independently of the fold-cost trap.
 - **First candidate ruled out:** `compact_vertex_edge_span_with_moves` publishes the descriptor with the
   run cleared and then releases it best-effort (`let _ = spill_release`). Instrumenting that release shows
   **no failure** across the native suite, so the loss is either specific to the bench fixture's shape
