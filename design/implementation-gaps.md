@@ -74,6 +74,12 @@ defect from being rediscovered without its prior reasoning.
 - **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
   releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
   already does for the values plane.
+- **First candidate ruled out:** `compact_vertex_edge_span_with_moves` publishes the descriptor with the
+  run cleared and then releases it best-effort (`let _ = spill_release`). Instrumenting that release shows
+  **no failure** across the native suite, so the loss is either specific to the bench fixture's shape
+  (degree 33, width 256) or the probe's class arithmetic. A native reproduction using `FoldFixture` at
+  that shape is the next step; until then the bench's assertion is stricter than the design, which
+  deliberately tolerates a failed release ("a failed release leaks a class, never loses a row").
 
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
 
