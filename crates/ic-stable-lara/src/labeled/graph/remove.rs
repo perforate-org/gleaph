@@ -351,7 +351,7 @@ where
                 .with_tiny_slot(slot_index, E::BYTES, tombstone)
                 .with_degree_field(new_degree)
         };
-        self.buckets.write_label_bucket_slot(slot, updated)?;
+        self.publish_bucket_descriptor(slot, updated)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
             .num_edges
@@ -697,7 +697,7 @@ where
             self.buckets
                 .write_label_bucket_degree(slot, updated.degree())?;
         } else {
-            self.buckets.write_label_bucket_slot(slot, updated)?;
+            self.publish_bucket_descriptor(slot, updated)?;
         }
         self.decrement_edge_counts_after_remove(src)?;
         Ok(Vec::new())

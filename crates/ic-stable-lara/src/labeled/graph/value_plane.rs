@@ -235,3 +235,51 @@ where
         Ok(self)
     }
 }
+
+impl<E, M> LabeledLaraGraph<E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    /// Publishes one bucket descriptor after checking that the runs it names are real.
+    ///
+    /// The store's `write_label_bucket_slot` is the byte-level publish; this is the *contract-level*
+    /// one. A descriptor that names a values or edge run which the arena does not hold - because a
+    /// later operation released it while a caller kept an older bucket value - cannot be published
+    /// through here. That failure mode reads as `MissingAscLogIndex` much later, so catching it at the
+    /// publish is the difference between a precise trap and a mystery.
+    pub(crate) fn publish_bucket_descriptor(
+        &self,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<(), LabeledOperationError> {
+        if bucket.values_spill_run() != crate::traits::NO_SPILL_RUN {
+            let run = self
+                .values
+                .spill_mint(bucket.values_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            assert!(
+                self.values.spill_used_len(run) > 0,
+                "publishing label {:?} at slot {bucket_slot} naming values run {} with no rows",
+                bucket.bucket_label_key(),
+                bucket.values_spill_run()
+            );
+        }
+        if bucket.edge_spill_run() != crate::traits::NO_SPILL_RUN {
+            let run = self
+                .edges
+                .spill_mint(bucket.edge_spill_run())
+                .map_err(LabeledOperationError::from)?;
+            assert!(
+                self.edges.spill_used_len(run) > 0,
+                "publishing label {:?} at slot {bucket_slot} naming edge run {} with no rows",
+                bucket.bucket_label_key(),
+                bucket.edge_spill_run()
+            );
+        }
+        // The byte-level publish this method exists to guard.
+        self.buckets
+            .write_label_bucket_slot(bucket_slot, bucket)
+            .map_err(LabeledOperationError::from)
+    }
+}

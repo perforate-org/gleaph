@@ -389,7 +389,7 @@ where
                             bucket,
                             edge_inline_property_width,
                         )?;
-                    self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+                    self.publish_bucket_descriptor(bucket_slot, bucket)?;
                 }
                 // Admission is based on logical resident width (prefix plus used run
                 // rows), not the bytes moved by a run-retaining relocation. A leaf
@@ -505,7 +505,7 @@ where
                             .value_plane(bucket_slot, bucket)
                             .write_after_insert(src, value_slot, &attempt_edge)?
                             .bucket();
-                        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+                        self.publish_bucket_descriptor(bucket_slot, bucket)?;
                         let hdr = self.edges.header();
                         let next_num_edges = hdr
                             .num_edges
@@ -566,7 +566,7 @@ where
                                 .value_plane(bucket_slot, bucket)
                                 .write_after_insert(src, written_slot, &attempt_edge)?
                                 .bucket();
-                            self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+                            self.publish_bucket_descriptor(bucket_slot, bucket)?;
                             return Ok(Some(ScalarInsertLocation {
                                 logical_slot: written_slot,
                                 storage: ScalarInsertStorage::Slab,
@@ -588,7 +588,7 @@ where
                                     .value_plane(bucket_slot, bucket)
                                     .write_after_insert(src, value_slot, &attempt_edge)?
                                     .bucket();
-                                self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+                                self.publish_bucket_descriptor(bucket_slot, bucket)?;
                             }
                             return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
                                 logical_slot,
@@ -782,7 +782,7 @@ where
         let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(reused_slot))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.edges.write_slot(physical_slot, edge.clone())?;
-        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+        self.publish_bucket_descriptor(bucket_slot, bucket)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
             .num_edges
@@ -867,7 +867,7 @@ where
                 .try_enable_tiny_mode(E::BYTES)
                 .map_err(LaraOperationError::from)?;
             let bucket = bucket.with_edge_range(anchor, 0);
-            self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+            self.publish_bucket_descriptor(bucket_slot, bucket)?;
             self.cache_bucket_lookup(src, label_id, &vertex, bucket_slot);
             return Ok((bucket_slot, bucket));
         }
@@ -951,7 +951,7 @@ where
         let bucket = bucket
             .with_edge_range(edge_start, 0)
             .without_edge_spill_run();
-        self.buckets.write_label_bucket_slot(slot, bucket)?;
+        self.publish_bucket_descriptor(slot, bucket)?;
         if initial_slots > 0 {
             self.vertices
                 .set(src, &vertex.with_stored_slots(initial_slots));
@@ -1047,7 +1047,7 @@ where
             .value_plane(bucket_slot, grown)
             .write_after_insert(src, logical_slot, &edge)?
             .bucket();
-        self.buckets.write_label_bucket_slot(bucket_slot, grown)?;
+        self.publish_bucket_descriptor(bucket_slot, grown)?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
             .num_edges
@@ -1318,7 +1318,7 @@ where
             "transcribed live count must match bucket degree"
         );
         let fresh = LabelBucket::from_parts(bucket.bucket_label_key(), span_base, degree, degree);
-        self.buckets.write_label_bucket_slot(bucket_slot, fresh)?;
+        self.publish_bucket_descriptor(bucket_slot, fresh)?;
         let vertex = self.vertices.get(src);
         self.vertices
             .set(src, &vertex.with_stored_slots(new_stored));

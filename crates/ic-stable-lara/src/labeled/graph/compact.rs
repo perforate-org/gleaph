@@ -6209,7 +6209,7 @@ where
         }
         let finalized = Self::finalize_bucket_slab_metadata(bucket);
         let finalized = if finalized != bucket {
-            self.buckets.write_label_bucket_slot(slot, finalized)?;
+            self.publish_bucket_descriptor(slot, finalized)?;
             finalized
         } else {
             finalized
@@ -6604,7 +6604,7 @@ where
         self.values
             .spill_release(run)
             .map_err(LabeledOperationError::from)?;
-        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+        self.publish_bucket_descriptor(bucket_slot, bucket)?;
         Ok(bucket)
     }
 
@@ -6636,7 +6636,7 @@ where
         let prefix = bucket_content_slots(bucket);
         if keep.is_empty() {
             // Nothing live: drop the run entirely and let the descriptor say so.
-            self.buckets.write_label_bucket_slot(
+            self.publish_bucket_descriptor(
                 bucket_slot,
                 bucket.with_edge_spill_run(crate::traits::NO_SPILL_RUN),
             )?;
