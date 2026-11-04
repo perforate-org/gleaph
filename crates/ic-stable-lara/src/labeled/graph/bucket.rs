@@ -1034,9 +1034,9 @@ where
     /// The bucket's values rows, oldest first. ADR 0097 §5: a values run is ordinal, so this is
     /// the run's row indices rather than a chain walk; callers that precompute it share one list.
     pub(super) fn bucket_inline_property_bytes_log_chain(&self, bucket: &LabelBucket) -> Vec<u32> {
-        match self.values.spill_mint(bucket.values_spill_run()) {
-            Ok(run) => self.values.spill_asc_indices(run),
-            Err(_) => Vec::new(),
+        match bucket.values_run() {
+            Some(run) => self.values.spill_asc_indices(run),
+            None => Vec::new(),
         }
     }
 }

@@ -468,9 +468,10 @@ where
     /// Rows the bucket's values run holds: the values beyond its slab prefix. A descriptor with no
     /// run (or one outside the arena) has none.
     pub(super) fn bucket_values_run_rows(&self, bucket: &LabelBucket) -> u32 {
-        match self.values.spill_mint(bucket.values_spill_run()) {
-            Ok(run) => self.values.spill_used_len(run),
-            Err(_) => 0,
+        // `values_run` already rejected an id outside the arena, so this is the whole question.
+        match bucket.values_run() {
+            Some(run) => self.values.spill_used_len(run),
+            None => 0,
         }
     }
 
@@ -595,10 +596,11 @@ where
                 .write_bytes(offset, bytes)
                 .map_err(LabeledOperationError::from);
         }
-        let run = self
-            .values
-            .spill_mint(bucket.values_spill_run())
-            .map_err(LabeledOperationError::from)?;
+        // A row past the prefix with no run to hold its block is a corrupt descriptor, not a
+        // recoverable state: fail closed like the other layout invariants on this path.
+        let run = bucket.values_run().ok_or_else(|| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
         self.values
             .spill_write(run, slot - prefix, width, bytes)
             .map_err(LabeledOperationError::from)
@@ -755,7 +757,7 @@ where
         if width == 0 {
             return Ok(*bucket);
         }
-        let run = self.values.spill_mint(bucket.values_spill_run()).ok();
+        let run = bucket.values_run();
         let (run, _row) = self
             .values
             .spill_append(run, width, bytes)
