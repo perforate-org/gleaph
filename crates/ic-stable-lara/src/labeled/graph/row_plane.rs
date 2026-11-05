@@ -10,7 +10,7 @@
 use crate::{
     VertexId,
     labeled::{
-        access::LabelEdgeSpanAccess, bucket_label_key::BucketLabelKey,
+        access::LabelEdgeSpanAccess, bucket_label_key::BucketLabelKey, record::LabelBucket,
         slot_index::checked_add_slot_index,
     },
     lara::{edge::InsertLocation, operation_error::LaraOperationError},
@@ -28,6 +28,16 @@ use super::insert::{
 use super::{BucketMode, BucketSearch, EdgeRemoval, LabeledLaraGraph, T_DEMOTE};
 use crate::traverse::{BucketEntryPosition, EdgeSlotState};
 
+/// Where the row that was just stored puts its value block.
+#[derive(Clone, Copy)]
+pub(super) enum StoredRowSlot {
+    /// A row inside the slab prefix: its block is at that prefix position.
+    Prefix(u32),
+    /// A row appended to the values run. `logical` is the row's logical slot when the storage layer
+    /// reported one; otherwise the position is read back from the run.
+    Run { logical: Option<u32> },
+}
+
 /// The row plane of one bucket.
 pub(crate) struct BucketRowPlane<'a, E, M>
 where
@@ -44,6 +54,47 @@ where
 {
     pub(super) fn new(graph: &'a LabeledLaraGraph<E, M>) -> Self {
         Self { graph }
+    }
+
+    /// Finishes a row that was just stored: writes its inline-property block when the bucket carries
+    /// values, then publishes the descriptor.
+    ///
+    /// Two rules live here instead of at each insert branch. The slot: a slab row's block sits at the
+    /// prefix position it extended, while a run row's sits at `stored_slots + its run index` - a value the
+    /// caller cannot know before the append, which is why the run index is read back rather than passed.
+    /// The pairing: the block and the descriptor that admits it are published together, so no caller can
+    /// store a row and forget its block - the desync that made a valueless insert and a tree-bucket insert
+    /// disagree with the row set.
+    pub(super) fn finish_stored_row(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+        slot: StoredRowSlot,
+        edge: &E,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        // The descriptor is published either way: the row grew the prefix or the run, and that growth is
+        // what the publication admits. Only the block is conditional on the bucket carrying values.
+        let bucket = if bucket.inline_property_byte_width() == 0 {
+            bucket
+        } else {
+            let value_slot = match slot {
+                StoredRowSlot::Prefix(position) => position,
+                StoredRowSlot::Run { logical } => logical.unwrap_or_else(|| {
+                    bucket.stored_slots().saturating_add(
+                        self.graph.bucket_values_run_rows(&bucket).saturating_sub(1),
+                    )
+                }),
+            };
+            self.graph
+                .value_plane(bucket_slot, bucket)
+                .write_after_insert(src, value_slot, edge)?
+                .bucket()
+        };
+        self.graph.publish_bucket_descriptor(bucket_slot, bucket)
     }
 
     /// Inserts one row, choosing among the bucket's storage classes.
@@ -337,14 +388,14 @@ where
                             .edges
                             .write_slot(write_slot, attempt_edge.clone())?;
                         let logical_slot = bucket.stored_slots();
-                        let value_slot = logical_slot;
                         let bucket = bucket.grow_packed_slab_by_one();
-                        let bucket = self
-                            .graph
-                            .value_plane(bucket_slot, bucket)
-                            .write_after_insert(src, value_slot, &attempt_edge)?
-                            .bucket();
-                        self.graph.publish_bucket_descriptor(bucket_slot, bucket)?;
+                        self.finish_stored_row(
+                            src,
+                            bucket_slot,
+                            bucket,
+                            StoredRowSlot::Prefix(logical_slot),
+                            &attempt_edge,
+                        )?;
                         let hdr = self.graph.edges.header();
                         let next_num_edges = hdr
                             .num_edges
@@ -400,15 +451,18 @@ where
                                 })?;
                             let new_stored =
                                 written_slot.saturating_add(1).max(bucket.stored_slots());
-                            if new_stored != bucket.stored_slots() {
-                                bucket = bucket.with_stored_slots(new_stored);
-                            }
-                            let bucket = self
-                                .graph
-                                .value_plane(bucket_slot, bucket)
-                                .write_after_insert(src, written_slot, &attempt_edge)?
-                                .bucket();
-                            self.graph.publish_bucket_descriptor(bucket_slot, bucket)?;
+                            let bucket = if new_stored != bucket.stored_slots() {
+                                bucket.with_stored_slots(new_stored)
+                            } else {
+                                bucket
+                            };
+                            self.finish_stored_row(
+                                src,
+                                bucket_slot,
+                                bucket,
+                                StoredRowSlot::Prefix(written_slot),
+                                &attempt_edge,
+                            )?;
                             return Ok(Some(ScalarInsertLocation {
                                 logical_slot: written_slot,
                                 storage: ScalarInsertStorage::Slab,
@@ -425,24 +479,15 @@ where
                                         );
                                         LaraOperationError::CollectAllocationOverflow
                                     })?;
-                                // A spilled row's slot is `stored_slots + its run index`, and the run
-                                // index of the row just appended is `used_len - 1`. Falling back to
-                                // `stored_slots` alone would name the run's first row instead of the
-                                // new one whenever the run was not empty (ADR 0099 mirror).
-                                let value_slot = match logical_slot {
-                                    Some(slot) => slot,
-                                    None => bucket.stored_slots().saturating_add(
-                                        self.graph
-                                            .bucket_values_run_rows(&bucket)
-                                            .saturating_sub(1),
-                                    ),
-                                };
-                                let bucket = self
-                                    .graph
-                                    .value_plane(bucket_slot, bucket)
-                                    .write_after_insert(src, value_slot, &attempt_edge)?
-                                    .bucket();
-                                self.graph.publish_bucket_descriptor(bucket_slot, bucket)?;
+                                self.finish_stored_row(
+                                    src,
+                                    bucket_slot,
+                                    bucket,
+                                    StoredRowSlot::Run {
+                                        logical: logical_slot,
+                                    },
+                                    &attempt_edge,
+                                )?;
                             }
                             return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
                                 logical_slot,

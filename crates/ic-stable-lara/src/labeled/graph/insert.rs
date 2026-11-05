@@ -653,11 +653,13 @@ where
         let slot = super::edge_slot::<E>(&mut slot);
         edge.write_to(slot);
         let grown = grown.with_tiny_slot(logical_slot, E::BYTES, slot);
-        let grown = self
-            .value_plane(bucket_slot, grown)
-            .write_after_insert(src, logical_slot, &edge)?
-            .bucket();
-        self.publish_bucket_descriptor(bucket_slot, grown)?;
+        self.row_plane().finish_stored_row(
+            src,
+            bucket_slot,
+            grown,
+            super::row_plane::StoredRowSlot::Prefix(logical_slot),
+            &edge,
+        )?;
         let hdr = self.edges.header();
         let next_num_edges = hdr
             .num_edges
