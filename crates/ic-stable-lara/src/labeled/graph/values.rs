@@ -5050,14 +5050,13 @@ mod tests {
 
 #[cfg(test)]
 mod value_root_span_tests {
-    use super::*;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::test_graph;
     use crate::labeled::record::LabelBucket;
 
-    /// ADR 0101: a tree bucket's value root gets a region in the value store and records its offset; the
-    /// admission is idempotent, so a bucket that already has one is left alone.
+    /// ADR 0101: a tree bucket's value root gets a region in the value store and records its offset, and the
+    /// ids written there read back from that offset.
     #[test]
     fn value_root_span_is_allocated_in_the_value_store() {
         let graph = test_graph();
