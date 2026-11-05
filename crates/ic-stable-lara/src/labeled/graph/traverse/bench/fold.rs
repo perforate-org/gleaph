@@ -196,7 +196,8 @@ impl<const W: usize> FoldFixture<W> {
         let (slot, bucket) = self.bucket();
         let _ = self
             .graph
-            .fold_bucket_edge_spill_head_into_span(self.src, slot, &bucket, u32::MAX)
+            .layout(slot, bucket)
+            .fold_head(self.src, u32::MAX)
             .unwrap();
     }
 

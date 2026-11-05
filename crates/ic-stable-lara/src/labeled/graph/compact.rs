@@ -1188,7 +1188,7 @@ mod physical_layout_tests {
             .count() as u32;
         assert!(live < used, "the rebuild must have holes to pack");
 
-        let moves = graph.rebuild_bucket_edge_spill(0, &source).unwrap();
+        let moves = graph.layout(0, source).rebuild_run().unwrap();
 
         let after = graph.buckets.read_label_bucket_slot(0).unwrap();
         let fresh = graph.edges.spill_mint(after.edge_spill_run()).unwrap();
@@ -1418,7 +1418,8 @@ mod physical_layout_tests {
             .collect();
 
         let folded = graph
-            .fold_bucket_edge_spill_head_into_span(VertexId::from(0), 0, &source, 2)
+            .layout(0, source)
+            .fold_head(VertexId::from(0), 2)
             .unwrap();
 
         assert_eq!(folded, 2, "two spill rows move into the span");
@@ -6138,7 +6139,7 @@ where
                     let dead = self.bucket_edge_spill_dead_rows(bucket)?;
                     if used > 0 && dead > used / 2 {
                         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                        let moves = self.rebuild_bucket_edge_spill(bucket_slot, bucket)?;
+                        let moves = self.layout(bucket_slot, *bucket).rebuild_run()?;
                         // An empty batch means every hole sat at the tail, so the run is already
                         // packed: returning it would reset the pass to bucket 0 forever. Fall
                         // through to the ordinal-retaining skip below instead.
@@ -6220,7 +6221,7 @@ where
                     .map_or(region_end, |next| region_end.min(next));
                 let free = u32::try_from(limit.saturating_sub(content_end)).unwrap_or(u32::MAX);
                 if free > 0 {
-                    self.fold_bucket_edge_spill_head_into_span(vid, slot, &finalized, free)?;
+                    self.layout(slot, finalized).fold_head(vid, free)?;
                 }
             }
         }
@@ -6588,89 +6589,6 @@ where
         Ok(bucket)
     }
 
-    pub(super) fn rebuild_bucket_edge_spill(
-        &self,
-        bucket_slot: u64,
-        bucket: &LabelBucket,
-    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let Ok(run) = self.edges.spill_mint(bucket.edge_spill_run()) else {
-            return Ok(Vec::new());
-        };
-        let used = self.edges.spill_used_len(run);
-        let mut keep = Vec::with_capacity(used as usize);
-        for index in 0..used {
-            let edge = self
-                .edges
-                .spill_edge_at(run, index)
-                .map_err(LabeledOperationError::from)?;
-            if !edge.is_tombstone_edge() {
-                keep.push(index);
-            }
-        }
-        if keep.len() as u32 == used {
-            return Ok(Vec::new());
-        }
-        let prefix = bucket_content_slots(bucket);
-        if keep.is_empty() {
-            // Nothing live: drop the run entirely and let the descriptor say so.
-            self.publish_bucket_descriptor(bucket_slot, bucket.without_edge_spill_run())?;
-            self.edges
-                .spill_release(run)
-                .map_err(LabeledOperationError::from)?;
-            return Ok(Vec::new());
-        }
-        // ADR 0099: the values plane mirrors the edge plane, so the same `keep` repacks the value
-        // run at the same indices. Both new ids are published in one descriptor write, and only
-        // then are the old runs released - the descriptor never names a freed run, and never names
-        // one plane's new run beside the other plane's old one.
-        let fresh = self
-            .edges
-            .spill_repack(run, &keep)
-            .map_err(LabeledOperationError::from)?;
-        let fresh_values = match bucket.values_run() {
-            None => None,
-            Some(old) => Some((
-                old,
-                self.values
-                    .spill_repack(old, &keep)
-                    .map_err(LabeledOperationError::from)?,
-            )),
-        };
-        let published = match &fresh_values {
-            Some((_, new_values)) => bucket
-                .with_edge_run(Some(fresh))
-                .map_err(LabeledOperationError::from)?
-                .with_values_run(Some(*new_values))
-                .map_err(LabeledOperationError::from)?,
-            None => bucket
-                .with_edge_run(Some(fresh))
-                .map_err(LabeledOperationError::from)?,
-        };
-        self.publish_bucket_descriptor(bucket_slot, published)?;
-        self.edges
-            .spill_release(run)
-            .map_err(LabeledOperationError::from)?;
-        if let Some((old_values, _)) = fresh_values {
-            self.values
-                .spill_release(old_values)
-                .map_err(LabeledOperationError::from)?;
-        }
-        let mut moves = Vec::new();
-        for (destination, source) in keep.iter().copied().enumerate() {
-            if destination as u32 != source {
-                moves.push(EdgeSlotMove {
-                    label_id: bucket.bucket_label_key(),
-                    old_slot_index: prefix + source,
-                    new_slot_index: prefix + destination as u32,
-                });
-            }
-        }
-        Ok(moves)
-    }
-
     /// Tombstones inside the bucket's edge-plane spill run.
     ///
     /// The run header counts `used` rows including tombstones, and a tombstone is only visible by
@@ -6700,80 +6618,6 @@ where
             }
         }
         Ok(dead)
-    }
-
-    /// Moves the head of a bucket's edge spill run into its slab span.
-    ///
-    /// A spilled row is one the leaf could not give the span a slot for, and it stays spilled
-    /// because the edge fold was deleted with the shared overflow log (ADR 0097). When the span
-    /// has room again - its region's own gap after a left-pack - the lowest spill rows belong back
-    /// in the span, where a read finds them without touching the run.
-    ///
-    /// No logical ordinal moves: logical row `i` is the span slot for `i < stored_slots` and spill
-    /// row `i - stored_slots` otherwise, so growing `stored_slots` by `k` re-homes exactly the `k`
-    /// rows removed from the front of the run. That is why this needs no move observer and no
-    /// rekey, unlike a rebuild.
-    ///
-    /// Order matters: write the span, drop the run's head, then publish `stored_slots`. A failure
-    /// before the publish leaves the old descriptor naming the spill, so the rows stay readable and
-    /// the written span bytes are simply not visible yet. `max_rows` is the caller's capacity
-    /// bound; the drop is also capped at the run's class floor, because a class change is the
-    /// rebuild's job.
-    pub(super) fn fold_bucket_edge_spill_head_into_span(
-        &self,
-        src: VertexId,
-        bucket_slot: u64,
-        bucket: &LabelBucket,
-        max_rows: u32,
-    ) -> Result<u32, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let run = match self.edges.spill_mint(bucket.edge_spill_run()) {
-            Ok(run) => run,
-            Err(_) => return Ok(0),
-        };
-        let Some((start, len)) = bucket_content_region(bucket) else {
-            return Ok(0);
-        };
-        let fold = max_rows
-            .min(self.edges.spill_used_len(run))
-            .min(self.edges.spill_head_drop_capacity(run));
-        if fold == 0 {
-            return Ok(0);
-        }
-        let mut rows = vec![0u8; fold as usize * E::BYTES];
-        for index in 0..fold {
-            let offset = index as usize * E::BYTES;
-            let mut row = vec![0u8; E::BYTES];
-            self.edges
-                .spill_read_row(run, index, &mut row)
-                .map_err(LabeledOperationError::from)?;
-            rows[offset..offset + E::BYTES].copy_from_slice(&row);
-        }
-        self.edges
-            .write_slots_contiguous(start.saturating_add(u64::from(len)), &rows)
-            .map_err(LabeledOperationError::from)?;
-        if let Err(error) = self.edges.spill_drop_head(run, fold) {
-            return Err(LabeledOperationError::from(error));
-        }
-        let grown = len
-            .checked_add(fold)
-            .ok_or(LaraOperationError::overflow())?;
-        let grown_bucket = bucket.with_stored_slots(grown);
-        // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
-        // span bring their value blocks with them. The move *is* the plane's operation (it grows the
-        // prefix it fills), so it goes through the view rather than being spelled out here.
-        if grown_bucket.inline_property_byte_width() != 0 && bucket.values_run().is_some() {
-            let published = self
-                .value_plane(bucket_slot, *bucket)
-                .fold_head_into_span(src, len, fold)?
-                .bucket();
-            self.publish_bucket_descriptor(bucket_slot, published)?;
-            return Ok(fold);
-        }
-        self.publish_bucket_descriptor(bucket_slot, grown_bucket)?;
-        Ok(fold)
     }
 
     /// Plan 0341 (GAP-2026-09-07-001 bypass side): left-pack a tombstoned
