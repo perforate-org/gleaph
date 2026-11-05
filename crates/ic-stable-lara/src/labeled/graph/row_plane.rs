@@ -286,18 +286,13 @@ where
                 // does not select a different path.
                 let resident = self.graph.bucket_resident_rows(&bucket)?;
                 if (super::T_PROMOTE..u32::MAX).contains(&resident) {
-                    super::promote::promote_bucket_to_tree_mode(self.graph, src, label_id)?;
-                    // Re-read the bucket: after promotion it is tree mode.
-                    let vertex = self.graph.vertices.get(src);
-                    bucket = match self.graph.find_bucket(src, &vertex, label_id)? {
-                        BucketSearch::Found { bucket, .. } => bucket,
-                        BucketSearch::Missing { .. } => {
-                            return Err(LabeledOperationError::BucketNotFound {
-                                vid: src,
-                                label: label_id,
-                            });
-                        }
-                    };
+                    // The view hands back the descriptor promotion published, so the slab-mode value read
+                    // above cannot be published over a tree root.
+                    bucket = self
+                        .graph
+                        .layout(bucket_slot, bucket)
+                        .promote_to_tree(src)?
+                        .bucket();
                     if bucket.is_tree_mode() {
                         // Plan 0340: reuse applies to a freshly-promoted Unordered
                         // tree bucket too (promotion preserves tombstones).
@@ -502,7 +497,9 @@ where
                             // does, because the bucket is no longer slab mode and this loop's
                             // remaining steps do not apply to it. This replaces the retired
                             // log-full leaf rebalance: a per-bucket run has no shared area to empty.
-                            super::promote::promote_bucket_to_tree_mode(self.graph, src, label_id)?;
+                            self.graph
+                                .layout(bucket_slot, bucket)
+                                .promote_to_tree(src)?;
                             return self.insert_row(
                                 src,
                                 label_id,

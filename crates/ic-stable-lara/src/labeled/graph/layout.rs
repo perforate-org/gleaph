@@ -72,6 +72,45 @@ where
         )
     }
 
+    /// Promotes the bucket to tree mode and returns the view over the descriptor it became.
+    ///
+    /// The refresh is part of the operation: promotion rewrites the descriptor's residency, so a caller
+    /// holding the old `LabelBucket` would publish a slab descriptor over a tree root. Callers that used to
+    /// re-find the bucket by label after promoting get the new value from here instead.
+    pub(crate) fn promote_to_tree(self, src: VertexId) -> Result<Self, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let label = self.bucket.bucket_label_key();
+        super::promote::promote_bucket_to_tree_mode(self.graph, src, label)?;
+        let vertex = self.graph.vertices.get(src);
+        match self.graph.find_bucket(src, &vertex, label)? {
+            super::BucketSearch::Found { bucket, .. } => Ok(Self { bucket, ..self }),
+            super::BucketSearch::Missing { .. } => {
+                Err(LabeledOperationError::BucketNotFound { vid: src, label })
+            }
+        }
+    }
+
+    /// Demotes the bucket from tree mode back to the slab prefix.
+    ///
+    /// The tree plane owns the transcription; what the view owns is that a caller says "demote" instead of
+    /// threading the descriptor, its slot and its label through `tree_write`.
+    pub(crate) fn demote_to_slab(self, src: VertexId) -> Result<Self, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let label = self.bucket.bucket_label_key();
+        super::tree_write::tree_mode_demote_to_slab(
+            self.graph,
+            src,
+            self.bucket_slot,
+            label,
+            &self.bucket,
+        )?;
+        Ok(self)
+    }
+
     pub(crate) fn release_span(self, src: VertexId) -> Result<Self, LabeledOperationError> {
         debug_assert!(
             self.bucket.degree == 0 && self.bucket.edge_run().is_none(),
