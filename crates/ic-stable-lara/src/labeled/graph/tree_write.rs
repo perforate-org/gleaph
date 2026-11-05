@@ -425,7 +425,9 @@ where
                                 return Err(e);
                             }
                         };
-                        let mut combined_bytes: Vec<u8> =
+                        // ADR 0102: the tree plane composes and writes the roots; this arm says what belongs
+                        // in each of them.
+                        let mut edge_root_image: Vec<u8> =
                             Vec::with_capacity(new_combined_len as usize * E::BYTES);
                         if old_edge_root_len > 0 {
                             let mut old_edge_bytes =
@@ -434,29 +436,31 @@ where
                                 old_combined_start,
                                 &mut old_edge_bytes,
                             );
-                            combined_bytes.extend_from_slice(&old_edge_bytes);
+                            edge_root_image.extend_from_slice(&old_edge_bytes);
                         }
-                        if old_prop_root_len > 0 {
-                            let mut old_prop_bytes =
-                                vec![0u8; old_prop_root_len as usize * PROPERTY_ID_BYTES];
-                            graph.edges().read_from_slot_bytes(
-                                old_combined_start + u64::from(old_edge_root_len),
-                                0,
-                                &mut old_prop_bytes,
-                            );
-                            combined_bytes.extend_from_slice(&old_prop_bytes);
-                        }
-                        push_property_root_entry(&mut combined_bytes, entry_id);
-                        pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
-                        if let Err(e) = graph
-                            .edges()
-                            .write_slots_contiguous_bytes(new_combined, &combined_bytes)
+                        let mut value_children: Vec<u32> = if old_prop_root_len > 0 {
+                            read_property_root_ids::<E, M>(graph, bucket, old_prop_root_len)
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .map(|bytes| u32::from_le_bytes(*bytes))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        value_children.push(entry_id);
+                        if graph
+                            .tree_plane(*bucket)
+                            .write_roots::<E>(new_combined, &edge_root_image, &value_children)
+                            .is_err()
                         {
                             release_property_plan::<E, M>(graph, &plan);
                             let _ = graph
                                 .edges()
                                 .release_span(new_combined, u64::from(new_combined_len));
-                            return Err(LabeledOperationError::from(e));
+                            return Err(
+                                LabeledOperationError::from(LaraOperationError::overflow()),
+                            );
                         }
                         // Write the property value at row 0 of the new
                         // leaf (slot is a K boundary → row 0).
@@ -767,22 +771,19 @@ where
             return Err(e);
         }
     };
-    // 5. Build the new combined bytes: [old edge root | new interior ids].
-    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
+    // 5. The tree plane composes and writes the roots (ADR 0102); this deepen says what belongs in each.
+    let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if edge_root_len > 0 {
         let mut old_edge_bytes = vec![0u8; edge_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
-        combined_bytes.extend_from_slice(&old_edge_bytes);
+        edge_root_image.extend_from_slice(&old_edge_bytes);
     }
-    for &id in &interior_ids {
-        push_property_root_entry(&mut combined_bytes, id);
-    }
-    pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
+    if graph
+        .tree_plane(*bucket)
+        .write_roots::<E>(new_combined_start, &edge_root_image, &interior_ids)
+        .is_err()
     {
         for &id in interior_ids.iter().rev() {
             let _ = graph.ltb().release(id);
@@ -790,7 +791,7 @@ where
         let _ = graph
             .edges()
             .release_span(new_combined_start, u64::from(new_combined_len));
-        return Err(LabeledOperationError::from(e));
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 6. Publish the descriptor (single canonical write).
     let new_bucket = bucket
