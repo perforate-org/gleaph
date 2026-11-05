@@ -301,101 +301,6 @@ where
 
     /// Releases an emptied bucket's slab span and syncs the vertex cover (F1).
     ///
-    /// Called when a delete empties a bucket (`degree == 0`, no log) that still
-    /// holds a slab span (`stored_slots > 0`). Releases the span to the edge
-    /// free store (best-effort, see below) and recomputes `vertex.stored_slots`
-    /// over survivors so the cover stays exact (no phantom occupancy).
-    /// Tiny buckets never hold a releasable span here (empty tiny resets to
-    /// stored 0, so the hook guard never fires for them); tree buckets
-    /// keep their root until maintenance demotion (unchanged behavior).
-    /// PMA total is untouched (block-pin floor owns it; slide/relocate
-    /// reconcile on next maintenance — same rule as promotion's floor-covered
-    /// spans).
-    fn release_bucket_edge_span_on_empty(
-        &self,
-        src: VertexId,
-        slot: u64,
-        bucket: &LabelBucket,
-    ) -> Result<(), LabeledOperationError> {
-        debug_assert!(
-            bucket.degree() == 0 && bucket.edge_run().is_none(),
-            "F1 release requires an emptied run-free bucket"
-        );
-        if bucket.is_tiny_mode() {
-            return Ok(());
-        }
-        if bucket.is_tree_mode() {
-            // Tree root regions are LTB-addressed, not slab spans; releasing
-            // them as edge slots would corrupt the free store.
-            return Ok(());
-        }
-        // The value *span* is this function's to release; the values *run* is not. The degree-zero
-        // block in `commit_bucket_edge_delete` owns the runs because releasing one is meaningless
-        // without clearing the descriptor that names it - and releasing it here as well handed the
-        // same run to the free list twice, which is how a descriptor ended up naming an empty run
-        // (`MissingAscLogIndex` in the expand benchmark).
-        if bucket.inline_property_bytes_slab_slots_allocated() > 0 {
-            let _ = self.release_bucket_inline_property_bytes_span(src, bucket);
-        }
-        let span_len = bucket.stored_slots_raw();
-        if span_len == 0 {
-            return Ok(());
-        }
-        // GAP-2026-09-20-002: inside a delete-level batch the emptied range is
-        // recorded and released merged at the flush; otherwise it is released
-        // immediately (F1's single-delete behaviour). Either way the release is
-        // best-effort, so a failed release never fails a successful delete.
-        let batched = match self.span_release_batch.borrow_mut().as_mut() {
-            Some(ranges) => {
-                ranges.push((bucket.edge_start(), u64::from(span_len)));
-                true
-            }
-            None => false,
-        };
-        if !batched {
-            let _ = self
-                .edges
-                .release_span(bucket.edge_start(), u64::from(span_len));
-        }
-        // Recompute the cover over survivors (the emptied span contributes 0),
-        // skipping the emptied bucket by INDEX (two buckets can share an
-        // anchor; address matching would skip a live survivor).
-        let vertex = self.vertices.get(src);
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        let mut cover_base: Option<u64> = None;
-        let mut survivor_end: Option<u64> = None;
-        for (index, other) in buckets.iter().enumerate() {
-            if other.is_tiny_mode() {
-                continue;
-            }
-            if u32::try_from(index).map_err(|_| LaraOperationError::overflow())? == bucket_index {
-                continue;
-            }
-            if cover_base.is_none() {
-                cover_base = Some(other.edge_start());
-            }
-            let end = other
-                .edge_start()
-                .checked_add(u64::from(other.stored_slots_raw()))
-                .ok_or(LaraOperationError::overflow())?;
-            survivor_end = Some(survivor_end.map_or(end, |prev| prev.max(end)));
-        }
-        if let (Some(base), Some(end)) = (cover_base, survivor_end) {
-            let new_stored = end
-                .checked_sub(base)
-                .ok_or(LaraOperationError::overflow())?;
-            let new_stored =
-                u32::try_from(new_stored).map_err(|_| LaraOperationError::overflow())?;
-            self.vertices
-                .set(src, &vertex.with_stored_slots(new_stored));
-        } else {
-            // No slab survivors: vertex span returns to zero.
-            self.vertices.set(src, &vertex.with_stored_slots(0));
-        }
-        Ok(())
-    }
-
     /// Starts collecting the spans of the buckets a delete operation empties.
     ///
     /// While a batch is active, `release_bucket_edge_span_on_empty` records the
@@ -595,7 +500,7 @@ where
         // zeroing its prefix while the run holds rows would break `resident = prefix + spill`.
         let emptied = updated.degree() == 0 && updated.edge_run().is_none();
         if emptied && updated.stored_slots() > 0 {
-            self.release_bucket_edge_span_on_empty(src, slot, &updated)?;
+            self.layout(slot, updated).release_span(src)?;
         }
         // ADR 0099: a bucket with no live rows gives up its value *span* - space, not state. Its runs
         // are reusable tombstone holders that compaction sweeps (see

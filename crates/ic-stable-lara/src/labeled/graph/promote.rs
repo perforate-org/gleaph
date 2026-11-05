@@ -345,11 +345,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 super::BucketSearch::Missing { .. } => avoid,
             };
             let _ = retiled;
-            super::leaf_arena::LeafArena::ensure_room(
-                graph,
+            graph.layout(slot, bucket).ensure_room_for(
                 vid,
                 u64::from(combined_len),
-                super::leaf_arena::SourceRegion::new(fresh_avoid.0, fresh_avoid.1),
+                fresh_avoid,
             )?;
             let vertex = graph.vertices().get(vid);
             let super::BucketSearch::Found { bucket: fresh, .. } =

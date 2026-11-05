@@ -246,6 +246,7 @@ mod headroom_screen;
 mod init;
 mod insert;
 mod iter;
+mod layout;
 pub(crate) mod leaf_arena;
 mod promote;
 mod remove;
