@@ -112,16 +112,17 @@ pub fn mem() -> crate::VectorMemory {
 pub fn test_graph_with_default(
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
-    test_graph_with_capacity(256, default_label)
+    test_graph_with_segment_size(32, default_label)
 }
 
-/// The same fixture with a chosen leaf capacity.
+/// The same fixture with a chosen segment size.
 ///
-/// Promotion forces a `T_PROMOTE`-slot prefix (1024 by default), which does not fit the 256-slot
-/// default: a second label's rows then spill into a run instead of taking a span, so a fixture that
-/// wants one label promoted *and* another holding a slab span has to grow the leaf first.
-pub fn test_graph_with_capacity(
-    capacity: u64,
+/// The segment size is the only knob that changes how much leaf space a vertex gets: one leaf block
+/// holds `segment_size * quota(segment_size)` slots and serves `segment_size` vertices, so
+/// `InitialCapacities` cannot widen it. Production uses 16 (`DEFAULT_SEGMENT_SIZE`), where a vertex is
+/// initially reserved one slot and grows by PMA relocation; the tests keep 32.
+pub fn test_graph_with_segment_size(
+    segment_size: u32,
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     // Most graph-unit fixtures exercise generic geometry and retain an explicit
@@ -144,9 +145,9 @@ pub fn test_graph_with_capacity(
         mem(),
         mem(),
         mem(),
-        crate::labeled::InitialCapacities::uniform(capacity),
+        crate::labeled::InitialCapacities::uniform(256),
         default_label,
-        32,
+        segment_size,
     )
     .unwrap();
     graph.push_vertex(LabeledVertex::default()).unwrap();
