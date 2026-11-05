@@ -1,0 +1,34 @@
+name: Rust
+
+# No Rust gate existed, which is how a stale `ProvisionGraphArgs` literal could stop the whole
+# `gleaph-pocket-ic-tests` target set from compiling without anyone noticing (plans 0331/0343 added two
+# fields and one struct literal did not follow). `--tests` is the point: `cargo check` alone skips test
+# targets, and the breakage lived in one.
+#
+# The runner is macOS because the workspace includes macOS-only GUI crates; a Linux runner would fail on
+# them for reasons unrelated to the change under review. Costs are bounded by the cache below.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Every target compiles, tests included
+        run: cargo check --workspace --tests
