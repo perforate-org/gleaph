@@ -546,8 +546,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             Ok(image)
         };
         let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior, E::BYTES)?;
+        // The ids are also what the tree plane needs to write the value root (ADR 0102), so keep them.
         let property_root = root(
-            property_ids,
+            property_ids.clone(),
             property_depth,
             BlockKind::InlinePropertyInterior,
             crate::labeled::tree_csr::PROPERTY_ID_BYTES,
@@ -589,16 +590,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         // head of the source prefix. Every fallible step is therefore done; the
         // write requires no growth (the prefix already backs those slots) and the
         // publish below is infallible.
+        // ADR 0102: the tree plane composes and writes both roots; promotion says what belongs in each.
         graph
-            .edges()
-            .write_slots_contiguous_bytes(new_start, &edge_root)
-            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        if !property_root.is_empty() {
-            graph
-                .edges()
-                .write_slots_contiguous_bytes(new_start + u64::from(edge_root_len), &property_root)
-                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        }
+            .tree_plane(template)
+            .write_roots::<E>(new_start, &edge_root, &property_ids)?;
         ready.publish();
         counts.write();
         if canonical.vertex.is_default_edge_labeled() {
