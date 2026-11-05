@@ -149,6 +149,10 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
         release_id: "rel-1".to_owned(),
         owner: env.admin,
         admins: std::collections::BTreeSet::new(),
+        // Text-canister install knobs (plan 0331/0343). This test provisions a GraphShard only, so
+        // both are ignored; they still have to be named because the struct is not `Default`.
+        text_analyzer_id: 0,
+        text_kinds: None,
     };
 
     // Scenario 1: fresh admission returns Accepted.
