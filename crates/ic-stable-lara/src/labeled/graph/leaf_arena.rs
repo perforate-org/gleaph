@@ -101,6 +101,16 @@ fn gap(content: u64) -> u64 {
     super::span_size::gap_slots(content)
 }
 
+/// Slots a region of `content` occupies, gap included - the shared rule, not a second spelling of it.
+///
+/// Region content always comes from a descriptor's `u32` field, so the narrowing cannot lose a value; the
+/// `unwrap_or` keeps a hypothetical wider caller from panicking, at the cost of clamping to the largest
+/// content the descriptor could describe.
+fn tile_slots(content: u64) -> u64 {
+    let content = u32::try_from(content).unwrap_or(u32::MAX);
+    super::span_size::slots_for_content(super::span_size::ContentSlots::new(content)).get()
+}
+
 /// One vertex's slice: the exclusive space it may place its buckets' regions in.
 ///
 /// A view, not state. The slice bounds are derived from the leaf's first-region starts, so
@@ -249,18 +259,16 @@ where
         let mut total = 0u64;
         let mut seen_target = false;
         for (start, end) in self.contents() {
-            let width = if start == target_start {
+            let content = if start == target_start {
                 seen_target = true;
-                content_after.saturating_add(gap(content_after))
+                content_after
             } else {
-                end.saturating_sub(start).saturating_add(gap(end - start))
+                end.saturating_sub(start)
             };
-            total = total.saturating_add(width);
+            total = total.saturating_add(tile_slots(content));
         }
         if !seen_target {
-            total = total
-                .saturating_add(content_after)
-                .saturating_add(gap(content_after));
+            total = total.saturating_add(tile_slots(content_after));
         }
         total
     }
