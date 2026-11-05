@@ -1459,9 +1459,12 @@ where
         }
         if let Err(e) = graph.ltb().write_payload_partial(
             p.leaf_id,
-            crate::labeled::tree_csr::value_slot_position(slot, w)
-                .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
-                .offset as usize,
+            crate::labeled::tree_csr::value_slot_position(
+                crate::traverse::BucketEntryPosition::new(slot),
+                w,
+            )
+            .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
+            .offset as usize,
             property_value_bytes,
         ) {
             undo_grown_root();

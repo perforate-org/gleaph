@@ -108,11 +108,21 @@ pub(crate) struct ValueSlotPosition {
     pub(crate) offset: u32,
 }
 
-/// Maps `slot` to its position in the value tree for a bucket of width `w`.
+/// Maps a bucket-local logical position to its place in the value tree, for a bucket of width `w`.
+///
+/// The argument is [`BucketEntryPosition`] on purpose: it is the row-local, tombstone-inclusive position
+/// that traversal and the Graph's edge handles share, and it is **not** a physical slab address
+/// ([`BucketEntryPosition`]'s own documentation says so). Taking the typed position makes it impossible to
+/// hand this function an edge-store address by mistake - the values live in a different store, so their
+/// addressing cannot depend on the edge layout at all.
 ///
 /// `None` when the width cannot hold a value (zero or wider than a block).
-pub(crate) fn value_slot_position(slot: u32, w: u16) -> Option<ValueSlotPosition> {
+pub(crate) fn value_slot_position(
+    slot: crate::traverse::BucketEntryPosition,
+    w: u16,
+) -> Option<ValueSlotPosition> {
     let slots_per_block = property_slots_per_block(w)?;
+    let slot = slot.raw();
     let row = slot % slots_per_block;
     Some(ValueSlotPosition {
         block: slot / slots_per_block,
@@ -1017,7 +1027,9 @@ mod value_slot_position_tests {
         for w in [1u16, 4, 8, 33, 64] {
             let k = property_slots_per_block(w).expect("width fits a block");
             for slot in 0..(k * 3 + 1) {
-                let position = value_slot_position(slot, w).expect("position");
+                let position =
+                    value_slot_position(crate::traverse::BucketEntryPosition::new(slot), w)
+                        .expect("position");
                 assert_eq!(position.block, slot / k);
                 assert_eq!(position.row, slot % k);
                 assert_eq!(position.offset, position.row * u32::from(w));
@@ -1026,7 +1038,7 @@ mod value_slot_position_tests {
             }
         }
         assert!(
-            value_slot_position(0, 0).is_none(),
+            value_slot_position(crate::traverse::BucketEntryPosition::new(0), 0).is_none(),
             "a zero width holds no value"
         );
     }
@@ -1038,7 +1050,11 @@ mod value_slot_position_tests {
         let w = 33u16;
         let k = property_slots_per_block(w).expect("width fits a block");
         let offsets: std::collections::BTreeSet<u32> = (0..k)
-            .map(|slot| value_slot_position(slot, w).expect("position").offset)
+            .map(|slot| {
+                value_slot_position(crate::traverse::BucketEntryPosition::new(slot), w)
+                    .expect("position")
+                    .offset
+            })
             .collect();
         assert_eq!(offsets.len() as u32, k);
     }

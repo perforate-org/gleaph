@@ -400,9 +400,12 @@ where
     }
     let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
     // The one formula for a slot's place in the value tree.
-    let row_offset = crate::labeled::tree_csr::value_slot_position(slot, w)
-        .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
-        .offset;
+    let row_offset = crate::labeled::tree_csr::value_slot_position(
+        crate::traverse::BucketEntryPosition::new(slot),
+        w,
+    )
+    .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
+    .offset;
     graph
         .ltb()
         .read_payload_partial(block_id, row_offset as usize, out)
@@ -460,9 +463,12 @@ where
         bucket.stored_slots()
     );
     let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
-    let row_offset = crate::labeled::tree_csr::value_slot_position(slot, w)
-        .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
-        .offset;
+    let row_offset = crate::labeled::tree_csr::value_slot_position(
+        crate::traverse::BucketEntryPosition::new(slot),
+        w,
+    )
+    .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
+    .offset;
     graph
         .ltb()
         .write_payload_partial(block_id, row_offset as usize, value)
