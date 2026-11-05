@@ -112,6 +112,18 @@ pub fn mem() -> crate::VectorMemory {
 pub fn test_graph_with_default(
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
+    test_graph_with_capacity(256, default_label)
+}
+
+/// The same fixture with a chosen leaf capacity.
+///
+/// Promotion forces a `T_PROMOTE`-slot prefix (1024 by default), which does not fit the 256-slot
+/// default: a second label's rows then spill into a run instead of taking a span, so a fixture that
+/// wants one label promoted *and* another holding a slab span has to grow the leaf first.
+pub fn test_graph_with_capacity(
+    capacity: u64,
+    default_label: BucketLabelKey,
+) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     // Most graph-unit fixtures exercise generic geometry and retain an explicit
     // segment32 layout. Production construction uses the segment16 default; the
     // segment-size-specific contract tests below exercise that policy directly.
@@ -132,7 +144,7 @@ pub fn test_graph_with_default(
         mem(),
         mem(),
         mem(),
-        crate::labeled::InitialCapacities::uniform(256),
+        crate::labeled::InitialCapacities::uniform(capacity),
         default_label,
         32,
     )
