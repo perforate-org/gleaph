@@ -71,6 +71,43 @@ where
         u32::from_le_bytes(id_bytes)
     }
 
+    /// Writes a tree bucket's two roots beginning at `edge_start` and returns the image it wrote (for
+    /// rollback).
+    ///
+    /// The caller hands over what it wants in each root - the edge root's slot image and the value tree's child
+    /// addresses - and this composes them for the layout that is stored. While both roots share the edge span
+    /// the composition is `edge ++ children`, padded to whole slots; ADR 0101's switch replaces the composition
+    /// here rather than at each of the six write sites.
+    pub(crate) fn write_roots<E2>(
+        &self,
+        edge_start: u64,
+        edge_root_image: &[u8],
+        value_children: &[u32],
+    ) -> Result<Vec<u8>, super::LabeledOperationError>
+    where
+        E2: CsrEdge + crate::traits::CsrEdgeTombstone,
+    {
+        let slot_bytes = E2::BYTES;
+        let children_bytes = value_children.len() * 4;
+        let total = edge_root_image.len().saturating_add(children_bytes);
+        let slots = total.div_ceil(slot_bytes.max(1));
+        let mut image = vec![0u8; slots * slot_bytes];
+        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
+        for (index, child) in value_children.iter().enumerate() {
+            let offset = edge_root_image.len() + index * 4;
+            image[offset..offset + 4].copy_from_slice(&child.to_le_bytes());
+        }
+        self.graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &image)
+            .map_err(|_| {
+                super::LabeledOperationError::from(
+                    crate::lara::operation_error::LaraOperationError::overflow(),
+                )
+            })?;
+        Ok(image)
+    }
+
     /// The first `count` child addresses of the value tree, packed as they are stored.
     pub(crate) fn value_children(&self, count: u32) -> Vec<u8> {
         let mut bytes = vec![0u8; count as usize * 4];

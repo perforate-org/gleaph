@@ -1352,30 +1352,32 @@ where
         }
     };
     // 3. Build new combined bytes: [edge root (old + new edge block_id) | property root (old + maybe entry)].
-    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
+    // ADR 0102: the roots are written by the tree plane, which owns how they are laid out. The caller only
+    // says what belongs in each root - the edge root's new slot image and the value tree's child addresses.
+    let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if old_edge_root_len > 0 {
         let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
         graph
             .edges()
             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
-        combined_bytes.extend_from_slice(&old_edge_bytes);
+        edge_root_image.extend_from_slice(&old_edge_bytes);
     }
-    push_root_entry::<E>(&mut combined_bytes, new_block_id);
-    if old_property_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * PROPERTY_ID_BYTES];
-        graph.edges().read_from_slot_bytes(
-            old_combined_start + u64::from(old_edge_root_len),
-            0,
-            &mut old_prop_bytes,
-        );
-        combined_bytes.extend_from_slice(&old_prop_bytes);
-    }
+    push_root_entry::<E>(&mut edge_root_image, new_block_id);
+    let mut value_children: Vec<u32> = if old_property_root_len > 0 {
+        read_property_root_ids::<E, M>(graph, bucket, old_property_root_len)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        push_property_root_entry(&mut combined_bytes, entry_id);
+        value_children.push(entry_id);
     }
-    pad_image_to_slots::<E>(&mut combined_bytes, new_combined_len);
 
     // Undo hook for every failure after the span grew: an in-place append must
     // restore the old root bytes and hand the extension back, a fresh span is
@@ -1405,12 +1407,13 @@ where
             }
         }
     };
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
+    if graph
+        .tree_plane(*bucket)
+        .write_roots::<E>(new_combined_start, &edge_root_image, &value_children)
+        .is_err()
     {
         undo_grown_root();
-        return Err(e.into());
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 4. Write the edge into the new (empty) leaf block at offset 0.
     if let Err(e) = graph
