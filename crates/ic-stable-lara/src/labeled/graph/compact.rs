@@ -4159,16 +4159,11 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
             // the two regions for the compaction rewrite path).
             let physical_depth = bucket.tree_mode_physical_depth();
             let stored = bucket.stored_slots();
-            let leaf_count =
-                u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
-                    .expect("leaf_count fits u32 for MAX_DEPTH=3");
-            let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-            let edge_root_len = match physical_depth {
-                1 => leaf_count,
-                2 => leaf_count.div_ceil(k),
-                3 => leaf_count.div_ceil(k).div_ceil(k),
-                _ => unreachable!("tree_mode_physical_depth out of range"),
-            };
+            let leaf_count = u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64);
+            // One arithmetic for every level of both trees: the edge root here, the value root below.
+            let edge_root_len =
+                crate::labeled::tree_csr::BlockIdArray::for_level(leaf_count, physical_depth)
+                    .edge_slots();
             // Plan 0326: property root length (separate LEG span; the
             // compact span logic adds the property root via
             // `property_root_region_len` below, so `bucket_span_region_len`
@@ -4202,12 +4197,8 @@ pub(super) fn property_root_entry_count(bucket: &LabelBucket) -> u32 {
         _ => return 0,
     };
     let l_p = u64::from(bucket.stored_slots().div_ceil(k));
-    let b = crate::labeled::tree_csr::B as u64;
-    let mut r = l_p;
-    for _ in 1..bucket.tree_mode_property_depth() {
-        r = r.div_ceil(b);
-    }
-    u32::try_from(r).expect("property root entry count fits u32 (bounded by R_MAX)")
+    crate::labeled::tree_csr::BlockIdArray::for_level(l_p, bucket.tree_mode_property_depth())
+        .entries()
 }
 
 /// Edge slots the property root reserves inside the combined region.

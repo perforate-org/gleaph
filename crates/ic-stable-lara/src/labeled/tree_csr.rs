@@ -124,6 +124,47 @@ impl crate::traits::CsrEdge for TargetRecord {
         Self(u32::from(vid))
     }
 }
+/// The 4-byte child block addresses that a tree node stores.
+///
+/// The same array serves the root and every interior node, and the same structure serves the edge tree and
+/// the value tree: what differs is the block size and *which store* holds it (ADR 0101). The unit here is the
+/// **entry** - one child address - and each side converts it to its own storage unit at the boundary:
+/// [`Self::edge_slots`] for the edge tree in the leaf's slot space, [`Self::value_bytes`] for the value tree
+/// in the inline property bytes store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BlockIdArray(u32);
+
+impl BlockIdArray {
+    /// The array at `depth` covering `blocks` child blocks: `ceil(blocks / R_MAX^(depth-1))` entries.
+    pub(crate) fn for_level(blocks: u64, depth: u32) -> Self {
+        let depth = depth.max(1);
+        let mut entries = blocks;
+        for _ in 1..depth {
+            entries = entries.div_ceil(R_MAX as u64);
+        }
+        Self(u32::try_from(entries).unwrap_or(u32::MAX))
+    }
+
+    /// One child address per entry.
+    pub(crate) const fn entries(self) -> u32 {
+        self.0
+    }
+
+    /// Edge tree: one leaf slot holds one child address.
+    pub(crate) const fn edge_slots(self) -> u32 {
+        self.0
+    }
+
+    /// Value tree: one child address is `PROPERTY_ID_BYTES` bytes in the value store.
+    ///
+    /// Test-only until the value side's root moves into the value store (ADR 0101); the conversion is here
+    /// now because the two sides are meant to share this arithmetic, not because a caller needs it yet.
+    #[cfg(test)]
+    pub(crate) fn value_bytes(self) -> u32 {
+        self.0.saturating_mul(PROPERTY_ID_BYTES as u32)
+    }
+}
+
 /// Root array cap (ADR 0088 §1 wire truth).
 pub(crate) const R_MAX: usize = 1024;
 /// Fail-closed depth boundary (ADR 0088 §4).
@@ -940,5 +981,44 @@ mod tests {
             b.insert(s);
             assert_eq!(b.root_len(), root_len(b.stored_slots()));
         }
+    }
+}
+
+#[cfg(test)]
+mod block_id_array_tests {
+    use super::*;
+
+    /// One array shape serves every level: a node at depth `d` points at the level below it, so the entry
+    /// count divides by the fan-out once per level.
+    #[test]
+    fn entries_shrink_by_the_fan_out_per_level() {
+        let blocks = (R_MAX * R_MAX + 1) as u64;
+        assert_eq!(BlockIdArray::for_level(blocks, 1).entries() as u64, blocks);
+        assert_eq!(
+            BlockIdArray::for_level(blocks, 2).entries() as u64,
+            blocks.div_ceil(R_MAX as u64)
+        );
+        assert_eq!(
+            BlockIdArray::for_level(blocks, 3).entries() as u64,
+            blocks.div_ceil(R_MAX as u64).div_ceil(R_MAX as u64)
+        );
+        // A depth below 1 is treated as the root.
+        assert_eq!(
+            BlockIdArray::for_level(7, 0).entries(),
+            BlockIdArray::for_level(7, 1).entries()
+        );
+    }
+
+    /// Both sides share the entry count and convert it to their own storage unit.
+    #[test]
+    fn each_side_converts_from_the_same_entries() {
+        let array = BlockIdArray::for_level(3, 1);
+        assert_eq!(array.entries(), 3);
+        assert_eq!(array.edge_slots(), 3, "one leaf slot per child address");
+        assert_eq!(
+            array.value_bytes(),
+            12,
+            "one child address is 4 bytes in the value store"
+        );
     }
 }
