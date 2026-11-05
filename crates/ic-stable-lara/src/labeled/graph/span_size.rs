@@ -83,6 +83,43 @@ pub(crate) fn content_capacity(span: SpanSlots) -> ContentSlots {
     ContentSlots::new(low)
 }
 
+/// What a bucket asks a leaf for, as one value.
+///
+/// The content is the mode-specific occupancy (rows for a slab prefix, root regions for a tree) and the
+/// span is that content plus its gap. Keeping them in one place is what stops a caller from passing content
+/// as if it were a span: the placement entries take spans, and the only way to obtain one from content is
+/// [`SpanRequest::for_content`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SpanRequest {
+    content: ContentSlots,
+    span: SpanSlots,
+}
+
+impl SpanRequest {
+    pub(crate) fn for_content(content: ContentSlots) -> Self {
+        Self {
+            content,
+            span: slots_for_content(content),
+        }
+    }
+
+    pub(crate) const fn content(self) -> ContentSlots {
+        self.content
+    }
+
+    pub(crate) const fn span(self) -> SpanSlots {
+        self.span
+    }
+
+    /// Whether this request fits in `headroom` slots.
+    ///
+    /// The headroom is the mode cap minus what the bucket already holds, i.e. `compute_bucket_allocation`;
+    /// asking for more is what promotion exists for.
+    pub(crate) fn fits_in(self, headroom: SpanSlots) -> bool {
+        self.span.0 <= headroom.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +150,27 @@ mod tests {
                 capacity.0,
                 slots_for_content(capacity).0
             );
+        }
+    }
+
+    /// A request carries the content it was built from and the span the gap rule derives, and it fits
+    /// exactly when that span does.
+    #[test]
+    fn request_pairs_content_with_its_span() {
+        for content in [0u32, 1, 8, 9, 80, 1_024, 4_096] {
+            let request = SpanRequest::for_content(ContentSlots::new(content));
+            assert_eq!(request.content(), ContentSlots::new(content));
+            assert_eq!(
+                request.span(),
+                slots_for_content(ContentSlots::new(content))
+            );
+            assert!(request.fits_in(request.span()));
+            if request.span().get() > 0 {
+                assert!(
+                    !request.fits_in(SpanSlots::new(request.span().get() - 1)),
+                    "one slot short must not fit"
+                );
+            }
         }
     }
 

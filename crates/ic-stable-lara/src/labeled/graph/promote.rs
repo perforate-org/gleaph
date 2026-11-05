@@ -237,15 +237,25 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         property_depth,
     ))
     .map_err(|_| LaraOperationError::overflow())?;
-    let combined_len = edge_root_len
-        .checked_add(property_root_len)
-        .ok_or(LaraOperationError::overflow())?;
     // Construct all descriptor fields before reserving target storage. Only its root address
     // will change after allocation; the old descriptor and both source planes remain owned.
     let template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
         .map_err(|_| LaraOperationError::overflow())?
         .with_tree_mode(true)
         .with_tree_mode_property_depth(property_depth);
+    // The root's content is read back from the template through the mode-blind geometry function, so the
+    // promotion does not spell out "edge root + property root" a second time.
+    let request = super::span_size::SpanRequest::for_content(super::span_size::ContentSlots::new(
+        super::compact::bucket_content_slots(&template),
+    ));
+    let combined_len = request.content().get();
+    debug_assert_eq!(
+        combined_len,
+        edge_root_len
+            .checked_add(property_root_len)
+            .ok_or(LaraOperationError::overflow())?,
+        "bucket_content_slots must equal the edge and property root lengths"
+    );
     let source = super::compact::PhysicalLayoutSource::capture(graph, vid)?;
     let canonical = super::compact::CanonicalPhysicalVertex::capture(graph, vid)?;
     let old_alloc = if canonical.vertex.is_default_edge_labeled() {
