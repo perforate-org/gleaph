@@ -1864,24 +1864,26 @@ where
         new_root_bytes.extend_from_slice(&old_bytes);
     }
     push_root_entry::<E>(&mut new_root_bytes, new_interior_id);
-    if old_prop_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * PROPERTY_ID_BYTES];
-        graph.edges().read_from_slot_bytes(
-            old_combined_start + u64::from(old_edge_root_len),
-            0,
-            &mut old_prop_bytes,
-        );
-        new_root_bytes.extend_from_slice(&old_prop_bytes);
-    }
+    // ADR 0102: the tree plane composes and writes the roots; this deepen says what belongs in each.
+    let mut value_children: Vec<u32> = if old_prop_root_len > 0 {
+        read_property_root_ids::<E, M>(graph, bucket, old_prop_root_len)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
-        push_property_root_entry(&mut new_root_bytes, entry_id);
+        value_children.push(entry_id);
     }
-    pad_image_to_slots::<E>(&mut new_root_bytes, new_combined_len);
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_edge_start, &new_root_bytes)
+    if graph
+        .tree_plane(*bucket)
+        .write_roots::<E>(new_edge_start, &new_root_bytes, &value_children)
+        .is_err()
     {
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
@@ -1891,7 +1893,7 @@ where
         let _ = graph
             .edges()
             .release_span(new_edge_start, u64::from(new_combined_len));
-        return Err(e.into());
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // Write the leaf id into the new interior at row 0.
     if let Err(e) =
@@ -2584,22 +2586,26 @@ where
     graph
         .edges()
         .read_slots_contiguous_bytes(new_combined_start, &mut overwritten);
-    // 5. Build new combined bytes: [new edge root (interior ids) | old property root].
-    let mut new_combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
+    // 5. The tree plane composes and writes the roots (ADR 0102): this deepen replaces the edge root's
+    // child array and keeps the value tree's children as they are.
+    let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     for &id in &interior_ids {
-        push_root_entry::<E>(&mut new_combined_bytes, id);
+        push_root_entry::<E>(&mut edge_root_image, id);
     }
-    if old_property_root_len > 0 {
-        let mut old_prop_bytes = vec![0u8; old_property_root_len as usize * E::BYTES];
-        graph.edges().read_slots_contiguous_bytes(
-            old_combined_start + u64::from(old_root_len),
-            &mut old_prop_bytes,
-        );
-        new_combined_bytes.extend_from_slice(&old_prop_bytes);
-    }
-    if let Err(e) = graph
-        .edges()
-        .write_slots_contiguous_bytes(new_combined_start, &new_combined_bytes)
+    let value_children: Vec<u32> = if old_property_root_len > 0 {
+        read_property_root_ids::<E, M>(graph, bucket, old_property_root_len)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if graph
+        .tree_plane(*bucket)
+        .write_roots::<E>(new_combined_start, &edge_root_image, &value_children)
+        .is_err()
     {
         for &id in interior_ids.iter().rev() {
             let _ = graph.ltb().release(id);
@@ -2607,7 +2613,7 @@ where
         let _ = graph
             .edges()
             .write_slots_contiguous_bytes(new_combined_start, &overwritten);
-        return Err(LabeledOperationError::from(e));
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 6. Commit: build the new descriptor.
     let new_physical_depth = depth + 1;
