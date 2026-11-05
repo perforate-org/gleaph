@@ -1495,6 +1495,34 @@ where
         }
     }
 
+    /// Gives a tree bucket's value root a region in the value store (ADR 0101).
+    ///
+    /// The value root is an array of 4-byte block addresses - the same structure as the edge root - and it
+    /// lives in the inline property bytes store, never in the leaf's edge slots. This admits the region and
+    /// records its offset on the descriptor; writing the ids is the caller's next step, because only the
+    /// caller knows which addresses to place.
+    ///
+    /// Always allocates a fresh region and records it; the caller owns releasing the one it replaces. A tree
+    /// root is created once at promotion and again whenever it deepens, so "reuse if present" would be wrong:
+    /// offset 0 is a legitimate address for the store's first span, not a "not admitted" sentinel.
+    pub(super) fn allocate_value_root_span(
+        &self,
+        bucket: LabelBucket,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        if !bucket.is_tree_mode() {
+            return Ok(bucket);
+        }
+        let bytes = u64::from(super::compact::value_root_region_bytes(&bucket));
+        if bytes == 0 {
+            return Ok(bucket);
+        }
+        let offset = self
+            .values
+            .allocate_byte_span(bytes)
+            .map_err(|_| LabeledOperationError::from(LaraOperationError::overflow()))?;
+        Ok(bucket.with_inline_property_bytes_offset(offset))
+    }
+
     pub(super) fn ensure_bucket_inline_property_bytes_span(
         &self,
         src: VertexId,
@@ -5017,5 +5045,72 @@ mod tests {
         );
         assert!(result.is_err(), "invalid slot must error");
         let _ = b;
+    }
+}
+
+#[cfg(test)]
+mod value_root_span_tests {
+    use super::*;
+    use crate::VertexId;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::test_support::test_graph;
+    use crate::labeled::record::LabelBucket;
+
+    /// ADR 0101: a tree bucket's value root gets a region in the value store and records its offset; the
+    /// admission is idempotent, so a bucket that already has one is left alone.
+    #[test]
+    fn value_root_span_is_allocated_in_the_value_store() {
+        let graph = test_graph();
+        let tree = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            5_000,
+            5_000,
+            8,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap()
+        .with_tree_mode(true)
+        .with_tree_mode_property_depth(1);
+        let bytes = super::super::compact::value_root_region_bytes(&tree);
+        assert!(bytes > 0, "fixture must have a value root");
+
+        let admitted = graph.allocate_value_root_span(tree).expect("admit");
+        let offset = admitted.inline_property_bytes_offset();
+        assert_eq!(
+            admitted.inline_property_bytes_offset(),
+            offset,
+            "the value root records its value-store offset"
+        );
+        // The region really is in the value store: the ids written there read back.
+        let mut buf = vec![0u8; bytes as usize];
+        graph.values().write_bytes(offset, &buf).expect("write ids");
+        graph.values().read_bytes(offset, &mut buf);
+        assert_eq!(buf.len(), bytes as usize);
+
+        // Non-tree buckets are untouched.
+        let slab = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            10,
+            10,
+            8,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            graph
+                .allocate_value_root_span(slab)
+                .expect("slab")
+                .inline_property_bytes_offset(),
+            slab.inline_property_bytes_offset()
+        );
+        let _ = VertexId::from(0);
     }
 }
