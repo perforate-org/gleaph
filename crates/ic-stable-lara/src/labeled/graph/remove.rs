@@ -1406,7 +1406,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         assert!(
             graph

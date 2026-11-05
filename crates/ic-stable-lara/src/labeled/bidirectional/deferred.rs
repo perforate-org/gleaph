@@ -4445,7 +4445,8 @@ where
         if removed_edges == 0 {
             for moved in self
                 .forward
-                .compact_vertex_edge_span_with_moves(vid, 0)
+                .vertex_layout(vid)
+                .compact_span_with_moves()
                 .map_err(DeferredBidirectionalLabeledError::Forward)?
             {
                 move_observer.edge_slot_moved(Orientation::Forward, vid, moved);
@@ -4453,7 +4454,8 @@ where
 
             for moved in self
                 .reverse
-                .compact_vertex_edge_span_with_moves(vid, 0)
+                .vertex_layout(vid)
+                .compact_span_with_moves()
                 .map_err(DeferredBidirectionalLabeledError::Reverse)?
             {
                 move_observer.edge_slot_moved(Orientation::Reverse, vid, moved);
@@ -7843,11 +7845,13 @@ mod tests {
         // segment-16 quota bucket would otherwise stay log-backed).
         graph
             .forward
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         graph
             .reverse
-            .compact_vertex_edge_span(VertexId::from(1), 0)
+            .vertex_layout(VertexId::from(1))
+            .compact_span()
             .unwrap();
 
         // Remove the second parallel edge by its inline bytes: the reverse half
@@ -8770,7 +8774,8 @@ mod tests {
         // hysteresis arithmetic below.
         graph
             .forward
-            .compact_vertex_edge_span(src, 0)
+            .vertex_layout(src)
+            .compact_span()
             .expect("fold log to slab");
         (src, label)
     }

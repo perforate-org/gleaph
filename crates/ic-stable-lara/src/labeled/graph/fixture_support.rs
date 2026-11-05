@@ -18,9 +18,9 @@ use crate::traits::CsrEdgeTombstone;
 pub fn force_span_fold<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
-    bucket_index: u32,
+    _bucket_index: u32,
 ) -> Result<(), LabeledOperationError> {
-    graph.compact_vertex_edge_span(vid, bucket_index)
+    graph.vertex_layout(vid).compact_span()
 }
 
 /// Every stored row of one bucket's spill run, as `(index, neighbour)`.

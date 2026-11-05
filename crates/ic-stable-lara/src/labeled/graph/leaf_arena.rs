@@ -1877,7 +1877,8 @@ mod tests {
                 label,
             );
             graph
-                .compact_vertex_edge_span(VertexId::from(vid_u), 0)
+                .vertex_layout(VertexId::from(vid_u))
+                .compact_span()
                 .unwrap();
         }
         graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(0));

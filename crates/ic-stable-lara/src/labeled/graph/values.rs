@@ -2355,7 +2355,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         let mut weights = Vec::new();
         graph
@@ -4322,7 +4323,7 @@ mod tests {
         graph
             .rewrite_vertex_edge_span(src, None, 1, true, None)
             .unwrap();
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         graph
             .test_assert_bucket_inline_property_bytes_follow_edge_slab_order(src)
             .expect("inline property bytes order matches edge slab after rewrite and compact");
@@ -4351,7 +4352,8 @@ mod tests {
             .unwrap()
             .expect("removed low slot");
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
 
         let mut values = Vec::new();

@@ -292,17 +292,21 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     let in_pin_start = if in_place {
         None
     } else {
-        match graph.vertex_layout(vid)? {
+        let pin = graph.vertex_layout(vid);
+        if !pin.has_leaf()? {
+            None
+        } else if prefix > 0 {
             // The root replaces this bucket's own region, so it grows in place when the
             // following slots are the vertex's own: keeping the base is what keeps the
             // declared width inside the successor's boundary.
-            Some(pin) if prefix > 0 => pin
-                .grow_region(avoid.0, u64::from(combined_len))
-                .or_else(|| pin.place(u64::from(combined_len), avoid)),
+            match pin.grow_region(avoid.0, u64::from(combined_len))? {
+                Some(base) => Some(base),
+                None => pin.place(u64::from(combined_len), avoid)?,
+            }
+        } else {
             // A bucket with no slab content owns no region yet, so it has no slice to be
             // exclusive about: its root comes from the leaf's own free space.
-            Some(pin) => pin.allocate(u64::from(combined_len), Some(avoid)),
-            None => None,
+            pin.allocate(u64::from(combined_len), Some(avoid))?
         }
     };
     let new_start = match in_pin_start {

@@ -487,7 +487,7 @@ pub(crate) fn retained_compaction_fixture(
         }
     }
     // Establish dense prefixes before constructing holes or external identity keys.
-    graph.compact_vertex_edge_span(vid, 0).unwrap();
+    graph.vertex_layout(vid).compact_span().unwrap();
     let label = BucketLabelKey::from_raw(2);
     for target in 8..16 {
         graph
@@ -644,7 +644,7 @@ pub(crate) fn tree_compaction_fixture(
         }
         if label == slab {
             // Establish the slab prefix before introducing any tree descriptor.
-            graph.compact_vertex_edge_span(vid, 0).unwrap();
+            graph.vertex_layout(vid).compact_span().unwrap();
         }
     }
     for slot in [0, 3, 511, super::T_PROMOTE - 1] {

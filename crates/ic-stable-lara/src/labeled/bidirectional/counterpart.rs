@@ -1043,7 +1043,8 @@ mod tests {
         let (fwd, _) = insert_directed(&forward, &reverse, 1, 2, label);
         let _third = insert_directed(&forward, &reverse, 1, 2, label);
         forward
-            .compact_vertex_edge_span(VertexId::from(1), 0)
+            .vertex_layout(VertexId::from(1))
+            .compact_span()
             .unwrap();
         forward
             .remove_edge_at_slot(fwd.owner_vertex_id, fwd.label_id, fwd.slot_index.raw())

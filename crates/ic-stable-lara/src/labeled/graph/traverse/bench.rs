@@ -333,7 +333,7 @@ fn build_dense_offset_graph(
             )
             .unwrap();
     }
-    graph.compact_vertex_edge_span(src, 0).unwrap();
+    graph.vertex_layout(src).compact_span().unwrap();
     let bucket = offset_bucket(&graph, src, label);
     assert_eq!(bucket.degree(), extent);
     assert_eq!(bucket.stored_slots(), extent);
@@ -788,7 +788,7 @@ fn bench_t_v_sparse() -> canbench_rs::BenchResult {
             )
             .unwrap();
     }
-    graph.compact_vertex_edge_span(src, 0).unwrap();
+    graph.vertex_layout(src).compact_span().unwrap();
     for slot in (1..DENSE_DEGREE).step_by(3) {
         graph.remove_edge_at_slot(src, label, slot).unwrap();
     }

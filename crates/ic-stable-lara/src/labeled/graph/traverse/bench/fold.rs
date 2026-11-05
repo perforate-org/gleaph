@@ -183,7 +183,8 @@ impl<const W: usize> FoldFixture<W> {
 
     fn fold_edges(&self) -> Vec<EdgeSlotMove> {
         self.graph
-            .compact_vertex_edge_span_with_moves(self.src, 0)
+            .vertex_layout(self.src)
+            .compact_span_with_moves()
             .unwrap()
     }
 

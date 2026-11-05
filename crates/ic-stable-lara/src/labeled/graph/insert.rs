@@ -1465,7 +1465,7 @@ mod tests {
         // Fold the overflow log into the slab so the bucket is slab-backed
         // (stored_slots == degree), matching a production bucket after
         // maintenance.
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
 
         // Delete the middle edge: slot 1 becomes a tombstone while stored_slots stays 5.
         let removed = graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
@@ -1542,7 +1542,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         // Delete the middle edge: edge slot 1 is tombstoned and the inline
         // property bytes sequence compacts to [10, 30].
         let removed = graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
@@ -1631,7 +1631,7 @@ mod tests {
                 .insert_edge(src, label, TestEdge { target }, insertion)
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
 
         // Insertion placement never fills the interior tombstone (ADR 0052 §6).
@@ -1688,7 +1688,7 @@ mod tests {
                 insertion,
             )
             .unwrap();
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         // Create a slab tombstone at slot 0, then craft the ADR 0052 §9
         // fallback state: the bucket's inline property bytes are log-backed.
         graph.remove_edge_at_slot(src, label, 0).unwrap().unwrap();
@@ -1733,7 +1733,7 @@ mod tests {
                 .insert_edge(src, label, TestEdge { target }, insertion)
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         // Interleave delete + unordered re-insert: every re-insert fills the
         // tombstone it just created, so stored_slots never grows past 8.
         for i in 0..8u32 {

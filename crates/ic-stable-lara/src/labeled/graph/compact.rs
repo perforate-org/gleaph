@@ -6201,12 +6201,13 @@ where
         };
         // The packed bucket may leave room at the end of its own region; spilled rows belong back
         // in the span there (ADR 0097: the edge fold lost its implementation with the overflow log).
-        if let Ok(Some(vertex)) = self.vertex_layout(vid) {
+        let vertex = self.vertex_layout(vid);
+        if vertex.has_leaf()? {
             let content_end = finalized
                 .edge_start()
                 .saturating_add(u64::from(finalized.stored_slots()));
             let region_end = vertex
-                .regions()
+                .regions()?
                 .into_iter()
                 .find(|(start, _)| *start == finalized.edge_start())
                 .map(|(_, end)| end);
@@ -6423,19 +6424,6 @@ where
         )
     }
 
-    /// Compacts all edge buckets for `vid` into slab-backed spans.
-    pub(crate) fn compact_vertex_edge_span(
-        &self,
-        vid: VertexId,
-        bucket_index: u32,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.compact_vertex_edge_span_with_moves(vid, bucket_index)
-            .map(|_| ())
-    }
-
     /// Compacts all edge buckets for `vid` and returns the slab-slot moves performed.
     pub(crate) fn compact_vertex_edge_span_with_moves(
         &self,
@@ -6501,7 +6489,7 @@ where
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
         }
-        self.compact_vertex_edge_span(vid, 0)?;
+        self.vertex_layout(vid).compact_span()?;
         if !allow_slack_grow {
             return Ok(());
         }
@@ -6928,7 +6916,7 @@ mod tests {
                     .unwrap();
             }
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         let vertex = graph.vertices().get(src);
         let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -7342,7 +7330,8 @@ mod tests {
             .unwrap();
 
         let err = graph
-            .compact_vertex_edge_span(hub, 0)
+            .vertex_layout(hub)
+            .compact_span()
             .expect_err("bucket edge_len sum overflow must be rejected");
 
         assert!(matches!(
@@ -7802,7 +7791,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         for target in 1..=55u32 {
             assert!(
@@ -7886,7 +7876,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         for target in 1..=17u32 {
             graph
@@ -7962,7 +7953,8 @@ mod tests {
         }
 
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
 
         for target in 1..=200 {
@@ -7981,7 +7973,8 @@ mod tests {
         assert_eq!(bucket.degree(), 2);
 
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert_eq!(bucket.stored_slots(), bucket.degree);
@@ -8419,7 +8412,7 @@ mod tests {
         graph
             .rewrite_vertex_edge_span(src, None, 1, true, None)
             .unwrap();
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         assert_eq!(
             labeled_vertex_footprint_release_calls().saturating_sub(vertex_releases_before),
             0,
@@ -8732,7 +8725,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         for target in 0..72u32 {
             graph
@@ -8751,7 +8745,8 @@ mod tests {
         assert!(before.stored_slots > 8);
 
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
 
         let after = graph.vertices().get(VertexId::from(0));
@@ -8866,12 +8861,7 @@ mod tests {
             "hub slice {slice_start}..{slice_end} must stay inside its extent {extent_start}..{}",
             extent_start + extent_len
         );
-        for (region_start, region_end) in graph
-            .vertex_layout(hub)
-            .expect("hub capture")
-            .expect("hub leaf")
-            .regions()
-        {
+        for (region_start, region_end) in graph.vertex_layout(hub).regions().expect("hub regions") {
             assert!(
                 region_start >= slice_start && region_end <= slice_end,
                 "hub region {region_start}..{region_end} must stay inside its slice {slice_start}..{slice_end}"
@@ -8903,7 +8893,8 @@ mod tests {
             road,
         );
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         graph
             .remove_edge_matching(VertexId::from(0), road, |edge| {
@@ -9107,7 +9098,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         graph
             .remove_edge_at_slot(VertexId::from(0), label, 1)
@@ -9204,7 +9196,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         graph
             .remove_edge_at_slot(VertexId::from(0), label, 1)
@@ -9259,7 +9252,8 @@ mod tests {
                 .unwrap();
         }
         graph
-            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .vertex_layout(VertexId::from(0))
+            .compact_span()
             .unwrap();
         for slot in [0u32, 2, 4] {
             graph

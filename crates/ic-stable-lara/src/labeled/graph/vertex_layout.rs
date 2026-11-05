@@ -1,19 +1,25 @@
 //! The space one vertex holds in its leaf, borrowed for one operation.
 //!
-//! ADR 0100 unit three. A vertex's space used to be reachable through `LeafSlice`, which was obtained from
-//! an `Option<LeafArena>` that callers had to capture first and which `Deref`-ed to the whole arena - so a
-//! handle that names one vertex could also place regions anywhere in the leaf. This view is vertex-scoped
-//! and nothing narrower or wider: it captures the defragmentated extent once and every operation answers
-//! for `src` alone.
+//! ADR 0100 unit three. A vertex's space used to be reachable through `LeafSlice`, obtained from an
+//! `Option<LeafArena>` the caller had to capture first, and it `Deref`-ed to that arena - so a handle naming
+//! one vertex could also place regions anywhere in the leaf. One handle, two granularities.
+//!
+//! This view answers for `src` alone. The leaf capture is lazy on purpose: the vertex-level rewrites
+//! (`compact_span`, `rewrite_span`) do not need the extent, so requiring a capture would force callers to
+//! invent a leaf they do not use - and silently skip the operation when the capture is absent, which is the
+//! bug this design avoids by making `has_leaf` an explicit question.
 //!
 //! The layers stay put: `LeafArena` is the leaf-level allocator, `FreeSpanStore` keeps the ledger, and a
-//! bucket's own span is `BucketLayout`'s business. Vertex-level *rewrites* (re-laying the tiling, packing
-//! buckets left) belong here and move in next; this cut only takes over the placement queries that today
-//! reach the arena directly.
+//! bucket's own span is `BucketLayout`'s business.
 
-use crate::{VertexId, labeled::graph::LabeledOperationError, traits::CsrEdge};
+use crate::{
+    VertexId,
+    labeled::graph::LabeledOperationError,
+    traits::{CsrEdge, CsrEdgeTombstone},
+};
 use ic_stable_structures::Memory;
 
+use super::EdgeSlotMove;
 use super::LabeledLaraGraph;
 use super::leaf_arena::{LeafArena, LeafSlice};
 
@@ -25,7 +31,6 @@ where
 {
     graph: &'a LabeledLaraGraph<E, M>,
     src: VertexId,
-    arena: LeafArena<'a, E, M>,
 }
 
 impl<'a, E, M> VertexLayout<'a, E, M>
@@ -33,12 +38,8 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    pub(super) const fn new(
-        graph: &'a LabeledLaraGraph<E, M>,
-        src: VertexId,
-        arena: LeafArena<'a, E, M>,
-    ) -> Self {
-        Self { graph, src, arena }
+    pub(super) const fn new(graph: &'a LabeledLaraGraph<E, M>, src: VertexId) -> Self {
+        Self { graph, src }
     }
 
     /// The vertex this view answers for.
@@ -46,56 +47,116 @@ where
         self.src
     }
 
-    fn slice(&self) -> LeafSlice<'_, '_, E, M> {
-        self.arena.leaf_slice(self.src)
+    /// Whether this vertex has a captured leaf range at all.
+    ///
+    /// A vertex described straight from a fixture has no leaf; placement operations answer `None` for it
+    /// while the rewrites still apply. Making that a question rather than a skip is deliberate: a caller
+    /// that needs placement has to know it cannot place.
+    pub(crate) fn has_leaf(&self) -> Result<bool, LabeledOperationError> {
+        Ok(LeafArena::capture(self.graph, self.src)?.is_some())
     }
 
-    /// The leaf this vertex lives in.
-    pub(crate) fn leaf(&self) -> u32 {
-        self.arena.leaf()
+    /// Runs `f` against the vertex's leaf slice, if it has one.
+    fn with_slice<T>(
+        &self,
+        f: impl FnOnce(&LeafSlice<'_, '_, E, M>) -> T,
+    ) -> Result<Option<T>, LabeledOperationError> {
+        Ok(LeafArena::capture(self.graph, self.src)?.map(|arena| f(&arena.leaf_slice(self.src))))
+    }
+
+    /// The leaf this vertex lives in, when it has one.
+    pub(crate) fn leaf(&self) -> Result<Option<u32>, LabeledOperationError> {
+        Ok(LeafArena::capture(self.graph, self.src)?.map(|arena| arena.leaf()))
     }
 
     /// The regions this vertex's buckets occupy, as `(start, end)` pairs.
-    pub(crate) fn regions(&self) -> Vec<(u64, u64)> {
-        self.slice().regions()
+    pub(crate) fn regions(&self) -> Result<Vec<(u64, u64)>, LabeledOperationError> {
+        Ok(self
+            .with_slice(|slice| slice.regions())?
+            .unwrap_or_default())
     }
 
     /// What this vertex's buckets actually wrote, per bucket.
-    pub(crate) fn contents(&self) -> Vec<(u64, u64)> {
-        self.slice().contents()
+    pub(crate) fn contents(&self) -> Result<Vec<(u64, u64)>, LabeledOperationError> {
+        Ok(self
+            .with_slice(|slice| slice.contents())?
+            .unwrap_or_default())
     }
 
     /// The vertex's extent: the space its leaf grants it.
-    pub(crate) fn extent(&self) -> (u64, u64) {
-        self.slice().extent()
+    pub(crate) fn extent(&self) -> Result<Option<(u64, u64)>, LabeledOperationError> {
+        self.with_slice(|slice| slice.extent())
     }
 
     /// Places `need` slots in the vertex's own space, keeping clear of `avoid`.
-    pub(crate) fn place(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
-        self.slice().place(need, avoid)
+    pub(crate) fn place(
+        &self,
+        need: u64,
+        avoid: (u64, u64),
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        Ok(self.with_slice(|slice| slice.place(need, avoid))?.flatten())
     }
 
     /// Places a leaf-wide region (`need` slots) in the vertex's own space.
-    pub(crate) fn place_leaf_wide(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
-        self.slice().place_leaf_wide(need, avoid)
+    pub(crate) fn place_leaf_wide(
+        &self,
+        need: u64,
+        avoid: (u64, u64),
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        Ok(self
+            .with_slice(|slice| slice.place_leaf_wide(need, avoid))?
+            .flatten())
     }
 
     /// Grows the region starting at `source_start` to hold `new_content`.
-    pub(crate) fn grow_region(&self, source_start: u64, new_content: u64) -> Option<u64> {
-        self.slice().grow_region(source_start, new_content)
+    pub(crate) fn grow_region(
+        &self,
+        source_start: u64,
+        new_content: u64,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        Ok(self
+            .with_slice(|slice| slice.grow_region(source_start, new_content))?
+            .flatten())
     }
 
     /// Allocates `len` slots from the leaf's free space, keeping clear of `avoid`.
-    pub(crate) fn allocate(&self, len: u64, avoid: Option<(u64, u64)>) -> Option<u64> {
-        self.slice().allocate(len, avoid)
+    pub(crate) fn allocate(
+        &self,
+        len: u64,
+        avoid: Option<(u64, u64)>,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        Ok(self
+            .with_slice(|slice| slice.allocate(len, avoid))?
+            .flatten())
     }
 
     /// Hands out a range: takes whatever the free-span store still owns inside it.
+    pub(crate) fn claim_placement(
+        &self,
+        start: u64,
+        need: u64,
+    ) -> Result<(), LabeledOperationError> {
+        self.with_slice(|slice| slice.claim_placement(start, need))
+            .map(|_| ())
+    }
+
+    /// Packs this vertex's buckets together and reports the slab-slot moves it performed.
     ///
-    /// Kept on the view rather than on the arena so the claim happens at the same granularity as the
-    /// placement that made it necessary.
-    pub(crate) fn claim_placement(&self, start: u64, need: u64) {
-        self.slice().claim_placement(start, need)
+    /// The bucket index the old signature carried was ignored (`let _ = bucket_index;`), so the operation is
+    /// vertex-scoped and says so.
+    pub(crate) fn compact_span_with_moves(&self) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.graph.compact_vertex_edge_span_with_moves(self.src, 0)
+    }
+
+    /// [`Self::compact_span_with_moves`], discarding the moves.
+    pub(crate) fn compact_span(&self) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.compact_span_with_moves().map(|_| ())
     }
 }
 
@@ -104,13 +165,10 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    /// The space `src` holds in its leaf, or `None` when the vertex has no captured range.
+    /// The layout of one vertex, borrowed for one operation.
     ///
-    /// ADR 0100 rule 2: this is the only way to a vertex-scoped placement.
-    pub(crate) fn vertex_layout(
-        &self,
-        src: VertexId,
-    ) -> Result<Option<VertexLayout<'_, E, M>>, LabeledOperationError> {
-        Ok(LeafArena::capture(self, src)?.map(|arena| VertexLayout::new(self, src, arena)))
+    /// ADR 0100 rule 2: this is the only way to a vertex-scoped placement or rewrite.
+    pub(crate) fn vertex_layout(&self, src: VertexId) -> VertexLayout<'_, E, M> {
+        VertexLayout::new(self, src)
     }
 }

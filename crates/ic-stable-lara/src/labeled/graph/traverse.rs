@@ -3956,7 +3956,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         // Logical slot 1 is live.
         let edge = graph
             .read_edge(src, label, BucketEntryPosition::new(1))
@@ -4158,7 +4158,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         // Slot 2 (target 3) is tombstoned; positions are tombstone-inclusive.
         graph.remove_edge_at_slot(src, label, 2).unwrap();
         let mut request = LabeledTraversalRequest {
@@ -4238,7 +4238,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        slab_graph.compact_vertex_edge_span(slab_src, 0).unwrap();
+        slab_graph.vertex_layout(slab_src).compact_span().unwrap();
         slab_graph.remove_edge_at_slot(slab_src, label, 2).unwrap();
         let mut out = Vec::new();
         let flow: ControlFlow<()> = Traversal::visit_edges_window(
@@ -4273,7 +4273,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         graph.remove_edge_at_slot(src, label, 2).unwrap();
 
         let mut out = Vec::new();
@@ -4443,7 +4443,7 @@ mod tests {
                     .unwrap();
             }
             if label != tree {
-                graph.compact_vertex_edge_span(owner, 0).unwrap();
+                graph.vertex_layout(owner).compact_span().unwrap();
             }
         }
         // Real slab/run removals, never the stale live-property tree writer.
@@ -5167,7 +5167,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
 
         let mut rows = Vec::new();
         let _ = graph
@@ -5456,7 +5456,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.vertex_layout(src).compact_span().unwrap();
         graph.remove_edge_at_slot(src, label, 2).unwrap();
         graph.remove_edge_at_slot(src, label, 5).unwrap();
 
