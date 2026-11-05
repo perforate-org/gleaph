@@ -95,6 +95,32 @@ pub(crate) fn property_slots_per_block(w: u16) -> Option<u32> {
     (w != 0 && w <= payload).then(|| payload / w)
 }
 
+/// Where a value slot sits inside the value tree: its block, its row in that block, and the byte offset of
+/// the value within the block payload.
+///
+/// The one formula. The promotion's transcription, the read path and the append path each used to spell
+/// `slot % property_slots_per_block` themselves; three copies of that arithmetic is how a slot can be written
+/// into one row and read from another without any single site looking wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ValueSlotPosition {
+    pub(crate) block: u32,
+    pub(crate) row: u32,
+    pub(crate) offset: u32,
+}
+
+/// Maps `slot` to its position in the value tree for a bucket of width `w`.
+///
+/// `None` when the width cannot hold a value (zero or wider than a block).
+pub(crate) fn value_slot_position(slot: u32, w: u16) -> Option<ValueSlotPosition> {
+    let slots_per_block = property_slots_per_block(w)?;
+    let row = slot % slots_per_block;
+    Some(ValueSlotPosition {
+        block: slot / slots_per_block,
+        row,
+        offset: row * u32::from(w),
+    })
+}
+
 /// 4-byte target record of the bench-only [`TreeCsrBucket`] model.
 ///
 /// ADR 0088 §1 stores one raw 4-byte `target` per slot; this marker names that
@@ -977,6 +1003,44 @@ mod tests {
             b.insert(s);
             assert_eq!(b.root_len(), root_len(b.stored_slots()));
         }
+    }
+}
+
+#[cfg(test)]
+mod value_slot_position_tests {
+    use super::*;
+
+    /// A slot's block is `slot / k`, its row is `slot % k`, and the offset is the row's byte position - the
+    /// three views of the same place, so a writer and a reader cannot disagree.
+    #[test]
+    fn positions_agree_with_their_parts() {
+        for w in [1u16, 4, 8, 33, 64] {
+            let k = property_slots_per_block(w).expect("width fits a block");
+            for slot in 0..(k * 3 + 1) {
+                let position = value_slot_position(slot, w).expect("position");
+                assert_eq!(position.block, slot / k);
+                assert_eq!(position.row, slot % k);
+                assert_eq!(position.offset, position.row * u32::from(w));
+                // Offsets never leave the block payload.
+                assert!(position.offset + u32::from(w) <= PROPERTY_BLOCK_BYTES as u32);
+            }
+        }
+        assert!(
+            value_slot_position(0, 0).is_none(),
+            "a zero width holds no value"
+        );
+    }
+
+    /// Every slot inside one block gets a distinct offset - overlapping rows would let one value overwrite
+    /// another.
+    #[test]
+    fn one_block_has_distinct_rows() {
+        let w = 33u16;
+        let k = property_slots_per_block(w).expect("width fits a block");
+        let offsets: std::collections::BTreeSet<u32> = (0..k)
+            .map(|slot| value_slot_position(slot, w).expect("position").offset)
+            .collect();
+        assert_eq!(offsets.len() as u32, k);
     }
 }
 

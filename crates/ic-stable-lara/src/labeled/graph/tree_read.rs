@@ -392,7 +392,6 @@ where
             edge_inline_property_width: 0,
         });
     }
-    let k = property_slots_per_block(graph, w)?;
     if out.len() != usize::from(w) {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: w,
@@ -400,7 +399,10 @@ where
         });
     }
     let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
-    let row_offset = (slot % k) * u32::from(w);
+    // The one formula for a slot's place in the value tree.
+    let row_offset = crate::labeled::tree_csr::value_slot_position(slot, w)
+        .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
+        .offset;
     graph
         .ltb()
         .read_payload_partial(block_id, row_offset as usize, out)
@@ -436,7 +438,6 @@ where
             edge_inline_property_width: 0,
         });
     }
-    let k = property_slots_per_block(graph, w)?;
     if value.len() != usize::from(w) {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: w,
@@ -459,7 +460,9 @@ where
         bucket.stored_slots()
     );
     let block_id = resolve_property_leaf_block_id::<E, M>(graph, bucket, slot)?;
-    let row_offset = (slot % k) * u32::from(w);
+    let row_offset = crate::labeled::tree_csr::value_slot_position(slot, w)
+        .ok_or_else(|| LabeledOperationError::from(LaraOperationError::overflow()))?
+        .offset;
     graph
         .ltb()
         .write_payload_partial(block_id, row_offset as usize, value)

@@ -423,7 +423,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 dead = 0;
             }
             if width > 0 {
-                let ppos = (slot % property_slots_per_block) as usize * usize::from(width);
+                let value_pos = crate::labeled::tree_csr::value_slot_position(slot, width)
+                    .ok_or(LaraOperationError::overflow())?;
+                let ppos = value_pos.offset as usize;
                 let dst = &mut property_payload[ppos..ppos + usize::from(width)];
                 if edge.is_deleted_slot() {
                     dst.fill(0);
@@ -433,9 +435,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                     }
                     dst.copy_from_slice(value);
                 }
-                if slot % property_slots_per_block + 1 == property_slots_per_block
-                    || slot + 1 == resident
-                {
+                if value_pos.row + 1 == property_slots_per_block || slot + 1 == resident {
                     property_ids.push(mint(
                         BlockHeader {
                             kind: BlockKind::InlineProperty,
