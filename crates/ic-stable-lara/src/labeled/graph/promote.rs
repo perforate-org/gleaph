@@ -325,8 +325,8 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             // `Required`: the room must exist, so a rewrite that cannot place the wider
             // span fails instead of silently keeping the current one.
             let retiled = graph
-                .rewrite_vertex_edge_span_with_policy(
-                    vid,
+                .vertex_layout(vid)
+                .rewrite_span_with_policy(
                     Some(bucket_index),
                     combined_len.saturating_sub(prefix),
                     true,

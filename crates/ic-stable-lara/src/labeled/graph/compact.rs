@@ -1634,7 +1634,7 @@ mod physical_layout_tests {
             reset_free_span_release_calls();
             take_events();
             graph
-                .rewrite_vertex_edge_span(src, None, 0, false, Some((destination, 8)))
+                .rewrite_vertex_edge_span_impl(src, None, 0, false, Some((destination, 8)))
                 .unwrap();
             let retired = FreeSpan {
                 start_slot: if destination == 98 { 106 } else { 100 },
@@ -2135,7 +2135,7 @@ mod physical_layout_tests {
             let publications = graph.edges.free_span_store().publication_count();
             reset_free_span_release_calls();
             let consume = || match branch {
-                0 => graph.rewrite_vertex_edge_span(src, None, 0, false, Some((98, 8))),
+                0 => graph.rewrite_vertex_edge_span_impl(src, None, 0, false, Some((98, 8))),
                 1 => graph.relocate_labeled_leaf_physical_block(src),
                 2 => graph.rebalance_labeled_leaf_weighted_slide(src),
                 _ => unreachable!(),
@@ -2263,7 +2263,7 @@ mod physical_layout_tests {
                 reset_free_span_release_calls();
                 take_events();
                 assert!(matches!(
-                    graph.rewrite_vertex_edge_span(src, None, 0, false, Some((98, 12))),
+                    graph.rewrite_vertex_edge_span_impl(src, None, 0, false, Some((98, 12))),
                     Err(super::LabeledOperationError::Store(
                         super::LaraOperationError::CollectAllocationOverflow
                     ))
@@ -2285,7 +2285,7 @@ mod physical_layout_tests {
                 );
                 take_events();
                 graph
-                    .rewrite_vertex_edge_span(src, None, 0, false, Some((98, 12)))
+                    .rewrite_vertex_edge_span_impl(src, None, 0, false, Some((98, 12)))
                     .unwrap();
                 assert_eq!(
                     graph.edges.free_span_store().publication_count() - publications,
@@ -3990,7 +3990,7 @@ fn record_labeled_vertex_footprint_release() {
 }
 
 #[cfg(test)]
-fn record_rewrite_vertex_edge_span() {
+fn record_rewrite_vertex_edge_span_impl() {
     REWRITE_VERTEX_EDGE_SPAN_CALLS.with(|c| c.set(c.get().saturating_add(1)));
 }
 
@@ -5285,7 +5285,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
-    pub(super) fn rewrite_vertex_edge_span(
+    pub(super) fn rewrite_vertex_edge_span_impl(
         &self,
         src: VertexId,
         preferred_bucket: Option<u32>,
@@ -5296,7 +5296,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.rewrite_vertex_edge_span_with_policy(
+        self.rewrite_vertex_edge_span_with_policy_impl(
             src,
             preferred_bucket,
             preferred_extra,
@@ -5307,7 +5307,7 @@ where
     }
 
     /// Rewrite that also names which base-resolution policy its caller accepts.
-    pub(super) fn rewrite_vertex_edge_span_with_policy(
+    pub(super) fn rewrite_vertex_edge_span_with_policy_impl(
         &self,
         src: VertexId,
         preferred_bucket: Option<u32>,
@@ -5320,7 +5320,7 @@ where
         E: CsrEdgeTombstone,
     {
         #[cfg(test)]
-        record_rewrite_vertex_edge_span();
+        record_rewrite_vertex_edge_span_impl();
         // Rebuild the VertexEdgeSpan from initialized slab prefixes and tree roots.
         //
         // The bucket layer is exact-fit, so a new label can appear anywhere in
@@ -5363,7 +5363,7 @@ where
             // span. Re-growing would demand a larger quantum than the relocate
             // sized for, exhaust its retry loop, and fail a healthy span —
             // force_slack drops on restart (proactive slack accrues later).
-            return self.rewrite_vertex_edge_span_with_policy(
+            return self.rewrite_vertex_edge_span_with_policy_impl(
                 src,
                 preferred_bucket,
                 preferred_extra,
@@ -5703,7 +5703,7 @@ where
                 .find(|bucket| !bucket.is_tiny_mode())
                 .map(|bucket| bucket.edge_start())
                 .unwrap_or(0);
-            self.rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))?;
+            self.rewrite_vertex_edge_span_impl(vid, None, 0, false, Some((base, physical)))?;
         }
         Ok(())
     }
@@ -6414,7 +6414,7 @@ where
         // base resolution accepts the maintenance policy (keep the current span when the
         // requested one cannot be placed).
         LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(false));
-        self.rewrite_vertex_edge_span_with_policy(
+        self.rewrite_vertex_edge_span_with_policy_impl(
             src,
             preferred_bucket,
             preferred_extra,
@@ -6500,7 +6500,7 @@ where
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
         if vertex.stored_slots > total_live.saturating_add(1) {
-            self.rewrite_vertex_edge_span(vid, None, 0, true, None)?;
+            self.rewrite_vertex_edge_span_impl(vid, None, 0, true, None)?;
         }
         Ok(())
     }
@@ -8410,7 +8410,7 @@ mod tests {
             .expect("removed");
         let vertex_releases_before = labeled_vertex_footprint_release_calls();
         graph
-            .rewrite_vertex_edge_span(src, None, 1, true, None)
+            .rewrite_vertex_edge_span_impl(src, None, 1, true, None)
             .unwrap();
         graph.vertex_layout(src).compact_span().unwrap();
         assert_eq!(

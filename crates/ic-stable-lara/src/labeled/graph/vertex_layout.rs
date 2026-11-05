@@ -140,6 +140,52 @@ where
             .map(|_| ())
     }
 
+    /// Re-lays this vertex's edge span: buckets keep their rows, the slack is redistributed.
+    ///
+    /// `preferred_bucket` names the bucket the caller is about to insert into so it receives
+    /// `preferred_extra` before the proportional gap placement; `in_window_layout` pins the base for a
+    /// caller that is moving the span in place.
+    pub(crate) fn rewrite_span(
+        &self,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        force_slack_grow: bool,
+        in_window_layout: Option<(u64, u32)>,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.graph.rewrite_vertex_edge_span_impl(
+            self.src,
+            preferred_bucket,
+            preferred_extra,
+            force_slack_grow,
+            in_window_layout,
+        )
+    }
+
+    /// [`Self::rewrite_span`] that also names which base-resolution policy the caller accepts.
+    pub(crate) fn rewrite_span_with_policy(
+        &self,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        force_slack_grow: bool,
+        in_window_layout: Option<(u64, u32)>,
+        policy: super::compact::SpanResolutionPolicy,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.graph.rewrite_vertex_edge_span_with_policy_impl(
+            self.src,
+            preferred_bucket,
+            preferred_extra,
+            force_slack_grow,
+            in_window_layout,
+            policy,
+        )
+    }
+
     /// Packs this vertex's buckets together and reports the slab-slot moves it performed.
     ///
     /// The bucket index the old signature carried was ignored (`let _ = bucket_index;`), so the operation is

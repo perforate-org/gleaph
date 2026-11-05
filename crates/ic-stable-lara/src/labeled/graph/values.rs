@@ -4265,7 +4265,8 @@ mod tests {
             .expect("removed low slot");
 
         graph
-            .rewrite_vertex_edge_span(VertexId::from(0), None, 1, true, None)
+            .vertex_layout(VertexId::from(0))
+            .rewrite_span(None, 1, true, None)
             .unwrap();
 
         let mut values = Vec::new();
@@ -4321,7 +4322,8 @@ mod tests {
             .unwrap()
             .expect("removed");
         graph
-            .rewrite_vertex_edge_span(src, None, 1, true, None)
+            .vertex_layout(src)
+            .rewrite_span(None, 1, true, None)
             .unwrap();
         graph.vertex_layout(src).compact_span().unwrap();
         graph

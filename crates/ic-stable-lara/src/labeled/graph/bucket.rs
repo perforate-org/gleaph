@@ -245,7 +245,7 @@ where
             if span_resident {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rewrite_vertex_edge_span");
-                self.rewrite_vertex_edge_span(src, None, 0, true, None)?;
+                self.vertex_layout(src).rewrite_span(None, 0, true, None)?;
             }
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
@@ -292,7 +292,7 @@ where
                 continue;
             }
             if v.degree() > 0 {
-                self.rewrite_vertex_edge_span(vid, None, 0, true, None)?;
+                self.vertex_layout(vid).rewrite_span(None, 0, true, None)?;
             }
         }
         Ok(())

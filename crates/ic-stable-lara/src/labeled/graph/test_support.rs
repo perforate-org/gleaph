@@ -546,7 +546,8 @@ pub(crate) fn retained_compaction_fixture(
     let physical: u32 = buckets.iter().map(bucket_content_slots).sum();
     // Existing non-folding physical publisher; never a fictitious allocation/extent.
     graph
-        .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))
+        .vertex_layout(vid)
+        .rewrite_span(None, 0, false, Some((base, physical)))
         .unwrap();
     let buckets = graph
         .read_vertex_label_buckets(&graph.vertices().get(vid))
@@ -679,7 +680,8 @@ pub(crate) fn tree_compaction_fixture(
     let physical = buckets.iter().map(bucket_content_slots).sum();
     // No fabricated descriptor: reuse the non-folding publisher and its backing checks.
     graph
-        .rewrite_vertex_edge_span(vid, None, 0, false, Some((base, physical)))
+        .vertex_layout(vid)
+        .rewrite_span(None, 0, false, Some((base, physical)))
         .unwrap();
     let buckets = graph
         .read_vertex_label_buckets(&graph.vertices().get(vid))
