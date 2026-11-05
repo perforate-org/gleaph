@@ -41,6 +41,21 @@ slot space; value-tree addresses live in the inline property bytes store.
   contributes to it, and `bucket_content_region` reports edge geometry only.
 - The value root's address is a value-store address, recorded where the value side's own geometry lives.
 
+## Why the shared unit needs a per-side conversion
+
+The two stores do not share an addressing model, and that is the whole reason the shared *entry* unit is
+converted per side rather than used directly:
+
+| | edge store | inline property bytes store |
+| --- | --- | --- |
+| structure | PMA with leaves and segments | flat byte arena, no leaf concept |
+| allocator | slot ranges in a leaf arena | byte spans with a free list |
+| address | slot number | byte offset |
+
+So one child address is one leaf slot on the edge side and four bytes on the value side. Anything that tried
+to treat the value root as "just more slots in the same space" would be pretending the value store has a leaf
+structure it does not have.
+
 ## Consequences
 
 - `TreeSpans` stops being one span: the edge root and the value root are separate spans in separate address
