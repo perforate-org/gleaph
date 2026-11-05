@@ -139,6 +139,38 @@ Two rules moved inside, because both were being answered at every site:
   the stale value and returns the new one; the four-line re-find that used to follow every promotion
   (twice, identically, in the row plane) is gone.
 
+## Unit three: a vertex's space (2026-11-05)
+
+`VertexLayout` (`12db7ecf`, `72445c52`, `2d7d59dc`, `57957c90`, `326a4834`) owns what one vertex holds in
+its leaf. It replaced the shape where a caller captured an `Option<LeafArena>` and then held a `LeafSlice`
+that `Deref`-ed to the whole arena - a handle naming one vertex that could answer arena-wide questions.
+
+| Entry | What it answers |
+| --- | --- |
+| `place`, `place_leaf_wide`, `grow_region`, `allocate`, `claim_placement` | placement inside the vertex's own space |
+| `ensure_room_for`, `reserve_span` | growth that may move the leaf (the tree plane's entry) |
+| `extent`, `regions`, `contents`, `parts_outside_extent`, `extent_contains` | the geometry questions the release paths ask |
+| `rewrite_span`, `rewrite_span_with_policy` | re-laying the vertex's tiling |
+| `compact_span`, `compact_span_with_moves` | packing its buckets together |
+| `validate`, `containment_errors` | the arena's own consistency checks, scoped |
+
+Three findings worth keeping:
+
+- **The capture is lazy.** `compact_span` never reads the extent, so a view that required a capture would
+  force callers to invent a leaf - and silently skip the operation for a vertex without one (fixtures build
+  those). `has_leaf()` makes that an explicit question instead.
+- **`bucket_index` was never an input.** Both compaction entries took one and began with `let _ = bucket_index;`.
+  The operation compacts *all* of a vertex's buckets; the view does not carry the parameter.
+- **`Deref` was load-bearing.** Removing it meant giving `LeafSlice` an explicit `extent` accessor and
+  spelling `self.arena.graph` in its methods; the alternative was leaving one handle answering two
+  granularities.
+- **The rewrite's body stayed put.** `rewrite_vertex_edge_span_impl` remains in `compact.rs` (nine internal
+  callers, its span-resolution policy beside it); the cut gave it a single external door rather than moving
+  two hundred lines to buy nothing the door did not already buy.
+
+Residual: the `leaf_arena` module stays `pub(crate)` because `labeled/bench.rs` reads
+`labeled_leaf_vertex_edge_quota`, a pure geometry helper with no arena state.
+
 ### Remaining operation families
 
 Not yet done, in the order the duplication measurement suggested:
