@@ -5,14 +5,16 @@ use candid::{CandidType, Decode, Deserialize, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
+use gleaph_graph_kernel::provisioning::LogicalResource;
+use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::UpsertDeploymentGrantArgs;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachIndexShardArgs, AdminAttachVectorIndexShardArgs, AtomicInsertRequest,
-    AtomicInsertResponse, BulkLoadCommand, BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs,
-    RegisterGraphShard, RegisterVectorIndexArgs,
+    AtomicInsertResponse, BulkLoadCommand, BulkLoadResponse, BulkLoadStatusPage,
+    ProvisionGraphArgs, RegisterGraphArgs, RegisterGraphShard, RegisterVectorIndexArgs,
 };
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
@@ -100,6 +102,33 @@ pub struct FederationEnv {
     pub index_dest: Principal,
     pub graph_source: Principal,
     pub graph_dest: Principal,
+}
+
+/// The `provision_graph` arguments for a single graph shard under the grant model.
+///
+/// The deployment *is* the Router principal, so `deployment_id` mirrors it, and the owner and caller are the
+/// admin. The text-install knobs are named at their ignored values on purpose: a struct literal does not
+/// pick up `#[serde(default)]`, so a knob added to `ProvisionGraphArgs` has to be answered here once rather
+/// than in every test that provisions a graph - which is how `adr0035_router_outbound_accept_envelope`
+/// stopped compiling for the whole crate when plans 0331/0343 added two of them.
+pub fn graph_shard_provision_args(
+    deployment: Principal,
+    administrator: Principal,
+    graph_name: &str,
+) -> ProvisionGraphArgs {
+    ProvisionGraphArgs {
+        deployment_id: deployment.to_text(),
+        graph_name: graph_name.to_owned(),
+        requested_resources: vec![ProvisionableResource {
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+        }],
+        authorized_caller: administrator,
+        release_id: "rel-1".to_owned(),
+        owner: administrator,
+        admins: BTreeSet::new(),
+        text_analyzer_id: 0,
+        text_kinds: None,
+    }
 }
 
 pub struct TwoGraphTwoIndexEnv {

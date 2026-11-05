@@ -13,6 +13,7 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::{ProvisionJobSummary, ProvisionableResource};
+use gleaph_pocket_ic_tests::graph_shard_provision_args;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactAuditAction, ArtifactAuditOutcome, ArtifactPublishMetadataArgs,
@@ -139,21 +140,7 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
 
     // Under the grant model the deployment IS the Router principal; the Router derives the
     // envelope deployment_id from itself (a caller-supplied deployment_id is ignored).
-    let args = ProvisionGraphArgs {
-        deployment_id: env.router.to_text(),
-        graph_name: "p0058.graph".to_owned(),
-        requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
-        }],
-        authorized_caller: env.admin,
-        release_id: "rel-1".to_owned(),
-        owner: env.admin,
-        admins: std::collections::BTreeSet::new(),
-        // Text-canister install knobs (plan 0331/0343). This test provisions a GraphShard only, so
-        // both are ignored; they still have to be named because the struct is not `Default`.
-        text_analyzer_id: 0,
-        text_kinds: None,
-    };
+    let args = graph_shard_provision_args(env.router, env.admin, "p0058.graph");
 
     // Scenario 1: fresh admission returns Accepted.
     let first = call_provision_graph(&env, &args).expect("first provision_graph accepted");
