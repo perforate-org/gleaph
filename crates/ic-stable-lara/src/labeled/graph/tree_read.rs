@@ -332,10 +332,7 @@ where
         return Err(LabeledOperationError::EdgeSlotOutOfRange { slot, stored_slots });
     }
     let property_leaf_index = u64::from(slot / k);
-    // The property root's address has one owner: `TreeSpans`. Readers never re-derive it.
-    let spans = crate::labeled::graph::compact::TreeSpans::of(bucket).ok_or(
-        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
-    )?;
+    // The property root's address has one owner: the tree plane (ADR 0102). Readers never re-derive it.
     // Depth-generic descent, mirroring `resolve_leaf_block_id` but
     // with interior radix B (block capacity) instead of the edge
     // tree's R_MAX hop radix and root offset after the edge root.
@@ -348,12 +345,7 @@ where
         let level_idx = u32::try_from(property_leaf_index / divisor).map_err(|_| {
             LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
         })?;
-        let (slot, byte_offset) = spans.property_root_entry(level_idx);
-        let mut id_bytes = [0u8; 4];
-        graph
-            .edges()
-            .read_from_slot_bytes(slot, byte_offset, &mut id_bytes);
-        u32::from_le_bytes(id_bytes)
+        graph.tree_plane(*bucket).value_child(level_idx)
     };
     for j in 1..depth {
         let divisor = b.pow(depth - 1 - j);

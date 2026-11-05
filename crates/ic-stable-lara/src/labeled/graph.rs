@@ -270,6 +270,7 @@ mod spill_swap_test;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod traverse;
+mod tree_plane;
 mod tree_read;
 mod tree_write;
 mod vertex_layout;

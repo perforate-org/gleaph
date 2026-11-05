@@ -104,13 +104,8 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    let spans = super::compact::TreeSpans::of(bucket).expect("tree-mode bucket has root spans");
-    let (slot, byte_offset) = spans.property_root_entry(index);
-    let mut id_bytes = [0u8; 4];
-    graph
-        .edges()
-        .read_from_slot_bytes(slot, byte_offset, &mut id_bytes);
-    u32::from_le_bytes(id_bytes)
+    // ADR 0102: the value root's children are answered by the tree plane, not re-derived here.
+    graph.tree_plane(*bucket).value_child(index)
 }
 
 /// Reads the packed property-root ids `[0, entries)` of `bucket`.
@@ -125,11 +120,7 @@ where
 {
     let mut bytes = vec![0u8; entries as usize * 4];
     if !bytes.is_empty() {
-        let spans = super::compact::TreeSpans::of(bucket).expect("tree-mode bucket has root spans");
-        let (slot, byte_offset) = spans.property_root_entry(0);
-        graph
-            .edges()
-            .read_from_slot_bytes(slot, byte_offset, &mut bytes);
+        bytes = graph.tree_plane(*bucket).value_children(entries);
     }
     bytes
 }
