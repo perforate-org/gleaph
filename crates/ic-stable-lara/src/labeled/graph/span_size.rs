@@ -83,6 +83,24 @@ pub(crate) fn content_capacity(span: SpanSlots) -> ContentSlots {
     ContentSlots::new(low)
 }
 
+/// How many rows a bucket can fold from its run into its span.
+///
+/// The bucket holds `resident` rows of which `prefix` already sit in the span; the rest are in the run. The
+/// span's tail offers `free` slots. The fold is the smaller of the two - content the bucket does not have
+/// cannot move, and content the tail cannot hold must wait for a wider region.
+///
+/// The caller still bounds this by the run's own head-drop capacity (a run's class may refuse to shrink);
+/// this function only answers the arithmetic half, so that the row count is derived in one place instead of
+/// being spelled out at each fold site.
+pub(crate) fn foldable_rows(
+    prefix: ContentSlots,
+    resident: ContentSlots,
+    free: SpanSlots,
+) -> SpanSlots {
+    let waiting = resident.0.saturating_sub(prefix.0);
+    SpanSlots(u64::from(waiting).min(free.0))
+}
+
 /// What a bucket asks a leaf for, as one value.
 ///
 /// The content is the mode-specific occupancy (rows for a slab prefix, root regions for a tree) and the
@@ -171,6 +189,31 @@ mod tests {
                     "one slot short must not fit"
                 );
             }
+        }
+    }
+
+    /// A fold never moves more rows than the bucket holds outside its prefix, nor more than the tail holds.
+    #[test]
+    fn folds_are_bounded_by_waiting_rows_and_free_tail() {
+        let cases = [
+            // (prefix, resident, free) -> folded
+            (0u32, 10u32, 100u64, 10u64), // tail is generous; only the waiting rows move
+            (5, 10, 2, 2),                // tail is the tighter bound
+            (5, 5, 100, 0),               // nothing waiting
+            (10, 0, 100, 0),              // prefix beyond resident saturates to zero
+            (0, 0, 0, 0),
+        ];
+        for (prefix, resident, free, expected) in cases {
+            assert_eq!(
+                foldable_rows(
+                    ContentSlots::new(prefix),
+                    ContentSlots::new(resident),
+                    SpanSlots::new(free)
+                )
+                .0,
+                expected,
+                "prefix {prefix}, resident {resident}, free {free}"
+            );
         }
     }
 

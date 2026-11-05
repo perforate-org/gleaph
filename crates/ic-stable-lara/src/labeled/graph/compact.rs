@@ -1419,7 +1419,10 @@ mod physical_layout_tests {
 
         let folded = graph
             .layout(0, source)
-            .fold_head(VertexId::from(0), 2)
+            .fold_head(
+                VertexId::from(0),
+                crate::labeled::graph::span_size::SpanSlots::new(2),
+            )
             .unwrap();
 
         assert_eq!(folded, 2, "two spill rows move into the span");
@@ -6216,9 +6219,10 @@ where
                 let limit = self
                     .next_leaf_vertex_edge_start(vid)?
                     .map_or(region_end, |next| region_end.min(next));
-                let free = u32::try_from(limit.saturating_sub(content_end)).unwrap_or(u32::MAX);
+                let free = limit.saturating_sub(content_end);
                 if free > 0 {
-                    self.layout(slot, finalized).fold_head(vid, free)?;
+                    self.layout(slot, finalized)
+                        .fold_head(vid, super::span_size::SpanSlots::new(free))?;
                 }
             }
         }

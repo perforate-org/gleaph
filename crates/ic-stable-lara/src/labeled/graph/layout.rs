@@ -286,7 +286,7 @@ where
     pub(crate) fn fold_head(
         &self,
         src: VertexId,
-        max_rows: u32,
+        free: super::span_size::SpanSlots,
     ) -> Result<u32, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -298,8 +298,15 @@ where
         let Some((start, len)) = bucket_content_region(&self.bucket) else {
             return Ok(0);
         };
-        let fold = max_rows
-            .min(self.graph.edges.spill_used_len(run))
+        // How many rows may move is arithmetic with two bounds (rows waiting in the run, room in the span
+        // tail) plus the run's own head-drop capacity; the first two come from the shared rule.
+        let prefix = super::span_size::ContentSlots::new(self.bucket.stored_slots());
+        let run_rows = self.graph.edges.spill_used_len(run);
+        let resident = super::span_size::ContentSlots::new(
+            self.bucket.stored_slots().saturating_add(run_rows),
+        );
+        let fold = u32::try_from(super::span_size::foldable_rows(prefix, resident, free).get())
+            .unwrap_or(u32::MAX)
             .min(self.graph.edges.spill_head_drop_capacity(run));
         if fold == 0 {
             return Ok(0);

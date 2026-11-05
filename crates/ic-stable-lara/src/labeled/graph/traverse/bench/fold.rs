@@ -198,7 +198,10 @@ impl<const W: usize> FoldFixture<W> {
         let _ = self
             .graph
             .layout(slot, bucket)
-            .fold_head(self.src, u32::MAX)
+            .fold_head(
+                self.src,
+                super::super::super::span_size::SpanSlots::new(u64::MAX),
+            )
             .unwrap();
     }
 
