@@ -98,7 +98,7 @@ pub(crate) struct LeafArena<'a, E: CsrEdge, M: Memory> {
 
 /// The gap a region carries on top of its content: 12.5%, at least one slot.
 fn gap(content: u64) -> u64 {
-    (content / 8).max(1)
+    super::span_size::gap_slots(content)
 }
 
 /// One vertex's slice: the exclusive space it may place its buckets' regions in.

@@ -251,6 +251,7 @@ pub(crate) mod leaf_arena;
 mod promote;
 mod remove;
 mod row_plane;
+mod span_size;
 #[cfg(test)]
 mod spill_read_test;
 #[cfg(test)]
