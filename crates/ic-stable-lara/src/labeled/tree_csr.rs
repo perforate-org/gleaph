@@ -156,10 +156,6 @@ impl BlockIdArray {
     }
 
     /// Value tree: one child address is `PROPERTY_ID_BYTES` bytes in the value store.
-    ///
-    /// Test-only until the value side's root moves into the value store (ADR 0101); the conversion is here
-    /// now because the two sides are meant to share this arithmetic, not because a caller needs it yet.
-    #[cfg(test)]
     pub(crate) fn value_bytes(self) -> u32 {
         self.0.saturating_mul(PROPERTY_ID_BYTES as u32)
     }

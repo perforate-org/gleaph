@@ -4201,6 +4201,40 @@ pub(super) fn property_root_entry_count(bucket: &LabelBucket) -> u32 {
         .entries()
 }
 
+/// Bytes the value root occupies in the inline property bytes store (ADR 0101).
+///
+/// The value root is the same block-address array as the edge root; only its store and its unit differ. Its
+/// children are value blocks (`property_slots_per_block` per block), and each child address is four bytes.
+pub(crate) fn value_root_region_bytes(bucket: &LabelBucket) -> u32 {
+    if !bucket.is_tree_mode() {
+        return 0;
+    }
+    let w = bucket.inline_property_byte_width();
+    if w == 0 {
+        return 0;
+    }
+    let Some(k) = crate::labeled::tree_csr::property_slots_per_block(w) else {
+        return 0;
+    };
+    if k == 0 {
+        return 0;
+    }
+    let value_blocks = u64::from(bucket.stored_slots().div_ceil(k));
+    crate::labeled::tree_csr::BlockIdArray::for_level(
+        value_blocks,
+        bucket.tree_mode_property_depth(),
+    )
+    .value_bytes()
+}
+
+/// The value root's address: a byte offset in the inline property bytes store (ADR 0101).
+///
+/// Deliberately *not* derived from the edge geometry - that derivation is what put the value root in the edge
+/// region and let it collide with a sibling bucket.
+pub(crate) fn value_root_address(bucket: &LabelBucket) -> u64 {
+    bucket.inline_property_bytes_offset()
+}
+
 /// Edge slots the property root reserves inside the combined region.
 ///
 /// The root holds [`property_root_entry_count`] u32 ids packed at
@@ -9442,6 +9476,57 @@ mod tests {
         // Non-tree buckets have no root regions.
         let slab = crate::labeled::record::LabelBucket::default();
         assert!(super::TreeSpans::of(&slab).is_none());
+    }
+
+    /// ADR 0101: the value root is the same block-address array as the edge root, measured in its own store -
+    /// four bytes per child address - and its address is a value-store offset, never the edge geometry.
+    #[test]
+    fn value_root_region_is_four_bytes_per_entry() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        use crate::labeled::record::LabelBucket;
+
+        let tree = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            5_000,
+            5_000,
+            8,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap()
+        .with_tree_mode(true)
+        .with_tree_mode_property_depth(1);
+        let entries = super::property_root_entry_count(&tree);
+        assert!(entries > 0, "a tree bucket with a width has a value root");
+        assert_eq!(
+            super::value_root_region_bytes(&tree),
+            entries * 4,
+            "one child address is four bytes in the value store"
+        );
+        assert!(super::value_root_region_bytes(&tree) <= 4 * 1_024);
+        assert_eq!(
+            super::value_root_address(&tree),
+            tree.inline_property_bytes_offset(),
+            "the value root's address is a value-store offset, not derived from the edge geometry"
+        );
+
+        // A slab bucket has no value root at all.
+        let slab = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            10,
+            10,
+            8,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(super::value_root_region_bytes(&slab), 0);
     }
 
     #[test]
