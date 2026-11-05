@@ -92,6 +92,22 @@ Use [document-date-accuracy](.agents/skills/document-date-accuracy/SKILL.md#when
 changing, or verifying calendar dates, deadlines, or time-dependent release/update claims.
 A document's type or incidental words such as `current` and `next` are not triggers.
 
+## Views and Their Tests
+
+A view (a borrowed struct that owns one operation family, per ADR 0100) carries the contract for everything
+it exposes, so it needs tests for each entry, not only indirect coverage through the graph:
+
+- **Growth and shrink**: make room, release, fold, rebuild, compact.
+- **Promotion and demotion**: the transitions between storage classes, including the descriptor a transition
+  publishes and the state it leaves behind.
+- **Coexistence**: more than one bucket on a vertex, more than one vertex in a leaf, mixed residencies
+  (tree beside slab, tiny beside slab) - the neighbour cases are where measurement errors hide.
+- **Contract edges**: an entry that hands back a refreshed descriptor, an entry that answers `None` for a
+  vertex without a leaf, an entry that is a no-op for a residency it does not own.
+
+When a view entry has no direct test, say so in the change that adds the entry, and say what covers the
+behaviour instead. A view that grows an entry without a test is the same defect as a duplicated invariant.
+
 ## Test-First Contract
 
 Tests are first-class architectural boundaries.

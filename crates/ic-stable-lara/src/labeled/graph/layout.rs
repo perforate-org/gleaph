@@ -87,25 +87,6 @@ where
         }
     }
 
-    /// Demotes the bucket from tree mode back to the slab prefix.
-    ///
-    /// The tree plane owns the transcription; what the view owns is that a caller says "demote" instead of
-    /// threading the descriptor, its slot and its label through `tree_write`.
-    pub(crate) fn demote_to_slab(self, src: VertexId) -> Result<Self, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let label = self.bucket.bucket_label_key();
-        super::tree_write::tree_mode_demote_to_slab(
-            self.graph,
-            src,
-            self.bucket_slot,
-            label,
-            &self.bucket,
-        )?;
-        Ok(self)
-    }
-
     pub(crate) fn release_span(self, src: VertexId) -> Result<Self, LabeledOperationError> {
         debug_assert!(
             self.bucket.degree == 0 && self.bucket.edge_run().is_none(),
