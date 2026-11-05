@@ -260,6 +260,7 @@ pub(crate) mod test_support;
 pub(crate) mod traverse;
 mod tree_read;
 mod tree_write;
+mod vertex_layout;
 
 pub(crate) use compact::SpanResolutionPolicy;
 pub use traverse::BucketEntryPosition;

@@ -284,7 +284,7 @@ where
     /// `OverlapPrevious` (ADR 0098's 2026-11-04 amendment). Part of a placement can also land in the
     /// vertex's own tile slack, which is not a free span at all, so the claim is best-effort: it takes
     /// what the store owns and leaves the rest alone.
-    fn claim_placement(&self, start: u64, need: u64) {
+    pub(crate) fn claim_placement(&self, start: u64, need: u64) {
         if need > 0 {
             let _ = self
                 .graph

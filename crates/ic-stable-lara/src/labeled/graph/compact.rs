@@ -6201,12 +6201,11 @@ where
         };
         // The packed bucket may leave room at the end of its own region; spilled rows belong back
         // in the span there (ADR 0097: the edge fold lost its implementation with the overflow log).
-        if let Ok(Some(arena)) = super::leaf_arena::LeafArena::capture(self, vid) {
+        if let Ok(Some(vertex)) = self.vertex_layout(vid) {
             let content_end = finalized
                 .edge_start()
                 .saturating_add(u64::from(finalized.stored_slots()));
-            let region_end = arena
-                .leaf_slice(vid)
+            let region_end = vertex
                 .regions()
                 .into_iter()
                 .find(|(start, _)| *start == finalized.edge_start())
@@ -8867,7 +8866,12 @@ mod tests {
             "hub slice {slice_start}..{slice_end} must stay inside its extent {extent_start}..{}",
             extent_start + extent_len
         );
-        for (region_start, region_end) in arena.leaf_slice(hub).regions() {
+        for (region_start, region_end) in graph
+            .vertex_layout(hub)
+            .expect("hub capture")
+            .expect("hub leaf")
+            .regions()
+        {
             assert!(
                 region_start >= slice_start && region_end <= slice_end,
                 "hub region {region_start}..{region_end} must stay inside its slice {slice_start}..{slice_end}"
