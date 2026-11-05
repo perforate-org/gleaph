@@ -115,18 +115,6 @@ where
     vid: VertexId,
 }
 
-impl<'a, 'b, E, M> std::ops::Deref for LeafSlice<'a, 'b, E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-    type Target = LeafArena<'a, E, M>;
-
-    fn deref(&self) -> &Self::Target {
-        self.arena
-    }
-}
-
 impl<'a, 'b, E, M> LeafSlice<'a, 'b, E, M>
 where
     E: CsrEdge,
@@ -142,10 +130,10 @@ where
         // A vertex that was never materialized owns no content. The arena is also driven
         // by buckets described directly in fixtures, which have no vertex record; the
         // contract is about what a vertex wrote, and such a vertex wrote nothing.
-        if u64::from(self.vid) >= u64::from(self.graph.vertices.len()) {
+        if u64::from(self.vid) >= u64::from(self.arena.graph.vertices.len()) {
             return Vec::new();
         }
-        let vertex = self.graph.vertices.get(self.vid);
+        let vertex = self.arena.graph.vertices.get(self.vid);
         if vertex.is_default_edge_labeled() {
             let base = vertex.base_slot_start();
             let end = base.saturating_add(u64::from(vertex.stored_slots));
@@ -155,7 +143,7 @@ where
                 Vec::new()
             };
         }
-        let Ok(buckets) = self.graph.read_vertex_label_buckets(&vertex) else {
+        let Ok(buckets) = self.arena.graph.read_vertex_label_buckets(&vertex) else {
             return Vec::new();
         };
         buckets
@@ -176,12 +164,12 @@ where
     }
 
     pub(crate) fn place_leaf_wide(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
-        let extent_end = checked_add_slot_index(self.extent.0, self.extent.1)?;
+        let extent_end = checked_add_slot_index(self.arena.extent.0, self.arena.extent.1)?;
         let cover_width = self.tile_width_with(avoid.0, need);
-        let mut spans = self.used_spans();
+        let mut spans = self.arena.used_spans();
         spans.push(avoid);
         spans.sort_by_key(|(start, _)| *start);
-        let mut cursor = self.extent.0;
+        let mut cursor = self.arena.extent.0;
         for (start, end) in &spans {
             if *start > cursor
                 && start.saturating_sub(cursor) >= need
@@ -209,7 +197,7 @@ where
         if need == 0 {
             return None;
         }
-        let (slice_start, slice_end) = self.slice(self.vid)?;
+        let (slice_start, slice_end) = self.arena.slice(self.vid)?;
         // The cover after this placement is `base + tile`, and the tile is the vertex's
         // post-operation content plus its gaps. A region that fits `need` but not the tile
         // would push the cover into the next vertex.
@@ -287,6 +275,7 @@ where
     pub(crate) fn claim_placement(&self, start: u64, need: u64) {
         if need > 0 {
             let _ = self
+                .arena
                 .graph
                 .edges
                 .free_span_store()
@@ -300,7 +289,7 @@ where
     /// than read a content width such as `stored_slots` as if it defined the space, and rather
     /// than derive an end from a neighbouring base of its own.
     pub(crate) fn fits(&self, start: u64, need: u64) -> bool {
-        let Some((slice_start, slice_end)) = self.slice(self.vid) else {
+        let Some((slice_start, slice_end)) = self.arena.slice(self.vid) else {
             return false;
         };
         start >= slice_start
@@ -330,7 +319,7 @@ where
     /// then a free run before the next region) and stay inside the slice. `None` means the
     /// caller must place a region elsewhere or grow the extent.
     pub(crate) fn grow_region(&self, source_start: u64, new_content: u64) -> Option<u64> {
-        let (_, slice_end) = self.slice(self.vid)?;
+        let (_, slice_end) = self.arena.slice(self.vid)?;
         let width = new_content.saturating_add(gap(new_content));
         if !self.fits(source_start, width) {
             return None;
@@ -364,12 +353,17 @@ where
     /// Leaf heap allocation: best fit over the per-bucket resident set, keeping `avoid` intact.
     pub(crate) fn allocate(&self, len: u64, avoid: Option<(u64, u64)>) -> Option<u64> {
         let avoid = avoid?;
-        if self.slice(self.vid).is_some() {
+        if self.arena.slice(self.vid).is_some() {
             return self.place(len, avoid);
         }
         // No content yet: the vertex has no slice to be exclusive about, so its first
         // region comes from the leaf's own free space (which then becomes its slice).
         self.place_leaf_wide(len, avoid)
+    }
+
+    /// The vertex's extent: the space its leaf grants it.
+    pub(crate) fn extent(&self) -> (u64, u64) {
+        self.arena.extent
     }
 }
 

@@ -7,7 +7,6 @@
 //! to grow the leaf for rows that already live in the run. The rows therefore never reach the span
 //! a fixture wants to test.
 
-use super::leaf_arena::LeafArena;
 use super::*;
 use crate::traits::CsrEdgeTombstone;
 
@@ -78,11 +77,7 @@ pub fn leaf_layout_errors<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
 ) -> Vec<String> {
-    match LeafArena::capture(graph, vid) {
-        Ok(Some(arena)) => arena.validate(),
-        Ok(None) => Vec::new(),
-        Err(_) => Vec::new(),
-    }
+    graph.vertex_layout(vid).validate()
 }
 
 /// `(vid, base_slot_start, stored_slots, first non-tiny bucket edge_start)` for every vertex of the

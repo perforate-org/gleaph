@@ -197,6 +197,42 @@ where
         }
     }
 
+    /// Makes room for `len` more slots in this vertex's space, growing the extent or moving the leaf.
+    ///
+    /// `avoid` names the region the growth must not collide with - usually the bucket that is about to
+    /// grow, which owns those slots already.
+    pub(crate) fn ensure_room_for(
+        &self,
+        len: u64,
+        avoid: (u64, u64),
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        LeafArena::ensure_room(
+            self.graph,
+            self.src,
+            len,
+            super::leaf_arena::SourceRegion::new(avoid.0, avoid.1),
+        )
+    }
+
+    /// The arena's own consistency check for this vertex, as human-readable errors.
+    pub(crate) fn validate(&self) -> Vec<String> {
+        match LeafArena::capture(self.graph, self.src) {
+            Ok(Some(arena)) => arena.validate(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Containment errors for this vertex's tree roots, as human-readable errors.
+    pub(crate) fn containment_errors(&self) -> Vec<String> {
+        match LeafArena::capture(self.graph, self.src) {
+            Ok(Some(arena)) => arena.containment_errors(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Reserves a span of `len` slots for this vertex, growing the extent or relocating the leaf when
     /// the current one cannot hold it.
     ///

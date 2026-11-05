@@ -64,12 +64,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        super::leaf_arena::LeafArena::ensure_room(
-            self.graph,
-            src,
-            len,
-            super::leaf_arena::SourceRegion::new(avoid.0, avoid.1),
-        )
+        self.graph.vertex_layout(src).ensure_room_for(len, avoid)
     }
 
     /// Promotes the bucket to tree mode and returns the view over the descriptor it became.

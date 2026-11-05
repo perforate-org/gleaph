@@ -4386,10 +4386,7 @@ where
                                 (start_slot.max(live_end), old_end),
                             ] {
                                 if start < end {
-                                    if matches!(
-                                        super::leaf_arena::LeafArena::capture(self, src),
-                                        Ok(Some(pin)) if pin.extent_contains(start, end - start)
-                                    ) {
+                                    if self.vertex_layout(src).extent_contains(start, end - start) {
                                         continue;
                                     }
                                     retired.try_reserve(1).map_err(|_| {
