@@ -83,6 +83,33 @@ pub(crate) fn content_capacity(span: SpanSlots) -> ContentSlots {
     ContentSlots::new(low)
 }
 
+/// The share of a leaf that a bucket's weight entitles it to.
+///
+/// The rebalance direction starts from the leaf and divides it; `content_capacity` then says how much
+/// content that share holds. Rounding is down, so the parts never exceed the whole.
+pub(crate) fn share_of(leaf: SpanSlots, weight: u32, total_weight: u32) -> SpanSlots {
+    if total_weight == 0 {
+        return SpanSlots(0);
+    }
+    SpanSlots(leaf.0.saturating_mul(u64::from(weight)) / u64::from(total_weight))
+}
+
+/// What a leaf sized for `content` can hold after a rebalance, exercising both directions.
+///
+/// The two must agree: grow sizes a leaf for some content, rebalance divides that leaf back and asks how much
+/// each bucket may hold. If rebalance answered less for the same content, every grow would be immediately
+/// undone by the next rebalance - the oscillation the demotion hysteresis tests guard against on the mode
+/// axis, here on the capacity axis.
+#[cfg(test)]
+pub(crate) fn rebalance_holds(
+    leaf: SpanSlots,
+    content: ContentSlots,
+    weight: u32,
+    total: u32,
+) -> bool {
+    content_capacity(share_of(leaf, weight, total)) >= content
+}
+
 /// How many rows a bucket can fold from its run into its span.
 ///
 /// The bucket holds `resident` rows of which `prefix` already sit in the span; the rest are in the run. The
@@ -215,6 +242,37 @@ mod tests {
                 "prefix {prefix}, resident {resident}, free {free}"
             );
         }
+    }
+
+    /// A leaf grown for some content gives that content back when the leaf is divided again: a grow cannot be
+    /// undone by the next rebalance.
+    #[test]
+    fn grow_and_rebalance_agree_on_the_same_content() {
+        for content in [0u32, 1, 8, 9, 80, 1_024, 4_096] {
+            let want = ContentSlots::new(content);
+            let leaf = slots_for_content(want);
+            assert!(
+                rebalance_holds(leaf, want, 1, 1),
+                "content {content} does not survive rebalance over its own leaf ({})",
+                leaf.0
+            );
+        }
+    }
+
+    /// Splitting a leaf between weighted buckets keeps the sum of shares within the leaf.
+    #[test]
+    fn shares_never_exceed_the_leaf() {
+        let leaf = SpanSlots::new(10_000);
+        let weights = [1u32, 2, 3, 7, 100];
+        let total: u32 = weights.iter().sum();
+        let sum: u64 = weights.iter().map(|w| share_of(leaf, *w, total).0).sum();
+        assert!(sum <= leaf.0, "shares {sum} exceed the leaf {}", leaf.0);
+        assert_eq!(share_of(leaf, 0, total).0, 0, "a zero weight gets nothing");
+        assert_eq!(
+            share_of(leaf, 1, 0).0,
+            0,
+            "an empty weight set shares nothing"
+        );
     }
 
     /// Gaps grow monotonically, and a small content still gets one slot of gap.
