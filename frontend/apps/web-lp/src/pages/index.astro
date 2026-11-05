@@ -1,0 +1,40 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+<Layout title="Gleaph — federated graph query platform">
+  <header class="border-b border-border">
+    <div class="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
+      <a href="/" class="flex items-center gap-2">
+        <img src="/gleaph-logo.svg" alt="Gleaph" class="h-7 w-auto" />
+      </a>
+      <nav class="flex items-center gap-5 text-sm text-muted-foreground">
+        <a href="/docs" class="hover:text-foreground">Docs</a>
+        <a href="https://github.com/gleaph/gleaph" class="hover:text-foreground">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-3xl px-6 py-20">
+    <h1 class="text-4xl font-bold tracking-tight">
+      Federated graph queries across the Internet Computer
+    </h1>
+    <p class="mt-4 text-lg text-muted-foreground">
+      Gleaph lets you query across canisters through a single GQL endpoint — federating
+      schemas, indexing properties and vectors, and executing queries across the network.
+    </p>
+    <div class="mt-8 flex gap-3">
+      <a
+        href="/docs"
+        class="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+      >
+        Get started
+      </a>
+      <a
+        href="https://github.com/gleaph/gleaph"
+        class="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
+      >
+        GitHub
+      </a>
+    </div>
+  </main>
+</Layout>
