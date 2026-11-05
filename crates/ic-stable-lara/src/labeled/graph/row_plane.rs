@@ -285,7 +285,10 @@ where
                 // records of `E::BYTES`, so the width only scales the block, it
                 // does not select a different path.
                 let resident = self.graph.bucket_resident_rows(&bucket)?;
-                if (super::T_PROMOTE..u32::MAX).contains(&resident) {
+                // The cap question is asked through the shared predicate; the `u32::MAX` guard stays because
+                // a bucket already at the degree cap must fail with `RowDegreeOverflow` from the slab path
+                // rather than be routed to the tree path (which would mint `resident / B` LTB blocks).
+                if !super::resident_fits_mode(&bucket, resident) && resident < u32::MAX {
                     // The view hands back the descriptor promotion published, so the slab-mode value read
                     // above cannot be published over a tree root.
                     bucket = self

@@ -164,6 +164,17 @@ pub(crate) fn cap_for_mode(bucket: &LabelBucket) -> u32 {
     }
 }
 
+/// Whether a bucket can still hold `rows_after` resident rows inside its current mode.
+///
+/// "Fits" is strict: reaching the cap means the bucket is full, so the trigger fires exactly at `T_PROMOTE`
+/// for a slab bucket, which is what the insert path's previous range test did. A tiny bucket stops at
+/// `TINY_MAX_DEGREE`, a tree at the structural cap. Keeping the question here is what stops a cap change from
+/// updating the cap and missing the trigger.
+#[inline]
+pub(crate) fn resident_fits_mode(bucket: &LabelBucket, rows_after: u32) -> bool {
+    rows_after < cap_for_mode(bucket)
+}
+
 /// Stack scratch for one encoded edge record.
 ///
 /// The widest record in the workspace is the 24-byte bench `WideEdge`; a wider
