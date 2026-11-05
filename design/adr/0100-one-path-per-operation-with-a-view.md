@@ -1,8 +1,9 @@
 # 0100. One path per operation, owned by a view
 
 Date: 2026-11-04
-Status: Decided, not implemented
-Last revised: 2026-11-04
+Status: Accepted (2026-11-05) - implemented for rows and for a bucket's span; the remaining
+operation families are listed in Progress
+Last revised: 2026-11-05
 Anchor timestamp: 2026-11-04 05:10:00 UTC +0000
 
 Related: [ADR 0097](0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md) owns the spill runs;
@@ -119,6 +120,52 @@ Step 3 finished (`c2abc0254`): the graph exposes `row_plane()` and the in-crate 
 insert, remove and read through it. That retired the delegating twins -
 `read_edge_state_internal`, `remove_edge_at_slot_with_move` and the internal insert wrapper - so there is one
 implementation and one door rather than a door beside a duplicate path.
+
+## Unit two: a bucket's span (2026-11-05)
+
+`BucketLayout` (`8507e1be`, `bf568410`, `fe6bd36f`) takes over what happens to a bucket's physical span:
+`release_span`, `ensure_room_for`, `fold_head`, `rebuild_run`, `promote_to_tree`, `demote_to_slab`. The
+placement (`LeafArena`), the ledger (`FreeSpanStore`) and the tree transcription (`tree_write`) stay in their
+own layers; the view composes them so an operation says "release this", "make room for this much", "demote"
+instead of restating the span rules.
+
+Two rules moved inside, because both were being answered at every site:
+- **The descriptor is published with the row, never apart from it.** `finish_stored_row` (`ff6c3fc2`) writes
+  the block and publishes in one operation. Its first draft returned early for a width-0 bucket and took the
+  publication with it - 81 tests failed immediately, which is why the publication is now stated as
+  unconditional in the code.
+- **Promotion hands back what it published.** Promotion rewrites the descriptor's residency, so a caller
+  holding the pre-promotion `LabelBucket` can publish a slab descriptor over a tree root. The view consumes
+  the stale value and returns the new one; the four-line re-find that used to follow every promotion
+  (twice, identically, in the row plane) is gone.
+
+### Remaining operation families
+
+Not yet done, in the order the duplication measurement suggested:
+
+| Family | Why it is a unit | Size |
+| --- | --- | --- |
+| Visit (row iteration) | 35 public operations and 44 storage-mode branches in `traverse.rs`; callers pick among single/batch/with-values/log-chain entry points | largest remaining |
+| Bucket lookup | `(src, label) -> bucket` with the last-lookup cache, descriptor-row origin, create/destroy and slack | medium |
+| Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
+
+### Where the unit stops, and why
+
+**Vertex-level work does not belong here**, measured rather than assumed:
+`compact_vertex_edge_span_with_moves` compacts *all* of a vertex's buckets and its callers pass a bucket
+*index*, not a bucket; `rewrite_vertex_edge_span` re-lays the vertex's tiling. Folding either into a
+bucket-scoped view would make it answer two granularities and force callers to invent a descriptor they do
+not have.
+
+The planned "hide the physical-layout choreography" cut was **dropped after checking its premise**: every
+caller of `prepare_physical_layout` (14) is inside `compact.rs`, and the only production callers of
+`rewrite_vertex_edge_span` outside it are two sites in `bucket.rs` with identical arguments. There is no
+choreography leaking across a boundary, so a view would only rename it. A vertex-scoped view is available if
+that changes; it is not warranted today (ADR 0100's criterion: duplication, not symmetry).
+
+One latent defect surfaced while moving the cover recompute: it measured a neighbour with
+`edge_start + stored_slots_raw`, which is a logical row count for a *tree* bucket, so a promoted neighbour
+was measured as its row count. It now reads `bucket_content_region`, the SSOT for that geometry.
 
 What stays is **API, not a path**: `insert_edge_skip_leaf_cascade`, `remove_edge_at_slot` and `read_edge`
 remain as the graph's public surface, each one line onto the view. The migration's goal was one

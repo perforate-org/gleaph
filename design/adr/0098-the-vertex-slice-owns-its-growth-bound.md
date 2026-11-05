@@ -2,7 +2,7 @@
 
 Date: 2026-11-03
 Status: Accepted (2026-11-03) - enforced at the two growth sites
-Last revised: 2026-11-04
+Last revised: 2026-11-05
 Anchor timestamp: 2026-11-03 00:10:16 UTC +0000
 
 Related: [ADR 0088](0088-tree-csr-mode-for-high-degree-label-buckets.md) defines the leaf-layout
@@ -330,6 +330,23 @@ Why this is the smaller correct fix, measured before choosing it:
 The three documentation divergences below are unchanged by this: the slice is still derived, and `LeafArena`
 is still not the only caller of the free-span store.
 
+## Amendment 2026-11-05: the owned extent is decided *out*, not scheduled
+
+The claim above is the enforcement point, and this amendment records that the owned-extent formulation will
+not be built. The reasoning is the one the measurements already gave, restated as a design decision:
+
+- The invariant the extent would enforce - "no slot range is handed out twice" - is enforced where the ranges
+  are handed out, in `LeafSlice::place` and `LeafSlice::place_leaf_wide`. One claim per handout is one place
+  to reason about, and it needs no new stored state.
+- The extent would make the claim necessary rather than best-effort, but it would also introduce state that
+  does not exist today (every extent question is currently *derived*), invert the order of three functions,
+  and make `place` fallible. That is more machinery for the same invariant.
+- Both naive forms of the extent were measured: 24 and 22 tests break. Those are not thresholds to tune; they
+  are placements that legitimately land in a vertex's tile slack, which is not a free span.
+
+So E4's sentence below is **superseded by decision**, not pending: the slice stays derived, and the invariant
+is stated at the handout sites instead.
+
 ## Documentation status (recorded 2026-11-04)
 
 Three sentences above describe the intended contract but not the code as it stands. They are listed here
@@ -337,14 +354,16 @@ rather than rewritten because each is the *target* of the amendment above, not a
 
 - "The slice is the vertex's exclusive space" (E4, quoted in Context): `LeafArena::slices` derives a slice as
   `[the vertex's first bucket base, the next vertex's first base)`, i.e. the gap between neighbours. The
-  amendment decides it becomes an owned extent; until then E4 is a claim about the target state.
+  2026-11-05 amendment decides this stays derived; "exclusive" is enforced at the handout sites
+  (`place`, `place_leaf_wide` claim what they hand out), not by an owned extent.
 - "`LeafArena` ... is the only caller of the free-span store" (ADR 0088, quoted in Context):
   `EdgeStore::release_span`, `allocate_span` and `reserve_for_releases` call it directly, and
   `promote.rs` reaches `free_span_store()` itself. Unifying those behind `LeafArena` is part of the
   amendment's work, and `release_span` returning the allocator's own error (`1f716f06b`) was a step toward
   it.
 - "`LeafArena` owns the extent (creation, growth, relocation)": there is no per-vertex extent stored
-  anywhere; every question about one is answered by deriving it from the vertices' resident spans.
+  anywhere; every question about one is answered by deriving it from the vertices' resident spans. The
+  2026-11-05 amendment keeps that shape deliberately (see above).
 
 One naming divergence is outside this ADR but worth recording next to it: `CollectAllocationOverflow` is
 used as the generic fail-closed answer at roughly three hundred sites, most of which are not allocation
