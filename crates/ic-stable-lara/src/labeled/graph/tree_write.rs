@@ -424,12 +424,10 @@ where
                             old_combined_start,
                             u64::from(old_combined_len),
                         );
-                        let new_combined = match super::leaf_arena::LeafArena::reserve_relocating(
-                            graph,
-                            vid,
-                            u64::from(new_combined_len),
-                            avoid,
-                        ) {
+                        let new_combined = match graph
+                            .vertex_layout(vid)
+                            .reserve_span(u64::from(new_combined_len), avoid)
+                        {
                             Ok(s) => s,
                             Err(e) => {
                                 release_property_plan::<E, M>(graph, &plan);
@@ -766,9 +764,7 @@ where
     }
     debug_assert_eq!(cursor, old_root_len as usize);
     // 4. Allocate the new combined span (avoiding the old one).
-    let new_combined_start = match super::leaf_arena::LeafArena::reserve_relocating(
-        graph,
-        vid,
+    let new_combined_start = match graph.vertex_layout(vid).reserve_span(
         u64::from(new_combined_len),
         super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len)),
     ) {
@@ -1350,12 +1346,10 @@ where
     let new_combined_start = if in_place {
         old_combined_start
     } else {
-        match super::leaf_arena::LeafArena::reserve_relocating(
-            graph,
-            vid,
-            u64::from(new_combined_len),
-            source,
-        ) {
+        match graph
+            .vertex_layout(vid)
+            .reserve_span(u64::from(new_combined_len), source)
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
@@ -1511,12 +1505,9 @@ where
     if old_combined_start != new_combined_start && old_combined_len > 0 {
         // Only the part outside the leaf extent goes back to the free-span store: the rest
         // is leaf space, and returning it would make a live extent overlap a free span.
-        let parts = match super::leaf_arena::LeafArena::capture(graph, vid) {
-            Ok(Some(arena)) => {
-                arena.parts_outside_extent(old_combined_start, u64::from(old_combined_len))
-            }
-            _ => vec![(old_combined_start, u64::from(old_combined_len))],
-        };
+        let parts = graph
+            .vertex_layout(vid)
+            .parts_outside_extent(old_combined_start, u64::from(old_combined_len));
         for (start, len) in parts {
             let _ = graph.release_vertex_edge_span_slab(start, len);
         }
@@ -1697,12 +1688,10 @@ where
                         old_combined_start,
                         u64::from(old_combined_len),
                     );
-                    let new_combined = match super::leaf_arena::LeafArena::reserve_relocating(
-                        graph,
-                        vid,
-                        u64::from(new_combined_len),
-                        avoid,
-                    ) {
+                    let new_combined = match graph
+                        .vertex_layout(vid)
+                        .reserve_span(u64::from(new_combined_len), avoid)
+                    {
                         Ok(s) => s,
                         Err(e) => {
                             let _ = graph.ltb().release(new_leaf_id);
@@ -1783,10 +1772,9 @@ where
         if let Some((start, len)) = release_old_combined
             && start != new_edge_start
         {
-            let parts = match super::leaf_arena::LeafArena::capture(graph, vid) {
-                Ok(Some(arena)) => arena.parts_outside_extent(start, u64::from(len)),
-                _ => vec![(start, u64::from(len))],
-            };
+            let parts = graph
+                .vertex_layout(vid)
+                .parts_outside_extent(start, u64::from(len));
             for (part_start, part_len) in parts {
                 let _ = graph.edges().release_span(part_start, part_len);
             }
@@ -1853,12 +1841,10 @@ where
     let old_combined_start = bucket.edge_start();
     let source =
         super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
-    let new_edge_start = match super::leaf_arena::LeafArena::reserve_relocating(
-        graph,
-        vid,
-        u64::from(new_combined_len),
-        source,
-    ) {
+    let new_edge_start = match graph
+        .vertex_layout(vid)
+        .reserve_span(u64::from(new_combined_len), source)
+    {
         Ok(s) => s,
         Err(e) => {
             let _ = graph.ltb().release(new_interior_id);
@@ -2653,10 +2639,9 @@ where
     let tail = old_combined_len.saturating_sub(new_combined_len);
     if tail > 0 {
         let tail_start = old_combined_start + u64::from(new_combined_len);
-        let in_pin = matches!(
-            super::leaf_arena::LeafArena::capture(graph, vid),
-            Ok(Some(pin)) if pin.extent_contains(tail_start, u64::from(tail))
-        );
+        let in_pin = graph
+            .vertex_layout(vid)
+            .extent_contains(tail_start, u64::from(tail));
         if !in_pin {
             let _ = graph.edges().release_span(tail_start, u64::from(tail));
         }
@@ -2735,12 +2720,9 @@ where
     let source =
         super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
     // 2. Allocate the new root region span.
-    let new_edge_start = super::leaf_arena::LeafArena::reserve_relocating(
-        graph,
-        vid,
-        u64::from(new_root_len),
-        source,
-    )?;
+    let new_edge_start = graph
+        .vertex_layout(vid)
+        .reserve_span(u64::from(new_root_len), source)?;
     // 3. Write the leaf-id array to the new root region.
     let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * E::BYTES);
     for &id in &leaf_ids {
@@ -2834,7 +2816,7 @@ where
 ///    `visit_tree_mode_label_bucket_edges`, filtering tombstones
 ///    (the visit yields ALL slot positions; tombstones are filtered
 ///    inside the visit closure using `E::is_tombstone_edge`).
-/// 2. **Reserve**: `LeafArena::reserve_relocating(graph, vid, degree as u64, None)`.
+/// 2. **Reserve**: `VertexLayout::reserve_span(degree as u64, SourceRegion::none())`.
 /// 3. **Write**: copy the live edges contiguously into the new span.
 /// 4. **Publish**: write the new slab-mode descriptor
 ///    (`with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
@@ -2941,12 +2923,9 @@ where
 
     // Phase 2: Reserve new slab span of exactly `degree` slots,
     // avoiding the live root region (see comment above).
-    let new_edge_start = super::leaf_arena::LeafArena::reserve_relocating(
-        graph,
-        src,
-        u64::from(degree),
-        avoid_range,
-    )?;
+    let new_edge_start = graph
+        .vertex_layout(src)
+        .reserve_span(u64::from(degree), avoid_range)?;
 
     // Phase 3: Write the live edges contiguously.
     let write_bytes = {
@@ -3107,12 +3086,9 @@ where
     }
     // 5c. Release the old root region span.
     if old_physical_root_len > 0 {
-        let parts = match super::leaf_arena::LeafArena::capture(graph, src) {
-            Ok(Some(arena)) => {
-                arena.parts_outside_extent(bucket.edge_start(), u64::from(old_physical_root_len))
-            }
-            _ => vec![(bucket.edge_start(), u64::from(old_physical_root_len))],
-        };
+        let parts = graph
+            .vertex_layout(src)
+            .parts_outside_extent(bucket.edge_start(), u64::from(old_physical_root_len));
         for (start, len) in parts {
             let _ = graph.edges().release_span(start, len);
         }

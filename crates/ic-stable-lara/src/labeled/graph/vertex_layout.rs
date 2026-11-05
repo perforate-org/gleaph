@@ -186,6 +186,45 @@ where
         )
     }
 
+    /// Whether `[start, start + len)` lies inside this vertex's leaf extent.
+    ///
+    /// A span that does is leaf space and must not be returned to the free-span store; one that is not
+    /// is a free span and must be.
+    pub(crate) fn extent_contains(&self, start: u64, len: u64) -> bool {
+        match LeafArena::capture(self.graph, self.src) {
+            Ok(Some(arena)) => arena.extent_contains(start, len),
+            _ => false,
+        }
+    }
+
+    /// Reserves a span of `len` slots for this vertex, growing the extent or relocating the leaf when
+    /// the current one cannot hold it.
+    ///
+    /// This is the tree plane's entry: a tree root must land in the vertex's own space, and the answer
+    /// is a base address rather than a "try" - either the room exists afterwards or the operation fails.
+    /// `source` names the region being replaced so a relocation moves it instead of copying a stale one.
+    pub(crate) fn reserve_span(
+        &self,
+        len: u64,
+        source: super::leaf_arena::SourceRegion,
+    ) -> Result<u64, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        LeafArena::reserve_relocating(self.graph, self.src, len, source)
+    }
+
+    /// The parts of `[start, start + len)` that fall outside this vertex's leaf extent.
+    ///
+    /// A released span may extend past the extent, because the slice is derived from resident regions;
+    /// only what lies outside is a free span, and returning the rest would overlap a live extent.
+    pub(crate) fn parts_outside_extent(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
+        match LeafArena::capture(self.graph, self.src) {
+            Ok(Some(arena)) => arena.parts_outside_extent(start, len),
+            _ => vec![(start, len)],
+        }
+    }
+
     /// Packs this vertex's buckets together and reports the slab-slot moves it performed.
     ///
     /// The bucket index the old signature carried was ignored (`let _ = bucket_index;`), so the operation is
