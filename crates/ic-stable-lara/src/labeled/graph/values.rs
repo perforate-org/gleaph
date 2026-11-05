@@ -695,22 +695,12 @@ where
             buf.resize(width, 0);
             return super::tree_read::read_property_value_at_slot(self, bucket, slot_index, buf);
         }
-        let prefix = bucket.inline_property_bytes_slab_slots();
-        let ordinal = if bucket.inline_property_byte_width() > 0 && slot_index >= prefix {
-            if let Some(chain) = log_chains {
-                let asc_log_index = slot_index - prefix;
-                let row = *chain
-                    .get(asc_log_index as usize)
-                    .ok_or(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index })?;
-                prefix
-                    .checked_add(row)
-                    .ok_or(LaraOperationError::overflow())?
-            } else {
-                slot_index
-            }
-        } else {
-            slot_index
-        };
+        // ADR 0097 §5: a values run is ordinal - row `i` of the run is the value of the slot at that
+        // position, tombstones included (their bytes are stale but present). The slot index therefore *is*
+        // the ordinal; the previous code mapped it through the run's live-index chain, which compacted away
+        // tombstones, so a bucket with a deleted slot read its neighbour's value.
+        let _ = log_chains;
+        let ordinal = slot_index;
         let end = ordinal
             .checked_add(1)
             .ok_or(LaraOperationError::overflow())?;
@@ -5109,6 +5099,62 @@ mod value_root_span_tests {
                 .expect("slab")
                 .inline_property_bytes_offset(),
             slab.inline_property_bytes_offset()
+        );
+        let _ = VertexId::from(0);
+    }
+}
+
+#[cfg(test)]
+mod value_run_position_tests {
+    use super::super::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+    use super::super::{EdgePlacementPolicy, OutEdgeOrder};
+    use crate::VertexId;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+
+    /// ADR 0097 §5: a values run is ordinal, so a slot reads its own value even when a neighbour is a
+    /// tombstone. The reader used to map the slot through the run's *live*-index chain, which compacted
+    /// tombstones away and made a bucket with a deleted slot report its neighbour's value.
+    #[test]
+    fn a_tombstone_does_not_shift_its_neighbours_value() {
+        let graph = inline_property_test_graph();
+        let vid = graph
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 2)
+            .unwrap();
+        let value = |target: u32| u16::try_from(target).expect("fits u16").to_le_bytes();
+        for target in 1..=8u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &value(target)),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        // Remove the first row: its slot becomes a tombstone inside the prefix.
+        graph.remove_edge_at_slot(vid, label, 0).unwrap().unwrap();
+
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edges_with_inline_property(vid, label, OutEdgeOrder::Ascending, |slot, item| {
+                seen.push((
+                    slot.raw(),
+                    u16::from_le_bytes(item.inline_property.bytes().try_into().expect("width 2")),
+                ));
+                std::ops::ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        // The deleted row is skipped as a tombstone, and every surviving row keeps its own value: slot 1
+        // holds target 2, slot 2 holds target 3, and so on - nothing shifts onto its neighbour.
+        assert_eq!(
+            seen,
+            (1..=7u32)
+                .map(|slot| (slot, (slot + 1) as u16))
+                .collect::<Vec<_>>()
         );
         let _ = VertexId::from(0);
     }
