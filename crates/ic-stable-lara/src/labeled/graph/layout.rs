@@ -58,7 +58,7 @@ where
     pub(crate) fn ensure_room_for(
         &self,
         src: VertexId,
-        len: u64,
+        len: super::span_size::ContentSlots,
         avoid: (u64, u64),
     ) -> Result<(), LabeledOperationError>
     where

@@ -91,7 +91,7 @@ where
     /// Places `need` slots in the vertex's own space, keeping clear of `avoid`.
     pub(crate) fn place(
         &self,
-        need: u64,
+        need: super::span_size::ContentSlots,
         avoid: (u64, u64),
     ) -> Result<Option<u64>, LabeledOperationError> {
         Ok(self.with_slice(|slice| slice.place(need, avoid))?.flatten())
@@ -100,7 +100,7 @@ where
     /// Places a leaf-wide region (`need` slots) in the vertex's own space.
     pub(crate) fn place_leaf_wide(
         &self,
-        need: u64,
+        need: super::span_size::ContentSlots,
         avoid: (u64, u64),
     ) -> Result<Option<u64>, LabeledOperationError> {
         Ok(self
@@ -112,7 +112,7 @@ where
     pub(crate) fn grow_region(
         &self,
         source_start: u64,
-        new_content: u64,
+        new_content: super::span_size::ContentSlots,
     ) -> Result<Option<u64>, LabeledOperationError> {
         Ok(self
             .with_slice(|slice| slice.grow_region(source_start, new_content))?
@@ -203,7 +203,7 @@ where
     /// grow, which owns those slots already.
     pub(crate) fn ensure_room_for(
         &self,
-        len: u64,
+        len: super::span_size::ContentSlots,
         avoid: (u64, u64),
     ) -> Result<(), LabeledOperationError>
     where

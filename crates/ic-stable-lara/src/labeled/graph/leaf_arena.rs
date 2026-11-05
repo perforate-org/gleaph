@@ -173,7 +173,12 @@ where
             .collect()
     }
 
-    pub(crate) fn place_leaf_wide(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
+    pub(crate) fn place_leaf_wide(
+        &self,
+        need: super::span_size::ContentSlots,
+        avoid: (u64, u64),
+    ) -> Option<u64> {
+        let need = u64::from(need.get());
         let extent_end = checked_add_slot_index(self.arena.extent.0, self.arena.extent.1)?;
         let cover_width = self.tile_width_with(avoid.0, need);
         let mut spans = self.arena.used_spans();
@@ -203,7 +208,12 @@ where
             None
         }
     }
-    pub(crate) fn place(&self, need: u64, avoid: (u64, u64)) -> Option<u64> {
+    pub(crate) fn place(
+        &self,
+        need: super::span_size::ContentSlots,
+        avoid: (u64, u64),
+    ) -> Option<u64> {
+        let need = u64::from(need.get());
         if need == 0 {
             return None;
         }
@@ -326,7 +336,12 @@ where
     /// so nothing is placed - the slots after it have to be this vertex's own (its gap,
     /// then a free run before the next region) and stay inside the slice. `None` means the
     /// caller must place a region elsewhere or grow the extent.
-    pub(crate) fn grow_region(&self, source_start: u64, new_content: u64) -> Option<u64> {
+    pub(crate) fn grow_region(
+        &self,
+        source_start: u64,
+        new_content: super::span_size::ContentSlots,
+    ) -> Option<u64> {
+        let new_content = u64::from(new_content.get());
         let (_, slice_end) = self.arena.slice(self.vid)?;
         let width = new_content.saturating_add(gap(new_content));
         if !self.fits(source_start, width) {
@@ -362,11 +377,17 @@ where
     pub(crate) fn allocate(&self, len: u64, avoid: Option<(u64, u64)>) -> Option<u64> {
         let avoid = avoid?;
         if self.arena.slice(self.vid).is_some() {
-            return self.place(len, avoid);
+            return self.place(
+                super::span_size::ContentSlots::new(u32::try_from(len).unwrap_or(u32::MAX)),
+                avoid,
+            );
         }
         // No content yet: the vertex has no slice to be exclusive about, so its first
         // region comes from the leaf's own free space (which then becomes its slice).
-        self.place_leaf_wide(len, avoid)
+        self.place_leaf_wide(
+            super::span_size::ContentSlots::new(u32::try_from(len).unwrap_or(u32::MAX)),
+            avoid,
+        )
     }
 
     /// The vertex's extent: the space its leaf grants it.
@@ -821,13 +842,19 @@ where
     pub(super) fn ensure_room(
         graph: &'a LabeledLaraGraph<E, M>,
         vid: VertexId,
-        len: u64,
+        len: super::span_size::ContentSlots,
         source: SourceRegion,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        let need = len.saturating_add(gap(len));
+        // The growth asks for the span this content needs; the placement below still takes the content,
+        // because a region is sized by its content and only its cover adds the gap.
+        let len = u64::from(len.get());
+        let need = super::span_size::slots_for_content(super::span_size::ContentSlots::new(
+            u32::try_from(len).unwrap_or(u32::MAX),
+        ))
+        .get();
         let avoid = Some(source.as_pair());
         // Growing only helps when the vertex's slice reaches the extent end: for any other
         // vertex the successor bounds the slice, so the probe placement below is what

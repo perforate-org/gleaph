@@ -309,9 +309,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             // The root replaces this bucket's own region, so it grows in place when the
             // following slots are the vertex's own: keeping the base is what keeps the
             // declared width inside the successor's boundary.
-            match pin.grow_region(avoid.0, u64::from(combined_len))? {
+            match pin.grow_region(avoid.0, request.content())? {
                 Some(base) => Some(base),
-                None => pin.place(u64::from(combined_len), avoid)?,
+                None => pin.place(request.content(), avoid)?,
             }
         } else {
             // A bucket with no slab content owns no region yet, so it has no slice to be
@@ -356,11 +356,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 super::BucketSearch::Missing { .. } => avoid,
             };
             let _ = retiled;
-            graph.layout(slot, bucket).ensure_room_for(
-                vid,
-                u64::from(combined_len),
-                fresh_avoid,
-            )?;
+            graph
+                .layout(slot, bucket)
+                .ensure_room_for(vid, request.content(), fresh_avoid)?;
             let vertex = graph.vertices().get(vid);
             let super::BucketSearch::Found { bucket: fresh, .. } =
                 graph.find_bucket(vid, &vertex, label)?
