@@ -618,6 +618,15 @@ defect from being rediscovered without its prior reasoning.
   (or to exclude the root's region from that release, which says the release's length must come from the region the
   source actually held rather than from the descriptor being replaced).
 
+- **Two hypotheses falsified by structure (2026-11-07).** The value root's region reads `[1, 2, 3, 1, 6]`, which looks
+  like an aliasing id or freed memory; measuring falsified both readings:
+  - the promotion refuses an id it has already minted (`DuplicateBlockMinted`, one check at the single `mint` closure)
+    and the check does **not** fire, so the store hands out distinct ids within one promotion;
+  - `values().free_byte_spans()` is **empty** and the root's address is **not** inside any free span, so nothing
+    released the region it lives in.
+  With the region live and no other writer, the bytes are what the **write received**: the entries the promotion hands
+  to `acquire_value_root` are the next reading, at the moment of the write (`property_root.entries`).
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
