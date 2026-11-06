@@ -3944,8 +3944,10 @@ mod tests {
                 )
                 .expect("noise edge");
         }
-        for index in 0..5 {
-            let before = ic_stable_lara::lara::operation_error::overflow_sites().len();
+        // The bench fixture's own shape: 500 second-label edges, which is under the spill run's class cap and
+        // therefore the run-backed promotion's regime. This is the fixture `expand_skewed_noise_10k_a_500b` builds,
+        // so the bench that could not construct its graph now can.
+        for index in 0..500 {
             store
                 .insert_directed_edge_named(
                     hub,
@@ -3953,13 +3955,7 @@ mod tests {
                     Some("SkewTarget"),
                     Vec::<(&str, Value)>::new(),
                 )
-                .unwrap_or_else(|error| {
-                    let sites = ic_stable_lara::lara::operation_error::overflow_sites();
-                    panic!(
-                        "target edge {index} of the second label: {error}\noverflow sites during this insert: {:#?}",
-                        &sites[before.min(sites.len())..]
-                    )
-                });
+                .unwrap_or_else(|error| panic!("target edge {index} of the second label: {error}"));
         }
     }
 

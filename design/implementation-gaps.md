@@ -410,91 +410,6 @@ defect from being rediscovered without its prior reasoning.
   not happened yet ("degree + 1 for the pending edge") and then counting the reservation instead of the writes. The
   fix is the same shape as `SourceRows`: let the rows that were written decide the count.
 
-### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
-
-- **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
-  fixture** - `target edge: Graph(Forward(Store(CollectAllocationOverflow)))` at
-  `crates/graph/src/bench/mod.rs:1185`, i.e. an insert of the tenth thousand rows into one bucket.
-- **Not caused by ADR 0099:** the same command traps on the pre-merge `spill-swap` tip
-  (`e6fd3d45e^1`).
-- **Impact:** `canbench --persist` cannot complete for `crates/graph`, so
-  `crates/graph/canbench_results.yml` still cannot be refreshed - the suite aborts at this bench, and the
-  same is true for the smaller `expand_inline_property_skewed_2k_a_100b` fix recorded above (which now
-  runs, but its neighbours do not).
-- **Next decision:** does the fixture exceed what the test graph's segment size can hold (the vertex has
-  to grow a span for ~10 000 rows), or is there a real fail-closed path that should relocate instead of
-  returning `CollectAllocationOverflow`? Build the same shape in a unit test and read which allocation
-  refuses.
-- **Narrowed by reading the limits:** the tree is not the ceiling. `tree_csr` allows
-  `R_MAX * B^MAX_DEPTH = 1024 * 1024^3` rows per bucket and `derive_depth(10_000)` is depth 1, so a
-  promoted bucket can hold the fixture. What cannot is the **vertex's edge span**: 10 000 rows live on one
-  vertex (all noise edges share one source, and the hub's reverse bucket takes them all), and the vertex
-  slice's growth bound is what fails. Per ADR 0098 that bound belongs to the vertex slice, so the
-  question is whether `GraphStore::new()`'s default segment size is meant to hold a 10 000-row vertex -
-  if not, the fixture is over budget and the bench needs a shape that spreads the noise, which is a bench
-  correction rather than a code fix.
-- **Measured against that suspicion:** a unit probe inserting 10 000 directed edges from one source into
-  one label on `GraphStore::new()` **succeeds**, including the promotion it triggers. So a 10 000-row
-  vertex is not over budget - the bench's failure is **state-dependent**: its store already carries the
-  hub's reverse bucket with the same rows, and whichever promotion runs second is the one whose prefix
-  retirement the free-span store rejects (that rejection is flattened to `GrowFailed { current_size: 0,
-  delta: 0 }` by `EdgeStore::release_span`, which is itself worth fixing: the real `FreeSpanError` is
-  discarded). Reproduce with both buckets populated and read the underlying error.
-- **The shape itself does not fail.** A unit probe inserting 10 000 edges from one source and then 500 from
-  a second source into the same hub - the bench's exact shape - **succeeds** on `GraphStore::new()`. So the
-  bench's failure is **environmental**, not layout: inside the canister the same inserts hit
-  `CollectAllocationOverflow`, which is the fail-closed answer when the backing memory cannot be grown.
-  The next thing to check is therefore the canister's memory budget under `canbench` (and whether the
-  bench allocates two full 10 500-row planes where one would do), not the promotion path.
-- **Correction, and the real defect:** the bench's edges are **valueless** (`insert_directed_edge_named`,
-  no inline bytes), and that is the shape that fails. A unit probe of 1 024 / 2 048 / 4 096 / 8 192 / 10 000
-  valueless parallel edges succeeds at 1 024 and 2 048 and then **panics in promotion** at
-  `promote.rs:638` (`source prefix tail retirement was reserved`). Surfacing the flattened error gives the
-  cause:
-  ```
-  OverlapPrevious { previous: FreeSpan { start_slot: 4103, len: 1017 },
-                    inserted: FreeSpan { start_slot: 4104, len: 1018 } }
-  ```
-  The promotion releases the old prefix's tail as `[edge_start + combined_len, prefix)`, and that range
-  overlaps a free span left by an earlier promotion by exactly **one slot** - an off-by-one in
-  `combined_len` (the root length the promotion reserves) against what the previous promotion released.
-  So 10 000 rows *are* reachable; promotion of a valueless bucket breaks at ~2 049 rows because of this
-  slot arithmetic.
-- **Read of the overlap:** the previous free span is `[4103, 5120)` (an earlier promotion's released
-  tail) and the span being released is `[4104, 5122)`. The second bucket's prefix therefore *extends two
-  slots past the first bucket's prefix end* while its tail still begins inside the first one's released
-  region - i.e. the promoted bucket grew into free space **without taking it off the free list**. That is
-  the defect: the in-place growth path has to consume the adjacent free span (or not release the tail it
-  has grown into), instead of assuming adjacency means ownership.
-- **Ruled out on reading it:** the release is *after* `publish()`, so the promotion cannot re-release on a
-  retry (`retried` only guards the in-leaf allocation branch, above the release). The overlapping region
-  therefore predates this promotion: a bucket's span was placed over free space that was never consumed,
-  which happens in the placement machinery (`prepare_physical_layout` and the growth ladder's
-  `try_extend_span`, the latter of which *does* take from the free store). The next thing to read is the
-  `in_pin_start` path this promotion takes when it cannot place in place
-  (`LeafArena::capture` → `grow_region` / `place` / `allocate`) and whether that hands out a region it
-  never took from the free list.
-- **Read: `place` is legitimate in itself.** It offers a base inside the vertex's *own* slice
-  (`self.slice(vid)`), carving the gaps between the vertex's existing regions, so it consumes nothing from
-  the global free store - which is correct **if the slice itself was taken from that store**. The
-  `OverlapPrevious` in the promotion says exactly one thing is wrong with that premise: a released tail
-  lands inside a global free span, so some slice (or some region inside one) was handed out while the
-  corresponding free span stayed in the store. The next read is the slice allocation path -
-  `LeafArena::capture`'s slice extent and `bucket_free_spans` - not the per-vertex placement.
-- **Found it, by reading `slices()`:** a vertex's slice is **derived**, not owned. `LeafArena::slices`
-  walks the leaf's vertices, keeps each one's first bucket base, and gives each vertex
-  `[its first base, the next vertex's first base)` - with the last one running to the leaf extent end. So
-  the slice is the *gap between neighbouring vertices*, and `place` carves allocations out of that gap with
-  no call to the free-span store. Space inside the gap that is still on the free list therefore gets handed
-  out twice: once to this bucket, and once to whoever takes that free span - which is exactly the
-  `OverlapPrevious` the promotion reports when it releases the tail.
-  The fix is at that boundary: either `place` (and `grow_region`) must take what they hand out from the
-  free-span store, or a slice must be an **owned extent** allocated from the store rather than a gap
-  inferred from its neighbours. Either way it is a layout invariant for ADR 0098 to settle, not a tweak.
-- **Diagnosability shipped:** `EdgeStore::release_span` returns the allocator's `FreeSpanError` instead of
-  flattening it to `GrowFailed { 0, 0 }` (`1f716f06b`), so this reads as `OverlapPrevious` with both spans
-  rather than as a growth failure.
-- **Status:** Open.
 
 ### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
 
@@ -6209,6 +6124,23 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — RESOLVED: the fixture's graph now builds
+
+- **Status:** Resolved (2026-11-07) by the run-backed promotion and the run-sizing fix
+  (`promote_tiny_to_run_backed_slab` allocates exactly the rows it transcribes). The fixture's own shape - 10 000
+  parallel edges on one label of a hub, then 500 on a second - is now a contract test in the graph crate:
+  `gql_run::tests::a_second_label_joins_a_ten_thousand_row_hub` runs that exact sequence through the bench's own API
+  (`GraphStore::new`, `insert_vertex_named`, `insert_directed_edge_named`) and passes in 0.6 s.
+- **What the trap was:** the fifth second-label edge could not be added because the vertex slice had no span for the
+  bucket's promotion, and the promotion had no way to say "then use a run". That path exists now: a bucket whose vertex
+  slice is full promotes into a run-backed slab bucket, and once it outgrows the run's class it promotes to tree with
+  its root in an edge run.
+- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
+  environment. The defect that aborted the suite is gone; producing the artifact is a separate mechanical step.
+- **Original report follows.** The largest expand fixture could not build its graph: `target edge:
+  Graph(Forward(Store(CollectAllocationOverflow)))` at `bench/mod.rs:1185` while inserting the tenth thousand rows
+  into one bucket, which also meant `canbench --persist` could not complete for `crates/graph`.
 
 ### GAP-LARA-FOLD-BENCH-RUN-PROBE — RESOLVED: the classes come back from a fold
 
