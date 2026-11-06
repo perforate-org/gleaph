@@ -110,7 +110,9 @@ where
                     crate::lara::operation_error::LaraOperationError::overflow(),
                 )
             })?;
-        if replaced > 0 && previous != offset && self.bucket.tree_mode_property_depth() > 0 {
+        // Whether a value root exists is a question the geometry answers, not the recorded address: offset 0 is
+        // also the first span's address, so treating it as "no root" leaked that span.
+        if replaced > 0 && previous != offset {
             let _ = self
                 .graph
                 .values()
@@ -199,5 +201,153 @@ where
     /// The tree plane of one bucket (ADR 0102: the only way to a tree's roots).
     pub(crate) fn tree_plane(&self, bucket: LabelBucket) -> BucketTreePlane<'_, E, M> {
         BucketTreePlane::new(self, bucket)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+
+    type Graph = LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>;
+
+    fn label() -> BucketLabelKey {
+        BucketLabelKey::directed_from_index(3)
+    }
+
+    /// Installs a depth-1 tree bucket whose roots name the given children.
+    fn install(graph: &Graph, edge_children: &[u32], value_children: &[u32]) -> LabelBucket {
+        crate::labeled::graph::test_support::install_tree_bucket::<
+            InlinePropertyTestEdge,
+            VectorMemory,
+        >(
+            graph,
+            0,
+            label(),
+            4096,
+            4,
+            1,
+            1,
+            edge_children,
+            value_children,
+        )
+    }
+
+    /// ADR 0101: the descriptor records where the value root went, and both roots read back what was written.
+    #[test]
+    fn publish_places_each_root_in_its_own_store() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23]);
+        // The edge root is the leaf's slot array; 4096 rows at 1024 rows per leaf need four leaves.
+        let (edge_start, edge_slots) = graph.tree_plane(bucket).edge_root();
+        assert_eq!(edge_start, bucket.edge_start());
+        assert_eq!(edge_slots, 4, "the root region is one slot per leaf");
+        // The value root is a block-address array in the value store.
+        let (offset, bytes) = graph.tree_plane(bucket).value_root();
+        assert_eq!(bytes, 4 * 4, "four children mean sixteen bytes");
+        assert_eq!(offset, bucket.inline_property_bytes_offset());
+        assert_eq!(
+            graph.tree_plane(bucket).value_child(1),
+            22,
+            "each value child reads back from the value store"
+        );
+    }
+
+    /// A publication that changes neither root publishes the descriptor alone - the reachable case where an
+    /// append stays inside the leaf tree it already has.
+    #[test]
+    fn publish_with_no_images_keeps_the_roots_it_had() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23, 24]);
+        let published = graph
+            .tree_plane(bucket)
+            .publish::<InlinePropertyTestEdge>(0, |b| b.with_degree_field(7), 0, &[], &[])
+            .expect("publish");
+        assert_eq!(published.degree, 7, "the shape is applied");
+        assert_eq!(
+            published.inline_property_bytes_offset(),
+            bucket.inline_property_bytes_offset(),
+            "an empty image leaves the value root where it was"
+        );
+        assert_eq!(graph.tree_plane(published).value_child(0), 21);
+    }
+
+    /// `shape` states the descriptor's shape; the plane states where the value root went. A call site that
+    /// builds its descriptor before the write still gets the recorded address.
+    #[test]
+    fn publish_applies_the_value_root_offset_after_the_shape() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23, 24]);
+        // A shape built from a descriptor that knows nothing about the value root.
+        let pre_built = bucket.with_inline_property_bytes_offset(0);
+        let published = graph
+            .tree_plane(bucket)
+            .publish::<InlinePropertyTestEdge>(
+                0,
+                |_| pre_built,
+                bucket.edge_start(),
+                &[],
+                &[31, 32],
+            )
+            .expect("publish");
+        assert_eq!(
+            graph.tree_plane(published).value_child(1),
+            32,
+            "the plane's address wins over whatever the shape carried"
+        );
+    }
+
+    /// Replacing the value root gives the old span back, so a growing tree does not leak its previous root.
+    #[test]
+    fn ensure_value_root_releases_the_span_it_replaces() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23, 24]);
+        let before = bucket.inline_property_bytes_offset();
+        let replaced = graph.tree_plane(bucket).value_root().1;
+        let grown = graph
+            .tree_plane(bucket)
+            .ensure_value_root(&[21, 22, 23, 24, 25])
+            .expect("grow the value root");
+        assert_ne!(grown, before, "a wider root needs a wider span");
+        assert_eq!(graph.tree_plane(bucket).value_child(0), 21);
+        // The replaced region is accounted as free again rather than staying charged to the bucket.
+        let stats = graph.values().allocator_stats();
+        assert!(
+            stats.free_bytes >= u64::from(replaced)
+                || stats.slab_occupied_tail <= u64::from(replaced) + 20,
+            "the replaced span must be free or reclaimed: {stats:?} (before={before}, replaced={replaced})"
+        );
+    }
+
+    /// The packed reader and the per-child reader answer the same array.
+    #[test]
+    fn value_children_returns_the_packed_array() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23, 24]);
+        let mut expected = Vec::new();
+        for id in [21u32, 22, 23, 24] {
+            expected.extend_from_slice(&id.to_le_bytes());
+        }
+        assert_eq!(graph.tree_plane(bucket).value_children(4), expected);
+    }
+
+    /// Writing the edge root pads to whole slots, so a byte image that ends mid-slot still lands as one row.
+    #[test]
+    fn write_edge_root_pads_to_a_whole_slot() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23, 24]);
+        let start = graph
+            .edges()
+            .allocate_span(1)
+            .expect("allocate a scratch slot");
+        graph
+            .tree_plane(bucket)
+            .write_edge_root::<InlinePropertyTestEdge>(start, &7u32.to_le_bytes()[..3])
+            .expect("write a short image");
+        let mut row = [0u8; 4];
+        graph.edges().read_slots_contiguous_bytes(start, &mut row);
+        assert_eq!(row, [7, 0, 0, 0], "the unused tail of the slot is zeroed");
     }
 }
