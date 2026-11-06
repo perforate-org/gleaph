@@ -125,3 +125,33 @@ the plane, and every writer that changes a bucket row names the plane's operatio
 
 What is left in this family is creation and destruction - `BucketSearch::Missing { insert_index }` and the re-read
 that follows an insert - which the plane does not yet own.
+
+## Slice 3: the create/destroy half is smaller than the family's name suggests
+
+The family's description says "create/destroy and slack", which sounds like a second half of equal size. Measured, it
+is not:
+
+| Path | Production call sites |
+| --- | --- |
+| `insert_label_bucket_at` (create one label's row) | **1** (`insert.rs`, already behind the plane) |
+| `clear_vertex_label_buckets` (destroy a vertex's row) | **1**, through the plane's `clear_row` |
+| `remove_label_bucket` (destroy one label's row) | **0** - only its own test calls it |
+
+So creation and destruction are already one path each, and the one that looks like a third path - per-label removal -
+has no caller. That is not a family to refactor but a dead method to delete, which is the pre-production rule in
+AGENTS.md: one canonical current layout, no superseded paths, and a store API whose only caller is its own test is
+exactly the kind of second implementation this series removes.
+
+## Where this family stands
+
+| Measure | Before the family | Now |
+| --- | --- | --- |
+| Lookup implementations | 1 | 1 |
+| Manual cache-invalidation sites | 9 | **0** |
+| Places that invalidate | 9 | **1** (`lookup_plane::rewrite_row`) |
+| Production create paths | 1 | 1 (behind the plane) |
+| Production destroy paths | 2 (`clear`, `remove_label_bucket`) | **1** (`clear_row`), once the dead one goes |
+
+The plane owns the family's questions: `resolve`, `rewrite_row`, `clear_row`. What remains is deleting
+`remove_label_bucket` and its test, after which the bucket lookup family is complete and the next family is inline
+value schema.
