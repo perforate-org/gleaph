@@ -217,7 +217,10 @@ Not yet done, in the order the duplication measurement suggested:
 Status as of 2026-11-07: **Visit is done and has a record of its own**
 ([investigation](../investigations/2026-11-06-visit-family-duplication.md)). **Bucket lookup has started**
 ([investigation](../investigations/2026-11-07-bucket-lookup-family.md)): `BucketLookupPlane` owns resolve and the
-cache-affecting rewrites, and the manual cache-invalidation sites went 9 -> 1. Inline value schema has not started.
+cache-affecting rewrites, and the manual cache-invalidation sites went 9 -> 0 (one place invalidates:
+`rewrite_row`). **Inline value schema has started**
+([investigation](../investigations/2026-11-07-inline-value-schema-family.md)): `BucketValueSchema` owns the width
+declaration behind the 132-caller entry.
 
 What Visit ended with, measured rather than assumed:
 

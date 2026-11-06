@@ -1448,20 +1448,9 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            return Ok(());
-        }
-        let (bucket_slot, bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
-        let bucket = self.ensure_bucket_inline_property_byte_width_on_slot(
-            src,
-            bucket_slot,
-            bucket,
-            inline_property_byte_width,
-        )?;
-        self.publish_bucket_descriptor(bucket_slot, bucket)?;
-        Ok(())
+        // The declaration has one owner; this name stays as the callers' surface (ADR 0100: API, not a path).
+        self.value_schema()
+            .declare(src, label_id, inline_property_byte_width)
     }
 
     /// Publishes a prepared descriptor before returning its replaced value span.

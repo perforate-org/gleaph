@@ -278,6 +278,7 @@ pub(crate) mod traverse;
 mod tree_plane;
 mod tree_read;
 mod tree_write;
+mod value_schema;
 mod value_source;
 mod vertex_layout;
 

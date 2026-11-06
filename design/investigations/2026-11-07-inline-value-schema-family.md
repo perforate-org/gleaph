@@ -49,3 +49,27 @@ The width is persisted schema and the cursor is persisted progress; the reopen t
 already cover the retry and cancellation cases (`materialize_owner_*`). A cut that renames the driver has to keep
 those green, and the 132 declaration callers must keep compiling while the view appears - the same constraint the
 Visit and bucket lookup families had.
+
+## Slice 1: the declaration has one owner, and three facts it established
+
+`BucketValueSchema` (`graph/value_schema.rs`) owns `declare(src, label, width)`, and the graph's
+`ensure_label_bucket_inline_property_byte_width` is now an adapter over it - so the 132 callers keep their surface
+while the declaration has one implementation. Three tests pin it, and writing them settled three behaviours the code
+was already expressing:
+
+1. **A declaration on a bucket with no rows creates the bucket.** A width without a bucket has nowhere to live, so
+   `declare` goes through `find_or_create_bucket` - that is why the entry is "ensure", not "set".
+2. **Declaring over live rows fails closed.** A bucket whose rows carry width 0 rejects a width-4 declaration with
+   `InlinePropertyBytesWidthMismatch`. That is the right answer: changing a width under live rows is the *migration*,
+   and this entry must not pretend to be one. The test says so by name.
+3. **The declaration's span backs the rows only while they fit.** Declaring width 4 on an empty bucket gives it a
+   span for the rows it has - zero - so the four rows inserted afterwards spill into a run, which is ADR 0097 working
+   as intended. The test therefore asserts what matters - each row reads back the value its insert carried - rather
+   than a slot count that would encode an assumption the design does not make.
+
+That third point is the reason this family's cut is about *naming* rather than about moving code: the migration
+already exists as one operation with two drivers, and what was missing was a place that says which question an entry
+answers.
+
+Next slices: route the nine direct `with_inline_property_byte_width` writes through `declare` or justify them in
+place, and put the two migration drivers behind the view as `migrate_inline` / `migrate_step`.
