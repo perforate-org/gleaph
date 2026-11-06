@@ -96,7 +96,7 @@ Everything else in the map is expected to resolve; a link to a moved or renamed 
 | [adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md) | accepted | Ordinal, per-bucket spill runs replace the shared overflow log |
 | [adr/0098-the-vertex-slice-owns-its-growth-bound.md](adr/0098-the-vertex-slice-owns-its-growth-bound.md) | accepted | A vertex's slice owns its growth bound |
 | [adr/0099-inline-property-values-are-slot-addressed.md](adr/0099-inline-property-values-are-slot-addressed.md) | accepted | Inline property values are addressed by slot |
-| [adr/0100-one-path-per-operation-with-a-view.md](adr/0100-one-path-per-operation-with-a-view.md) | accepted (five views implemented and tested; Visit done - one row walker, typed rows; bucket lookup and inline value schema remain) | One path per operation, owned by a view |
+| [adr/0100-one-path-per-operation-with-a-view.md](adr/0100-one-path-per-operation-with-a-view.md) | accepted (seven views implemented and tested; all three families have a view: Visit, bucket lookup, inline value schema) | One path per operation, owned by a view |
 | [adr/0101-tree-addresses-live-in-their-own-sides-region.md](adr/0101-tree-addresses-live-in-their-own-sides-region.md) | accepted | A tree's block addresses live in the store that owns the tree |
 | [adr/0102-one-view-owns-a-trees-roots.md](adr/0102-one-view-owns-a-trees-roots.md) | accepted | One view owns a tree bucket's roots |
 

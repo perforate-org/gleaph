@@ -214,13 +214,35 @@ Not yet done, in the order the duplication measurement suggested:
 | Bucket lookup | `(src, label) -> bucket` with the last-lookup cache, descriptor-row origin, create/destroy and slack | medium |
 | Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
 
-Status as of 2026-11-07: **Visit is done and has a record of its own**
-([investigation](../investigations/2026-11-06-visit-family-duplication.md)). **Bucket lookup has started**
-([investigation](../investigations/2026-11-07-bucket-lookup-family.md)): `BucketLookupPlane` owns resolve and the
-cache-affecting rewrites, and the manual cache-invalidation sites went 9 -> 0 (one place invalidates:
-`rewrite_row`). **Inline value schema has started**
-([investigation](../investigations/2026-11-07-inline-value-schema-family.md)): `BucketValueSchema` owns the width
-declaration behind the 132-caller entry.
+Status as of 2026-11-07: **all three families have a view and a record of their own.**
+
+- **Visit is done** ([investigation](../investigations/2026-11-06-visit-family-duplication.md)): one row walker,
+  typed rows, and the storage-class dispatch down from 8 functions to 4.
+- **Bucket lookup is done** ([investigation](../investigations/2026-11-07-bucket-lookup-family.md)):
+  `BucketLookupPlane` owns resolve and the cache-affecting rewrites; manual cache-invalidation sites went 9 -> 0, with
+  `rewrite_row` the only place that invalidates.
+- **Inline value schema's view exists and its invariants are structural**
+  ([investigation](../investigations/2026-11-07-inline-value-schema-family.md)): `BucketValueSchema` owns the width
+  declaration behind the 132-caller entry; a width change names its transition; a width wider than a value block is
+  not constructible; and the deferred migration is one value carried by the error and queued unchanged.
+
+What each family left as follow-ups is recorded in its own investigation; none of them is a second implementation of
+another's operation, which is the property this ADR exists to establish.
+
+The view inventory, verified rather than remembered:
+
+| View | Owns | Direct tests |
+| --- | --- | --- |
+| `BucketRowPlane` (`row_plane.rs`) | a vertex's bucket-descriptor row | 3 |
+| `BucketValuePlane` (`value_plane.rs`) | where a bucket's values live and how they are published | 3 |
+| `BucketLayout` (`layout.rs`) | the bucket's physical layout | 3 |
+| `VertexLayout` (`vertex_layout.rs`) | the vertex record's span and slack | 4 |
+| `BucketTreePlane` (`tree_plane.rs`) | a tree bucket's roots and descriptor publication | 6 |
+| `BucketLookupPlane` (`lookup_plane.rs`) | `(src, label) -> bucket` and the caches behind it | 3 |
+| `BucketValueSchema` (`value_schema.rs`) | the value width: declaration, its transitions, the deferred work | 4 |
+
+That is every view with per-entry tests, which is the rule in AGENTS.md: a view that grows an entry without a test
+is the same defect as a duplicated invariant.
 
 What Visit ended with, measured rather than assumed:
 
