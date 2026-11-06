@@ -301,3 +301,20 @@ What is left, and why each is not the same cut:
 - `visit_edges_for_label_impl` (4) and `visit_edges_with_inline_property_impl` (3) - the legacy value-attaching
   funnels, waiting on their callers being moved to the entry that names their shape.
 - `visit_bucket_edge_slots` (1) - a selected-slot walk with one slab/tree difference.
+
+## A defect found by reading the funnel: the tree arm yielded no values
+
+`visit_edges_for_label` is the legacy callback-`E` API. Its slab arms attach the row's inline property bytes to the
+edge they yield (`with_stored_inline_property_bytes`); its tree arm yielded the bare edge. So a caller reading
+`edge.edge_inline_property_bytes()` got that row's values from a slab bucket and an empty slice from a tree bucket -
+the same class-dependent answer this record keeps finding, this time in **data**, not in row visibility.
+
+The arm now reads through `BucketValueSource`, as the slab arms already did, so the two classes answer with the
+same bytes. No test caught this one; it was found by reading the arms side by side while looking for the cut. The
+fixtures that build a tree bucket with real property values live in `tree_write`'s test module, so a parity test
+for this funnel would have to cross module boundaries - the honest statement is that the arms are now uniform by
+construction (both go through the one reader) and that no test pins the parity itself.
+
+This is the shape of the remaining work in this family: the duplicate is not always a duplicated *walk*, sometimes
+it is an arm that quietly answers a different question than its siblings, and the way to find those is to read the
+arms against each other rather than to trust that the tests cover them.

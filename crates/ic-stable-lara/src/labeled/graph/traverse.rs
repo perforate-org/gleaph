@@ -2343,24 +2343,36 @@ where
             }
             // Tree arm: LTB-backed reads (arm-guaranteed tree-only).
             BucketMode::Tree => {
-                super::tree_read::visit_tree_mode_label_bucket_edges(
+                // The slab arms above attach the row's inline property bytes to the edge they yield, so this arm
+                // must too - otherwise a caller reading `edge.edge_inline_property_bytes()` gets its values from a
+                // slab bucket and an empty slice from a tree bucket.
+                let source = super::value_source::BucketValueSource::of(&bucket);
+                let width = source.width();
+                let mut bytes = Vec::new();
+                let mut failure: Option<LabeledOperationError> = None;
+                let flow = super::tree_read::visit_tree_mode_label_bucket_edges(
                     self,
                     label.raw(),
                     &bucket,
                     bucket.degree(),
                     order,
                     |slot_idx, edge| {
-                        // Mirror the slab path's visit semantics: yield the
-                        // edge with the slot index attached. The visitor
-                        // signature is `FnMut(E)` (no slot index), so we
-                        // drop the slot index here; callers that need it use
-                        // `visit_edges_with_inline_property` instead.
-                        let _ = slot_idx;
-                        visit(edge);
+                        if width > 0
+                            && let Err(e) =
+                                source.read_slot_into(self, &bucket, slot_idx, &mut bytes)
+                        {
+                            failure = Some(e);
+                            return ControlFlow::Break(());
+                        }
+                        visit(edge.with_stored_inline_property_bytes(width, &bytes));
                         ControlFlow::<()>::Continue(())
                     },
-                )
-                .map(|_| ())
+                )?;
+                if let Some(e) = failure {
+                    return Err(e);
+                }
+                let _ = flow;
+                Ok(())
             }
         }
     }
