@@ -198,3 +198,29 @@ What is left of the family's duplication is the with-values paths: `visit_edges_
 branches), `visit_edges_with_inline_property_impl` (3), and the two batch cursors (3 each). They are the same cut
 one level up - a request that says selection, visibility and whether values are attached - and the count to beat
 is 7.
+
+## The with-values family, first slice: the mode match was a value-source question
+
+`visit_edges_at_with_inline_property` carried eight mode branches. Reading them apart, most were answering one
+question: *where does this slot's value live?* Tiny has none (its width bytes are target payload), slab reads its
+inline property bytes span or run, tree reads its property tree. Every with-values entry spelled that out again,
+which is why one of them grew to eight branches and another to three.
+
+`BucketValueSource` (`value_source.rs`) now answers it once:
+
+| Resolution | Meaning |
+| --- | --- |
+| `None` | no values at this width - tiny, or any class at width 0 |
+| `Slab { width }` | the inline property bytes store, by slot |
+| `Tree { width }` | the property tree, by slot |
+
+`read_slot_into` is the one reader: it names the class-specific path once. The at-variant's mode match is gone -
+its tree arm reads through the source, and the class decision now happens in one place.
+
+Measured: the at-variant went from **8 mode branches to 4** (the slab batch path keeps its own because it reads a
+whole value sequence in one call, which is what makes a hot scan cheap; collapsing it into per-slot reads would
+trade a correctness-neutral refactor for a regression). Functions owning a dispatch: 7 -> 7, but the one that
+carried the most now carries half as many, and the *answer* it kept was moved to the owner.
+
+Next: the same treatment for `visit_edges_with_inline_property_impl` (3 branches) and the two batch cursors (3
+each), then the slab batch path becomes the only thing an entry still says about its class.

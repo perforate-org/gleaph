@@ -3037,40 +3037,33 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        let width = match BucketMode::from_bucket(&bucket) {
-            // Tiny schema bytes are target payload, including native tombstone encodings.
-            // Reuse valueless selected topology without interpreting those bytes as a width.
-            BucketMode::Tiny => 0,
-            BucketMode::Tree => {
-                // Native values retain the original edge positions, including holes. Slab live-rank
-                // mapping and the independent slab/run value sequence do not apply to either tree.
-                let width = bucket.inline_property_byte_width();
-                let mut bytes = vec![0; usize::from(width)];
-                for slot_index in selected {
-                    let EdgeSlotState::Live(edge) =
-                        self.read_edge_state_at_slot(&bucket, slot_index)?
-                    else {
-                        continue;
-                    };
-                    if width > 0 {
-                        super::tree_read::read_property_value_at_slot(
-                            self, &bucket, slot_index, &mut bytes,
-                        )?;
-                    }
-                    if let ControlFlow::Break(value) = visit(
-                        BucketEntryPosition::new(slot_index),
-                        EdgeWithInlinePropertyRef {
-                            edge,
-                            inline_property: InlinePropertyBytesRef::from_parts(width, &bytes),
-                        },
-                    ) {
-                        return Ok(ControlFlow::Break(value));
-                    }
+        // ADR 0100: where a slot's value lives is one question, answered by `BucketValueSource` rather than by
+        // a mode match here. Tiny bytes are target payload, so they are not a value width.
+        let source = super::value_source::BucketValueSource::of(&bucket);
+        if let super::value_source::BucketValueSource::Tree { width } = source {
+            // Native values retain their edge positions, holes included; the slab live-rank mapping and its
+            // independent value sequence do not apply to a tree.
+            let mut bytes = Vec::new();
+            for &slot_index in &selected {
+                let EdgeSlotState::Live(edge) =
+                    self.read_edge_state_at_slot(&bucket, slot_index)?
+                else {
+                    continue;
+                };
+                source.read_slot_into(self, &bucket, slot_index, &mut bytes)?;
+                if let ControlFlow::Break(value) = visit(
+                    BucketEntryPosition::new(slot_index),
+                    EdgeWithInlinePropertyRef {
+                        edge,
+                        inline_property: InlinePropertyBytesRef::from_parts(width, &bytes),
+                    },
+                ) {
+                    return Ok(ControlFlow::Break(value));
                 }
-                return Ok(ControlFlow::Continue(()));
             }
-            BucketMode::Slab => bucket.inline_property_byte_width(),
-        };
+            return Ok(ControlFlow::Continue(()));
+        }
+        let width = source.width();
         if width == 0 {
             return self.visit_bucket_edge_slots(&bucket, &selected, order, |slot, edge| {
                 visit(
