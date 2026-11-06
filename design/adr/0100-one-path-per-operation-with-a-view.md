@@ -1,9 +1,9 @@
 # 0100. One path per operation, owned by a view
 
 Date: 2026-11-04
-Status: Accepted (2026-11-05) - implemented for rows and for a bucket's span; the remaining
-operation families are listed in Progress
-Last revised: 2026-11-05
+Status: Accepted (2026-11-05) - implemented for rows, a bucket's span, a vertex's space and a tree's roots,
+with direct tests for every view; the remaining operation families are listed in Progress
+Last revised: 2026-11-06
 Anchor timestamp: 2026-11-04 05:10:00 UTC +0000
 
 Related: [ADR 0097](0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md) owns the spill runs;
@@ -171,6 +171,39 @@ Three findings worth keeping:
 Residual: the `leaf_arena` module stays `pub(crate)` because `labeled/bench.rs` reads
 `labeled_leaf_vertex_edge_quota`, a pure geometry helper with no arena state.
 
+## Units four and five: a tree's roots, and the view rule's own tests (2026-11-06)
+
+`BucketTreePlane` ([ADR 0102](0102-one-view-owns-a-trees-roots.md)) is the fifth view and the first one this ADR's
+rule forced into existence *before* a change rather than after a defect: six functions wrote a tree bucket's two
+roots, each composing its own image, ordering its own publication and carrying its own rollback. Once
+[ADR 0101](0101-tree-addresses-live-in-their-own-sides-region.md) split the roots across two stores, those six
+would each have had to learn a second store and a second address space.
+
+The view turned that into one entry. `BucketTreePlane::publish` writes the roots and the descriptor they belong
+to; the caller states only the descriptor's *shape*. Two consequences are worth recording because they are what
+the rule buys:
+
+- **ADR 0101 landed inside one module.** The split changed `publish`'s body, `value_child`/`value_children`, and
+  the geometry functions - no write path learned about the value store.
+- **`grep` replaced "by convention".** Root publication is in `tree_plane.rs`; what remains in `tree_write.rs`
+  are two rollback restores, and in `promote.rs` a test fixture.
+
+### The view rule needed a test side too
+
+The rule in AGENTS.md says a view tests each entry, not just that the graph works. Running it as an audit found
+**every view had zero direct tests** except `span_size` and `leaf_arena`. That is not a coverage number: a view
+owns a contract, and the graph's tests exercise the contract through callers that happen to agree.
+
+Closing it produced two findings that the indirect tests could not:
+
+- **`ensure_value_root` never released a store's first span.** It treated a recorded offset of 0 as "no value
+  root", but 0 is also the first span's address. Whether a value root exists is a question the geometry answers.
+- **A vertex's slice is bounded by the next vertex**, and a tiny bucket owns no leaf at all - both facts a
+  leaf-bearing fixture has to honour, and both invisible when the fixture is written through the graph.
+
+Every view now has direct tests: `span_size` (8), `leaf_arena` (11), `tree_plane` (6), `vertex_layout` (4),
+`layout` (3), `row_plane` (3), `value_plane` (3).
+
 ### Remaining operation families
 
 Not yet done, in the order the duplication measurement suggested:
@@ -180,6 +213,9 @@ Not yet done, in the order the duplication measurement suggested:
 | Visit (row iteration) | 35 public operations and 44 storage-mode branches in `traverse.rs`; callers pick among single/batch/with-values/log-chain entry points | largest remaining |
 | Bucket lookup | `(src, label) -> bucket` with the last-lookup cache, descriptor-row origin, create/destroy and slack | medium |
 | Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
+
+Status as of 2026-11-06: none of the three has started. They are the remaining duplication this ADR identified;
+the five views above cover rows, a bucket's span, a vertex's space, a tree's roots - and their tests.
 
 ### Where the unit stops, and why
 

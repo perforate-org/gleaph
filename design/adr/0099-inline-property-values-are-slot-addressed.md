@@ -608,7 +608,9 @@ the cursor/hybrid page fixtures. Rebuilding those expectations around the mirror
 that is left, plus the promotion path.
 
 **Where it stood at 29.** Two more distinctions landed after the slot batch: a tree bucket owns no
-value span to charge the vertex for (its values live in the property root inside the edge span), and
+value span to charge the vertex for (its values live in the property root, which since
+[ADR 0101](0101-tree-addresses-live-in-their-own-sides-region.md) has its own span in the value store rather
+than a share of the edge span), and
 `inline_property_bytes_slab_slots` means the geometry a bucket needs while
 `inline_property_bytes_slab_slots_allocated` means what the allocator backs - the admission had been
 comparing the first against itself, which left spans unallocated and vertices uncharged.

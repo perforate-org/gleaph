@@ -2859,3 +2859,29 @@ that the slice is the vertex's exclusive space. Neither holds in the code:
 
 The sentences stay as written because they state the intended contract; this amendment records where the
 code stands against it, so a reader does not take them as fact.
+
+## Amendment 2026-11-06: the property root no longer sits after the edge root
+
+The layout sections above place both roots in one span - "`[edge root | inline-property root]`, each a dense
+array of u32 block ids" - with the property root starting slot-aligned right after the edge root and the span
+width summed from both. [ADR 0101](0101-tree-addresses-live-in-their-own-sides-region.md) supersedes that
+placement, and the code now follows it:
+
+| Question | Above (and what the code did until 2026-11-06) | Now |
+| --- | --- | --- |
+| Where does the property root live? | after the edge root in the leaf's span | the inline property bytes store, as a byte-span of `R_MAX` four-byte entries |
+| How is its address recorded? | derived as `edge_start + edge_root_len` | the descriptor's `inline_property_bytes_offset` |
+| What does the bucket's leaf span hold? | both roots | the edge root only |
+| What is the span width? | `edge root len + property root len` | `edge root len` |
+
+The reason is the defect the combined placement caused: a value root that grew past its share wrote into a
+sibling bucket's region. Roots are now addressed by the store that owns the tree, which is also why the shared
+entry unit converts per side (`edge_slots` one slot, `value_bytes` four bytes) - the edge store is a PMA over
+leaves, the value store is a flat byte arena with no leaf concept at all.
+
+What does **not** change: `B`, `R_MAX`, `MAX_DEPTH`, the fan-out arithmetic (`ceil(S / (K·B^(d'−1)))` entries
+for the property tree), the ordinal addressing, and the depth derivation. Only the region each root is written
+into, and the descriptor field that records it, moved.
+
+The sentences above stay as written: they are the record of what was decided then. Read them with this
+amendment, and read the value root's address from the descriptor rather than deriving it.

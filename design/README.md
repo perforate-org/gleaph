@@ -93,6 +93,12 @@ Everything else in the map is expected to resolve; a link to a moved or renamed 
 | [adr/0052-per-label-adjacency-order-and-tombstone-reuse.md](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md)               | planned                                                                                                | Per-label insertion-order capability, unordered tombstone reuse, policy-specific batch placement and compaction             |
 | [adr/0058-versioned-additive-schema-migrations.md](adr/0058-versioned-additive-schema-migrations.md)                                 | implemented                                                                                            | Versioned additive migration artifacts, Router ledger, and CLI workflow                                                     |
 | [adr/0059-create-index-migration-backfill.md](adr/0059-create-index-migration-backfill.md)                                           | accepted (partially implemented; production Router driver implemented, E2E/upgrade validation pending) | `CREATE INDEX` migration target resolution, online backfill lifecycle, generation fencing, and Active-only planner exposure |
+| [adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md) | accepted | Ordinal, per-bucket spill runs replace the shared overflow log |
+| [adr/0098-the-vertex-slice-owns-its-growth-bound.md](adr/0098-the-vertex-slice-owns-its-growth-bound.md) | accepted | A vertex's slice owns its growth bound |
+| [adr/0099-inline-property-values-are-slot-addressed.md](adr/0099-inline-property-values-are-slot-addressed.md) | accepted | Inline property values are addressed by slot |
+| [adr/0100-one-path-per-operation-with-a-view.md](adr/0100-one-path-per-operation-with-a-view.md) | accepted (five views implemented and tested; Visit, bucket lookup and inline value schema remain) | One path per operation, owned by a view |
+| [adr/0101-tree-addresses-live-in-their-own-sides-region.md](adr/0101-tree-addresses-live-in-their-own-sides-region.md) | accepted | A tree's block addresses live in the store that owns the tree |
+| [adr/0102-one-view-owns-a-trees-roots.md](adr/0102-one-view-owns-a-trees-roots.md) | accepted | One view owns a tree bucket's roots |
 
 ## Conventions
 
