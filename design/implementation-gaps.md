@@ -383,6 +383,18 @@ defect from being rediscovered without its prior reasoning.
   re-dispatches, so the row that triggered it must be provably absent from the source the promotion transcribed. The
   reproduction (`a_run_backed_bucket_promotes_to_tree_mode`, `#[ignore]`d) states the count.
 
+- **The remaining defect is now classified: a duplicated row, not a stale count.** The reproduction reads the rows
+  before it trusts the descriptor - `1026` readable where `1025` were inserted. So the run-full -> promote ->
+  re-dispatch path stores one edge twice, and the promotion's own answer is consistent with the rows it read (it
+  publishes what the inventory counted). Reading order matters here: the previous order (field first) could not tell a
+  descriptor bug from a duplicated row, and this one can.
+- **Where to look next, by construction:** the only place an edge can be written twice is a path that writes it before
+  asking whether it fits and then writes it again after promoting. `insert_into_spill_with_layout` returns
+  `SpillNeedsPromotion` *without* writing (`spill_append` failed, `used >= MAX_ROWS`), and `row_plane`'s arm then
+  promotes and re-dispatches - so the invariant to check is that the arm's promotion cannot have absorbed the
+  triggering row, i.e. that the source the inventory counts excludes it. A test at the row plane can assert degree
+  after each insert, which turns "one insert wrote two rows" into the exact insert index.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

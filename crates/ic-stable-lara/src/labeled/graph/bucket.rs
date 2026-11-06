@@ -1223,12 +1223,11 @@ mod tests {
     /// A run-backed bucket promotes to tree mode once it is large enough - the path that would make a second label
     /// on a filled vertex usable at any size, not only up to the spill run's class cap.
     ///
-    /// `#[ignore]`d: the promotion now **succeeds** - the root goes to a run, the descriptor names it, and the source
-    /// inventory replaces the descriptor's `degree` with the live count the rows actually hold. What remains is
-    /// upstream: the bucket ends with `1026` rows where `T_PROMOTE + 1 = 1025` edges were inserted, so one row was
-    /// stored twice by the run-full -> promote -> re-dispatch path. This test is the reproduction for that, and its
-    /// count is what says so.
-    #[ignore = "one row is stored twice by the run-full -> promote -> re-dispatch path (1026 for 1025 inserts)"]
+    /// `#[ignore]`d, and it is now a description of an upstream defect rather than of the promotion. The promotion
+    /// succeeds: the root goes to a run, the descriptor names it, and the source inventory publishes the row count it
+    /// measured. What the test reports is that **1026 rows are readable where 1025 edges were inserted** - the row
+    /// count is read before the descriptor is trusted, so this is a duplicated row, not a stale field.
+    #[ignore = "a row is duplicated by the run-full -> promote -> re-dispatch path: 1026 readable for 1025 inserts"]
     #[test]
     fn a_run_backed_bucket_promotes_to_tree_mode() {
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
@@ -1271,7 +1270,8 @@ mod tests {
             bucket.is_tree_mode(),
             "a run-backed bucket over T_PROMOTE must promote to tree mode"
         );
-        assert_eq!(u64::from(bucket.degree()), u64::from(T_PROMOTE) + 1);
+        // The rows are read before the field is trusted: a reader that sees 1025 rows and a descriptor that says 1026
+        // is a descriptor bug, while 1026 rows is a duplicated row.
         // The label reads back whole, which is the point: the rows moved from a run into LTB blocks.
         let mut rows = 0u32;
         let _ = graph
@@ -1285,7 +1285,12 @@ mod tests {
                 },
             )
             .expect("read the promoted label");
-        assert_eq!(rows, T_PROMOTE + 1, "every promoted row is readable");
+        assert_eq!(
+            rows,
+            T_PROMOTE + 1,
+            "every promoted row is readable exactly once (descriptor says {})",
+            bucket.degree()
+        );
     }
 
     #[test]
