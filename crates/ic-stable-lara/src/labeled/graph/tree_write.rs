@@ -780,9 +780,20 @@ where
             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
         edge_root_image.extend_from_slice(&old_edge_bytes);
     }
+    // 6. Publish: the tree plane writes both roots and the descriptor (ADR 0102).
+    let new_bucket = bucket
+        .with_edge_range(new_combined_start, stored_slots)
+        .with_tree_mode(true)
+        .with_tree_mode_property_depth(d + 1);
     if graph
         .tree_plane(*bucket)
-        .write_roots::<E>(new_combined_start, &edge_root_image, &interior_ids)
+        .publish::<E>(
+            bucket_slot,
+            |_| new_bucket,
+            new_combined_start,
+            &edge_root_image,
+            &interior_ids,
+        )
         .is_err()
     {
         for &id in interior_ids.iter().rev() {
@@ -792,23 +803,6 @@ where
             .edges()
             .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
-    // 6. Publish the descriptor (single canonical write).
-    let new_bucket = bucket
-        .with_edge_range(new_combined_start, stored_slots)
-        .with_tree_mode(true)
-        .with_tree_mode_property_depth(d + 1);
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
-    {
-        for &id in interior_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
-        return Err(e.into());
     }
     // 7. After publish, release the old combined span.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
@@ -2728,16 +2722,7 @@ where
     for &id in &leaf_ids {
         push_root_entry::<E>(&mut edge_root_image, id);
     }
-    if graph
-        .tree_plane(*bucket)
-        .write_roots::<E>(new_edge_start, &edge_root_image, &[])
-        .is_err()
-    {
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
-        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
+
     // 4. Commit: new descriptor. Reset the physical depth to 1
     //    (the flatten result is a flat root region; no interior).
     let new_bucket = bucket
@@ -2746,15 +2731,23 @@ where
         .with_degree_field(bucket.degree)
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(1);
-    // 5. Publish.
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
+    // 5. Publish: the tree plane writes the edge root and the descriptor (ADR 0102). A flatten declares no
+    //    value children, so the value root is left exactly as the descriptor already records it.
+    if graph
+        .tree_plane(*bucket)
+        .publish::<E>(
+            bucket_slot,
+            |_| new_bucket,
+            new_edge_start,
+            &edge_root_image,
+            &[],
+        )
+        .is_err()
     {
         let _ = graph
             .edges()
             .release_span(new_edge_start, u64::from(new_root_len));
-        return Err(e.into());
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 6. After publish, release the old root region span and the
     //    interior blocks. The interior blocks are read-but-not-claimed
