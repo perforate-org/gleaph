@@ -3916,6 +3916,56 @@ mod tests {
         }
     }
 
+    /// The bench shape `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` describes, at the layer the bench traps in: one hub
+    /// with 10 000 parallel edges on one label, then the first edges of a second label. The fifth one fails with
+    /// `collect overflow`, which is the gap's symptom reproduced outside canbench.
+    ///
+    /// `#[ignore]`d until the gap is fixed: it is the reproduction, not a contract. Its diagnostic prints the
+    /// `overflow()` constructions of the failing insert, which is how the gap's missing evidence gets collected -
+    /// and on the first run that list was **empty**, so the error is a directly constructed variant rather than an
+    /// `overflow()` site.
+    #[ignore = "reproduction for GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX"]
+    #[test]
+    fn a_second_label_joins_a_ten_thousand_row_hub() {
+        let store = GraphStore::new();
+        let noise_dst = store
+            .insert_vertex_named(["SkewNoiseDst"], Vec::<(&str, Value)>::new())
+            .expect("noise dst");
+        let target_dst = store
+            .insert_vertex_named(["SkewTargetDst"], Vec::<(&str, Value)>::new())
+            .expect("target dst");
+        let hub = store
+            .insert_vertex_named(["SkewHub"], Vec::<(&str, Value)>::new())
+            .expect("hub");
+        for _ in 0..10_000 {
+            store
+                .insert_directed_edge_named(
+                    hub,
+                    noise_dst,
+                    Some("SkewNoise"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("noise edge");
+        }
+        for index in 0..5 {
+            let before = ic_stable_lara::lara::operation_error::overflow_sites().len();
+            store
+                .insert_directed_edge_named(
+                    hub,
+                    target_dst,
+                    Some("SkewTarget"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .unwrap_or_else(|error| {
+                    let sites = ic_stable_lara::lara::operation_error::overflow_sites();
+                    panic!(
+                        "target edge {index} of the second label: {error}\noverflow sites during this insert: {:#?}",
+                        &sites[before.min(sites.len())..]
+                    )
+                });
+        }
+    }
+
     fn setup_gql_reused_dst_graph(store: &GraphStore) {
         let a = store
             .insert_vertex_named(["ReuseGqlA"], [("name", Value::Text("anchor".into()))])

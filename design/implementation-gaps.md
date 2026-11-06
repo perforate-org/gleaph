@@ -175,6 +175,24 @@ defect from being rediscovered without its prior reasoning.
   looking for by hand. A test pins the message. This does not make room on the vertex; it makes the *next* run
   produce the answer instead of another round of instrumentation.
 
+- **Reproduced outside canbench, 2026-11-07** - `crates/graph/src/gql_run.rs`, `#[ignore]`d test
+  `a_second_label_joins_a_ten_thousand_row_hub`: one hub, 10 000 parallel edges on `SkewNoise`, then the first
+  edges on `SkewTarget`. The **fifth** target edge fails with `forward store: collect overflow`, exactly the bench's
+  symptom, in 0.34 s and with no canbench toolchain. The fixture is the bench's own sequence (`GraphStore::new`,
+  `insert_vertex_named`, `insert_directed_edge_named`), so the shape is faithful rather than approximated.
+- **The trace says the error is not an `overflow()` site.** The test records
+  `operation_error::overflow_sites()` before and after each insert: on the failing insert the list was **empty**.
+  So the terminal `CollectAllocationOverflow` is constructed as a plain variant somewhere on the insert path
+  (`graph/compact.rs` has sixteen such constructions, `bidirectional/deferred.rs` two, `traverse.rs`/`bypass.rs`
+  more), not by the `#[track_caller]` constructor that `GLEAPH_TRACE_OVERFLOW` instruments. That is why three
+  earlier probes chased `bucket.rs` and `segment_vertex_bounds` and found nothing: the trace only ever shows the
+  *first* construction on the thread, which comes from an earlier, tolerated "no room" signal.
+- **Next, now cheap:** run the ignored test with `GLEAPH_TRACE_OVERFLOW` unset but with the direct constructions in
+  the insert path converted one at a time into a distinct typed error (the pattern `BucketDescriptorRow` now uses),
+  starting with `bucket_store::plan_segment_rewrite`'s admission, which the backtrace names:
+  `find_or_create_bucket -> insert_label_bucket_at -> plan_segment_rewrite -> segment_vertex_bounds`.
+  The first conversion that changes the message localises the failure.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

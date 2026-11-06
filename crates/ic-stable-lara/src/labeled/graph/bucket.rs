@@ -1064,6 +1064,75 @@ mod tests {
         );
     }
 
+    /// The reproduction `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` describes, with the typed error in place so the
+    /// failure can be read instead of guessed.
+    #[test]
+    fn a_second_label_joins_a_ten_thousand_row_vertex() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        // Production geometry: segment 16 is where sixteen vertices share a leaf and a vertex grows by
+        // relocation, which is the shape the gap was found in.
+        let graph = super::super::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::directed_from_index(1),
+        );
+        let vid = VertexId::from(0);
+        // Segment 16 means sixteen vertices share one leaf: the hub has to grow its slice beside fifteen mates,
+        // which is the layout the gap was found in.
+        for mate in 1..16u32 {
+            let mate_id = graph.push_vertex(LabeledVertex::default()).unwrap();
+            for target in 0..4u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        mate_id,
+                        BucketLabelKey::directed_from_index(2),
+                        crate::labeled::graph::test_support::TestEdge {
+                            target: mate * 10 + target,
+                        },
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .expect("mate insert");
+            }
+        }
+        let first = BucketLabelKey::directed_from_index(2);
+        for target in 0..10_000u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    first,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        let after_first = graph.vertices().get(vid);
+        assert_eq!(after_first.degree(), 1, "one bucket on the first label");
+        let second = BucketLabelKey::directed_from_index(3);
+        for target in 0..5u32 {
+            let result = graph.insert_edge_skip_leaf_cascade(
+                vid,
+                second,
+                crate::labeled::graph::test_support::TestEdge {
+                    target: 50_000 + target,
+                },
+                EdgePlacementPolicy::Insertion,
+            );
+            if let Err(error) = result {
+                let vertex = graph.vertices().get(vid);
+                panic!(
+                    "edge {target} of the second label failed: {error}\n\
+                     vertex: degree={} slack={} default_labeled={} base={} span={:?}",
+                    vertex.degree(),
+                    vertex.bucket_slack_slots(),
+                    vertex.is_default_edge_labeled(),
+                    vertex.base_slot_start(),
+                    vertex.label_bucket_descriptor_span(),
+                );
+            }
+        }
+        let after_second = graph.vertices().get(vid);
+        assert_eq!(after_second.degree(), 2, "both labels have a bucket");
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();
