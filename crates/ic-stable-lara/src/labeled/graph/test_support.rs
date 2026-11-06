@@ -1034,6 +1034,137 @@ where
         .expect("publish tree bucket")
 }
 
+/// Installs a tree bucket that a graph-level entry can actually reach.
+///
+/// [`install_tree_bucket`] writes a bucket descriptor at a slot; every graph-level entry first resolves the label
+/// through the **vertex's** descriptor row, so a descriptor alone is invisible to `find_bucket`. This helper wires
+/// the row too: it reuses the slot the lookup already resolves, or creates the vertex's first bucket row when the
+/// label has none yet.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_reachable_tree_bucket<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    stored_slots: u32,
+    width: u16,
+    physical_depth: u32,
+    property_depth: u32,
+    edge_child_ids: &[u32],
+    value_child_ids: &[u32],
+) -> crate::labeled::record::LabelBucket
+where
+    E: crate::traits::CsrEdgeTombstone,
+    M: ic_stable_structures::Memory,
+{
+    graph.ensure_vertex(vid).expect("vertex");
+    let vertex = graph.vertices().get(vid);
+    let slot = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+        crate::labeled::graph::BucketSearch::Found { slot, .. } => slot,
+        crate::labeled::graph::BucketSearch::Missing { .. } => {
+            // Create the label's row entry before the descriptor, which is the order the graph's own create path
+            // uses: the vertex names the bucket, then the bucket exists.
+            let updated = vertex.try_with_bucket_row(0, 1).expect("first bucket row");
+            graph.set_labeled_vertex(vid, updated).expect("set vertex");
+            0
+        }
+    };
+    let installed = install_tree_bucket::<E, M>(
+        graph,
+        slot,
+        label,
+        stored_slots,
+        width,
+        physical_depth,
+        property_depth,
+        edge_child_ids,
+        value_child_ids,
+    );
+    // The lookup keeps a last-bucket cache per segment; a descriptor written without invalidating it is invisible
+    // to the next graph-level entry, which is the difference between a reachable fixture and an unreachable one.
+    graph
+        .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+        .expect("invalidate the segment's lookup cache");
+    installed
+}
+
+/// Installs a reachable tree bucket whose edge rows and property values are seeded from per-slot closures.
+///
+/// A test says what each row *is* - `edge_target(slot)` gives the target (the tombstone sentinel makes a hole) and
+/// `value(slot)` the property bytes - and the trees' layout stays `install_tree_bucket`'s business.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seeded_tree_bucket_on_vertex<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    stored_slots: u32,
+    width: u16,
+    edge_target: impl Fn(u32) -> u32,
+    value: impl Fn(u32) -> Vec<u8>,
+) -> crate::labeled::record::LabelBucket
+where
+    E: crate::traits::CsrEdgeTombstone,
+    M: ic_stable_structures::Memory,
+{
+    let block_b = crate::labeled::tree_csr::B as u32;
+    let mut edge_ids = Vec::new();
+    for leaf in 0..stored_slots.div_ceil(block_b) {
+        let id = graph.ltb().mint().expect("mint edge leaf");
+        edge_ids.push(id);
+        let first_slot = leaf * block_b;
+        let used = (stored_slots - first_slot).min(block_b) as usize;
+        let mut payload = vec![0u8; graph.ltb().payload_bytes()];
+        let mut tombstones = 0u16;
+        for row in 0..used {
+            let slot = first_slot + row as u32;
+            let target = edge_target(slot);
+            if target == u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL) {
+                tombstones += 1;
+            }
+            payload[row * E::BYTES..(row + 1) * E::BYTES].copy_from_slice(&target.to_le_bytes());
+        }
+        // The header states how many cells hold a tombstone; the tree walk verifies its scan against it.
+        let mut header = graph.ltb().read_block_header(id);
+        header.tombstone_count = tombstones;
+        graph.ltb().write_block_header(id, &header);
+        graph
+            .ltb()
+            .write_payload(id, &payload)
+            .expect("write edge leaf");
+    }
+    let mut value_ids = Vec::new();
+    if width > 0 {
+        let slots_per_leaf = crate::labeled::tree_csr::property_slots_per_block(width)
+            .expect("width fits a property block");
+        let row_bytes = usize::from(width);
+        for leaf in 0..stored_slots.div_ceil(slots_per_leaf) {
+            let id = graph.ltb().mint().expect("mint property leaf");
+            value_ids.push(id);
+            let first_slot = leaf * slots_per_leaf;
+            let used = (stored_slots - first_slot).min(slots_per_leaf) as usize;
+            let mut payload = vec![0u8; graph.ltb().payload_bytes()];
+            for row in 0..used {
+                let slot = first_slot + row as u32;
+                payload[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(&value(slot));
+            }
+            graph
+                .ltb()
+                .write_payload(id, &payload)
+                .expect("write property leaf");
+        }
+    }
+    install_reachable_tree_bucket::<E, M>(
+        graph,
+        vid,
+        label,
+        stored_slots,
+        width,
+        1,
+        1,
+        &edge_ids,
+        &value_ids,
+    )
+}
+
 pub(crate) use crate::test_support::CountMemory as CountingMemory;
 
 /// Builds a fully counting-backed graph: all 16 memories share one

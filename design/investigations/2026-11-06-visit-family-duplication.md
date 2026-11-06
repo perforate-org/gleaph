@@ -338,3 +338,35 @@ the vertex and label and write the row entry too - and both tests follow from it
 
 The attempt is reverted rather than left half-working: a fixture that cannot reach the code it is meant to exercise
 is not progress, and the record above is worth more than a dead helper.
+
+## A reachable tree fixture, and the three things it took
+
+The fixture gap is closed enough to be useful: `install_reachable_tree_bucket` writes the vertex's bucket row as
+well as the descriptor, and `seeded_tree_bucket_on_vertex` mints edge and property leaves with payloads from
+per-slot closures. The trees' layout stays `install_tree_bucket`'s business.
+
+Three things were needed, and each was a real difference between "a descriptor exists" and "the graph can see it":
+
+1. **The vertex's bucket row.** A descriptor alone is invisible: every graph-level entry resolves the label through
+   the vertex's row first, so a fixture must create the row (`try_with_bucket_row(0, 1)`) when the label has none.
+2. **The lookup cache.** The segment keeps a last-bucket cache; a descriptor written without
+   `invalidate_bucket_lookup_caches_for_bucket_segment` is not seen by the next lookup.
+3. **The leaf header's tombstone count.** A tree walk verifies its scan against the block header, so a fixture that
+   writes a tombstone into a payload must write the count too - otherwise the walk fails closed with
+   `CountMismatch`, which is the check working, not the fixture.
+
+With those, `the_shapes_hold_for_a_seeded_tree_bucket` pins the three shapes on the one class that can report a
+hole: the mutation shape names it at position 3, the read shape hides it, and a page over it reports only live rows.
+
+## Still open: the funnel parity test
+
+The parity test - that the legacy label funnel attaches the same values to a tree row as to a slab row - could not
+be made to pass, and the honest reason is that the fixture's bucket arrives at the funnel with **width 0** even
+though the descriptor it installed says 4; the shapes test proves the same bucket is reachable, so the gap is in how
+this path reads the descriptor, not in the fixture. That is a lead, not a conclusion: the next step is to read the
+funnel's bucket against the fixture's (degree, width, mode, physical/property depth) rather than guess.
+
+Two findings from the attempt are worth keeping regardless: `TestEdge` does not store inline bytes at all (the
+trait's `with_stored_inline_property_bytes` default returns `self`, so a parity test must use
+`InlinePropertyTestEdge` on both sides), and a fixture's edge-type choice silently decides whether a value goes
+anywhere.

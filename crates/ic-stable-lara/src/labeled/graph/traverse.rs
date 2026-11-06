@@ -7298,6 +7298,74 @@ mod row_visibility_tests {
         );
     }
 
+    /// The three shapes hold for a tree bucket, the class whose walk can report a hole at all.
+    #[test]
+    fn the_shapes_hold_for_a_seeded_tree_bucket() {
+        let graph = test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        // Slot 3 holds the tombstone sentinel: a hole inside the tree's first edge leaf.
+        let bucket = seeded_tree_bucket_on_vertex::<TestEdge, crate::VectorMemory>(
+            &graph,
+            vid,
+            label,
+            8,
+            0,
+            |slot| {
+                if slot == 3 {
+                    u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL)
+                } else {
+                    100 + slot
+                }
+            },
+            |_| Vec::new(),
+        );
+        assert!(bucket.is_tree_mode(), "the fixture is a tree bucket");
+
+        let mut all = Vec::new();
+        let _ = graph
+            .visit_edge_positions(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                all.push((slot.raw(), edge.target));
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("positions");
+        assert_eq!(all.len(), 8, "the mutation shape covers every slot");
+        assert_eq!(
+            all[3],
+            (3, u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL)),
+            "and names the hole at its position"
+        );
+
+        let mut live_rows = Vec::new();
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                live_rows.push((slot.raw(), edge.target));
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("live");
+        assert_eq!(live_rows.len(), 7, "the read shape hides the hole");
+        assert!(!live_rows.iter().any(|(slot, _)| *slot == 3));
+
+        let mut page = Vec::new();
+        let _ = graph
+            .visit_edges_window(
+                vid,
+                label,
+                OutEdgeOrder::Ascending,
+                TraversalWindow::new(2, Some(3)),
+                |slot, edge| {
+                    page.push((slot.raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("page");
+        assert_eq!(
+            page,
+            vec![(2, 102), (4, 104)],
+            "a page reports live rows only"
+        );
+    }
+
     /// A page reports live rows only, whatever the window: the hole is not a row to a reader, and the window
     /// does not resurrect it.
     #[test]
