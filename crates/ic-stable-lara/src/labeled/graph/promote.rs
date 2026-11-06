@@ -179,9 +179,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         Some(graph.edges().spill_mint(bucket.edge_spill_run())?)
     };
     let prefix = graph.edges().initialized_slab_slots(&bucket)?;
-    let resident = prefix
-        .checked_add(edge_run.map_or(0, |run| graph.edges().spill_used_len(run)))
-        .ok_or(LaraOperationError::overflow())?;
+    // One inventory for both numbers the promotion needs: the rows it must transcribe, and the live count it publishes.
+    // The `degree` field is not consulted - it is replaced by what the rows say, so it cannot disagree with them.
+    let rows = super::compact::source_rows(graph, &bucket)?;
+    let resident = rows.resident;
+    debug_assert_eq!(
+        resident,
+        prefix.saturating_add(edge_run.map_or(0, |run| graph.edges().spill_used_len(run))),
+        "the inventory and the prefix+run split must describe the same source"
+    );
     if resident < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
             current_alloc_space: resident,
@@ -194,10 +200,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     let resident = resident
         .checked_add(added)
         .ok_or(LaraOperationError::RowDegreeOverflow)?;
-    let degree = bucket
-        .degree
-        .checked_add(added)
-        .ok_or(LaraOperationError::RowDegreeOverflow)?;
+    let degree = rows.with_added(added);
     let width = bucket.inline_property_byte_width();
     if usize::from(width) > crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -552,17 +555,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         if let ControlFlow::Break(error) = flow {
             return Err(error);
         }
-        if live != bucket.degree {
-            return Err(LabeledOperationError::TreePromotionSourceMismatch(
-                super::error::TreePromotionSourceMismatch {
-                    stage: "live-count",
-                    slot: next,
-                    extent: source_extent,
-                    live,
-                    degree: bucket.degree,
-                },
-            ));
-        }
+        debug_assert_eq!(
+            live, rows.live,
+            "the emit pass must walk the rows the inventory counted"
+        );
         while next < source_extent {
             emit(next, &tombstone, &[])?;
             next += 1;

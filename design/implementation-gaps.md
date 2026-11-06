@@ -367,6 +367,22 @@ defect from being rediscovered without its prior reasoning.
   deciding where the reservation's failure is reported, not just moving the call: recorded so the next attempt starts
   from that question instead of the code.
 
+- **The source inventory replaced the descriptor field, and the *promotion* is now out of the picture.**
+  `compact::source_rows(graph, bucket) -> SourceRows { resident, live }` counts the bucket's own records - prefix slots
+  plus run rows, tiny payload slots for a tiny bucket - and counts non-tombstones among them. It is deliberately not a
+  visitor count: `visit_*` answers "which rows does a reader see" and applies a visibility policy plus a storage-class
+  dispatch, which is the wrong question for sizing a transcription (and measurably the wrong answer for a bypass row).
+  The promotion now takes `resident` and `live` from that one walk, publishes `live + pending` as the tree's degree, and
+  the `live != degree` error is gone - not handled, unreachable, because the field is replaced rather than compared.
+- **Where the reproduction now stands: the promotion succeeds, and its answer is 1026.** `T_PROMOTE + 1 = 1025` edges
+  were inserted on the second label and the promoted bucket holds `1026` rows, so **one row was stored twice** by the
+  run-full -> promote -> re-dispatch path. That is an upstream duplicate, not a promotion or root problem, and the
+  inventory is what made it visible: the count now comes from the rows, so a count that disagrees with the inserts is
+  a fact about the store rather than a field the promotion could blame.
+- **Next:** read `row_plane`'s `SpillNeedsPromotion` arm against `insert_into_spill_with_layout`: the arm promotes and
+  re-dispatches, so the row that triggered it must be provably absent from the source the promotion transcribed. The
+  reproduction (`a_run_backed_bucket_promotes_to_tree_mode`, `#[ignore]`d) states the count.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

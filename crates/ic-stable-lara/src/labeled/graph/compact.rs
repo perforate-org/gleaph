@@ -4353,6 +4353,89 @@ pub(crate) fn bucket_content_slots(bucket: &LabelBucket) -> u32 {
     bucket_content_region(bucket).map_or(0, |(_, len)| len)
 }
 
+/// What a bucket's source holds, counted from the rows themselves.
+///
+/// `resident` is the physical row count (slab prefix plus spill run, or the tiny payload's used slots) and `live` is the
+/// non-tombstone count among those rows. Both come from **one walk over the same records the transcription writes**, so
+/// they cannot disagree with each other or with what a promotion publishes: the descriptor's `degree` is replaced by
+/// `live`, not compared against it, and a field that lagged the rows cannot fail the promotion for a state the
+/// transcription could have corrected.
+///
+/// This is deliberately *not* a visitor count. `visit_*` answers "which rows does a reader see" - it applies a
+/// visibility policy and a storage-class dispatch - which is the wrong question for sizing a transcription and the
+/// wrong answer for a bypass row (measured: counting through the visitor changed the count on the bypass paths).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceRows {
+    /// Physical rows the source holds, holes included.
+    pub(crate) resident: u32,
+    /// Rows among them that are not tombstones.
+    pub(crate) live: u32,
+}
+
+impl SourceRows {
+    /// The rows a promotion still has to add on top of this source.
+    pub(crate) fn with_added(self, added: u32) -> u32 {
+        self.live.saturating_add(added)
+    }
+}
+
+/// Counts a bucket's source rows from the store, without a visibility policy.
+pub(crate) fn source_rows<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+) -> Result<SourceRows, LabeledOperationError>
+where
+    E: crate::traits::CsrEdgeTombstone,
+    M: ic_stable_structures::Memory,
+{
+    if bucket.is_tiny_mode() {
+        let mut record = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        let mut live = 0u32;
+        for index in 0..bucket.tiny_used_width() {
+            let slot = super::edge_slot::<E>(&mut record);
+            bucket.tiny_slot(index, E::BYTES, slot);
+            if !E::read_from(slot).is_deleted_slot() {
+                live = live.saturating_add(1);
+            }
+        }
+        return Ok(SourceRows {
+            resident: bucket.tiny_used_width(),
+            live,
+        });
+    }
+    let (prefix, run_rows) = graph
+        .edges()
+        .initialized_row_slots(bucket)
+        .map_err(LabeledOperationError::from)?;
+    let resident = prefix.saturating_add(run_rows);
+    let mut live = 0u32;
+    let mut row = vec![0u8; E::BYTES];
+    for index in 0..prefix {
+        graph
+            .edges()
+            .read_slot_bytes(bucket.edge_start() + u64::from(index), &mut row);
+        if !E::read_from(&row).is_deleted_slot() {
+            live = live.saturating_add(1);
+        }
+    }
+    if run_rows > 0 {
+        let run = graph
+            .edges()
+            .spill_mint(bucket.edge_spill_run())
+            .map_err(LabeledOperationError::from)?;
+        for index in 0..run_rows {
+            graph
+                .edges()
+                .spill_read_row(run, index, &mut row)
+                .map_err(LabeledOperationError::from)?;
+            if !E::read_from(&row).is_deleted_slot() {
+                live = live.saturating_add(1);
+            }
+        }
+    }
+    Ok(SourceRows { resident, live })
+}
+
 /// The edge-slab region a bucket physically owns, as `(start_slot, len)`, or
 /// `None` when it owns none (tiny). The mode-blind geometry layer reads sizes
 /// only through this SSOT: slab is its `stored_slots` prefix, tree its LEG root
