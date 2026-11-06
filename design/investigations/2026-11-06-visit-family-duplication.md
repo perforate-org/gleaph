@@ -505,3 +505,30 @@ That is a real conclusion about the work, not a reason to keep trying the same e
 **partition of the observation surface** - every observer, helper and assertion gets the question it asks - and it is
 a session of its own, not a tail of this one. The dispatch has no remaining obstacle, which is what this record set
 out to establish, and the state it left is green.
+
+## The structural fix, first slice: the answer is a type
+
+Every attempt to name the two answers with a parameter landed on the same defect one layer up, so the answer is now
+a property of what a walk returns (`graph/row_view.rs`):
+
+| Type | What it can be |
+| --- | --- |
+| `LiveRow<E> { slot, edge }` | a live row; there is **no value of this type that is a hole** |
+| `SlotRow<E> { slot, state }` with `SlotState<E> { Live(E), Hole }` | every stored position; the hole is a *variant* |
+
+Two entries yield them - `visit_live_rows` and `visit_slot_rows` - and the flat entries (`visit_edges`,
+`visit_edge_positions`) are now adapters over them, so the typed form is what a helper can take in its signature.
+A helper that returns `Vec<LiveRow<E>>` cannot be compared against a `Vec<SlotRow<E>>`: mixing the questions is a
+type error rather than a re-read of the test.
+
+One decision inside the slice: `slot_row` is still the single place where the flat `(position, edge)` pair is
+interpreted, because every walker arm already produces that pair. The sentinel has not disappeared from the walk yet;
+what has changed is that it no longer has to leak into a caller that did not ask for it.
+
+The remaining slices, in order:
+
+1. observation helpers return the typed vectors, so their signatures name the question;
+2. the shared helper that two tests disagree over is split by type - it can no longer be a parameter;
+3. the sentinel leaves the read paths entirely (`SlotState::Hole` needs no edge), which removes the encoding that
+   made the three defects possible;
+4. the flat entries go, once their callers name a typed one.

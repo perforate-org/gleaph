@@ -806,14 +806,44 @@ where
     /// [`Self::visit_edge_positions`] instead, which reports every position.
     /// Visits one label's whole row, reporting live rows only: the read shape.
     ///
-    /// A tombstone is not a row to a reader, so a reader never sees one. Anything that has to see the holes -
-    /// removal, compaction, tombstone reuse, a topology rewrite - asks [`Self::visit_edge_positions`].
+    /// Kept for the callers that only need the edge; the typed form is [`Self::visit_live_rows`], which a helper
+    /// should take when its *signature* should say which question it answers.
     pub(crate) fn visit_edges<B>(
         &self,
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_live_rows(owner, label, order, |row| visit(row.slot, row.edge))
+    }
+
+    /// Visits one label's whole row, tombstones included: the mutation shape.
+    ///
+    /// The typed form is [`Self::visit_slot_rows`], where a hole is a variant rather than a sentinel edge.
+    pub(crate) fn visit_edge_positions<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_slot_rows(owner, label, order, |row| visit(row.slot, row.into_edge()))
+    }
+
+    /// Visits one label's whole row as [`LiveRow`]s: a row cannot be a hole, so a reader cannot see one.
+    pub(crate) fn visit_live_rows<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(super::row_view::LiveRow<E>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -824,20 +854,17 @@ where
             order,
             RowSelection::WholeRow,
             crate::lara::edge::RowVisibility::LiveRows,
-            visit,
+            |slot, edge| visit(super::row_view::LiveRow { slot, edge }),
         )
     }
 
-    /// Visits one label's whole row, tombstones included: the mutation shape.
-    ///
-    /// Removal, compaction and tombstone reuse have to see the holes at their positions, so this entry reports
-    /// them as the sentinel cells they are.
-    pub(crate) fn visit_edge_positions<B>(
+    /// Visits one label's whole row as [`super::row_view::SlotRow`]s: a hole is a variant, not an edge value.
+    pub(crate) fn visit_slot_rows<B>(
         &self,
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+        mut visit: impl FnMut(super::row_view::SlotRow<E>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -848,7 +875,7 @@ where
             order,
             RowSelection::WholeRow,
             crate::lara::edge::RowVisibility::Positions,
-            visit,
+            |slot, edge| visit(super::row_view::slot_row(slot, edge)),
         )
     }
 
