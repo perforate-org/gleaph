@@ -61,111 +61,6 @@ defect from being rediscovered without its prior reasoning.
 - **Cost, stated plainly:** five bench families and their coverage are gone. Rebuilding that coverage
   against the slot-addressed geometry is a bench-design task and is **not** done here.
 
-### GAP-LARA-FOLD-BENCH-RUN-PROBE — the fold-cost bench's reuse probe asks for a run the arena never frees
-
-- **Observed behavior:** `canbench "bench_t_fold_cost_33_256"` traps in `assert_reusable`
-  (`labeled/graph/traverse/bench/fold.rs:422`): `assert_eq!(reused.get(), id)` with `left: 299, right: 42`.
-- **Not caused by this branch:** the same command traps on `43c3add4e` (the landed tip before the late
-  changes in this session).
-- **What the numbers say:** replacing the assertion with "keep allocating until `id` comes back" shows the
-  allocator handing out `299, 556, 813, ...` - a fresh run every time, stride 257 - and never `42`. A run
-  that the fixture's bookkeeping records as released is therefore **not on the free list**, so the probe is
-  asking for something that was never freed (or was freed into a different class).
-- **Impact:** `canbench --persist` completes for `crates/graph` (artifact refreshed in `43fe89ce0`) but not
-  for `crates/ic-stable-lara`, so that crate's artifact still cannot be refreshed.
-- **Not a leak - the probe's assumption is wrong:** relaxing the assertion to "allocating the released
-  class must not grow the arena" fails too (`299 -> 556`). That is expected once the sequence is read:
-  `assert_reusable` runs *after* the fixture has folded and appended further, and those later folds
-  allocate classes that reuse the freed span. So the freed space was returned and then legitimately
-  consumed; the probe is asking whether a run freed many operations ago is still free, which is not a
-  property the allocator promises.
-- **The probe now runs at the right moment and reports a real defect** (`fdeb0573a`): immediately after
-  the first fold, the edge run is gone from the descriptor (`runs()` answers `NO_SPILL_RUN`, which is why
-  the probe takes it) yet allocating its class **still grows the arena** (`299 -> 556`). A descriptor that
-  stopped naming a run while the run's space never came back is a **lost release**, and it is the same
-  family as the double release fixed earlier this session - the release and the field clear are paired by
-  hand at each call site rather than by one owner.
-- **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
-  releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
-  already does for the values plane.
-- **Narrowed 2026-11-07 by reading every site that clears the field.** The four routes a descriptor takes to
-  stop naming an edge run, and what each does about the store:
-  - `BucketLayout::repack` (`layout.rs`): publishes the runtless descriptor, then releases — ordered so the
-    descriptor never names a freed run; a failed release is the only leak window and it is documented as
-    best-effort.
-  - the fold-to-slab path (`compact.rs`, the two `spill_release` calls beside `without_edge_spill_run`):
-    captures both run ids before the admission that clears the fields, then releases both. This is the path the
-    probe's own comment credits with the earlier fix.
-  - `finalize_bucket_slab_metadata`: returns the bucket untouched whenever `edge_run().is_some()`, so its
-    `without_edge_spill_run` is a no-op on any bucket that has one.
-  - tree-to-slab demotion (`tree_write.rs`): clears the field, and releases leaves, interior blocks and spans —
-    but **no run**, because a tree bucket's rows live in LTB blocks and never in an edge spill run, so the clear
-    is a no-op there too.
-  - `try_place_new_bucket_edge_span` (`insert.rs`) builds a brand-new bucket, so its clear is a no-op; the
-    synthetic successor view in `access.rs` is not a stored descriptor.
-- **What that rules out, and what it says about the probe.** No site clears a *live* edge run without releasing
-  it. The remaining explanations are the ones the probe's numbers already suggest: a release into a **different
-  class** (the class is recomputed from the run's *current* used length at release time, so a run whose length
-  moved must still land in the class it was allocated as), or a probe that reads a plane's high-water mark after
-  the fixture has legitimately consumed the freed space.
-- **Missing evidence to get first:** make the probe print, per probed run, which plane it probed, the run id, the
-  class it was allocated as, the class `release` computed, and the arena's high-water before and after. That
-  turns "the arena grew" into "this run was released into class X but probed as class Y", or clears the probe.
-  `SpillRunStore::release` deriving its class from `read_used_len(run).max(1)` rather than from the allocation is
-  the one line worth suspecting until that print exists - `drop_head` refuses any drop that would change
-  `class_rows`, so a released run's length can only be stale if some *other* operation moved it.
-- **Why 14 verifiers fail, and it is not this session:** the values allocator reports
-  `byte_capacity: 4096, slab_occupied_tail: 0, free_bytes: 0, free_span_count: 0` **before and after** a
-  peer append - the byte-span allocator is not involved at all any more, because ADR 0099 replaced it
-  with slot-addressed blocks. The failing assertions (`"a real peer claims the value tail"`,
-  `fold_economics_*`, `update_reuse_*`, `repeated_fold_*`) were written for the pre-0099 geometry and are
-  **stale verifiers for a removed design**, not a defect in the current one. Rewriting them to the
-  slot-addressed geometry is its own unit of work: 14 tests across five bench families, each of which
-  currently asserts an allocator that no longer holds the values.
-- **Progress on the sweep:** the obsolete bench cases are deleted (`b03685d09`) - `value_fold_case!`,
-  `continuous_case!`, `assert_retired_prefix_reusable` and the `RepeatedFold::Values` mode all verified the
-  byte-span allocator or the values-only fold that ADR 0099 removed. The canbench feature suite went
-  **14 -> 6** failures (`repeated_fold_*` and `update_reuse_*` test mirrors still carry the same kind of
-  stale assertion), and `canbench --persist` now advances past every one of those families.
-- **The sweep is not finished, and it is one bench per round:** the next trap is
-  `materialize_owner_two_step_4800` (`labeled/bench.rs:4607`), which asserts
-  `materialize_inline_property_stream_step` answers `Resumed` - another pre-0099 expectation about how the
-  values plane streams. Each `canbench --persist` attempt costs about five minutes and reveals exactly one
-  more, so the remaining work is a systematic sweep of the lara bench verifiers against the ADR 0099
-  geometry rather than a single fix.
-- **Current state: 10 failures, all exercising a removed operation or the removed allocator.**
-  | Tests | Cause |
-  | --- | --- |
-  | `repeated_fold_*` (4) | `check_repeated_fold` folds in `RepeatedFold::Values` mode and then asserts the values folded - the values-only fold ADR 0099 removed, so `fold_values` cannot move values without rows |
-  | `continuous_spill_*` (4) | asserts the **byte-span allocator** (`slab_occupied_tail`, `free_byte_spans`), which holds nothing since ADR 0099 replaced it with slot-addressed blocks |
-  | `update_reuse_*` (2) | same allocator accounting (`0` vs `32`) |
-  Two of the fourteen were fixed (`5cbe2b3fe`): the values-only case in `check_fold_economics` and the
-  "edge fold leaves values untouched" expectation. The rest need a decision first: `RepeatedFold::Values`
-  and the byte-span accounting are measuring behaviour that no longer exists, so the answer is to **remove
-  those bench cases**, not to re-express them - deleting a benchmark is a coverage decision, which is why
-  it is left here rather than taken unilaterally.
-- **What rewriting them actually requires (learned by doing it, then reverting):**
-  1. `check_fold_economics`'s first block exercises the **values-only fold that ADR 0099 deleted** - a
-     bucket with edges in the span and values still in a run cannot exist now, so that block must go.
-  2. The assertion after `fold_edges()` encodes the pre-ADR contract "folding edges leaves the values plane
-     untouched"; post-ADR the values follow the rows, so it becomes `values_spill_run == NO_SPILL_RUN` and
-     `inline_property_bytes_slab_slots == degree`.
-  3. Every reuse probe must compare against the high-water mark captured **before** the freeing operation
-     (a release at the arena's tail shrinks `arena_rows`; measuring afterwards inverts the test).
-  Those three changes were made and the suite still failed on the same three families, so a fourth cause
-  remains: in `fold_economics::<8>(64)` the values run's class is **still not returned** even with the probe
-  measuring against the pre-free mark. That is what to chase next, with the three edits above as the base.
-- **The lara benchmark suite has 14 pre-existing verifier failures of its own:**
-  `cargo test -p ic-stable-lara --lib --features canbench` gives **633 passed / 14 failed**, identically
-  with and without the changes in this session (checked by stashing). The visible one is
-  `continuous_spill_*` asserting "a real peer claims the value tail" (0 vs 33). They are why
-  `canbench --persist` cannot complete for this crate either, independently of the fold-cost trap.
-- **First candidate ruled out:** `compact_vertex_edge_span_with_moves` publishes the descriptor with the
-  run cleared and then releases it best-effort (`let _ = spill_release`). Instrumenting that release shows
-  **no failure** across the native suite, so the loss is either specific to the bench fixture's shape
-  (degree 33, width 256) or the probe's class arithmetic. A native reproduction using `FoldFixture` at
-  that shape is the next step; until then the bench's assertion is stricter than the design, which
-  deliberately tolerates a failed release ("a failed release leaks a class, never loses a row").
 
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — a second bucket cannot join a 10 000-row vertex
 
@@ -6049,6 +5944,31 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-LARA-FOLD-BENCH-RUN-PROBE — RESOLVED: the classes come back from a fold
+
+- **Status:** Resolved (2026-11-07). The probe that reported the trap passes natively, and the whole
+  `--features canbench` suite is green.
+- **Original symptom:** `canbench "bench_t_fold_cost_33_256"` trapped in `assert_reusable`; relaxing it to "the
+  freed class must not grow the arena" still failed (`299 -> 556`), while the descriptor had already stopped naming
+  the run.
+- **What the fix was:** the release and the field clear were paired by hand at each site. The values plane got the
+  pairing as one operation (`BucketValuePlane::release_run`, and `fold_head_into_span` releasing an emptied values run
+  when it clears the field), and the fold-to-slab path captures both run ids *before* the admission that clears the
+  fields and releases both after publication. The comments on those two sites credit this probe by name, which is
+  what a gap entry is for.
+- **Evidence (re-run 2026-11-07):** `check_fold_economics` is the probe's native twin - it captures `runs()` before
+  folding, folds edges and values, asserts both descriptors answer `NO_SPILL_RUN`, and then calls
+  `assert_reusable(runs)`, which allocates each freed class and demands the arena's high-water mark not move.
+  `cargo test -p ic-stable-lara --lib --features canbench fold_economics` is **4 passed**, and the full suite is
+  **697 passed / 0 failed**.
+- **What was ruled out on the way:** a folded run cannot be emptied into a different class (`drop_head` refuses a
+  drop that changes `class_rows`), so the "release an emptied run during the fold" patch is unreachable; every site
+  that clears a live edge run releases it (`repack`, the fold-to-slab path), and the ones that do not are no-ops
+  (a tree bucket never sets a run, a fresh bucket has none, the synthetic successor view is not stored).
+- **Left open deliberately:** refreshing `crates/ic-stable-lara`'s canbench artifact needs a `canbench --persist`
+  run in the wasm environment, which this change did not execute. The defect the artifact was blocked on is gone;
+  producing the artifact is a separate, mechanical step.
 
 ### GAP-2026-09-02-001 — RESOLVED: production `LabeledLaraGraph::visit_edges` dispatches tree-mode buckets into the dense slab read path
 
