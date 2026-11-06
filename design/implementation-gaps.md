@@ -593,6 +593,17 @@ defect from being rediscovered without its prior reasoning.
   *run* whose release overlaps it, and a property-block mint aliasing the same address. That is the next reading, and
   the reproduction records the offset and the bytes it finds.
 
+- **Checked for aliasing, and the mint is clean (2026-11-07).** The root region holds `[1, 2, 3, 1, 6]` - a repeated
+  id, which would mean two property leaves sharing a block - so the promotion now refuses a minted id it has already
+  used (`DuplicateBlockMinted`, one check at the single `mint` closure). The check **did not fire**, so the ids this
+  promotion minted are distinct and the duplicate in the region is not from the store handing one out twice.
+- **What the dump adds up to:** the descriptor is `width 8, depth 1, degree 2100, stored 2100, offset 36, slab_slots 0`,
+  and 40 bytes from `offset - 8` read `[3, 5, 1, 2, 3, 1, 6, 0…]`. A root of five distinct leaf ids does not look like
+  that, and the bytes before the region are not zero, so the region is **not the first thing written at that address** -
+  which points at the values store's own allocation history: something was written at 28..36 earlier, and the root
+  landed at 36 while the reads at 28.. hold the earlier content. The next reading is `values().allocate_byte_span` around
+  this promotion: what the store believed free at 28..56 when the root was allocated.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

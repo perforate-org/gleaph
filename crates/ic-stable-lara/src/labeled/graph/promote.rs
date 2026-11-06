@@ -461,6 +461,12 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         };
         let mut mint = |header: BlockHeader, bytes: &[u8]| -> Result<u32, LabeledOperationError> {
             let id = graph.ltb().mint()?;
+            // One id, one block, per promotion: a store that hands the same id twice would alias two leaves.
+            if allocated_blocks.contains(&id) {
+                return Err(LabeledOperationError::DuplicateBlockMinted(
+                    super::error::DuplicateBlockMinted { id },
+                ));
+            }
             allocated_blocks.push(id);
             graph.ltb().write_block_header(id, &header);
             graph.ltb().write_payload_partial(id, 0, bytes)?;

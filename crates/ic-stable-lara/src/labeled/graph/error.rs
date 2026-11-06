@@ -183,6 +183,8 @@ pub enum LabeledOperationError {
     TreePromotionSourceMismatch(TreePromotionSourceMismatch),
     /// A property leaf write would leave the leaf unsupported; names the window.
     PropertyLeafWindowMismatch(PropertyLeafWindowMismatch),
+    /// Two blocks of one promotion share an id; the store handed it out twice.
+    DuplicateBlockMinted(DuplicateBlockMinted),
     /// The vertex's slice cannot hold the span it asked for; names the layout reason.
     VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
@@ -376,6 +378,27 @@ impl fmt::Display for PropertyLeafWindowMismatch {
     }
 }
 
+/// Two blocks of one tree promotion were minted with the same id.
+///
+/// A promotion mints a block per transcribed leaf; if the store hands one id twice, two leaves alias one payload and
+/// the descriptor publishes an image whose entries are not distinct - silently, because every id is "valid". This names
+/// the aliasing at the point it would be published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DuplicateBlockMinted {
+    /// The id that was handed out twice.
+    pub id: u32,
+}
+
+impl fmt::Display for DuplicateBlockMinted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "block id {} was minted twice for one tree promotion: two leaves would alias one payload",
+            self.id
+        )
+    }
+}
+
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -465,6 +488,7 @@ impl fmt::Display for LabeledOperationError {
             Self::BucketSpanPlacementExhausted(exhausted) => exhausted.fmt(f),
             Self::TreePromotionSourceMismatch(mismatch) => mismatch.fmt(f),
             Self::PropertyLeafWindowMismatch(mismatch) => mismatch.fmt(f),
+            Self::DuplicateBlockMinted(duplicate) => duplicate.fmt(f),
             Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
@@ -507,6 +531,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::BucketSpanPlacementExhausted(_)
             | Self::TreePromotionSourceMismatch(_)
             | Self::PropertyLeafWindowMismatch(_)
+            | Self::DuplicateBlockMinted(_)
             | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }
