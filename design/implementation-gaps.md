@@ -264,6 +264,24 @@ defect from being rediscovered without its prior reasoning.
   `BucketSpanPlacementExhausted` with the relocation count. That is the "no room as a value" pattern applied to the
   place that used to swallow it.
 
+- **FIXED 2026-11-07: the promotion chooses the run when the leaf has no span to give.**
+  `promote_tiny_to_run_backed_slab` transcribes a tiny bucket's live rows into a fresh spill run and publishes a
+  slab bucket with `edge_start` at the vertex's content end, `stored_slots = 0` and that run - a zero-length span, so
+  ADR 0098's floor is never consulted and the vertex's slice does not grow at all. `promote_tiny_to_slab_with_growth`
+  takes this path when the refusal is `pinned && !floor_covers`; the relocation attempt it replaces could not win,
+  because the new block is sized from the content it already holds.
+  The representation needed no new concept: a later bucket is created span-less with rows in a run, `EdgeStore`'s
+  insert appends to the run whenever one is named, and `BucketLayout::fold_head` moves rows back into a span when room
+  appears. The only new API is `EdgeStore::spill_allocate_rows(len)` for a caller that has the rows in hand.
+  The transcription also accounts the leaf's `actual` for those rows, which is what the insert path does for a spill
+  row - the invariant audit caught that omission immediately.
+- **Verified:** the graph-layer test `a_second_label_joins_a_ten_thousand_row_hub` is no longer `#[ignore]`d - it is
+  the contract now: 10 000 edges on one label, then five on a second, on one hub, with `GraphStore::new()`. lara 763,
+  graph 1132, router 1137, canbench suite 700, clippy and fmt clean.
+- **Follow-ups this opens, stated rather than implied:** value-carrying edges need the values plane mirrored into a
+  run as well (ADR 0099), the tree promotion of a run-backed bucket wants its own reading, and the bench fixture that
+  trapped should now run - which is the last piece of this gap.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

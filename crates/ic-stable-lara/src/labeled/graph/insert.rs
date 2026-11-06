@@ -717,16 +717,17 @@ where
         // old catch-all on `CollectAllocationOverflow` swallowed the reason, which is why this path could fail
         // sixty-four times and report only "collect overflow".
         let mut relocations = 0u8;
-        let mut last_refusal = None;
         for _attempt in 0..64u32 {
             match self.promote_tiny_to_slab(src, bucket_slot, bucket) {
                 Ok(()) => return Ok(()),
                 Err(LabeledOperationError::VertexSliceExhausted(refusal))
                     if refusal.pinned && !refusal.floor_covers =>
                 {
-                    last_refusal = Some(refusal);
-                    relocations = relocations.saturating_add(1);
-                    self.relocate_labeled_leaf_physical_block(src)?;
+                    // The leaf has no room for a span. Growing it does not help - the new block is sized from the
+                    // content it already holds - so the promotion takes the representation that needs no span at
+                    // all: a run-backed slab bucket. Its rows come back into a span later, through `fold_head`,
+                    // when room appears.
+                    return self.promote_tiny_to_run_backed_slab(src, bucket_slot, bucket);
                 }
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
@@ -737,19 +738,88 @@ where
                 Err(other) => return Err(other),
             }
         }
-        let refusal =
-            last_refusal.expect("a bounded retry that never succeeded refused at least once");
+        let vertex = self.vertices.get(src);
         Err(LabeledOperationError::BucketSpanPlacementExhausted(
             super::error::BucketSpanPlacementExhausted {
                 stage: "tiny-promotion-relocate-budget",
                 slot: bucket_slot,
                 bucket_index: 0,
-                base: refusal.content_end,
+                base: vertex.base_slot_start(),
                 degree: bucket.degree(),
                 capacity: self.buckets.header().elem_capacity,
                 relocations,
             },
         ))
+    }
+
+    /// Promotes a tiny bucket to a **run-backed slab bucket**: no leaf span, every row in a spill run.
+    ///
+    /// This is the answer to a leaf that has no room left for a span (ADR 0098's floor refusing a growth, reported as
+    /// [`super::error::VertexSliceExhausted`]). The representation already exists - a later bucket is created with
+    /// `stored_slots = 0` and its rows land in a run, `EdgeStore`'s insert appends to the run whenever one is named,
+    /// and `BucketLayout::fold_head` moves rows back into a span when room appears. What was missing was a promotion
+    /// that can *choose* it: this one transcribes the tiny rows into a fresh run instead of a span, so the vertex's
+    /// slice does not grow at all.
+    pub(super) fn promote_tiny_to_run_backed_slab(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        bucket: &LabelBucket,
+    ) -> Result<(), LabeledOperationError> {
+        debug_assert!(
+            bucket.is_tiny_mode(),
+            "run-backed promotion requires a tiny-mode bucket"
+        );
+        let degree = bucket.degree();
+        let rows = degree
+            .checked_add(1)
+            .ok_or(LaraOperationError::overflow())?;
+        // The anchor is the vertex's content end: a zero-length span there extends no cover and cannot cross the
+        // leaf's floor, which is the whole point of choosing the run.
+        let vertex = self.vertices.get(src);
+        let mut anchor = vertex.base_slot_start();
+        for index in 0..vertex.degree() {
+            let slot = Self::labeled_vertex_bucket_slot(&vertex, index)?;
+            let Some(sibling) = self.buckets.read_label_bucket_slot(slot) else {
+                continue;
+            };
+            if let Some((start, len)) = super::compact::bucket_content_region(&sibling) {
+                anchor = anchor.max(start.saturating_add(u64::from(len)));
+            }
+        }
+        let run = self
+            .edges
+            .spill_allocate_rows(rows)
+            .map_err(LabeledOperationError::from)?;
+        let mut transcribed = 0u32;
+        let mut tiny_slot = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        for index in 0..bucket.tiny_used_width() {
+            let record = super::edge_slot::<E>(&mut tiny_slot);
+            bucket.tiny_slot(index, E::BYTES, record);
+            if E::read_from(record).is_deleted_slot() {
+                continue;
+            }
+            self.edges
+                .spill_write_row(run, transcribed, record)
+                .map_err(LabeledOperationError::from)?;
+            transcribed = transcribed
+                .checked_add(1)
+                .ok_or(LaraOperationError::overflow())?;
+        }
+        debug_assert_eq!(
+            transcribed, degree,
+            "transcribed live count must match bucket degree"
+        );
+        let published = LabelBucket::from_parts(bucket.bucket_label_key(), anchor, degree, 0)
+            .with_edge_run(Some(run))
+            .map_err(LabeledOperationError::from)?;
+        self.publish_bucket_descriptor(bucket_slot, published)?;
+        // The leaf's `actual` counts live non-tiny, non-tree rows whichever plane holds them - `EdgeStore`'s insert
+        // bumps it for a spill row too - so the transcription accounts for the same rows the tiny bucket did.
+        self.edges
+            .bump_vertex_segment_counts(src, i64::from(degree), 0)
+            .map_err(LabeledOperationError::from)?;
+        Ok(())
     }
 
     /// Promotes a tiny-mode bucket to slab (ADR 0096 §4): reserve, transcribe,

@@ -72,6 +72,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map_err(LaraOperationError::from)
     }
 
+    /// Mints a run of `len` rows and answers it, for a caller that is about to write those rows itself.
+    ///
+    /// The insert path mints runs one row at a time as it appends; a promotion has the rows in hand and needs the
+    /// run before it can write them, so it asks for the whole length once.
+    pub(crate) fn spill_allocate_rows(&self, len: u32) -> Result<SpillRunId, LaraOperationError> {
+        self.spill.allocate(len).map_err(LaraOperationError::from)
+    }
+
     /// Appends `row` at the run's used end. `Ok(false)` means the run's class is full: the caller
     /// grows ([`Self::spill_grow`]) or promotes, and never writes past capacity.
     pub(crate) fn spill_append(

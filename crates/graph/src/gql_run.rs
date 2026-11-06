@@ -3920,11 +3920,8 @@ mod tests {
     /// with 10 000 parallel edges on one label, then the first edges of a second label. The fifth one fails with
     /// `collect overflow`, which is the gap's symptom reproduced outside canbench.
     ///
-    /// `#[ignore]`d until the gap is fixed: it is the reproduction, not a contract. Its diagnostic prints the
-    /// `overflow()` constructions of the failing insert, which is how the gap's missing evidence gets collected -
-    /// and on the first run that list was **empty**, so the error is a directly constructed variant rather than an
-    /// `overflow()` site.
-    #[ignore = "reproduction for GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX"]
+    /// This is the contract, not a reproduction: a label's bucket that cannot take a leaf span any more promotes to a
+    /// run-backed slab bucket, so a second label still joins a vertex whose first label filled the leaf.
     #[test]
     fn a_second_label_joins_a_ten_thousand_row_hub() {
         let store = GraphStore::new();
