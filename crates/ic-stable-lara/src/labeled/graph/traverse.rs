@@ -854,8 +854,37 @@ where
             order,
             RowSelection::WholeRow,
             crate::lara::edge::RowVisibility::LiveRows,
-            |slot, edge| visit(super::row_view::LiveRow { slot, edge }),
+            |slot, edge| {
+                visit(super::row_view::LiveRow {
+                    slot,
+                    edge,
+                    payload: (),
+                })
+            },
         )
+    }
+
+    /// Visits one label's whole row as value-bearing [`super::row_view::LiveRow`]s: the read shape with values.
+    ///
+    /// A helper that returns a vector of these cannot be handed to a caller expecting holes, and vice versa - which
+    /// is the point of the type existing.
+    pub(crate) fn visit_live_rows_with_values<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(super::row_view::LiveRow<E, Vec<u8>>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_live_edges_with_inline_property(owner, label, order, |slot, item| {
+            visit(super::row_view::LiveRow {
+                slot,
+                edge: item.edge,
+                payload: item.inline_property.bytes().to_vec(),
+            })
+        })
     }
 
     /// Visits one label's whole row as [`super::row_view::SlotRow`]s: a hole is a variant, not an edge value.

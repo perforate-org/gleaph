@@ -17,40 +17,49 @@ use crate::traits::CsrEdgeTombstone;
 
 /// A row that a reader sees: it holds a live edge, and there is no value of this type that represents a hole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LiveRow<E> {
+pub(crate) struct LiveRow<E, P = ()> {
     /// The row's tombstone-inclusive position.
     pub(crate) slot: BucketEntryPosition,
     /// The row's edge.
     pub(crate) edge: E,
+    /// Whatever the walk carried alongside the row: inline property values, or nothing.
+    pub(crate) payload: P,
 }
 
 /// What a stored slot holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SlotState<E> {
+pub(crate) enum SlotState<E, P = ()> {
     /// A live edge.
-    Live(E),
+    Live { edge: E, payload: P },
     /// A hole: a deleted or tombstoned cell.
-    Hole,
+    Hole { payload: P },
 }
 
 /// A stored slot: every position in the walked range, whatever it holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SlotRow<E> {
+pub(crate) struct SlotRow<E, P = ()> {
     /// The row's tombstone-inclusive position.
     pub(crate) slot: BucketEntryPosition,
     /// What the slot holds.
-    pub(crate) state: SlotState<E>,
+    pub(crate) state: SlotState<E, P>,
 }
 
-impl<E> SlotRow<E>
+impl<E, P> SlotRow<E, P>
 where
     E: CsrEdgeTombstone,
 {
     /// The edge this slot reports in the flat form: the live edge, or the tombstone encoding.
     pub(crate) fn into_edge(self) -> E {
         match self.state {
-            SlotState::Live(edge) => edge,
-            SlotState::Hole => E::tombstone_edge(),
+            SlotState::Live { edge, .. } => edge,
+            SlotState::Hole { .. } => E::tombstone_edge(),
+        }
+    }
+
+    /// The payload, whichever state the slot is in.
+    pub(crate) fn payload(self) -> P {
+        match self.state {
+            SlotState::Live { payload, .. } | SlotState::Hole { payload } => payload,
         }
     }
 }
@@ -64,9 +73,9 @@ where
     E: CsrEdgeTombstone,
 {
     let state = if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-        SlotState::Hole
+        SlotState::Hole { payload: () }
     } else {
-        SlotState::Live(edge)
+        SlotState::Live { edge, payload: () }
     };
     SlotRow { slot, state }
 }
@@ -83,17 +92,76 @@ mod tests {
         assert_eq!(live.slot.raw(), 3);
         assert!(matches!(
             live.state,
-            SlotState::Live(TestEdge { target: 7 })
+            SlotState::Live {
+                edge: TestEdge { target: 7 },
+                ..
+            }
         ));
 
         let hole = slot_row(
             BucketEntryPosition::new(4),
             <TestEdge as CsrEdgeTombstone>::tombstone_edge(),
         );
-        assert!(matches!(hole.state, SlotState::Hole));
+        assert!(matches!(hole.state, SlotState::Hole { .. }));
         assert!(
             hole.into_edge().is_tombstone_edge(),
             "the flat form still says what it holds"
         );
+    }
+
+    /// The typed entry is usable end to end: a reader gets rows whose payload is the row's own values, and the type
+    /// says that a hole is not among them.
+    #[test]
+    fn a_live_read_yields_rows_with_their_own_values() {
+        use crate::labeled::graph::test_support::{
+            InlinePropertyTestEdge, inline_property_test_graph,
+        };
+        use crate::labeled::record::LabeledVertex;
+        use crate::labeled::{bucket_label_key::BucketLabelKey, graph::EdgePlacementPolicy};
+        use std::ops::ControlFlow;
+
+        let graph = inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 2)
+            .expect("declare the width");
+        for slot in 0..8u32 {
+            let value = u16::try_from(100 + slot).expect("fits").to_le_bytes();
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(100 + slot, &value),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph
+            .remove_edge_at_slot(vid, label, 3)
+            .expect("remove")
+            .expect("the row existed");
+
+        let mut rows: Vec<LiveRow<InlinePropertyTestEdge, Vec<u8>>> = Vec::new();
+        let flow = graph
+            .visit_live_rows_with_values(
+                vid,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |row| {
+                    rows.push(row);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("live rows");
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(rows.len(), 7, "the hole is not a row");
+        assert!(rows.iter().all(|row| row.slot.raw() != 3));
+        for row in &rows {
+            let expected = u16::try_from(100 + row.slot.raw())
+                .expect("fits")
+                .to_le_bytes();
+            assert_eq!(row.payload, expected, "each row carries its own values");
+        }
     }
 }
