@@ -16,6 +16,7 @@ use ic_stable_structures::Memory;
 use super::LabelBucket;
 use super::LabeledLaraGraph;
 use super::compact::{self, TreeSpans};
+use super::error::LabeledOperationError;
 
 /// See the module documentation.
 pub(crate) struct BucketTreePlane<'a, E, M>
@@ -25,6 +26,27 @@ where
 {
     graph: &'a LabeledLaraGraph<E, M>,
     bucket: LabelBucket,
+}
+
+/// Where a tree's edge-root array lives.
+///
+/// ADR 0101 put the edge root in the leaf's edge slots and the value root in the value store. A bucket whose
+/// vertex slice has no room left cannot do that - and the alternative of moving the edge root out of the edge
+/// side is refused - so the edge root may instead live in an **edge spill run**: the same arena edge rows use for
+/// their overflow. The two cases are one type, so a caller asks this view rather than reading
+/// `bucket.edge_start()`.
+///
+/// A tree bucket's rows always live in LTB blocks, never in a run, so "tree bucket carries an edge run" can only
+/// mean the root array - that is what makes the descriptor need no new field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EdgeRootLoc {
+    /// The root array occupies `slots` edge slots starting at `start`.
+    Slots { start: u64, slots: u32 },
+    /// The root array occupies `rows` rows of `run`, one block id per row.
+    Run {
+        run: crate::labeled::spill_run_store::SpillRunId,
+        rows: u32,
+    },
 }
 
 impl<'a, E, M> BucketTreePlane<'a, E, M>
@@ -41,7 +63,42 @@ where
         self.bucket
     }
 
-    /// The edge root's span: `(start_slot, slots)` in the leaf.
+    /// Where this tree's edge-root array is, and how long it is.
+    pub(crate) fn edge_root_loc(&self) -> EdgeRootLoc {
+        if self.bucket.is_tree_mode()
+            && let Ok(run) = self.graph.edges().spill_mint(self.bucket.edge_spill_run())
+        {
+            let rows = self.graph.edges().spill_used_len(run);
+            return EdgeRootLoc::Run { run, rows };
+        }
+        let (start, slots) = self.edge_root();
+        EdgeRootLoc::Slots { start, slots }
+    }
+
+    /// Block id `index` of this tree's edge root, from whichever store holds the array.
+    pub(crate) fn edge_child(&self, index: u32) -> Result<u32, LabeledOperationError> {
+        let mut id_bytes = [0u8; 4];
+        match self.edge_root_loc() {
+            EdgeRootLoc::Slots { start, .. } => {
+                self.graph
+                    .edges()
+                    .read_slot_bytes(start + u64::from(index), &mut id_bytes);
+            }
+            EdgeRootLoc::Run { run, rows } => {
+                if index >= rows {
+                    return Err(LabeledOperationError::Store(
+                        crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+                    ));
+                }
+                self.graph
+                    .edges()
+                    .spill_read_row(run, index, &mut id_bytes)
+                    .map_err(LabeledOperationError::from)?;
+            }
+        }
+        Ok(u32::from_le_bytes(id_bytes))
+    }
+
     pub(crate) fn edge_root(&self) -> (u64, u32) {
         TreeSpans::of(&self.bucket)
             .map(|spans| spans.edge_root())
@@ -188,7 +245,7 @@ where
         self.graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, published)
-            .map_err(super::LabeledOperationError::from)?;
+            .map_err(LabeledOperationError::from)?;
         Ok(published)
     }
 }
@@ -233,6 +290,32 @@ mod tests {
             edge_children,
             value_children,
         )
+    }
+
+    /// A tree bucket's edge root is answered as a location, and its children read through that location.
+    ///
+    /// The location is the type that lets a root live in the leaf slots (ADR 0101) or in an edge run (a vertex slice
+    /// with no room left); today every tree bucket takes the slot form, and the run form is what the promotion adds.
+    #[test]
+    fn the_edge_root_is_a_location_and_its_children_read_through_it() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23]);
+        let plane = graph.tree_plane(bucket);
+        let (start, slots) = plane.edge_root();
+        assert_eq!(
+            plane.edge_root_loc(),
+            EdgeRootLoc::Slots { start, slots },
+            "a tree bucket with a leaf span keeps its root in the leaf"
+        );
+        for (index, expected) in [11u32, 12, 13, 14].into_iter().enumerate() {
+            assert_eq!(
+                plane
+                    .edge_child(u32::try_from(index).expect("fits"))
+                    .expect("read"),
+                expected,
+                "edge root child {index}"
+            );
+        }
     }
 
     /// ADR 0101: the descriptor records where the value root went, and both roots read back what was written.
