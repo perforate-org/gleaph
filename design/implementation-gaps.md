@@ -582,6 +582,17 @@ defect from being rediscovered without its prior reasoning.
   the region the promotion wrote**. Two candidates, both one print apart: `ensure_value_root`'s returned offset differs
   from the descriptor's, or something writes over the region after publication.
 
+- **Ownership as a value with a drop (2026-11-07).** `OwnedValueRoot` is the attempt's ownership of the value-root
+  region: it is released when it drops and only a successful publication disarms it (`ensure_value_root` keeps its
+  published form for the paths whose descriptor is written immediately). A failed attempt can no longer leave a written
+  root behind, because the attempt itself owns the region; `replaces` remains only for the paths that genuinely replace
+  a root they own. Suite green.
+- **What that did *not* change:** the reproduction still reads `[1, 2, 3, 1, 6]` at the descriptor's offset (36). The
+  descriptor's offset **is** the allocation the promotion made (the same value is published), so the region is written
+  correctly and then **something writes over it afterwards** - the remaining candidates are the values *span* or
+  *run* whose release overlaps it, and a property-block mint aliasing the same address. That is the next reading, and
+  the reproduction records the offset and the bytes it finds.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

@@ -18,6 +18,58 @@ use super::LabeledLaraGraph;
 use super::compact::{self, TreeSpans};
 use super::error::LabeledOperationError;
 
+/// A value-root region **this attempt owns**.
+///
+/// The region exists between the allocation and the descriptor that records it, and the failure in between is the
+/// interesting one: with ownership as a bare offset nobody holds it, so a failed attempt leaks the span and a retried
+/// attempt allocates a second one over a region whose bytes stay behind. As a value with a drop, the owner is the
+/// attempt itself - an early return releases the span, and only a successful publication disarms it.
+///
+/// The release is best-effort, as every release in this subsystem is: a failed release leaks a span, never data.
+pub(crate) struct OwnedValueRoot<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    graph: &'a LabeledLaraGraph<E, M>,
+    offset: u64,
+    bytes: u64,
+    /// `true` until the descriptor that records this region has been published.
+    armed: bool,
+}
+
+impl<'a, E, M> OwnedValueRoot<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    /// The address a descriptor may record for this region.
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// States that the descriptor recording this region is published: the drop no longer releases it.
+    pub(crate) fn disarm(mut self) -> u64 {
+        self.armed = false;
+        self.offset
+    }
+}
+
+impl<E, M> Drop for OwnedValueRoot<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self
+                .graph
+                .values()
+                .release_byte_span(self.offset, self.bytes);
+        }
+    }
+}
+
 /// See the module documentation.
 pub(crate) struct BucketTreePlane<'a, E, M>
 where
@@ -155,16 +207,15 @@ where
     /// it is part of the operation; `None` means nothing is owned yet - a promotion builds the descriptor from a
     /// template whose offset is not an allocation, and passing it as if it were released a span the promotion never
     /// held (offset 0 is also a legitimate first span, so a sentinel cannot express this).
-    pub(crate) fn ensure_value_root(
+    /// Allocates the value root's region, writes the entries, and answers the **owned** region.
+    pub(crate) fn acquire_value_root(
         &self,
         value_children: &[u32],
-        replaces: Option<u64>,
-    ) -> Result<u64, super::LabeledOperationError> {
+    ) -> Result<OwnedValueRoot<'_, E, M>, super::LabeledOperationError> {
         let mut children = Vec::with_capacity(value_children.len() * 4);
         for child in value_children {
             children.extend_from_slice(&child.to_le_bytes());
         }
-        let replaced = compact::value_root_region_bytes(&self.bucket);
         let offset = self
             .graph
             .values()
@@ -182,9 +233,28 @@ where
                     crate::lara::operation_error::LaraOperationError::overflow(),
                 )
             })?;
-        // Whether a previous root is released is the caller's claim, not a sentinel: offset 0 is also the first
-        // span's address, so "offset == 0 means nothing to release" both leaks real roots and releases spans the
-        // caller never owned.
+        Ok(OwnedValueRoot {
+            graph: self.graph,
+            offset,
+            bytes: children.len() as u64,
+            armed: true,
+        })
+    }
+
+    /// Allocates the value root and records it in a descriptor the caller publishes immediately, releasing the root it
+    /// replaces.
+    ///
+    /// `replaces` is the **ownership claim** for that release: `Some(offset)` means this bucket owns the root there and
+    /// releasing it is part of the operation; `None` means nothing is owned yet. Offset 0 cannot express the
+    /// difference, because it is also a legitimate first span.
+    pub(crate) fn ensure_value_root(
+        &self,
+        value_children: &[u32],
+        replaces: Option<u64>,
+    ) -> Result<u64, super::LabeledOperationError> {
+        let replaced = compact::value_root_region_bytes(&self.bucket);
+        let root = self.acquire_value_root(value_children)?;
+        let offset = root.disarm();
         if let Some(previous) = replaces
             && replaced > 0
             && previous != offset
