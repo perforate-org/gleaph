@@ -1011,17 +1011,20 @@ mod physical_layout_tests {
                     super::super::OutEdgeOrder::Ascending,
                     super::super::OutEdgeOrder::Descending,
                 ] {
+                    // The stored slot stream: the expectation lists the holes at their positions.
                     let mut rows = Vec::new();
                     let flow = graph
-                        .visit_edges_with_inline_property(
-                            owner,
-                            graph.default_label,
-                            order,
-                            |slot, item| {
-                                rows.push((slot.raw(), u32::from(item.edge.neighbor_vid())));
-                                ControlFlow::<()>::Continue(())
-                            },
-                        )
+                        .visit_slot_rows_with_values(owner, graph.default_label, order, |row| {
+                            let slot = row.slot.raw();
+                            let target = match row.state {
+                                crate::labeled::graph::row_view::SlotState::Live {
+                                    edge, ..
+                                } => u32::from(edge.neighbor_vid()),
+                                crate::labeled::graph::row_view::SlotState::Hole { .. } => u32::MAX,
+                            };
+                            rows.push((slot, target));
+                            ControlFlow::<()>::Continue(())
+                        })
                         .unwrap();
                     assert!(matches!(flow, ControlFlow::Continue(())));
                     assert_eq!(

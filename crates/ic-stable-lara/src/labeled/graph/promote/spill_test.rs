@@ -247,6 +247,39 @@ fn rows_for_owner<E: CsrEdgeTombstone, M: Memory>(
     assert_eq!(flow, ControlFlow::Continue(()));
     out
 }
+/// The stored slot stream, holes included: what a header check and a transcription observation need.
+fn rows_with_holes<E: CsrEdgeTombstone, M: Memory>(
+    g: &LabeledLaraGraph<E, M>,
+    label: BucketLabelKey,
+    order: super::super::OutEdgeOrder,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    rows_for_owner_with_holes(g, VertexId::from(0), label, order)
+}
+
+fn rows_for_owner_with_holes<E: CsrEdgeTombstone, M: Memory>(
+    g: &LabeledLaraGraph<E, M>,
+    owner: VertexId,
+    label: BucketLabelKey,
+    order: super::super::OutEdgeOrder,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut out = Vec::new();
+    let flow = g
+        .visit_slot_rows_with_values(owner, label, order, |row| {
+            let slot = row.slot.raw();
+            let (target, payload) = match row.state {
+                crate::labeled::graph::row_view::SlotState::Live { edge, payload } => {
+                    (u32::from(edge.neighbor_vid()), payload)
+                }
+                crate::labeled::graph::row_view::SlotState::Hole { payload } => (u32::MAX, payload),
+            };
+            out.push((slot, target, payload));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(flow, ControlFlow::Continue(()));
+    out
+}
+
 // Native tree visitors retain tombstone rows; verify the whole slot stream and headers.
 fn assert_tree<E: CsrEdgeTombstone, M: Memory>(
     g: &LabeledLaraGraph<E, M>,
@@ -266,11 +299,11 @@ fn assert_tree<E: CsrEdgeTombstone, M: Memory>(
         })
         .collect();
     assert_eq!(
-        rows(g, label, super::super::OutEdgeOrder::Ascending),
+        rows_with_holes(g, label, super::super::OutEdgeOrder::Ascending),
         expected
     );
     assert_eq!(
-        rows(g, label, super::super::OutEdgeOrder::Descending),
+        rows_with_holes(g, label, super::super::OutEdgeOrder::Descending),
         expected.iter().cloned().rev().collect::<Vec<_>>()
     );
     for block in 0..extent.div_ceil(BLOCK_B as u32) {
@@ -1231,7 +1264,8 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     let cached = peer_lookup();
     assert_eq!(peer_lookup(), cached);
     let peer_before = g.vertices().get(peer);
-    let peer_rows = rows(g, g.default_label(), Ascending);
+    // The peer was promoted, so its stored stream is what this test pins: holes keep their positions.
+    let peer_rows = rows_with_holes(g, g.default_label(), Ascending);
     let source = g.vertices().get(owner);
     let raw_prefix = |start: u64, slots: u32| {
         let mut bytes = vec![0; slots as usize * Edge::<4>::BYTES];
@@ -1317,7 +1351,7 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
         rows_for_owner(g, owner, label, Descending),
         before.iter().cloned().rev().collect::<Vec<_>>()
     );
-    assert_eq!(rows(g, g.default_label(), Ascending), peer_rows);
+    assert_eq!(rows_with_holes(g, g.default_label(), Ascending), peer_rows);
     memories[1].fail_never();
     outer
         .insert_forward_out_edge(
@@ -1331,7 +1365,7 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     assert_eq!(now.1, cached.1);
     assert_eq!(now.0, g.vertices().get(peer).base_slot_start());
     assert_ne!(now.0, cached.0, "peer descriptor actually moved");
-    assert_eq!(rows(g, g.default_label(), Ascending), peer_rows);
+    assert_eq!(rows_with_holes(g, g.default_label(), Ascending), peer_rows);
     assert_eq!(
         rows(g, g.default_label(), Descending),
         peer_rows.iter().cloned().rev().collect::<Vec<_>>()
@@ -1347,9 +1381,13 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
             }
         })
         .collect();
-    assert_eq!(rows_for_owner(g, owner, label, Ascending), expected);
+    // The source is a promoted tree: its stored stream keeps every hole, so the expectation lists them.
     assert_eq!(
-        rows_for_owner(g, owner, label, Descending),
+        rows_for_owner_with_holes(g, owner, label, Ascending),
+        expected
+    );
+    assert_eq!(
+        rows_for_owner_with_holes(g, owner, label, Descending),
         expected.iter().cloned().rev().collect::<Vec<_>>()
     );
     assert_eq!(g.edges().header().num_edges, count + 1);

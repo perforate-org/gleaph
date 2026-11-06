@@ -532,3 +532,29 @@ The remaining slices, in order:
 3. the sentinel leaves the read paths entirely (`SlotState::Hole` needs no edge), which removes the encoding that
    made the three defects possible;
 4. the flat entries go, once their callers name a typed one.
+
+## The with-values family is unified, and the count is 4
+
+The typed row plus the named observers did what three earlier attempts could not: the last legacy funnel's mode
+match is gone. `visit_edges_with_inline_property_impl` now asks `BucketValueSource` where a slot's value lives and
+applies the caller's visibility once, at its callback boundary; its slab fast path, slab batch path and tree walk
+are three shapes of one answer rather than three storage classes with their own.
+
+What that took, in the order it worked:
+
+1. the typed rows (`LiveRow` / `SlotRow`) with a payload, so an observer's signature names its question;
+2. `retained_compaction_rows_including_holes` and the promotion tests' `rows_with_holes`, so the readers that need
+   positions say so at the call site;
+3. the default flipped to live rows - which then *held*, because every reader that needed holes had already named
+   itself;
+4. the harness checker and the compact test moved to `visit_slot_rows_with_values`, which is the typed position
+   entry rather than a flat one.
+
+| Measure | Start of this record | Now |
+| --- | --- | --- |
+| Functions owning a `BucketMode` dispatch | 8 | **4** |
+| Mode-branch sites in `traverse.rs` | 34 | **13** |
+
+The four that remain are each the owner of its own question: `visit_rows` (the row walker), the slab span funnel
+(span shapes), the at-slot batch path (a bulk read), and `visit_bucket_edge_slots` (a selected-slot walk with one
+class difference). None of them is a second implementation of another's operation.

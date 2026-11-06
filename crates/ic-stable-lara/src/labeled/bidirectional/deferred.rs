@@ -5303,7 +5303,8 @@ mod tests {
         use crate::labeled::graph::{
             EdgeSlotState, T_PROMOTE,
             test_support::{
-                retained_compaction_rows, retained_compaction_value, tree_compaction_fixture,
+                retained_compaction_rows_including_holes, retained_compaction_value,
+                tree_compaction_fixture,
             },
         };
         let graph = tree_compaction_fixture(33);
@@ -5323,7 +5324,8 @@ mod tests {
             })
             .collect();
         for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
-            let rows = retained_compaction_rows(&graph, vid, label, order);
+            // The native slot stream: this test pins that tombstones keep their positions.
+            let rows = retained_compaction_rows_including_holes(&graph, vid, label, order);
             let want: Vec<_> = if order == OutEdgeOrder::Ascending {
                 expected.clone()
             } else {
@@ -5347,7 +5349,10 @@ mod tests {
                     assert_eq!((edge.target, edge.edge_slot_index_raw()), (*target, *slot));
                 }
             }
-            assert_eq!(retained_compaction_rows(&graph, vid, label, order), rows);
+            assert_eq!(
+                retained_compaction_rows_including_holes(&graph, vid, label, order),
+                rows
+            );
         }
         for slot in [T_PROMOTE, u32::MAX] {
             assert!(matches!(
@@ -5503,7 +5508,7 @@ mod tests {
             graph::{
                 T_PROMOTE, bucket_content_slots,
                 test_support::{
-                    inline_property_test_graph, retained_compaction_rows,
+                    inline_property_test_graph, retained_compaction_rows_including_holes,
                     retained_compaction_value, tree_compaction_fixture,
                 },
             },
@@ -5546,7 +5551,12 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            retained_compaction_rows(graph.forward(), vid, tree, OutEdgeOrder::Ascending),
+            retained_compaction_rows_including_holes(
+                graph.forward(),
+                vid,
+                tree,
+                OutEdgeOrder::Ascending
+            ),
             expected_tree
         );
         // The value root is a block-address array in the value store (ADR 0101).
@@ -5740,14 +5750,16 @@ mod tests {
                 peer_before
             );
             for (owner, label) in [(vid, slab), (vid, tree), (peer, slab)] {
-                let rows = retained_compaction_rows(
+                // The stored slot stream, not "the rows a reader sees": this checker also verifies that the
+                // native traversal keeps every tombstone, and slab buckets have holes of their own.
+                let rows = retained_compaction_rows_including_holes(
                     graph.forward(),
                     owner,
                     label,
                     OutEdgeOrder::Ascending,
                 );
                 assert_eq!(
-                    retained_compaction_rows(
+                    retained_compaction_rows_including_holes(
                         graph.forward(),
                         owner,
                         label,

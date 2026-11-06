@@ -1165,6 +1165,36 @@ where
     )
 }
 
+/// The stored slot stream of a retained-compaction fixture, holes included, in the flat tuple form the tests
+/// compare against.
+///
+/// `retained_compaction_rows` above answers the read question; this answers the mutation one. A caller that needs a
+/// header check or a transcription observation takes this, and the two cannot be swapped by accident at a distance
+/// because the names differ.
+pub(crate) fn retained_compaction_rows_including_holes(
+    graph: &LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    order: OutEdgeOrder,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut rows = Vec::new();
+    assert_eq!(
+        graph
+            .visit_slot_rows_with_values(vid, label, order, |row| {
+                let slot = row.slot.raw();
+                let (target, payload) = match row.state {
+                    super::row_view::SlotState::Live { edge, payload } => (edge.target, payload),
+                    super::row_view::SlotState::Hole { payload } => (u32::MAX, payload),
+                };
+                rows.push((slot, target, payload));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap(),
+        ControlFlow::Continue(())
+    );
+    rows
+}
+
 pub(crate) use crate::test_support::CountMemory as CountingMemory;
 
 /// Builds a fully counting-backed graph: all 16 memories share one

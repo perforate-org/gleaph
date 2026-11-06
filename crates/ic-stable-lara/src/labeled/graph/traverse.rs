@@ -864,6 +864,34 @@ where
         )
     }
 
+    /// Visits one label's whole row as value-bearing [`super::row_view::SlotRow`]s: every position, holes included.
+    ///
+    /// A hole carries the values its stale cell holds, which is what a transcription or a header check needs to see.
+    pub(crate) fn visit_slot_rows_with_values<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(super::row_view::SlotRow<E, Vec<u8>>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_edges_with_inline_property_positions(owner, label, order, |slot, item| {
+            let state = if item.edge.is_deleted_slot() || item.edge.is_tombstone_edge() {
+                super::row_view::SlotState::Hole {
+                    payload: item.inline_property.bytes().to_vec(),
+                }
+            } else {
+                super::row_view::SlotState::Live {
+                    edge: item.edge,
+                    payload: item.inline_property.bytes().to_vec(),
+                }
+            };
+            visit(super::row_view::SlotRow { slot, state })
+        })
+    }
+
     /// Visits one label's whole row as value-bearing [`super::row_view::LiveRow`]s: the read shape with values.
     ///
     /// A helper that returns a vector of these cannot be handed to a caller expecting holes, and vice versa - which
@@ -1936,6 +1964,32 @@ where
             &vertex,
             label,
             order,
+            crate::lara::edge::RowVisibility::LiveRows,
+            visit,
+        )
+    }
+
+    /// Visits one label's whole row with values attached, tombstones included: the mutation shape.
+    fn visit_edges_with_inline_property_positions<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: impl for<'a> FnMut(
+            BucketEntryPosition,
+            EdgeWithInlinePropertyRef<'a, E>,
+        ) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        self.visit_edges_with_inline_property_impl(
+            owner,
+            &vertex,
+            label,
+            order,
             crate::lara::edge::RowVisibility::Positions,
             visit,
         )
@@ -2061,23 +2115,20 @@ where
         else {
             return Ok(ControlFlow::Continue(()));
         };
-        let width = bucket.inline_property_byte_width();
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
 
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read. Tiny arm returns inline (topology + empty
-        // values) before any width read; tree/slab share width-gated paths.
-        match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny buckets visit inline (topology + empty values).
-            // Width bytes are payload on tiny and must never feed the dense bulk
-            // path or the value attach below.
-            BucketMode::Tiny => self.visit_tiny_bucket_edges(
-                &bucket,
+        // ADR 0100: the class decides one thing here - where a slot's value lives - and `BucketValueSource` is
+        // that answer. Row visibility was already applied at this function's callback boundary.
+        let source = super::value_source::BucketValueSource::of(&bucket);
+        if source.width() == 0 {
+            return self.visit_rows(
+                owner,
+                label,
                 order,
-                TraversalWindow::unbounded(),
-                crate::lara::edge::RowVisibility::LiveRows,
+                RowSelection::WholeRow,
+                visibility,
                 |slot, edge| {
                     visit(
                         slot,
@@ -2087,168 +2138,104 @@ where
                         },
                     )
                 },
-            ),
-            BucketMode::Tree | BucketMode::Slab => {
-                if !bucket.is_tree_mode() && width == 0 {
-                    return self.visit_slab_bucket_edges(
-                        &bucket,
-                        order,
-                        TraversalWindow::unbounded(),
-                        |slot, edge| {
-                            visit(
-                                slot,
-                                EdgeWithInlinePropertyRef {
-                                    edge,
-                                    inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
-                                },
-                            )
-                        },
-                    );
-                }
-                // Width is bucket schema here (both modes carry real schema;
-                // tiny diverged above). Inner routing below is arm-local: dense
-                // bulk reads slab bytes, so tree diverts to LPB/slow; the
-                // `!is_tree_mode()` conjunct is that routing, not a mode guard.
-                if !bucket.is_tree_mode()
-                    && bucket.values_run().is_none()
-                    && bucket.edge_run().is_none()
-                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-                {
-                    let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
-                        owner,
-                        &bucket,
-                        0,
-                        bucket.degree(),
-                    )?;
-                    return self.visit_slab_bucket_edges(
-                        &bucket,
-                        order,
-                        TraversalWindow::unbounded(),
-                        |slot, edge| {
-                            let byte_width = usize::from(width);
-                            let start = slot.raw() as usize * byte_width;
-                            let end = start + byte_width;
-                            visit(
-                                slot,
-                                EdgeWithInlinePropertyRef {
-                                    edge,
-                                    inline_property: InlinePropertyBytesRef::from_parts(
-                                        width,
-                                        &inline_property_bytes[start..end],
-                                    ),
-                                },
-                            )
-                        },
-                    );
-                }
-
-                // Plan 0326 LPB-in-tree: tree-mode path with property
-                // bytes. The dense path above is slab-only (`!is_tree_mode()`);
-                // the slow `single_bucket_span_iter` below is slab-only too
-                // (it reads from the LEG slab + log chain). For tree mode
-                // we walk the LTB edge tree (depth 1) directly via
-                // `visit_tree_mode_label_bucket_edges_with_property`,
-                // reading each slot's property value from the LPB
-                // (depth-1 property tree) via the property root region.
-                //
-                // **Position contract** (Plan 0324 REWORK-3): the visit
-                // callback receives the tombstone-inclusive `BucketEntryPosition`
-                // (slot index, not live ordinal). The closure
-                // `visit_tree_mode_label_bucket_edges_with_property` yields
-                // `(slot, edge, property_value)` directly from the LTB
-                // walk; no `enumerate()` (which would yield live ordinals
-                // and break the contract). Arm-local routing: tree+w>0 takes the
-                // LPB walk; tree+w=0 falls to the slow span walk below (served
-                // via the funnel's own Tree arm).
-                if bucket.is_tree_mode() && width > 0 {
-                    use super::tree_read::visit_tree_mode_label_bucket_edges_with_property;
-                    // LPB tree walk: forward Break directly (ControlFlow<B> primitive).
-                    return visit_tree_mode_label_bucket_edges_with_property(
-                        self,
-                        label.raw(),
-                        &bucket,
-                        bucket.degree(),
-                        order,
-                        |slot, edge, value_bytes| {
-                            visit(
-                                BucketEntryPosition::new(slot),
-                                EdgeWithInlinePropertyRef {
-                                    edge,
-                                    inline_property: InlinePropertyBytesRef::from_parts(
-                                        width,
-                                        &value_bytes,
-                                    ),
-                                },
-                            )
-                        },
-                    );
-                }
-                let mut inline_property_bytes = Vec::new();
-                let mut value_range = 0..0;
-                let batch_rows = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES
-                    / usize::from(width).max(1))
-                .max(1) as u32;
-                // ADR 0099: values are addressed by slot, so the batch is a run of **slots**, not of
-                // live ordinals. The bound is the bucket's resident value slots (slab prefix plus
-                // spill rows); a batch spanning slots also covers the tombstoned ones in between,
-                // whose blocks are stale but never visited.
-                // ...and the bound must cover the run too: the accounting helper returns the backed
-                // span only, which clips the batch short of the run and makes the in-batch offsets
-                // read the wrong block.
-                let run_rows = bucket
-                    .values_run()
-                    .map_or(0, |run| self.values.spill_used_len(run));
-                let slot_bound = bucket
-                    .inline_property_bytes_slab_slots()
-                    .saturating_add(run_rows);
-                let mut next_slot = match order {
-                    OutEdgeOrder::Ascending => 0,
-                    OutEdgeOrder::Descending => slot_bound.saturating_sub(1),
-                };
-                let flow =
-                    self.visit_slab_bucket_span_edges(&bucket, order, false, |slot, edge| {
-                        if width > 0 && !value_range.contains(&slot) {
-                            value_range = match order {
-                                OutEdgeOrder::Ascending => {
-                                    slot..slot
-                                        .saturating_add(batch_rows)
-                                        .min(slot_bound)
-                                        .max(slot.saturating_add(1))
-                                }
-                                OutEdgeOrder::Descending => {
-                                    slot.saturating_sub(batch_rows.saturating_sub(1))
-                                        ..slot.saturating_add(1)
-                                }
-                            };
-                            self.read_bucket_inline_property_bytes_range_into(
-                                &bucket,
-                                value_range.clone(),
-                                &mut inline_property_bytes,
-                            )?;
-                        }
-                        let start = (slot - value_range.start) as usize * usize::from(width);
-                        let flow = visit(
-                            BucketEntryPosition::new(slot),
-                            EdgeWithInlinePropertyRef {
-                                edge,
-                                inline_property: InlinePropertyBytesRef::from_parts(
-                                    width,
-                                    &inline_property_bytes[start..start + usize::from(width)],
-                                ),
-                            },
-                        );
-                        if let ControlFlow::Break(value) = flow {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                        next_slot = slot;
-                        Ok(flow)
-                    })?;
-                if let ControlFlow::Break(value) = flow {
-                    return Ok(ControlFlow::Break(value));
-                }
-                Ok(ControlFlow::Continue(()))
-            }
+            );
         }
+        let width = source.width();
+        if matches!(source, super::value_source::BucketValueSource::Slab { .. })
+            && bucket.values_run().is_none()
+            && bucket.edge_run().is_none()
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+        {
+            let inline_property_bytes =
+                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?;
+            return self.visit_slab_bucket_edges(
+                &bucket,
+                order,
+                TraversalWindow::unbounded(),
+                |slot, edge| {
+                    let byte_width = usize::from(width);
+                    let start = slot.raw() as usize * byte_width;
+                    let end = start + byte_width;
+                    visit(
+                        slot,
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(
+                                width,
+                                &inline_property_bytes[start..end],
+                            ),
+                        },
+                    )
+                },
+            );
+        }
+        if matches!(source, super::value_source::BucketValueSource::Tree { .. }) {
+            return super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot, edge, value_bytes| {
+                    visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(
+                                width,
+                                &value_bytes,
+                            ),
+                        },
+                    )
+                },
+            );
+        }
+        let mut inline_property_bytes = Vec::new();
+        let mut value_range = 0..0;
+        let batch_rows =
+            (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / usize::from(width).max(1)).max(1) as u32;
+        let run_rows = bucket
+            .values_run()
+            .map_or(0, |run| self.values.spill_used_len(run));
+        let slot_bound = bucket
+            .inline_property_bytes_slab_slots()
+            .saturating_add(run_rows);
+        let flow = self.visit_slab_bucket_span_edges(&bucket, order, false, |slot, edge| {
+            if !value_range.contains(&slot) {
+                value_range = match order {
+                    OutEdgeOrder::Ascending => {
+                        slot..slot
+                            .saturating_add(batch_rows)
+                            .min(slot_bound)
+                            .max(slot.saturating_add(1))
+                    }
+                    OutEdgeOrder::Descending => {
+                        slot.saturating_sub(batch_rows.saturating_sub(1))..slot.saturating_add(1)
+                    }
+                };
+                self.read_bucket_inline_property_bytes_range_into(
+                    &bucket,
+                    value_range.clone(),
+                    &mut inline_property_bytes,
+                )?;
+            }
+            let start = (slot - value_range.start) as usize * usize::from(width);
+            let flow = visit(
+                BucketEntryPosition::new(slot),
+                EdgeWithInlinePropertyRef {
+                    edge,
+                    inline_property: InlinePropertyBytesRef::from_parts(
+                        width,
+                        &inline_property_bytes[start..start + usize::from(width)],
+                    ),
+                },
+            );
+            if let ControlFlow::Break(value) = flow {
+                return Ok(ControlFlow::Break(value));
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
+        Ok(flow)
     }
 
     /// Visits one label's edges while materializing inline properties directly on the edge.
