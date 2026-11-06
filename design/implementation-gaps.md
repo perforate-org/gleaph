@@ -193,6 +193,26 @@ defect from being rediscovered without its prior reasoning.
   `find_or_create_bucket -> insert_label_bucket_at -> plan_segment_rewrite -> segment_vertex_bounds`.
   The first conversion that changes the message localises the failure.
 
+- **Root site found, 2026-11-07 - and the reason three probes were blind.** A temporary trap on the
+  `Store(CollectAllocationOverflow)` conversion, filtered to the edge-insert stack, names it:
+  `insert.rs:473`, the `read_label_bucket_slot(bucket_slot).ok_or(overflow())?` that reads the descriptor of the
+  bucket `find_or_create_bucket` has **just created**. The read answers `None`, so the slot the caller derived is not
+  the slot the create wrote. The two lines above it are the cause candidates:
+  `ensure_vertex_bucket_row_origin(src)` then `labeled_bucket_descriptor_index(&vertex, slot)` re-derive the row from
+  the vertex, while the no-slack path of `insert_label_bucket_at` runs `plan_segment_rewrite` and returns
+  `preparation.row_slot(vid, insert_index)` - a slot from the **rewritten** layout. A row that moved during the
+  rewrite and a vertex whose `base_slot_start` still describes the old one is exactly the divergence at line 473.
+- **Why the earlier probes saw nothing:** `overflow_sites()` is a thread-local capped at **64** entries
+  (`if sites.len() < 64`), and a 10 000-edge fixture fills it long before the failing insert. The "sites during this
+  insert" measurement was therefore an empty *slice* of a full buffer, not evidence of absence - and
+  `GLEAPH_TRACE_OVERFLOW` panics on the *first* construction on the thread, which belongs to vertex creation
+  tolerating the same signal while it grows a leaf. Both instruments were measuring the wrong end of the run.
+- **Next:** make the create return where the bucket actually is, and stop re-deriving it. `insert_label_bucket_at`
+  already knows the answer (`preparation.row_slot(..)`); `find_or_create_bucket` should use that slot for the
+  descriptor read instead of `labeled_vertex_bucket_slot` over a vertex it re-read, and `ensure_vertex_bucket_row_origin`
+  should run **before** the rewrite (or be told the row moved) rather than after it. A test at the bucket-store layer
+  can then assert that the slot a create returns is readable, for both the slack and the rewrite path.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
