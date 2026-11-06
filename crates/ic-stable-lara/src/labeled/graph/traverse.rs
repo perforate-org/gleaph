@@ -7366,6 +7366,74 @@ mod row_visibility_tests {
         );
     }
 
+    /// The legacy label funnel attaches the same values whichever storage class holds the bucket.
+    #[test]
+    fn the_label_funnel_attaches_values_for_both_classes() {
+        let label = BucketLabelKey::directed_from_index(2);
+        let width = 4u16;
+        let value_of = |slot: u32| (100 + slot).to_le_bytes().to_vec();
+
+        let slab_graph = inline_property_test_graph();
+        let slab_vid = slab_graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push");
+        slab_graph
+            .ensure_label_bucket_inline_property_byte_width(slab_vid, label, width)
+            .expect("declare the width");
+        for slot in 0..8u32 {
+            slab_graph
+                .insert_edge_skip_leaf_cascade(
+                    slab_vid,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(100 + slot, &value_of(slot)),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let mut slab_rows = Vec::new();
+        slab_graph
+            .visit_edges_for_label(slab_vid, label, OutEdgeOrder::Ascending, |edge| {
+                slab_rows.push((
+                    edge.target,
+                    edge.edge_inline_property_bytes().to_vec(),
+                    edge.edge_inline_property_byte_width(),
+                ));
+            })
+            .expect("slab funnel");
+
+        let tree_graph = inline_property_test_graph();
+        let tree_vid = tree_graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push");
+        crate::labeled::graph::test_support::seeded_tree_bucket_on_vertex::<
+            InlinePropertyTestEdge,
+            crate::VectorMemory,
+        >(
+            &tree_graph,
+            tree_vid,
+            label,
+            8,
+            width,
+            |slot| 100 + slot,
+            value_of,
+        );
+        let mut tree_rows = Vec::new();
+        tree_graph
+            .visit_edges_for_label(tree_vid, label, OutEdgeOrder::Ascending, |edge| {
+                tree_rows.push((
+                    edge.target,
+                    edge.edge_inline_property_bytes().to_vec(),
+                    edge.edge_inline_property_byte_width(),
+                ));
+            })
+            .expect("tree funnel");
+
+        assert_eq!(
+            tree_rows, slab_rows,
+            "the funnel must attach the same values whichever class holds the bucket"
+        );
+    }
+
     /// A page reports live rows only, whatever the window: the hole is not a row to a reader, and the window
     /// does not resurrect it.
     #[test]

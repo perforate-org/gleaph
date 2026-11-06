@@ -358,15 +358,16 @@ Three things were needed, and each was a real difference between "a descriptor e
 With those, `the_shapes_hold_for_a_seeded_tree_bucket` pins the three shapes on the one class that can report a
 hole: the mutation shape names it at position 3, the read shape hides it, and a page over it reports only live rows.
 
-## Still open: the funnel parity test
+## Closed: the funnel parity test
 
-The parity test - that the legacy label funnel attaches the same values to a tree row as to a slab row - could not
-be made to pass, and the honest reason is that the fixture's bucket arrives at the funnel with **width 0** even
-though the descriptor it installed says 4; the shapes test proves the same bucket is reachable, so the gap is in how
-this path reads the descriptor, not in the fixture. That is a lead, not a conclusion: the next step is to read the
-funnel's bucket against the fixture's (degree, width, mode, physical/property depth) rather than guess.
+The parity test - that the legacy label funnel attaches the same values to a tree row as to a slab row - passes.
+The earlier failure was not the fixture's reachability, which the probe settled in one line: the seeded bucket
+reported `w=4 stored=8 tree=true` and the lookup returned exactly that bucket. It was the **edge type**: `TestEdge`
+does not store inline property bytes at all, because the trait's `with_stored_inline_property_bytes` default returns
+`self`, so the tree side of the comparison was reading a type that had nowhere to put the value. Both sides now use
+`InlinePropertyTestEdge`.
 
-Two findings from the attempt are worth keeping regardless: `TestEdge` does not store inline bytes at all (the
-trait's `with_stored_inline_property_bytes` default returns `self`, so a parity test must use
-`InlinePropertyTestEdge` on both sides), and a fixture's edge-type choice silently decides whether a value goes
-anywhere.
+That is the same lesson as the funnel defect itself, one layer down: a row's values are only a row's values if the
+edge type can hold them, and the default trait method is a silent no-op that makes the bug look like a data
+problem. Two facts worth keeping from the attempt: `TestEdge` cannot express a value-bearing row, and a fixture's
+edge-type choice decides whether a value goes anywhere.
