@@ -1875,21 +1875,9 @@ where
     {
         value_children.push(entry_id);
     }
-    if graph
-        .tree_plane(*bucket)
-        .write_roots::<E>(new_edge_start, &new_root_bytes, &value_children)
-        .is_err()
-    {
-        let _ = graph.ltb().release(new_interior_id);
-        let _ = graph.ltb().release(new_leaf_id);
-        if let Some(p) = &plan {
-            release_property_plan::<E, M>(graph, p);
-        }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(new_combined_len));
-        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
+    // ADR 0102: hand the image to the single publication below instead of writing it here.
+    let root_edge_image = new_root_bytes;
+    let root_value_children = value_children;
     // Write the leaf id into the new interior at row 0.
     if let Err(e) =
         graph
@@ -1963,9 +1951,16 @@ where
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(depth)
         .with_tree_mode_property_depth(property_depth);
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
+    if graph
+        .tree_plane(*bucket)
+        .publish::<E>(
+            bucket_slot,
+            |_| new_bucket,
+            new_edge_start,
+            &root_edge_image,
+            &root_value_children,
+        )
+        .is_err()
     {
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
@@ -1975,7 +1970,7 @@ where
         let _ = graph
             .edges()
             .release_span(new_edge_start, u64::from(new_combined_len));
-        return Err(e.into());
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // Release the old combined span.
     if new_edge_start != bucket.edge_start() && old_combined_len > 0 {
