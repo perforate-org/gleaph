@@ -551,6 +551,14 @@ defect from being rediscovered without its prior reasoning.
   differently for the point reader than for the walk's leaf cache is the next reading. Both call it with the same
   `slot`, which is what makes the disagreement interesting rather than a parameter mix-up.
 
+- **The readers agree; the write side is wrong (2026-11-07).** Probing the resolver directly inside the reproduction -
+  `resolve_property_leaf_block_id(bucket, 1)` and `value_slot_position(1, 8).offset` - names **block 0, offset 8**,
+  which is exactly where rows 0..511 belong, and the payload there holds **row 1537's** value (whose own offset is also
+  8). The property tree is depth 2, as 2100 rows at 512 value rows per leaf require. So no reader is mis-addressing:
+  the promotion wrote another row's bytes at row 1's place, with a value that wrapped at a 512-row boundary its flush
+  condition did not honour. The next reading is the promotion's property-payload arithmetic
+  (`property_slots_per_block` against `value_slot_position(..).row` in `emit`), not the read paths.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

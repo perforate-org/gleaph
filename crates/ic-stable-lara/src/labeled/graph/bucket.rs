@@ -1417,11 +1417,17 @@ mod tests {
     /// the tree *walk* reader (`visit_edges_with_inline_property`, `tree_mode_valued_bucket_reads_its_values`) reads
     /// the same bucket correctly.
     ///
-    /// Measured so the next reading starts from facts: the promoted bucket **is dense** (`degree == stored == 2100`, so
-    /// a row *is* a slot), and the value returned belongs to row 1537 - whose offset within its property leaf is
-    /// `(1537 % 512) * 8 = 8`, exactly the offset row 1 asks for. So the two readers compute the **same offset** and
-    /// disagree on the **block**: `resolve_property_leaf_block_id(bucket, 1)` must be answering a different block for
-    /// the point reader than the walk's leaf cache gets for the same slot, which is where to look next.
+    /// Measured so the next reading starts from facts, and the facts point at the **write** side:
+    ///
+    /// - the promoted bucket is **dense** (`degree == stored == 2100`, so a row is a slot) and its property tree is
+    ///   **depth 2** (2100 rows at 512 value rows per property leaf);
+    /// - the resolver and the offset agree between the readers: `resolve_property_leaf_block_id(bucket, 1)` answers
+    ///   **block 0** and `value_slot_position(1, 8).offset` is **8** - the block that should hold rows 0..511;
+    /// - and the payload at block 0, offset 8 **holds row 1537's value**, whose own offset is also 8
+    ///   (`(1537 % 512) * 8`).
+    ///
+    /// So a reader is not mis-addressing: the promotion put another row's bytes at row 1's place, and the values it
+    /// wrote wrap at a 512-row boundary that its flush condition did not honour. That arithmetic is the next reading.
     #[test]
     #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
@@ -1465,6 +1471,29 @@ mod tests {
                 .read_value_row(&bucket, row)
                 .unwrap_or_else(|error| panic!("row {row}: {error}"));
             assert_eq!(value.len(), usize::from(width));
+            if row == 1 {
+                // Which block does the resolver name for this slot, and does its payload hold this row's value?
+                let block = crate::labeled::graph::tree_read::resolve_property_leaf_block_id(
+                    &graph, &bucket, row,
+                )
+                .expect("resolve the property leaf");
+                let offset = crate::labeled::tree_csr::value_slot_position(
+                    crate::traverse::BucketEntryPosition::new(row),
+                    width,
+                )
+                .expect("position")
+                .offset;
+                let mut probe = vec![0u8; usize::from(width)];
+                graph
+                    .ltb()
+                    .read_payload_partial(block, offset as usize, &mut probe)
+                    .expect("read payload");
+                assert_eq!(
+                    u32::from_le_bytes(probe[..4].try_into().expect("4 bytes")),
+                    row,
+                    "resolver+offset for row {row} named block {block} offset {offset}, payload says otherwise"
+                );
+            }
             assert_eq!(
                 u32::from_le_bytes(value[..4].try_into().expect("4 bytes")),
                 row,
