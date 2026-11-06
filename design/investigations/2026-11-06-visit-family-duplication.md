@@ -76,3 +76,33 @@ the tests that must keep passing.
 - It removes the tempting wrong cut, with evidence.
 - It leaves the number to beat: **8 functions owning a mode dispatch; 3 of them belong to the with-values
   family.** A cut that does not reduce that count has not cut the duplication.
+
+## Addendum: the contract that could unify them, and the two places the code departs from it
+
+The windowed and unbounded tree walks *look* like one operation with different ranges, and there is a contract
+that would make them one:
+
+> **Visit the tombstone-inclusive positions in a slot range `[lo, hi)`, in the requested order. Resolve a block
+> when you reach it, validate its header when you scan it, yield the positions inside the range, and stop
+> touching storage the moment the callback breaks.**
+
+Unbounded is `[0, stored)`. Under that contract both entries are one walker with one dispatcher. Two departures
+stop it today, and both are in the **windowed** walk:
+
+1. **A corrupt root entry trips an assertion instead of failing closed.** The walker reads a block header
+   straight from the store, whose contract is "never read unbacked ids" - so a root entry naming a block past
+   the tail panics in debug and reads garbage in release, where the unbounded walk returns
+   `LtbBlock(NotMinted { id })`. **Fixed** (`traverse.rs`, both order arms now check the id against
+   `ltb().tail_next()` and return the typed error).
+2. **A break does not stop the block it lands in.** The windowed walk hands `scan_tree_block_range_desc` a
+   closure that records the break value but returns unit, so the scan finishes the whole block and only then
+   stops. The unbounded walk stops at the position. That is a real difference in the guarantee "no read after
+   Break", and it is why the unbounded entry cannot simply delegate: the poison in
+   `tree_visit_break_stops_topology_reads` sits in the next block's root entry, which the windowed walk reaches
+   while finishing the current block.
+
+The remaining work is therefore item 2: let `scan_tree_block_range_desc` / `_asc` carry a `ControlFlow` out of
+the callback so the scan stops at the position. With that, the contract above holds for both, and `visit_edges`
+becomes `visit_edges_window` with an unbounded window - one walker, and one entry fewer.
+
+The measurement to beat is unchanged: **8 functions owning a mode dispatch; 3 belong to the with-values family.**

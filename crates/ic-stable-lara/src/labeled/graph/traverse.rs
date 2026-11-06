@@ -1570,6 +1570,16 @@ where
                             // always scan.
                             let fully_inside = block_first_slot >= offset && block_end_slot <= end;
                             if fully_inside {
+                                // A root entry naming a block past the store's tail is corrupt state. The
+                                // unbounded walk reports it as a typed error; this walk must too, rather than
+                                // tripping the store's own "never read unbacked ids" assertion.
+                                if block_id >= self.ltb().tail_next() {
+                                    return Err(LabeledOperationError::LtbBlock(
+                                        crate::labeled::ltb_raw_block_store::BlockError::NotMinted {
+                                            id: block_id,
+                                        },
+                                    ));
+                                }
                                 let header = self.ltb().read_block_header(block_id);
                                 let used = block_end_slot - block_first_slot;
                                 if u32::from(header.tombstone_count) == used {
@@ -1644,6 +1654,16 @@ where
                             let scan_slot_lo = block_first_slot.max(range_lo);
                             let scan_slot_hi = block_end_slot.min(range_hi);
                             if fully_inside {
+                                // A root entry naming a block past the store's tail is corrupt state. The
+                                // unbounded walk reports it as a typed error; this walk must too, rather than
+                                // tripping the store's own "never read unbacked ids" assertion.
+                                if block_id >= self.ltb().tail_next() {
+                                    return Err(LabeledOperationError::LtbBlock(
+                                        crate::labeled::ltb_raw_block_store::BlockError::NotMinted {
+                                            id: block_id,
+                                        },
+                                    ));
+                                }
                                 let header = self.ltb().read_block_header(block_id);
                                 let used = block_end_slot - block_first_slot;
                                 if u32::from(header.tombstone_count) == used {
