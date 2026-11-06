@@ -468,3 +468,25 @@ That means the migration is: give each observation helper **two** entries (`rows
 visibility parameter), have each assertion name the one it means, and only then flip the default. That is a bigger
 change than a rename and it is the honest unit - the helpers are where the two questions were being conflated, which
 is the same defect this whole family keeps producing at every layer.
+
+## The remaining work, enumerated
+
+The helper split was implemented and works: `rows_for_owner` / `rows_with_holes` in the promotion tests and
+`retained_compaction_rows` / `retained_compaction_rows_with_holes` in `test_support`, with `assert_tree` taking the
+holes view because its header check counts holes by definition. Flipping the default after that left five failures,
+all of them call sites that still ask the live question while asserting the hole answer:
+
+| File | Call sites on the observer |
+| --- | --- |
+| `bidirectional/deferred.rs` | 16 |
+| `graph/promote/spill_test.rs` | 46 (three helpers: `rows`, `rows_for_owner`, `rows_with_holes`) |
+| `graph/compact.rs` | 2 local closures |
+
+Sixteen call sites are not the obstacle; the obstacle is that each needs its assertion read before it can be named,
+because the same test can ask both questions about the same bucket - and the two `compact.rs` sites are a local
+closure that does exactly that.
+
+That is the whole of what is left in this family: rename each observation to the question it asks, then let the mode
+match go. The dispatch itself has no remaining obstacle, which is what this record set out to establish - the count
+went 8 -> 5 and the five that remain are the owner (`visit_rows`), the slab span funnel, the at-slot batch path, this
+one entry, and a selected-slot walk with one class difference.
