@@ -5745,7 +5745,7 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("bucket missing"),
         };
-        let b_with_lpb = b_orig.with_inline_property_byte_width(4);
+        let b_with_lpb = b_orig.with_rewritten_value_width(4);
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, b_with_lpb)

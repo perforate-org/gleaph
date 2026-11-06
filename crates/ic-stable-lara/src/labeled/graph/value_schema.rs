@@ -81,6 +81,53 @@ where
 }
 
 #[cfg(test)]
+mod construction_tests {
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::record::{LabelBucket, LabelBucketFieldError};
+
+    /// A width wider than a value block's payload is refused where the descriptor is built, not where a reader
+    /// happens to discover it: no code path can hold a bucket whose schema contradicts its storage.
+    #[test]
+    fn a_width_wider_than_a_value_block_is_refused_at_construction() {
+        let too_wide =
+            u16::try_from(crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES + 1).expect("fits u16");
+        let refused = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(2),
+            0,
+            1,
+            1,
+            too_wide,
+            0,
+            0,
+            -1,
+            0,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange)
+            ),
+            "a schema that cannot be stored must not be constructible"
+        );
+        // The widest storable width is accepted, so the boundary is a real one rather than a blanket refusal.
+        assert!(
+            LabelBucket::try_from_parts(
+                BucketLabelKey::directed_from_index(2),
+                0,
+                1,
+                1,
+                u16::try_from(crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES).expect("fits"),
+                0,
+                0,
+                -1,
+                0,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::VectorMemory;

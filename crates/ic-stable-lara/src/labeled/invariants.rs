@@ -477,7 +477,7 @@ mod tests {
     fn inline_property_bytes_byte_offset_at_slot_scales_by_width() {
         let bucket = LabelBucket::default()
             .with_inline_property_bytes_offset(128)
-            .with_inline_property_byte_width(4);
+            .with_rewritten_value_width(4);
         assert_eq!(
             inline_property_bytes_byte_offset_at_slot(&bucket, 0).unwrap(),
             128

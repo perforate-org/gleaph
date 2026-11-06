@@ -73,3 +73,29 @@ answers.
 
 Next slices: route the nine direct `with_inline_property_byte_width` writes through `declare` or justify them in
 place, and put the two migration drivers behind the view as `migrate_inline` / `migrate_step`.
+
+## Slice 2: the transitions are named, and an impossible descriptor is unconstructible
+
+Two changes make the schema's invalid states harder to reach than a comment can:
+
+**The width mutation has two names, not one setter.** `LabelBucket::with_inline_property_byte_width` was a free
+setter; it is now two transitions that say which change they are:
+
+| Transition | Meaning |
+| --- | --- |
+| `with_declared_value_width(w)` | the schema transition `0 -> w`; `debug_assert`s that the bucket had no width and that `w != 0` |
+| `with_rewritten_value_width(w)` | a descriptor rewrite that does not change what the rows hold (promotion, the ADR 0101 value-root split, fixtures) |
+
+The nine direct writes split along that line with no ambiguity: the two production ones are declarations
+(`materialize`'s publication and the declaration path), the rest are rewrites. A future site has to choose, and the
+choice is in the diff.
+
+**A descriptor cannot be built with a schema its storage cannot hold.** `LabelBucket::try_from_parts` now answers
+`InlinePropertyBytesWidthOutOfRange` for a width wider than a value block's payload
+(`PROPERTY_BLOCK_BYTES`). Before, such a descriptor was constructible and every reader discovered it lazily -
+`property_slots_per_block` returning `None` deep inside a value read - so the failure surfaced far from the code that
+made the mistake. The boundary is tested from both sides: the widest storable width is accepted, one byte more is
+refused.
+
+That is the structural part of this family: the declaration has one owner, the mutation names which transition it is,
+and the schema cannot exceed what the storage models.

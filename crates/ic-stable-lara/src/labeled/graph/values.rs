@@ -1062,7 +1062,7 @@ where
         crate::slab_index::checked_add_byte_offset(offset, cursor.total_bytes())
             .ok_or(LaraOperationError::overflow())?;
         let updated = bucket
-            .with_inline_property_byte_width(cursor.width)
+            .with_declared_value_width(cursor.width)
             .with_inline_property_bytes_offset(offset)
             .with_inline_property_bytes_slab_slots(bucket.stored_slots());
         let bucket_write = self
@@ -1433,7 +1433,7 @@ where
                         .ok_or(LaraOperationError::overflow())?;
                     return Ok(updated);
                 }
-                Ok(bucket.with_inline_property_byte_width(inline_property_byte_width))
+                Ok(bucket.with_declared_value_width(inline_property_byte_width))
             }
         }
     }
@@ -4707,7 +4707,7 @@ mod tests {
             .buckets
             .read_label_bucket_slot(peer_slot)
             .unwrap()
-            .with_inline_property_byte_width(1000)
+            .with_rewritten_value_width(1000)
             .with_inline_property_bytes_offset(reissued)
             .with_inline_property_bytes_slab_slots(5);
         graph

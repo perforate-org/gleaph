@@ -2076,8 +2076,7 @@ mod tests {
             match invalid {
                 "physical" => plan.rows[0].physical = 1,
                 "encoding" => {
-                    plan.rows[0].buckets[0] =
-                        plan.rows[0].buckets[0].with_inline_property_byte_width(0)
+                    plan.rows[0].buckets[0] = plan.rows[0].buckets[0].with_rewritten_value_width(0)
                 }
                 "order" => plan.rows[0].buckets.swap(0, 1),
                 "missing" => {

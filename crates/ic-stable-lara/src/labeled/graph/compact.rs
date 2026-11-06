@@ -9358,7 +9358,7 @@ mod tests {
         // dense, run-free plane; a slot-addressed plane moves one block per row, so a bucket with a
         // value run or a sparse value span may swap like any other.
         let value_run = LabelBucket::default()
-            .with_inline_property_byte_width(2)
+            .with_rewritten_value_width(2)
             .with_degree_field(2)
             .with_stored_slots(4)
             .with_values_spill_run(7);
@@ -9369,7 +9369,7 @@ mod tests {
             "a value run no longer stops a swap"
         );
         let non_dense = LabelBucket::default()
-            .with_inline_property_byte_width(2)
+            .with_rewritten_value_width(2)
             .with_inline_property_bytes_slab_slots(2)
             .with_degree_field(3)
             .with_stored_slots(4);
@@ -9433,7 +9433,7 @@ mod tests {
         let tree = crate::labeled::record::LabelBucket::default()
             .with_edge_range(100, 4096)
             .with_tree_mode(true)
-            .with_inline_property_byte_width(8)
+            .with_rewritten_value_width(8)
             .with_tree_mode_property_depth(1);
         let spans = super::TreeSpans::of(&tree).expect("tree bucket");
         let (edge_start, edge_len) = spans.edge_root();

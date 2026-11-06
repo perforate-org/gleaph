@@ -206,6 +206,14 @@ impl LabelBucket {
         if !byte_offset_fits(inline_property_bytes_offset) {
             return Err(LabelBucketFieldError::InlinePropertyBytesOffsetOverflow);
         }
+        // A width is a schema for rows that hold values, so it must name a payload a value block can hold. Readers
+        // discover a wider width lazily (`property_slots_per_block` answers `None`), which turns a broken descriptor
+        // into a failure far from the code that built it; refusing it here keeps an impossible descriptor impossible
+        // rather than merely unlikely.
+        if usize::from(inline_property_byte_width) > crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES
+        {
+            return Err(LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange);
+        }
         let word = try_encode_bucket_word(edge_start, bucket_label_key)
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
         let inline_property_bytes_log_byte =
@@ -952,7 +960,31 @@ impl LabelBucket {
 
     /// Returns a copy with [`Self::inline_property_byte_width`] updated.
     #[inline]
-    pub fn with_inline_property_byte_width(self, inline_property_byte_width: u16) -> Self {
+    /// Declares a bucket's value width where it had none: the schema transition (`0 -> w`).
+    ///
+    /// Only a bucket whose rows carry no values may be given a width: changing it under live rows is a migration
+    /// ([`LabelBucketStore`]'s materialize path), not a declaration. The debug assertion states that; the release
+    /// check lives in the declaration entry, which answers `InlinePropertyBytesWidthMismatch` instead.
+    pub fn with_declared_value_width(self, inline_property_byte_width: u16) -> Self {
+        debug_assert_eq!(
+            self.inline_property_byte_width, 0,
+            "a declaration sets a width where there was none; changing it under live rows is a migration"
+        );
+        debug_assert_ne!(
+            inline_property_byte_width, 0,
+            "a declaration to width 0 is a schema removal, which has no path"
+        );
+        Self {
+            inline_property_byte_width,
+            ..self
+        }
+    }
+
+    /// Rewrites the width a descriptor carries without changing what its rows hold.
+    ///
+    /// Promotion, the value-root split and fixtures rebuild a descriptor from one they already have; this is the
+    /// transition that says so, as distinct from a declaration.
+    pub fn with_rewritten_value_width(self, inline_property_byte_width: u16) -> Self {
         Self {
             inline_property_byte_width,
             ..self
@@ -1274,6 +1306,8 @@ pub enum LabelBucketFieldError {
     SlotIndexOverflow,
     /// `inline_property_bytes_offset` does not fit in the 40-bit byte-offset space.
     InlinePropertyBytesOffsetOverflow,
+    /// The value width names more bytes than one value block can hold.
+    InlinePropertyBytesWidthOutOfRange,
     /// Value overflow log head byte is out of range.
     InlinePropertyBytesLogHeadOutOfRange,
     /// Value overflow log length byte is out of range.
@@ -1305,6 +1339,9 @@ impl core::fmt::Display for LabelBucketFieldError {
         match self {
             Self::SlotIndexOverflow => {
                 write!(f, "label bucket edge_start exceeds 36-bit slot index")
+            }
+            Self::InlinePropertyBytesWidthOutOfRange => {
+                f.write_str("inline property byte width exceeds one value block's payload")
             }
             Self::InlinePropertyBytesOffsetOverflow => {
                 write!(
