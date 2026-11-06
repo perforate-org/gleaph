@@ -155,3 +155,17 @@ exactly the kind of second implementation this series removes.
 The plane owns the family's questions: `resolve`, `rewrite_row`, `clear_row`. What remains is deleting
 `remove_label_bucket` and its test, after which the bucket lookup family is complete and the next family is inline
 value schema.
+
+## Deleting `remove_label_bucket` is not mechanical, and that is itself a finding
+
+The deletion was attempted and reverted. Cutting the method out of `bucket_store.rs` leaves the crate failing to
+build, because its neighbours in that region are `#[cfg(test)]`-gated: `plan_enable_default_edge_bypass` sits right
+after it behind `#[cfg(test)]`, and `insert.rs`'s mode-handoff path reaches it. A naive range delete takes an
+attribute with it and the failure surfaces far from the cut.
+
+So the deletion needs the surrounding `cfg` boundary read first, and the method's test - which exercises segment
+rewrite, slack and descriptor rows - has to go with it. That is a small, careful change rather than a line in a
+bigger commit, and it is the last thing this family needs before it is complete.
+
+Recorded rather than forced: the tree is green at the state where the family's real work is done, and the removal is
+a named, bounded follow-up instead of a half-applied edit.
