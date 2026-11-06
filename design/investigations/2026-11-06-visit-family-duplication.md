@@ -490,3 +490,18 @@ That is the whole of what is left in this family: rename each observation to the
 match go. The dispatch itself has no remaining obstacle, which is what this record set out to establish - the count
 went 8 -> 5 and the five that remain are the owner (`visit_rows`), the slab span funnel, the at-slot batch path, this
 one entry, and a selected-slot walk with one class difference.
+
+## One level up again: the helpers are shared by tests that disagree
+
+Driving the migration to green was attempted twice more with the helper split in place, and each attempt stopped at
+the same place, one layer further up: a **shared observation helper used by two tests that ask different questions**.
+
+`tree_sibling_compaction_*` read their rows through a helper around `deferred.rs:5747`, not directly; switching that
+helper to the holes view fixes one test and breaks its sibling, and switching it back does the reverse. The pattern
+repeats what the record already found at the call site and then at the helper: the two questions were conflated at
+every layer, so each attempt to name one of them surfaces the conflation one level up.
+
+That is a real conclusion about the work, not a reason to keep trying the same edit: the remaining migration is a
+**partition of the observation surface** - every observer, helper and assertion gets the question it asks - and it is
+a session of its own, not a tail of this one. The dispatch has no remaining obstacle, which is what this record set
+out to establish, and the state it left is green.
