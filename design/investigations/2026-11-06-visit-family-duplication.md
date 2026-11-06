@@ -396,3 +396,28 @@ What is left, and why it is not this cut:
   (a tree reports holes, a slab cannot) and its ten callers sit on both sides, so it needs the same two-entry split
   the valueless one got before its match can go.
 - `visit_bucket_edge_slots` (1) - a selected-slot walk with one slab/tree difference.
+
+## The last funnel: which answer becomes the default is the whole question
+
+`visit_edges_with_inline_property_impl` is the one entry left with a mode match. Two attempts to remove it failed,
+and both failed on the same point rather than on the dispatch: **which row visibility the entry's name should
+answer**.
+
+Attempt one kept the legacy answer (positions) and replaced the match with a value-source structure. Sixteen tests
+failed - not because the dispatch was wrong, but because a slab bucket can now report the holes it holds, and
+callers that had been reading through this entry saw rows they never saw before.
+
+Attempt two moved the read callers to `visit_live_edges_with_inline_property` first (four in `deferred`, one in
+`counterpart`), which is correct and kept the suite green, and then unified the impl. It failed the same way from
+the other side: the mutation callers that remain - promotion and compaction - do want positions, and their tests
+assert them, so making the width-0 path obey the caller's visibility changes what the *slab* arms report.
+
+So the work is not the dispatch. It is:
+
+1. Decide the entry's default answer and say it in its name (the valueless family did this: `visit_edges` reads,
+   `visit_edge_positions` is the mutation shape).
+2. Move promotion and compaction to a positions entry, and their tests with them.
+3. Then the match becomes a value-source resolution, as it did in the at-variant and the other funnel.
+
+The read-side migration from attempt two is worth redoing as step 1 of that sequence; it is mechanical and it
+passed. The rest waits on the naming decision, which is a contract question rather than a code-shape one.
