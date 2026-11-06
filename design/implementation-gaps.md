@@ -422,7 +422,7 @@ defect from being rediscovered without its prior reasoning.
 - **Evidence:** `inline_update_after_a_delete_writes_the_right_row` (frozen reproduction, currently
   the suite's only red test) and the ignored property test above.
 
-### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — the fold's new bound is only covered one layer up
+### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — RESOLVED: the fold's bound is the view's, and production cannot pass one
 
 - **Status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
   `next_leaf_vertex_edge_start`, now has its own LARA test - including the guard that an unwritten
@@ -438,6 +438,14 @@ defect from being rediscovered without its prior reasoning.
   *relocate* the bucket instead of folding into the region - so the assertion passed even with the
   clamp disabled, i.e. it had no teeth. A meaningful test has to force the fold path (call the fold
   with the room the caller would compute) rather than the rebuild path, and that is its own unit.
+- **Status: RESOLVED 2026-11-07 structurally.** The bound moved into the view that owns the fold:
+  `BucketLayout::fold_head(src, room: FoldRoom)` takes a *room kind*, not a number. `FoldRoom::UntilNextLeafMate`
+  makes the view measure the region tail clamped at the next leaf-mate's edge start (the ADR 0098 rule); the numeric
+  `FoldRoom::At` variant is compiled only for `cfg(any(test, feature = "canbench"))`, so **a production caller cannot
+  compute a bound of its own** - the duplication that produced both this gap's toothless tests and the measured
+  three-rows-past-the-bound is now unrepresentable. The compaction step passes `UntilNextLeafMate` and its twenty-line
+  bound computation is deleted; a direct view test pins the fail-closed answer (a bucket with no leaf folds nothing
+  and writes nothing) and the bench fixture states its own room with `At`.
 - **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
 - **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
 - **Attempted 2026-11-07 and reverted, with the numbers it produced.** The attempt moved the physical fixture's

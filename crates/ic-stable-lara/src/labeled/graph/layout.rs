@@ -286,11 +286,39 @@ where
     pub(crate) fn fold_head(
         &self,
         src: VertexId,
-        free: super::span_size::SpanSlots,
+        room: FoldRoom,
     ) -> Result<u32, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
+        let free = match room {
+            #[cfg(any(test, feature = "canbench"))]
+            FoldRoom::At(free) => free,
+            // The bound the caller must not compute: the region tail up to the next leaf-mate's edge start.
+            FoldRoom::UntilNextLeafMate => {
+                let vertex = self.graph.vertex_layout(src);
+                if !vertex.has_leaf()? {
+                    return Ok(0);
+                }
+                let content_end = self
+                    .bucket
+                    .edge_start()
+                    .saturating_add(u64::from(self.bucket.stored_slots()));
+                let Some(region_end) = vertex
+                    .regions()?
+                    .into_iter()
+                    .find(|(start, _)| *start == self.bucket.edge_start())
+                    .map(|(_, end)| end)
+                else {
+                    return Ok(0);
+                };
+                let limit = self
+                    .graph
+                    .next_leaf_vertex_edge_start(src)?
+                    .map_or(region_end, |next| region_end.min(next));
+                super::span_size::SpanSlots::new(limit.saturating_sub(content_end))
+            }
+        };
         let run = match self.graph.edges.spill_mint(self.bucket.edge_spill_run()) {
             Ok(run) => run,
             Err(_) => return Ok(0),
@@ -349,6 +377,27 @@ where
             .publish_bucket_descriptor(self.bucket_slot, grown_bucket)?;
         Ok(fold)
     }
+}
+
+/// How much room a fold may use, and who decides it.
+///
+/// The bound is not a number a caller should compute: it is the region's free tail **bounded by the next
+/// leaf-mate's edge start**, because the region may stretch over a mate that owns none (ADR 0098) and rows folded
+/// past that point would take the space the mate's own rows come back to. Passing the number in made two places
+/// derive it and let them disagree - a compaction step that measured one bound folded three rows past a mate whose
+/// bound was one. `UntilNextLeafMate` is the only answer production gets; `At` exists for the bench fixture and the
+/// direct unit tests, which own their layout on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FoldRoom {
+    /// The free tail of the bucket's own region, clamped at the next leaf-mate's edge start.
+    UntilNextLeafMate,
+    /// An explicit room, for a caller that built the layout itself.
+    ///
+    /// Compiled only for tests and the bench: production has exactly one room kind, so a production caller cannot
+    /// compute a bound of its own even if it wants to. That is the structural half of
+    /// `GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST` - the earlier defect was two places deriving the bound and disagreeing.
+    #[cfg(any(test, feature = "canbench"))]
+    At(super::span_size::SpanSlots),
 }
 
 impl<E, M> LabeledLaraGraph<E, M>

@@ -200,7 +200,11 @@ impl<const W: usize> FoldFixture<W> {
             .layout(slot, bucket)
             .fold_head(
                 self.src,
-                super::super::super::span_size::SpanSlots::new(u64::MAX),
+                // The fixture owns its layout and folds everything it can: the clamp would measure a mate that
+                // this bench does not build.
+                super::super::super::layout::FoldRoom::At(
+                    super::super::super::span_size::SpanSlots::new(u64::MAX),
+                ),
             )
             .unwrap();
     }

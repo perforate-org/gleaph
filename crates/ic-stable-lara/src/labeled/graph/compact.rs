@@ -1435,7 +1435,9 @@ mod physical_layout_tests {
             .layout(0, source)
             .fold_head(
                 VertexId::from(0),
-                crate::labeled::graph::span_size::SpanSlots::new(2),
+                crate::labeled::graph::layout::FoldRoom::At(
+                    crate::labeled::graph::span_size::SpanSlots::new(2),
+                ),
             )
             .unwrap();
 
@@ -1457,6 +1459,54 @@ mod physical_layout_tests {
             let slot = start + u64::from(after.stored_slots()) - 2 + index as u64;
             assert_eq!(graph.edges.read_slot(slot), *expected);
         }
+    }
+
+    /// The fold's room is the view's, and production can only ask for the bounded one.
+    ///
+    /// `FoldRoom::At` is the bench's and these tests' escape hatch; every production call site passes
+    /// `UntilNextLeafMate`, which measures the region tail clamped at the next leaf-mate's edge start. On this
+    /// fixture - two hand-placed descriptors with no leaf of their own - that derived room is zero, so the fold
+    /// refuses instead of writing three rows over the mate: the refusal is the safe answer the old caller-computed
+    /// number could not give.
+    #[test]
+    fn the_fold_room_is_derived_and_fails_closed() {
+        use super::super::test_support::TestEdge;
+        use crate::labeled::graph::layout::FoldRoom;
+
+        let (graph, _m) = physical_fixture::<TestEdge>();
+        let source = append_physical_source_run(&graph);
+        let content_end = source.edge_start() + u64::from(source.stored_slots());
+        graph
+            .publish_bucket_descriptor(
+                1,
+                LabelBucket::from_parts(
+                    source.bucket_label_key(),
+                    content_end + 1,
+                    source.degree(),
+                    1,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            graph
+                .next_leaf_vertex_edge_start(VertexId::from(0))
+                .unwrap(),
+            Some(content_end + 1),
+            "the fixture must place a mate before the region's end"
+        );
+
+        // The derived room: no leaf here, so no room - and nothing is written over the mate.
+        let derived = graph
+            .layout(0, source)
+            .fold_head(VertexId::from(0), FoldRoom::UntilNextLeafMate)
+            .unwrap();
+        assert_eq!(derived, 0, "a bucket without a leaf has no bounded room");
+        let after = graph.buckets.read_label_bucket_slot(0).unwrap();
+        assert_eq!(
+            after.stored_slots(),
+            source.stored_slots(),
+            "a refused fold writes nothing"
+        );
     }
 
     #[test]
@@ -6196,33 +6246,11 @@ where
         } else {
             finalized
         };
-        // The packed bucket may leave room at the end of its own region; spilled rows belong back
-        // in the span there (ADR 0097: the edge fold lost its implementation with the overflow log).
-        let vertex = self.vertex_layout(vid);
-        if vertex.has_leaf()? {
-            let content_end = finalized
-                .edge_start()
-                .saturating_add(u64::from(finalized.stored_slots()));
-            let region_end = vertex
-                .regions()?
-                .into_iter()
-                .find(|(start, _)| *start == finalized.edge_start())
-                .map(|(_, end)| end);
-            if let Some(region_end) = region_end {
-                // The region may extend over the next leaf-mate's edge start, because the slice is
-                // derived from the regions that exist (ADR 0098). Rows folded past that point would
-                // take the space the mate's own rows must come back to, so the room is measured
-                // against whichever comes first.
-                let limit = self
-                    .next_leaf_vertex_edge_start(vid)?
-                    .map_or(region_end, |next| region_end.min(next));
-                let free = limit.saturating_sub(content_end);
-                if free > 0 {
-                    self.layout(slot, finalized)
-                        .fold_head(vid, super::span_size::SpanSlots::new(free))?;
-                }
-            }
-        }
+        // The packed bucket may leave room at the end of its own region; spilled rows belong back in the span
+        // there (ADR 0097). The room is the view's to measure - it owns the clamp at the next leaf-mate's edge
+        // start, which is the part a caller must not re-derive (ADR 0098).
+        self.layout(slot, finalized)
+            .fold_head(vid, super::layout::FoldRoom::UntilNextLeafMate)?;
         Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(
             bucket_index.saturating_add(1),
         ))
