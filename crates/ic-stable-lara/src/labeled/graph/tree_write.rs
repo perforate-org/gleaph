@@ -2601,19 +2601,6 @@ where
     } else {
         Vec::new()
     };
-    if graph
-        .tree_plane(*bucket)
-        .write_roots::<E>(new_combined_start, &edge_root_image, &value_children)
-        .is_err()
-    {
-        for &id in interior_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
-        let _ = graph
-            .edges()
-            .write_slots_contiguous_bytes(new_combined_start, &overwritten);
-        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
     // 6. Commit: build the new descriptor.
     let new_physical_depth = depth + 1;
     let new_bucket = bucket
@@ -2625,10 +2612,17 @@ where
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(new_physical_depth)
         .with_tree_mode_property_depth(d_prop);
-    // 7. Publish: single canonical write.
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
+    // 7. Publish: the tree plane writes the roots and the descriptor together (ADR 0102).
+    if graph
+        .tree_plane(*bucket)
+        .publish::<E>(
+            bucket_slot,
+            |_| new_bucket,
+            new_combined_start,
+            &edge_root_image,
+            &value_children,
+        )
+        .is_err()
     {
         for &id in interior_ids.iter().rev() {
             let _ = graph.ltb().release(id);
@@ -2636,7 +2630,7 @@ where
         let _ = graph
             .edges()
             .write_slots_contiguous_bytes(new_combined_start, &overwritten);
-        return Err(e.into());
+        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 8. After publish, return the tail the smaller root no longer uses. A
     //    pin-sheltered tail is not released: the leaf's derived occupancy
