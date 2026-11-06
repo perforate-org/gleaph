@@ -1408,14 +1408,6 @@ where
             }
         }
     };
-    if graph
-        .tree_plane(*bucket)
-        .write_roots::<E>(new_combined_start, &edge_root_image, &value_children)
-        .is_err()
-    {
-        undo_grown_root();
-        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
     // 4. Write the edge into the new (empty) leaf block at offset 0.
     if let Err(e) = graph
         .ltb()
@@ -1475,20 +1467,26 @@ where
             property_value_bytes,
         )?;
     }
-    // 6. Publish the new descriptor.
-    let new_bucket = bucket
-        .with_edge_range(new_combined_start, next_stored)
-        .with_degree_field(next_degree)
-        .with_stored_slots(next_stored)
-        .with_tree_mode(true)
-        .with_tree_mode_physical_depth(1)
-        .with_tree_mode_property_depth(property_depth);
-    if let Err(e) = graph
-        .buckets()
-        .write_label_bucket_slot(bucket_slot, new_bucket)
-    {
-        undo_grown_root();
-        return Err(e.into());
+    // 6. Publish: the tree plane writes both roots and the descriptor they belong to (ADR 0102).
+    match graph.tree_plane(*bucket).publish::<E>(
+        bucket_slot,
+        |b| {
+            b.with_edge_range(new_combined_start, next_stored)
+                .with_degree_field(next_degree)
+                .with_stored_slots(next_stored)
+                .with_tree_mode(true)
+                .with_tree_mode_physical_depth(1)
+                .with_tree_mode_property_depth(property_depth)
+        },
+        new_combined_start,
+        &edge_root_image,
+        &value_children,
+    ) {
+        Ok(_) => {}
+        Err(_) => {
+            undo_grown_root();
+            return Err(LabeledOperationError::from(LaraOperationError::overflow()));
+        }
     }
     // 7. Release the old combined span — but only the owned remainder. At
     // w == 0 the allocator above ran WITHOUT avoid, so the old span's head

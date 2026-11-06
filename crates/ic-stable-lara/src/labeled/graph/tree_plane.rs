@@ -108,6 +108,47 @@ where
         Ok(image)
     }
 
+    /// Writes a tree bucket's roots and publishes its descriptor: the only way a tree bucket is published.
+    ///
+    /// The caller hands over only the *shape* it wants (edge range, degree, stored slots, depths). The root
+    /// layout - which store each root lives in, in which order they are written, and how the descriptor records
+    /// the result - stays here, so a call site cannot publish a descriptor that disagrees with the roots it
+    /// just wrote.
+    pub(crate) fn publish<E2>(
+        &self,
+        bucket_slot: u64,
+        shape: impl FnOnce(LabelBucket) -> LabelBucket,
+        edge_start: u64,
+        edge_root_image: &[u8],
+        value_children: &[u32],
+    ) -> Result<LabelBucket, super::LabeledOperationError>
+    where
+        E2: CsrEdge + crate::traits::CsrEdgeTombstone,
+    {
+        // While both roots share the edge span the stored image is `edge ++ children`, padded to slots; the
+        // ADR 0101 split replaces this composition and nothing else.
+        let slot_bytes = E2::BYTES;
+        let children_bytes = value_children.len() * 4;
+        let total = edge_root_image.len() + children_bytes;
+        let slots = total.div_ceil(slot_bytes.max(1));
+        let mut image = vec![0u8; slots * slot_bytes];
+        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
+        for (index, child) in value_children.iter().enumerate() {
+            let offset = edge_root_image.len() + index * 4;
+            image[offset..offset + 4].copy_from_slice(&child.to_le_bytes());
+        }
+        self.graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &image)
+            .map_err(super::LabeledOperationError::from)?;
+        let published = shape(self.bucket);
+        self.graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, published)
+            .map_err(super::LabeledOperationError::from)?;
+        Ok(published)
+    }
+
     /// The first `count` child addresses of the value tree, packed as they are stored.
     pub(crate) fn value_children(&self, count: u32) -> Vec<u8> {
         let mut bytes = vec![0u8; count as usize * 4];
