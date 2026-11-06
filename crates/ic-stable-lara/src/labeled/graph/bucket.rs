@@ -1414,10 +1414,14 @@ mod tests {
     /// projection uses.
     ///
     /// `#[ignore]`d: it fails, and the failure is the finding. **Row 1 reads the value of another row** (1537), while
-    /// the tree *walk* reader (`visit_edges_with_inline_property`,
-    /// `tree_mode_valued_bucket_reads_its_values`) reads the same bucket correctly. So the promoted bucket has one
-    /// mapping that works and one that does not - the divergence ADR 0100 exists to remove - and the point reader is
-    /// the one to rebase on the tree plane's own address arithmetic.
+    /// the tree *walk* reader (`visit_edges_with_inline_property`, `tree_mode_valued_bucket_reads_its_values`) reads
+    /// the same bucket correctly.
+    ///
+    /// Measured so the next reading starts from facts: the promoted bucket **is dense** (`degree == stored == 2100`, so
+    /// a row *is* a slot), and the value returned belongs to row 1537 - whose offset within its property leaf is
+    /// `(1537 % 512) * 8 = 8`, exactly the offset row 1 asks for. So the two readers compute the **same offset** and
+    /// disagree on the **block**: `resolve_property_leaf_block_id(bucket, 1)` must be answering a different block for
+    /// the point reader than the walk's leaf cache gets for the same slot, which is where to look next.
     #[test]
     #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
@@ -1451,6 +1455,11 @@ mod tests {
             .expect("bucket");
         let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
         assert!(bucket.is_tree_mode(), "the fixture must promote");
+        assert_eq!(
+            (bucket.degree(), bucket.stored_slots()),
+            (rows, rows),
+            "the promoted bucket must be dense: degree and stored must agree for slot addressing"
+        );
         for row in 0..bucket.degree() {
             let value = graph
                 .read_value_row(&bucket, row)

@@ -544,6 +544,13 @@ defect from being rediscovered without its prior reasoning.
 - **Reproduction:** `a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`, `#[ignore]`d with
   the measured row and values.
 
+- **Measured one step further, 2026-11-07: same offset, different block.** The promoted bucket **is dense**
+  (`degree == stored == 2100`, so a row *is* a slot), and the point reader's answer for row 1 is row 1537's value -
+  whose offset inside its property leaf is `(1537 % 512) * 8 = 8`, exactly the offset row 1 asks for. So the two readers
+  compute the same offset and disagree on the **block**, and `resolve_property_leaf_block_id(bucket, 1)` answering
+  differently for the point reader than for the walk's leaf cache is the next reading. Both call it with the same
+  `slot`, which is what makes the disagreement interesting rather than a parameter mix-up.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
