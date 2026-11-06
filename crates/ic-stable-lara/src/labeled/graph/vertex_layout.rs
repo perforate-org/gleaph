@@ -293,3 +293,140 @@ where
         VertexLayout::new(self, src)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::EdgePlacementPolicy;
+    use crate::labeled::graph::test_support::{TestEdge, test_graph_with_segment_size};
+    use crate::labeled::record::LabeledVertex;
+
+    type Graph = LabeledLaraGraph<TestEdge, VectorMemory>;
+
+    fn test_graph_16() -> Graph {
+        test_graph_with_segment_size(16, BucketLabelKey::directed_from_index(1))
+    }
+
+    fn empty_vertex(graph: &Graph) -> VertexId {
+        graph.push_vertex(LabeledVertex::default()).expect("push")
+    }
+
+    /// A vertex with a leaf: one insert allocates the leaf its bucket lives in. A following vertex bounds the
+    /// extent, because a slice runs up to the next vertex that owns space.
+    fn vertex_with_leaf(graph: &Graph) -> VertexId {
+        let vid = empty_vertex(graph);
+        let _after = empty_vertex(graph);
+        // More than a tiny bucket holds: four edges force a slab bucket, which is what owns a leaf slice.
+        for target in 7..12u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    BucketLabelKey::directed_from_index(2),
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        vid
+    }
+
+    fn content(slots: u32) -> super::super::span_size::ContentSlots {
+        super::super::span_size::ContentSlots::new(slots)
+    }
+
+    /// A vertex with no leaf answers "nothing to place" rather than pretending to place: the question is the
+    /// contract, so a caller that needs placement learns it cannot.
+    #[test]
+    fn a_vertex_without_a_leaf_answers_nothing_to_place() {
+        let graph = test_graph_16();
+        let vid = empty_vertex(&graph);
+        let layout = graph.vertex_layout(vid);
+        assert!(!layout.has_leaf().expect("has_leaf"), "no leaf yet");
+        assert_eq!(layout.leaf().expect("leaf"), None);
+        assert_eq!(layout.extent().expect("extent"), None);
+        assert_eq!(layout.place(content(4), (0, 0)).expect("place"), None);
+        assert!(layout.regions().expect("regions").is_empty());
+        assert!(layout.contents().expect("contents").is_empty());
+        // With no extent to be inside, a released span is entirely free.
+        assert_eq!(
+            layout.parts_outside_extent(10, 5),
+            vec![(10, 5)],
+            "a span outside a missing extent is wholly outside"
+        );
+        assert!(!layout.extent_contains(10, 5));
+    }
+
+    /// A span inside the vertex's extent is leaf space and must not be released; one that straddles the
+    /// boundary is split, so only the outside part is handed back.
+    #[test]
+    fn parts_outside_extent_splits_at_the_boundary() {
+        let graph = test_graph_16();
+        let vid = vertex_with_leaf(&graph);
+        let layout = graph.vertex_layout(vid);
+        eprintln!(
+            "EXTENT {:?} has_leaf={:?}",
+            layout.extent(),
+            layout.has_leaf()
+        );
+        assert!(
+            layout.has_leaf().expect("has_leaf"),
+            "the fixture owns a leaf"
+        );
+        let (start, len) = layout
+            .extent()
+            .expect("extent")
+            .expect("a vertex holding a leaf bucket has an extent");
+        assert!(len > 0, "the extent grants space");
+        assert!(layout.extent_contains(start, len));
+        assert!(layout.parts_outside_extent(start, len).is_empty());
+        assert_eq!(
+            layout.parts_outside_extent(start, len + 3),
+            vec![(start + len, 3)],
+            "only what passes the extent's end is free"
+        );
+        assert_eq!(
+            layout.parts_outside_extent(start + len, 2),
+            vec![(start + len, 2)]
+        );
+    }
+
+    /// A healthy vertex reports no errors through either consistency entry, and both are no-ops for a vertex
+    /// the arena does not own.
+    #[test]
+    fn consistency_entries_report_nothing_for_a_healthy_or_leaf_less_vertex() {
+        let graph = test_graph_16();
+        let bare = empty_vertex(&graph);
+        assert!(graph.vertex_layout(bare).validate().is_empty());
+        assert!(graph.vertex_layout(bare).containment_errors().is_empty());
+        let with_leaf = vertex_with_leaf(&graph);
+        assert!(
+            graph.vertex_layout(with_leaf).validate().is_empty(),
+            "a freshly inserted vertex is consistent"
+        );
+        assert!(
+            graph
+                .vertex_layout(with_leaf)
+                .containment_errors()
+                .is_empty(),
+            "and it contains nothing it should not"
+        );
+    }
+
+    /// `reserve_span` answers a base address whose span the extent actually contains - the property the tree
+    /// plane relies on when it writes a root.
+    #[test]
+    fn reserve_span_answers_a_base_inside_the_extent() {
+        let graph = test_graph_16();
+        let vid = vertex_with_leaf(&graph);
+        let layout = graph.vertex_layout(vid);
+        let base = layout
+            .reserve_span(1, super::super::leaf_arena::SourceRegion::new(0, 0))
+            .expect("reserve one slot");
+        assert!(
+            layout.extent_contains(base, 1),
+            "reserved span must be inside the vertex's own space"
+        );
+    }
+}
