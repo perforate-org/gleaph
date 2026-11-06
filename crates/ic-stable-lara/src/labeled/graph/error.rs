@@ -176,19 +176,32 @@ pub enum LabeledOperationError {
     /// *contract* between inner and outer: it carries the work-item payload
     /// plus the (already-bumped) `degree` so the wrapper can size the
     /// stepped fill exactly.
-    InlinePropertyMaterializeDeferredRequired {
-        /// Source vertex (already-validated).
-        vid: VertexId,
-        /// Bucket slot (already-resolved).
-        bucket_slot: u64,
-        /// Target width to publish on the descriptor.
-        width: u16,
-        /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
-        fill_byte: u8,
-        /// Live-ordinal count at the time of the signal (= `bucket.degree()`).
-        /// Drives `total_bytes = degree * width` for the stepped fill.
-        degree: u32,
-    },
+    InlinePropertyMaterializeDeferredRequired(ValueMigration),
+}
+
+/// A migration the graph could not finish inline: the work a caller has to drive.
+///
+/// The entry that decides inline-versus-deferred publishes this value, the error variant carries it, and the
+/// bidirectional wrapper queues exactly this; one type, so the three cannot describe the same job differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValueMigration {
+    /// Source vertex (already validated).
+    pub vid: VertexId,
+    /// Bucket slot (already resolved).
+    pub bucket_slot: u64,
+    /// Target width to publish on the descriptor.
+    pub width: u16,
+    /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
+    pub fill_byte: u8,
+    /// Live-ordinal count at the time of the signal (= `bucket.degree()`).
+    pub degree: u32,
+}
+
+impl ValueMigration {
+    /// Bytes the stepped fill must cover: every live ordinal gets a block, wherever it lives (ADR 0099).
+    pub const fn total_bytes(&self) -> u64 {
+        self.degree as u64 * self.width as u64
+    }
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -276,17 +289,16 @@ impl fmt::Display for LabeledOperationError {
                  (property-tree deepen with BlockKind::InlinePropertyInterior is not yet \
                  wired; follow-up todo: property-tree-deepen)"
             ),
-            Self::InlinePropertyMaterializeDeferredRequired {
-                vid,
-                bucket_slot,
-                width,
-                fill_byte,
-                degree,
-            } => write!(
+            Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
                 "inline-property materialization exceeds INLINE_MATERIALIZE_BYTE_BUDGET: \
-                 vid={vid}, bucket_slot={bucket_slot}, width={width}, fill_byte=0x{fill_byte:02x}, \
-                 degree={degree}; caller must drain maintenance queue and retry"
+                 vid={}, bucket_slot={}, width={}, fill_byte=0x{:02x}, degree={}; caller must drain \
+                 maintenance queue and retry",
+                migration.vid,
+                migration.bucket_slot,
+                migration.width,
+                migration.fill_byte,
+                migration.degree
             ),
         }
     }
@@ -314,7 +326,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::LeafArenaExhausted { .. }
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }
-            | Self::InlinePropertyMaterializeDeferredRequired { .. } => None,
+            | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }
     }
 }

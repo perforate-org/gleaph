@@ -99,3 +99,28 @@ refused.
 
 That is the structural part of this family: the declaration has one owner, the mutation names which transition it is,
 and the schema cannot exceed what the storage models.
+
+## Slice 3: the deferred migration is one value, not two descriptions of it
+
+The inline-versus-deferred decision was already in one function
+(`materialize_inline_property_stream`), but its **result** existed as two types: the error variant carried five fields
+(`vid`, `bucket_slot`, `width`, `fill_byte`, `degree`) and the bidirectional wrapper defined `MaterializeSignal` with a
+subset of them, converting between the two by hand in `from_operation_error`. Adding a field to the job meant remembering
+to add it in three places - the variant, the wrapper struct, the conversion - and the compiler would only notice the
+third.
+
+Now there is one type: `ValueMigration` (in `graph/error.rs`, so the error variant can carry it). The error carries it,
+the wrapper queues it (`type MaterializeSignal = ValueMigration`), and `total_bytes()` states the byte count the
+stepped fill covers, which is the fact that used to be recomputed at each end. A test pins the identity: the value the
+error carries equals the value that was queued.
+
+That is the structural part of this slice: the description of a unit of work cannot drift between the layer that
+decides it and the layer that performs it, because there is only one description.
+
+### What is deliberately *not* changed
+
+The deferred case still travels as an error rather than as a return value. That is the retry-after-drain contract the
+code documents: the insert has already begun, so the migration is signalled by unwinding to the wrapper, which drains
+the queue and retries. Turning that into a return value would thread an outcome through the whole insert path - a much
+larger change than this family needs, and one the current contract does not require: a caller that ignores the signal
+gets an error, not corruption.

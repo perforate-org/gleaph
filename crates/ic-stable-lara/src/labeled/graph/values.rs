@@ -1,6 +1,6 @@
 //! Labeled graph `values` implementation.
 
-use super::error::LabeledOperationError;
+use super::error::{LabeledOperationError, ValueMigration};
 use super::{
     BucketMode, BucketSearch, LabeledInlinePropertyBytesCompactionResult,
     LabeledInlinePropertyBytesStorageStats, LabeledLaraGraph,
@@ -1091,13 +1091,13 @@ where
         let stream_bytes = u64::from(cursor.source.degree()) * u64::from(width);
         if stream_bytes > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
             return Err(
-                LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                LabeledOperationError::InlinePropertyMaterializeDeferredRequired(ValueMigration {
                     vid: src,
                     bucket_slot,
                     width,
                     fill_byte,
                     degree: cursor.source.degree(),
-                },
+                }),
             );
         }
         self.materialize_compaction_before_reserve(cursor.total_bytes())?;

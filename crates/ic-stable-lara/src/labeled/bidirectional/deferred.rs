@@ -855,40 +855,19 @@ const MATERIALIZE_DRAIN_MAX_PASSES: u32 = 16;
 /// implementation settles in 1-2 passes.
 const SIBLING_DRAIN_MAX_PASSES: u32 = 8;
 
-/// Payload of the inner `InlinePropertyMaterializeDeferredRequired` signal
-/// (Plan 0320 §F-1): the bucket whose inline-property schema must be
-/// materialized (stepped fill + descriptor publish) before the interrupted
-/// edge append can proceed.
-struct MaterializeSignal {
-    /// Vertex whose bucket triggered the signal.
-    vid: VertexId,
-    /// Bucket slot at signal time (re-resolved before enqueue).
-    bucket_slot: u64,
-    /// Target width to publish on the descriptor.
-    width: u16,
-    /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
-    fill_byte: u8,
-}
+/// The migration a wrapper has to drive after the inner graph deferred it: the error's own payload, so the two
+/// cannot describe the job differently.
+type MaterializeSignal = crate::labeled::graph::ValueMigration;
 
-impl MaterializeSignal {
-    /// Extracts the signal payload from an inner operation error, passing any
-    /// other error through unchanged.
-    fn from_operation_error(err: LabeledOperationError) -> Result<Self, LabeledOperationError> {
-        match err {
-            LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
-                vid,
-                bucket_slot,
-                width,
-                fill_byte,
-                degree: _,
-            } => Ok(Self {
-                vid,
-                bucket_slot,
-                width,
-                fill_byte,
-            }),
-            other => Err(other),
+/// Extracts the deferred work from an inner operation error, passing any other error through unchanged.
+fn materialize_signal(
+    err: LabeledOperationError,
+) -> Result<MaterializeSignal, LabeledOperationError> {
+    match err {
+        LabeledOperationError::InlinePropertyMaterializeDeferredRequired(migration) => {
+            Ok(migration)
         }
+        other => Err(other),
     }
 }
 
@@ -1925,7 +1904,7 @@ where
     ) -> Result<R, DeferredBidirectionalLabeledError> {
         match half() {
             Ok(result) => Ok(result),
-            Err(err) => match MaterializeSignal::from_operation_error(err) {
+            Err(err) => match materialize_signal(err) {
                 Ok(signal) => {
                     let bucket_slot =
                         self.run_inline_property_materialize(orientation, label_id, &signal)?;
@@ -8284,6 +8263,7 @@ mod tests {
             bucket_slot: slot,
             width: 8,
             fill_byte: 0xA5,
+            degree: 3,
         };
         assert!(matches!(
             graph.run_inline_property_materialize(Orientation::Forward, label, &signal),

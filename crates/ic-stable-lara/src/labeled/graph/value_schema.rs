@@ -81,6 +81,35 @@ where
 }
 
 #[cfg(test)]
+mod migration_signal_tests {
+    use crate::VertexId;
+    use crate::labeled::graph::{LabeledOperationError, ValueMigration};
+
+    /// The deferred work is one value: the error carries it, and its byte count is the one the stepped fill uses.
+    #[test]
+    fn the_deferred_signal_is_the_work_itself() {
+        let queued = ValueMigration {
+            vid: VertexId::from(7),
+            bucket_slot: 42,
+            width: 4,
+            fill_byte: 0xA5,
+            degree: 600,
+        };
+        assert_eq!(queued.total_bytes(), 2_400);
+        let error = LabeledOperationError::InlinePropertyMaterializeDeferredRequired(queued);
+        match error {
+            LabeledOperationError::InlinePropertyMaterializeDeferredRequired(carried) => {
+                assert_eq!(
+                    carried, queued,
+                    "the error carries the work, not a copy of it"
+                )
+            }
+            other => panic!("wrong variant: {other}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod construction_tests {
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::record::{LabelBucket, LabelBucketFieldError};
