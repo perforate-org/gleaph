@@ -1133,6 +1133,93 @@ mod tests {
         assert_eq!(after_second.degree(), 2, "both labels have a bucket");
     }
 
+    /// A value-carrying second label joins a 10 000-row vertex the same way the valueless one does: the tiny bucket
+    /// promotes into a run, and the width the new edges carry is materialized on that run-backed bucket.
+    #[test]
+    fn a_valued_second_label_joins_a_ten_thousand_row_vertex() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        // The width-carrying edge type only exists in the inline-property fixture, which keeps segment 32; the leaf
+        // geometry is the same shape (sixteen-plus vertices per leaf, one slice each), just wider.
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let first = BucketLabelKey::directed_from_index(2);
+        for target in 0..10_000u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    first,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &[],
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("noise insert");
+        }
+        let second = BucketLabelKey::directed_from_index(3);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, second, 2)
+            .expect("declare the value width");
+        for target in 0..5u32 {
+            let value = u16::try_from(50_000 + target).expect("fits").to_le_bytes();
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    second,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        50_000 + target,
+                        &value,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("valued edge {target}: {error}"));
+        }
+        // The point of the test: the second label's bucket is run-backed, so its values are materialized on a run
+        // rather than a slab prefix, and the width the edges carry survived the promotion and the migration.
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, second)
+            .expect("find")
+            .expect("the valued label has a bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert_eq!(
+            bucket.stored_slots(),
+            0,
+            "the second label took the run-backed promotion"
+        );
+        assert!(
+            bucket.edge_run().is_some(),
+            "a span-less bucket must name the run its rows are in"
+        );
+        assert_eq!(bucket.inline_property_byte_width(), 2);
+
+        // Every valued row reads back its own value, whichever plane backs it.
+        let mut read = Vec::new();
+        let _ = graph
+            .visit_edges_with_inline_property(
+                vid,
+                second,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |slot, item| {
+                    read.push((
+                        slot.raw(),
+                        u16::from_le_bytes(
+                            item.inline_property.bytes().try_into().expect("width 2"),
+                        ),
+                    ));
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("read the valued label");
+        assert_eq!(read.len(), 5, "five valued rows");
+        for (_, value) in read {
+            assert!(
+                (50_000..50_005).contains(&value),
+                "value {value} is not one this test inserted"
+            );
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

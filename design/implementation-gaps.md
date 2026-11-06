@@ -282,6 +282,15 @@ defect from being rediscovered without its prior reasoning.
   run as well (ADR 0099), the tree promotion of a run-backed bucket wants its own reading, and the bench fixture that
   trapped should now run - which is the last piece of this gap.
 
+- **Value-carrying edges need no extra plumbing, verified 2026-11-07.** The concern was that a run-backed promotion
+  would lose a width. It cannot: tiny buckets hold no values at all (a width-carrying edge forces promotion before any
+  value is stored - the rule is stated at the tiny insert path), so the promotion sees width 0 and publishes width 0,
+  and the retried insert then declares the width on a normal slab bucket whose rows happen to be in a run. The values
+  plane materializes onto that run through the path it already had. The test
+  `a_valued_second_label_joins_a_ten_thousand_row_vertex` pins it the strong way: 10 000 valueless edges, then a width-2
+  label whose bucket is **run-backed** (`stored_slots == 0`, a run named, width 2), and every row reads back its own
+  value.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
