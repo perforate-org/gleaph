@@ -177,6 +177,8 @@ pub enum LabeledOperationError {
     /// plus the (already-bumped) `degree` so the wrapper can size the
     /// stepped fill exactly.
     InlinePropertyMaterializeDeferredRequired(ValueMigration),
+    /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
+    BucketDescriptorRow(BucketDescriptorRowUnavailable),
 }
 
 /// A migration the graph could not finish inline: the work a caller has to drive.
@@ -201,6 +203,34 @@ impl ValueMigration {
     /// Bytes the stepped fill must cover: every live ordinal gets a block, wherever it lives (ADR 0099).
     pub const fn total_bytes(&self) -> u64 {
         self.degree as u64 * self.width as u64
+    }
+}
+
+/// A vertex whose bucket-descriptor row cannot be located: the row is the vertex's `degree + slack` slots, and that
+/// sum is the invariant every descriptor read and write depends on.
+///
+/// This is its own error rather than an overflow because the two ways it fails need different answers - a
+/// default-labeled vertex has no row by design, while a normal vertex whose degree plus slack overflowed is a
+/// corruption or a placement bug - and an `overflow()` at the site told a probe neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BucketDescriptorRowUnavailable {
+    /// The vertex whose row could not be located.
+    pub vid: VertexId,
+    /// The degree the vertex reported.
+    pub degree: u32,
+    /// The descriptor slack the vertex carried.
+    pub slack: u32,
+    /// Whether the vertex was default-edge labelled, which has no descriptor row by design.
+    pub default_labeled: bool,
+}
+
+impl fmt::Display for BucketDescriptorRowUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "vertex {} has no bucket-descriptor row: degree={}, slack={}, default_labeled={}",
+            self.vid, self.degree, self.slack, self.default_labeled
+        )
     }
 }
 
@@ -289,6 +319,7 @@ impl fmt::Display for LabeledOperationError {
                  (property-tree deepen with BlockKind::InlinePropertyInterior is not yet \
                  wired; follow-up todo: property-tree-deepen)"
             ),
+            Self::BucketDescriptorRow(unavailable) => unavailable.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
                 "inline-property materialization exceeds INLINE_MATERIALIZE_BYTE_BUDGET: \
@@ -326,6 +357,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::LeafArenaExhausted { .. }
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }
+            | Self::BucketDescriptorRow(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }
     }

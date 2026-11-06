@@ -168,6 +168,13 @@ defect from being rediscovered without its prior reasoning.
   insert path.
 - **Impact:** the 10 000-row expand fixtures and therefore `canbench --persist` remain blocked.
 
+- **Structural change 2026-11-07: the failing site now names its cause.** Three probes at this gap could not say
+  which invariant failed, because every failure at `vertex_bucket_descriptor_row_end` arrived as
+  `CollectAllocationOverflow`. The site now answers `LabeledOperationError::BucketDescriptorRow`, which carries the
+  vertex, its `degree`, its `slack` and whether it is default-edge labelled - the four numbers each probe went
+  looking for by hand. A test pins the message. This does not make room on the vertex; it makes the *next* run
+  produce the answer instead of another round of instrumentation.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

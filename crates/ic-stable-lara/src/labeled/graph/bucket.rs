@@ -981,9 +981,18 @@ where
         if vertex.is_default_edge_labeled() {
             return self.vertex_prefix_end(vid);
         }
-        let span = vertex
-            .label_bucket_descriptor_span()
-            .ok_or(LaraOperationError::overflow())?;
+        // The row is the vertex's `degree + slack` slots. Its absence is reported with the fields that explain it:
+        // a probe asked which invariant failed at this site and a bare `overflow()` could not answer.
+        let span = vertex.label_bucket_descriptor_span().ok_or_else(|| {
+            LabeledOperationError::BucketDescriptorRow(
+                crate::labeled::graph::error::BucketDescriptorRowUnavailable {
+                    vid,
+                    degree: vertex.degree(),
+                    slack: u32::from(vertex.bucket_slack_slots()),
+                    default_labeled: vertex.is_default_edge_labeled(),
+                },
+            )
+        })?;
         vertex
             .base_slot_start()
             .checked_add(u64::from(span))
@@ -1025,6 +1034,35 @@ mod tests {
     use super::super::test_support::*;
     use super::super::{LEAF_VERTEX_EDGE_SEGMENT_DENSITY, *};
     use crate::VertexId;
+
+    /// The descriptor row's absence names its cause instead of reporting a generic overflow.
+    ///
+    /// `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` was traced to this site three times and each probe could not say which
+    /// invariant had failed, because every failure arrived as `CollectAllocationOverflow`. The error now carries the
+    /// vertex's degree, slack and labelling, which is what those probes wanted to print.
+    #[test]
+    fn a_missing_descriptor_row_names_its_cause() {
+        use crate::labeled::graph::error::BucketDescriptorRowUnavailable;
+        let graph = inline_property_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let vid = VertexId::from(0);
+        // A default-edge-labelled vertex has no descriptor row by design - but its span answers `None` only for that
+        // reason here, and the error says so rather than leaving a caller to guess.
+        let unavailable = BucketDescriptorRowUnavailable {
+            vid,
+            degree: 10_000,
+            slack: 3,
+            default_labeled: false,
+        };
+        let error = LabeledOperationError::BucketDescriptorRow(unavailable);
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("degree=10000")
+                && rendered.contains("slack=3")
+                && rendered.contains("default_labeled=false"),
+            "the message must name the fields a probe needs: {rendered}"
+        );
+    }
 
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
