@@ -20,11 +20,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// order. Only the selected range is buffered, with no decoded replay or allocation slack.
     /// `Break` stops decoding and callbacks, not the bulk read already completed for this range.
     /// Callers must dispatch inline/tree records before invoking this slab-plus-spill reader.
-    pub(crate) fn visit_row_edges<V: CsrVertex, B>(
+    pub(crate) fn visit_row_edges_with_visibility<V: CsrVertex, B>(
         &self,
         row: &V,
         order: TraversalOrder,
         window: TraversalWindow,
+        visibility: RowVisibility,
         mut visit: impl FnMut(u32, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LaraOperationError>
     where
@@ -46,17 +47,46 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
         let mut bytes = Vec::new();
         self.read_row_range(row, prefix, lo..hi, &mut bytes)?;
-        Ok(visit_edge_bytes(&bytes, lo, order, &mut visit))
+        Ok(visit_edge_bytes(&bytes, lo, order, visibility, &mut visit))
     }
 
-    /// Visits sorted, deduplicated row-local slots. Adjacent selections share a range read;
-    /// isolated selections never cause unrelated rows to be read. The labeled boundary owns
-    /// normalization and tiny/tree dispatch. A break prevents reading subsequent ranges.
+    /// Visits the live rows of a window; tombstones are not rows to a reader.
+    pub(crate) fn visit_row_edges<V: CsrVertex, B>(
+        &self,
+        row: &V,
+        order: TraversalOrder,
+        window: TraversalWindow,
+        visit: impl FnMut(u32, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LaraOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_row_edges_with_visibility(row, order, window, RowVisibility::LiveRows, visit)
+    }
+
+    /// Visits the selected slots that hold live rows.
     pub(crate) fn visit_row_edge_slots<V: CsrVertex, B>(
         &self,
         row: &V,
         slots: &[u32],
         order: TraversalOrder,
+        visit: impl FnMut(u32, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LaraOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_row_edge_slots_with_visibility(row, slots, order, RowVisibility::LiveRows, visit)
+    }
+
+    /// Visits sorted, deduplicated row-local slots. Adjacent selections share a range read;
+    /// isolated selections never cause unrelated rows to be read. The labeled boundary owns
+    /// normalization and tiny/tree dispatch. A break prevents reading subsequent ranges.
+    pub(crate) fn visit_row_edge_slots_with_visibility<V: CsrVertex, B>(
+        &self,
+        row: &V,
+        slots: &[u32],
+        order: TraversalOrder,
+        visibility: RowVisibility,
         mut visit: impl FnMut(u32, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LaraOperationError>
     where
@@ -77,7 +107,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 continue;
             }
             self.read_row_range(row, prefix, lo..hi, &mut bytes)?;
-            if let ControlFlow::Break(value) = visit_edge_bytes(&bytes, lo, order, &mut visit) {
+            if let ControlFlow::Break(value) =
+                visit_edge_bytes(&bytes, lo, order, visibility, &mut visit)
+            {
                 return Ok(ControlFlow::Break(value));
             }
         }
@@ -378,16 +410,39 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 }
 
+/// Which rows a walk reports.
+///
+/// Two callers want two different answers, and the difference is the contract rather than an implementation
+/// detail: a read wants the live rows, while anything that has to see the holes - removal, compaction,
+/// tombstone reuse, a topology rewrite - needs every position, tombstones included. Naming the choice is what
+/// stops an entry from quietly reporting one under the other's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowVisibility {
+    /// Live rows only: a tombstone is not a row.
+    LiveRows,
+    /// Every position in the range, tombstones included.
+    Positions,
+}
+
+impl RowVisibility {
+    /// Whether a cell holding a tombstone is reported.
+    const fn reports_tombstones(self) -> bool {
+        matches!(self, Self::Positions)
+    }
+}
+
 fn visit_edge_bytes<E: CsrEdge + CsrEdgeTombstone, B>(
     bytes: &[u8],
     low: u32,
     order: TraversalOrder,
+    visibility: RowVisibility,
     visit: &mut impl FnMut(u32, E) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let mut emit = |(index, raw): (usize, &[u8])| {
         let slot = low + index as u32;
         let edge = E::read_from(raw).with_slot_index(slot);
-        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+        if !visibility.reports_tombstones() && (edge.is_deleted_slot() || edge.is_tombstone_edge())
+        {
             ControlFlow::Continue(())
         } else {
             visit(slot, edge)

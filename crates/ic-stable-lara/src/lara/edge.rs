@@ -105,6 +105,7 @@ mod visit_window;
 pub use error::InitError;
 pub(crate) use iter::OutEdgeSlabIter;
 pub use iter::{DescOutEdgesIter, OutEdgesIter};
+pub(crate) use scan::RowVisibility;
 pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 

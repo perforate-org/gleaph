@@ -881,7 +881,7 @@ mod tests {
                     .expect("poison later edge root");
 
                 let mut seen = Vec::new();
-                let result = graph.visit_edges(vid, label, order, |slot, edge| {
+                let result = graph.visit_edge_positions(vid, label, order, |slot, edge| {
                     seen.push((slot.raw(), edge.target));
                     if slot.raw() == stop_slot {
                         ControlFlow::Break(String::from("stopped at tombstone"))
@@ -912,12 +912,9 @@ mod tests {
                 assert_eq!(seen, expected);
                 assert!(
                     matches!(
-                        graph.visit_edges(
-                            vid,
-                            label,
-                            order,
-                            |_, _| ControlFlow::<()>::Continue(())
-                        ),
+                        graph.visit_edge_positions(vid, label, order, |_, _| {
+                            ControlFlow::<()>::Continue(())
+                        }),
                         Err(LabeledOperationError::LtbBlock(BlockError::NotMinted {
                             id: u32::MAX
                         }))
@@ -1246,7 +1243,7 @@ mod tests {
                 count_desc = count_desc.saturating_add(1);
                 ControlFlow::<()>::Continue(())
             })
-            .expect("visit_edges descending");
+            .expect("visit_edge_positions descending");
         assert_eq!(count_desc, stored, "descending must visit all stored edges");
         assert_eq!(
             first_target_desc,
@@ -1268,7 +1265,7 @@ mod tests {
                 count_asc = count_asc.saturating_add(1);
                 ControlFlow::<()>::Continue(())
             })
-            .expect("visit_edges ascending");
+            .expect("visit_edge_positions ascending");
         assert_eq!(count_asc, stored, "ascending must visit all stored edges");
         assert_eq!(first_target_asc, 100, "first visit in asc is lowest slot");
         assert_eq!(
@@ -1341,14 +1338,14 @@ mod tests {
         let mut visited_positions: Vec<u32> = Vec::new();
         let mut tombstone_seen_at: Option<u32> = None;
         let _ = graph
-            .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+            .visit_edge_positions(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
                 if edge.is_tombstone_edge() && tombstone_seen_at.is_none() {
                     tombstone_seen_at = Some(slot.raw());
                 }
                 visited_positions.push(slot.raw());
                 ControlFlow::<()>::Continue(())
             })
-            .expect("visit_edges ascending");
+            .expect("visit_edge_positions ascending");
         assert_eq!(
             visited_positions.len() as u32,
             stored,
@@ -1372,14 +1369,14 @@ mod tests {
         let mut visited_positions_desc: Vec<u32> = Vec::new();
         let mut tombstone_seen_desc: Option<u32> = None;
         let _ = graph
-            .visit_edges(vid, label, OutEdgeOrder::Descending, |slot, edge| {
+            .visit_edge_positions(vid, label, OutEdgeOrder::Descending, |slot, edge| {
                 if edge.is_tombstone_edge() && tombstone_seen_desc.is_none() {
                     tombstone_seen_desc = Some(slot.raw());
                 }
                 visited_positions_desc.push(slot.raw());
                 ControlFlow::<()>::Continue(())
             })
-            .expect("visit_edges descending");
+            .expect("visit_edge_positions descending");
         assert_eq!(
             visited_positions_desc.len() as u32,
             stored,

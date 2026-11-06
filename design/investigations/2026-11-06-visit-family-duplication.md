@@ -136,3 +136,40 @@ That is the answer to "is there a simpler contract to unify under": there is for
 lazy resolution, validate on scan, stop at break - all now true for both), and there is not for the *reporting*.
 The two entries are one walker with two row-visibility contracts, and the duplication that remains is the
 with-values family, which repeats the dispatch rather than sharing this one.
+
+## Resolution: the difference is row visibility, and it is now a type
+
+The tombstone question was not a contract between a window and a whole row - it was **inconsistent between
+storage classes under the same entry**. `visit_edges` on a tree bucket reported the holes at their positions; on
+a slab bucket the row scan hid them. Nothing in either name or signature said which you would get, and three
+tests happened to encode the tree answer while every slab reader relied on the other.
+
+Two callers want two answers for a real reason:
+
+| Purpose | Needs | Examples |
+| --- | --- | --- |
+| Reading | live rows only: a tombstone is not a row | pagination, scans, a caller that wants edges |
+| Mutation / topology | every position, tombstones included | removal, compaction, tombstone reuse, a rewrite that has to keep positions |
+
+So the choice is now a value, `lara::edge::RowVisibility { LiveRows, Positions }`, threaded through the row scan
+(where the tombstone is still skipped at the source for `LiveRows`), and the graph exposes the two purposes as
+two entries:
+
+| Entry | Contract |
+| --- | --- |
+| `visit_edges` | whole row, **live rows only** (the read shape) |
+| `visit_edge_positions` | whole row, **every position including tombstones** (the mutation shape) |
+| `visit_edges_with_visibility` | the one walker both call, for a caller that has the choice as a value |
+
+`visit_edges` is uniform now: a slab bucket and a tree bucket answer the same rows under it. The three tests that
+encoded the tree answer - `tree_visit_break_stops_topology_reads`,
+`tombstoned_tree_bucket_visit_preserves_logical_positions`, and the native-visitor half of
+`point_state_tree_native_boundaries_and_errors_preserve_all_memories` - now ask for `visit_edge_positions`,
+which is what they were actually testing: that mutations see the holes.
+
+The windowed entry keeps its own contract deliberately: a window is a page over live rows, and
+`visit_edges_window_tree_matches_slab_tombstone_positions` asserts that both storage classes agree on it. The
+unification that a single walker would buy is therefore not blocked by the walk any more - it is blocked by
+`visit_edge_positions` having no windowed form yet. That is the next slice: the tree window walker yields
+tombstones when asked, `visit_rows(owner, label, order, selection, visibility)` becomes the only dispatcher, and
+`visit_edges` / `visit_edge_positions` / `visit_edges_window` become adapters over it.

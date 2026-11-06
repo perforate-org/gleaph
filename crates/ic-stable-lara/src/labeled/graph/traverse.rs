@@ -515,6 +515,35 @@ where
             .map_err(Into::into)
     }
 
+    /// Adds label identity to the store's slab walk, reporting the rows the caller names.
+    #[inline]
+    fn visit_slab_bucket_edges_with_visibility<B>(
+        &self,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        window: TraversalWindow,
+        visibility: crate::lara::edge::RowVisibility,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.edges
+            .visit_row_edges_with_visibility(
+                bucket,
+                order.into(),
+                window,
+                visibility,
+                |slot, edge| {
+                    visit(
+                        BucketEntryPosition::new(slot),
+                        edge.with_label_id(bucket.bucket_label_key().raw()),
+                    )
+                },
+            )
+            .map_err(Into::into)
+    }
+
     /// Visits every live edge together with its inline-property bytes in a dense,
     /// tombstone-free label bucket by bulk-reading both the topology slab and the
     /// inline-property bytes span in one call each.
@@ -737,16 +766,69 @@ where
 
     /// Visits every live edge for one label in the requested order.
     #[allow(clippy::needless_return)]
+    /// Visits one label's whole row, reporting live rows only.
+    ///
+    /// This is the read-shaped contract: a tombstone is not a row, so a reader never sees one. Anything that
+    /// has to see the holes - removal, compaction, tombstone reuse, a topology rewrite - asks
+    /// [`Self::visit_edge_positions`] instead, which reports every position.
     pub(crate) fn visit_edges<B>(
         &self,
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
+        visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_edges_with_visibility(
+            owner,
+            label,
+            order,
+            crate::lara::edge::RowVisibility::LiveRows,
+            visit,
+        )
+    }
+
+    /// Visits one label's whole row, tombstones included.
+    ///
+    /// The mutation-shaped contract: removal, compaction and tombstone reuse have to see the holes at their
+    /// positions, so this entry reports them as the sentinel cells they are.
+    pub(crate) fn visit_edge_positions<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_edges_with_visibility(
+            owner,
+            label,
+            order,
+            crate::lara::edge::RowVisibility::Positions,
+            visit,
+        )
+    }
+
+    /// One whole-row walker, with the row visibility the caller names.
+    pub(crate) fn visit_edges_with_visibility<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        visibility: crate::lara::edge::RowVisibility,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
+        use crate::lara::edge::RowVisibility;
+        // A read never wants a tombstone, and every storage class can skip one at the source. The mutation
+        // shape needs the position, which the slab walker can report but the tree walkers currently cannot, so
+        // the tree arm filters the other way.
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
         if vertex.is_default_edge_labeled() {
@@ -755,10 +837,11 @@ where
             }
             return self
                 .edges
-                .visit_row_edges(
+                .visit_row_edges_with_visibility(
                     &vertex,
                     order.into(),
                     TraversalWindow::unbounded(),
+                    visibility,
                     |slot, edge| {
                         visit(
                             BucketEntryPosition::new(slot),
@@ -774,31 +857,34 @@ where
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
-        // Mode dispatch precedes storage reads: tiny is inline, slab mode reads
-        // initialized prefix plus spill directly, and tree has its own reader.
         match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
-            // not storage); the slow funnel serves them inline.
             BucketMode::Tiny => {
                 self.visit_tiny_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
             }
-            BucketMode::Slab => {
-                self.visit_slab_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
-            }
-            // Tree arm: LTB walk (arm-guaranteed tree-only).
-            BucketMode::Tree => {
-                // Tree-mode visits yield tombstone-inclusive slot positions
-                // (ADR 0088 §2). Forward Break directly; the ControlFlow<B>
-                // primitive propagates it.
-                return super::tree_read::visit_tree_mode_label_bucket_edges(
-                    self,
-                    label.raw(),
-                    &bucket,
-                    bucket.degree(),
-                    order,
-                    |slot, edge| visit(BucketEntryPosition::new(slot), edge),
-                );
-            }
+            BucketMode::Slab => self.visit_slab_bucket_edges_with_visibility(
+                &bucket,
+                order,
+                TraversalWindow::unbounded(),
+                visibility,
+                visit,
+            ),
+            BucketMode::Tree => super::tree_read::visit_tree_mode_label_bucket_edges(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot, edge| {
+                    // The tree walk reports positions; a read drops the holes it reported.
+                    if visibility == RowVisibility::LiveRows
+                        && (edge.is_deleted_slot() || edge.is_tombstone_edge())
+                    {
+                        ControlFlow::Continue(())
+                    } else {
+                        visit(BucketEntryPosition::new(slot), edge)
+                    }
+                },
+            ),
         }
     }
 
