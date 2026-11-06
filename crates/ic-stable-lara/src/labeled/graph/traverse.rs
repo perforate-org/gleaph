@@ -1589,6 +1589,30 @@ where
                                 // Fully inside the window ⇒ the scan covers the
                                 // whole block ⇒ the scan self-verifies against
                                 // the header count (fail closed).
+                                if let ControlFlow::Break(value) =
+                                    super::tree_read::scan_tree_block_range(
+                                        self,
+                                        label.raw(),
+                                        block_id,
+                                        block_first_slot,
+                                        block_end_slot,
+                                        scan_lo,
+                                        scan_hi,
+                                        header.tombstone_count,
+                                        &mut |slot, edge| {
+                                            visit(BucketEntryPosition::new(slot), edge)
+                                        },
+                                    )?
+                                {
+                                    break_value = Some(value);
+                                    break;
+                                }
+                                continue;
+                            }
+                            // Boundary block: payload scan over the window cut;
+                            // the in-closure position cut remains exact. Partial
+                            // scans carry no header verification.
+                            if let ControlFlow::Break(value) =
                                 super::tree_read::scan_tree_block_range(
                                     self,
                                     label.raw(),
@@ -1597,41 +1621,11 @@ where
                                     block_end_slot,
                                     scan_lo,
                                     scan_hi,
-                                    header.tombstone_count,
-                                    &mut |slot, edge| {
-                                        if let ControlFlow::Break(value) =
-                                            visit(BucketEntryPosition::new(slot), edge)
-                                        {
-                                            break_value = Some(value);
-                                        }
-                                    },
-                                )?;
-                                if break_value.is_some() {
-                                    break;
-                                }
-                                continue;
-                            }
-                            // Boundary block: payload scan over the window cut;
-                            // the in-closure position cut remains exact. Partial
-                            // scans carry no header verification.
-                            super::tree_read::scan_tree_block_range(
-                                self,
-                                label.raw(),
-                                block_id,
-                                block_first_slot,
-                                block_end_slot,
-                                scan_lo,
-                                scan_hi,
-                                0,
-                                &mut |slot, edge| {
-                                    if let ControlFlow::Break(value) =
-                                        visit(BucketEntryPosition::new(slot), edge)
-                                    {
-                                        break_value = Some(value);
-                                    }
-                                },
-                            )?;
-                            if break_value.is_some() {
+                                    0,
+                                    &mut |slot, edge| visit(BucketEntryPosition::new(slot), edge),
+                                )?
+                            {
+                                break_value = Some(value);
                                 break;
                             }
                         }
@@ -1670,6 +1664,27 @@ where
                                     continue;
                                 }
                                 // Fully inside ⇒ full-block scan ⇒ self-verified.
+                                if let ControlFlow::Break(value) =
+                                    super::tree_read::scan_tree_block_range_desc(
+                                        self,
+                                        label.raw(),
+                                        block_id,
+                                        block_first_slot,
+                                        block_end_slot,
+                                        scan_slot_lo,
+                                        scan_slot_hi,
+                                        header.tombstone_count,
+                                        &mut |slot, edge| {
+                                            visit(BucketEntryPosition::new(slot), edge)
+                                        },
+                                    )?
+                                {
+                                    break_value = Some(value);
+                                    break;
+                                }
+                                continue;
+                            }
+                            if let ControlFlow::Break(value) =
                                 super::tree_read::scan_tree_block_range_desc(
                                     self,
                                     label.raw(),
@@ -1678,38 +1693,11 @@ where
                                     block_end_slot,
                                     scan_slot_lo,
                                     scan_slot_hi,
-                                    header.tombstone_count,
-                                    &mut |slot, edge| {
-                                        if let ControlFlow::Break(value) =
-                                            visit(BucketEntryPosition::new(slot), edge)
-                                        {
-                                            break_value = Some(value);
-                                        }
-                                    },
-                                )?;
-                                if break_value.is_some() {
-                                    break;
-                                }
-                                continue;
-                            }
-                            super::tree_read::scan_tree_block_range_desc(
-                                self,
-                                label.raw(),
-                                block_id,
-                                block_first_slot,
-                                block_end_slot,
-                                scan_slot_lo,
-                                scan_slot_hi,
-                                0,
-                                &mut |slot, edge| {
-                                    if let ControlFlow::Break(value) =
-                                        visit(BucketEntryPosition::new(slot), edge)
-                                    {
-                                        break_value = Some(value);
-                                    }
-                                },
-                            )?;
-                            if break_value.is_some() {
+                                    0,
+                                    &mut |slot, edge| visit(BucketEntryPosition::new(slot), edge),
+                                )?
+                            {
+                                break_value = Some(value);
                                 break;
                             }
                         }

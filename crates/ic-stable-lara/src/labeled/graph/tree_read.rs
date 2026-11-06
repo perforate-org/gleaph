@@ -643,7 +643,7 @@ where
 /// (`LabeledOperationError::LtbBlock(BlockError::CountMismatch)`).
 /// Partial (boundary-window) scans carry no verification.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn scan_tree_block_range<E, M>(
+pub(crate) fn scan_tree_block_range<E, M, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     block_id: u32,
@@ -652,8 +652,8 @@ pub(crate) fn scan_tree_block_range<E, M>(
     scan_lo: u32,
     scan_hi: u32,
     header_tombstone_count: u16,
-    mut visit: impl FnMut(u32, E),
-) -> Result<(), LabeledOperationError>
+    mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
+) -> Result<std::ops::ControlFlow<B>, LabeledOperationError>
 where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
@@ -673,7 +673,11 @@ where
             scanned_tombstones += 1;
             continue;
         }
-        visit(slot, edge);
+        // A break stops the scan where it happens: the remaining slots are not paid for, so the caller's
+        // "no read after Break" guarantee holds at the position rather than at the block boundary.
+        if let std::ops::ControlFlow::Break(value) = visit(slot, edge) {
+            return Ok(std::ops::ControlFlow::Break(value));
+        }
     }
     if scan_lo == block_first_slot
         && scan_hi == block_end_slot
@@ -687,14 +691,14 @@ where
             },
         ));
     }
-    Ok(())
+    Ok(std::ops::ControlFlow::Continue(()))
 }
 
 /// Plan 0338 descending-order twin of [`scan_tree_block_range`]: the
 /// block's slot sub-range is walked downward. The S2 verification is
 /// order-independent (the scanned marker set is identical).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn scan_tree_block_range_desc<E, M>(
+pub(crate) fn scan_tree_block_range_desc<E, M, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     block_id: u32,
@@ -703,8 +707,8 @@ pub(crate) fn scan_tree_block_range_desc<E, M>(
     scan_lo: u32,
     scan_hi: u32,
     header_tombstone_count: u16,
-    mut visit: impl FnMut(u32, E),
-) -> Result<(), LabeledOperationError>
+    mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
+) -> Result<std::ops::ControlFlow<B>, LabeledOperationError>
 where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
@@ -724,7 +728,11 @@ where
             scanned_tombstones += 1;
             continue;
         }
-        visit(slot, edge);
+        // A break stops the scan where it happens: the remaining slots are not paid for, so the caller's
+        // "no read after Break" guarantee holds at the position rather than at the block boundary.
+        if let std::ops::ControlFlow::Break(value) = visit(slot, edge) {
+            return Ok(std::ops::ControlFlow::Break(value));
+        }
     }
     if scan_lo == block_first_slot
         && scan_hi == block_end_slot
@@ -738,7 +746,7 @@ where
             },
         ));
     }
-    Ok(())
+    Ok(std::ops::ControlFlow::Continue(()))
 }
 
 #[cfg(test)]

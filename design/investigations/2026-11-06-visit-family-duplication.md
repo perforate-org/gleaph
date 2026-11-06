@@ -106,3 +106,33 @@ the callback so the scan stops at the position. With that, the contract above ho
 becomes `visit_edges_window` with an unbounded window - one walker, and one entry fewer.
 
 The measurement to beat is unchanged: **8 functions owning a mode dispatch; 3 belong to the with-values family.**
+
+### The third departure, and why it is the one that stays
+
+Item 2 is now done: `scan_tree_block_range` / `_desc` carry a `ControlFlow` out of the callback, so the windowed
+walk stops at the break position instead of finishing the block it landed in. That is a strict improvement -
+"no read after Break" now holds at the position in both entries - and `visit_edges` still cannot delegate,
+because a third difference remains and it is **semantic**:
+
+| Entry | Rows it reports |
+| --- | --- |
+| `visit_edges` (whole row) | tombstone-inclusive **positions**: a deleted slot is reported as the sentinel edge it holds (ADR 0088 §2) |
+| `visit_edges_window` (a window) | live rows only, at their positions |
+
+Both are asserted, by name:
+
+- `tree_visit_break_stops_topology_reads` removes the row at the break slot and expects the walk to report it
+  as `EDGE_TOMBSTONE_SENTINEL`; the break lands on a tombstone, so a walk that skipped tombstones would not
+  break there at all.
+- `visit_edges_window_tree_matches_slab_tombstone_positions` expects a window over the same bucket to report
+  `[(1, 101), (3, 103)]` - the hole at 2 absent - and that is what the slab window reports too, which is the
+  point of the test: a window names the same live rows whichever storage class holds them.
+
+So the difference is **what a window means**, not how it is implemented: pagination wants live rows, topology
+wants positions. Making them one entry would have to change one of those contracts - and the slab window's, to
+keep the storage classes interchangeable.
+
+That is the answer to "is there a simpler contract to unify under": there is for the *walk* (a slot range,
+lazy resolution, validate on scan, stop at break - all now true for both), and there is not for the *reporting*.
+The two entries are one walker with two row-visibility contracts, and the duplication that remains is the
+with-values family, which repeats the dispatch rather than sharing this one.
