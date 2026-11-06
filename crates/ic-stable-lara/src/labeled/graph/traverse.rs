@@ -1566,7 +1566,8 @@ where
         // tombstone-inclusive positions before visiting live rows.
         match BucketMode::from_bucket(&bucket) {
             BucketMode::Tiny => self.visit_tiny_bucket_edges(&bucket, order, window, visit),
-            BucketMode::Slab => self.visit_slab_bucket_edges(&bucket, order, window, visit),
+            BucketMode::Slab => self
+                .visit_slab_bucket_edges_with_visibility(&bucket, order, window, visibility, visit),
             // Tree arm: LTB walk with window (arm-guaranteed tree-only).
             BucketMode::Tree => {
                 // Tree-mode visits yield tombstone-inclusive slot positions
@@ -7010,5 +7011,140 @@ mod g6_zero_read_tests {
         // (predicted 105R/0W, measured 109R/0W: the wider descriptor row straddles page boundaries
         // on the descriptor reads).
         assert_eq!((r, w), (107, 0), "tiny scan byte shape changed");
+    }
+}
+
+#[cfg(test)]
+mod row_visibility_tests {
+    use super::super::EdgePlacementPolicy;
+    use super::super::test_support::*;
+    use super::*;
+
+    /// A slab bucket holding `rows` edges with the row at `hole` removed.
+    fn slab_with_hole(
+        rows: u32,
+        hole: u32,
+    ) -> (
+        LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+        VertexId,
+        BucketLabelKey,
+    ) {
+        let graph = test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 100..100 + rows {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph
+            .remove_edge_at_slot(vid, label, hole)
+            .expect("remove")
+            .expect("the row existed");
+        (graph, vid, label)
+    }
+
+    fn positions(
+        graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+    ) -> Vec<(u32, u32)> {
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edge_positions(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                seen.push((slot.raw(), edge.target));
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("positions");
+        seen
+    }
+
+    fn live(
+        graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+    ) -> Vec<(u32, u32)> {
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                seen.push((slot.raw(), edge.target));
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("live");
+        seen
+    }
+
+    fn page(
+        graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+        window: TraversalWindow,
+    ) -> Vec<(u32, u32)> {
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edges_window(vid, label, OutEdgeOrder::Ascending, window, |slot, edge| {
+                seen.push((slot.raw(), edge.target));
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("page");
+        seen
+    }
+
+    /// The three shapes answer what their names promise, and a slab bucket answers them the same way a tree
+    /// bucket does - which is the property the entries exist to make checkable.
+    #[test]
+    fn the_three_shapes_agree_across_storage_classes() {
+        let (graph, vid, label) = slab_with_hole(8, 3);
+        assert_eq!(
+            positions(&graph, vid, label).len(),
+            8,
+            "positions cover every slot"
+        );
+        assert_eq!(live(&graph, vid, label).len(), 7, "a read hides the hole");
+        assert!(
+            positions(&graph, vid, label)
+                .iter()
+                .any(|(slot, _)| *slot == 3),
+            "the mutation shape names the hole at its position"
+        );
+        assert!(
+            !live(&graph, vid, label).iter().any(|(slot, _)| *slot == 3),
+            "the read shape does not"
+        );
+        assert_eq!(
+            page(&graph, vid, label, TraversalWindow::new(0, Some(4))).len(),
+            3,
+            "a page over live rows skips the hole inside the page"
+        );
+    }
+
+    /// A page reports live rows only, whatever the window: the hole is not a row to a reader, and the window
+    /// does not resurrect it.
+    #[test]
+    fn a_page_over_a_hole_skips_it() {
+        let (graph, vid, label) = slab_with_hole(8, 3);
+        for window in [
+            TraversalWindow::new(0, Some(8)),
+            TraversalWindow::new(2, Some(4)),
+            TraversalWindow::new(3, Some(1)),
+        ] {
+            assert!(
+                !page(&graph, vid, label, window)
+                    .iter()
+                    .any(|(slot, _)| *slot == 3),
+                "window {window:?} must not report the hole"
+            );
+        }
+        assert!(
+            positions(&graph, vid, label)
+                .iter()
+                .any(|(slot, _)| *slot == 3),
+            "the mutation shape still names it"
+        );
     }
 }
