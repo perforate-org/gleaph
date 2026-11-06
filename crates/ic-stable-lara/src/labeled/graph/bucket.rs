@@ -1426,8 +1426,11 @@ mod tests {
     /// - and the payload at block 0, offset 8 **holds row 1537's value**, whose own offset is also 8
     ///   (`(1537 % 512) * 8`).
     ///
-    /// So a reader is not mis-addressing: the promotion put another row's bytes at row 1's place, and the values it
-    /// wrote wrap at a 512-row boundary that its flush condition did not honour. That arithmetic is the next reading.
+    /// The property tree is **depth 1** (five leaves fit a root of 1024 entries), and walking it by hand shows the
+    /// remaining defect: the descriptor's value-root region has **entry 0 = block id 1**, not the first property leaf's
+    /// id. So the reader is faithful to the region it is told about, and the region is not the one the promotion wrote -
+    /// the next reading is the value root's address: which allocation the descriptor names versus which
+    /// `ensure_value_root` wrote.
     #[test]
     #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
@@ -1472,26 +1475,30 @@ mod tests {
                 .unwrap_or_else(|error| panic!("row {row}: {error}"));
             assert_eq!(value.len(), usize::from(width));
             if row == 1 {
-                // Which block does the resolver name for this slot, and does its payload hold this row's value?
-                let block = crate::labeled::graph::tree_read::resolve_property_leaf_block_id(
-                    &graph, &bucket, row,
-                )
-                .expect("resolve the property leaf");
-                let offset = crate::labeled::tree_csr::value_slot_position(
-                    crate::traverse::BucketEntryPosition::new(row),
-                    width,
-                )
-                .expect("position")
-                .offset;
+                // Walk the property tree by hand: root entry -> interior payload -> leaf payload, at row 1's offset.
+                let depth = bucket.tree_mode_property_depth();
+                let root_off = crate::labeled::graph::compact::value_root_address(&bucket);
+                let mut root_id = [0u8; 4];
+                graph.values().read_bytes(root_off, &mut root_id);
+                let root_entry = u32::from_le_bytes(root_id);
+                let mut id = root_entry;
+                if depth >= 2 {
+                    let mut child = [0u8; 4];
+                    graph
+                        .ltb()
+                        .read_payload_partial(id, 0, &mut child)
+                        .expect("read interior");
+                    id = u32::from_le_bytes(child);
+                }
                 let mut probe = vec![0u8; usize::from(width)];
                 graph
                     .ltb()
-                    .read_payload_partial(block, offset as usize, &mut probe)
-                    .expect("read payload");
+                    .read_payload_partial(id, 8, &mut probe)
+                    .expect("read leaf payload");
                 assert_eq!(
                     u32::from_le_bytes(probe[..4].try_into().expect("4 bytes")),
                     row,
-                    "resolver+offset for row {row} named block {block} offset {offset}, payload says otherwise"
+                    "depth {depth}: root entry {root_entry} -> leaf {id}, offset 8 holds another row"
                 );
             }
             assert_eq!(

@@ -264,6 +264,7 @@ mod layout;
 pub(crate) mod leaf_arena;
 mod lookup_plane;
 mod promote;
+mod property_leaf;
 mod remove;
 mod row_plane;
 mod row_view;

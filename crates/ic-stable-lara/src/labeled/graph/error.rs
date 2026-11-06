@@ -181,6 +181,8 @@ pub enum LabeledOperationError {
     BucketSpanPlacementExhausted(BucketSpanPlacementExhausted),
     /// A tree promotion's source disagreed with itself; names both sides.
     TreePromotionSourceMismatch(TreePromotionSourceMismatch),
+    /// A property leaf write would leave the leaf unsupported; names the window.
+    PropertyLeafWindowMismatch(PropertyLeafWindowMismatch),
     /// The vertex's slice cannot hold the span it asked for; names the layout reason.
     VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
@@ -352,6 +354,28 @@ impl fmt::Display for TreePromotionSourceMismatch {
     }
 }
 
+/// A property leaf write that would leave the leaf unsupported: the slot belongs to a window the writer is not
+/// filling, so sealing here would publish a leaf no id accounts for - or overwrite one that is already accounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PropertyLeafWindowMismatch {
+    /// The slot the caller tried to write.
+    pub slot: u32,
+    /// First slot of the window being filled.
+    pub window_start: u32,
+    /// Values one property leaf holds at this width.
+    pub slots_per_block: u32,
+}
+
+impl fmt::Display for PropertyLeafWindowMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "property leaf window mismatch: slot {} is outside the window starting at {} ({} slots per leaf)",
+            self.slot, self.window_start, self.slots_per_block
+        )
+    }
+}
+
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -440,6 +464,7 @@ impl fmt::Display for LabeledOperationError {
             Self::BucketDescriptorRow(unavailable) => unavailable.fmt(f),
             Self::BucketSpanPlacementExhausted(exhausted) => exhausted.fmt(f),
             Self::TreePromotionSourceMismatch(mismatch) => mismatch.fmt(f),
+            Self::PropertyLeafWindowMismatch(mismatch) => mismatch.fmt(f),
             Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
@@ -481,6 +506,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::BucketDescriptorRow(_)
             | Self::BucketSpanPlacementExhausted(_)
             | Self::TreePromotionSourceMismatch(_)
+            | Self::PropertyLeafWindowMismatch(_)
             | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }

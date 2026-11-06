@@ -467,9 +467,18 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             Ok(id)
         };
         let mut edge_ids = Vec::new();
-        let mut property_ids = Vec::new();
         let mut edge_payload = vec![0u8; graph.ltb().payload_bytes()];
-        let mut property_payload = vec![0u8; graph.ltb().payload_bytes()];
+        // The property leaves are built by the type that owns their window arithmetic: the caller states the slot, not
+        // an offset or a boundary (`PropertyLeafWriter`).
+        let mut property_writer = if width == 0 {
+            None
+        } else {
+            Some(super::property_leaf::PropertyLeafWriter::new(
+                width,
+                graph.ltb().payload_bytes(),
+            )?)
+        };
+        let tombstone_value = vec![0u8; usize::from(width)];
         let mut dead = 0u16;
         let tombstone = E::tombstone_edge();
         // Source slots are explicit; missing ordinals are emitted as native tree tombstones.
@@ -489,31 +498,13 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 )?);
                 dead = 0;
             }
-            if width > 0 {
-                let value_pos = crate::labeled::tree_csr::value_slot_position(
-                    crate::traverse::BucketEntryPosition::new(slot),
-                    width,
-                )
-                .ok_or(LaraOperationError::overflow())?;
-                let ppos = value_pos.offset as usize;
-                let dst = &mut property_payload[ppos..ppos + usize::from(width)];
-                if edge.is_deleted_slot() {
-                    dst.fill(0);
+            if let Some(writer) = property_writer.as_mut() {
+                let bytes: &[u8] = if edge.is_deleted_slot() {
+                    &tombstone_value
                 } else {
-                    if value.len() != usize::from(width) {
-                        return Err(LaraOperationError::overflow().into());
-                    }
-                    dst.copy_from_slice(value);
-                }
-                if value_pos.row + 1 == property_slots_per_block || slot + 1 == resident {
-                    property_ids.push(mint(
-                        BlockHeader {
-                            kind: BlockKind::InlineProperty,
-                            ..base_header
-                        },
-                        &property_payload[..ppos + usize::from(width)],
-                    )?);
-                }
+                    value
+                };
+                writer.put(slot, bytes)?;
             }
             Ok(())
         };
@@ -567,6 +558,19 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         if let Some(edge) = pending {
             emit(next, edge, &[])?;
         }
+        drop(emit);
+        let mut property_ids = Vec::new();
+        if let Some(writer) = property_writer {
+            for payload in writer.finish()? {
+                property_ids.push(mint(
+                    BlockHeader {
+                        kind: BlockKind::InlineProperty,
+                        ..base_header
+                    },
+                    &payload,
+                )?);
+            }
+        }
 
         // The same native id-block encoding builds either stream's unpublished interior levels.
         //
@@ -580,11 +584,17 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         // `id_stride` is the tree's block-id grid: edge ids occupy one edge record
         // each, property ids are packed at `PROPERTY_ID_BYTES` so that `B` of them
         // exactly fill a property block (ADR 0088 §2).
+        // An image and the entries inside it are the same fact at two levels; a caller that builds one and writes the
+        // other is how a depth-2 property tree ended up naming its leaves where its depth said interiors.
+        struct RootImage {
+            image: Vec<u8>,
+            entries: Vec<u32>,
+        }
         let mut root = |mut ids: Vec<u32>,
                         depth: u32,
                         kind: BlockKind,
                         id_stride: usize|
-         -> Result<Vec<u8>, LabeledOperationError> {
+         -> Result<RootImage, LabeledOperationError> {
             for level in 1..depth {
                 let mut parents = Vec::new();
                 for chunk in ids.chunks(BLOCK_B) {
@@ -619,7 +629,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 let offset = index * id_stride;
                 image[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
             }
-            Ok(image)
+            Ok(RootImage {
+                image,
+                entries: ids,
+            })
         };
         let edge_root = root(edge_ids, depth, BlockKind::EdgeInterior, E::BYTES)?;
         // The ids are also what the tree plane needs to write the value root (ADR 0102), so keep them.
@@ -629,15 +642,18 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             BlockKind::InlinePropertyInterior,
             crate::labeled::tree_csr::PROPERTY_ID_BYTES,
         )?;
-        if edge_root.len() != edge_root_len as usize * E::BYTES
-            || property_root.len() != property_root_len as usize * E::BYTES
+        if edge_root.image.len() != edge_root_len as usize * E::BYTES
+            || property_root.image.len() != property_root_len as usize * E::BYTES
         {
             return Err(LaraOperationError::overflow().into());
         }
         // ADR 0101: the value root gets its value-store span before the descriptor is built.
+        // The region holds the level the depth names: the entries the image was built from. For depth 1 those are the
+        // leaves; for depth 2 they are the interior ids - writing the leaves there made the resolver descend one level
+        // too far and read a value payload as an id.
         let value_root_offset = graph
             .tree_plane(template)
-            .ensure_value_root(&property_ids)?;
+            .ensure_value_root(&property_root.entries)?;
         let target = template
             .with_base_slot_start(new_start)
             .with_inline_property_bytes_offset(value_root_offset);
@@ -676,7 +692,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         // The value root is already admitted; this writes the edge root into the leaf.
         graph
             .tree_plane(template)
-            .write_edge_root::<E>(new_start, &edge_root)?;
+            .write_edge_root::<E>(new_start, &edge_root.image)?;
         // The publication voids the caches that described the old row, and only when the row it describes changed.
         graph
             .bucket_lookup()

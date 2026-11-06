@@ -559,6 +559,18 @@ defect from being rediscovered without its prior reasoning.
   condition did not honour. The next reading is the promotion's property-payload arithmetic
   (`property_slots_per_block` against `value_slot_position(..).row` in `emit`), not the read paths.
 
+- **Structural fix landed, and it moved the defect one layer out (2026-11-07).** Two duplications are gone:
+  `PropertyLeafWriter` owns a property leaf's window, offset and seal together (its only entry takes a **slot**; a
+  window jump is a typed error instead of an overwrite), and the promotion's interior builder now answers
+  `RootImage { image, entries }` so the bytes written as a root and the ids they describe cannot diverge - previously
+  the image was built, length-checked, and the *leaf* ids were written into the value root instead, which is only
+  correct at depth 1. The whole suite is green with both in place.
+- **What the reproduction now shows:** the property tree is depth 1 (five leaves fit one root level) and walking it by
+  hand gives **root entry 0 = block id 1**, which is not the first property leaf's id. The reader is faithful to the
+  region it is told about; the region is not the one the promotion wrote. So the last step is the value root's
+  *address*: which allocation the descriptor names versus which `ensure_value_root` wrote (a released-and-reused region,
+  or a descriptor published from an earlier attempt, are the two candidates).
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
