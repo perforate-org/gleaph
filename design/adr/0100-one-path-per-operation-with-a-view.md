@@ -222,7 +222,7 @@ What Visit has so far, measured rather than assumed:
 
 - **Row iteration has one walker.** `visit_rows(owner, label, order, selection, visibility)` chooses the storage
   class once; `visit_edges`, `visit_edge_positions` and `visit_edges_window` are adapters that name a purpose
-  (read, mutation, page). Functions owning a `BucketMode` dispatch: 8 -> 6.
+  (read, mutation, page). Functions owning a `BucketMode` dispatch: 8 -> 5.
 - **Row visibility is a type.** `lara::edge::RowVisibility { LiveRows, Positions }` is threaded to every class,
   which fixed three real defects: the slab and tiny walks ignored it while the tree walk honoured it, so one entry
   answered differently per storage class.

@@ -2274,107 +2274,90 @@ where
             return Ok(());
         }
 
-        // ADR 0096 §7: match-first dispatch — mode decides before any
-        // storage-class read. Slab arm: dense bulk + slow span below;
-        // tree has its own arm (LTB reads).
-        match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
-            // not storage); the slow funnel serves them inline.
-            BucketMode::Tiny => self
-                .visit_tiny_bucket_edges(
-                    &bucket,
+        // ADR 0100: every caller of this funnel reads - deferred iteration and out-edge iteration - so its row
+        // visibility is the read shape for every storage class, and the class only decides where a value lives.
+        let source = super::value_source::BucketValueSource::of(&bucket);
+        if source.width() == 0 {
+            // No values to attach: one topology walk, uniform across classes.
+            return self
+                .visit_rows(
+                    owner,
+                    label,
                     order,
-                    TraversalWindow::unbounded(),
+                    RowSelection::WholeRow,
                     crate::lara::edge::RowVisibility::LiveRows,
                     |_, edge| {
                         visit(edge);
                         ControlFlow::<()>::Continue(())
                     },
                 )
-                .map(|_| ()),
-            BucketMode::Slab => {
-                let width = bucket.inline_property_byte_width();
-                if width == 0 {
-                    return self
-                        .visit_slab_bucket_edges(
-                            &bucket,
-                            order,
-                            TraversalWindow::unbounded(),
-                            |_, edge| {
-                                visit(edge);
-                                ControlFlow::<()>::Continue(())
-                            },
-                        )
-                        .map(|_| ());
-                }
-                if bucket.values_run().is_none()
-                    && bucket.edge_run().is_none()
-                    && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-                {
-                    let inline_property_bytes = self.read_bucket_inline_property_bytes_span(
-                        owner,
-                        &bucket,
-                        0,
-                        bucket.degree(),
-                    )?;
-                    return self
-                        .visit_slab_bucket_edges(
-                            &bucket,
-                            order,
-                            TraversalWindow::unbounded(),
-                            |slot, edge| {
-                                let start = slot.raw() as usize * usize::from(width);
-                                let end = start + usize::from(width);
-                                visit(edge.with_stored_inline_property_bytes(
-                                    width,
-                                    &inline_property_bytes[start..end],
-                                ));
-                                ControlFlow::<()>::Continue(())
-                            },
-                        )
-                        .map(|_| ());
-                }
-
-                let _ = self.visit_slab_bucket_span_edges(&bucket, order, true, |_, edge| {
-                    visit(edge.with_label_id(label.raw()));
-                    Ok(ControlFlow::<()>::Continue(()))
-                })?;
-                Ok(())
-            }
-            // Tree arm: LTB-backed reads (arm-guaranteed tree-only).
-            BucketMode::Tree => {
-                // The slab arms above attach the row's inline property bytes to the edge they yield, so this arm
-                // must too - otherwise a caller reading `edge.edge_inline_property_bytes()` gets its values from a
-                // slab bucket and an empty slice from a tree bucket.
-                let source = super::value_source::BucketValueSource::of(&bucket);
-                let width = source.width();
-                let mut bytes = Vec::new();
-                let mut failure: Option<LabeledOperationError> = None;
-                let flow = super::tree_read::visit_tree_mode_label_bucket_edges(
+                .map(|_| ());
+        }
+        let width = source.width();
+        // Slab fast path: every slot in the prefix, so the whole value span is one read.
+        if matches!(source, super::value_source::BucketValueSource::Slab { .. })
+            && bucket.values_run().is_none()
+            && bucket.edge_run().is_none()
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+        {
+            let inline_property_bytes =
+                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?;
+            return self
+                .visit_slab_bucket_edges(
+                    &bucket,
+                    order,
+                    TraversalWindow::unbounded(),
+                    |slot, edge| {
+                        let start = slot.raw() as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        visit(edge.with_stored_inline_property_bytes(
+                            width,
+                            &inline_property_bytes[start..end],
+                        ));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ());
+        }
+        let mut bytes = Vec::new();
+        let mut failure: Option<LabeledOperationError> = None;
+        let walk = match source {
+            super::value_source::BucketValueSource::Tree { .. } => {
+                super::tree_read::visit_tree_mode_label_bucket_edges(
                     self,
                     label.raw(),
                     &bucket,
                     bucket.degree(),
                     order,
                     |slot_idx, edge| {
-                        if width > 0
-                            && let Err(e) =
-                                source.read_slot_into(self, &bucket, slot_idx, &mut bytes)
-                        {
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            // The tree walk reports positions; this funnel's callers read rows.
+                            return ControlFlow::Continue(());
+                        }
+                        if let Err(e) = source.read_slot_into(self, &bucket, slot_idx, &mut bytes) {
                             failure = Some(e);
                             return ControlFlow::Break(());
                         }
                         visit(edge.with_stored_inline_property_bytes(width, &bytes));
                         ControlFlow::<()>::Continue(())
                     },
-                )?;
-                if let Some(e) = failure {
-                    return Err(e);
-                }
-                let _ = flow;
-                Ok(())
+                )
             }
+            _ => {
+                // The remaining shape is a slab row whose values live partly in a run: the span walk serves it with
+                // the values it already carries per row.
+                self.visit_slab_bucket_span_edges(&bucket, order, true, |_, edge| {
+                    visit(edge.with_label_id(label.raw()));
+                    Ok(ControlFlow::<()>::Continue(()))
+                })
+                .map(|_| ControlFlow::Continue(()))
+            }
+        };
+        if let Some(e) = failure {
+            return Err(e);
         }
+        let _ = walk?;
+        Ok(())
     }
 
     /// Visits every live edge together with its inline-property bytes in a slab-only

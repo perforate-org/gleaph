@@ -371,3 +371,28 @@ That is the same lesson as the funnel defect itself, one layer down: a row's val
 edge type can hold them, and the default trait method is a silent no-op that makes the bug look like a data
 problem. Two facts worth keeping from the attempt: `TestEdge` cannot express a value-bearing row, and a fixture's
 edge-type choice decides whether a value goes anywhere.
+
+## The legacy funnel is a read, so it has one shape now
+
+`visit_edges_for_label` is the callback-`E` API the deferred iterators and the out-edge iterators use - all reads.
+Its mode match is gone: the value source answers where a value lives, `visit_rows` answers the topology when there
+are no values, and the tree arm filters the holes the tree walk reports (this funnel's callers read rows, not
+positions). The dense slab read stays, because reading a whole value span in one call is the reason that path
+exists.
+
+| Measure | Start of this record | Now |
+| --- | --- | --- |
+| Functions owning a `BucketMode` dispatch | 8 | **5** |
+| Mode-branch sites in `traverse.rs` | 34 | 22 |
+
+What is left, and why it is not this cut:
+
+- `visit_rows` (4) - the owner; it should dispatch.
+- `visit_slab_bucket_span_edges` (4) - the slow span funnel, slab-specific by definition; its branches are span
+  shapes.
+- `visit_edges_at_with_inline_property` (4) - the at-slot value attach; the remaining branches are the slab batch
+  path.
+- `visit_edges_with_inline_property_impl` (3) - the last legacy funnel. Its row visibility is still class-dependent
+  (a tree reports holes, a slab cannot) and its ten callers sit on both sides, so it needs the same two-entry split
+  the valueless one got before its match can go.
+- `visit_bucket_edge_slots` (1) - a selected-slot walk with one slab/tree difference.
