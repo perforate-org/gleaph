@@ -604,6 +604,20 @@ defect from being rediscovered without its prior reasoning.
   landed at 36 while the reads at 28.. hold the earlier content. The next reading is `values().allocate_byte_span` around
   this promotion: what the store believed free at 28..56 when the root was allocated.
 
+- **Ordering read, and the leading hypothesis is precise (2026-11-07).** In `transcribe_and_publish_tree_inner` the
+  value root is acquired **inside** the publication closure and written **before** publication, while the source's
+  values span is released **after** it
+  (`release_bucket_inline_property_bytes_span(vid, &bucket)` at the end of the function). If that release covers the
+  address the root was just given - because the source span still owns 28.. and the root landed inside it, or because the
+  release's length comes from a descriptor whose slab fields no longer describe the same region - then the free list
+  starts handing out the root's own bytes, and the next allocation writes values over the root. That is exactly the
+  shape of the dump: root-looking ids first, value-looking words after.
+- **Next experiment (one measurement):** read the values store's free spans immediately before the root acquisition and
+  immediately after the source retirement, in the promoted bucket's own fixture. If the root's offset appears in the
+  free set after retirement, the ordering is the bug and the fix is to retire the source span before acquiring the root
+  (or to exclude the root's region from that release, which says the release's length must come from the region the
+  source actually held rather than from the descriptor being replaced).
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
