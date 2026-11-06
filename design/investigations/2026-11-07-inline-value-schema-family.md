@@ -124,3 +124,25 @@ code documents: the insert has already begun, so the migration is signalled by u
 the queue and retries. Turning that into a return value would thread an outcome through the whole insert path - a much
 larger change than this family needs, and one the current contract does not require: a caller that ignores the signal
 gets an error, not corruption.
+
+## Slice 4: the migration's decision and its drivers belong to the view
+
+The inline-versus-deferred decision moved into `BucketValueSchema::migrate`, which answers `Migration::Done` or
+`Migration::Deferred(ValueMigration)`. The graph's `materialize_inline_property_stream` is now the flat surface over
+it: it maps `Deferred` to the retry-after-drain error, so the insert path's contract is unchanged while the decision
+has one owner.
+
+The work that runs *after* the decision stays where the values live, split out as
+`complete_migration_inline(cursor)`: compaction, reservation, retirement and publication. The split is the point -
+the view owns *whether*, the value algebra owns *how* - and the two no longer call each other's decision code.
+
+`migrate_step` puts the stepped driver behind the same view, so both drivers are reachable from one door.
+
+| Measure | Before | Now |
+| --- | --- | --- |
+| Places that decide inline-versus-deferred | 1 | 1 (the view) |
+| Drivers reachable from the view | 0 | 2 (`migrate`, `migrate_step`) |
+
+Three direct tests cover the entries, as AGENTS.md requires of every view entry: a small stream migrates inline and
+publishes its width and span; an oversized stream answers `Deferred` with the work and publishes nothing; and the
+deferred work finishes through the step driver, taking more than one step.

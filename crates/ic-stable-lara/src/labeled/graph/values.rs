@@ -1,6 +1,6 @@
 //! Labeled graph `values` implementation.
 
-use super::error::{LabeledOperationError, ValueMigration};
+use super::error::LabeledOperationError;
 use super::{
     BucketMode, BucketSearch, LabeledInlinePropertyBytesCompactionResult,
     LabeledInlinePropertyBytesStorageStats, LabeledLaraGraph,
@@ -31,7 +31,7 @@ pub(super) struct BucketInlinePropertyBytesDeletePlan {
 }
 
 /// Both canonical writes are admitted; publication has no recoverable failure.
-struct MaterializePublication<'a, M: Memory> {
+pub(super) struct MaterializePublication<'a, M: Memory> {
     bucket: crate::labeled::bucket_store::PreparedExistingBucketRow<'a, M>,
     vertex: crate::lara::vertex::PreparedVertexWrite<'a, LabeledVertex>,
 }
@@ -51,12 +51,13 @@ pub struct MaterializeCursor {
     bucket_slot: u64,
     width: u16,
     fill_byte: u8,
-    source: LabelBucket,
+    /// The bucket the cursor was admitted against; the schema view reads its degree to size the stream.
+    pub(super) source: LabelBucket,
     progress: MaterializeProgress,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum MaterializeProgress {
+pub(super) enum MaterializeProgress {
     Unreserved,
     Filling { offset: u64, position: u64 },
     Consumed,
@@ -955,7 +956,7 @@ where
     pub(crate) const INLINE_MATERIALIZE_BYTE_BUDGET: u64 = MaterializeCursor::STEP_BYTES;
 
     /// Shared source/schema/accounting admission. Tiny payload is never read as schema.
-    fn materialize_source(
+    pub(super) fn materialize_source(
         &self,
         src: VertexId,
         bucket_slot: u64,
@@ -1032,7 +1033,7 @@ where
 
     /// Grows the value run to the edge run's length, filling the new blocks with the cursor's fill
     /// byte, and publishes the run id when the bucket did not have one.
-    fn fill_value_run_for_edge_spill(
+    pub(super) fn fill_value_run_for_edge_spill(
         &self,
         cursor: &MaterializeCursor,
     ) -> Result<(), LabeledOperationError> {
@@ -1049,7 +1050,7 @@ where
             .publish()
     }
 
-    fn prepare_materialize_publication(
+    pub(super) fn prepare_materialize_publication(
         &self,
         cursor: &MaterializeCursor,
         offset: u64,
@@ -1083,33 +1084,37 @@ where
         width: u16,
         fill_byte: u8,
     ) -> Result<(), LabeledOperationError> {
-        let cursor = self.materialize_cursor(src, bucket_slot, width, fill_byte)?;
-        // The decision is about the whole stream - every live row gets a block, whether it ends up in
-        // the slab prefix or in the run - while `total_bytes` is the prefix the span has to hold
-        // (ADR 0099). A bucket whose rows all spilled therefore still needs a cursor when the stream
-        // is large, even though its span part is empty.
-        let stream_bytes = u64::from(cursor.source.degree()) * u64::from(width);
-        if stream_bytes > Self::INLINE_MATERIALIZE_BYTE_BUDGET {
-            return Err(
-                LabeledOperationError::InlinePropertyMaterializeDeferredRequired(ValueMigration {
-                    vid: src,
-                    bucket_slot,
-                    width,
-                    fill_byte,
-                    degree: cursor.source.degree(),
-                }),
-            );
+        // The decision is the schema view's; this name is the flat surface that turns its answer into the
+        // retry-after-drain signal the insert path unwinds with.
+        match self
+            .value_schema()
+            .migrate(src, bucket_slot, width, fill_byte)?
+        {
+            super::value_schema::Migration::Done => Ok(()),
+            super::value_schema::Migration::Deferred(work) => {
+                Err(LabeledOperationError::InlinePropertyMaterializeDeferredRequired(work))
+            }
         }
+    }
+
+    /// Fills the reservation a schema migration admitted, and publishes the descriptor it admits.
+    ///
+    /// Split out of the migration entry because the view owns *whether* to run it; this is the part that must run
+    /// after a full admission (compaction, reservation, retirement, publication).
+    pub(super) fn complete_migration_inline(
+        &self,
+        cursor: &MaterializeCursor,
+    ) -> Result<(), LabeledOperationError> {
         self.materialize_compaction_before_reserve(cursor.total_bytes())?;
         let offset = self.values.header().slab_occupied_tail;
-        let publication = self.prepare_materialize_publication(&cursor, offset)?;
+        let publication = self.prepare_materialize_publication(cursor, offset)?;
         let mut retirement = self
             .values
             .prepare_retire_byte_span(offset, cursor.total_bytes())?;
         let rollback = retirement
             .ready()
             .map_err(|_| LaraOperationError::overflow())?;
-        let fill = vec![fill_byte; cursor.total_bytes() as usize];
+        let fill = vec![cursor.fill_byte; cursor.total_bytes() as usize];
         let reserved = self.values.append_byte_span(cursor.total_bytes())?;
         assert_eq!(reserved, offset, "inline reservation moved after admission");
         if let Err(error) = self.values.write_bytes(offset, &fill) {
@@ -1121,7 +1126,7 @@ where
         Ok(())
     }
 
-    fn materialize_compaction_before_reserve(
+    pub(super) fn materialize_compaction_before_reserve(
         &self,
         total: u64,
     ) -> Result<(), LabeledOperationError> {
@@ -1133,7 +1138,7 @@ where
         Ok(())
     }
 
-    fn cancel_materialize(
+    pub(super) fn cancel_materialize(
         &self,
         cursor: &mut MaterializeCursor,
         reason: LabeledOperationError,

@@ -18,6 +18,8 @@ use crate::traits::{CsrEdge, CsrEdgeTombstone};
 use ic_stable_structures::Memory;
 
 use super::LabeledLaraGraph;
+use super::error::ValueMigration;
+use super::values::{MaterializeCursor, MaterializeStep};
 
 /// See the module documentation.
 pub(crate) struct BucketValueSchema<'a, E, M>
@@ -69,6 +71,61 @@ where
     }
 }
 
+impl<'a, E, M> BucketValueSchema<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    /// Migrates a bucket's rows to `width`, or hands back the work when the stream is too large to do inline.
+    ///
+    /// The decision belongs here because it is about the whole stream (every live row gets a block, wherever it
+    /// lives), while the byte budget is about the reservation. `Deferred` is the same [`ValueMigration`] the error
+    /// carries, so a caller that only propagates it and a caller that queues it describe the same job.
+    pub(crate) fn migrate(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        width: u16,
+        fill_byte: u8,
+    ) -> Result<Migration, LabeledOperationError> {
+        let cursor = self
+            .graph
+            .materialize_cursor(src, bucket_slot, width, fill_byte)?;
+        let stream_bytes = u64::from(cursor.source.degree) * u64::from(width);
+        if stream_bytes > <LabeledLaraGraph<E, M>>::INLINE_MATERIALIZE_BYTE_BUDGET {
+            return Ok(Migration::Deferred(ValueMigration {
+                vid: src,
+                bucket_slot,
+                width,
+                fill_byte,
+                degree: cursor.source.degree,
+            }));
+        }
+        self.graph.complete_migration_inline(&cursor)?;
+        Ok(Migration::Done)
+    }
+
+    /// Drives the deferred migration the queue owns, one step at a time.
+    ///
+    /// `Err` retains the cursor (the caller keeps the work item); `Cancelled` consumes it, because the source it
+    /// named is gone.
+    pub(crate) fn migrate_step(
+        &self,
+        cursor: &mut MaterializeCursor,
+    ) -> Result<MaterializeStep, LabeledOperationError> {
+        self.graph.materialize_inline_property_stream_step(cursor)
+    }
+}
+
+/// What a migration did: finished inline, or the work a caller must drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Migration {
+    /// The rows are migrated and the new width is published.
+    Done,
+    /// The stream exceeds the inline byte budget; drive it through the queue.
+    Deferred(ValueMigration),
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -77,6 +134,144 @@ where
     /// The inline value schema of one graph (ADR 0100: the schema family's only door).
     pub(crate) fn value_schema(&self) -> BucketValueSchema<'_, E, M> {
         BucketValueSchema::new(self)
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+    use crate::labeled::record::LabeledVertex;
+
+    type Graph = LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>;
+
+    fn graph() -> Graph {
+        inline_property_test_graph()
+    }
+
+    fn label() -> BucketLabelKey {
+        BucketLabelKey::directed_from_index(2)
+    }
+
+    fn bucket_slot(graph: &Graph, vid: VertexId) -> (u64, crate::labeled::record::LabelBucket) {
+        let vertex = graph.vertices().get(vid);
+        match graph.find_bucket(vid, &vertex, label()).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket missing"),
+        }
+    }
+
+    /// A bucket with a few width-0 rows migrates to a wide schema inline, and the descriptor it publishes names the
+    /// width and the span.
+    #[test]
+    fn a_small_stream_migrates_inline() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        let graph = graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        for target in 100..103u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label(),
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let (slot, before) = bucket_slot(&graph, vid);
+        assert_eq!(before.inline_property_byte_width(), 0);
+        let outcome = graph
+            .value_schema()
+            .migrate(vid, slot, 4, 0xA5)
+            .expect("migrate");
+        assert_eq!(outcome, Migration::Done, "3 rows x 4 bytes fits inline");
+        let (_, after) = bucket_slot(&graph, vid);
+        assert_eq!(after.inline_property_byte_width(), 4);
+        assert_eq!(after.inline_property_bytes_slab_slots(), 3);
+    }
+
+    /// A stream over the inline budget is not attempted: the view answers with the work, and nothing is published.
+    #[test]
+    fn an_oversized_stream_hands_back_the_work() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        let graph = graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        for target in 100..103u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label(),
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let (slot, _) = bucket_slot(&graph, vid);
+        let width = 2048;
+        let outcome = graph
+            .value_schema()
+            .migrate(vid, slot, width, 0xA5)
+            .expect("migrate");
+        let Migration::Deferred(work) = outcome else {
+            panic!("3 rows x 2048 bytes must defer");
+        };
+        assert_eq!(work.vid, vid);
+        assert_eq!(work.bucket_slot, slot);
+        assert_eq!(work.width, width);
+        assert_eq!(work.degree, 3);
+        assert_eq!(work.total_bytes(), 6_144);
+        let (_, after) = bucket_slot(&graph, vid);
+        assert_eq!(
+            after.inline_property_byte_width(),
+            0,
+            "a deferred migration publishes nothing"
+        );
+    }
+
+    /// The deferred work is drivable: the queue's step form finishes it and publishes the width.
+    #[test]
+    fn a_deferred_migration_finishes_through_the_step_driver() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        let graph = graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        for target in 100..103u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label(),
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let (slot, _) = bucket_slot(&graph, vid);
+        let Migration::Deferred(work) = graph
+            .value_schema()
+            .migrate(vid, slot, 2048, 0xA5)
+            .expect("migrate")
+        else {
+            panic!("must defer");
+        };
+        let mut cursor = graph
+            .materialize_cursor(work.vid, work.bucket_slot, work.width, work.fill_byte)
+            .expect("admit cursor");
+        let mut steps = 0;
+        loop {
+            match graph
+                .value_schema()
+                .migrate_step(&mut cursor)
+                .expect("step")
+            {
+                MaterializeStep::Finished => break,
+                MaterializeStep::Resumed => steps += 1,
+                MaterializeStep::Cancelled(reason) => panic!("cancelled: {reason}"),
+            }
+        }
+        assert!(steps > 0, "a deferred stream takes more than one step");
+        let (_, after) = bucket_slot(&graph, vid);
+        assert_eq!(after.inline_property_byte_width(), 2048);
     }
 }
 
