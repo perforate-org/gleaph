@@ -440,6 +440,21 @@ defect from being rediscovered without its prior reasoning.
   with the room the caller would compute) rather than the rebuild path, and that is its own unit.
 - **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
 - **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
+- **Attempted 2026-11-07 and reverted, with the numbers it produced.** The attempt moved the physical fixture's
+  mate to `content_end + 1` (which `next_leaf_vertex_edge_start(v0)` does report, so the bound is set as intended),
+  then ran `compact_vertex_edge_span_one_step_with_span_policy` and asserted the fold stopped there. It did not: the
+  descriptor went from `edge_start = 100, stored = 3` to `stored = 7`, i.e. the fold absorbed three rows while the
+  bound allowed one (`content_end = 104`, mate at 105).
+- **What that means, precisely:** the fixture's "mate" is not the one the step reads. The two-bucket
+  `physical_fixture` writes vertex 1's descriptor through `publish_bucket_descriptor(1, ..)`, and
+  `next_leaf_vertex_edge_start` does see it (the pre-step assertion proves it), yet the step folded past it - so
+  the step's own computation of `free` differs from the pre-step helper call. Two candidates, neither measured:
+  the step reads `finalized.stored_slots()` after a finalize that changed the content end, or it takes the
+  relocation arm and folds against the relocated layout.
+- **Missing evidence for the next attempt:** print `free`, `limit`, `content_end` and `finalized.stored_slots()`
+  inside the step for this fixture, and assert the fold against those numbers rather than against a pre-step
+  reading. That is one print away, and it turns the earlier "no teeth" problem and this "too much room" problem
+  into a fixture fact.
 
 ### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
 
