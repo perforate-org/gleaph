@@ -318,3 +318,23 @@ construction (both go through the one reader) and that no test pins the parity i
 This is the shape of the remaining work in this family: the duplicate is not always a duplicated *walk*, sometimes
 it is an arm that quietly answers a different question than its siblings, and the way to find those is to read the
 arms against each other rather than to trust that the tests cover them.
+
+## The fixture gap is a lookup gap, measured
+
+Two tests were wanted: the tree half of the three row shapes, and a parity test for the funnel's value attachment
+(the fix that made the tree arm read through `BucketValueSource`). A `seeded_tree_bucket` fixture was written - it
+mints edge and property leaves, fills their payloads from a per-slot closure, and installs the descriptor through
+`install_tree_bucket`.
+
+It could not reach the walk. `install_tree_bucket` writes the **bucket descriptor** at a slot; a graph-level entry
+(`visit_edge_positions`, `visit_edges_for_label`) first resolves the label through the **vertex's descriptor row**,
+and installing a bucket at slot 0 does not update that row. The probe is unambiguous: slot 0 holds a tree
+descriptor (`buckets().read_label_bucket_slot(0).is_some()` is true, and it reports `is_tree_mode()`), while
+`find_bucket(vid, vertex, label)` answers `Missing` for the same vertex and label.
+
+So the fixture gap and the "no parity test" note above are the same gap: a tree bucket reachable through the graph
+needs its vertex row installed as well as its descriptor. That is what `install_tree_bucket` should do next - take
+the vertex and label and write the row entry too - and both tests follow from it.
+
+The attempt is reverted rather than left half-working: a fixture that cannot reach the code it is meant to exercise
+is not progress, and the record above is worth more than a dead helper.
