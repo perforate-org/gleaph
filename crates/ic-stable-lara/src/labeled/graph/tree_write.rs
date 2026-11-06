@@ -1609,6 +1609,11 @@ where
         0
     };
     let property_root_grows = plan.as_ref().is_some_and(|p| p.entry_for_root.is_some());
+    // ADR 0102: whichever arm rewrites the roots leaves what belongs in each of them here, and the single
+    // publication below hands it to the tree plane. An arm that only writes inside the existing leaf tree
+    // leaves both empty, which the plane reads as "the roots are unchanged".
+    let mut root_edge_image: Vec<u8> = Vec::new();
+    let mut root_value_children: Vec<u32> = Vec::new();
     // 1. Resolve the home interior's block_id (post-ensure bucket).
     let home_interior_id = resolve_interior_block_id::<E, M>(graph, bucket, home_interior_index)?;
     // 2. Mint the new leaf block.
@@ -1712,18 +1717,9 @@ where
                         Vec::new()
                     };
                     value_children.push(entry_id);
-                    if graph
-                        .tree_plane(*bucket)
-                        .write_roots::<E>(new_combined, &edge_root_image, &value_children)
-                        .is_err()
-                    {
-                        let _ = graph.ltb().release(new_leaf_id);
-                        release_property_plan::<E, M>(graph, p);
-                        let _ = graph
-                            .edges()
-                            .release_span(new_combined, u64::from(new_combined_len));
-                        return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-                    }
+                    // ADR 0102: hand the image to the single publication below instead of writing it here.
+                    root_edge_image = edge_root_image;
+                    root_value_children = value_children;
                     if let Err(e) = graph.ltb().write_payload_partial(
                         p.leaf_id,
                         ((slot % kp) as usize) * usize::from(w),
@@ -1741,8 +1737,7 @@ where
                 }
             },
         };
-        // Publish the descriptor (edge_start may have moved with the
-        // combined-span realloc).
+        // Publish: the tree plane writes the roots (when the arm changed them) and the descriptor (ADR 0102).
         let new_bucket = bucket
             .with_edge_range(new_edge_start, next_stored)
             .with_degree_field(next_degree)
@@ -1750,15 +1745,22 @@ where
             .with_tree_mode(true)
             .with_tree_mode_physical_depth(depth)
             .with_tree_mode_property_depth(property_depth);
-        if let Err(e) = graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, new_bucket)
+        if graph
+            .tree_plane(*bucket)
+            .publish::<E>(
+                bucket_slot,
+                |_| new_bucket,
+                new_edge_start,
+                &root_edge_image,
+                &root_value_children,
+            )
+            .is_err()
         {
             let _ = graph.ltb().release(new_leaf_id);
             if let Some(p) = &plan {
                 release_property_plan::<E, M>(graph, p);
             }
-            return Err(e.into());
+            return Err(LabeledOperationError::from(LaraOperationError::overflow()));
         }
         // Release the old combined span after publish, minus whatever the extent covers
         // (that part is leaf space).
