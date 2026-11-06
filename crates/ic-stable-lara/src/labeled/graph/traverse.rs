@@ -490,12 +490,14 @@ where
         bucket: &LabelBucket,
         order: OutEdgeOrder,
         window: TraversalWindow,
+        visibility: crate::lara::edge::RowVisibility,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         debug_assert!(bucket.is_tiny_mode());
+        let reports_tombstones = visibility == crate::lara::edge::RowVisibility::Positions;
         let width = bucket.tiny_used_width();
         let offset = window.offset.min(width);
         let limit = window.limit.unwrap_or(width).min(width - offset);
@@ -504,7 +506,16 @@ where
                 OutEdgeOrder::Ascending => index,
                 OutEdgeOrder::Descending => width - 1 - index,
             };
-            if let EdgeSlotState::Live(edge) = Self::read_tiny_edge_state_at_slot(bucket, slot)
+            // A tiny bucket holds tombstones too (its descriptor cells carry the sentinel), so a
+            // mutation-shaped walk reads the cell rather than only the live state.
+            let edge = match Self::read_tiny_edge_state_at_slot(bucket, slot) {
+                EdgeSlotState::Live(edge) => Some(edge),
+                EdgeSlotState::Tombstone if reports_tombstones => {
+                    Some(Self::read_tiny_edge_at_slot(bucket, slot))
+                }
+                EdgeSlotState::Tombstone | EdgeSlotState::Missing => None,
+            };
+            if let Some(edge) = edge
                 && let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge)
             {
                 return Ok(ControlFlow::Break(value));
@@ -743,6 +754,7 @@ where
                         bucket,
                         order,
                         TraversalWindow::unbounded(),
+                        crate::lara::edge::RowVisibility::LiveRows,
                         |slot, edge| {
                             edges.push((slot.raw(), edge));
                             ControlFlow::<()>::Continue(())
@@ -1565,7 +1577,9 @@ where
         // Mode dispatch precedes storage reads. Every arm cuts the requested
         // tombstone-inclusive positions before visiting live rows.
         match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => self.visit_tiny_bucket_edges(&bucket, order, window, visit),
+            BucketMode::Tiny => {
+                self.visit_tiny_bucket_edges(&bucket, order, window, visibility, visit)
+            }
             BucketMode::Slab => self
                 .visit_slab_bucket_edges_with_visibility(&bucket, order, window, visibility, visit),
             // Tree arm: LTB walk with window (arm-guaranteed tree-only).
@@ -1946,6 +1960,7 @@ where
                 &bucket,
                 order,
                 TraversalWindow::unbounded(),
+                crate::lara::edge::RowVisibility::LiveRows,
                 |slot, edge| {
                     visit(
                         slot,
@@ -2205,10 +2220,16 @@ where
             // ADR 0096 §5: tiny buckets skip the dense bulk path (anchor,
             // not storage); the slow funnel serves them inline.
             BucketMode::Tiny => self
-                .visit_tiny_bucket_edges(&bucket, order, TraversalWindow::unbounded(), |_, edge| {
-                    visit(edge);
-                    ControlFlow::<()>::Continue(())
-                })
+                .visit_tiny_bucket_edges(
+                    &bucket,
+                    order,
+                    TraversalWindow::unbounded(),
+                    crate::lara::edge::RowVisibility::LiveRows,
+                    |_, edge| {
+                        visit(edge);
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
                 .map(|_| ()),
             BucketMode::Slab => {
                 let width = bucket.inline_property_byte_width();
@@ -3185,6 +3206,16 @@ where
     /// Descriptor-only point reader shared by tiny scans and mode-dispatched point reads.
     /// It cannot touch slab, tree or spill storage after the caller has resolved tiny mode.
     #[inline]
+    fn read_tiny_edge_at_slot(bucket: &LabelBucket, slot_index: u32) -> E
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut record = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];
+        let record = super::edge_slot::<E>(&mut record);
+        bucket.tiny_slot(slot_index, E::BYTES, record);
+        E::read_from(record)
+    }
+
     fn read_tiny_edge_state_at_slot(bucket: &LabelBucket, slot_index: u32) -> EdgeSlotState<E>
     where
         E: CsrEdgeTombstone,
@@ -7120,6 +7151,78 @@ mod row_visibility_tests {
             page(&graph, vid, label, TraversalWindow::new(0, Some(4))).len(),
             3,
             "a page over live rows skips the hole inside the page"
+        );
+    }
+
+    /// The shapes hold for a tiny bucket too: its rows live in the descriptor, not in a slab, and its cells can
+    /// carry a tombstone just the same.
+    #[test]
+    fn a_tiny_bucket_reports_its_hole_only_to_the_mutation_shape() {
+        let graph = test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        // Three edges is the tiny bucket's whole width, so one removed row is a hole inside it.
+        for target in [100u32, 101, 102] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => {
+                assert!(bucket.is_tiny_mode(), "three rows stay in the descriptor");
+            }
+            _ => panic!("bucket missing"),
+        }
+        graph
+            .remove_edge_at_slot(vid, label, 1)
+            .expect("remove")
+            .expect("the row existed");
+        assert_eq!(
+            positions(&graph, vid, label),
+            vec![(0, 100), (1, u32::MAX), (2, 102)],
+            "the mutation shape names every position, the hole included"
+        );
+        assert_eq!(
+            live(&graph, vid, label),
+            vec![(0, 100), (2, 102)],
+            "the read shape reports the surviving rows at their positions"
+        );
+    }
+
+    /// The shapes hold when the rows spill past the slab prefix into a run, which is the case the fixture above
+    /// reaches: eight rows do not fit the one-slot prefix a segment-16 leaf grants.
+    #[test]
+    fn the_shapes_hold_across_the_prefix_and_the_spill_run() {
+        let (graph, vid, label) = slab_with_hole(8, 3);
+        match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => {
+                assert!(!bucket.is_tiny_mode(), "eight rows left the descriptor");
+                assert!(
+                    bucket.edge_run().is_some(),
+                    "eight rows do not fit the one-slot prefix a segment-16 leaf grants, so they spill"
+                );
+            }
+            _ => panic!("bucket missing"),
+        }
+        let all = positions(&graph, vid, label);
+        let live_rows = live(&graph, vid, label);
+        assert_eq!(all.len(), 8, "every position is reported");
+        assert_eq!(live_rows.len(), 7, "the hole is not a row");
+        assert!(
+            all.iter()
+                .any(|(slot, target)| *slot == 3 && *target == u32::MAX),
+            "the hole reads back as the sentinel it holds"
         );
     }
 
