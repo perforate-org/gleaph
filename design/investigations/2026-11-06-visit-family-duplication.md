@@ -448,3 +448,23 @@ and its second wants what a reader sees (live).
 That makes the remaining work a per-call-site classification with a decision at each: read the assertion, ask which
 question it is, name the entry accordingly. It is mechanical but not batchable, and it is the correct remaining
 step for this family.
+
+## Correction: the migration's unit is the observation helper, not the call site
+
+The per-call-site story above is incomplete, and a run through it showed why. Flipping the default and moving
+individual call sites reached 744 of 746; the last two failures were inside **shared test helpers**, not inside
+tests:
+
+- `rows_for_owner` in the promotion tests serves assertions that want live rows *and* `assert_tree`, which wants the
+  stored slot stream including holes;
+- `retained_compaction_rows` is the same question one module over;
+- the compact tests read rows through a local closure whose two assertions disagree the same way.
+
+A header check (`assert_eq!(header.tombstone_count, holes)`) forces the helper to see holes even where the row
+assertion next to it wants live rows, because the header counts holes by definition. So one helper can legitimately
+need both views.
+
+That means the migration is: give each observation helper **two** entries (`rows` and `rows_with_holes`, or a
+visibility parameter), have each assertion name the one it means, and only then flip the default. That is a bigger
+change than a rename and it is the honest unit - the helpers are where the two questions were being conflated, which
+is the same defect this whole family keeps producing at every layer.
