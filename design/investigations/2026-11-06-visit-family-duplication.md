@@ -224,3 +224,32 @@ carried the most now carries half as many, and the *answer* it kept was moved to
 
 Next: the same treatment for `visit_edges_with_inline_property_impl` (3 branches) and the two batch cursors (3
 each), then the slab batch path becomes the only thing an entry still says about its class.
+
+## The whole-row with-values entry cannot be cut yet, and the tests say why
+
+The next shape after the at-variant is `visit_edges_with_inline_property_impl` (three mode branches). Its
+dispatch is the same value-source question, so replacing the mode match with `BucketValueSource` looks mechanical.
+It is not, because this entry's **row visibility is currently class-dependent**, and the tests encode that:
+
+| Bucket | Rows this entry reports today | Pinned by |
+| --- | --- | --- |
+| tree | positions, holes included | `promotion_retained_eight_holes`, `promotion_retained_sixteen_holes`, the `public_bypass_capacity_*` group |
+| slab | live rows only | `tiny_parallel_counterparts_keep_slots_after_holes`, `delete_purge_keeps_neighbor_survivors_order_preserving`, the compaction group |
+
+Both experiments were run. Forcing `Positions` makes the slab-shaped tests fail; forcing `LiveRows` makes the
+tree-shaped ones fail. That is the same inconsistency `visit_edges` had before `RowVisibility` existed, one entry
+over - and it is why the mechanical replacement cannot land on its own.
+
+The cut, when it is made, is:
+
+1. give this entry the same visibility split the valueless one has (a read entry, and a positions entry that
+   attaches values);
+2. move the tree-shaped tests to the positions entry and the slab-shaped ones stay on the read entry;
+3. then the mode match becomes a `BucketValueSource` resolution, as it did in the at-variant.
+
+Two facts from this attempt are worth keeping: the width-0 path of the entry reports positions for a tree bucket
+(the width bytes of a tiny bucket are payload, so width 0 is not "no values" for every class), and the slab dense
+batch path must stay - it reads a whole value sequence in one call, and collapsing it would be a regression with
+no correctness gain.
+
+Measured count to beat, unchanged: **7 functions owning a storage-class dispatch.**
