@@ -275,3 +275,29 @@ uniform answer exists and has a caller while the legacy name waits for its calle
 That leaves step 3 - replacing the mode match with a `BucketValueSource` resolution - still open for this entry,
 because the arms are now separated by more than the value source. The order that works is: move a caller to the
 entry that names its shape, then let the dead arm go.
+
+## The batch cursors dispatched on the wrong thing
+
+Both batch cursors matched on `BucketMode` to answer one question: does this bucket have values at all? Tiny has
+none (its width bytes are target payload), and a bucket at width 0 has none either - which is exactly
+`BucketValueSource::None`. They now match on the source, so the class decision lives in `value_source.rs` and the
+cursors only branch on "values / no values".
+
+That took the two cursors out of the dispatch count entirely: they no longer name a storage class.
+
+| Measure | Start of this record | Now |
+| --- | --- | --- |
+| Visit entry points | 20 | 21 (two named shapes added) |
+| Functions owning a `BucketMode` dispatch | 8 | **6** |
+| Mode-branch sites in `traverse.rs` | 34 | 26 |
+
+What is left, and why each is not the same cut:
+
+- `visit_rows` (4) - the single row walker; this one *should* dispatch, it is the owner.
+- `visit_slab_bucket_span_edges` (4) - the slow span funnel, which is slab-specific by definition; its branches
+  are about span shapes, not storage classes choosing themselves.
+- `visit_edges_at_with_inline_property` (4) - the at-slot value attach; the remaining branches are the slab batch
+  path whose bulk read is the point.
+- `visit_edges_for_label_impl` (4) and `visit_edges_with_inline_property_impl` (3) - the legacy value-attaching
+  funnels, waiting on their callers being moved to the entry that names their shape.
+- `visit_bucket_edge_slots` (1) - a selected-slot walk with one slab/tree difference.

@@ -2522,11 +2522,14 @@ where
         // storage-class read. Tiny buckets hold no values: emit nothing
         // (bypass precedent for valueless rows). Tree/slab share the
         // dense/hybrid/slow value paths below (both carry real schema).
-        match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => {
+        // ADR 0100: the class decides one thing here - whether this bucket has values at all - and
+        // `BucketValueSource::None` is that answer. Match on it rather than on the class.
+        match super::value_source::BucketValueSource::of(&bucket) {
+            super::value_source::BucketValueSource::None => {
                 return Ok(ControlFlow::Continue(()));
             }
-            BucketMode::Tree | BucketMode::Slab => {
+            super::value_source::BucketValueSource::Slab { .. }
+            | super::value_source::BucketValueSource::Tree { .. } => {
                 if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
                     return Ok(ControlFlow::Continue(()));
                 }
@@ -2856,11 +2859,14 @@ where
         // storage-class read. Tiny buckets hold no values: emit nothing
         // (bypass precedent for valueless rows). Tree/slab share the
         // dense/hybrid/slow value paths below (both carry real schema).
-        match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => {
+        // ADR 0100: the class decides one thing here - whether this bucket has values at all - and
+        // `BucketValueSource::None` is that answer. Match on it rather than on the class.
+        match super::value_source::BucketValueSource::of(&bucket) {
+            super::value_source::BucketValueSource::None => {
                 return Ok(ControlFlow::Continue(()));
             }
-            BucketMode::Tree | BucketMode::Slab => {
+            super::value_source::BucketValueSource::Slab { .. }
+            | super::value_source::BucketValueSource::Tree { .. } => {
                 if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
                     return Ok(ControlFlow::Continue(()));
                 }
