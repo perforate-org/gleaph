@@ -5952,42 +5952,19 @@ mod tests {
                 .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
-        // Combined span [edge root | property root].
-        let combined_len = edge_leaf_count + l_p;
-        let edge_start = graph
-            .edges()
-            .allocate_span(u64::from(combined_len))
-            .expect("allocate combined span");
-        let mut bytes: Vec<u8> = Vec::with_capacity(combined_len as usize * 4);
-        for &id in &edge_ids {
-            bytes.extend_from_slice(&id.to_le_bytes());
-        }
-        for &id in &prop_ids {
-            bytes.extend_from_slice(&id.to_le_bytes());
-        }
-        graph
-            .edges()
-            .write_slots_contiguous_bytes(edge_start, &bytes)
-            .expect("write combined span");
-        let bucket = LabelBucket::try_from_parts(
+        // The fixture mints the blocks; the production writer places both roots (ADR 0101/0102). Writing the
+        // layout here is what made a layout change reach every fixture.
+        super::super::test_support::install_tree_bucket(
+            graph,
+            bucket_slot,
             label,
-            edge_start,
-            stored_slots,
             stored_slots,
             w,
-            0,
-            0,
-            -1,
-            0,
+            1,
+            1,
+            &edge_ids,
+            &prop_ids,
         )
-        .expect("try_from_parts")
-        .with_tree_mode(true)
-        .with_tree_mode_physical_depth(1);
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, bucket)
-            .expect("write descriptor");
-        bucket
     }
 
     /// Decoy span: fill a fresh LEG span with a sentinel pattern so a
@@ -6329,30 +6306,18 @@ mod tests {
                 .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
-        let combined_len = edge_root_len + l_p;
-        let edge_start = graph
-            .edges()
-            .allocate_span(u64::from(combined_len))
-            .expect("allocate combined");
-        let mut bytes: Vec<u8> = Vec::with_capacity(combined_len as usize * 4);
-        for &id in &edge_interior_ids {
-            bytes.extend_from_slice(&id.to_le_bytes());
-        }
-        for &id in &prop_leaf_ids {
-            bytes.extend_from_slice(&id.to_le_bytes());
-        }
-        graph
-            .edges()
-            .write_slots_contiguous_bytes(edge_start, &bytes)
-            .expect("write combined");
-        let pre = LabelBucket::try_from_parts(label, edge_start, stored, stored, w, 0, 0, -1, 0)
-            .expect("try_from_parts")
-            .with_tree_mode(true)
-            .with_tree_mode_physical_depth(2);
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, pre)
-            .expect("write descriptor");
+        // The fixture mints the blocks; the production writer places both roots (ADR 0101/0102).
+        let pre = super::super::test_support::install_tree_bucket(
+            &graph,
+            bucket_slot,
+            label,
+            stored,
+            w,
+            2,
+            1,
+            &edge_interior_ids,
+            &prop_leaf_ids,
+        );
         // Pre-insert sanity.
         for slot in [0u32, 4095, 1 << 20, stored - 1] {
             assert_eq!(

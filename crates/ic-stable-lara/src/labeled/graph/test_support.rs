@@ -956,6 +956,84 @@ pub(crate) fn force_tree_mode_for_test(
         .expect("promote");
 }
 
+/// Installs a hand-built tree-mode bucket by handing its child ids to the production writer.
+///
+/// A fixture knows two things: which blocks it minted for the edge tree and which for the value tree. Where
+/// each root's addresses are stored, in what order the roots are written, and how the descriptor records the
+/// value root's address are the production writer's business - so a layout change after ADR 0101 does not
+/// reach the fixtures at all, and a fixture cannot spell out a layout the production code does not use.
+///
+/// `stored_slots`, `width` and the two depths describe the bucket; `edge_child_ids` are the edge tree's root
+/// children (leaf ids at depth 1, interior ids above) and `value_child_ids` the value tree's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_tree_bucket<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket_slot: u64,
+    label: BucketLabelKey,
+    stored_slots: u32,
+    width: u16,
+    physical_depth: u32,
+    property_depth: u32,
+    edge_child_ids: &[u32],
+    value_child_ids: &[u32],
+) -> crate::labeled::record::LabelBucket
+where
+    E: crate::traits::CsrEdgeTombstone,
+    M: ic_stable_structures::Memory,
+{
+    // The span the bucket needs comes from the production geometry, not from a count this helper keeps: that is
+    // what makes the helper follow a layout change instead of fighting it.
+    let template = crate::labeled::record::LabelBucket::try_from_parts(
+        label,
+        0,
+        stored_slots,
+        stored_slots,
+        width,
+        0,
+        0,
+        -1,
+        0,
+    )
+    .expect("try_from_parts")
+    .with_tree_mode(true)
+    .with_tree_mode_physical_depth(physical_depth)
+    .with_tree_mode_property_depth(property_depth);
+    let span_slots = super::compact::bucket_content_slots(&template);
+    let edge_start = graph
+        .edges()
+        .allocate_span(u64::from(span_slots))
+        .expect("allocate root span");
+    let base = crate::labeled::record::LabelBucket::try_from_parts(
+        label,
+        edge_start,
+        stored_slots,
+        stored_slots,
+        width,
+        0,
+        0,
+        -1,
+        0,
+    )
+    .expect("try_from_parts")
+    .with_tree_mode(true)
+    .with_tree_mode_physical_depth(physical_depth)
+    .with_tree_mode_property_depth(property_depth);
+    let mut edge_root_image: Vec<u8> = Vec::with_capacity(edge_child_ids.len() * E::BYTES);
+    for id in edge_child_ids {
+        edge_root_image.extend_from_slice(&id.to_le_bytes());
+    }
+    graph
+        .tree_plane(base)
+        .publish::<E>(
+            bucket_slot,
+            |b| b,
+            edge_start,
+            &edge_root_image,
+            value_child_ids,
+        )
+        .expect("publish tree bucket")
+}
+
 pub(crate) use crate::test_support::CountMemory as CountingMemory;
 
 /// Builds a fully counting-backed graph: all 16 memories share one
