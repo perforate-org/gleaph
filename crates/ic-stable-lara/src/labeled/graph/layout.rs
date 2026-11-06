@@ -364,3 +364,120 @@ where
         BucketLayout::new(self, bucket_slot, bucket)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::EdgePlacementPolicy;
+    use crate::labeled::graph::test_support::{TestEdge, test_graph_with_segment_size};
+    use crate::labeled::record::LabeledVertex;
+
+    type Graph = LabeledLaraGraph<TestEdge, VectorMemory>;
+
+    fn graph() -> Graph {
+        test_graph_with_segment_size(16, BucketLabelKey::directed_from_index(1))
+    }
+
+    /// A roomier leaf, for the case that asks the vertex to grow rather than to place inside what it has.
+    fn roomy_graph() -> Graph {
+        test_graph_with_segment_size(64, BucketLabelKey::directed_from_index(1))
+    }
+
+    /// A slab bucket with a leaf: four edges are more than a tiny bucket holds.
+    fn slab_bucket(graph: &Graph) -> (VertexId, u64, LabelBucket) {
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 7..12u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.vertices().get(vid);
+        match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (vid, slot, bucket),
+            _ => panic!("bucket missing"),
+        }
+    }
+
+    /// The view answers the descriptor it was opened on, and opening it again is the only way to see a newer
+    /// one - so a caller never reads half an updated span.
+    #[test]
+    fn the_view_answers_the_descriptor_it_was_opened_on() {
+        let graph = graph();
+        let (_vid, slot, bucket) = slab_bucket(&graph);
+        let layout = graph.layout(slot, bucket);
+        assert_eq!(layout.bucket(), bucket);
+        assert_eq!(layout.bucket().stored_slots(), bucket.stored_slots());
+    }
+
+    /// Releasing a span the bucket no longer owns answers the descriptor it left behind, so the caller
+    /// publishes exactly what the release produced instead of the graph mutating behind its back.
+    #[test]
+    fn release_span_answers_the_descriptor_it_left_behind() {
+        let graph = graph();
+        let (vid, slot, bucket) = slab_bucket(&graph);
+        // The release requires an emptied, run-free bucket: remove every row first.
+        let label = bucket.bucket_label_key();
+        let rows = bucket.stored_slots();
+        for slot_index in 0..rows {
+            graph
+                .row_plane()
+                .remove_row(vid, label, slot_index)
+                .expect("remove a row");
+        }
+        let emptied = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        let released = graph
+            .layout(slot, emptied)
+            .release_span(vid)
+            .expect("release the span");
+        assert_eq!(
+            released.bucket().stored_slots(),
+            0,
+            "a released span leaves no slab slots"
+        );
+        assert!(
+            released.bucket().edge_run().is_none() && released.bucket().values_run().is_none(),
+            "and no runs either"
+        );
+    }
+
+    /// `ensure_room_for` is a question about the vertex's space, not about the bucket's contents: whichever
+    /// way it answers - and failing closed when the leaf cannot grow is a valid answer - it does not change how
+    /// many slots the bucket holds.
+    #[test]
+    fn ensure_room_for_never_changes_the_bucket_size() {
+        let graph = roomy_graph();
+        let (vid, slot, bucket) = slab_bucket(&graph);
+        let before = bucket.stored_slots();
+        let _ = graph.layout(slot, bucket).ensure_room_for(
+            vid,
+            super::super::span_size::ContentSlots::new(1),
+            (0, 0),
+        );
+        let after = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), bucket.bucket_label_key())
+            .expect("find")
+        {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        assert_eq!(
+            after.stored_slots(),
+            before,
+            "making room does not change how many slots the bucket holds"
+        );
+    }
+}
