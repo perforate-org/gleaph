@@ -150,7 +150,7 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
     bucket: LabelBucket,
     pending: Option<&E>,
 ) -> Result<(), LabeledOperationError> {
-    transcribe_and_publish_tree_inner(graph, vid, bucket, pending, false)
+    transcribe_and_publish_tree_inner(graph, vid, bucket, pending, false, false)
 }
 
 /// `retried` is true once the vertex window has been rebalanced for this promotion; a
@@ -161,6 +161,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     bucket: LabelBucket,
     pending: Option<&E>,
     retried: bool,
+    root_in_run: bool,
 ) -> Result<(), LabeledOperationError> {
     use crate::labeled::ltb_raw_block_store::{BlockHeader, BlockKind};
     use crate::traits::NO_SPILL_RUN;
@@ -248,6 +249,8 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     let request = super::span_size::SpanRequest::for_content(super::span_size::ContentSlots::new(
         super::compact::bucket_content_slots(&template),
     ));
+    // With the root in a run the bucket occupies no leaf slots at all, so the prefix the promotion replaces is
+    // released whole instead of being replaced by a root region.
     let combined_len = request.content().get();
     // ADR 0101: the leaf reserves the edge root only; the value root gets its own span in the value store.
     debug_assert_eq!(
@@ -262,6 +265,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             .ok_or(LaraOperationError::overflow())?,
         "the value root's value-store span must hold every property child"
     );
+    if root_in_run {
+        let run = graph
+            .edges()
+            .spill_allocate_rows(edge_root_len)
+            .map_err(LabeledOperationError::from)?;
+        template = template
+            .with_edge_run(Some(run))
+            .map_err(LabeledOperationError::from)?;
+    }
     let source = super::compact::PhysicalLayoutSource::capture(graph, vid)?;
     let canonical = super::compact::CanonicalPhysicalVertex::capture(graph, vid)?;
     let old_alloc = if canonical.vertex.is_default_edge_labeled() {
@@ -269,7 +281,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     } else {
         canonical.vertex.stored_slots
     };
-    let new_alloc = if canonical.vertex.is_default_edge_labeled() {
+    let new_alloc = if root_in_run {
+        old_alloc.saturating_sub(prefix)
+    } else if canonical.vertex.is_default_edge_labeled() {
         combined_len
     } else {
         old_alloc
@@ -288,7 +302,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     )?;
     source.validate()?;
     canonical.validate(graph)?;
-    graph.edges().free_span_store().reserve_for_releases(2)?;
+    graph
+        .edges()
+        .free_span_store()
+        .reserve_for_releases(if root_in_run { 1 } else { 2 })?;
     graph.values().reserve_retired_byte_spans(1)?;
     // Promotion is a shrink: the root (`combined_len` slots) never needs more room
     // than the prefix it replaces (`prefix >= combined_len` for every production
@@ -325,7 +342,6 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             pin.allocate(u64::from(combined_len), Some(avoid))?
         }
     };
-    let mut root_in_run = false;
     let new_start = match in_pin_start {
         Some(base) => base,
         None if in_place => bucket.edge_start(),
@@ -374,38 +390,27 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 else {
                     return Err(LabeledOperationError::BucketNotFound { vid, label });
                 };
-                transcribe_and_publish_tree_inner(graph, vid, fresh, pending, true)
+                transcribe_and_publish_tree_inner(graph, vid, fresh, pending, true, false)
             };
             match retry() {
                 Ok(()) => return Ok(()),
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
                 )) => {
-                    // No room was made either way: the root goes to a run.
-                    root_in_run = true;
-                    bucket.edge_start()
+                    // No room could be made either way: restart with the root in a run.
+                    return transcribe_and_publish_tree_inner(
+                        graph, vid, bucket, pending, true, true,
+                    );
                 }
                 Err(other) => return Err(other),
             }
         }
-        // The leaf has no room for the root's span and none could be made.
+        // The leaf has no room for the root's span and none could be made: restart with the root in a run, where no
+        // leaf span is needed at all.
         None => {
-            root_in_run = true;
-            bucket.edge_start()
+            return transcribe_and_publish_tree_inner(graph, vid, bucket, pending, true, true);
         }
     };
-    if root_in_run {
-        // The root array is a run of block ids, and a tree bucket never keeps rows in a run, so it can live in an
-        // edge run instead - the same arena edge rows overflow into, still on the edge side. The descriptor carries
-        // it, and the geometry answers zero leaf occupancy for it.
-        let run = graph
-            .edges()
-            .spill_allocate_rows(edge_root_len)
-            .map_err(LabeledOperationError::from)?;
-        template = template
-            .with_edge_run(Some(run))
-            .map_err(LabeledOperationError::from)?;
-    }
     let allocated_header = graph.edges().header();
     let mut allocated_blocks = Vec::new();
     let prepared = (|| -> Result<(), LabeledOperationError> {

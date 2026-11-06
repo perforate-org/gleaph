@@ -317,6 +317,17 @@ defect from being rediscovered without its prior reasoning.
   the promotion's preparation builds a leaf-span publication for a root that no longer needs one, so the failure moved
   from "no room" to "prepared the wrong shape". That preparation is the next step, and the test states it.
 
+- **Fourth slice: the promotion's accounting follows the decision.** The root-in-run case is now a *restart* rather
+  than a mid-function switch (`transcribe_and_publish_tree_inner(.., retried, root_in_run)`), so the descriptor names
+  the run before any span admission, `new_alloc` shrinks by the whole replaced prefix, and only one release is
+  reserved. The reproduction still fails, and the record says where it now stands: the failure is inside the
+  publication preparation for the run-held root, after the block transcription succeeds. Everything else - the type,
+  the geometry, the reading and writing through the location, the transcription - is in place and green.
+- **What the next attempt should read first:** `prepare_existing_row_image`'s expectation about the vertex's
+  `stored_slots` versus the descriptor being published. The shrink of `new_alloc` by `prefix` is an accounting claim;
+  the row image preparation recomputes the same geometry from the descriptor and the vertex, and the two must agree
+  for the publication to become ready.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
