@@ -421,3 +421,30 @@ So the work is not the dispatch. It is:
 
 The read-side migration from attempt two is worth redoing as step 1 of that sequence; it is mechanical and it
 passed. The rest waits on the naming decision, which is a contract question rather than a code-shape one.
+
+## The decision, made: the with-values entry's default is live rows
+
+Evidence from the code, not taste:
+
+- **Promotion needs live rows.** Its callback fills the gaps itself (`while next < slot { emit(tombstone) }`),
+  emits the visited row, and then asserts `live == bucket.degree`. A tombstone row in the callback would
+  over-count `live` and transcribe a sentinel as data.
+- **Every production caller is a read**: promotion above, the deferred iterators, the reversed counterparts, and
+  this module's own read helpers.
+- **The calls that expect holes sit in tests**, and their rows are width 0 - so they need *positions*, not values.
+
+So `visit_edges_with_inline_property` answers live rows, uniform across storage classes, and a positions entry
+exists for the other question. That is the same shape the valueless family already has, which is the point: one
+family, one naming rule.
+
+## What the migration actually costs, and why it is not a batch rename
+
+The one-line change of default plus a mechanical move of the hole-expecting call sites was attempted and produced
+six failures of a specific kind: a test that reads the same promoted bucket **twice** asserts different visibility
+at the two sites - holes at one, live rows at the other - so a per-file substitution moves a call site that was
+already right. `promotion_retained_eight_holes` is the example: its first read wants the transcription (positions)
+and its second wants what a reader sees (live).
+
+That makes the remaining work a per-call-site classification with a decision at each: read the assertion, ask which
+question it is, name the entry accordingly. It is mechanical but not batchable, and it is the correct remaining
+step for this family.
