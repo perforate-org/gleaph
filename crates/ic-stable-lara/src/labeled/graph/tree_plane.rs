@@ -63,6 +63,15 @@ where
         self.bucket
     }
 
+    /// The value-root offset this plane's bucket owns, if it has a root to replace.
+    ///
+    /// The geometry answers whether a root exists (a bucket whose depth or width says it has none owns none), so a
+    /// caller never has to read "is this offset real" out of the number itself.
+    pub(crate) fn owned_value_root(&self) -> Option<u64> {
+        (compact::value_root_region_bytes(&self.bucket) > 0)
+            .then(|| self.bucket.inline_property_bytes_offset())
+    }
+
     /// Where this tree's edge-root array is, and how long it is.
     pub(crate) fn edge_root_loc(&self) -> EdgeRootLoc {
         if self.bucket.is_tree_mode()
@@ -140,16 +149,22 @@ where
 
     /// Admits the value root's region in the inline property bytes store and writes its child addresses
     /// there (ADR 0101). Returns the offset the descriptor must record.
+    /// Gives the value root a region in the value store and records the entries in it.
+    ///
+    /// `replaces` is the **ownership claim**: `Some(offset)` means this bucket owns the root at `offset` and releasing
+    /// it is part of the operation; `None` means nothing is owned yet - a promotion builds the descriptor from a
+    /// template whose offset is not an allocation, and passing it as if it were released a span the promotion never
+    /// held (offset 0 is also a legitimate first span, so a sentinel cannot express this).
     pub(crate) fn ensure_value_root(
         &self,
         value_children: &[u32],
+        replaces: Option<u64>,
     ) -> Result<u64, super::LabeledOperationError> {
         let mut children = Vec::with_capacity(value_children.len() * 4);
         for child in value_children {
             children.extend_from_slice(&child.to_le_bytes());
         }
         let replaced = compact::value_root_region_bytes(&self.bucket);
-        let previous = self.bucket.inline_property_bytes_offset();
         let offset = self
             .graph
             .values()
@@ -167,9 +182,13 @@ where
                     crate::lara::operation_error::LaraOperationError::overflow(),
                 )
             })?;
-        // Whether a value root exists is a question the geometry answers, not the recorded address: offset 0 is
-        // also the first span's address, so treating it as "no root" leaked that span.
-        if replaced > 0 && previous != offset {
+        // Whether a previous root is released is the caller's claim, not a sentinel: offset 0 is also the first
+        // span's address, so "offset == 0 means nothing to release" both leaks real roots and releases spans the
+        // caller never owned.
+        if let Some(previous) = replaces
+            && replaced > 0
+            && previous != offset
+        {
             let _ = self
                 .graph
                 .values()
@@ -230,7 +249,7 @@ where
         let offset = if value_children.is_empty() {
             0
         } else {
-            self.ensure_value_root(value_children)?
+            self.ensure_value_root(value_children, self.owned_value_root())?
         };
         self.write_edge_root::<E2>(edge_start, edge_root_image)?;
         Ok(offset)
@@ -258,7 +277,7 @@ where
             self.write_edge_root::<E2>(edge_start, edge_root_image)?;
         }
         if !value_children.is_empty() {
-            let offset = self.ensure_value_root(value_children)?;
+            let offset = self.ensure_value_root(value_children, self.owned_value_root())?;
             published = published.with_inline_property_bytes_offset(offset);
         }
         self.graph
@@ -410,7 +429,7 @@ mod tests {
         let replaced = graph.tree_plane(bucket).value_root().1;
         let grown = graph
             .tree_plane(bucket)
-            .ensure_value_root(&[21, 22, 23, 24, 25])
+            .ensure_value_root(&[21, 22, 23, 24, 25], Some(before))
             .expect("grow the value root");
         assert_ne!(grown, before, "a wider root needs a wider span");
         assert_eq!(graph.tree_plane(bucket).value_child(0), 21);

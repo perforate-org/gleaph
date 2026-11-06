@@ -1426,11 +1426,12 @@ mod tests {
     /// - and the payload at block 0, offset 8 **holds row 1537's value**, whose own offset is also 8
     ///   (`(1537 % 512) * 8`).
     ///
-    /// The property tree is **depth 1** (five leaves fit a root of 1024 entries), and walking it by hand shows the
-    /// remaining defect: the descriptor's value-root region has **entry 0 = block id 1**, not the first property leaf's
-    /// id. So the reader is faithful to the region it is told about, and the region is not the one the promotion wrote -
-    /// the next reading is the value root's address: which allocation the descriptor names versus which
-    /// `ensure_value_root` wrote.
+    /// The property tree is **depth 1** (five leaves fit a root of 1024 entries), and dumping the region the descriptor
+    /// names settles the direction: at offset 36 it holds **`[1, 2, 3, 1, 6]`** - not five monotone leaf ids, and not
+    /// anything a root write produces. So the reader is faithful, the writer is fine (the leaf payloads now come from
+    /// one owner), and the remaining defect is that the region the descriptor names is **not the region the promotion
+    /// wrote**: either `ensure_value_root`'s offset and the descriptor's differ, or something wrote over the region after
+    /// it was published. Both are one print apart, and the numbers to print are recorded here.
     #[test]
     #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
@@ -1481,6 +1482,14 @@ mod tests {
                 let mut root_id = [0u8; 4];
                 graph.values().read_bytes(root_off, &mut root_id);
                 let root_entry = u32::from_le_bytes(root_id);
+                let mut root_bytes = [0u8; 20];
+                graph.values().read_bytes(root_off, &mut root_bytes);
+                let entries: Vec<u32> = root_bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_le_bytes(*c))
+                    .collect();
                 let mut id = root_entry;
                 if depth >= 2 {
                     let mut child = [0u8; 4];
@@ -1498,7 +1507,7 @@ mod tests {
                 assert_eq!(
                     u32::from_le_bytes(probe[..4].try_into().expect("4 bytes")),
                     row,
-                    "depth {depth}: root entry {root_entry} -> leaf {id}, offset 8 holds another row"
+                    "depth {depth}, offset {root_off}, entries {entries:?}: root entry {root_entry} -> leaf {id}, offset 8 holds another row"
                 );
             }
             assert_eq!(

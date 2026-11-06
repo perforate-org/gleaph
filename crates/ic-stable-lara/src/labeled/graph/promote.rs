@@ -651,9 +651,11 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         // The region holds the level the depth names: the entries the image was built from. For depth 1 those are the
         // leaves; for depth 2 they are the interior ids - writing the leaves there made the resolver descend one level
         // too far and read a value payload as an id.
+        // The promotion owns no previous value root: the template's descriptor is not an allocation, so this call
+        // claims nothing to release. Saying so is why offset 0 no longer means "nothing".
         let value_root_offset = graph
             .tree_plane(template)
-            .ensure_value_root(&property_root.entries)?;
+            .ensure_value_root(&property_root.entries, None)?;
         let target = template
             .with_base_slot_start(new_start)
             .with_inline_property_bytes_offset(value_root_offset);

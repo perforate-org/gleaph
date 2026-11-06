@@ -571,6 +571,17 @@ defect from being rediscovered without its prior reasoning.
   *address*: which allocation the descriptor names versus which `ensure_value_root` wrote (a released-and-reused region,
   or a descriptor published from an earlier attempt, are the two candidates).
 
+- **Ownership made explicit, and the measurement now points at the region (2026-11-07).**
+  `BucketTreePlane::ensure_value_root(entries, replaces: Option<u64>)` takes the **ownership claim** instead of
+  inferring it from the offset. The promotion builds its descriptor from a template whose offset is not an allocation,
+  and calling `ensure_value_root` on it with the old signature released a span the promotion never owned - which offset
+  0 cannot express, since offset 0 is also a legitimate first span. The suite is green with the explicit claim.
+- **What the dump says:** the property tree is depth 1, and the region the descriptor names holds
+  **`[1, 2, 3, 1, 6]`** at offset 36 - not five monotone leaf ids and not something a root write produces. So readers
+  are faithful and the leaf payloads now have one owner; what remains is that **the region the descriptor names is not
+  the region the promotion wrote**. Two candidates, both one print apart: `ensure_value_root`'s returned offset differs
+  from the descriptor's, or something writes over the region after publication.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
