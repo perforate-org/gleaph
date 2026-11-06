@@ -442,18 +442,19 @@ where
         };
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
-        let (slot, rewrote_bucket_segment) = self
-            .buckets
-            .insert_label_bucket_at(
-                &self.vertices,
-                src,
-                LabelBucket::default().with_bucket_label_key(label_id),
-                insert_index,
-            )
-            .map_err(LabeledOperationError::from)?;
-        if rewrote_bucket_segment {
-            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
-        }
+        // The row and the caches that describe it change together; the "did it move" bit travels with the rewrite.
+        let slot = self.bucket_lookup().rewrite_row(src, |graph| {
+            let (slot, rewrote) = graph
+                .buckets
+                .insert_label_bucket_at(
+                    &graph.vertices,
+                    src,
+                    LabelBucket::default().with_bucket_label_key(label_id),
+                    insert_index,
+                )
+                .map_err(LabeledOperationError::from)?;
+            Ok((slot, rewrote))
+        })?;
         self.ensure_vertex_bucket_row_origin(src)?;
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;

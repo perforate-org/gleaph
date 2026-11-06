@@ -68,3 +68,29 @@ caller calling `invalidate_bucket_lookup_caches_for_bucket_segment` has not cut 
 accounting, which the promotion fixtures already exercise. The Visit family took nine slices for the same reason:
 the type had to exist before the callers could name it. The order that worked there applies here - introduce the
 plane and its entries, prove them with tests, then move callers in batches.
+
+## Slice 1: the plane exists, and one caller moved
+
+`BucketLookupPlane` (`graph/lookup_plane.rs`) now owns the family's two questions:
+
+| Entry | What it answers |
+| --- | --- |
+| `resolve(src, label)` | where the bucket is, or where it would go - the graph's own `BucketSearch`, unchanged |
+| `rewrite_row(vid, rewrite)` | performs a bucket-row rewrite and voids the caches that described it |
+
+The design detail that mattered: `rewrite_row`'s closure returns `(value, moved)` rather than taking `moved` as an
+argument. The first attempt passed the bit in and the insertion site had to pass `true` because the answer only
+exists *after* the rewrite - which is precisely the `if` this plane is meant to remove. With the bit in the return,
+the writer states it where it is known and cannot perform the rewrite without answering it.
+
+Three tests pin the plane: `resolve` agrees with the lookup it owns (found and missing), a failing rewrite publishes
+and invalidates nothing, and a successful one hands back what it published. The conditional insert site
+(`insert_label_bucket_at` reporting whether it rewrote the segment) is the first caller, so the plane's reason for
+existing is exercised in production code rather than only in tests.
+
+| Measure | Before | Now |
+| --- | --- | --- |
+| Manual invalidation sites | 9 | 8 (one moved behind the plane) |
+
+The next slices are the remaining eight sites, then creation and destruction through the same plane. The number to
+beat stays **9 -> 1**.

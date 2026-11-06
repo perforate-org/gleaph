@@ -262,6 +262,7 @@ mod insert;
 mod iter;
 mod layout;
 pub(crate) mod leaf_arena;
+mod lookup_plane;
 mod promote;
 mod remove;
 mod row_plane;
