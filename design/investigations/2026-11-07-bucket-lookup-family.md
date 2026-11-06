@@ -169,3 +169,17 @@ bigger commit, and it is the last thing this family needs before it is complete.
 
 Recorded rather than forced: the tree is green at the state where the family's real work is done, and the removal is
 a named, bounded follow-up instead of a half-applied edit.
+
+## Correction: `remove_label_bucket` is not a dead production path - it is a test seam
+
+The record above said per-label removal has no caller and should be deleted. That was wrong, and the `cfg` boundary
+the deletion needed to read is what says so: the method carries `#[cfg(test)]`, so it does not exist in a production
+build at all. It is a **test seam** for the failed-batch-reservation case - undoing a descriptor created only for
+that reservation - and one test exercises exactly that.
+
+A store method that exists only under `cfg(test)` and has a real user is not a superseded path; deleting it would
+delete the test's ability to state its case. The lesson is the one this family keeps teaching: the number of
+production callers is not the measure until you know which build the caller and the callee live in.
+
+So the create/destroy half is: creation one path (behind the plane), destruction one production path (`clear_row`) and
+one test seam. Nothing is dead, and nothing is duplicated.
