@@ -177,6 +177,10 @@ pub enum LabeledOperationError {
     /// plus the (already-bumped) `degree` so the wrapper can size the
     /// stepped fill exactly.
     InlinePropertyMaterializeDeferredRequired(ValueMigration),
+    /// A new bucket's edge span could not be placed; carries the stage and geometry.
+    BucketSpanPlacementExhausted(BucketSpanPlacementExhausted),
+    /// The vertex's slice cannot hold the span it asked for; names the layout reason.
+    VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
     BucketDescriptorRow(BucketDescriptorRowUnavailable),
 }
@@ -230,6 +234,88 @@ impl fmt::Display for BucketDescriptorRowUnavailable {
             f,
             "vertex {} has no bucket-descriptor row: degree={}, slack={}, default_labeled={}",
             self.vid, self.degree, self.slack, self.default_labeled
+        )
+    }
+}
+
+/// A new bucket's edge span could not be placed: which stage gave up, and the geometry it gave up with.
+///
+/// The placement path catches `CollectAllocationOverflow` to relocate the leaf and try again, so the value a failing
+/// insert reported was the *last tolerated* one - it named neither the stage nor what the layout looked like. This is
+/// the error only the final "exhausted" answer produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BucketSpanPlacementExhausted {
+    /// The stage that gave up: `pin`, `relocate`, `base`, `successor`, `read`, or `place`.
+    pub stage: &'static str,
+    /// The bucket slot the create returned.
+    pub slot: u64,
+    /// The descriptor index the caller derived.
+    pub bucket_index: u32,
+    /// The vertex's descriptor-row base.
+    pub base: u64,
+    /// The vertex's bucket count.
+    pub degree: u32,
+    /// The descriptor row's slot capacity.
+    pub capacity: u64,
+    /// How many leaf relocations the placement attempted before giving up.
+    pub relocations: u8,
+}
+
+impl fmt::Display for BucketSpanPlacementExhausted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "bucket span placement exhausted at `{}` for slot {} (index {}, base {}, degree {}, capacity {}), \
+             after {} relocation(s)",
+            self.stage,
+            self.slot,
+            self.bucket_index,
+            self.base,
+            self.degree,
+            self.capacity,
+            self.relocations
+        )
+    }
+}
+
+/// A vertex's slice cannot hold the span it asked for: the leaf's mates own the space, or the pinned floor does not
+/// cover the request.
+///
+/// This is the ADR 0098 bound answering "no", and it is its own error because it is not a capacity arithmetic
+/// overflow: the arithmetic is fine and the *layout* refuses. `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` needed exactly
+/// this distinction - the fifth edge of a second label on a 10 000-row hub fails here, and every earlier probe read
+/// it as a generic overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VertexSliceExhausted {
+    /// The vertex whose slice cannot take the span.
+    pub vid: VertexId,
+    /// How many slots the request needed.
+    pub span_len: u64,
+    /// The end slot the request needed.
+    pub span_end: u64,
+    /// The vertex's current content end.
+    pub content_end: u64,
+    /// Whether the leaf's other mates left the span free.
+    pub mates_free: bool,
+    /// Whether the leaf is pinned (its floor must cover the span).
+    pub pinned: bool,
+    /// Whether the pinned floor covers the span, when it is pinned.
+    pub floor_covers: bool,
+}
+
+impl fmt::Display for VertexSliceExhausted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "vertex {} slice exhausted: span {}..{} refused (content ends at {}, mates_free={}, \
+             pinned={}, floor_covers={})",
+            self.vid,
+            self.span_len,
+            self.span_end,
+            self.content_end,
+            self.mates_free,
+            self.pinned,
+            self.floor_covers
         )
     }
 }
@@ -320,6 +406,8 @@ impl fmt::Display for LabeledOperationError {
                  wired; follow-up todo: property-tree-deepen)"
             ),
             Self::BucketDescriptorRow(unavailable) => unavailable.fmt(f),
+            Self::BucketSpanPlacementExhausted(exhausted) => exhausted.fmt(f),
+            Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
                 "inline-property materialization exceeds INLINE_MATERIALIZE_BYTE_BUDGET: \
@@ -358,6 +446,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::TreeRootCapacityReached { .. }
             | Self::PropertyTreeRootCapacityReached { .. }
             | Self::BucketDescriptorRow(_)
+            | Self::BucketSpanPlacementExhausted(_)
+            | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }
     }

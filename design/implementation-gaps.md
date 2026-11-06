@@ -241,6 +241,29 @@ defect from being rediscovered without its prior reasoning.
   reported. It also makes the retry budget explicit, which is the other half of this gap: an insert that tried
   relocation twice and failed should be able to say so.
 
+- **ANSWERED 2026-11-07, with the numbers.** `CollectAllocationOverflow` stopped being the answer at the
+  refusing site: `promote_tiny_to_slab`'s span guard now reports `VertexSliceExhausted`, and the reproduced failure
+  prints
+  `vertex 2 slice exhausted: span 5..4113 refused (content ends at 4108, mates_free=true, pinned=true,
+  floor_covers=false)`. Read it: the hub's content ends at 4108, the new bucket's span needs to reach 4113, the
+  mates are **not** in the way, and the leaf **is** pinned with a floor that ends before 4113. So this is the ADR 0098
+  bound refusing a *pinned* leaf's growth - not a descriptor bug, not a stale base, and nothing to do with the
+  10 000 rows themselves except that they pushed the content end to the block's edge.
+- **The retry could not fix it.** `promote_tiny_to_slab_with_growth` retries on `CollectAllocationOverflow` by
+  relocating the leaf (up to 64 times). The retry now matches the typed refusal instead of the generic signal, so the
+  reason survives - and the reproduction still fails, which says the relocation does not create the room: after the
+  relocate the floor still cannot cover `content_end + span_len`.
+- **So the gap is a design question, stated exactly:** a pinned leaf whose content reaches its floor must either
+  (a) grow its floor (the block's extent, not the vertex's slice), (b) accept a new bucket's descriptor row outside
+  the floor (it is a descriptor row, not edge content), or (c) relocate the *vertex* rather than the leaf. The
+  cluster's own numbers decide which: `span_len = 5` for a new bucket's span is the vertex's descriptor row, and the
+  edge rows are what a leaf's floor is meant to bound. Option (b) is the smallest and the one the code seems to
+  assume elsewhere - `bucket_content_region` already distinguishes descriptor row from content.
+- **What changed in the code (kept):** `VertexSliceExhausted` names the refusal,
+  `promote_tiny_to_slab_with_growth` states its retry condition in terms of it, and a budget-exhausted retry answers
+  `BucketSpanPlacementExhausted` with the relocation count. That is the "no room as a value" pattern applied to the
+  place that used to swallow it.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

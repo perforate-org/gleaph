@@ -422,13 +422,8 @@ where
     {
         let vertex = self.vertices.get(src);
         let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-        if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-            return Ok(());
-        }
-        log_collect_overflow(
-            "ensure_labeled_bucket_edge_span_room: new bucket span placement failed",
-        );
-        Err(LaraOperationError::overflow().into())
+        // The give-up path names the stage and the geometry; the placement's tolerated signals do not survive it.
+        self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)
     }
 
     pub(super) fn find_or_create_bucket(
@@ -503,12 +498,25 @@ where
         vertex: &LabeledVertex,
         slot: u64,
         bucket_index: u32,
-    ) -> Result<bool, LabeledOperationError>
+    ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
+        let exhausted = |stage: &'static str, relocations: u8| {
+            LabeledOperationError::BucketSpanPlacementExhausted(
+                super::error::BucketSpanPlacementExhausted {
+                    stage,
+                    slot,
+                    bucket_index,
+                    base: vertex.base_slot_start(),
+                    degree: vertex.degree(),
+                    capacity: self.buckets.header().elem_capacity,
+                    relocations,
+                },
+            )
+        };
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
-            return Ok(false);
+            return Ok(());
         }
 
         // Pin even the first bucket's leaf before publishing its initial position. The
@@ -536,8 +544,11 @@ where
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
                 )) => {
-                    self.relocate_labeled_leaf_physical_block(src)?;
-                    self.labeled_edge_base_from_first_bucket(src)?
+                    // The one relocation this path attempts; a second failure is the give-up.
+                    self.relocate_labeled_leaf_physical_block(src)
+                        .map_err(|_| exhausted("relocate", 1))?;
+                    self.labeled_edge_base_from_first_bucket(src)
+                        .map_err(|_| exhausted("base", 1))?
                 }
                 Err(error) => return Err(error),
             }
@@ -571,7 +582,7 @@ where
             self.vertices
                 .set(src, &vertex.with_stored_slots(initial_slots));
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Inserts one edge into a tiny-mode bucket (ADR 0096 §5 + delete redesign).
@@ -701,16 +712,44 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        // The retry condition is now stated in terms of *why* the layout refused: a pinned floor that does not
+        // cover the request is what a leaf relocation can fix, and anything else is the caller's to handle. The
+        // old catch-all on `CollectAllocationOverflow` swallowed the reason, which is why this path could fail
+        // sixty-four times and report only "collect overflow".
+        let mut relocations = 0u8;
+        let mut last_refusal = None;
         for _attempt in 0..64u32 {
             match self.promote_tiny_to_slab(src, bucket_slot, bucket) {
                 Ok(()) => return Ok(()),
+                Err(LabeledOperationError::VertexSliceExhausted(refusal))
+                    if refusal.pinned && !refusal.floor_covers =>
+                {
+                    last_refusal = Some(refusal);
+                    relocations = relocations.saturating_add(1);
+                    self.relocate_labeled_leaf_physical_block(src)?;
+                }
                 Err(LabeledOperationError::Store(
                     LaraOperationError::CollectAllocationOverflow,
-                )) => self.relocate_labeled_leaf_physical_block(src)?,
+                )) => {
+                    relocations = relocations.saturating_add(1);
+                    self.relocate_labeled_leaf_physical_block(src)?;
+                }
                 Err(other) => return Err(other),
             }
         }
-        Err(LaraOperationError::overflow().into())
+        let refusal =
+            last_refusal.expect("a bounded retry that never succeeded refused at least once");
+        Err(LabeledOperationError::BucketSpanPlacementExhausted(
+            super::error::BucketSpanPlacementExhausted {
+                stage: "tiny-promotion-relocate-budget",
+                slot: bucket_slot,
+                bucket_index: 0,
+                base: refusal.content_end,
+                degree: bucket.degree(),
+                capacity: self.buckets.header().elem_capacity,
+                relocations,
+            },
+        ))
     }
 
     /// Promotes a tiny-mode bucket to slab (ADR 0096 §4): reserve, transcribe,
@@ -799,7 +838,19 @@ where
                 };
                 let pinned = self.labeled_leaf_physical_range(src)?.is_some();
                 if !mates_free || (pinned && !floor_covers) {
-                    return Err(LaraOperationError::overflow().into());
+                    // The layout refuses, and it says why: a generic overflow here is what made
+                    // GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX untraceable through four probes.
+                    return Err(LabeledOperationError::VertexSliceExhausted(
+                        super::error::VertexSliceExhausted {
+                            vid: src,
+                            span_len: u64::from(span_len),
+                            span_end,
+                            content_end: content,
+                            mates_free,
+                            pinned,
+                            floor_covers,
+                        },
+                    ));
                 }
                 if span_end > self.edges.header().elem_capacity {
                     self.edges.set_elem_capacity(span_end)?;
