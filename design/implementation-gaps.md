@@ -88,6 +88,32 @@ defect from being rediscovered without its prior reasoning.
 - **Next:** find the fold path that clears `edge_spill_run` without a successful `spill_release` (or
   releases into the wrong arena), and make the pair inseparable, as `BucketValuePlane::release_run`
   already does for the values plane.
+- **Narrowed 2026-11-07 by reading every site that clears the field.** The four routes a descriptor takes to
+  stop naming an edge run, and what each does about the store:
+  - `BucketLayout::repack` (`layout.rs`): publishes the runtless descriptor, then releases — ordered so the
+    descriptor never names a freed run; a failed release is the only leak window and it is documented as
+    best-effort.
+  - the fold-to-slab path (`compact.rs`, the two `spill_release` calls beside `without_edge_spill_run`):
+    captures both run ids before the admission that clears the fields, then releases both. This is the path the
+    probe's own comment credits with the earlier fix.
+  - `finalize_bucket_slab_metadata`: returns the bucket untouched whenever `edge_run().is_some()`, so its
+    `without_edge_spill_run` is a no-op on any bucket that has one.
+  - tree-to-slab demotion (`tree_write.rs`): clears the field, and releases leaves, interior blocks and spans —
+    but **no run**, because a tree bucket's rows live in LTB blocks and never in an edge spill run, so the clear
+    is a no-op there too.
+  - `try_place_new_bucket_edge_span` (`insert.rs`) builds a brand-new bucket, so its clear is a no-op; the
+    synthetic successor view in `access.rs` is not a stored descriptor.
+- **What that rules out, and what it says about the probe.** No site clears a *live* edge run without releasing
+  it. The remaining explanations are the ones the probe's numbers already suggest: a release into a **different
+  class** (the class is recomputed from the run's *current* used length at release time, so a run whose length
+  moved must still land in the class it was allocated as), or a probe that reads a plane's high-water mark after
+  the fixture has legitimately consumed the freed space.
+- **Missing evidence to get first:** make the probe print, per probed run, which plane it probed, the run id, the
+  class it was allocated as, the class `release` computed, and the arena's high-water before and after. That
+  turns "the arena grew" into "this run was released into class X but probed as class Y", or clears the probe.
+  `SpillRunStore::release` deriving its class from `read_used_len(run).max(1)` rather than from the allocation is
+  the one line worth suspecting until that print exists - `drop_head` refuses any drop that would change
+  `class_rows`, so a released run's length can only be stale if some *other* operation moved it.
 - **Why 14 verifiers fail, and it is not this session:** the values allocator reports
   `byte_capacity: 4096, slab_occupied_tail: 0, free_bytes: 0, free_span_count: 0` **before and after** a
   peer append - the byte-span allocator is not involved at all any more, because ADR 0099 replaced it
