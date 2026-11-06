@@ -225,6 +225,22 @@ defect from being rediscovered without its prior reasoning.
   above them - and run the ignored reproduction. The first one to fire is the site; if neither fires, the failure is
   in `ensure_labeled_bucket_edge_span_room` between them, whose own read is the third candidate.
 
+- **The decisive finding, 2026-11-07: `CollectAllocationOverflow` is control flow, so it cannot be traced.**
+  Every localisation attempt failed for the same reason, and the last one says it plainly: a trap on the
+  `From<LaraOperationError>` conversion fires on the **first tolerated** signal of a *successful* insert, and the
+  three candidate descriptor-read diagnostics (tiny birth, slab birth, span placement) never fire at all. The
+  "no room" answer is used as retry pressure - `try_place_new_bucket_edge_span` catches it to relocate the leaf and
+  try again - so by the time the insert fails, the value has been produced by a `?` that propagated the last
+  tolerated return, not by the site the backtrace names. Instrumenting constructions cannot find it because the
+  construction that matters is the one the retry *accepted* and then gave up on.
+- **The structural fix, not another probe:** the retry signal has to stop being an error. The two decision points -
+  `try_place_new_bucket_edge_span`'s catch-and-relocate and `ensure_labeled_bucket_edge_span_room`'s guard - should
+  answer a `RoomOutcome { Placed(u64), Relocated(u64), Exhausted { stage, slot, base, degree, capacity } }` and only
+  the final `Exhausted` becomes an error, carrying the geometry the retry had. That is pattern B from the Visit work:
+  a value that says what happened, instead of an error that says "no room" and is swallowed four times before it is
+  reported. It also makes the retry budget explicit, which is the other half of this gap: an insert that tried
+  relocation twice and failed should be able to say so.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
