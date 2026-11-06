@@ -94,3 +94,34 @@ existing is exercised in production code rather than only in tests.
 
 The next slices are the remaining eight sites, then creation and destruction through the same plane. The number to
 beat stays **9 -> 1**.
+
+## Slice 2: every cache-affecting writer now goes through the plane, and the number is 1
+
+All eight remaining manual sites moved behind the plane, each as the rewrite it actually is:
+
+| Site | How it reads now |
+| --- | --- |
+| promotion | `rewrite_row(vid, |_| { ready.publish(); counts.write(); Ok(((), was_default)) })` |
+| segment compaction (insert) | `rewrite_row(vid, |g| { g.buckets.compact_vertex_segment…; Ok(((), true)) })` |
+| bypass, two handoffs | `rewrite_row(src, |_| { …publish…; Ok(((), true)) })` |
+| mode handoff (insert) | `rewrite_row(src, |_| { …publish…; Ok(((), true)) })` |
+| fixture installing a tree bucket | `rewrite_row(vid, |_| Ok(((), true)))` |
+
+Clearing a row joined the plane too: `clear_row(vid)` is `rewrite_row` with no survivor, and the graph's
+`clear_vertex_label_buckets_for_segment` - which already coupled the two - is gone, so the coupling has one home
+rather than two.
+
+Promotion's site is the interesting one: it invalidates only when the vertex *was* default-edge labelled, because
+that is when the row it searched changes. The plane takes that as the rewrite's own answer, which is the same shape
+the conditional insert needed.
+
+| Measure | Before this record | Now |
+| --- | --- | --- |
+| Manual invalidation sites | 9 | **0** |
+| Places that invalidate | 9 | **1** (`lookup_plane::rewrite_row`) |
+
+The number to beat was 9 -> 1, and it is 1: `invalidate_bucket_lookup_caches_for_bucket_segment` is called only by
+the plane, and every writer that changes a bucket row names the plane's operation instead.
+
+What is left in this family is creation and destruction - `BucketSearch::Missing { insert_index }` and the re-read
+that follows an insert - which the plane does not yet own.

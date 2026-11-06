@@ -607,13 +607,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         graph
             .tree_plane(template)
             .write_edge_root::<E>(new_start, &edge_root)?;
-        ready.publish();
-        counts.write();
-        if canonical.vertex.is_default_edge_labeled() {
-            graph
-                .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
-                .expect("admitted bucket segment");
-        }
+        // The publication voids the caches that described the old row, and only when the row it describes changed.
+        graph
+            .bucket_lookup()
+            .rewrite_row(vid, |_| {
+                ready.publish();
+                counts.write();
+                Ok(((), canonical.vertex.is_default_edge_labeled()))
+            })
+            .expect("admitted bucket segment");
         if pending.is_some() {
             graph.edges().set_num_edges(next_count);
         }

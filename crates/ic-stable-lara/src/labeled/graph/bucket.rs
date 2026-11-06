@@ -521,16 +521,6 @@ where
         Ok(())
     }
 
-    pub(crate) fn clear_vertex_label_buckets_for_segment(
-        &self,
-        vid: VertexId,
-    ) -> Result<(), LabeledOperationError> {
-        self.buckets
-            .clear_vertex_label_buckets(&self.vertices, vid)?;
-        self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
-        Ok(())
-    }
-
     pub(super) fn invalidate_bucket_lookup_for_label(
         &self,
         src: VertexId,

@@ -49,6 +49,16 @@ where
         self.graph.find_bucket(src, &vertex, label)
     }
 
+    /// Empties `vid`'s bucket row and voids the lookup caches that described it: the rewrite case with no survivor.
+    pub(crate) fn clear_row(&self, vid: VertexId) -> Result<(), LabeledOperationError> {
+        self.rewrite_row(vid, |graph| {
+            graph
+                .buckets
+                .clear_vertex_label_buckets(&graph.vertices, vid)?;
+            Ok(((), true))
+        })
+    }
+
     /// Performs a rewrite of `vid`'s bucket row and voids the lookup caches that described it.
     ///
     /// The closure answers "did this change the row the caches search": a rewrite that only touched a descriptor keeps

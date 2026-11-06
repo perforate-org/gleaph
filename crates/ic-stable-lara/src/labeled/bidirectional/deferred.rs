@@ -4297,13 +4297,15 @@ where
         let forward_row = self.forward.vertices().get(vid);
         if !forward_row.is_default_edge_labeled() {
             self.forward
-                .clear_vertex_label_buckets_for_segment(vid)
+                .bucket_lookup()
+                .clear_row(vid)
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         let reverse_row = self.reverse.vertices().get(vid);
         if !reverse_row.is_default_edge_labeled() {
             self.reverse
-                .clear_vertex_label_buckets_for_segment(vid)
+                .bucket_lookup()
+                .clear_row(vid)
                 .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         }
         let len = self.forward.vertex_count();

@@ -167,9 +167,13 @@ where
             if self.vertices.get(src) != vertex || !counts.validate_source() {
                 return Err(LaraOperationError::overflow().into());
             }
-            write.write();
-            counts.write();
-            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+            // The handoff rewrites the bucket row, so the caches that described it go with it.
+            self.bucket_lookup()
+                .rewrite_row(src, |_| {
+                    write.write();
+                    counts.write();
+                    Ok(((), true))
+                })
                 .expect("admitted empty mode handoff has a valid bucket segment");
             return Ok(());
         }
@@ -190,9 +194,12 @@ where
         if !counts.validate_source() {
             return Err(LaraOperationError::overflow().into());
         }
-        preparation.ready()?.publish();
-        counts.write();
-        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+        self.bucket_lookup()
+            .rewrite_row(src, |_| {
+                preparation.ready()?.publish();
+                counts.write();
+                Ok(((), true))
+            })
             .expect("admitted mode handoff has a valid bucket segment");
         Ok(())
     }

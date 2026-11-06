@@ -215,8 +215,9 @@ Not yet done, in the order the duplication measurement suggested:
 | Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
 
 Status as of 2026-11-07: **Visit is done and has a record of its own**
-([investigation](../investigations/2026-11-06-visit-family-duplication.md)); bucket lookup and inline value schema
-have not started.
+([investigation](../investigations/2026-11-06-visit-family-duplication.md)). **Bucket lookup has started**
+([investigation](../investigations/2026-11-07-bucket-lookup-family.md)): `BucketLookupPlane` owns resolve and the
+cache-affecting rewrites, and the manual cache-invalidation sites went 9 -> 1. Inline value schema has not started.
 
 What Visit ended with, measured rather than assumed:
 

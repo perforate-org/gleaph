@@ -157,10 +157,14 @@ where
         self.ensure_vertex(vid)?;
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_compact_label_bucket_vertex_segment");
-        self.buckets
-            .compact_vertex_segment_for_vertex(&self.vertices, vid)
-            .map_err(LabeledOperationError::from)?;
-        self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
+        // A segment compaction rewrites the rows the lookups search, so the caches go with it.
+        self.bucket_lookup().rewrite_row(vid, |graph| {
+            graph
+                .buckets
+                .compact_vertex_segment_for_vertex(&graph.vertices, vid)
+                .map_err(LabeledOperationError::from)?;
+            Ok(((), true))
+        })?;
         Ok(())
     }
 
@@ -1016,9 +1020,12 @@ where
         if !counts.validate_source() {
             return Err(LaraOperationError::overflow().into());
         }
-        preparation.ready()?.publish();
-        counts.write();
-        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+        self.bucket_lookup()
+            .rewrite_row(src, |_| {
+                preparation.ready()?.publish();
+                counts.write();
+                Ok(((), true))
+            })
             .expect("admitted mode handoff has a valid bucket segment");
         Ok(())
     }

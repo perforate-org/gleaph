@@ -1082,7 +1082,8 @@ where
     // The lookup keeps a last-bucket cache per segment; a descriptor written without invalidating it is invisible
     // to the next graph-level entry, which is the difference between a reachable fixture and an unreachable one.
     graph
-        .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+        .bucket_lookup()
+        .rewrite_row(vid, |_| Ok(((), true)))
         .expect("invalidate the segment's lookup cache");
     installed
 }
