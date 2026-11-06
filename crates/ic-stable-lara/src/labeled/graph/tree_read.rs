@@ -897,7 +897,9 @@ mod tests {
                     .expect("poison later edge root");
 
                 let mut seen = Vec::new();
-                let result = graph.visit_edge_positions(vid, label, order, |slot, edge| {
+                let result = graph.visit_slot_rows(vid, label, order, |row| {
+                    let slot = row.slot;
+                    let edge = row.into_edge();
                     seen.push((slot.raw(), edge.target));
                     if slot.raw() == stop_slot {
                         ControlFlow::Break(String::from("stopped at tombstone"))
@@ -928,7 +930,8 @@ mod tests {
                 assert_eq!(seen, expected);
                 assert!(
                     matches!(
-                        graph.visit_edge_positions(vid, label, order, |_, _| {
+                        graph.visit_slot_rows(vid, label, order, |row| {
+                            let _ = row.into_edge();
                             ControlFlow::<()>::Continue(())
                         }),
                         Err(LabeledOperationError::LtbBlock(BlockError::NotMinted {
@@ -1354,7 +1357,9 @@ mod tests {
         let mut visited_positions: Vec<u32> = Vec::new();
         let mut tombstone_seen_at: Option<u32> = None;
         let _ = graph
-            .visit_edge_positions(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+            .visit_slot_rows(vid, label, OutEdgeOrder::Ascending, |row| {
+                let slot = row.slot;
+                let edge = row.into_edge();
                 if edge.is_tombstone_edge() && tombstone_seen_at.is_none() {
                     tombstone_seen_at = Some(slot.raw());
                 }
@@ -1385,7 +1390,9 @@ mod tests {
         let mut visited_positions_desc: Vec<u32> = Vec::new();
         let mut tombstone_seen_desc: Option<u32> = None;
         let _ = graph
-            .visit_edge_positions(vid, label, OutEdgeOrder::Descending, |slot, edge| {
+            .visit_slot_rows(vid, label, OutEdgeOrder::Descending, |row| {
+                let slot = row.slot;
+                let edge = row.into_edge();
                 if edge.is_tombstone_edge() && tombstone_seen_desc.is_none() {
                     tombstone_seen_desc = Some(slot.raw());
                 }

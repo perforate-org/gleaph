@@ -895,7 +895,9 @@ fn point_state_tree_native_boundaries_and_errors_preserve_all_memories() {
     for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
         let mut native = Vec::new();
         let flow = graph
-            .visit_edge_positions(owner, label, order, |slot, edge| {
+            .visit_slot_rows(owner, label, order, |row| {
+                let slot = row.slot;
+                let edge = row.into_edge();
                 native.push((slot.raw(), edge.0));
                 ControlFlow::<()>::Continue(())
             })

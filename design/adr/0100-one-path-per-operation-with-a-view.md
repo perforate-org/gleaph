@@ -236,9 +236,12 @@ What Visit ended with, measured rather than assumed:
 - **The walk-level guarantees are the same both ways**: a windowed tree walk stops at the break position, and a
   corrupt tree root fails closed with the same typed error as the whole-row walk.
 
-The remaining work in Visit is cleanup, not duplication: the flat entries (`visit_edges`, `visit_edge_positions`,
-`visit_edges_with_inline_property`) are adapters kept for their callers, and they go once those callers name a typed
-entry.
+The cleanup ran: `visit_edge_positions` (seven callers), the duplicate `visit_live_edges_with_inline_property` (the
+read entry already answered that) and a dead `visit_edge_positions_with_inline_property` are deleted, and their
+callers now name a typed entry. What stays is API, not a path: `visit_edges` and
+`visit_edges_with_inline_property` keep their 69 and 56 callers, and they are three-line adapters over
+`visit_live_rows` / the typed read entry - the same shape the row insert and remove entries have had since unit
+one.
 
 ### Where the unit stops, and why
 

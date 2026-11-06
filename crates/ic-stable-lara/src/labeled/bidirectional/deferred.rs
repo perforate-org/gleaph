@@ -2553,7 +2553,7 @@ where
         // answer the same whichever storage class holds the bucket.
         let flow = self
             .forward
-            .visit_live_edges_with_inline_property(
+            .visit_edges_with_inline_property(
                 src,
                 label_id,
                 OutEdgeOrder::Descending,
