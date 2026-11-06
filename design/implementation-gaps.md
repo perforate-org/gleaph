@@ -213,6 +213,18 @@ defect from being rediscovered without its prior reasoning.
   should run **before** the rewrite (or be told the row moved) rather than after it. A test at the bucket-store layer
   can then assert that the slot a create returns is readable, for both the slack and the rewrite path.
 
+- **What the two localisation attempts established, and what they did not.** Replacing the direct
+  `CollectAllocationOverflow` constructions with markers was abandoned: half of them sit in *pattern* position and
+  the patch both fails to compile and shifts every line number the tracing reports. The conversion trap
+  (`From<LaraOperationError>` filtered to an `insert_edge` stack) did fire and named `insert.rs`'s new-bucket
+  descriptor reads, but the attribution was undermined by the same thing - temporary edits moved the line numbers
+  the backtrace prints - so the next attempt must either pin the source with `#[track_caller]`-free wrapping or add
+  the diagnostics **without** changing any line before them.
+- **Concrete next step, unchanged in substance:** wrap the two reads of the freshly created descriptor
+  (`find_or_create_bucket`'s tiny branch and its slab-birth branch) in distinct typed errors - no line-count changes
+  above them - and run the ignored reproduction. The first one to fire is the site; if neither fires, the failure is
+  in `ensure_labeled_bucket_edge_span_room` between them, whose own read is the third candidate.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
