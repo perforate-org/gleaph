@@ -264,10 +264,16 @@ What Visit ended with, measured rather than assumed:
 
 The cleanup ran: `visit_edge_positions` (seven callers), the duplicate `visit_live_edges_with_inline_property` (the
 read entry already answered that) and a dead `visit_edge_positions_with_inline_property` are deleted, and their
-callers now name a typed entry. What stays is API, not a path: `visit_edges` and
-`visit_edges_with_inline_property` keep their 69 and 56 callers, and they are three-line adapters over
-`visit_live_rows` / the typed read entry - the same shape the row insert and remove entries have had since unit
-one.
+callers now name a typed entry.
+
+What stays, and **why it stays** (a follow-up that was withdrawn rather than done): `visit_edges` (69 callers) and
+`visit_edges_with_inline_property` (56) are three-line adapters over `visit_live_rows` and the typed read entry. The
+typed form exists for the callers that need the guarantee in a *signature* - an observation helper whose question has
+to be visible at a glance, or a place where the hole-bearing form was being mixed in. For the 125 callers that simply
+walk live rows, renaming would turn `|slot, edge|` into `|row| row.slot, row.edge` at every site without adding a
+guarantee the name does not already carry: the entry is a read, there is one implementation behind it, and the
+hole-bearing form is a different name. Removing them would make 125 sites noisier to prove a property those sites
+never needed - the same "smallest at the owning layer" reasoning this ADR applies elsewhere.
 
 ### Where the unit stops, and why
 

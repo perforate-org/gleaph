@@ -558,3 +558,19 @@ What that took, in the order it worked:
 The four that remain are each the owner of its own question: `visit_rows` (the row walker), the slab span funnel
 (span shapes), the at-slot batch path (a bulk read), and `visit_bucket_edge_slots` (a selected-slot walk with one
 class difference). None of them is a second implementation of another's operation.
+
+## The flat adapters stay: the follow-up is withdrawn
+
+The record ended with "the flat entries go once their callers name a typed entry". Measured again at the point of
+doing it, that is the wrong trade:
+
+- `visit_edges` (69 callers) and `visit_edges_with_inline_property` (56) are three-line adapters, one implementation
+  behind each, and their names already state the question they answer (a read, live rows).
+- The typed form earns its place where a *signature* must carry the guarantee: an observation helper shared by tests
+  that disagree, or a site that had been mixing the hole-bearing form in. Those sites moved (that is why the
+  with-values family could finally be unified), and they are the ones that needed it.
+- Renaming the other 125 would turn `|slot, edge|` into `|row| row.slot, row.edge` everywhere without adding a
+  property: the compiler cannot tell "read rows" from "read rows" any better after the change.
+
+Withdrawing a follow-up with the measurement that withdraws it is cheaper than doing 125 mechanical edits that make
+the call sites noisier, and it keeps the ADR's claim honest: what remains is API, not a second path.
