@@ -1223,11 +1223,11 @@ mod tests {
     /// A run-backed bucket promotes to tree mode once it is large enough - the path that would make a second label
     /// on a filled vertex usable at any size, not only up to the spill run's class cap.
     ///
-    /// `#[ignore]`d: the root-in-run fallback is implemented (the promotion allocates a run of block ids when no
-    /// span can be made, and `BucketTreePlane::edge_root_loc` answers the run form), but the promotion's *preparation*
-    /// still fails before publication - it prepares a leaf-span publication for a root that now needs none. That
-    /// preparation is the next step; this test is the reproduction that will turn green when it is done.
-    #[ignore = "tree promotion preparation still assumes the root occupies a leaf span"]
+    /// `#[ignore]`d: the root-in-run path is implemented end to end - the decision, the descriptor, the geometry and
+    /// the placement-failure routing - but the promotion's *retry* (the attempt that first makes room in the vertex)
+    /// hits an internal failure before the length check inside its publication closure, so the restart with the root
+    /// in a run is never reached. That single step is the next reading; this test is the reproduction for it.
+    #[ignore = "the promotion's retry fails inside its publication closure before taking the run restart"]
     #[test]
     fn a_run_backed_bucket_promotes_to_tree_mode() {
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};

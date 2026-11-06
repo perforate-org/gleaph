@@ -328,6 +328,16 @@ defect from being rediscovered without its prior reasoning.
   the row image preparation recomputes the same geometry from the descriptor and the vertex, and the two must agree
   for the publication to become ready.
 
+- **Fifth slice: placement failures route instead of propagating.** A failed placement is now a *decision point*:
+  with the room-making attempt still ahead of it, "no room" becomes "no placement" and the retry arm runs; after that
+  attempt has run, it restarts with the root in a run. The reproduction still fails, and the record now says where
+  precisely: inside the **retried** promotion's publication closure, after `bind_allocated_header` succeeds and before
+  the root-length check - so the remaining unknown is one step inside the block transcription for a vertex whose span
+  was just grown, not in the run-root design.
+- **Measured along the way, worth keeping:** the retried attempt sees `old_alloc = 1168` for a 1024-row bucket on a
+  vertex whose first label filled the leaf - the retile does grow the vertex's span, and the failure is after that
+  growth, which is why the run fallback is still the right answer for this shape.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
