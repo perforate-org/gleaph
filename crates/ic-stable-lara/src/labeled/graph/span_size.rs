@@ -83,32 +83,68 @@ pub(crate) fn content_capacity(span: SpanSlots) -> ContentSlots {
     ContentSlots::new(low)
 }
 
-/// The share of a leaf that a bucket's weight entitles it to.
+/// The positions a leaf's residents start at, after its gaps are shared out by weight.
 ///
-/// The rebalance direction starts from the leaf and divides it; `content_capacity` then says how much
-/// content that share holds. Rounding is down, so the parts never exceed the whole.
-pub(crate) fn share_of(leaf: SpanSlots, weight: u32, total_weight: u32) -> SpanSlots {
-    if total_weight == 0 {
-        return SpanSlots(0);
+/// This is the rule the weighted slide uses, and it is not `share_of`: a resident keeps its own slots and only the
+/// **gaps** are distributed, in proportion to each resident's size. The distribution accumulates in fixed point
+/// (scale [`SPLIT_SCALE`]) so a long leaf does not drift by a slot per vertex - integer division per vertex would.
+///
+/// Returns `None`-free positions: `positions.len() == residents.len()`, and each resident's start plus its own
+/// slots stays inside the leaf because the shares sum to `gaps` at or below each boundary.
+pub(crate) fn leaf_split_positions(
+    leaf_start: u64,
+    residents: &[u32],
+    gaps: u64,
+) -> Result<Vec<u64>, crate::lara::operation_error::LaraOperationError> {
+    let mut total_weight = 0u64;
+    for resident in residents {
+        total_weight = total_weight
+            .checked_add(u64::from(*resident))
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?;
     }
-    SpanSlots(leaf.0.saturating_mul(u64::from(weight)) / u64::from(total_weight))
+    let gaps_u = u128::from(gaps);
+    let total_u = u128::from(total_weight);
+    let step_fp = if total_u == 0 {
+        0u128
+    } else {
+        gaps_u
+            .checked_mul(SPLIT_SCALE)
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?
+            .checked_div(total_u)
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?
+    };
+    let mut cursor_fp = u128::from(leaf_start)
+        .checked_mul(SPLIT_SCALE)
+        .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(residents.len())
+        .map_err(|_| crate::lara::operation_error::LaraOperationError::overflow())?;
+    for resident in residents {
+        let start = u64::try_from(cursor_fp / SPLIT_SCALE)
+            .map_err(|_| crate::lara::operation_error::LaraOperationError::overflow())?;
+        out.push(start);
+        let resident_fp = u128::from(*resident)
+            .checked_mul(SPLIT_SCALE)
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?;
+        cursor_fp = u128::from(start)
+            .checked_mul(SPLIT_SCALE)
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?
+            .checked_add(
+                resident_fp
+                    .checked_add(
+                        step_fp
+                            .checked_mul(u128::from(*resident))
+                            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?,
+                    )
+                    .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?,
+            )
+            .ok_or(crate::lara::operation_error::LaraOperationError::overflow())?;
+    }
+    Ok(out)
 }
 
-/// What a leaf sized for `content` can hold after a rebalance, exercising both directions.
-///
-/// The two must agree: grow sizes a leaf for some content, rebalance divides that leaf back and asks how much
-/// each bucket may hold. If rebalance answered less for the same content, every grow would be immediately
-/// undone by the next rebalance - the oscillation the demotion hysteresis tests guard against on the mode
-/// axis, here on the capacity axis.
-#[cfg(test)]
-pub(crate) fn rebalance_holds(
-    leaf: SpanSlots,
-    content: ContentSlots,
-    weight: u32,
-    total: u32,
-) -> bool {
-    content_capacity(share_of(leaf, weight, total)) >= content
-}
+/// Fixed-point scale for [`leaf_split_positions`]: enough to keep a whole leaf's accumulation within a slot.
+pub(crate) const SPLIT_SCALE: u128 = 100_000_000;
 
 /// How many rows a bucket can fold from its run into its span.
 ///
@@ -162,6 +198,52 @@ impl SpanRequest {
     /// asking for more is what promotion exists for.
     pub(crate) fn fits_in(self, headroom: SpanSlots) -> bool {
         self.span.0 <= headroom.0
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// The rule the weighted slide uses: a resident keeps its own slots, and the gaps are shared in proportion to
+    /// those slots.
+    #[test]
+    fn gaps_are_shared_in_proportion_to_residents() {
+        // Two residents of equal size share the gaps equally.
+        let positions = leaf_split_positions(0, &[8, 8], 4).expect("split");
+        assert_eq!(positions, vec![0, 10]);
+        // A resident twice the size starts after twice the share.
+        let positions = leaf_split_positions(0, &[4, 8], 6).expect("split");
+        assert_eq!(positions, vec![0, 6]);
+    }
+
+    /// Each resident keeps at least its own slots, so a grow can never be undone by the slide that follows it.
+    #[test]
+    fn a_resident_never_shrinks() {
+        for residents in [vec![8u32, 8], vec![1, 100, 3], vec![5], vec![0, 5]] {
+            let gaps = 16u64;
+            let positions = leaf_split_positions(100, &residents, gaps).expect("split");
+            for (index, resident) in residents.iter().enumerate() {
+                let next = positions.get(index + 1).copied().unwrap_or_else(|| {
+                    100 + gaps + residents.iter().map(|r| u64::from(*r)).sum::<u64>()
+                });
+                let span = next - positions[index];
+                assert!(
+                    span >= u64::from(*resident),
+                    "resident {index} of {resident} got {span} slots"
+                );
+            }
+        }
+    }
+
+    /// An empty leaf has nothing to split, and a leaf of only gaps still starts its first resident at the start.
+    #[test]
+    fn degenerate_leaves_are_defined() {
+        assert!(leaf_split_positions(7, &[], 9).expect("split").is_empty());
+        assert_eq!(
+            leaf_split_positions(7, &[0, 0], 0).expect("split"),
+            vec![7, 7]
+        );
     }
 }
 
@@ -242,37 +324,6 @@ mod tests {
                 "prefix {prefix}, resident {resident}, free {free}"
             );
         }
-    }
-
-    /// A leaf grown for some content gives that content back when the leaf is divided again: a grow cannot be
-    /// undone by the next rebalance.
-    #[test]
-    fn grow_and_rebalance_agree_on_the_same_content() {
-        for content in [0u32, 1, 8, 9, 80, 1_024, 4_096] {
-            let want = ContentSlots::new(content);
-            let leaf = slots_for_content(want);
-            assert!(
-                rebalance_holds(leaf, want, 1, 1),
-                "content {content} does not survive rebalance over its own leaf ({})",
-                leaf.0
-            );
-        }
-    }
-
-    /// Splitting a leaf between weighted buckets keeps the sum of shares within the leaf.
-    #[test]
-    fn shares_never_exceed_the_leaf() {
-        let leaf = SpanSlots::new(10_000);
-        let weights = [1u32, 2, 3, 7, 100];
-        let total: u32 = weights.iter().sum();
-        let sum: u64 = weights.iter().map(|w| share_of(leaf, *w, total).0).sum();
-        assert!(sum <= leaf.0, "shares {sum} exceed the leaf {}", leaf.0);
-        assert_eq!(share_of(leaf, 0, total).0, 0, "a zero weight gets nothing");
-        assert_eq!(
-            share_of(leaf, 1, 0).0,
-            0,
-            "an empty weight set shares nothing"
-        );
     }
 
     /// Gaps grow monotonically, and a small content still gets one slot of gap.

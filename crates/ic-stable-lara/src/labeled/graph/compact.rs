@@ -5430,49 +5430,10 @@ where
         resident_slots: &[u32],
         gaps: u64,
     ) -> Result<Vec<u64>, LabeledOperationError> {
-        let mut total_weight = 0u64;
-        for resident in resident_slots {
-            total_weight = total_weight
-                .checked_add(u64::from(*resident))
-                .ok_or(LaraOperationError::overflow())?;
-        }
-
-        const P: u128 = 100_000_000;
-        let gaps_u = u128::from(gaps);
-        let tw = total_weight as u128;
-        let step_fp = if tw == 0 {
-            0u128
-        } else {
-            gaps_u
-                .checked_mul(P)
-                .ok_or(LaraOperationError::overflow())?
-                .checked_div(tw)
-                .ok_or(LaraOperationError::overflow())?
-        };
-
-        let mut cursor_fp = u128::from(leaf_start)
-            .checked_mul(P)
-            .ok_or(LaraOperationError::overflow())?;
-        let mut out = Vec::new();
-        out.try_reserve_exact(resident_slots.len())
-            .map_err(|_| LaraOperationError::overflow())?;
-        for resident in resident_slots {
-            let start = u64::try_from(cursor_fp / P).map_err(|_| LaraOperationError::overflow())?;
-            out.push(start);
-            let resident = u128::from(*resident);
-            let start_fp = u128::from(start)
-                .checked_mul(P)
-                .ok_or(LaraOperationError::overflow())?;
-            cursor_fp = start_fp
-                .checked_add(
-                    resident
-                        .checked_mul(P)
-                        .ok_or(LaraOperationError::overflow())?,
-                )
-                .and_then(|cursor| cursor.checked_add(step_fp.checked_mul(resident)?))
-                .ok_or(LaraOperationError::overflow())?;
-        }
-        Ok(out)
+        // The rule lives with the other capacity arithmetic: a resident keeps its slots and the gaps are shared by
+        // weight. Keeping a copy here is how the two could drift apart.
+        super::span_size::leaf_split_positions(leaf_start, resident_slots, gaps)
+            .map_err(LabeledOperationError::from)
     }
 
     /// Weighted in-window slide for all labeled vertices sharing one pinned PMA leaf block.

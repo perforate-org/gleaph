@@ -214,26 +214,31 @@ Not yet done, in the order the duplication measurement suggested:
 | Bucket lookup | `(src, label) -> bucket` with the last-lookup cache, descriptor-row origin, create/destroy and slack | medium |
 | Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
 
-Status as of 2026-11-06: **Visit has started and has a record of its own**
+Status as of 2026-11-07: **Visit is done and has a record of its own**
 ([investigation](../investigations/2026-11-06-visit-family-duplication.md)); bucket lookup and inline value schema
 have not started.
 
-What Visit has so far, measured rather than assumed:
+What Visit ended with, measured rather than assumed:
 
 - **Row iteration has one walker.** `visit_rows(owner, label, order, selection, visibility)` chooses the storage
-  class once; `visit_edges`, `visit_edge_positions` and `visit_edges_window` are adapters that name a purpose
-  (read, mutation, page). Functions owning a `BucketMode` dispatch: 8 -> 5.
-- **Row visibility is a type.** `lara::edge::RowVisibility { LiveRows, Positions }` is threaded to every class,
-  which fixed three real defects: the slab and tiny walks ignored it while the tree walk honoured it, so one entry
-  answered differently per storage class.
+  class once. Functions owning a `BucketMode` dispatch: **8 -> 4**, mode-branch sites 34 -> 13, and each of the four
+  that remain owns its question - the row walker, the slab span funnel, the at-slot bulk read, and a selected-slot
+  walk - rather than repeating another's operation.
+- **A walk's answer is a type, not a parameter.** `graph/row_view.rs` holds `LiveRow<E, P>` (no hole exists in it)
+  and `SlotRow<E, P>` (`SlotState::Hole`), and the entries that yield them are `visit_live_rows`,
+  `visit_slot_rows` and their `_with_values` forms. A helper's signature names the question, and mixing the two is a
+  type error.
+- **Row visibility reached every storage class.** `lara::edge::RowVisibility { LiveRows, Positions }` is honoured by
+  the slab scan, the tiny walk and the tree walk; three of the six defects this family produced were one class
+  ignoring what another honoured.
 - **A slot's value address is one question.** `BucketValueSource { None, Slab, Tree }` answers it, which took the
-  at-slot with-values entry from eight mode branches to four and the two batch cursors out of the dispatch count.
-- **The two walk-level fixes that made the merge possible**: a windowed tree walk stops at the break position
-  rather than finishing the block, and a corrupt tree root fails closed with the same typed error both ways.
+  at-slot with-values entry from eight mode branches to four and the batch cursors out of the dispatch count.
+- **The walk-level guarantees are the same both ways**: a windowed tree walk stops at the break position, and a
+  corrupt tree root fails closed with the same typed error as the whole-row walk.
 
-What remains in Visit, and why each piece is not the same cut, is in the investigation record: the two legacy
-value-attaching funnels wait on their callers moving to the entry that names their shape, and the slab batch path
-keeps its branches because the bulk read is the point.
+The remaining work in Visit is cleanup, not duplication: the flat entries (`visit_edges`, `visit_edge_positions`,
+`visit_edges_with_inline_property`) are adapters kept for their callers, and they go once those callers name a typed
+entry.
 
 ### Where the unit stops, and why
 
