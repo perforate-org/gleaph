@@ -127,6 +127,16 @@ where
     {
         // While both roots share the edge span the stored image is `edge ++ children`, padded to slots; the
         // ADR 0101 split replaces this composition and nothing else.
+        // An empty image means the caller is not changing the roots (an append that stays inside the
+        // existing leaf tree); only the descriptor is published then.
+        if edge_root_image.is_empty() && value_children.is_empty() {
+            let published = shape(self.bucket);
+            self.graph
+                .buckets()
+                .write_label_bucket_slot(bucket_slot, published)
+                .map_err(super::LabeledOperationError::from)?;
+            return Ok(published);
+        }
         let slot_bytes = E2::BYTES;
         let children_bytes = value_children.len() * 4;
         let total = edge_root_image.len() + children_bytes;
