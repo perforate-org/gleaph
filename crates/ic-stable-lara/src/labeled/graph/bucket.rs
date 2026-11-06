@@ -1352,6 +1352,118 @@ mod tests {
         }
     }
 
+    /// Reproduction for the tree-mode inline value read: a valued bucket promoted to tree must read its values back
+    /// through the value plane, not through the edge plane's run.
+    #[test]
+    fn tree_mode_valued_bucket_reads_its_values() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        let width = 8u16;
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, width)
+            .expect("declare width");
+        let rows = T_PROMOTE + 100;
+        for target in 0..rows {
+            let value = target.to_le_bytes();
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&value);
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+        let mut seen = 0u32;
+        let _ = graph
+            .visit_edges_with_inline_property(
+                vid,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |slot, item| {
+                    let expected = slot.raw().to_le_bytes();
+                    assert_eq!(
+                        &item.inline_property.bytes()[..4],
+                        &expected[..],
+                        "row {} reads the wrong value",
+                        slot.raw()
+                    );
+                    seen += 1;
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("read the tree-mode values");
+        assert_eq!(seen, rows);
+    }
+
+    /// The bench shape `expand_inline_property_skewed_2k_a_100b` inserts: 2 000 + 100 valued edges on one bucket, so it
+    /// promotes to tree mode, and every row's value must still read back - through the point reader the expand
+    /// projection uses.
+    ///
+    /// `#[ignore]`d: it fails, and the failure is the finding. **Row 1 reads the value of another row** (1537), while
+    /// the tree *walk* reader (`visit_edges_with_inline_property`,
+    /// `tree_mode_valued_bucket_reads_its_values`) reads the same bucket correctly. So the promoted bucket has one
+    /// mapping that works and one that does not - the divergence ADR 0100 exists to remove - and the point reader is
+    /// the one to rebase on the tree plane's own address arithmetic.
+    #[test]
+    #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
+    fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        let width = 8u16;
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, width)
+            .expect("declare width");
+        let rows = 2_100u32;
+        for target in 0..rows {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+        for row in 0..bucket.degree() {
+            let value = graph
+                .read_value_row(&bucket, row)
+                .unwrap_or_else(|error| panic!("row {row}: {error}"));
+            assert_eq!(value.len(), usize::from(width));
+            assert_eq!(
+                u32::from_le_bytes(value[..4].try_into().expect("4 bytes")),
+                row,
+                "row {row} read a value that is not its own"
+            );
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

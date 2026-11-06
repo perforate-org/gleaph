@@ -531,6 +531,19 @@ defect from being rediscovered without its prior reasoning.
   (`write_label_bucket_slot`) that hold a handle across another operation.
 - **Status:** Open.
 
+- **Narrowed 2026-11-07: the reported error is gone, and a worse one is behind it.** The `MissingAscLogIndex` the
+  bench reported no longer reproduces at the LARA layer - the point reader routes a tree bucket to the property tree
+  (`read_value_row` -> `read_property_value_at_slot`) and the reader that produced that error
+  (`read_value_range`) has no callers left. Rebuilding the bench's own shape - 2 100 valued edges on one bucket, so it
+  promotes to tree mode - and reading every row through the point reader shows a different defect:
+  **row 1 reads another row's value** (`1537` instead of `1`).
+- **That is a duplicated mapping, not a missing branch.** The same bucket reads correctly through the tree *walk*
+  (`visit_edges_with_inline_property`, pinned by `tree_mode_valued_bucket_reads_its_values`), so one promoted bucket
+  has one address mapping that works and one that does not - the divergence ADR 0100 exists to remove. The point
+  reader should be rebased on the tree plane's own address arithmetic instead of its own.
+- **Reproduction:** `a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`, `#[ignore]`d with
+  the measured row and values.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
