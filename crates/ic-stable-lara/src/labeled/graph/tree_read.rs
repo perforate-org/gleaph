@@ -652,6 +652,7 @@ pub(crate) fn scan_tree_block_range<E, M, B>(
     scan_lo: u32,
     scan_hi: u32,
     header_tombstone_count: u16,
+    visibility: crate::lara::edge::RowVisibility,
     mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
 ) -> Result<std::ops::ControlFlow<B>, LabeledOperationError>
 where
@@ -671,6 +672,13 @@ where
         let edge = E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
         if edge.is_deleted_slot() || edge.is_tombstone_edge() {
             scanned_tombstones += 1;
+            // A mutation-shaped walk needs the hole at its position; a read-shaped one does not, and skipping
+            // it here is what keeps a reader from paying for it.
+            if visibility == crate::lara::edge::RowVisibility::Positions
+                && let std::ops::ControlFlow::Break(value) = visit(slot, edge)
+            {
+                return Ok(std::ops::ControlFlow::Break(value));
+            }
             continue;
         }
         // A break stops the scan where it happens: the remaining slots are not paid for, so the caller's
@@ -707,6 +715,7 @@ pub(crate) fn scan_tree_block_range_desc<E, M, B>(
     scan_lo: u32,
     scan_hi: u32,
     header_tombstone_count: u16,
+    visibility: crate::lara::edge::RowVisibility,
     mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
 ) -> Result<std::ops::ControlFlow<B>, LabeledOperationError>
 where
@@ -726,6 +735,13 @@ where
         let edge = E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
         if edge.is_deleted_slot() || edge.is_tombstone_edge() {
             scanned_tombstones += 1;
+            // A mutation-shaped walk needs the hole at its position; a read-shaped one does not, and skipping
+            // it here is what keeps a reader from paying for it.
+            if visibility == crate::lara::edge::RowVisibility::Positions
+                && let std::ops::ControlFlow::Break(value) = visit(slot, edge)
+            {
+                return Ok(std::ops::ControlFlow::Break(value));
+            }
             continue;
         }
         // A break stops the scan where it happens: the remaining slots are not paid for, so the caller's

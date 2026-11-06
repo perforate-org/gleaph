@@ -244,6 +244,27 @@ fn order_slots(slots: &[BucketEntryPosition], order: OutEdgeOrder) -> Vec<u32> {
     ordered
 }
 
+/// Which rows of a label a walk covers.
+///
+/// The two shapes are not a window with a wide limit: a whole-row walk may use the unbounded path, while a
+/// window is a page and keeps its own early answer for an empty request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowSelection {
+    /// Every position the bucket holds.
+    WholeRow,
+    /// The positions the window covers.
+    Window(TraversalWindow),
+}
+
+impl RowSelection {
+    const fn window(self) -> TraversalWindow {
+        match self {
+            Self::WholeRow => TraversalWindow::unbounded(),
+            Self::Window(window) => window,
+        }
+    }
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -771,6 +792,10 @@ where
     /// This is the read-shaped contract: a tombstone is not a row, so a reader never sees one. Anything that
     /// has to see the holes - removal, compaction, tombstone reuse, a topology rewrite - asks
     /// [`Self::visit_edge_positions`] instead, which reports every position.
+    /// Visits one label's whole row, reporting live rows only: the read shape.
+    ///
+    /// A tombstone is not a row to a reader, so a reader never sees one. Anything that has to see the holes -
+    /// removal, compaction, tombstone reuse, a topology rewrite - asks [`Self::visit_edge_positions`].
     pub(crate) fn visit_edges<B>(
         &self,
         owner: VertexId,
@@ -781,19 +806,20 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.visit_edges_with_visibility(
+        self.visit_rows(
             owner,
             label,
             order,
+            RowSelection::WholeRow,
             crate::lara::edge::RowVisibility::LiveRows,
             visit,
         )
     }
 
-    /// Visits one label's whole row, tombstones included.
+    /// Visits one label's whole row, tombstones included: the mutation shape.
     ///
-    /// The mutation-shaped contract: removal, compaction and tombstone reuse have to see the holes at their
-    /// positions, so this entry reports them as the sentinel cells they are.
+    /// Removal, compaction and tombstone reuse have to see the holes at their positions, so this entry reports
+    /// them as the sentinel cells they are.
     pub(crate) fn visit_edge_positions<B>(
         &self,
         owner: VertexId,
@@ -804,94 +830,20 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.visit_edges_with_visibility(
+        self.visit_rows(
             owner,
             label,
             order,
+            RowSelection::WholeRow,
             crate::lara::edge::RowVisibility::Positions,
             visit,
         )
     }
 
-    /// One whole-row walker, with the row visibility the caller names.
-    pub(crate) fn visit_edges_with_visibility<B>(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        order: OutEdgeOrder,
-        visibility: crate::lara::edge::RowVisibility,
-        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        use crate::lara::edge::RowVisibility;
-        // A read never wants a tombstone, and every storage class can skip one at the source. The mutation
-        // shape needs the position, which the slab walker can report but the tree walkers currently cannot, so
-        // the tree arm filters the other way.
-        self.ensure_vertex(owner)?;
-        let vertex = self.vertices.get(owner);
-        if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(&vertex) {
-                return Ok(ControlFlow::Continue(()));
-            }
-            return self
-                .edges
-                .visit_row_edges_with_visibility(
-                    &vertex,
-                    order.into(),
-                    TraversalWindow::unbounded(),
-                    visibility,
-                    |slot, edge| {
-                        visit(
-                            BucketEntryPosition::new(slot),
-                            edge.with_label_id(label.raw()),
-                        )
-                    },
-                )
-                .map_err(Into::into);
-        }
-        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
-            return Ok(ControlFlow::Continue(()));
-        };
-        if bucket.degree() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        match BucketMode::from_bucket(&bucket) {
-            BucketMode::Tiny => {
-                self.visit_tiny_bucket_edges(&bucket, order, TraversalWindow::unbounded(), visit)
-            }
-            BucketMode::Slab => self.visit_slab_bucket_edges_with_visibility(
-                &bucket,
-                order,
-                TraversalWindow::unbounded(),
-                visibility,
-                visit,
-            ),
-            BucketMode::Tree => super::tree_read::visit_tree_mode_label_bucket_edges(
-                self,
-                label.raw(),
-                &bucket,
-                bucket.degree(),
-                order,
-                |slot, edge| {
-                    // The tree walk reports positions; a read drops the holes it reported.
-                    if visibility == RowVisibility::LiveRows
-                        && (edge.is_deleted_slot() || edge.is_tombstone_edge())
-                    {
-                        ControlFlow::Continue(())
-                    } else {
-                        visit(BucketEntryPosition::new(slot), edge)
-                    }
-                },
-            ),
-        }
-    }
-
-    /// Visits every live logical slot for one label in the requested order.
+    /// Visits every live logical slot's position for one label, in the requested order.
     ///
-    /// This is the slot-only counterpart to [`Self::visit_edges`]; the edge value
-    /// is not materialized and inline-property bytes are not read.
+    /// The slot-only counterpart of [`Self::visit_edges`]: the edge value is not materialized and inline
+    /// property bytes are not read.
     pub fn visit_edge_slots<B>(
         &self,
         owner: VertexId,
@@ -1544,17 +1496,44 @@ where
     ///
     /// Slab and bypass rows bulk-read only the selected slot range from the slab
     /// prefix and spill suffix. Holes consume positions but never callbacks.
+    /// Visits the live rows a window covers: the page shape a reader asks for.
+    ///
+    /// A window names live rows at their positions, and it does so whatever storage class holds the bucket -
+    /// `visit_edges_window_tree_matches_slab_tombstone_positions` is the assertion of that promise.
     pub(crate) fn visit_edges_window<B>(
         &self,
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
         window: TraversalWindow,
+        visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_rows(
+            owner,
+            label,
+            order,
+            RowSelection::Window(window),
+            crate::lara::edge::RowVisibility::LiveRows,
+            visit,
+        )
+    }
+
+    pub(crate) fn visit_rows<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        selection: RowSelection,
+        visibility: crate::lara::edge::RowVisibility,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
+        let window = selection.window();
         if window.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
@@ -1668,8 +1647,11 @@ where
                                 }
                                 let header = self.ltb().read_block_header(block_id);
                                 let used = block_end_slot - block_first_slot;
-                                if u32::from(header.tombstone_count) == used {
-                                    // Fully dead: skip the payload entirely.
+                                if u32::from(header.tombstone_count) == used
+                                    && visibility == crate::lara::edge::RowVisibility::LiveRows
+                                {
+                                    // Fully dead and nothing to report: skip the payload entirely. A
+                                    // mutation-shaped walk still scans it, because the holes are its answer.
                                     continue;
                                 }
                                 // Fully inside the window ⇒ the scan covers the
@@ -1685,6 +1667,7 @@ where
                                         scan_lo,
                                         scan_hi,
                                         header.tombstone_count,
+                                        visibility,
                                         &mut |slot, edge| {
                                             visit(BucketEntryPosition::new(slot), edge)
                                         },
@@ -1708,6 +1691,7 @@ where
                                     scan_lo,
                                     scan_hi,
                                     0,
+                                    visibility,
                                     &mut |slot, edge| visit(BucketEntryPosition::new(slot), edge),
                                 )?
                             {
@@ -1760,6 +1744,7 @@ where
                                         scan_slot_lo,
                                         scan_slot_hi,
                                         header.tombstone_count,
+                                        visibility,
                                         &mut |slot, edge| {
                                             visit(BucketEntryPosition::new(slot), edge)
                                         },
@@ -1780,6 +1765,7 @@ where
                                     scan_slot_lo,
                                     scan_slot_hi,
                                     0,
+                                    visibility,
                                     &mut |slot, edge| visit(BucketEntryPosition::new(slot), edge),
                                 )?
                             {
@@ -1789,10 +1775,10 @@ where
                         }
                     }
                 }
-                if let Some(value) = break_value {
-                    return Ok(ControlFlow::Break(value));
+                match break_value {
+                    Some(value) => Ok(ControlFlow::Break(value)),
+                    None => Ok(ControlFlow::Continue(())),
                 }
-                return Ok(ControlFlow::Continue(()));
             }
         }
     }

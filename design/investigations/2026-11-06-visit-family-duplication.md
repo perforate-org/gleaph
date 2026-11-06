@@ -173,3 +173,28 @@ unification that a single walker would buy is therefore not blocked by the walk 
 `visit_edge_positions` having no windowed form yet. That is the next slice: the tree window walker yields
 tombstones when asked, `visit_rows(owner, label, order, selection, visibility)` becomes the only dispatcher, and
 `visit_edges` / `visit_edge_positions` / `visit_edges_window` become adapters over it.
+
+## Done: one dispatcher, four shapes
+
+`visit_rows(owner, label, order, selection, visibility)` is now the only walker that chooses a storage class for
+whole-row and windowed iteration. The three public entries are adapters over it:
+
+| Entry | Selection | Visibility |
+| --- | --- | --- |
+| `visit_edges` | `WholeRow` | `LiveRows` (read) |
+| `visit_edge_positions` | `WholeRow` | `Positions` (mutation) |
+| `visit_edges_window` | `Window(..)` | `LiveRows` (page) |
+
+Measured after the change: the functions owning a `BucketMode` dispatch went from **8 to 7**, and the two that
+merged (`visit_edges`, `visit_edges_window`) were the pair this record started from. Three properties made the
+merge safe rather than hopeful:
+
+1. The block scan carries a `ControlFlow` out, so a break stops at the position (elsewhere in this record).
+2. A corrupt root fails closed as the same typed error in both (elsewhere in this record).
+3. Row visibility is a parameter, and the tree scanners report a hole when asked - which is what let the whole-row
+   `Positions` walk keep its answer while the windowed `LiveRows` walk kept its own.
+
+What is left of the family's duplication is the with-values paths: `visit_edges_at_with_inline_property` (8 mode
+branches), `visit_edges_with_inline_property_impl` (3), and the two batch cursors (3 each). They are the same cut
+one level up - a request that says selection, visibility and whether values are attached - and the count to beat
+is 7.
