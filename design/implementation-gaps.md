@@ -348,6 +348,25 @@ defect from being rediscovered without its prior reasoning.
 - **State of the branch:** the root-in-run design is complete and green except this reproduction. Type, geometry,
   descriptor, restart, routing, read and write are all in place; the ignored test states the one remaining boundary.
 
+- **The error now names the disagreement, and that is how the last one was found without a probe.** The two
+  consistency answers in the promotion's transcription - `slot >= source_extent` and `live != bucket.degree` - were
+  `overflow()`; they answer `TreePromotionSourceMismatch { stage, slot, extent, live, degree }` now. The first run
+  printed the whole disagreement: **`live=1024, extent=1024, degree=1023`** for a run-backed bucket at `T_PROMOTE`.
+  So the source holds one more row than its descriptor's `degree` says, and the promotion is right to refuse: it would
+  publish a tree whose count disagrees with the rows it wrote.
+- **The structural fix this points at:** `resident` (rows read from the run/prefix) and `degree` (the field) are two
+  descriptions of one source. Deriving one from the other removes the possible error rather than handling it - and the
+  derivation must count **non-tombstone rows in the run**, not ask a visitor (measuring with
+  `visit_edges_with_inline_property` was tried: it changed the count for the bypass paths and failed five tests,
+  because a bypass row's liveness is not the tree-source liveness).
+- **Also tried and reverted: admitting every LTB block id before transcription** (so the write phase cannot allocate
+  and therefore cannot fail). It is the right long-term shape - it is how `PreparedVertexWrite` and
+  `MaterializePublication` already work - but it moves *when* growth can fail, and three capacity-failure tests pin
+  that timing (`public_bypass_capacity_target_failure_preserves_source`,
+  `public_capacity_bucket_reservation_failure_preserves_cached_peer`, `mode_footprint_tree_append_…`). Doing it means
+  deciding where the reservation's failure is reported, not just moving the call: recorded so the next attempt starts
+  from that question instead of the code.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

@@ -179,6 +179,8 @@ pub enum LabeledOperationError {
     InlinePropertyMaterializeDeferredRequired(ValueMigration),
     /// A new bucket's edge span could not be placed; carries the stage and geometry.
     BucketSpanPlacementExhausted(BucketSpanPlacementExhausted),
+    /// A tree promotion's source disagreed with itself; names both sides.
+    TreePromotionSourceMismatch(TreePromotionSourceMismatch),
     /// The vertex's slice cannot hold the span it asked for; names the layout reason.
     VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
@@ -320,6 +322,36 @@ impl fmt::Display for VertexSliceExhausted {
     }
 }
 
+/// A tree promotion's source disagreed with itself: the row the visitor yielded is outside the extent the promotion
+/// sized, or the live count does not match the bucket's degree.
+///
+/// Both used to be a bare `overflow()`, which said "no room" for an answer that is about consistency. Naming the
+/// numbers is what makes the disagreement readable without a probe - and the promotion's write side cannot produce it,
+/// because its block ids are admitted before transcription.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreePromotionSourceMismatch {
+    /// Which check failed: `slot-past-extent` or `live-count`.
+    pub stage: &'static str,
+    /// The slot the visitor yielded (for `slot-past-extent`), else the last slot seen.
+    pub slot: u32,
+    /// The extent the promotion sized its blocks for.
+    pub extent: u32,
+    /// Rows the visitor reported live (for `live-count`).
+    pub live: u32,
+    /// The bucket's degree.
+    pub degree: u32,
+}
+
+impl fmt::Display for TreePromotionSourceMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "tree promotion source mismatch at `{}`: slot={}, extent={}, live={}, degree={}",
+            self.stage, self.slot, self.extent, self.live, self.degree
+        )
+    }
+}
+
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -407,6 +439,7 @@ impl fmt::Display for LabeledOperationError {
             ),
             Self::BucketDescriptorRow(unavailable) => unavailable.fmt(f),
             Self::BucketSpanPlacementExhausted(exhausted) => exhausted.fmt(f),
+            Self::TreePromotionSourceMismatch(mismatch) => mismatch.fmt(f),
             Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
@@ -447,6 +480,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::PropertyTreeRootCapacityReached { .. }
             | Self::BucketDescriptorRow(_)
             | Self::BucketSpanPlacementExhausted(_)
+            | Self::TreePromotionSourceMismatch(_)
             | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }

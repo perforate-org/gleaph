@@ -524,7 +524,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                 let result = (|| -> Result<(), LabeledOperationError> {
                     let slot = slot.raw();
                     if slot < next || slot >= source_extent {
-                        return Err(LaraOperationError::overflow().into());
+                        return Err(LabeledOperationError::TreePromotionSourceMismatch(
+                            super::error::TreePromotionSourceMismatch {
+                                stage: "slot-past-extent",
+                                slot,
+                                extent: source_extent,
+                                live,
+                                degree: bucket.degree,
+                            },
+                        ));
                     }
                     while next < slot {
                         emit(next, &tombstone, &[])?;
@@ -545,7 +553,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             return Err(error);
         }
         if live != bucket.degree {
-            return Err(LaraOperationError::overflow().into());
+            return Err(LabeledOperationError::TreePromotionSourceMismatch(
+                super::error::TreePromotionSourceMismatch {
+                    stage: "live-count",
+                    slot: next,
+                    extent: source_extent,
+                    live,
+                    degree: bucket.degree,
+                },
+            ));
         }
         while next < source_extent {
             emit(next, &tombstone, &[])?;
