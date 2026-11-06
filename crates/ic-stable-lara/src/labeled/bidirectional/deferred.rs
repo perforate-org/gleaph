@@ -2549,9 +2549,11 @@ where
         Visit: FnMut(E) -> Result<bool, Err>,
     {
         let mut remaining = *offset_remaining;
+        // A skip-then-visit read wants live rows: a hole is not a row to skip past, and hiding it here keeps the
+        // answer the same whichever storage class holds the bucket.
         let flow = self
             .forward
-            .visit_edges_with_inline_property(
+            .visit_live_edges_with_inline_property(
                 src,
                 label_id,
                 OutEdgeOrder::Descending,

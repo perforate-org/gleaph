@@ -1875,7 +1875,45 @@ where
     {
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
-        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
+        self.visit_edges_with_inline_property_impl(
+            owner,
+            &vertex,
+            label,
+            order,
+            crate::lara::edge::RowVisibility::Positions,
+            visit,
+        )
+    }
+
+    /// Visits one label's whole row with values attached, reporting live rows only.
+    ///
+    /// This is the read shape, and it is uniform across storage classes: a tree walk reports the holes it holds,
+    /// and this entry drops them, so a reader sees the same rows whichever class holds the bucket. A caller that
+    /// has to see the holes - a compaction or a rewrite that keeps positions - uses
+    /// [`Self::visit_edges_with_inline_property`], which reports every position its storage class can.
+    pub(crate) fn visit_live_edges_with_inline_property<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: impl for<'a> FnMut(
+            BucketEntryPosition,
+            EdgeWithInlinePropertyRef<'a, E>,
+        ) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        self.visit_edges_with_inline_property_impl(
+            owner,
+            &vertex,
+            label,
+            order,
+            crate::lara::edge::RowVisibility::LiveRows,
+            visit,
+        )
     }
 
     /// Unchecked borrowed variant of [`Self::visit_edges_with_inline_property`].
@@ -1898,7 +1936,14 @@ where
     {
         debug_assert!(u32::from(owner) < self.vertices.len());
         let vertex = self.vertices.get(owner);
-        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
+        self.visit_edges_with_inline_property_impl(
+            owner,
+            &vertex,
+            label,
+            order,
+            crate::lara::edge::RowVisibility::LiveRows,
+            visit,
+        )
     }
 
     #[allow(clippy::needless_return)]
@@ -1908,7 +1953,8 @@ where
         vertex: &LabeledVertex,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        mut visit: impl for<'a> FnMut(
+        visibility: crate::lara::edge::RowVisibility,
+        visit: impl for<'a> FnMut(
             BucketEntryPosition,
             EdgeWithInlinePropertyRef<'a, E>,
         ) -> ControlFlow<B>,
@@ -1916,6 +1962,21 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        // ADR 0100: row visibility is the caller's answer, applied once here rather than arm by arm. A storage
+        // class that reports a hole (a tree walk does) and one that never does (a slab dense read) then answer
+        // the same question the same way.
+        let mut visit = {
+            let mut inner = visit;
+            move |position: BucketEntryPosition, item: EdgeWithInlinePropertyRef<'_, E>| {
+                if visibility == crate::lara::edge::RowVisibility::LiveRows
+                    && (item.edge.is_deleted_slot() || item.edge.is_tombstone_edge())
+                {
+                    ControlFlow::Continue(())
+                } else {
+                    inner(position, item)
+                }
+            }
+        };
         if vertex.is_default_edge_labeled() {
             if label != self.bypass_storage_label_for(vertex) {
                 return Ok(ControlFlow::Continue(()));

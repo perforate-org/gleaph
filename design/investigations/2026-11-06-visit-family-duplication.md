@@ -253,3 +253,25 @@ batch path must stay - it reads a whole value sequence in one call, and collapsi
 no correctness gain.
 
 Measured count to beat, unchanged: **7 functions owning a storage-class dispatch.**
+
+## The whole-row with-values entry now has both shapes, and the legacy name kept its answer
+
+Step 1 of the three above is in. `visit_edges_with_inline_property_impl` takes a `RowVisibility` and applies it
+**once**, at the callback boundary, so an arm that reports holes (a tree walk) and one that never does (a slab
+dense read) answer the same question the same way without touching either arm.
+
+Two entries front it:
+
+| Entry | Contract |
+| --- | --- |
+| `visit_edges_with_inline_property` | unchanged: every position its storage class can report (a tree reports holes, a slab cannot) |
+| `visit_live_edges_with_inline_property` | **new**: live rows only, uniform across storage classes |
+
+The first keeps its historical answer rather than adopting one of the two: it has ten callers on both sides of the
+question, the tests on both sides pin today's behaviour, and renaming the answer under them would be a semantic
+change dressed as a refactor. The new entry is the read shape the deferred skip-then-visit path now uses, so the
+uniform answer exists and has a caller while the legacy name waits for its callers to be sorted one by one.
+
+That leaves step 3 - replacing the mode match with a `BucketValueSource` resolution - still open for this entry,
+because the arms are now separated by more than the value source. The order that works is: move a caller to the
+entry that names its shape, then let the dead arm go.
