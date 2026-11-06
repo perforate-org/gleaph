@@ -338,6 +338,16 @@ defect from being rediscovered without its prior reasoning.
   vertex whose first label filled the leaf - the retile does grow the vertex's span, and the failure is after that
   growth, which is why the run fallback is still the right answer for this shape.
 
+- **Where the remaining step is, enumerated from the code (2026-11-07).** Inside the retried promotion's
+  publication closure, after `bind_allocated_header` and before the root-length check, the only fallible steps are:
+  the `placed_len` capacity check (`combined_len = 1`); the transcription visitor
+  `visit_edges_with_inline_property` over the retiled bucket; its two consistency answers
+  (`slot >= source_extent` and `live != bucket.degree`); and `ltb().mint()` for the single 1024-row block. Each is one
+  print away, and the next attempt should read them in that order - the first two are cheap invariants, the third is
+  the only allocation, and the fourth is the only store that has not been touched by this work.
+- **State of the branch:** the root-in-run design is complete and green except this reproduction. Type, geometry,
+  descriptor, restart, routing, read and write are all in place; the ignored test states the one remaining boundary.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
