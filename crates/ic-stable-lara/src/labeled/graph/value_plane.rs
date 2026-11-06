@@ -296,3 +296,108 @@ where
             .map_err(LabeledOperationError::from)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+    use crate::labeled::record::LabeledVertex;
+
+    type Graph = LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>;
+
+    fn graph() -> Graph {
+        inline_property_test_graph()
+    }
+
+    fn label() -> BucketLabelKey {
+        BucketLabelKey::directed_from_index(2)
+    }
+
+    /// A slab bucket carrying values at width 2, with `rows` edges in it.
+    fn bucket_with_values(graph: &Graph, rows: u32, width: u16) -> (VertexId, u64, LabelBucket) {
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label(), width)
+            .expect("declare the width");
+        for target in 7..7 + rows {
+            let bytes = u16::try_from(target).expect("fits").to_le_bytes();
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label(),
+                    InlinePropertyTestEdge::with_bytes(target, &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.vertices().get(vid);
+        match graph.find_bucket(vid, &vertex, label()).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (vid, slot, bucket),
+            _ => panic!("bucket missing"),
+        }
+    }
+
+    /// The plane answers the descriptor it was opened on: a caller publishes what an operation produced, and a
+    /// plane that has produced nothing is a no-op rather than a silent write.
+    #[test]
+    fn the_plane_answers_the_descriptor_it_was_opened_on() {
+        let graph = graph();
+        let (_vid, slot, bucket) = bucket_with_values(&graph, 8, 2);
+        let plane = graph.value_plane(slot, bucket);
+        assert_eq!(plane.bucket(), bucket);
+        // Publishing an untouched plane writes back exactly the descriptor it holds.
+        graph.value_plane(slot, bucket).publish().expect("publish");
+        let after = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert_eq!(after, bucket, "a no-op publish changes nothing");
+    }
+
+    /// `release_run` clears the descriptor field that named the run, so the plane cannot leave a bucket
+    /// pointing at a run it no longer owns.
+    #[test]
+    fn release_run_clears_the_descriptor_field_that_named_it() {
+        let graph = graph();
+        let (_vid, slot, bucket) = bucket_with_values(&graph, 8, 2);
+        assert!(
+            bucket.values_run().is_some(),
+            "the fixture's values live in a run"
+        );
+        // Releasing is best-effort by contract: it answers the descriptor it produced.
+        let released = graph.value_plane(slot, bucket).release_run();
+        assert_eq!(
+            released.bucket().values_run(),
+            None,
+            "a released run leaves no run id behind"
+        );
+    }
+
+    /// A bucket with no values has nothing to fill: the mirror is a no-op rather than an error, because "no run
+    /// to keep step with" is the normal state of a bucket without inline property bytes.
+    #[test]
+    fn filling_an_edge_run_is_a_no_op_without_values() {
+        let graph = graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        for target in 7..12u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label(),
+                    InlinePropertyTestEdge::with_bytes(target, &[]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.vertices().get(vid);
+        let (slot, bucket) = match graph.find_bucket(vid, &vertex, label()).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket missing"),
+        };
+        assert_eq!(bucket.inline_property_byte_width(), 0);
+        let filled = graph
+            .value_plane(slot, bucket)
+            .fill_to_edge_run_len(0)
+            .expect("a width-0 bucket needs no mirror");
+        assert_eq!(filled.bucket(), bucket, "and nothing is changed");
+    }
+}

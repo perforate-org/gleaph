@@ -642,3 +642,138 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::graph::test_support::{TestEdge, test_graph_with_segment_size};
+    use crate::labeled::record::LabeledVertex;
+
+    type Graph = LabeledLaraGraph<TestEdge, VectorMemory>;
+
+    fn graph() -> Graph {
+        test_graph_with_segment_size(16, BucketLabelKey::directed_from_index(1))
+    }
+
+    fn label() -> BucketLabelKey {
+        BucketLabelKey::directed_from_index(2)
+    }
+
+    fn owner(graph: &Graph) -> VertexId {
+        graph.push_vertex(LabeledVertex::default()).expect("push")
+    }
+
+    fn insert(graph: &Graph, vid: VertexId, target: u32) {
+        graph
+            .row_plane()
+            .insert_row(
+                vid,
+                label(),
+                TestEdge { target },
+                EdgePlacementPolicy::Insertion,
+                ScalarLocationCapture::Ignore,
+            )
+            .expect("insert a row");
+    }
+
+    /// A row inserted through the plane reads back through the same plane at the position it was inserted at,
+    /// and a position beyond what the bucket holds answers `Missing` rather than a stale neighbour.
+    #[test]
+    fn a_row_reads_back_at_its_own_position() {
+        let graph = graph();
+        let vid = owner(&graph);
+        for target in 7..10u32 {
+            insert(&graph, vid, target);
+        }
+        for (slot, target) in (7..10u32).enumerate() {
+            let read = graph
+                .row_plane()
+                .read_row(vid, label(), BucketEntryPosition::new(slot as u32))
+                .expect("read")
+                .expect("live row");
+            assert_eq!(read.target, target, "slot {slot} keeps its own edge");
+        }
+        assert!(
+            matches!(
+                graph
+                    .row_plane()
+                    .read_row_state(vid, label(), BucketEntryPosition::new(3))
+                    .expect("state"),
+                EdgeSlotState::Missing
+            ),
+            "a position past the row is missing, not a neighbour"
+        );
+    }
+
+    /// A removed row becomes a tombstone: still a position, no longer a live row, and the reading entry points
+    /// distinguish the two so a caller does not mistake a hole for the end of the row.
+    #[test]
+    fn a_removed_row_is_a_tombstone_not_a_missing_position() {
+        let graph = graph();
+        let vid = owner(&graph);
+        for target in 7..11u32 {
+            insert(&graph, vid, target);
+        }
+        let removed = graph
+            .row_plane()
+            .remove_row(vid, label(), 1)
+            .expect("remove")
+            .expect("the row existed");
+        assert_eq!(
+            removed.removed.target, 8,
+            "the removal reports the edge it took out"
+        );
+        assert!(matches!(
+            graph
+                .row_plane()
+                .read_row_state(vid, label(), BucketEntryPosition::new(1))
+                .expect("state"),
+            EdgeSlotState::Tombstone
+        ));
+        assert_eq!(
+            graph
+                .row_plane()
+                .read_row(vid, label(), BucketEntryPosition::new(1))
+                .expect("read"),
+            None,
+            "the shape most callers want answers None for a tombstone"
+        );
+        // The neighbour is untouched: a tombstone is a position, not a compaction.
+        assert_eq!(
+            graph
+                .row_plane()
+                .read_row(vid, label(), BucketEntryPosition::new(2))
+                .expect("read")
+                .expect("live")
+                .target,
+            9
+        );
+    }
+
+    /// Reading a bucket the vertex does not have answers `Missing`; reading a vertex that does not exist is an
+    /// error, because "no such vertex" is not "no such row".
+    #[test]
+    fn a_missing_bucket_answers_missing_and_a_missing_vertex_errors() {
+        let graph = graph();
+        let vid = owner(&graph);
+        assert!(
+            matches!(
+                graph
+                    .row_plane()
+                    .read_row_state(vid, label(), BucketEntryPosition::new(0))
+                    .expect("state"),
+                EdgeSlotState::Missing
+            ),
+            "no bucket means no position"
+        );
+        assert!(
+            graph
+                .row_plane()
+                .read_row_state(VertexId::from(99), label(), BucketEntryPosition::new(0))
+                .is_err(),
+            "a vertex that does not exist is an error, not an empty row"
+        );
+    }
+}
