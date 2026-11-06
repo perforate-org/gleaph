@@ -249,12 +249,18 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         super::compact::bucket_content_slots(&template),
     ));
     let combined_len = request.content().get();
+    // ADR 0101: the leaf reserves the edge root only; the value root gets its own span in the value store.
     debug_assert_eq!(
         combined_len,
-        edge_root_len
-            .checked_add(property_root_len)
+        super::compact::bucket_span_region_len(&template),
+        "bucket_content_slots must equal the edge root length"
+    );
+    debug_assert_eq!(
+        super::compact::value_root_region_bytes(&template),
+        property_root_len
+            .checked_mul(4)
             .ok_or(LaraOperationError::overflow())?,
-        "bucket_content_slots must equal the edge and property root lengths"
+        "the value root's value-store span must hold every property child"
     );
     let source = super::compact::PhysicalLayoutSource::capture(graph, vid)?;
     let canonical = super::compact::CanonicalPhysicalVertex::capture(graph, vid)?;
@@ -558,7 +564,13 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         {
             return Err(LaraOperationError::overflow().into());
         }
-        let target = template.with_base_slot_start(new_start);
+        // ADR 0101: the value root gets its value-store span before the descriptor is built.
+        let value_root_offset = graph
+            .tree_plane(template)
+            .ensure_value_root(&property_ids)?;
+        let target = template
+            .with_base_slot_start(new_start)
+            .with_inline_property_bytes_offset(value_root_offset);
         let mut publication = if canonical.vertex.is_default_edge_labeled() {
             let plan = graph.buckets().plan_promote_bypass_to_bucket_mode(
                 graph.vertices(),
@@ -591,9 +603,10 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         // write requires no growth (the prefix already backs those slots) and the
         // publish below is infallible.
         // ADR 0102: the tree plane composes and writes both roots; promotion says what belongs in each.
+        // The value root is already admitted; this writes the edge root into the leaf.
         graph
             .tree_plane(template)
-            .write_roots::<E>(new_start, &edge_root, &property_ids)?;
+            .write_edge_root::<E>(new_start, &edge_root)?;
         ready.publish();
         counts.write();
         if canonical.vertex.is_default_edge_labeled() {

@@ -5547,13 +5547,12 @@ mod tests {
             retained_compaction_rows(graph.forward(), vid, tree, OutEdgeOrder::Ascending),
             expected_tree
         );
+        // The value root is a block-address array in the value store (ADR 0101).
         let roots = |b: LabelBucket| {
-            let mut bytes = vec![0; bucket_content_slots(&b) as usize * 4];
             graph
                 .forward()
-                .edges()
-                .read_slots_contiguous_bytes(b.edge_start(), &mut bytes);
-            bytes
+                .tree_plane(b)
+                .value_children(crate::labeled::graph::value_root_region_bytes(&b) / 4)
         };
         let root_before = roots(tree_before);
         assert!(u32::try_from(root_before.len() / 4).unwrap() < tree_before.stored_slots());
@@ -5577,16 +5576,11 @@ mod tests {
             // root references own reachability. Snapshot all header fields below.
             assert_eq!(header.bucket_label_key_wire, 0);
             assert_eq!(header.level, 0);
-            assert_eq!(
-                header.kind,
-                if i == 0 {
-                    BlockKind::Edge
-                } else {
-                    BlockKind::InlineProperty
-                }
-            );
+            // This array is the value root, so every entry is a property block.
+            assert_eq!(header.kind, BlockKind::InlineProperty);
             assert_eq!(header.ordinal, 0);
-            assert_eq!(header.tombstone_count, if i == 0 { 4 } else { 0 });
+            assert_eq!(header.tombstone_count, 0);
+            let _ = i;
         }
         if width > 0 {
             assert!(
@@ -5594,6 +5588,18 @@ mod tests {
                 "multiple independent property leaves"
             );
         }
+        // The edge root still points at its block, with the tombstones the deletes left.
+        let mut edge_root_entry = [0u8; 4];
+        graph
+            .forward()
+            .edges()
+            .read_slots_contiguous_bytes(tree_before.edge_start(), &mut edge_root_entry);
+        let edge_header = graph
+            .forward()
+            .ltb()
+            .read_block_header(u32::from_le_bytes(edge_root_entry));
+        assert_eq!(edge_header.kind, BlockKind::Edge);
+        assert_eq!(edge_header.tombstone_count, 4);
         let blocks = || {
             let ltb = graph.forward().ltb();
             let payloads: Vec<_> = (0..ltb.tail_next())

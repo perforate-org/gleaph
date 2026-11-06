@@ -1,7 +1,7 @@
 # 0102. One view owns a tree bucket's roots
 
 Date: 2026-11-06
-Status: Decided, not implemented
+Status: Accepted
 Anchor timestamp: 2026-11-06 01:05:00 UTC +0000
 
 Related: [ADR 0100](0100-one-path-per-operation-with-a-view.md) owns the view rule;
@@ -68,5 +68,11 @@ The invariant the view enforces:
   image is written outside the module, (S6) apply ADR 0101 inside the view.
 
 ## Status
+
+Accepted and implemented through S6. Every path that writes a tree bucket's roots calls
+`BucketTreePlane::publish`, which also publishes the descriptor; `grep write_slots_contiguous_bytes` over the
+production graph code finds root writes only in `tree_plane.rs` and the two rollback restores. The read side
+(`value_child`, `value_children`) is the view's too, so "which store holds which root" is answered in one
+module - which is what let ADR 0101's split land as a change inside it.
 
 Decided, not implemented. The write paths named above are the ones to convert, in the order given.

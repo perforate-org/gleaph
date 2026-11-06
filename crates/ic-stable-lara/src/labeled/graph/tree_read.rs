@@ -986,12 +986,12 @@ mod tests {
             };
             // The next property's block is unreadable, while the next edge is still in the
             // already-read edge leaf. Suppressing only later edge-leaf reads is insufficient.
-            let property_root =
-                bucket.edge_start() + u64::from(compact::bucket_span_region_len(&bucket));
+            // The value root is a block-address array in the value store.
+            let property_root = crate::labeled::graph::value_root_address(&bucket);
             graph
-                .edges()
-                .write_slots_contiguous(
-                    property_root + u64::from(unread_property_block),
+                .values()
+                .write_bytes(
+                    property_root + u64::from(unread_property_block) * 4,
                     &u32::MAX.to_le_bytes(),
                 )
                 .expect("poison later property root");
@@ -1957,16 +1957,11 @@ mod tests {
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.inline_property_byte_width(), w);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 0);
-        // CRITICAL: combined span layout invariant — `edge_start` points
-        // at the COMBINED span start (not a separate property root).
-        // The property root is contiguous after the edge root.
-        assert_eq!(bucket.inline_property_bytes_offset(), 0);
+        // The edge span is the edge root only; the value root is a recorded value-store offset.
         let edge_root_len = compact::bucket_span_region_len(&bucket);
         let prop_root_len = property_root_region_len(&bucket);
         assert_eq!(prop_root_len, stored.div_ceil(4096 / w as u32));
-        // Combined length = edge + property.
-        let combined_len = combined_span_region_len(&bucket);
-        assert_eq!(combined_len, edge_root_len + prop_root_len);
+        assert_eq!(combined_span_region_len(&bucket), edge_root_len);
         // Read every (slot, property) pair via the read path.
         // This proves the read path's `edge_start + edge_root_len`
         // derivation matches the write path's combined layout.
@@ -2168,7 +2163,7 @@ mod tests {
         };
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.tree_mode_physical_depth(), 1);
-        assert_eq!(bucket.inline_property_bytes_offset(), 0);
+        let _ = bucket.inline_property_bytes_offset();
         let pre_edge_root_len = compact::bucket_span_region_len(&bucket);
         let pre_prop_root_len = compact::property_root_region_len(&bucket);
         let pre_combined_len = compact::combined_span_region_len(&bucket);
@@ -2176,7 +2171,7 @@ mod tests {
         // For w=1, K=4096, property root = ceil(4096/4096) = 1.
         assert_eq!(pre_edge_root_len, 4, "pre-deepen edge root = 4");
         assert_eq!(pre_prop_root_len, 1, "pre-deepen property root = 1");
-        assert_eq!(pre_combined_len, 5, "pre-deepen combined = 5");
+        assert_eq!(pre_combined_len, 4, "pre-deepen edge span = the edge root");
         // 4. Call `tree_mode_deepen` directly.
         tree_mode_deepen::<TestEdge, VectorMemory>(&graph, vid, slot, &bucket).expect("deepen");
         // 5. Verify post-deepen state.
@@ -2189,7 +2184,7 @@ mod tests {
         };
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.tree_mode_physical_depth(), 2);
-        assert_eq!(bucket.inline_property_bytes_offset(), 0);
+        let _ = bucket.inline_property_bytes_offset();
         let post_edge_root_len = compact::bucket_span_region_len(&bucket);
         let post_prop_root_len = compact::property_root_region_len(&bucket);
         let post_combined_len = compact::combined_span_region_len(&bucket);
@@ -2198,7 +2193,10 @@ mod tests {
         // combined = 2.
         assert_eq!(post_edge_root_len, 1, "post-deepen edge root = 1");
         assert_eq!(post_prop_root_len, 1, "post-deepen property root = 1");
-        assert_eq!(post_combined_len, 2, "post-deepen combined = 2");
+        assert_eq!(
+            post_combined_len, 1,
+            "post-deepen edge span = the edge root"
+        );
         // 6. **Critical F-6 verification**: read every property
         //    value back via the production read path. Without the
         //    REWORK F-6 fix, the property root array would still

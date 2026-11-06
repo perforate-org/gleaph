@@ -402,15 +402,15 @@ where
                 // contract (single source of truth).
                 let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
                 let old_prop_root_len = super::compact::property_root_region_len(bucket);
-                let old_combined_start = bucket.edge_start();
                 match plan.entry_for_root {
                     Some(entry_id) => {
-                        // Combined span realloc: [edge root | property root | entry].
-                        let new_combined_len = old_edge_root_len
-                            .checked_add(old_prop_root_len)
-                            .and_then(|v| v.checked_add(1))
+                        // ADR 0101: only the edge root lives in the leaf, so the realloc moves it; the value
+                        // root grows in its own store.
+                        let old_combined_start = bucket.edge_start();
+                        let old_combined_len = old_edge_root_len;
+                        let new_combined_len = old_combined_len
+                            .checked_add(1)
                             .ok_or(LaraOperationError::overflow())?;
-                        let old_combined_len = old_edge_root_len + old_prop_root_len;
                         let avoid = super::leaf_arena::SourceRegion::new(
                             old_combined_start,
                             u64::from(old_combined_len),
@@ -498,7 +498,7 @@ where
                             release_property_plan::<E, M>(graph, &plan);
                             return Err(LabeledOperationError::LtbBlock(e));
                         }
-                        old_combined_start
+                        bucket.edge_start()
                     }
                 }
             } else {
@@ -676,7 +676,7 @@ where
 ///    order and return `Err`.
 pub(crate) fn tree_mode_property_deepen<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    vid: VertexId,
+    _vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
@@ -702,13 +702,6 @@ where
     );
     let b = u32::try_from(crate::labeled::tree_csr::B).expect("B fits u32");
     let new_interior_count = old_root_len.div_ceil(b);
-    let edge_root_len = super::compact::bucket_span_region_len(bucket);
-    let old_combined_len = edge_root_len
-        .checked_add(old_root_len)
-        .expect("old combined span overflow");
-    let new_combined_len = edge_root_len
-        .checked_add(new_interior_count)
-        .expect("new combined span overflow");
     // 1. Reserve: mint the interior blocks (LIFO rollback).
     let mut interior_ids: Vec<u32> = Vec::with_capacity(new_interior_count as usize);
     for _ in 0..new_interior_count {
@@ -736,9 +729,8 @@ where
         };
         graph.ltb().write_block_header(id, &header);
     }
-    // 3. Read the old property root bytes and pack them into the
-    //    interiors (B entries per block).
-    let old_combined_start = bucket.edge_start();
+    // 3. Read the old property root bytes and pack them into the interiors (B entries per block). The bytes
+    //    come from the value store, through the tree plane.
     let old_root_bytes = read_property_root_ids::<E, M>(graph, bucket, old_root_len);
     let mut cursor: usize = 0;
     for &interior_id in &interior_ids {
@@ -758,31 +750,9 @@ where
         cursor += this_block_count;
     }
     debug_assert_eq!(cursor, old_root_len as usize);
-    // 4. Allocate the new combined span (avoiding the old one).
-    let new_combined_start = match graph.vertex_layout(vid).reserve_span(
-        u64::from(new_combined_len),
-        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len)),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            for &id in interior_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            return Err(e);
-        }
-    };
-    // 5. The tree plane composes and writes the roots (ADR 0102); this deepen says what belongs in each.
-    let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
-    if edge_root_len > 0 {
-        let mut old_edge_bytes = vec![0u8; edge_root_len as usize * E::BYTES];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
-        edge_root_image.extend_from_slice(&old_edge_bytes);
-    }
-    // 6. Publish: the tree plane writes both roots and the descriptor (ADR 0102).
+    // 4. Publish. ADR 0101: the value tree's deepen moves only the value root - the edge root keeps its span,
+    //    so this deepen reserves nothing in the leaf at all.
     let new_bucket = bucket
-        .with_edge_range(new_combined_start, stored_slots)
         .with_tree_mode(true)
         .with_tree_mode_property_depth(d + 1);
     if graph
@@ -790,8 +760,8 @@ where
         .publish::<E>(
             bucket_slot,
             |_| new_bucket,
-            new_combined_start,
-            &edge_root_image,
+            bucket.edge_start(),
+            &[],
             &interior_ids,
         )
         .is_err()
@@ -799,16 +769,7 @@ where
         for &id in interior_ids.iter().rev() {
             let _ = graph.ltb().release(id);
         }
-        let _ = graph
-            .edges()
-            .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
-    }
-    // 7. After publish, release the old combined span.
-    if old_combined_start != new_combined_start && old_combined_len > 0 {
-        let _ = graph
-            .edges()
-            .release_span(old_combined_start, u64::from(old_combined_len));
     }
     Ok(())
 }
@@ -1674,9 +1635,10 @@ where
                     bucket.edge_start()
                 }
                 Some(entry_id) => {
-                    // Combined span realloc: [edge root | property root | entry].
+                    // ADR 0101: only the edge root lives in the leaf, so the realloc moves the edge root by one
+                    // slot; the value root grows in its own store.
                     let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
-                    let old_combined_len = old_edge_root_len + old_prop_root_len;
+                    let old_combined_len = old_edge_root_len;
                     let new_combined_len = old_combined_len
                         .checked_add(1)
                         .ok_or(LaraOperationError::overflow())?;
@@ -5795,13 +5757,11 @@ mod tests {
         // writing an unminted block id into the first property-root slot, so the
         // restore fails with `LtbBlock(NotMinted)` no matter where the promotion
         // placed the root.
-        let property_root_start = b_orig.edge_start()
-            + u64::from(crate::labeled::graph::compact::bucket_span_region_len(
-                &b_orig,
-            ));
+        // The property root is a block-address array in the value store.
+        let property_root_start = crate::labeled::graph::value_root_address(&b_orig);
         graph
-            .edges()
-            .write_slot(property_root_start, TestEdge { target: u32::MAX })
+            .values()
+            .write_bytes(property_root_start, &u32::MAX.to_le_bytes())
             .expect("write unminted property-root sentinel");
         // Demote: the property restore fails before any state change.
         let result = tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b_with_lpb);
@@ -6403,31 +6363,18 @@ mod tests {
                 .write_payload(id, leaf_payload.as_slice())
                 .expect("write property leaf");
         }
-        let combined_len_b = edge_root_len_b + l_p_b;
-        let edge_start_b = graph_b
-            .edges()
-            .allocate_span(u64::from(combined_len_b))
-            .expect("allocate combined b");
-        let mut bytes_b: Vec<u8> = Vec::with_capacity(combined_len_b as usize * 4);
-        for &id in &edge_interior_ids_b {
-            bytes_b.extend_from_slice(&id.to_le_bytes());
-        }
-        for &id in &prop_leaf_ids_b {
-            bytes_b.extend_from_slice(&id.to_le_bytes());
-        }
-        graph_b
-            .edges()
-            .write_slots_contiguous_bytes(edge_start_b, &bytes_b)
-            .expect("write combined b");
-        let pre_b =
-            LabelBucket::try_from_parts(label, edge_start_b, stored_b, stored_b, w, 0, 0, -1, 0)
-                .expect("try_from_parts b")
-                .with_tree_mode(true)
-                .with_tree_mode_physical_depth(2);
-        graph_b
-            .buckets()
-            .write_label_bucket_slot(0, pre_b)
-            .expect("write descriptor b");
+        // The fixture mints the blocks; the production writer places both roots (ADR 0101/0102).
+        let pre_b = super::super::test_support::install_tree_bucket(
+            &graph_b,
+            0,
+            label,
+            stored_b,
+            w,
+            2,
+            1,
+            &edge_interior_ids_b,
+            &prop_leaf_ids_b,
+        );
         // Insert at slot = 2^21 (K boundary; leaf index 2048, row 0 →
         // new-edge-interior mint branch).
         let new_value_b: u32 = 0x3C;

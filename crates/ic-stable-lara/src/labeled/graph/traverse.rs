@@ -4774,20 +4774,27 @@ mod tests {
         else {
             panic!("tree missing");
         };
-        let property_root =
-            bucket.edge_start() + u64::from(super::super::compact::bucket_span_region_len(&bucket));
+        // The value root lives in the value store, the edge root in the leaf's slots.
+        let value_root = crate::labeled::graph::value_root_address(&bucket);
         let bad_id = graph.ltb().tail_next();
-        // Bad property root in the second 124-value leaf, then the partial second edge leaf.
-        for (root, selected_slot, other_slot) in [
-            (property_root + 1, 124, 1024),
-            (bucket.edge_start() + 1, 1024, 124),
+        for (in_value_store, root, selected_slot, other_slot) in [
+            (true, value_root + 4, 124, 1024),
+            (false, bucket.edge_start() + 1, 1024, 124),
         ] {
             let mut saved = [0u8; 4];
-            graph.edges().read_slot_bytes(root, &mut saved);
-            graph
-                .edges()
-                .write_slots_contiguous(root, &bad_id.to_le_bytes())
-                .unwrap();
+            if in_value_store {
+                graph.values().read_bytes(root, &mut saved);
+                graph
+                    .values()
+                    .write_bytes(root, &bad_id.to_le_bytes())
+                    .unwrap();
+            } else {
+                graph.edges().read_slot_bytes(root, &mut saved);
+                graph
+                    .edges()
+                    .write_slots_contiguous(root, &bad_id.to_le_bytes())
+                    .unwrap();
+            }
             let corrupt = snapshot();
             for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
                 let mut calls = 0;
@@ -4839,7 +4846,11 @@ mod tests {
                 );
                 assert_eq!(snapshot(), corrupt);
             }
-            graph.edges().write_slots_contiguous(root, &saved).unwrap();
+            if in_value_store {
+                graph.values().write_bytes(root, &saved).unwrap();
+            } else {
+                graph.edges().write_slots_contiguous(root, &saved).unwrap();
+            }
             assert_eq!(snapshot(), before);
         }
     }

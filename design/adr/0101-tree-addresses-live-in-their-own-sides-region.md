@@ -1,7 +1,7 @@
 # 0101. A tree's block addresses live in their side's region
 
 Date: 2026-11-05
-Status: Decided, not implemented
+Status: Accepted
 Anchor timestamp: 2026-11-05 20:55:00 UTC +0000
 
 Related: [ADR 0096](0096-inline-tiny-mode-for-low-degree-label-buckets.md) owns the bucket modes;
@@ -66,6 +66,18 @@ structure it does not have.
   edge regions overlapped because the value root was folded into them.
 
 ## Status
+
+Accepted and implemented. `BucketTreePlane` owns both roots: `publish` writes the edge root into the leaf's
+slots and the value root into the inline property bytes store, then records the value root's offset on the
+descriptor. `write_edge_root` + `ensure_value_root` serve the one path whose publication is not the view's
+(promotion, which publishes through its own guard). No caller handles a value-root address.
+
+The leaf now reserves the edge root only: `combined()` is `edge_root()`, `combined_span_region_len` returns
+`bucket_span_region_len`, and the value root's span is measured in its own store. The property deepen no longer
+reserves anything in the leaf - it moves the value root and nothing else.
+
+Test fixtures install a tree bucket through `test_support::install_tree_bucket`, which asks the production
+geometry for the span size and the production writer for the root placement, so no fixture spells out a layout.
 
 Decided, not implemented. The steps are: ADR (this), the shared block-address-array type, the edge geometry
 losing the value root, the value side gaining its own root region, then the read/write paths and the

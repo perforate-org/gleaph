@@ -249,6 +249,9 @@ pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_
 // `labeled::invariants` validates tree buckets against their physical root
 // region, so the helper is re-exported to the crate.
 pub(crate) use compact::bucket_content_slots;
+// Test fixtures address the value root directly; production code goes through `BucketTreePlane`.
+#[cfg(test)]
+pub(crate) use compact::{value_root_address, value_root_region_bytes};
 mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixture_support;

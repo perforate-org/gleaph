@@ -1599,12 +1599,14 @@ fn root_geometry_normal_promotion_keeps_cover_and_pin() {
         assert_eq!(tree.degree(), source.degree());
         assert_eq!(tree.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(tree.values_spill_run(), crate::traits::NO_SPILL_RUN);
-        let root_slots = T_PROMOTE.div_ceil(BLOCK_B as u32)
-            + if width == 0 {
-                0
-            } else {
-                T_PROMOTE.div_ceil(4096 / u32::from(width))
-            };
+        // The edge span is the edge root only; the value root is a recorded value-store offset.
+        let root_slots = T_PROMOTE.div_ceil(BLOCK_B as u32);
+        if width > 0 {
+            assert!(
+                super::super::compact::value_root_region_bytes(&tree) > 0,
+                "a tree bucket with a width has a value root"
+            );
+        }
         assert_eq!(
             super::super::compact::bucket_content_region(&tree),
             Some((tree.edge_start(), root_slots))

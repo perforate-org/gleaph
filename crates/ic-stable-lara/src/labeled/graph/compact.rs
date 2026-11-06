@@ -229,10 +229,21 @@ mod physical_layout_tests {
             .with_tiny_target(0, 55)
             .with_degree_field(1)
             .with_tiny_used_width(1);
+        // The edge root is an edge slot; the value root is a block-address array in the value store.
+        let edge_words = 1usize;
         graph
             .edges
-            .write_slots_contiguous_bytes(112, &roots)
+            .write_slots_contiguous_bytes(112, &roots[..edge_words * 4])
             .unwrap();
+        let value_offset = graph
+            .values
+            .append_byte_span((roots.len() - edge_words * 4) as u64)
+            .unwrap();
+        graph
+            .values
+            .write_bytes(value_offset, &roots[edge_words * 4..])
+            .unwrap();
+        let tree = tree.with_inline_property_bytes_offset(value_offset);
         graph
             .buckets
             .write_label_bucket_slots_contiguous(0, &[slab, tree, tiny])
@@ -1884,18 +1895,21 @@ mod physical_layout_tests {
                 Some(tiny.with_edge_range(destination + 15, 0))
             );
             assert_eq!(graph.buckets.read_label_bucket_slot(3), Some(peer));
-            let mut actual = [0u8; 24];
+            // The destination holds the edge root only.
+            let mut actual = [0u8; 20];
             graph
                 .edges
                 .read_slots_contiguous_bytes(destination, &mut actual);
             assert_eq!(
                 actual,
-                [7u32, 0, u32::MAX, 7, 0, 1]
+                [7u32, 0, u32::MAX, 7, 0]
                     .into_iter()
                     .flat_map(u32::to_le_bytes)
                     .collect::<Vec<_>>()
                     .as_slice()
             );
+            let value_root = graph.tree_plane(tree).value_children(1);
+            assert_eq!(value_root, 1u32.to_le_bytes());
             assert_eq!(
                 graph.edges.counts_store().get(1),
                 super::SegmentEdgeCounts {
@@ -2056,7 +2070,7 @@ mod physical_layout_tests {
                 })
                 .unwrap();
             let (retained, scratch) = preparation.slab.copy_buffer_metrics();
-            assert_eq!(retained, if tree { 2048 } else { 1536 });
+            assert_eq!(retained, if tree { 1024 } else { 1536 });
             assert_eq!(scratch, 0);
             preparation.ready().unwrap().publish();
             drop(preparation);
@@ -2665,9 +2679,15 @@ mod physical_layout_tests {
                 .edges
                 .write_slots_contiguous_bytes(80, &words(&[21, 0, u32::MAX, 21]))
                 .unwrap();
+            // The edge slot holds the edge root; the value root lives in the value store.
+            let earlier_value_offset = graph.values.append_byte_span(4).unwrap();
+            graph
+                .values
+                .write_bytes(earlier_value_offset, &201u32.to_le_bytes())
+                .unwrap();
             graph
                 .edges
-                .write_slots_contiguous_bytes(88, &words(&[101, 201]))
+                .write_slots_contiguous_bytes(88, &words(&[101]))
                 .unwrap();
             graph
                 .edges
@@ -2750,7 +2770,8 @@ mod physical_layout_tests {
                 component.final_vertex,
                 LabeledVertex::from_parts(0, 4, 16, 0)
             );
-            assert_eq!(component.retained_source_bytes(), 24);
+            // A tree bucket's source span is its edge root only.
+            assert_eq!(component.retained_source_bytes(), 20);
             assert_eq!(component.transcribed_bytes(), 20);
             component.validate_source().unwrap();
             drop(component);
@@ -2786,8 +2807,9 @@ mod physical_layout_tests {
             let mut raw = [0u8; 16];
             graph.edges.read_slots_contiguous_bytes(80, &mut raw);
             assert_eq!(raw.as_slice(), words(&[21, 0, u32::MAX, 21]));
-            graph.edges.read_slots_contiguous_bytes(84, &mut raw[..8]);
-            assert_eq!(&raw[..8], words(&[101, 201]));
+            graph.edges.read_slots_contiguous_bytes(84, &mut raw[..4]);
+            // The tree's edge span holds the edge root; the value root is in the value store.
+            assert_eq!(&raw[..4], words(&[101]));
         }
     }
 
@@ -4092,13 +4114,9 @@ impl TreeSpans {
         (self.edge_start, self.edge_root_len)
     }
 
-    /// `(start, len)` of the property root. This is the only place the address is computed.
-    pub(crate) fn property_root(&self) -> (u64, u32) {
-        (
-            self.edge_start
-                .saturating_add(u64::from(self.edge_root_len)),
-            self.property_root_len,
-        )
+    /// `(byte_offset, bytes)` of the value root in the inline property bytes store (ADR 0101).
+    pub(crate) fn value_root(&self, bucket: &LabelBucket) -> (u64, u32) {
+        (value_root_address(bucket), self.property_root_len * 4)
     }
 
     /// Address of property-root entry `index` as `(slot, byte offset past that slot)`.
@@ -4116,10 +4134,8 @@ impl TreeSpans {
 
     /// `(start, len)` covering both roots (gap 0).
     pub(crate) fn combined(&self) -> (u64, u32) {
-        (
-            self.edge_start,
-            self.edge_root_len.saturating_add(self.property_root_len),
-        )
+        // ADR 0101: the edge span is the edge root alone; the value root lives in the value store.
+        self.edge_root()
     }
 
     /// The descriptor's recorded offset must agree with the derived address. A non-zero offset is
@@ -4127,15 +4143,11 @@ impl TreeSpans {
     /// exists to prevent.
     pub(crate) fn validate(&self, bucket: &LabelBucket) -> Result<(), &'static str> {
         let recorded = bucket.inline_property_bytes_offset();
-        let (derived, _) = self.property_root();
-        if recorded != 0 && recorded != derived {
-            return Err("property root offset disagrees with the derived address");
-        }
-        let (_, combined_len) = self.combined();
-        // Edge root and property root are each bounded by R_MAX (1024), so the combined region
-        // can never exceed 2048 slots.
-        if combined_len > 2048 {
-            return Err("combined root length out of range");
+        // ADR 0101: the value root's address is a value-store offset recorded on the descriptor.
+        let _ = recorded;
+        let (_, edge_len) = self.edge_root();
+        if edge_len > crate::labeled::tree_csr::R_MAX as u32 {
+            return Err("edge root length out of range");
         }
         Ok(())
     }
@@ -4260,12 +4272,8 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
         BucketMode::Tiny => 0,
         BucketMode::Slab => bucket.stored_slots(),
         BucketMode::Tree => {
-            let edge = bucket_span_region_len(bucket);
-            let prop = property_root_region_len(bucket);
-            edge.checked_add(prop).expect(
-                "combined_span_region_len: edge_root_len + property_root_len overflows u32 (impossible: \
-                 both bounded by R_MAX = 1024, so total <= 2048)",
-            )
+            // ADR 0101: the edge span holds the edge root only.
+            bucket_span_region_len(bucket)
         }
     }
 }
@@ -9465,14 +9473,12 @@ mod tests {
             .with_tree_mode_property_depth(1);
         let spans = super::TreeSpans::of(&tree).expect("tree bucket");
         let (edge_start, edge_len) = spans.edge_root();
-        let (property_start, property_len) = spans.property_root();
         assert_eq!(edge_start, 100);
-        assert_eq!(property_start, 100 + u64::from(edge_len));
-        assert_eq!(spans.combined(), (100, edge_len + property_len));
-        assert!(spans.validate(&tree).is_ok());
-        // A recorded offset that disagrees with the derivation is the split-brain this type owns.
-        let wrong = tree.with_inline_property_bytes_offset(999);
-        assert!(spans.validate(&wrong).is_err());
+        assert_eq!(spans.combined(), (100, edge_len));
+        let placed = tree.with_inline_property_bytes_offset(4_096);
+        let (offset, bytes) = spans.value_root(&placed);
+        assert_eq!(offset, 4_096);
+        assert_eq!(bytes, spans.property_root_len * 4);
         // Non-tree buckets have no root regions.
         let slab = crate::labeled::record::LabelBucket::default();
         assert!(super::TreeSpans::of(&slab).is_none());

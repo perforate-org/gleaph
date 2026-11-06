@@ -62,58 +62,108 @@ where
     /// ADR 0101's switch changes this method and `value_children` - inside this module, which is ADR 0102's
     /// point: the callers stay as they are.
     pub(crate) fn value_child(&self, index: u32) -> u32 {
-        let spans = TreeSpans::of(&self.bucket).expect("tree-mode bucket has root spans");
-        let (slot, byte_offset) = spans.property_root_entry(index);
         let mut id_bytes = [0u8; 4];
-        self.graph
-            .edges()
-            .read_from_slot_bytes(slot, byte_offset, &mut id_bytes);
+        self.graph.values().read_bytes(
+            compact::value_root_address(&self.bucket) + u64::from(index) * 4,
+            &mut id_bytes,
+        );
         u32::from_le_bytes(id_bytes)
     }
 
-    /// Writes a tree bucket's two roots beginning at `edge_start` and returns the image it wrote (for
-    /// rollback).
-    ///
-    /// The caller hands over what it wants in each root - the edge root's slot image and the value tree's child
-    /// addresses - and this composes them for the layout that is stored. While both roots share the edge span
-    /// the composition is `edge ++ children`, padded to whole slots; ADR 0101's switch replaces the composition
-    /// here rather than at each of the six write sites.
-    pub(crate) fn write_roots<E2>(
-        &self,
-        edge_start: u64,
-        edge_root_image: &[u8],
-        value_children: &[u32],
-    ) -> Result<Vec<u8>, super::LabeledOperationError>
-    where
-        E2: CsrEdge + crate::traits::CsrEdgeTombstone,
-    {
-        let slot_bytes = E2::BYTES;
-        let children_bytes = value_children.len() * 4;
-        let total = edge_root_image.len().saturating_add(children_bytes);
-        let slots = total.div_ceil(slot_bytes.max(1));
-        let mut image = vec![0u8; slots * slot_bytes];
-        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
-        for (index, child) in value_children.iter().enumerate() {
-            let offset = edge_root_image.len() + index * 4;
-            image[offset..offset + 4].copy_from_slice(&child.to_le_bytes());
+    /// The first `count` child addresses of the value tree, packed as they are stored.
+    pub(crate) fn value_children(&self, count: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; count as usize * 4];
+        if !bytes.is_empty() {
+            self.graph
+                .values()
+                .read_bytes(compact::value_root_address(&self.bucket), &mut bytes);
         }
-        self.graph
-            .edges()
-            .write_slots_contiguous_bytes(edge_start, &image)
+        bytes
+    }
+
+    /// Admits the value root's region in the inline property bytes store and writes its child addresses
+    /// there (ADR 0101). Returns the offset the descriptor must record.
+    pub(crate) fn ensure_value_root(
+        &self,
+        value_children: &[u32],
+    ) -> Result<u64, super::LabeledOperationError> {
+        let mut children = Vec::with_capacity(value_children.len() * 4);
+        for child in value_children {
+            children.extend_from_slice(&child.to_le_bytes());
+        }
+        let replaced = compact::value_root_region_bytes(&self.bucket);
+        let previous = self.bucket.inline_property_bytes_offset();
+        let offset = self
+            .graph
+            .values()
+            .allocate_byte_span(children.len() as u64)
             .map_err(|_| {
                 super::LabeledOperationError::from(
                     crate::lara::operation_error::LaraOperationError::overflow(),
                 )
             })?;
-        Ok(image)
+        self.graph
+            .values()
+            .write_bytes(offset, &children)
+            .map_err(|_| {
+                super::LabeledOperationError::from(
+                    crate::lara::operation_error::LaraOperationError::overflow(),
+                )
+            })?;
+        if replaced > 0 && previous != offset && self.bucket.tree_mode_property_depth() > 0 {
+            let _ = self
+                .graph
+                .values()
+                .release_byte_span(previous, u64::from(replaced));
+        }
+        Ok(offset)
+    }
+
+    /// Writes the edge root's slot image at `edge_start`.
+    pub(crate) fn write_edge_root<E2>(
+        &self,
+        edge_start: u64,
+        edge_root_image: &[u8],
+    ) -> Result<(), super::LabeledOperationError>
+    where
+        E2: CsrEdge + crate::traits::CsrEdgeTombstone,
+    {
+        let slot_bytes = E2::BYTES;
+        let slots = edge_root_image.len().div_ceil(slot_bytes.max(1));
+        let mut image = vec![0u8; slots * slot_bytes];
+        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
+        self.graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &image)
+            .map_err(super::LabeledOperationError::from)
+    }
+
+    /// Writes both roots and returns the value root's new offset (for the paths whose publication is not this
+    /// view's: promotion publishes through its own guard).
+    pub(crate) fn write_roots<E2>(
+        &self,
+        edge_start: u64,
+        edge_root_image: &[u8],
+        value_children: &[u32],
+    ) -> Result<u64, super::LabeledOperationError>
+    where
+        E2: CsrEdge + crate::traits::CsrEdgeTombstone,
+    {
+        let offset = if value_children.is_empty() {
+            0
+        } else {
+            self.ensure_value_root(value_children)?
+        };
+        self.write_edge_root::<E2>(edge_start, edge_root_image)?;
+        Ok(offset)
     }
 
     /// Writes a tree bucket's roots and publishes its descriptor: the only way a tree bucket is published.
     ///
-    /// The caller hands over only the *shape* it wants (edge range, degree, stored slots, depths). The root
-    /// layout - which store each root lives in, in which order they are written, and how the descriptor records
-    /// the result - stays here, so a call site cannot publish a descriptor that disagrees with the roots it
-    /// just wrote.
+    /// The caller states the shape it wants (edge range, degree, stored slots, depths) as a function of the
+    /// descriptor. Where each root lives, in which order they are written, and how the descriptor records the
+    /// value root's address stay here - so a call site cannot publish a descriptor that disagrees with the roots
+    /// it just wrote, and it does not have to know that the value root moved at all.
     pub(crate) fn publish<E2>(
         &self,
         bucket_slot: u64,
@@ -125,51 +175,19 @@ where
     where
         E2: CsrEdge + crate::traits::CsrEdgeTombstone,
     {
-        // While both roots share the edge span the stored image is `edge ++ children`, padded to slots; the
-        // ADR 0101 split replaces this composition and nothing else.
-        // An empty image means the caller is not changing the roots (an append that stays inside the
-        // existing leaf tree); only the descriptor is published then.
-        if edge_root_image.is_empty() && value_children.is_empty() {
-            let published = shape(self.bucket);
-            self.graph
-                .buckets()
-                .write_label_bucket_slot(bucket_slot, published)
-                .map_err(super::LabeledOperationError::from)?;
-            return Ok(published);
+        let mut published = shape(self.bucket);
+        if !edge_root_image.is_empty() {
+            self.write_edge_root::<E2>(edge_start, edge_root_image)?;
         }
-        let slot_bytes = E2::BYTES;
-        let children_bytes = value_children.len() * 4;
-        let total = edge_root_image.len() + children_bytes;
-        let slots = total.div_ceil(slot_bytes.max(1));
-        let mut image = vec![0u8; slots * slot_bytes];
-        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
-        for (index, child) in value_children.iter().enumerate() {
-            let offset = edge_root_image.len() + index * 4;
-            image[offset..offset + 4].copy_from_slice(&child.to_le_bytes());
+        if !value_children.is_empty() {
+            let offset = self.ensure_value_root(value_children)?;
+            published = published.with_inline_property_bytes_offset(offset);
         }
-        self.graph
-            .edges()
-            .write_slots_contiguous_bytes(edge_start, &image)
-            .map_err(super::LabeledOperationError::from)?;
-        let published = shape(self.bucket);
         self.graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, published)
             .map_err(super::LabeledOperationError::from)?;
         Ok(published)
-    }
-
-    /// The first `count` child addresses of the value tree, packed as they are stored.
-    pub(crate) fn value_children(&self, count: u32) -> Vec<u8> {
-        let mut bytes = vec![0u8; count as usize * 4];
-        if !bytes.is_empty() {
-            let spans = TreeSpans::of(&self.bucket).expect("tree-mode bucket has root spans");
-            let (slot, byte_offset) = spans.property_root_entry(0);
-            self.graph
-                .edges()
-                .read_from_slot_bytes(slot, byte_offset, &mut bytes);
-        }
-        bytes
     }
 }
 
