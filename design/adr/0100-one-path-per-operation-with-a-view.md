@@ -214,8 +214,26 @@ Not yet done, in the order the duplication measurement suggested:
 | Bucket lookup | `(src, label) -> bucket` with the last-lookup cache, descriptor-row origin, create/destroy and slack | medium |
 | Inline value schema | width declaration, 0-to-w migration, materialisation scheduling | medium |
 
-Status as of 2026-11-06: none of the three has started. They are the remaining duplication this ADR identified;
-the five views above cover rows, a bucket's span, a vertex's space, a tree's roots - and their tests.
+Status as of 2026-11-06: **Visit has started and has a record of its own**
+([investigation](../investigations/2026-11-06-visit-family-duplication.md)); bucket lookup and inline value schema
+have not started.
+
+What Visit has so far, measured rather than assumed:
+
+- **Row iteration has one walker.** `visit_rows(owner, label, order, selection, visibility)` chooses the storage
+  class once; `visit_edges`, `visit_edge_positions` and `visit_edges_window` are adapters that name a purpose
+  (read, mutation, page). Functions owning a `BucketMode` dispatch: 8 -> 6.
+- **Row visibility is a type.** `lara::edge::RowVisibility { LiveRows, Positions }` is threaded to every class,
+  which fixed three real defects: the slab and tiny walks ignored it while the tree walk honoured it, so one entry
+  answered differently per storage class.
+- **A slot's value address is one question.** `BucketValueSource { None, Slab, Tree }` answers it, which took the
+  at-slot with-values entry from eight mode branches to four and the two batch cursors out of the dispatch count.
+- **The two walk-level fixes that made the merge possible**: a windowed tree walk stops at the break position
+  rather than finishing the block, and a corrupt tree root fails closed with the same typed error both ways.
+
+What remains in Visit, and why each piece is not the same cut, is in the investigation record: the two legacy
+value-attaching funnels wait on their callers moving to the entry that names their shape, and the slab batch path
+keeps its branches because the bulk read is the point.
 
 ### Where the unit stops, and why
 
