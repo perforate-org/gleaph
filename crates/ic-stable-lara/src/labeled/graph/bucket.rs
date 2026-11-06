@@ -1220,6 +1220,74 @@ mod tests {
         }
     }
 
+    /// A run-backed bucket promotes to tree mode once it is large enough - the path that would make a second label
+    /// on a filled vertex usable at any size, not only up to the spill run's class cap.
+    ///
+    /// `#[ignore]`d because it does not pass: the promotion fails with `collect overflow` at `degree = 1023`,
+    /// `stored_slots = 0`. The tree's edge root lives in the leaf's edge slots (ADR 0101), so promoting needs a span
+    /// the vertex's slice cannot give - the same wall the run-backed promotion itself was created to get around.
+    /// That is the next gap: either a tree root that does not need leaf slots, or an accepted ceiling of one spill
+    /// run per bucket.
+    #[ignore = "run-backed buckets cannot promote to tree: the root needs leaf slots (see the gap record)"]
+    #[test]
+    fn a_run_backed_bucket_promotes_to_tree_mode() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = super::super::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::directed_from_index(1),
+        );
+        let vid = VertexId::from(0);
+        let first = BucketLabelKey::directed_from_index(2);
+        for target in 0..10_000u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    first,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("noise insert");
+        }
+        let second = BucketLabelKey::directed_from_index(3);
+        for target in 0..T_PROMOTE + 1 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    second,
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 20_000 + target,
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("second-label edge {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, second)
+            .expect("find")
+            .expect("the second label has a bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(
+            bucket.is_tree_mode(),
+            "a run-backed bucket over T_PROMOTE must promote to tree mode"
+        );
+        assert_eq!(u64::from(bucket.degree()), u64::from(T_PROMOTE) + 1);
+        // The label reads back whole, which is the point: the rows moved from a run into LTB blocks.
+        let mut rows = 0u32;
+        let _ = graph
+            .visit_edges(
+                vid,
+                second,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |_, _| {
+                    rows += 1;
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("read the promoted label");
+        assert_eq!(rows, T_PROMOTE + 1, "every promoted row is readable");
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

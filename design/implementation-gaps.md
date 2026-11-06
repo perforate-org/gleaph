@@ -291,6 +291,19 @@ defect from being rediscovered without its prior reasoning.
   label whose bucket is **run-backed** (`stored_slots == 0`, a run named, width 2), and every row reads back its own
   value.
 
+- **The tree promotion does not follow, measured 2026-11-07.** A run-backed bucket grows until the spill run's
+  class cap and then needs tree mode; there the promotion fails with `collect overflow` at `degree = 1023`,
+  `stored_slots = 0` (the ignored reproduction `a_run_backed_bucket_promotes_to_tree_mode` in `bucket.rs`). The
+  reason is ADR 0101: a tree's edge root is an array in the **leaf's edge slots**, so promoting needs a span - the same
+  wall the run-backed promotion was created to get around. So a second label on a filled vertex is usable up to one
+  spill run's worth of rows, not unlimited.
+- **The next gap, named:** either the tree root stops needing leaf slots (a root region in the value store, the way
+  ADR 0101 already moved the *value* root there), or the contract says a bucket is bounded by one run and large labels
+  must be the vertex's first. The first is the interesting one and matches the direction ADR 0101 already took.
+- **What the bench needed is nevertheless fixed:** the trapping fixture inserts 500 edges on the second label, well
+  under the run cap, so the canbench case is unblocked by the run-backed promotion even though the unlimited case is
+  not.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the
