@@ -771,9 +771,6 @@ where
             "run-backed promotion requires a tiny-mode bucket"
         );
         let degree = bucket.degree();
-        let rows = degree
-            .checked_add(1)
-            .ok_or(LaraOperationError::overflow())?;
         // The anchor is the vertex's content end: a zero-length span there extends no cover and cannot cross the
         // leaf's floor, which is the whole point of choosing the run.
         let vertex = self.vertices.get(src);
@@ -787,9 +784,13 @@ where
                 anchor = anchor.max(start.saturating_add(u64::from(len)));
             }
         }
+        // The run holds exactly the rows being transcribed: its used length is what the append path reads, and
+        // over-allocating it (degree + 1, "for the pending edge") leaves an unwritten row *inside* the run's used
+        // length, which every reader then counts. The pending edge appends through the ordinary spill path, which grows
+        // the run if its class is full.
         let run = self
             .edges
-            .spill_allocate_rows(rows)
+            .spill_allocate_rows(degree)
             .map_err(LabeledOperationError::from)?;
         let mut transcribed = 0u32;
         let mut tiny_slot = [0u8; super::EDGE_SLOT_SCRATCH_BYTES];

@@ -395,6 +395,21 @@ defect from being rediscovered without its prior reasoning.
   triggering row, i.e. that the source the inventory counts excludes it. A test at the row plane can assert degree
   after each insert, which turns "one insert wrote two rows" into the exact insert index.
 
+- **FIXED 2026-11-07: the run was over-allocated by one for the pending edge.** `promote_tiny_to_run_backed_slab`
+  allocated `degree + 1` rows "for the edge that triggered the promotion" and transcribed `degree`, which left the run's
+  `used_len` one longer than the rows written in it - and every reader counts `used_len` rows, so the bucket reported a
+  row that was never written. The index-by-index reproduction said so exactly: with production segment-16 geometry on a
+  filled vertex, the fifth insert on the second label gave `descriptor=5, readable=6`. The run is now allocated for
+  exactly the rows transcribed, and the pending edge appends through the ordinary spill path (which grows the run when
+  its class is full).
+- **Both reproductions are contracts now** (`a_run_backed_bucket_promotes_to_tree_mode`,
+  `every_insert_on_a_second_label_writes_exactly_one_row`), so the whole cluster is closed: 10 000 edges on one label,
+  a second label of any size (`T_PROMOTE + 1` verified), the root in a run, and no duplicated row. lara 767, canbench
+  suite 704, graph 1132, router 1137, clippy and fmt clean.
+- **The structural lesson, worth keeping:** the duplicated row came from sizing a reservation for an operation that had
+  not happened yet ("degree + 1 for the pending edge") and then counting the reservation instead of the writes. The
+  fix is the same shape as `SourceRows`: let the rows that were written decide the count.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

@@ -1220,14 +1220,10 @@ mod tests {
         }
     }
 
-    /// A run-backed bucket promotes to tree mode once it is large enough - the path that would make a second label
-    /// on a filled vertex usable at any size, not only up to the spill run's class cap.
-    ///
-    /// `#[ignore]`d, and it is now a description of an upstream defect rather than of the promotion. The promotion
-    /// succeeds: the root goes to a run, the descriptor names it, and the source inventory publishes the row count it
-    /// measured. What the test reports is that **1026 rows are readable where 1025 edges were inserted** - the row
-    /// count is read before the descriptor is trusted, so this is a duplicated row, not a stale field.
-    #[ignore = "a row is duplicated by the run-full -> promote -> re-dispatch path: 1026 readable for 1025 inserts"]
+    /// A run-backed bucket promotes to tree mode, its root living in an edge run because the vertex slice has no
+    /// span for it, and every inserted row reads back exactly once - which makes a second label on a filled vertex
+    /// usable at any size, not only up to the spill run's class cap. The row count is read **before** the descriptor is
+    /// trusted: that ordering is what told "a duplicated row" apart from "a stale field" when this test was red.
     #[test]
     fn a_run_backed_bucket_promotes_to_tree_mode() {
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
@@ -1291,6 +1287,69 @@ mod tests {
             "every promoted row is readable exactly once (descriptor says {})",
             bucket.degree()
         );
+    }
+
+    /// No insert writes two rows: the second label's degree and its readable rows both track the inserts made so far,
+    /// index by index. This is the assertion that turned "one row is duplicated somewhere" into "the run was
+    /// over-allocated by one for the pending edge".
+    #[test]
+    fn every_insert_on_a_second_label_writes_exactly_one_row() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = super::super::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::directed_from_index(1),
+        );
+        let vid = VertexId::from(0);
+        let first = BucketLabelKey::directed_from_index(2);
+        for target in 0..10_000u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    first,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("noise insert");
+        }
+        let second = BucketLabelKey::directed_from_index(3);
+        for target in 0..T_PROMOTE + 3 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    second,
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 20_000 + target,
+                    },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("edge {target}: {error}"));
+            let vertex = graph.vertices().get(vid);
+            let slot = graph
+                .find_bucket_slot(&vertex, second)
+                .expect("find")
+                .expect("bucket");
+            let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+            let mut rows = 0u32;
+            let _ = graph
+                .visit_edges(
+                    vid,
+                    second,
+                    crate::labeled::graph::OutEdgeOrder::Ascending,
+                    |_, _| {
+                        rows += 1;
+                        std::ops::ControlFlow::<()>::Continue(())
+                    },
+                )
+                .expect("read");
+            assert_eq!(
+                (u64::from(bucket.degree()), rows),
+                (u64::from(target) + 1, target + 1),
+                "after inserting edge {target}: descriptor={}, readable rows={}, tree={}",
+                bucket.degree(),
+                rows,
+                bucket.is_tree_mode()
+            );
+        }
     }
 
     #[test]
