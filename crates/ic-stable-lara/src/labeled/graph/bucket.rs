@@ -1427,11 +1427,14 @@ mod tests {
     ///   (`(1537 % 512) * 8`).
     ///
     /// The property tree is **depth 1** (five leaves fit a root of 1024 entries), and dumping the region the descriptor
-    /// names settles the direction: at offset 36 it holds **`[1, 2, 3, 1, 6]`** - not five monotone leaf ids, and not
-    /// anything a root write produces. So the reader is faithful, the writer is fine (the leaf payloads now come from
-    /// one owner), and the remaining defect is that the region the descriptor names is **not the region the promotion
-    /// wrote**: either `ensure_value_root`'s offset and the descriptor's differ, or something wrote over the region after
-    /// it was published. Both are one print apart, and the numbers to print are recorded here.
+    /// names settles the direction: at offset 36 it holds **`[1, 2, 3, 1, 6]`** - not five monotone leaf ids, and with a
+    /// repeated id, so **two writers** left content there. That is the promotion's restart: an attempt writes a root
+    /// region, the retry allocates another and publishes that, and the first attempt's bytes stay behind - so the
+    /// retry's ownership claim (now `None` on every attempt) is what needs threading: a restart must release the root
+    /// region its previous attempt allocated.
+    ///
+    /// Readers are faithful and the leaf payloads have one owner; the root region's ownership across a restart is the
+    /// last piece.
     #[test]
     #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
