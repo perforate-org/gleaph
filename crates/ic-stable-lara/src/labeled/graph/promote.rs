@@ -239,7 +239,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     .map_err(|_| LaraOperationError::overflow())?;
     // Construct all descriptor fields before reserving target storage. Only its root address
     // will change after allocation; the old descriptor and both source planes remain owned.
-    let template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
+    let mut template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
         .map_err(|_| LaraOperationError::overflow())?
         .with_tree_mode(true)
         .with_tree_mode_property_depth(property_depth);
@@ -325,68 +325,97 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             pin.allocate(u64::from(combined_len), Some(avoid))?
         }
     };
+    let mut root_in_run = false;
     let new_start = match in_pin_start {
         Some(base) => base,
         None if in_place => bucket.edge_start(),
         None if !retried => {
             // First make room *inside* the vertex: its buckets may be laid out with the
-            // free run between them, and re-tiling is cheaper than moving the leaf.
+            // free run between them, and re-tiling is cheaper than moving the leaf. If that whole attempt runs out
+            // of room, the root takes a run instead (below) rather than failing the promotion.
             let vertex = graph.vertices().get(vid);
             let super::BucketSearch::Found { slot, .. } = graph.find_bucket(vid, &vertex, label)?
             else {
                 return Err(LabeledOperationError::BucketNotFound { vid, label });
             };
-            let bucket_index = u32::try_from(slot.saturating_sub(vertex.base_slot_start()))
-                .map_err(|_| LaraOperationError::overflow())?;
-            // `Required`: the room must exist, so a rewrite that cannot place the wider
-            // span fails instead of silently keeping the current one.
-            let retiled = graph
-                .vertex_layout(vid)
-                .rewrite_span_with_policy(
-                    Some(bucket_index),
-                    combined_len.saturating_sub(prefix),
-                    true,
-                    None,
-                    super::compact::SpanResolutionPolicy::Required,
-                )
-                .is_ok();
-            // Re-tiling may or may not have left a run the root fits (`Required` only
-            // guarantees the rewrite was attempted). `ensure_room` probes the placement
-            // itself and grows the extent or moves the leaf only when it still fails.
-            let vertex = graph.vertices().get(vid);
-            let fresh_avoid = match graph.find_bucket(vid, &vertex, label)? {
-                super::BucketSearch::Found { bucket: b, .. } => (
-                    b.edge_start(),
-                    u64::from(super::compact::bucket_content_slots(&b)),
-                ),
-                super::BucketSearch::Missing { .. } => avoid,
+            let retry = || -> Result<(), LabeledOperationError> {
+                let bucket_index = u32::try_from(slot.saturating_sub(vertex.base_slot_start()))
+                    .map_err(|_| LaraOperationError::overflow())?;
+                // `Required`: the room must exist, so a rewrite that cannot place the wider
+                // span fails instead of silently keeping the current one.
+                let retiled = graph
+                    .vertex_layout(vid)
+                    .rewrite_span_with_policy(
+                        Some(bucket_index),
+                        combined_len.saturating_sub(prefix),
+                        true,
+                        None,
+                        super::compact::SpanResolutionPolicy::Required,
+                    )
+                    .is_ok();
+                // Re-tiling may or may not have left a run the root fits (`Required` only
+                // guarantees the rewrite was attempted). `ensure_room` probes the placement
+                // itself and grows the extent or moves the leaf only when it still fails.
+                let vertex = graph.vertices().get(vid);
+                let fresh_avoid = match graph.find_bucket(vid, &vertex, label)? {
+                    super::BucketSearch::Found { bucket: b, .. } => (
+                        b.edge_start(),
+                        u64::from(super::compact::bucket_content_slots(&b)),
+                    ),
+                    super::BucketSearch::Missing { .. } => avoid,
+                };
+                let _ = retiled;
+                graph
+                    .layout(slot, bucket)
+                    .ensure_room_for(vid, request.content(), fresh_avoid)?;
+                let vertex = graph.vertices().get(vid);
+                let super::BucketSearch::Found { bucket: fresh, .. } =
+                    graph.find_bucket(vid, &vertex, label)?
+                else {
+                    return Err(LabeledOperationError::BucketNotFound { vid, label });
+                };
+                transcribe_and_publish_tree_inner(graph, vid, fresh, pending, true)
             };
-            let _ = retiled;
-            graph
-                .layout(slot, bucket)
-                .ensure_room_for(vid, request.content(), fresh_avoid)?;
-            let vertex = graph.vertices().get(vid);
-            let super::BucketSearch::Found { bucket: fresh, .. } =
-                graph.find_bucket(vid, &vertex, label)?
-            else {
-                return Err(LabeledOperationError::BucketNotFound { vid, label });
-            };
-            return transcribe_and_publish_tree_inner(graph, vid, fresh, pending, true);
+            match retry() {
+                Ok(()) => return Ok(()),
+                Err(LabeledOperationError::Store(
+                    LaraOperationError::CollectAllocationOverflow,
+                )) => {
+                    // No room was made either way: the root goes to a run.
+                    root_in_run = true;
+                    bucket.edge_start()
+                }
+                Err(other) => return Err(other),
+            }
         }
-        // The leaf was already given room for this promotion, so no further growth is
-        // available: fail closed rather than leave the leaf.
+        // The leaf has no room for the root's span and none could be made.
         None => {
-            return Err(LabeledOperationError::LeafArenaExhausted {
-                vid,
-                need: u64::from(combined_len),
-            });
+            root_in_run = true;
+            bucket.edge_start()
         }
     };
+    if root_in_run {
+        // The root array is a run of block ids, and a tree bucket never keeps rows in a run, so it can live in an
+        // edge run instead - the same arena edge rows overflow into, still on the edge side. The descriptor carries
+        // it, and the geometry answers zero leaf occupancy for it.
+        let run = graph
+            .edges()
+            .spill_allocate_rows(edge_root_len)
+            .map_err(LabeledOperationError::from)?;
+        template = template
+            .with_edge_run(Some(run))
+            .map_err(LabeledOperationError::from)?;
+    }
     let allocated_header = graph.edges().header();
     let mut allocated_blocks = Vec::new();
     let prepared = (|| -> Result<(), LabeledOperationError> {
         let source = source.bind_allocated_header(allocated_header)?;
-        crate::slab_index::checked_add_slot_exclusive_end(new_start, u64::from(combined_len))
+        let placed_len = if template.edge_run().is_some() {
+            0
+        } else {
+            combined_len
+        };
+        crate::slab_index::checked_add_slot_exclusive_end(new_start, u64::from(placed_len))
             .filter(|end| *end <= allocated_header.elem_capacity)
             .ok_or(LaraOperationError::overflow())?;
         let base_header = BlockHeader {
@@ -646,7 +675,15 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             .expect("source values run was validated");
     }
     if !sheltered_prefix {
-        if in_place {
+        if template.edge_run().is_some() {
+            // The root went into a run, so the whole source prefix is free (when it was not sheltered).
+            if prefix > 0 {
+                graph
+                    .edges()
+                    .release_span(bucket.edge_start(), u64::from(prefix))
+                    .expect("source prefix retirement was reserved");
+            }
+        } else if in_place {
             // The root occupies the prefix's head; its unused tail becomes free.
             let tail = prefix - combined_len;
             if tail > 0 {

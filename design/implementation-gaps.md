@@ -304,6 +304,19 @@ defect from being rediscovered without its prior reasoning.
   under the run cap, so the canbench case is unblocked by the run-backed promotion even though the unlimited case is
   not.
 
+- **Tree root in a run: three of five slices landed 2026-11-07.** Following the decision that the edge root must stay
+  on the edge side (never the value store), the tree root can live in an edge run:
+  - `BucketTreePlane::edge_root_loc` answers `EdgeRootLoc::Slots | Run`, `edge_child` and `write_edge_root` go through
+    it, and `resolve_leaf_block_id`'s depth-1 hop reads through it - so the store that holds the array is the view's
+    answer rather than every caller's assumption.
+  - the geometry answers zero leaf occupancy for a tree bucket carrying a run, which is what lets the span arithmetic
+    and the audit agree that such a bucket holds no slab slots.
+  - the promotion allocates a root run when no span can be made (including when the retry's room-making fails) and
+    publishes the descriptor that names it; the whole source prefix is then released instead of a tail.
+- **Remaining:** the reproduction `a_run_backed_bucket_promotes_to_tree_mode` still fails, now **before publication** -
+  the promotion's preparation builds a leaf-span publication for a root that no longer needs one, so the failure moved
+  from "no room" to "prepared the wrong shape". That preparation is the next step, and the test states it.
+
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — the largest expand fixture cannot build its graph
 
 - **Observed behavior:** `canbench "expand_skewed_noise_10k_a_500b"` traps while **building the

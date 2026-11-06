@@ -2143,13 +2143,9 @@ where
     // the structural formula would under-walk the hop chain.
     let depth = bucket.tree_mode_physical_depth();
     if depth == 1 {
-        // Single hop: root region entry IS the leaf block_id.
-        let mut block_id_bytes = [0u8; 4];
-        graph.edges().read_slot_bytes(
-            bucket.edge_start() + u64::from(block_index),
-            &mut block_id_bytes,
-        );
-        return Ok(u32::from_le_bytes(block_id_bytes));
+        // Single hop: root region entry IS the leaf block_id. Where that region lives is the tree plane's answer -
+        // leaf slots, or an edge run when the vertex slice had no room for the root.
+        return graph.tree_plane(*bucket).edge_child(block_index);
     }
     // Depth >= 2: descend root -> interior -> ... -> interior -> leaf.
     // The hop chain is indexed by **mixed-radix decomposition** of

@@ -187,6 +187,25 @@ where
     where
         E2: CsrEdge + crate::traits::CsrEdgeTombstone,
     {
+        // Where the array goes is the view's answer: the leaf's slots, or the edge run that holds it when the vertex
+        // slice had no room for a span.
+        if let EdgeRootLoc::Run { run, rows } = self.edge_root_loc() {
+            let id_bytes = crate::labeled::tree_csr::PROPERTY_ID_BYTES;
+            let written = edge_root_image.len() / id_bytes;
+            if written > rows as usize {
+                return Err(super::LabeledOperationError::Store(
+                    crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+                ));
+            }
+            for index in 0..written {
+                let start = index * id_bytes;
+                self.graph
+                    .edges()
+                    .spill_write_row(run, index as u32, &edge_root_image[start..start + id_bytes])
+                    .map_err(super::LabeledOperationError::from)?;
+            }
+            return Ok(());
+        }
         let slot_bytes = E2::BYTES;
         let slots = edge_root_image.len().div_ceil(slot_bytes.max(1));
         let mut image = vec![0u8; slots * slot_bytes];

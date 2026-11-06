@@ -1223,12 +1223,11 @@ mod tests {
     /// A run-backed bucket promotes to tree mode once it is large enough - the path that would make a second label
     /// on a filled vertex usable at any size, not only up to the spill run's class cap.
     ///
-    /// `#[ignore]`d because it does not pass: the promotion fails with `collect overflow` at `degree = 1023`,
-    /// `stored_slots = 0`. The tree's edge root lives in the leaf's edge slots (ADR 0101), so promoting needs a span
-    /// the vertex's slice cannot give - the same wall the run-backed promotion itself was created to get around.
-    /// That is the next gap: either a tree root that does not need leaf slots, or an accepted ceiling of one spill
-    /// run per bucket.
-    #[ignore = "run-backed buckets cannot promote to tree: the root needs leaf slots (see the gap record)"]
+    /// `#[ignore]`d: the root-in-run fallback is implemented (the promotion allocates a run of block ids when no
+    /// span can be made, and `BucketTreePlane::edge_root_loc` answers the run form), but the promotion's *preparation*
+    /// still fails before publication - it prepares a leaf-span publication for a root that now needs none. That
+    /// preparation is the next step; this test is the reproduction that will turn green when it is done.
+    #[ignore = "tree promotion preparation still assumes the root occupies a leaf span"]
     #[test]
     fn a_run_backed_bucket_promotes_to_tree_mode() {
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};

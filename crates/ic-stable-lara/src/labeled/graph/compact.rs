@@ -4212,6 +4212,12 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     match BucketMode::from_bucket(bucket) {
         BucketMode::Tiny => 0,
         BucketMode::Slab => bucket.stored_slots(),
+        BucketMode::Tree if bucket.edge_run().is_some() => {
+            // The root array lives in an edge run instead of the leaf (a vertex slice with no room for it), so the
+            // bucket occupies no leaf slots at all. A tree bucket's rows are in LTB blocks and never in a run, so an
+            // edge run on a tree bucket can only be the root array.
+            0
+        }
         BucketMode::Tree => {
             // Tree mode: edge root region length + property root region length
             // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
