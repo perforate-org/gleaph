@@ -2578,28 +2578,6 @@ acceptance remain separate. See the movement-publication correction above.
 - **Next decision:** Resolve inside the slice that introduces cross-shard resolution,
   if ever demanded; until then no action.
 
-### GAP-2026-09-11-003 — Federated aggregate merge errors on all-NULL partials instead of yielding NULL/skip
-
-- **Status:** Open — non-blocking, low priority. Fail-closed error direction (never a
-  wrong result); single-shard execution unaffected; `Avg` excluded (already
-  non-mergeable UnionRows). Recorded 2026-09-11 during the GQL-execution
-  Unsupported-path survey.
-- **Owner:** Router federation aggregate merge
-  (`crates/router/src/federation/aggregate_merge.rs`).
-- **Observed behavior:** For mergeable `COUNT`/`SUM`/`MIN`/`MAX`, when the
-  first-ingested shard partial for a group is `Null` — e.g. grouped `SUM(x)` where one
-  shard holds the group's rows but every value is NULL, so the Graph partial is Null —
-  `merge_add_values` (`:345`) / `merge_extreme_value` (`:381`) return
-  `Err("aggregate merge on null")` instead of skipping the NULL partial. All shards
-  empty produces no rows and does not trigger.
-- **Evidence:** source paths above; merge tests (`merge_aggregate_blobs_*`) cover valued
-  partials only.
-- **Expected or needed behavior:** SQL-consistent outcome: skip NULL partials and emit
-  NULL when every partial is NULL.
-- **Impact:** A rare multi-shard-only query error; the error direction is safe.
-- **Next decision:** Smallest fix is "skip NULL partials, emit NULL when all partials
-  are NULL" plus a two-shard unit test; open only on demand.
-
 ### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
 
 - **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
@@ -2652,6 +2630,19 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-11-003 — RESOLVED: a NULL partial contributes nothing instead of failing the merge
+
+- **Status:** Resolved (2026-11-07). A grouped `SUM(x)` could not run across shards when one shard held the group's rows but
+  every value was NULL: its partial is `NULL`, and `merge_add_values` / `merge_extreme_value` rejected it
+  (`aggregate merge on null`) instead of letting the other shards decide. `MIN`/`MAX` had the identical rejection.
+- **Behaviour now:** a `NULL` partial contributes nothing - the same meaning it has in a single-shard execution - the other
+  partials decide the value, and a group whose every partial is `NULL` answers `NULL` rather than erroring. The fail-closed
+  direction is unchanged where it is doing work: a non-numeric or incomparable partial still fails.
+- **Evidence:** `a_null_partial_contributes_nothing_to_a_sum`, `an_all_null_group_merges_to_null`, and
+  `a_null_partial_contributes_nothing_to_min_and_max` (`crates/router/src/federation/aggregate_merge.rs`). router 1146.
+- **Note on scope:** single-shard execution was never affected (there is nothing to merge); this only ever surfaced in a
+  multi-shard topology, which is why it was recorded as non-blocking while the exercised topology was single-shard.
 
 ### GAP-2026-09-11-001 — RESOLVED: the percentile fraction contract is documented and its arms are locked
 
