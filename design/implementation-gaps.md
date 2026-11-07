@@ -627,6 +627,19 @@ defect from being rediscovered without its prior reasoning.
   With the region live and no other writer, the bytes are what the **write received**: the entries the promotion hands
   to `acquire_value_root` are the next reading, at the moment of the write (`property_root.entries`).
 
+- **The write measured, and the shape is now fully known (2026-11-07).** A probe at the moment of the write shows the
+  promotion publishes **`entries=[1, 2]`**, not five: the promotion happens when the source runs out (1024 rows), so the
+  property tree it builds has exactly two leaves, and the root region holds two entries. The bucket then keeps growing
+  in the tree - to 2100 rows, five property leaves - and the append path **extends the root region** with the new
+  leaf ids. That is where `[1, 2, 3, 1, 6]` comes from: two correct ids from the promotion and three from appends, one of
+  which repeats `1`.
+- **The invariant this exposes:** the value-root region must always hold exactly the entries the geometry says
+  (`property_root_region_len(bucket)`). A guard that refuses duplicate children was written to catch the aliasing and
+  **reverted**: it fired on a legitimate append (`tree_property_scan_reads_each_payload_block_once`, insert 1280), which
+  means the append path itself can produce a list whose length does not match the region - so the next reading is the
+  append's old-root length (`property_root_region_len(bucket)` at line 404 of `tree_write.rs`) against what the region
+  actually contains, and the duplicate `1` is a symptom of reading one entry too many.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
