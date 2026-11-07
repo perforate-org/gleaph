@@ -28,14 +28,8 @@ use ic_stable_structures::Memory;
 /// plain `u64`. That is how this record's own figure 2 came to compare an edge-store root against a cover anchored at a
 /// bucket-store address and call the difference a violation. A span or a cover whose start is this type cannot be built from
 /// the wrong store's number without an explicit conversion, which is the whole point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
 pub struct EdgeSlot(u64);
-
-impl core::fmt::Display for EdgeSlot {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 impl EdgeSlot {
     pub const ZERO: Self = Self(0);
@@ -52,19 +46,52 @@ impl EdgeSlot {
         self.0
     }
 
-    /// The slot `count` positions later. Staying in the same space is the only arithmetic this type allows.
-    pub fn add(self, count: u64) -> Self {
-        Self(self.0 + count)
+    /// The slot `slots` positions later.
+    ///
+    /// The argument is a **length** (`u32`, the unit this codebase counts slots in), not a `u64`: a raw `u64` is exactly the
+    /// number-without-a-space that this type exists to keep out. Inside the space, address + length = address, which is the
+    /// only arithmetic an address should model.
+    pub fn advance(self, slots: u32) -> Self {
+        Self(self.0 + u64::from(slots))
     }
 
     /// One past the last of `len` slots starting here.
     pub fn end_of(self, len: u32) -> Self {
-        Self(self.0 + u64::from(len))
+        self.advance(len)
     }
 
     /// The distance to `other`, in slots; negative cases are a bug the caller reports, so it saturates at zero.
     pub fn distance_to(self, other: Self) -> u64 {
         other.0.saturating_sub(self.0)
+    }
+}
+
+impl core::ops::Add<u32> for EdgeSlot {
+    type Output = Self;
+
+    fn add(self, slots: u32) -> Self {
+        self.advance(slots)
+    }
+}
+
+impl core::ops::Sub<u32> for EdgeSlot {
+    type Output = Self;
+
+    fn sub(self, slots: u32) -> Self {
+        Self(
+            self.0
+                .checked_sub(u64::from(slots))
+                .expect("slot subtraction underflow"),
+        )
+    }
+}
+
+impl core::ops::Sub<EdgeSlot> for EdgeSlot {
+    type Output = u32;
+
+    /// The distance in slots. Saturating: a negative distance means the operands were never comparable.
+    fn sub(self, other: Self) -> u32 {
+        u32::try_from(self.0.saturating_sub(other.0)).unwrap_or(u32::MAX)
     }
 }
 
@@ -342,6 +369,26 @@ mod tests {
             assert_eq!(hand, expected, "table sanity");
             assert_eq!(typed.len(), expected, "previous={previous} span={span_len}");
         }
+    }
+
+    /// The address arithmetic models the one operation an address space has: address + length.
+    ///
+    /// `advance`/`end_of` take a length, and the `Add`/`Sub` impls take `u32`, so `slot + slot` (a length!) and `slot + u64`
+    /// (a number from anywhere) are both compile errors. That is the difference between "an address" and "a number".
+    #[test]
+    fn slot_arithmetic_stays_inside_the_space() {
+        let base = EdgeSlot::from_raw(256);
+        assert_eq!((base + 4).get(), 260);
+        assert_eq!(base.end_of(4).get(), 260);
+        assert_eq!(
+            (base.advance(0)).get(),
+            256,
+            "zero length is the same address"
+        );
+        assert_eq!((base + 4) - 4, base);
+        assert_eq!((base + 9) - base, 9, "distance is a length, not an address");
+        // Saturating rather than wrapping: a negative distance means the operands were not comparable.
+        assert_eq!(base - (base + 9), 0);
     }
 
     #[test]
