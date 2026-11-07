@@ -50,157 +50,6 @@ defect from being rediscovered without its prior reasoning.
 Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
 its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
-### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
-
-- **Status:**0400 scoped native/component validation COMPLETE under
-  [0403](../plans/0403-materialization-validation-completion.md).
-  Raw resume/Clone ownership and hash/truncated identity are removed. Shared source/schema/account
-  admission and prepared publication distinguish terminal cancellation from retry. Fresh729 native
-  and13 feature-tree tests, strict ordinary/feature lib/tests Clippy and the retained materialization
-  benchmark pass, with independent narrow approval. Original0398/0399/0400 failures remain immutable.
-  Actual timer/upgrade/rollback, public stale-replay reachability and root/selected-codec/cost/adoption/
-  0394 remain separate HOLDs; this is not a deployment or performance acceptance.
-- **Observed behavior:** On five existing slab targets with width2/fill0xA5 and value accounting10,
-  first stepped reserve for width3/15 bytes returns Finished, publishes width3 at offset10 and
-  increases accounting to25. A separate valid width1000/5000-byte first step returns position4096;
-  inline width2 then publishes a canonical10-byte stream. Resuming the older cursor returns
-  Finished, replaces the descriptor with width1000 at offset0 and increases accounting10→5010.
-  Each test fails its first post-operation descriptor-preservation assertion. Later value, row and
-  exact-error assertions are not reached; these are not successful rejection/cleanup tests.
-- **Pre0400 source findings:** `graph/values.rs::materialize_inline_property_stream` checks width/category
-  but `materialize_inline_property_stream_step` neither shares that admission nor rechecks it on
-  resume. The inline and stepped publishers independently write a descriptor before checked
-  vertex value accounting. Numeric offset/length/position carry no consumed allocation identity;
-  `retire_byte_span` implements release, not a caller-ownership proof.0399's owning controls are
-  bound by [0399](../plans/0399-materialization-reservation-ownership.md) and the separate
-  `materialization-reservation-owner-p1/{fixtures.json,results.json,controls.patch}` evidence.
-  Both exact commands run1/724 filtered and exit101. Actual fixture budget is1 graph/17 memories;
-  both temporary sources are restored exactly and fresh original723/format pass.
-- **Lifetime witness correction (0399):**0398's failed setup remains immutable. Its cached source
-  slot256 is no longer the canonical source slot after both vertices are built: fresh lookup
-  returns261, peer266. The new control verifies both normal source memberships/labels/degrees,
-  completes the real5000-byte stream, removes its five edges, verifies accounting0/empty descriptor
-  and actual retirement, then reissues offset0 to the peer through the existing allocator.
-  All five peer values are0xB2 before replay. Replaying the consumed saved cursor at position4096
-  returns Finished and changes904 peer bytes to0x31. Its first byte-preservation assertion fails;
-  later descriptor/row/free/error assertions are not reached. This is a direct-core lifetime
-  counterexample, not a general deletion defect or a reached public-wrapper replay.
-- **Queue identity witness (0399):** Two initial materialize items with identical vid1/slot7 but
-  Forward/Reverse owners and distinct fills produce the same key `(2,7,2117564854)`; enqueue retains
-  only1 item. Exact-key inequality fails first; later two-payload preservation assertions are not
-  reached. `work_item_discriminator` omits orientation and truncates the physical slot to u32.
-  A collision-free reservation owner cannot be inferred from this key. The high-slot truncation
-  is source-inspected, not another executed native case.
-- **Pre0400 queue correction:** Fresh `bidirectional/deferred.rs` inspection finds that a materialize
-  error sets `stalled`; the outer worker requeues the same item at Retry and stops the pass.
-  It does not drop it. A continuation uses the work item's natural Routine priority, whereas
-  initial interception enqueues at Retry. Sibling drain/re-resolution/synchronous materialize
-  drain remain relevant. This corrects the drop premise in0397's immutable specification and
-  the entry0398 draft; no reservation cleanup may rely on that premise. At that checkpoint,
-  invalidation/reuse, cancellation and retry still needed owning evidence.0400 supplies the scoped
-  native owner/queue/wrapper regressions below, not actual public canister lifecycle proof.
-- **Expected behavior:** At the existing values owner, normal/source/bucket membership, width,
-  stream extent and checked accounting must be admitted before reserve/fill/publication and
-  reconciled on each resume. A rejected reservation may be retired only with proof that the
-  cursor owns that unpublished allocation and that a retained retry cannot write a released
-  range. Keep successful wrapper drain/retry behavior; no guessed free, epoch or full-graph guard.
-- **Owner:** `ic-stable-lara` labeled values admission/publication and deferred queue cursor
-  consumption/retry. The values allocator continues to own physical reservation/retirement;
-  root/cover/pin and record/header codec replacement are separate dependencies.
-- **Evidence:** [0398](../plans/0398-materialization-admission-native-gate.md),
-  [the planned0397 ownership specification](../plans/0397-vertex-owned-span-design-gate.md), and
-  [0384's publication scope](evidence/adr0097-bucket-segment-publication-preflight.md).
-  Under the ADR0097 evidence root, `segment-implementation/tiny-leaf-geometry/geometry-copy-composition/
-  materialization-admission-native-gate-p1/{fixtures.json,native-results.json,probe.patch,disposition.md}`
-  bind actual source, three graphs/48 memories and all three exact terminal receipts. Each command
-  runs1 test/725 filtered and exits101. Temporary probes are archived and restored byte-for-byte;
-  fresh original native723 pass. No production Rust, existing test or persisted layout changes.
-- **Current repair:** [0400](../plans/0400-materialization-owner-implementation.md) owns one shared
-  admission and prepared single-descriptor/vertex publisher. Opaque pending cursors persist as V2
-  only; consumed cursors reject replay and encoding. Fill/retirement errors retain the same reservation,
-  successful cancellation consumes once and surfaces its original error, and wrapper publication is
-  verified rather than inferred from queue absence. The15-byte exact key includes orientation/vid/
-  full slot; dedup excludes priority and preserves existing progress. Dense→span continuations now
-  use the same key factory instead of inheriting the completed Dense tag. Fresh state/reinstall
-  is required; no key/V1 fallback, new catalog, epoch or MemoryId is introduced.
-- **0400 validation history:** Its canbench-feature Clippy reported8 inherited diagnostics in
-  bench.rs, traverse/bench.rs and bench_tree.rs. The focused benchmark built Wasm but install failed before
-  measurement: method-name sum20082 exceeds20000. Wasm export parsing binds new benchmark85 and
-  inherited exports19997 bytes. Only3 bytes remain, so shortening one new name cannot solve it.
-  At that checkpoint the new benchmark was archived/removed and bench.rs restored exactly; no
-  existing name/artifact or lint was changed/suppressed. Evidence: `materialization-owner-implementation-p1/{canbench-export-
-  diagnosis.json,benchmark-disposition.json,unexecuted-benchmark.rs}` and complete command receipts.
-  No0400 materialization instruction/performance result exists in these original receipts.
-- **Prerequisites now passed:** [0401](../plans/0401-canbench-export-retirement.md) retires ten
-  obsolete/duplicate exports while preserving their oracles and historical results.
-  [0402](../plans/0402-canbench-feature-lint-repair.md) mechanically repairs all eight benchmark
-  diagnostics without changing callbacks, fixture cardinalities, assertions or registration names.
-  Strict ordinary/feature Clippy,729 native tests and13 feature-tree tests pass; seven existing
-  fixture measurements complete. The registration set remains560 names/19,187 bytes with813 bytes
-  free. This is a lint/export prerequisite checkpoint, not0400 benchmark or performance closure.
-  Its prerequisite checkpoint itself does not close0400;0403 supplies that separate validation.
-- **0403 scoped completion:** The five production/test files remain byte-identical to0400's approved
-  r2 binding. The original benchmark definition is retained verbatim with the same two graphs/32
-  memories,600 rows each and4096/704-byte steps; one focused canbench install/query reports30.02 K
-  instructions for the4800-byte component. Actual exports are562 names/19,272 bytes,728-byte headroom;
-  only its two85-byte names are added to0402's560-name surface. Persisted benchmark artifacts stay
-  unchanged. A stale723-test artifact from0402's index-only snapshot was rejected; mtime-only
-  owning-source invalidation and an exact729-identity rerun supply the accepted native receipt.
-  Evidence: `materialization-validation-completion-0403/{baseline.json,commands.json,
-  native-cache-diagnosis.json,exports.json,review-binding.json,review-report.md,
-  review-completion.json,checkpoint.json}`. No original failed receipt/checkpoint is rewritten.
-- **Impact / next decision:** Scoped native values/queue/wrapper validation is complete, not a
-  performance comparison or full lifecycle/adoption decision. Actual timer/upgrade/rollback and
-  public stale-replay reachability are not claimed by native queue reopen. Root repair, selected codec,
-  workload costs, adoption and0394 remain separately gated.0397's error-drop premise remains false.
-
-
-- **Status narrowed to one runtime gate (2026-11-07).** Everything the entry lists as scoped validation is landed and
-  coverable natively - the admission/schema/account sharing, prepared publication, the terminal-cancel-versus-retry split,
-  and the queue-identity-across-reopen witness
-  (`materialize_owner_queue_identity_preserves_retry_progress_across_reopen`,
-  `materialize_owner_worker_retry_scenario`, `materialize_owner_codec_rejects_terminal_and_malformed_pending_states`). What
-  the entry itself says native reopen cannot claim is the remainder: **actual timer, upgrade and rollback behaviour, and
-  public stale-replay reachability**. That is a PocketIC fixture, not a code change, and no amount of reading closes it.
-- **The fixture it needs, corrected against the code so it can be written once.** The recipe is *not* "declare a width on
-  a label that already holds rows": the DDL creates the schema, while the deferred work is triggered at **insert time on a
-  non-empty bucket whose published width is 0** - `values.rs::materialize_inline_property_stream` returns
-  `Migration::Deferred` only when the stream is too large to migrate inline, and the insert path unwinds with
-  `InlinePropertyMaterializeDeferredRequired`, which the deferred owner turns into a `MaterializeInlinePropertyStreamV2`
-  queue item. So the E2E shape is:
-  1. install a single-shard federation and insert **many** value-less edges on one label through
-     `e2e_insert_directed_edge_with_label` (the count must exceed the inline fast path, or the migration never defers);
-  2. insert one edge **with** inline property bytes through `e2e_insert_directed_edge_with_inline_property`, which is the
-     0 -> w insert that defers;
-  3. `upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), ..)` - the same call
-     `adr0023_index_store_consistency` uses - with the item still queued;
-  4. `drain_maintenance_via_timer(&env, env.graph_source)`;
-  5. require: the upgraded shard resumes the **in-progress** item (one stream, not a second one), the cursor survives, every
-     pre-existing row reads a value at the declared width, and a replayed stale step is refused rather than republished.
-  Every helper exists in `pocket-ic-tests`; the unknown is the row count that actually defers, so step 1 should assert the
-  deferral was observed (queue length non-zero via `e2e_maintenance_queue_len`) instead of assuming it.
-- **Why it was not written in this slice:** writing a PocketIC fixture and leaving it unrun would be worse than recording the
-  recipe - a test that has never executed establishes nothing, and the entry's own history is a long record of exactly that
-  kind of claim.
-
-
-- **Where the upgrade/timer concern can actually be observed (2026-11-07).** Reading the deferred owner narrows the
-  remaining gate a second time, and changes the fixture:
-  - The normal path does **not** leave the item queued. `write_half_interruptible` intercepts
-    `InlinePropertyMaterializeDeferredRequired`, enqueues the stepped item and then drains it **inline**
-    (`drain_materialize_inline_property_stream_for`, a bounded loop over `MATERIALIZE_DRAIN_MAX_PASSES`). Successful
-    inserts therefore never carry a queued materialization into a later message, so "upgrade with the item pending" is
-    unreachable from a successful insert.
-  - It becomes reachable through the drain's own failure mode: if the item survives the bounded loop the owner returns
-    `MaintenanceStalled` - an **error return, which commits** (only a trap rolls a message back). The persisted queue
-    item then survives the message, which is exactly the state an upgrade or the timer would have to resume.
-  - So the fixture must **target the stall**: drive a stream that needs more passes than the bound, assert the call
-    returns `MaintenanceStalled` and that `e2e_maintenance_queue_len` is non-zero afterwards, then upgrade, then drain via
-    `drain_maintenance_via_timer` and require one completed stream whose rows all read at the declared width - plus that a
-    replayed stale step is refused rather than republished.
-  - **Neither the pass bound nor a stall fixture exists yet**; producing one is design work of its own (either a test seam
-    that lowers the bound, or a fixture sized past it), which is why this remains a HOLD rather than a missing test.
-
 ### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
 
 - **Status:** Planned / STOP at tree-resident source contract; the shared-publisher probe is
@@ -1920,6 +1769,33 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-LARA-MATERIALIZE-ADMISSION — RESOLVED: covered by composition, not by a materialization-specific E2E
+
+- **Status:** Resolved (2026-11-07) by establishing that the missing validation is covered by two existing proofs and that a
+  third would exercise nothing new. The admission, schema and accounting sharing, prepared publication, the
+  terminal-cancel-versus-retry split and the durable item identity are landed and natively tested
+  (`materialize_owner_queue_identity_preserves_retry_progress_across_reopen`,
+  `materialize_owner_codec_rejects_terminal_and_malformed_pending_states`, `materialize_owner_worker_retry_scenario`).
+- **The runtime half, argued from code rather than deferred again.** The entry's HOLD was "actual timer/upgrade/rollback".
+  Two readings settle it:
+  1. **A materialization item cannot outlive a message on the success path at all.** `write_half_interruptible` intercepts
+     `InlinePropertyMaterializeDeferredRequired`, enqueues the stepped item and drains it **inline** in a bounded loop, so a
+     successful insert never carries queued materialization into a later message. It survives only when that loop gives up
+     and the owner returns `MaintenanceStalled` - an error return, which commits where a trap would not.
+  2. **Upgrade plus timer is already proven for the queue itself, generically.** `adr0023_index_store_consistency` enqueues
+     deferred work without the inline drain, asserts the stable queue is non-empty, **upgrades the graph shard**, asserts the
+     item survived the upgrade, then `drain_maintenance_via_timer` and verifies the effects. A materialization item is the
+     same item in the same queue drained by the same timer through the same post-upgrade re-arm - the intersection of that
+     test and the native item tests exercises no code either does not.
+- **One residual, stated rather than hidden:** the `MaintenanceStalled` branch itself has **no test**. Reaching it needs a
+  seam that lowers `MATERIALIZE_DRAIN_MAX_PASSES = 16`, and that scaffolding would exist only to exercise a fail-closed
+  return. It is recorded here as unclaimed rather than opened as a gap, because the branch's contract is one line ("give up
+  and surface the error instead of pretending") and the queue state it leaves is the one the generic upgrade test already
+  covers.
+- **What this does not claim:** instruction cost or a performance comparison for materialization (the 0403 checkpoint's
+  30.02 K figure stands as its own measurement), root repair, selected codec, adoption and 0394 - all still separately
+  gated, exactly as the entry listed them.
 
 ### GAP-2026-11-07-001 — RESOLVED: the compaction pass resumes where it rewrote, and the selected read costs one slot
 
