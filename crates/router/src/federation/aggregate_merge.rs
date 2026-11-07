@@ -340,9 +340,10 @@ fn merge_metric_value(
 
 fn merge_add_values(existing: Option<&Value>, incoming: &Value) -> Result<Value, String> {
     if incoming == &Value::Null {
-        return existing
-            .cloned()
-            .ok_or_else(|| "aggregate merge on null".to_string());
+        // A `NULL` partial means that shard contributed nothing to this group's metric - a grouped `SUM(x)` whose shard
+        // holds the group's rows but every `x` is NULL. It is not an error: the other partials still decide the value, and
+        // if every partial is NULL the group's metric is NULL, exactly as a single-shard execution would answer.
+        return Ok(existing.cloned().unwrap_or(Value::Null));
     }
     let incoming_numeric = incoming
         .as_f64()
@@ -376,9 +377,8 @@ fn merge_extreme_value(
     pick_min: bool,
 ) -> Result<Value, String> {
     if incoming == &Value::Null {
-        return existing
-            .cloned()
-            .ok_or_else(|| "aggregate merge on null".to_string());
+        // Same rule as `merge_add_values`: a NULL partial contributes nothing, and an all-NULL group is NULL.
+        return Ok(existing.cloned().unwrap_or(Value::Null));
     }
     let Some(left) = existing else {
         return Ok(incoming.clone());
@@ -579,6 +579,87 @@ mod tests {
             .expect("values");
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].get("cnt"), Some(&Value::Int64(8)));
+    }
+
+    fn null_metric_row(columns: &[(&str, &str)], metric: &str) -> BTreeMap<String, Value> {
+        let mut row = text_row(columns, &[]);
+        row.insert(metric.to_string(), Value::Null);
+        row
+    }
+
+    fn sum_spec() -> FederatedAggregateMerge {
+        FederatedAggregateMerge {
+            group_key_columns: vec!["country".into()],
+            aggregate_columns: vec![AggregateMergeColumn {
+                name: "total".into(),
+                func: AggregateFunc::Sum,
+            }],
+            having: None,
+        }
+    }
+
+    /// A shard that holds a group's rows but whose values are all NULL returns a `NULL` partial.
+    ///
+    /// That is not a merge error: the other shards still decide the group's value, and the group is present only because a
+    /// row exists. Previously the first `NULL` partial failed the whole merge (`aggregate merge on null`), so a grouped
+    /// `SUM(x)` could not run at all when one shard's values were all NULL.
+    #[test]
+    fn a_null_partial_contributes_nothing_to_a_sum() {
+        let left = rows_blob(vec![null_metric_row(&[("country", "US")], "total")]);
+        let right = rows_blob(vec![text_row(&[("country", "US")], &[("total", 7)])]);
+        let merged = merge_aggregate_blobs(&left, &right, &sum_spec()).expect("merge");
+        let decoded = GqlWireRows::decode_blob(&merged)
+            .expect("decode")
+            .try_into_value_rows()
+            .expect("values");
+        assert_eq!(decoded.len(), 1, "one group");
+        assert_eq!(decoded[0].get("total"), Some(&Value::Int64(7)));
+    }
+
+    /// When every partial for a group is `NULL`, the group's metric is `NULL` - the same answer a single-shard execution
+    /// gives for a group whose values are all NULL, rather than an error.
+    #[test]
+    fn an_all_null_group_merges_to_null() {
+        let left = rows_blob(vec![null_metric_row(&[("country", "UK")], "total")]);
+        let right = rows_blob(vec![null_metric_row(&[("country", "UK")], "total")]);
+        let merged = merge_aggregate_blobs(&left, &right, &sum_spec()).expect("merge");
+        let decoded = GqlWireRows::decode_blob(&merged)
+            .expect("decode")
+            .try_into_value_rows()
+            .expect("values");
+        assert_eq!(
+            decoded.len(),
+            1,
+            "the group exists; only its metric is unknown"
+        );
+        assert_eq!(decoded[0].get("total"), Some(&Value::Null));
+    }
+
+    /// The same rule for the extremes, which had the identical rejection.
+    #[test]
+    fn a_null_partial_contributes_nothing_to_min_and_max() {
+        for (func, expected) in [(AggregateFunc::Min, 2i64), (AggregateFunc::Max, 9i64)] {
+            let spec = FederatedAggregateMerge {
+                group_key_columns: vec!["country".into()],
+                aggregate_columns: vec![AggregateMergeColumn {
+                    name: "m".into(),
+                    func,
+                }],
+                having: None,
+            };
+            let left = rows_blob(vec![null_metric_row(&[("country", "US")], "m")]);
+            let right = rows_blob(vec![
+                text_row(&[("country", "US")], &[("m", 9)]),
+                text_row(&[("country", "US")], &[("m", 2)]),
+            ]);
+            let merged = merge_aggregate_blobs(&left, &right, &spec).expect("merge");
+            let decoded = GqlWireRows::decode_blob(&merged)
+                .expect("decode")
+                .try_into_value_rows()
+                .expect("values");
+            assert_eq!(decoded.len(), 1);
+            assert_eq!(decoded[0].get("m"), Some(&Value::Int64(expected)));
+        }
     }
 
     #[test]
