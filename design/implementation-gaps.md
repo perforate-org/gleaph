@@ -519,6 +519,21 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   *checked against* the rule rather than merely resembling it. A future slice that derives the width at those sites has an
   oracle to land against; one that changes the arithmetic fails the table.
 
+- **Correction (2026-11-08): the edge-side RED was a measurement error of mine, and it is gone.** The `#[ignore]`d witness
+  compared an **edge-store** root against a cover anchored at `LabeledVertex::base_slot_start`, which is a **bucket-store**
+  address - two different spaces. Re-measured against the edge anchor (`[first_bucket.edge_start, + stored_slots)`), the root at
+  `[258, 260)` **is** inside the cover for both widths, and the test now passes.
+  - It passes **because** the append republishes the cover: deleting that call makes the same test fail with
+    `cover [258, 259)`, which is the first evidence that `publish_bucket_and_cover` is load-bearing - it was added for a reason I
+    had stated wrongly, and kept for one that is now measured.
+  - **What this invalidates:** the six- and eight-fixture "drift inventories" used the same arithmetic, so none of those firings
+    can be called drift until re-measured. Recorded in
+    [`investigations/2026-11-08-owning-region-accounting.md` §10](../investigations/2026-11-08-owning-region-accounting.md).
+  - **What it leaves standing:** the value-side leak fix (independent of the base), the types (`BucketLeafSpan`,
+    `VertexLeafCover`), the retention rule with its oracle (`SlackRule::NeverShrink`, `VertexLeafCover::monotone`), and the view.
+    `GAP-LARA-TINY-GEOMETRY` therefore has **no outstanding witness**; what remains is the promotion-ordering subject the entry was
+    originally about, which is a separate slice.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
