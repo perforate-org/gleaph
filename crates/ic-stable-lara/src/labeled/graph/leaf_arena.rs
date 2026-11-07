@@ -1855,6 +1855,42 @@ mod tests {
         assert_eq!(targets, dsts);
     }
 
+    /// The skewed-degree shape the GAP-2026-09-20-005 audit probe reproduced: several leaf mates with wildly different
+    /// degrees sharing one segment-16 leaf.
+    ///
+    /// The recorded failure was `assert_no_labeled_leaf_mate_overlap` firing with "vid N reserves up to X but vid M
+    /// starts at Y" - a span reservation growing a cover past a mate's start. This test is the repo-resident form of that
+    /// probe, so the claim can be checked rather than remembered.
+    #[test]
+    fn leaf_mate_overlap_guard_holds_for_skewed_degree_mates() {
+        let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::from_raw(1),
+        );
+        // Degrees from the audit probe: one heavy hub beside much lighter mates in the same leaf window.
+        let degrees = [160u32, 48, 24, 12, 8, 3, 1];
+        let label = BucketLabelKey::from_raw(7);
+        for degree in degrees {
+            let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
+            for target in 0..degree {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        vid,
+                        label,
+                        TestEdge { target },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("insert into degree-{degree} mate at target {target}: {error}")
+                    });
+            }
+        }
+        // Every mate's reservation must stay inside its own slice of the leaf.
+        for vid in 0..degrees.len() as u32 {
+            graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(vid));
+        }
+    }
+
     #[test]
     fn leaf_mate_overlap_guard_passes_for_normal_inserts() {
         let graph = hub_graph();
