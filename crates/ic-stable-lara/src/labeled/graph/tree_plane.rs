@@ -162,6 +162,71 @@ where
         }
     }
 
+    /// Reads a root array back from whichever store holds it: the mirror of [`Self::write_root_array`].
+    ///
+    /// Both roots are read the same way they are written - the store decides, the caller asks for entries - so an append
+    /// that rebuilds a root cannot read one root with leaf-slot arithmetic and the other with a packed-value offset.
+    pub(crate) fn read_root_array(
+        &self,
+        store: RootArrayStore,
+        entries: u32,
+    ) -> Result<Vec<u32>, LabeledOperationError> {
+        let mut ids = Vec::with_capacity(entries as usize);
+        match store {
+            RootArrayStore::ValueBytes { offset } => {
+                let mut bytes = vec![0u8; entries as usize * 4];
+                if !bytes.is_empty() {
+                    self.graph.values().read_bytes(offset, &mut bytes);
+                }
+                ids.extend(
+                    bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|chunk| u32::from_le_bytes(*chunk)),
+                );
+            }
+            RootArrayStore::LeafRun { run, rows } => {
+                if entries > rows {
+                    return Err(LabeledOperationError::RootEntryCountMismatch(
+                        super::error::RootEntryCountMismatch {
+                            root: "edge",
+                            expected: rows,
+                            got: entries,
+                        },
+                    ));
+                }
+                let mut row = [0u8; 4];
+                for index in 0..entries {
+                    self.graph
+                        .edges()
+                        .spill_read_row(run, index, &mut row)
+                        .map_err(LabeledOperationError::from)?;
+                    ids.push(u32::from_le_bytes(row));
+                }
+            }
+            RootArrayStore::LeafSlots { start, slot_bytes } => {
+                let mut bytes = vec![0u8; entries as usize * 16];
+                if !bytes.is_empty() {
+                    self.graph
+                        .edges()
+                        .read_slots_contiguous_bytes(start, &mut bytes);
+                }
+                let stride = (slot_bytes as usize).max(4);
+                for index in 0..entries as usize {
+                    let base = index * stride;
+                    ids.push(u32::from_le_bytes([
+                        bytes[base],
+                        bytes[base + 1],
+                        bytes[base + 2],
+                        bytes[base + 3],
+                    ]));
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// A root array's store, derived from the descriptor being written.
     pub(crate) fn edge_root_store(&self, edge_start: u64, slot_bytes: u32) -> RootArrayStore {
         match self.edge_root_loc() {
@@ -177,6 +242,26 @@ where
     #[cfg(test)]
     pub(crate) fn edge_root_store_for_test(start: u64, slot_bytes: u32) -> RootArrayStore {
         RootArrayStore::LeafSlots { start, slot_bytes }
+    }
+
+    /// Validates a root array this bucket's geometry expects, reading it back from its store.
+    ///
+    /// The check both roots lacked: a root that is not the shape the geometry says, or that names one block twice, reads
+    /// another row's payload while looking valid. Reading through the shared reader means the ids checked are the ids a
+    /// traversal would use.
+    pub(crate) fn validate_value_root(&self) -> Result<(), LabeledOperationError> {
+        let width = self.bucket.inline_property_byte_width();
+        let Some(slots_per_block) = crate::labeled::tree_csr::property_slots_per_block(width)
+        else {
+            return Ok(());
+        };
+        let shape = tree_root_entries(&self.bucket, slots_per_block);
+        if shape.value == 0 {
+            return Ok(());
+        }
+        let store = Self::value_root_store(compact::value_root_address(&self.bucket));
+        let ids = self.read_root_array(store, shape.value)?;
+        validate_root_ids("value", shape.value, &ids)
     }
 
     /// The value root's store for a descriptor whose value-root region starts at `offset`.

@@ -118,9 +118,22 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    let mut bytes = vec![0u8; entries as usize * 4];
-    if !bytes.is_empty() {
-        bytes = graph.tree_plane(*bucket).value_children(entries);
+    // Both roots are read by the tree plane from the store that holds them; this keeps the packed-bytes shape its
+    // callers already use.
+    let plane = graph.tree_plane(*bucket);
+    let store = super::tree_plane::BucketTreePlane::<E, M>::value_root_store(
+        super::compact::value_root_address(bucket),
+    );
+    let mut bytes = Vec::with_capacity(entries as usize * 4);
+    if entries > 0 {
+        match plane.read_root_array(store, entries) {
+            Ok(ids) => {
+                for id in ids {
+                    bytes.extend_from_slice(&id.to_le_bytes());
+                }
+            }
+            Err(_) => bytes.resize(entries as usize * 4, 0),
+        }
     }
     bytes
 }

@@ -1473,6 +1473,14 @@ mod tests {
             (rows, rows),
             "the promoted bucket must be dense: degree and stored must agree for slot addressing"
         );
+        // Does the published root name distinct, geometry-sized blocks? Reading it through the shared reader is what a
+        // traversal would do, so this is the invariant the read path depends on.
+        graph
+            .tree_plane(bucket)
+            .validate_value_root()
+            .unwrap_or_else(|error| {
+                panic!("the promoted value root is not a valid root array: {error}")
+            });
         for row in 0..bucket.degree() {
             let value = graph
                 .read_value_row(&bucket, row)

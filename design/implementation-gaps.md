@@ -718,6 +718,20 @@ defect from being rediscovered without its prior reasoning.
   the entries that append computed - `read_property_root_ids(graph, bucket, old_prop_root_len)` where
   `old_prop_root_len = property_root_region_len(bucket)` - against the region's real content at that moment.
 
+- **The reads share the writer's structure now, and the check names the defect (2026-11-07).**
+  `BucketTreePlane::read_root_array(store, entries)` is the mirror of `write_root_array`: the store decides where the
+  array lives, the caller asks for entries. `read_property_root_ids` is a thin shim over it, and
+  `validate_value_root()` reads the published root back through that one reader and refuses a root that is not the
+  geometry's size or that repeats an id. Asserting it in the reproduction gives the defect a name instead of a corrupted
+  read: **`block id 1 was minted twice for one tree promotion`** - while the LTB mint trace itself is clean (`0..7`,
+  distinct) and no block is ever released. So the duplicate enters the *entry list* an append builds, not the store: an
+  append reads `property_root_region_len(bucket)` old ids and pushes its new leaf id, and one of the ids it read is not
+  what that region holds.
+- **Next, exactly:** print, at each property-leaf append, the tuple
+  `(property_root_region_len(bucket), ids_read, new_leaf_id, region_bytes_at_descriptor_offset)`. The trace already fixes
+  the offsets (`root region 0..8 -> 8..20 -> 20..36 -> 36..56`, five entries at 36 for 2100 rows), so the disagreement is
+  between `property_root_region_len` and the bytes the descriptor's offset actually holds at that moment.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
