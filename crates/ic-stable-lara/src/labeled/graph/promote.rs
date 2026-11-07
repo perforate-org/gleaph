@@ -648,6 +648,13 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             BlockKind::InlinePropertyInterior,
             crate::labeled::tree_csr::PROPERTY_ID_BYTES,
         )?;
+        // One derivation answers the value root's entry count, and the image must match it: a root holding the wrong
+        // number of ids - or the same id twice - publishes a tree that reads another row's payload while looking valid.
+        {
+            use super::tree_plane::{tree_root_entries, validate_root_ids};
+            let shape = tree_root_entries(&template, property_slots_per_block);
+            validate_root_ids("value", shape.value, &property_root.entries)?;
+        }
         if edge_root.image.len() != edge_root_len as usize * E::BYTES
             || property_root.image.len() != property_root_len as usize * E::BYTES
         {

@@ -640,6 +640,22 @@ defect from being rediscovered without its prior reasoning.
   append's old-root length (`property_root_region_len(bucket)` at line 404 of `tree_write.rs`) against what the region
   actually contains, and the duplicate `1` is a symptom of reading one entry too many.
 
+- **One derivation for both roots, and it named the real defect (2026-11-07).** `tree_plane::tree_root_entries(bucket, k)`
+  now answers how many ids each root holds - the edge root's `tree_csr::root_len(stored_slots)` and the value root's
+  `property_root_entry_count(leaves, depth)` in one place - and `validate_root_ids` refuses a root list that is the
+  wrong length (`RootEntryCountMismatch`) or repeats an id (`DuplicateBlockMinted`). The promotion checks its value root
+  against the target descriptor's shape; the edge root always satisfied that by construction, which is the asymmetry the
+  unification removes.
+- **Wiring the same check into the *append* path reproduced the defect as a name, not a corruption:**
+  `tree_property_scan_reads_each_payload_block_once` failed at insert 1280 with
+  **`DuplicateBlockMinted { id: 1 }`** - the append path hands the root a list in which a freshly minted property leaf
+  already appears, which means **a live property leaf block was released** and handed out again. That is a
+  double release, not a length arithmetic error, and it is the actual cause behind the region's `[1, 2, 3, 1, 6]`.
+- **State:** the validation is wired into the promotion only; wiring it into the append path makes that test red because
+  it refuses the corrupting insert, so the double release must be fixed first. The reverting commit says so, and the
+  next reading is the release/mint pairs around `release_property_plan`, the deepen plan's failure path and the
+  promotion's restart.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

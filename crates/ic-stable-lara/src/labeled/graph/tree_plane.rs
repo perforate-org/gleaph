@@ -18,6 +18,68 @@ use super::LabeledLaraGraph;
 use super::compact::{self, TreeSpans};
 use super::error::LabeledOperationError;
 
+/// How many entries each of a tree bucket's root arrays holds.
+///
+/// Both roots answer the same question - "one id per child at the level below" - and both used to answer it with their
+/// own arithmetic at every call site: the edge root through `tree_csr::root_len(stored_slots)`, the value root through
+/// `property_root_entry_count(leaves, depth)`. Writing a root, reading one back and validating one must all agree, so the
+/// pair is derived here once and everyone asks for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeRootEntries {
+    /// Ids the edge root array holds.
+    pub(crate) edge: u32,
+    /// Ids the value root array holds.
+    pub(crate) value: u32,
+}
+
+/// The root shapes of `bucket` at `property_slots_per_block`.
+pub(crate) fn tree_root_entries(bucket: &LabelBucket, slots_per_block: u32) -> TreeRootEntries {
+    let edge = u32::try_from(crate::labeled::tree_csr::root_len(bucket.stored_slots()))
+        .unwrap_or(u32::MAX);
+    let value = if !bucket.is_tree_mode() || bucket.inline_property_byte_width() == 0 {
+        0
+    } else {
+        let leaves =
+            u64::from(bucket.stored_slots().max(1)).div_ceil(u64::from(slots_per_block.max(1)));
+        u32::try_from(super::tree_write::property_root_entry_count(
+            leaves,
+            bucket.tree_mode_property_depth(),
+        ))
+        .unwrap_or(u32::MAX)
+    };
+    TreeRootEntries { edge, value }
+}
+
+/// Refuses a root array whose shape is not the bucket's, or whose ids are not distinct.
+///
+/// This is the check the edge root has always satisfied by construction ("root length == blocks that exist") and the
+/// value root did not: a root that holds the wrong number of ids, or the same id twice, publishes a tree that reads
+/// another row's payload while looking valid.
+pub(crate) fn validate_root_ids(
+    root: &'static str,
+    expected: u32,
+    ids: &[u32],
+) -> Result<(), LabeledOperationError> {
+    if ids.len() != expected as usize {
+        return Err(LabeledOperationError::RootEntryCountMismatch(
+            super::error::RootEntryCountMismatch {
+                root,
+                expected,
+                got: u32::try_from(ids.len()).unwrap_or(u32::MAX),
+            },
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if !seen.insert(*id) {
+            return Err(LabeledOperationError::DuplicateBlockMinted(
+                super::error::DuplicateBlockMinted { id: *id },
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A value-root region **this attempt owns**.
 ///
 /// The region exists between the allocation and the descriptor that records it, and the failure in between is the

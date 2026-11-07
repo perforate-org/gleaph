@@ -185,6 +185,8 @@ pub enum LabeledOperationError {
     PropertyLeafWindowMismatch(PropertyLeafWindowMismatch),
     /// Two blocks of one promotion share an id; the store handed it out twice.
     DuplicateBlockMinted(DuplicateBlockMinted),
+    /// A root array's entry count is not what the geometry requires.
+    RootEntryCountMismatch(RootEntryCountMismatch),
     /// The vertex's slice cannot hold the span it asked for; names the layout reason.
     VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
@@ -399,6 +401,30 @@ impl fmt::Display for DuplicateBlockMinted {
     }
 }
 
+/// A root array whose entry count is not the shape the bucket's geometry requires.
+///
+/// One derivation answers how many ids each root holds (`TreeRootEntries`); this names a caller that wrote or passed a
+/// different number, which is how a tree ends up reading an id that was never written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RootEntryCountMismatch {
+    /// Which root: `edge` or `value`.
+    pub root: &'static str,
+    /// Entries the geometry requires.
+    pub expected: u32,
+    /// Entries the caller supplied.
+    pub got: u32,
+}
+
+impl fmt::Display for RootEntryCountMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} root entry count mismatch: geometry requires {}, caller supplied {}",
+            self.root, self.expected, self.got
+        )
+    }
+}
+
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -489,6 +515,7 @@ impl fmt::Display for LabeledOperationError {
             Self::TreePromotionSourceMismatch(mismatch) => mismatch.fmt(f),
             Self::PropertyLeafWindowMismatch(mismatch) => mismatch.fmt(f),
             Self::DuplicateBlockMinted(duplicate) => duplicate.fmt(f),
+            Self::RootEntryCountMismatch(mismatch) => mismatch.fmt(f),
             Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
@@ -532,6 +559,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::TreePromotionSourceMismatch(_)
             | Self::PropertyLeafWindowMismatch(_)
             | Self::DuplicateBlockMinted(_)
+            | Self::RootEntryCountMismatch(_)
             | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }
