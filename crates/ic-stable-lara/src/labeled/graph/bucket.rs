@@ -1413,30 +1413,15 @@ mod tests {
     /// promotes to tree mode, and every row's value must still read back - through the point reader the expand
     /// projection uses.
     ///
-    /// `#[ignore]`d: it fails, and the failure is the finding. **Row 1 reads the value of another row** (1537), while
-    /// the tree *walk* reader (`visit_edges_with_inline_property`, `tree_mode_valued_bucket_reads_its_values`) reads
-    /// the same bucket correctly.
+    /// A promoted valued bucket reads every row back through the point reader.
     ///
-    /// Measured so the next reading starts from facts, and the facts point at the **write** side:
-    ///
-    /// - the promoted bucket is **dense** (`degree == stored == 2100`, so a row is a slot) and its property tree is
-    ///   **depth 2** (2100 rows at 512 value rows per property leaf);
-    /// - the resolver and the offset agree between the readers: `resolve_property_leaf_block_id(bucket, 1)` answers
-    ///   **block 0** and `value_slot_position(1, 8).offset` is **8** - the block that should hold rows 0..511;
-    /// - and the payload at block 0, offset 8 **holds row 1537's value**, whose own offset is also 8
-    ///   (`(1537 % 512) * 8`).
-    ///
-    /// The property tree is **depth 1** (five leaves fit a root of 1024 entries), and dumping the region the descriptor
-    /// names settles the direction: at offset 36 it holds **`[1, 2, 3, 1, 6]`** - not five monotone leaf ids, and with a
-    /// repeated id, so **two writers** left content there. That is the promotion's restart: an attempt writes a root
-    /// region, the retry allocates another and publishes that, and the first attempt's bytes stay behind - so the
-    /// retry's ownership claim (now `None` on every attempt) is what needs threading: a restart must release the root
-    /// region its previous attempt allocated.
-    ///
-    /// Readers are faithful and the leaf payloads have one owner; the root region's ownership across a restart is the
-    /// last piece.
+    /// The fixture is the bench shape `expand_inline_property_skewed_2k_a_100b`: 2 100 valued edges, so the bucket
+    /// promotes to a tree and keeps growing until it spans five property leaves. Three defects had to be fixed for this
+    /// to read correctly, and each is now a rule the code states: a leaf payload is written before the pointer that
+    /// names it, the descriptor records the value-root region the append just wrote, and the root array is read and
+    /// written through one store-typed pair of functions. The row count is asserted before the descriptor is trusted, so
+    /// a duplicated row and a stale field cannot be confused again.
     #[test]
-    #[ignore = "the tree point reader mis-addresses property leaves: row 1 reads another row's value"]
     fn a_promoted_valued_bucket_reads_every_row_through_the_point_reader() {
         use crate::labeled::graph::EdgePlacementPolicy;
         let graph = crate::labeled::graph::test_support::inline_property_test_graph();

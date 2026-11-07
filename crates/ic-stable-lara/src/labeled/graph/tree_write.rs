@@ -383,6 +383,9 @@ where
         // Both are settled **after** the descriptor publish below, never before it.
         let tree_plane = graph.tree_plane(*bucket);
         let mut owned_value_root = None;
+        // The value-root address this append allocated, when it allocated one: the descriptor that is published below
+        // must record it in the same write that records everything else.
+        let mut published_value_offset: Option<u64> = None;
         let mut replaced_value_root: Option<(u64, u32)> = None;
         let new_combined_span_start: u64 = if w > 0 {
             let property_value = edge.edge_inline_property_bytes();
@@ -489,7 +492,14 @@ where
                             &edge_root_image,
                             &value_children,
                         ) {
-                            Ok(owned) => owned_value_root = owned,
+                            Ok(owned) => {
+                                // **The descriptor must name the region that was just written.** `write_roots` allocates
+                                // a fresh region when the new root does not fit in place; publishing the old offset made
+                                // the next append read past its own array and take the *next* region's first id as an
+                                // entry - which is how one leaf id came to appear twice in a root.
+                                published_value_offset = owned.as_ref().map(|root| root.offset());
+                                owned_value_root = owned;
+                            }
                             Err(_) => {
                                 release_property_plan::<E, M>(graph, &plan);
                                 let _ = graph
@@ -550,6 +560,10 @@ where
             .with_degree_field(next_degree)
             .with_tree_mode(true)
             .with_tree_mode_property_depth(property_depth_for_publish);
+        let new_bucket = match published_value_offset {
+            Some(offset) => new_bucket.with_inline_property_bytes_offset(offset),
+            None => new_bucket,
+        };
         if let Err(e) = graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)

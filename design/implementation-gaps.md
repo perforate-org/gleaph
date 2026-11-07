@@ -431,306 +431,6 @@ defect from being rediscovered without its prior reasoning.
   settle whether the tree shape is the new normal for this bench, and that refresh is only possible now
   that the suite runs to completion.
 
-### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS-OLD — a recorded benchmark now traps
-
-- **Observed behavior:** `canbench "expand_inline_property_skewed_2k_a_100b"` traps inside
-  `execute_expand_plan` (`crates/graph/src/bench/mod.rs:715`) with
-  `Store(Graph(Forward(InlinePropertyBytesLogRead(MissingAscLogIndex { asc_log_index: 0 }))))`. The
-  committed baseline still carries a value for it (2,114,557 instructions), so it used to run.
-- **Not caused by ADR 0099:** the same command traps on the pre-merge `spill-swap` tip
-  (`f6ebb7e1e`), so the regression predates the slot-addressed values work.
-- **Cause, not yet found:** the forward store reads an inline value through the values run of a bucket
-  that has none to read there. The fixture inserts 2,000 + 100 valued edges into one destination, which
-  is enough for the bucket to promote; a reader that is not tree-aware would take exactly this path.
-- **Impact:** the full `canbench --persist` refresh cannot complete, so `crates/graph/canbench_results.yml`
-  cannot be updated for the benches added by ADR 0099 (`bench_delete_w8_*`,
-  `bench_graph_undirected_inline_update_*`). The stale baseline also means any `canbench` run reports
-  this bench as failing rather than regressed.
-- **Next decision:** does the expand path read a promoted (tree-mode) bucket's inline values through the
-  run reader? Reproduce with a unit-level expand over a bucket driven past promotion, then route that
-  read through the tree-aware accessor.
-- **Evidence gathered:** the read reaches `read_bucket_inline_property_bytes_for_slot_into`, whose
-  chain branch requires `log_chains` - i.e. a bucket that still names a values run - and then fails on
-  `chain[0]` because that run's `asc_indices` is empty. The attach path
-  (`attach_edge_inline_property_at_ordinal`, `values.rs:1744`) reads through it and is not tree-aware;
-  the traversal arms that can see a tree bucket (`visit_edges_with_inline_property_impl`,
-  `visit_edges_for_label_impl`, `visit_edges_at_with_inline_property`) each divert tree buckets before
-  it, so the caller that does not is the one to find. A lara-level repro exists: 1100 valued inserts
-  into one bucket promote it (`tree=true`, `stored=1100`) and a slab/run read of any slot then reports
-  the same error, so the repro does not need canbench. The traversals are **not** the caller: on that
-  same promoted bucket `visit_edges_with_inline_property` and `visit_edges_at_with_inline_property`
-  both return `Ok` with 2-byte values, so the defect is in a non-traversal read path. The batch visitor
-  is safe too: on the promoted bucket `visit_out_inline_property_batches_for_label_next` returns `Ok`,
-  and the deferred graph's in-direction reuses it on the reverse store.
-- **Reproduced on the merged tip:** the focused `canbench` run still traps after this ADR's work, so
-  whatever the caller is, it is not one of the traversal or batch arms. The remaining shape is a
-  descriptor that names a values run whose `asc_indices` is empty, which points at a release that left
-  the descriptor naming the run (an emptied bucket keeps both runs by design, and a promotion or a fold
-  is what releases them).
-- **Already eliminated while narrowing it:** the emptied-bucket path released the same run twice (fixed)
-  and releasing a run without clearing the descriptor is now impossible through
-  `BucketValuePlane`, the borrowing view that owns the pair. Promotion and tiny-promotion were checked:
-  both publish a descriptor whose runs default to `NO_SPILL_RUN`, so they are not the source. That leaves
-  the materialisation fill (`fill_value_run_for_edge_spill`) and the bypass promotion as the untested
-  candidates.
-- **The error's exact origin, measured:** `MissingAscLogIndex` is only a *rendering* -
-  `map_values_spill_read_error` produces it from `ValuesSpillReadError::RowOutOfRange { index }`, so the
-  fixture reads **row 0 of a run that has no rows**. Instrumenting both chain-reading sites
-  (`read_bucket_inline_property_bytes_for_slot_into` and the `spill_mint` failure in
-  `read_bucket_inline_property_bytes_range_into`) printed nothing, so the read gets a *valid* run id whose
-  `used_len` is 0. That narrows the defect to a path that empties a values run without clearing the
-  descriptor - `spill_drop_head(run, used)` reaching zero, or a run released and re-minted empty - and it
-  is a *state* bug, not a reader bug.
-- **Mechanisms eliminated by reading them:**
-  - `SpillRunStore::drop_head` cannot empty a run: it refuses (`HeadDropWouldReclass`) whenever the new
-    length would move the class, and `0` always does.
-  - `SpillRunStore::repack` asserts `!keep.is_empty()` ("an empty run is released, not repacked"), so it
-    cannot mint an empty run either.
-  - releasing a run without clearing the descriptor is now impossible through `BucketValuePlane`.
-  What is left is a run **allocated but never appended to** while its id is published. Every minting site
-  appends before publishing except the materialisation fill's loop
-  (`fill_value_run_for_edge_spill`), which is the next thing to check against an early `break`.
-- **The fill's early break is closed by construction:** that loop is now
-  `BucketValuePlane::fill_to_edge_run_len`, which only changes the published id when a block was
-  actually appended. The benchmark still traps afterwards, so the empty run comes from somewhere else.
-- **Publishes are now validated:** every bucket descriptor goes through
-  `LabeledLaraGraph::publish_bucket_descriptor`, which refuses a descriptor naming a run the arena does
-  not hold, and refuses one whose named run has no rows while the bucket has rows beyond its prefix. The
-  benchmark still traps and that check never fires, so the descriptor that breaks is legitimate *at
-  publication* - the row set goes wrong afterwards, or the read that fails is not one of the three sites
-  instrumented (`read_bucket_inline_property_bytes_for_slot_into`'s chain branch, the run branch's
-  `spill_mint`, its `spill_read_range`).
-- **Instrumentation caveat, learned the hard way:** the benchmark runs in wasm, where `eprintln!` goes to
-  the canister log and is **not** shown by `canbench`; only a `panic!` message surfaces (as the trap
-  text). The probes below were re-run as panics and still did not fire, so their conclusion stands.
-- **Sites instrumented that do NOT fire** (so a future session need not re-probe them):
-  `read_bucket_inline_property_bytes_for_slot_into`'s chain branch,
-  `read_bucket_inline_property_bytes_range_into`'s `spill_mint` failure and its `spill_read_range`,
-  `BucketValuePlane::fold_head_into_span`'s `spill_read_range`, and the live-log fold's `spill_read`
-  (`compact.rs`). Only two production functions construct the error at all
-  (`values.rs:666`, `values.rs:721`), both probed, so the value reaches them through
-  `map_values_spill_read_error` - i.e. a `ValuesSpillReadError::RowOutOfRange` - which only
-  `spill_read` / `spill_read_range` produce. That leaves callers of those two on paths not yet reviewed,
-  and the bench's own setup as the other candidate.
-- **The error index pins the state:** `ValuesSpillRunStore::read_range` reports
-  `RowOutOfRange { index: rows.start.max(used_len) }`, and the trap carries index `0`, so the run is
-  **live with `used_len == 0`** - not released (a released header makes `used_len` read as garbage and
-  the index large). The publish check deliberately allows that state while all rows sit in the prefix,
-  so the sequence to look for is: a bucket publishes legitimately with an empty run and every row in its
-  prefix, then a row lands **beyond** the prefix whose value block is never appended. Which insert path
-  can grow the edge prefix/run without appending a block is the question that remains.
-- **Next technique, before more grep:** put `#[track_caller]` on
-  `EdgeInlinePropertyBytesStore::spill_read` / `spill_read_range` and panic with
-  `Location::caller()` on the `RowOutOfRange` path. That names the call site directly instead of
-  inferring it from the code - it is how `with_stored_slots`'s caller was found in this same work, and
-  it is cheaper than another round of probes.
-- **What that leaves:** a descriptor published from a bucket value that is **stale** with respect to a
-  run another operation already released - the run id would then name a class that is on the free list,
-  and `spill_mint` on it succeeds with `used_len == 0`. Every value-plane mutation now goes through
-  `BucketValuePlane`, so the next search is over the *publishers* of bucket descriptors
-  (`write_label_bucket_slot`) that hold a handle across another operation.
-- **Status:** Open.
-
-- **Narrowed 2026-11-07: the reported error is gone, and a worse one is behind it.** The `MissingAscLogIndex` the
-  bench reported no longer reproduces at the LARA layer - the point reader routes a tree bucket to the property tree
-  (`read_value_row` -> `read_property_value_at_slot`) and the reader that produced that error
-  (`read_value_range`) has no callers left. Rebuilding the bench's own shape - 2 100 valued edges on one bucket, so it
-  promotes to tree mode - and reading every row through the point reader shows a different defect:
-  **row 1 reads another row's value** (`1537` instead of `1`).
-- **That is a duplicated mapping, not a missing branch.** The same bucket reads correctly through the tree *walk*
-  (`visit_edges_with_inline_property`, pinned by `tree_mode_valued_bucket_reads_its_values`), so one promoted bucket
-  has one address mapping that works and one that does not - the divergence ADR 0100 exists to remove. The point
-  reader should be rebased on the tree plane's own address arithmetic instead of its own.
-- **Reproduction:** `a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`, `#[ignore]`d with
-  the measured row and values.
-
-- **Measured one step further, 2026-11-07: same offset, different block.** The promoted bucket **is dense**
-  (`degree == stored == 2100`, so a row *is* a slot), and the point reader's answer for row 1 is row 1537's value -
-  whose offset inside its property leaf is `(1537 % 512) * 8 = 8`, exactly the offset row 1 asks for. So the two readers
-  compute the same offset and disagree on the **block**, and `resolve_property_leaf_block_id(bucket, 1)` answering
-  differently for the point reader than for the walk's leaf cache is the next reading. Both call it with the same
-  `slot`, which is what makes the disagreement interesting rather than a parameter mix-up.
-
-- **The readers agree; the write side is wrong (2026-11-07).** Probing the resolver directly inside the reproduction -
-  `resolve_property_leaf_block_id(bucket, 1)` and `value_slot_position(1, 8).offset` - names **block 0, offset 8**,
-  which is exactly where rows 0..511 belong, and the payload there holds **row 1537's** value (whose own offset is also
-  8). The property tree is depth 2, as 2100 rows at 512 value rows per leaf require. So no reader is mis-addressing:
-  the promotion wrote another row's bytes at row 1's place, with a value that wrapped at a 512-row boundary its flush
-  condition did not honour. The next reading is the promotion's property-payload arithmetic
-  (`property_slots_per_block` against `value_slot_position(..).row` in `emit`), not the read paths.
-
-- **Structural fix landed, and it moved the defect one layer out (2026-11-07).** Two duplications are gone:
-  `PropertyLeafWriter` owns a property leaf's window, offset and seal together (its only entry takes a **slot**; a
-  window jump is a typed error instead of an overwrite), and the promotion's interior builder now answers
-  `RootImage { image, entries }` so the bytes written as a root and the ids they describe cannot diverge - previously
-  the image was built, length-checked, and the *leaf* ids were written into the value root instead, which is only
-  correct at depth 1. The whole suite is green with both in place.
-- **What the reproduction now shows:** the property tree is depth 1 (five leaves fit one root level) and walking it by
-  hand gives **root entry 0 = block id 1**, which is not the first property leaf's id. The reader is faithful to the
-  region it is told about; the region is not the one the promotion wrote. So the last step is the value root's
-  *address*: which allocation the descriptor names versus which `ensure_value_root` wrote (a released-and-reused region,
-  or a descriptor published from an earlier attempt, are the two candidates).
-
-- **Ownership made explicit, and the measurement now points at the region (2026-11-07).**
-  `BucketTreePlane::ensure_value_root(entries, replaces: Option<u64>)` takes the **ownership claim** instead of
-  inferring it from the offset. The promotion builds its descriptor from a template whose offset is not an allocation,
-  and calling `ensure_value_root` on it with the old signature released a span the promotion never owned - which offset
-  0 cannot express, since offset 0 is also a legitimate first span. The suite is green with the explicit claim.
-- **What the dump says:** the property tree is depth 1, and the region the descriptor names holds
-  **`[1, 2, 3, 1, 6]`** at offset 36 - not five monotone leaf ids and not something a root write produces. So readers
-  are faithful and the leaf payloads now have one owner; what remains is that **the region the descriptor names is not
-  the region the promotion wrote**. Two candidates, both one print apart: `ensure_value_root`'s returned offset differs
-  from the descriptor's, or something writes over the region after publication.
-
-- **Ownership as a value with a drop (2026-11-07).** `OwnedValueRoot` is the attempt's ownership of the value-root
-  region: it is released when it drops and only a successful publication disarms it (`ensure_value_root` keeps its
-  published form for the paths whose descriptor is written immediately). A failed attempt can no longer leave a written
-  root behind, because the attempt itself owns the region; `replaces` remains only for the paths that genuinely replace
-  a root they own. Suite green.
-- **What that did *not* change:** the reproduction still reads `[1, 2, 3, 1, 6]` at the descriptor's offset (36). The
-  descriptor's offset **is** the allocation the promotion made (the same value is published), so the region is written
-  correctly and then **something writes over it afterwards** - the remaining candidates are the values *span* or
-  *run* whose release overlaps it, and a property-block mint aliasing the same address. That is the next reading, and
-  the reproduction records the offset and the bytes it finds.
-
-- **Checked for aliasing, and the mint is clean (2026-11-07).** The root region holds `[1, 2, 3, 1, 6]` - a repeated
-  id, which would mean two property leaves sharing a block - so the promotion now refuses a minted id it has already
-  used (`DuplicateBlockMinted`, one check at the single `mint` closure). The check **did not fire**, so the ids this
-  promotion minted are distinct and the duplicate in the region is not from the store handing one out twice.
-- **What the dump adds up to:** the descriptor is `width 8, depth 1, degree 2100, stored 2100, offset 36, slab_slots 0`,
-  and 40 bytes from `offset - 8` read `[3, 5, 1, 2, 3, 1, 6, 0…]`. A root of five distinct leaf ids does not look like
-  that, and the bytes before the region are not zero, so the region is **not the first thing written at that address** -
-  which points at the values store's own allocation history: something was written at 28..36 earlier, and the root
-  landed at 36 while the reads at 28.. hold the earlier content. The next reading is `values().allocate_byte_span` around
-  this promotion: what the store believed free at 28..56 when the root was allocated.
-
-- **Ordering read, and the leading hypothesis is precise (2026-11-07).** In `transcribe_and_publish_tree_inner` the
-  value root is acquired **inside** the publication closure and written **before** publication, while the source's
-  values span is released **after** it
-  (`release_bucket_inline_property_bytes_span(vid, &bucket)` at the end of the function). If that release covers the
-  address the root was just given - because the source span still owns 28.. and the root landed inside it, or because the
-  release's length comes from a descriptor whose slab fields no longer describe the same region - then the free list
-  starts handing out the root's own bytes, and the next allocation writes values over the root. That is exactly the
-  shape of the dump: root-looking ids first, value-looking words after.
-- **Next experiment (one measurement):** read the values store's free spans immediately before the root acquisition and
-  immediately after the source retirement, in the promoted bucket's own fixture. If the root's offset appears in the
-  free set after retirement, the ordering is the bug and the fix is to retire the source span before acquiring the root
-  (or to exclude the root's region from that release, which says the release's length must come from the region the
-  source actually held rather than from the descriptor being replaced).
-
-- **Two hypotheses falsified by structure (2026-11-07).** The value root's region reads `[1, 2, 3, 1, 6]`, which looks
-  like an aliasing id or freed memory; measuring falsified both readings:
-  - the promotion refuses an id it has already minted (`DuplicateBlockMinted`, one check at the single `mint` closure)
-    and the check does **not** fire, so the store hands out distinct ids within one promotion;
-  - `values().free_byte_spans()` is **empty** and the root's address is **not** inside any free span, so nothing
-    released the region it lives in.
-  With the region live and no other writer, the bytes are what the **write received**: the entries the promotion hands
-  to `acquire_value_root` are the next reading, at the moment of the write (`property_root.entries`).
-
-- **The write measured, and the shape is now fully known (2026-11-07).** A probe at the moment of the write shows the
-  promotion publishes **`entries=[1, 2]`**, not five: the promotion happens when the source runs out (1024 rows), so the
-  property tree it builds has exactly two leaves, and the root region holds two entries. The bucket then keeps growing
-  in the tree - to 2100 rows, five property leaves - and the append path **extends the root region** with the new
-  leaf ids. That is where `[1, 2, 3, 1, 6]` comes from: two correct ids from the promotion and three from appends, one of
-  which repeats `1`.
-- **The invariant this exposes:** the value-root region must always hold exactly the entries the geometry says
-  (`property_root_region_len(bucket)`). A guard that refuses duplicate children was written to catch the aliasing and
-  **reverted**: it fired on a legitimate append (`tree_property_scan_reads_each_payload_block_once`, insert 1280), which
-  means the append path itself can produce a list whose length does not match the region - so the next reading is the
-  append's old-root length (`property_root_region_len(bucket)` at line 404 of `tree_write.rs`) against what the region
-  actually contains, and the duplicate `1` is a symptom of reading one entry too many.
-
-- **One derivation for both roots, and it named the real defect (2026-11-07).** `tree_plane::tree_root_entries(bucket, k)`
-  now answers how many ids each root holds - the edge root's `tree_csr::root_len(stored_slots)` and the value root's
-  `property_root_entry_count(leaves, depth)` in one place - and `validate_root_ids` refuses a root list that is the
-  wrong length (`RootEntryCountMismatch`) or repeats an id (`DuplicateBlockMinted`). The promotion checks its value root
-  against the target descriptor's shape; the edge root always satisfied that by construction, which is the asymmetry the
-  unification removes.
-- **Wiring the same check into the *append* path reproduced the defect as a name, not a corruption:**
-  `tree_property_scan_reads_each_payload_block_once` failed at insert 1280 with
-  **`DuplicateBlockMinted { id: 1 }`** - the append path hands the root a list in which a freshly minted property leaf
-  already appears, which means **a live property leaf block was released** and handed out again. That is a
-  double release, not a length arithmetic error, and it is the actual cause behind the region's `[1, 2, 3, 1, 6]`.
-- **State:** the validation is wired into the promotion only; wiring it into the append path makes that test red because
-  it refuses the corrupting insert, so the double release must be fixed first. The reverting commit says so, and the
-  next reading is the release/mint pairs around `release_property_plan`, the deepen plan's failure path and the
-  promotion's restart.
-
-- **Edge side checked, and two asymmetries fixed as common process (2026-11-07).**
-  - **Pointers last.** The edge append writes a row's payload before the root that indexes it; the property append wrote
-    the root *first* and the leaf payload after. A payload failure then released a block the published root still named,
-    so the next mint handed that id out again - which is the shape of `[1, 2, 3, 1, 6]`. The property path now writes the
-    payload first too.
-  - **Retire last.** `BucketTreePlane::publish` released the value root it replaced *before* writing the descriptor that
-    names the new one, so a failed descriptor write left the old region free while the descriptor still pointed at it. It
-    now publishes first and retires after, using the same `OwnedValueRoot` that returns a region its attempt did not
-    publish.
-  - **One reservation owns the ids.** `LtbBlockReservation` (in `ltb_raw_block_store`) mints a set of blocks and returns
-    every one of them if the operation does not commit; `commit` hands them over. Both deepens used to spell the LIFO
-    rollback out by hand at *two* failure points each - four copies of one rule - which is how one of them can be missed.
-    They now hold a reservation and commit it after publication, so "release an id you already published" has no
-    spelling left.
-- **Still red, and now pointed at the append's own release:** the reproduction keeps `[1, 2, 3, 1, 6]`, so the duplicate
-  comes from a path that releases a *named* property leaf block outside the deepen - the candidates are
-  `release_property_plan`'s callers after a successful root write (lines 490-500 of `tree_write.rs`, the "home interior
-  already covers the new leaf" arm) and the promotion's rollback of `allocated_blocks`. Reading those two against the
-  reservation's rule is the next step.
-
-- **Decisive measurement 2026-11-07: no LTB block is released, so the duplicate is not a block release at all.**
-  `LtbRawBlockStore::release` was given a test-only call-site trace; the reproduction ran with **zero releases
-  recorded**. So the tree's blocks are never freed - the ids are distinct and stay distinct - and `[1, 2, 3, 1, 6]`
-  cannot be a leaf-id list at all. It is **not root data**: the wrong bytes are at the address the descriptor names,
-  which is the value-root region hypothesis again, but now with the release path narrowed to the **values store**
-  (`release_byte_span`, not `ltb().release`), where the earlier LTB-level checks could not see it.
-- **Where the region can go stale, by reading the code:** `BucketTreePlane::write_roots` calls `ensure_value_root`, which
-  releases the region it "replaces" **before** the caller writes the descriptor that names the new one. Every tree-append
-  path reaches it through `write_roots`, so a failure or an interleaved write between those two points leaves the
-  descriptor pointing at a freed region - and the value payloads then land on it, which is exactly the shape read back
-  (value-looking words at the root's address).
-- **Structural fix, stated:** `write_roots` must not release a replaced region at all; it should hand back the owned
-  region (`OwnedValueRoot`) and let the caller retire the old one **after** its descriptor publish, the way `publish`
-  already does. That is one signature change across the tree-write call sites and removes the only remaining
-  release-before-publish in this subsystem.
-
-- **The roots are one structure now, not two implementations (2026-11-07).** `RootArrayStore` says where a root array
-  lives - `LeafSlots { start, slot_bytes }`, `LeafRun { run, rows }`, `ValueBytes { offset }` - and
-  `BucketTreePlane::write_root_array` is the only writer for both roots. The two had been written twice: the edge root
-  padded ids to `E::BYTES` and could live in a run, the value root packed them at four bytes into a value-store region,
-  and the ordering rules ("pointers last", "retire last") therefore had two homes. A direct test drives one writer into
-  both stores and checks the layouts - leaf slots pad to the record width so a raw copy moves the array, the value store
-  packs at four bytes - which is the property the two implementations never stated.
-- **What the unification makes impossible:** a new root write cannot choose its own byte layout, its own padding or its
-  own release point; it passes entries to one function that knows the store. The remaining defect (see above) is the
-  value root's *address* being retired before the descriptor that names it, which is now a single call site to fix rather
-  than two implementations to keep in step.
-
-- **`write_roots` no longer retires, and the allocation trace names the remaining shape (2026-11-07).**
-  `write_roots` hands back the `OwnedValueRoot` it acquired and *never* releases the region it replaces; the caller
-  settles both **after** its descriptor publish (`disarm` the new root, then `retire_value_root` the old one). That
-  removes the last release-before-publish in the tree append path.
-- **The trace, which is now the whole story:** minting is clean (`0..7`, distinct), no LTB block is ever released, and
-  the value store's spans go
-  `alloc 8 -> 0`, `alloc 12 -> 8`, `release 0..8`, `alloc 16 -> 20`, `alloc 20 -> 36`, `release 8..24`. So the root the
-  descriptor names is the 20-byte region at **36** - five entries, which is the right size for 2100 rows at 512 rows per
-  property leaf. Its contents `[1, 2, 3, 1, 6]` therefore came from the *entries handed to the write*, not from the
-  store: the append read four old entries from the 16-byte region at 20 and pushed a fifth, and the old read already
-  contained a duplicate. So the duplicate is in a root region **written by an earlier append**, and the next reading is
-  the entries that append computed - `read_property_root_ids(graph, bucket, old_prop_root_len)` where
-  `old_prop_root_len = property_root_region_len(bucket)` - against the region's real content at that moment.
-
-- **The reads share the writer's structure now, and the check names the defect (2026-11-07).**
-  `BucketTreePlane::read_root_array(store, entries)` is the mirror of `write_root_array`: the store decides where the
-  array lives, the caller asks for entries. `read_property_root_ids` is a thin shim over it, and
-  `validate_value_root()` reads the published root back through that one reader and refuses a root that is not the
-  geometry's size or that repeats an id. Asserting it in the reproduction gives the defect a name instead of a corrupted
-  read: **`block id 1 was minted twice for one tree promotion`** - while the LTB mint trace itself is clean (`0..7`,
-  distinct) and no block is ever released. So the duplicate enters the *entry list* an append builds, not the store: an
-  append reads `property_root_region_len(bucket)` old ids and pushes its new leaf id, and one of the ids it read is not
-  what that region holds.
-- **Next, exactly:** print, at each property-leaf append, the tuple
-  `(property_root_region_len(bucket), ids_read, new_leaf_id, region_bytes_at_descriptor_offset)`. The trace already fixes
-  the offsets (`root region 0..8 -> 8..20 -> 20..36 -> 36..56`, five entries at 36 for 2100 rows), so the disagreement is
-  between `property_root_region_len` and the bytes the descriptor's offset actually holds at that moment.
 
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
@@ -6325,6 +6025,35 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS-OLD — RESOLVED: the tree's valued reads are correct again
+
+- **Status:** Resolved (2026-11-07). The bench shape - 2 100 valued edges on one bucket, so it promotes and keeps growing
+  across five property leaves - now reads every row's own value back, and the reproduction is a contract test
+  (`a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`). lara 772, canbench suite 709,
+  graph 1132, clippy and fmt clean.
+- **What it actually was, in the order the measurements found it.** The reported `MissingAscLogIndex` no longer
+  reproduced (the point reader had already been routed to the property tree); behind it were three separate defects, each
+  found by making the code state a rule instead of repeating one:
+  1. **A leaf payload was written after the pointer that named it**, in two arms of the property append. A payload
+     failure then released a block the published pointer still named, and the next mint handed that id out again. The
+     edge side had always written the payload first; the property side now does too.
+  2. **The descriptor did not record the value-root region the append had just written.** When a new root did not fit in
+     place the append allocated a fresh region, published the old offset, and the next append read past its own array and
+     took the next region's first id as an entry - which is exactly the `[1, 2, 3, 1, 6]` that started this. The
+     descriptor now records the address in the same write as everything else, via `OwnedValueRoot`.
+  3. **The roots were implemented twice.** The edge root and the value root are the same array in different stores, but
+     each had its own writer, its own reader and its own length arithmetic, so every ordering rule had two homes.
+     `RootArrayStore` (`LeafSlots` / `LeafRun` / `ValueBytes`) with `write_root_array` / `read_root_array`, one
+     `tree_root_entries` derivation and one `validate_root_ids` check now serve both, and `LtbBlockReservation` owns a set
+     of blocks so "release an id you already published" has no spelling left.
+- **Evidence path worth keeping:** every step above came from a measurement rather than a guess - the row read before the
+  descriptor, the LTB release trace (zero), the mint trace (distinct), the values-store span trace
+  (`0..8 -> 8..20 -> 20..36 -> 36..56`), and finally the append tuple
+  `(old_len, descriptor_offset, ids_read, entry, region)`, which showed the descriptor still naming offset 8 while the
+  four-entry root had been written at 20.
+- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
+  environment; the defects that aborted the suite are gone.
 
 ### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — RESOLVED: the fixture's graph now builds
 
