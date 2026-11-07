@@ -2387,6 +2387,9 @@ impl RouterStore {
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload =
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+                // This fixture inserts a saga whose outcome is captured, so its retirement is outstanding: the
+                // production driver is what discharges it, and leaving the flag false models exactly that.
+                retirement_acked: false,
                 shards: shards
                     .iter()
                     .map(|shard| {

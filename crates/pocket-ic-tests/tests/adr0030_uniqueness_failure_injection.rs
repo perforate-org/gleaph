@@ -182,16 +182,22 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
     // Elapse past **both** the 7-day router key TTL (ADR 0025) and the 9-day graph journal retention
     // (ADR 0027), then actually evict the graph mutation journal: every entry is now older than the
     // 9-day window, so the journal drains to empty.
+    // ADR 0027 amendment (2026-11-07): the scalar journal entry is retained until its owner retires it, and a retirement
+    // needs a terminal record. This saga is deliberately stuck (its `Acquire` ack traps, so the record stays
+    // non-terminal), so the entry is `Active` and the 9-day sweep must **not** erase it - erasing it would reintroduce
+    // exactly the lost-dedup-evidence defect GAP-2026-09-22-001 records. The entry count is therefore unchanged by the
+    // sweep rather than zero, and the number itself is not asserted (it is a fixture detail, not the contract).
+    let retained_before = graph_mutation_journal_len_all_shards(&env);
+    assert!(retained_before >= 1, "the committed write is journaled");
     advance_past_journal_eviction(&env);
     assert_eq!(
         evict_graph_mutation_journal_all_shards(&env),
-        0,
-        "the 9-day-old graph mutation journal entry is evicted past the ADR 0027 window"
+        retained_before,
+        "an unretired (in-doubt) scalar entry must survive the age-only sweep"
     );
 
-    // The decoupling proof: the pinned `Acquire` survives graph-journal eviction (pin-until-acked
-    // retention is independent of the journal), and the held reservation GC-pins the router record so
-    // a full mutation-key sweep past the 7-day TTL evicts nothing.
+    // The retention is independent of the outbox: the pinned `Acquire` survives the same sweep, and the held reservation
+    // GC-pins the router record so a full mutation-key sweep past the 7-day TTL evicts nothing.
     assert_eq!(
         graph_unique_outbox_len_all_shards(&env),
         1,
