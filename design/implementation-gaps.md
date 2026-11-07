@@ -361,6 +361,21 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   the vertex's `inline_property_bytes_allocated_bytes` and the bucket's slab-slot claim both read 0, so that span is
   released by nobody and reusable by nobody.
 
+- **Value side fixed, and its release twin left as a measured RED (2026-11-08, `71dadf4a`).** The accounting was wrong
+  because its derivation was: `invariants::bucket_resident_inline_property_bytes` returned zero for a tree (a
+  pre-ADR-0101 statement, when the root lived in the edge span), and `values.rs` kept a **second copy** of the same formula
+  that never learned about the root. One owner now, counting slab span plus root span, with `values.rs` delegating.
+  Two things the unification had to state, because both are easy to get wrong: the predicate is **physical, not logical**
+  (gated on width, not degree - an emptied bucket still owns the span it has not released, which is exactly when the release
+  asks), and **promotion no longer writes the number** (it publishes, then reconciles from what it published).
+  - Still open, with a witness: emptying a promoted tree leaves the vertex charged **8 bytes** - no path asks the derivation
+    when a tree's rows all go. `a_promoted_tree_releases_its_value_root_span` is `#[ignore]`d on exactly that assertion, and
+    it is the release-side twin of the derivation defect, not a new class.
+  - Also observed while writing it, and **not** claimed as fixed: a tree grown past the promotion boundary needs a 12-byte
+    root while promotion allocated 8 (`value_root_region_bytes` asks for three property-leaf ids; the promotion sized for
+    two before the appended row). Whether that is a genuine under-allocation or over-counting in the derivation is the next
+    question, and it belongs with the append/deepen inventory the entry already assigns to the shared-leaf root work.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
