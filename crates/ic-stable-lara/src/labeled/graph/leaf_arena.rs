@@ -1855,39 +1855,58 @@ mod tests {
         assert_eq!(targets, dsts);
     }
 
-    /// The skewed-degree shape the GAP-2026-09-20-005 audit probe reproduced: several leaf mates with wildly different
-    /// degrees sharing one segment-16 leaf.
+    /// The G5-shaped skew the audit probe reported: the entry's own shape, not an approximation.
     ///
-    /// The recorded failure was `assert_no_labeled_leaf_mate_overlap` firing with "vid N reserves up to X but vid M
-    /// starts at Y" - a span reservation growing a cover past a mate's start. This test is the repo-resident form of that
-    /// probe, so the claim can be checked rather than remembered.
+    /// `GAP-2026-09-20-005`'s remaining claim is a span reservation that grows a cover past a leaf mate in the *skew* phase
+    /// ("leaf 328: vid 5255 reserves up to 1384 but vid 5248 starts at 1184" - vids in the thousands, so a shape with
+    /// thousands of vertices). The entry names the mix: `1x160, 2x48, 3x24, 8x12, 64x8, 512x3, 2048x1` degrees on a
+    /// segment-16 graph. This builds exactly that and runs the guard for every vertex.
     #[test]
-    fn leaf_mate_overlap_guard_holds_for_skewed_degree_mates() {
-        let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
-            16,
-            BucketLabelKey::from_raw(1),
-        );
-        // Degrees from the audit probe: one heavy hub beside much lighter mates in the same leaf window.
-        let degrees = [160u32, 48, 24, 12, 8, 3, 1];
-        let label = BucketLabelKey::from_raw(7);
-        for degree in degrees {
-            let vid = graph.push_vertex(LabeledVertex::default()).unwrap();
-            for target in 0..degree {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        vid,
-                        label,
-                        TestEdge { target },
-                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("insert into degree-{degree} mate at target {target}: {error}")
-                    });
+    fn leaf_mate_overlap_guard_holds_for_the_audited_skew_shape() {
+        let mix: [(u32, u32); 7] = [
+            (1, 160),
+            (2, 48),
+            (3, 24),
+            (8, 12),
+            (64, 8),
+            (512, 3),
+            (2048, 1),
+        ];
+        // Both orders the record implies: the mix as listed, and "mates first, hubs last" (the order the entry's minimal
+        // reproduction uses, where a hub is placed into a gap its mates left). Order decides which free run a promotion
+        // lands in, so a shape that only trips in one of them must be tried in both.
+        for reversed in [false, true] {
+            let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
+                16,
+                BucketLabelKey::from_raw(1),
+            );
+            let label = BucketLabelKey::from_raw(7);
+            let mut order: Vec<(u32, u32)> = mix.to_vec();
+            if reversed {
+                order.reverse();
             }
-        }
-        // Every mate's reservation must stay inside its own slice of the leaf.
-        for vid in 0..degrees.len() as u32 {
-            graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(vid));
+            let mut vid = 0u32;
+            for (count, degree) in order {
+                for _ in 0..count {
+                    let vertex = graph.push_vertex(LabeledVertex::default()).unwrap();
+                    for target in 0..degree {
+                        graph
+                            .insert_edge_skip_leaf_cascade(
+                                vertex,
+                                label,
+                                TestEdge { target },
+                                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "insert into vid {vid} (degree {degree}) target {target}: {error}"
+                                )
+                            });
+                    }
+                    graph.assert_no_labeled_leaf_mate_overlap(vertex);
+                    vid += 1;
+                }
+            }
         }
     }
 
