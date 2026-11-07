@@ -1852,6 +1852,84 @@ mod tests {
         }
     }
 
+    /// The directedness surface reads every storage class, because it now delegates to the canonical visitor.
+    ///
+    /// It used to be a second implementation that walked slab windows itself: a tiny bucket (no slab window yet) and a
+    /// promoted tree bucket (rows in LTB blocks) were outside what it knew, so a caller filtering by directedness could
+    /// silently miss them (GAP-2026-09-22-007). This drives both classes through the one surviving implementation.
+    #[test]
+    fn the_directedness_surface_reads_tiny_and_tree_buckets() {
+        use crate::labeled::bucket_label_key::BucketDirectedness;
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+
+        let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::directed_from_index(1),
+        );
+        let vid = VertexId::from(0);
+        // A tiny bucket: two directed edges fit inside the descriptor.
+        let tiny_label = BucketLabelKey::directed_from_index(2);
+        for target in 0..2u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    tiny_label,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("tiny insert {target}: {error}"));
+        }
+        // A promoted tree bucket on a second label.
+        let tree_label = BucketLabelKey::directed_from_index(3);
+        for target in 0..(T_PROMOTE + 2) {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    tree_label,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("tree insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let tiny_slot = graph
+            .find_bucket_slot(&vertex, tiny_label)
+            .expect("find tiny")
+            .expect("tiny bucket");
+        let tiny = graph
+            .buckets()
+            .read_label_bucket_slot(tiny_slot)
+            .expect("read tiny");
+        assert!(tiny.is_tiny_mode(), "the fixture must keep one bucket tiny");
+        let tree_slot = graph
+            .find_bucket_slot(&vertex, tree_label)
+            .expect("find tree")
+            .expect("tree bucket");
+        let tree = graph
+            .buckets()
+            .read_label_bucket_slot(tree_slot)
+            .expect("read tree");
+        assert!(tree.is_tree_mode(), "the fixture must promote one bucket");
+
+        let mut visited = 0usize;
+        let _: std::ops::ControlFlow<()> = graph
+            .for_each_out_edges_by_directedness(
+                vid,
+                BucketDirectedness::Directed,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |_edge| {
+                    visited += 1;
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("visit by directedness");
+        assert_eq!(
+            visited as u32,
+            2 + T_PROMOTE + 2,
+            "both the tiny and the promoted tree bucket's edges are visible through this surface"
+        );
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

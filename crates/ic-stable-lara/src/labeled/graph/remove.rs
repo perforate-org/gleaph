@@ -3,13 +3,12 @@
 use crate::{
     VertexId,
     labeled::{
-        access::LabelEdgeSpanAccess,
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
         spill_run_store::SpillRunId,
     },
-    lara::{edge::OutEdgeSlabIter, operation_error::LaraOperationError},
+    lara::operation_error::LaraOperationError,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -538,276 +537,24 @@ where
         Ok(Vec::new())
     }
 
-    pub(super) fn for_each_out_edges_by_directedness_impl<B, Visit>(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        directedness: BucketDirectedness,
-        ascending: bool,
-        visit: &mut Visit,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        Visit: FnMut(E) -> ControlFlow<B>,
-    {
-        if vertex.is_default_edge_labeled() {
-            if self.bypass_storage_label_for(vertex).directedness() != directedness {
-                return Ok(ControlFlow::Continue(()));
-            }
-            match ascending {
-                false => {
-                    let slab_iter = OutEdgeSlabIter::try_new(
-                        &self.edges,
-                        vertex.base_slot_start(),
-                        vertex.stored_degree(),
-                        vertex.degree(),
-                    )?;
-                    let label = self.bypass_storage_label_for(vertex).raw();
-                    for edge in slab_iter {
-                        if let ControlFlow::Break(value) = visit(edge.with_label_id(label)) {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                }
-                true => {
-                    let label = self.bypass_storage_label_for(vertex).raw();
-                    for edge in self
-                        .edges
-                        .collect_out_edges_slot_order(&self.vertices, src)?
-                    {
-                        if let ControlFlow::Break(value) = visit(edge.with_label_id(label)) {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                }
-            }
-            return Ok(ControlFlow::Continue(()));
-        }
-        let deg = vertex.degree();
-        let strategy = Self::directedness_partition_strategy(directedness, ascending);
-        let (lo, hi) = self.buckets.directedness_bucket_index_range(
-            vertex.base_slot_start(),
-            deg,
-            directedness,
-            strategy,
-        )?;
-        if lo >= hi {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let first_global = self
-            .buckets
-            .read_label_bucket_slot(vertex.base_slot_start())
-            .ok_or(LaraOperationError::overflow())?;
-        let span_end_exclusive = Self::vertex_label_edge_span_end_exclusive(vertex, &first_global)?;
-        let buckets = self.read_vertex_label_buckets_range(vertex, lo, hi)?;
-        if let Some(run) =
-            Self::try_contiguous_tiled_labeled_out_edges_slice(&buckets, span_end_exclusive)
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_out_edges_by_directedness_tiled");
-            if run.total_edges() > 0 {
-                let nbytes = run.byte_len::<E>()?;
-                let mut raw = vec![0u8; nbytes];
-                self.edges.read_slots_contiguous(run.base(), &mut raw);
-                match ascending {
-                    false => {
-                        let mut bucket_rev_idx = buckets.len() as isize - 1;
-                        let mut slot_rev: Option<u32> = None;
-                        while bucket_rev_idx >= 0 {
-                            let bidx = bucket_rev_idx as usize;
-                            let bucket = &buckets[bidx];
-                            if bucket.degree() == 0 {
-                                bucket_rev_idx -= 1;
-                                slot_rev = None;
-                                continue;
-                            }
-                            let bucket_index = lo + bidx as u32;
-                            let log_chains =
-                                self.bucket_inline_property_bytes_log_chain_opt(bucket);
-                            let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                            let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
-                            if let ControlFlow::Break(value) = visit(
-                                self.attach_edge_inline_property(
-                                    src,
-                                    vertex,
-                                    bucket_index,
-                                    *bucket,
-                                    slot,
-                                    E::read_from(chunk)
-                                        .with_slot_index(slot)
-                                        .with_label_id(bucket.bucket_label_key().raw()),
-                                    log_chains.as_ref(),
-                                )?,
-                            ) {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                            if slot == 0 {
-                                bucket_rev_idx -= 1;
-                                slot_rev = None;
-                            } else {
-                                slot_rev = Some(slot - 1);
-                            }
-                        }
-                    }
-                    true => {
-                        for (local, bucket) in buckets.iter().enumerate() {
-                            if bucket.degree() == 0 {
-                                continue;
-                            }
-                            let bucket_index = lo + local as u32;
-                            let log_chains =
-                                self.bucket_inline_property_bytes_log_chain_opt(bucket);
-                            for slot in 0..bucket.degree() {
-                                let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
-                                if let ControlFlow::Break(value) = visit(
-                                    self.attach_edge_inline_property(
-                                        src,
-                                        vertex,
-                                        bucket_index,
-                                        *bucket,
-                                        slot,
-                                        E::read_from(chunk)
-                                            .with_slot_index(slot)
-                                            .with_label_id(bucket.bucket_label_key().raw()),
-                                        log_chains.as_ref(),
-                                    )?,
-                                ) {
-                                    return Ok(ControlFlow::Break(value));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            return Ok(ControlFlow::Continue(()));
-        }
-        match ascending {
-            false => {
-                for local_rev in (0..buckets.len()).rev() {
-                    let bucket_index = lo + local_rev as u32;
-                    let bucket = &buckets[local_rev];
-                    if bucket.degree() == 0 {
-                        continue;
-                    }
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
-                    let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
-                        vertex,
-                        bucket_index,
-                        bucket,
-                    )?;
-                    let acc = LabelEdgeSpanAccess::with_bucket(
-                        &self.buckets,
-                        slot,
-                        *bucket,
-                        successor,
-                        src,
-                    );
-                    if bucket.edge_run().is_none() {
-                        let it = OutEdgeSlabIter::try_new(
-                            &self.edges,
-                            bucket.edge_start(),
-                            bucket.stored_slots(),
-                            bucket.degree(),
-                        )?;
-                        for edge in it {
-                            let slot_index = edge.edge_slot_index_raw();
-                            if let ControlFlow::Break(value) =
-                                visit(self.attach_edge_inline_property(
-                                    src,
-                                    vertex,
-                                    bucket_index,
-                                    *bucket,
-                                    slot_index,
-                                    edge.with_label_id(bucket.bucket_label_key().raw()),
-                                    log_chains.as_ref(),
-                                )?)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    } else {
-                        for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
-                            let slot_index = edge.edge_slot_index_raw();
-                            if let ControlFlow::Break(value) =
-                                visit(self.attach_edge_inline_property(
-                                    src,
-                                    vertex,
-                                    bucket_index,
-                                    *bucket,
-                                    slot_index,
-                                    edge.with_label_id(bucket.bucket_label_key().raw()),
-                                    log_chains.as_ref(),
-                                )?)
-                            {
-                                return Ok(ControlFlow::Break(value));
-                            }
-                        }
-                    }
-                }
-            }
-            true => {
-                for (local, bucket) in buckets.iter().enumerate() {
-                    let bucket_index = lo + local as u32;
-                    if bucket.degree() == 0 {
-                        continue;
-                    }
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(bucket);
-                    let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
-                        vertex,
-                        bucket_index,
-                        bucket,
-                    )?;
-                    let acc = LabelEdgeSpanAccess::with_bucket(
-                        &self.buckets,
-                        slot,
-                        *bucket,
-                        successor,
-                        src,
-                    );
-                    for edge in self
-                        .edges
-                        .collect_out_edges_slot_order(&acc, VertexId::from(0))?
-                    {
-                        let slot_index = edge.edge_slot_index_raw();
-                        if let ControlFlow::Break(value) = visit(self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot_index,
-                            edge.with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?) {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(ControlFlow::Continue(()))
-    }
-
     /// Visits outgoing edges whose bucket directedness matches `directedness`.
+    ///
+    /// This delegates to the canonical directedness visitor (`traverse.rs`), which dispatches every storage class -
+    /// tiny, slab/run, retained bypass and native tree - through the same per-bucket reader. It used to be a second
+    /// implementation that read slab windows itself and therefore did not know about tiny or tree buckets
+    /// (GAP-2026-09-22-007); one operation has one implementation.
     pub fn for_each_out_edges_by_directedness<B, Visit>(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
-        mut visit: Visit,
+        visit: Visit,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E) -> ControlFlow<B>,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        self.for_each_out_edges_by_directedness_impl(
-            src,
-            &vertex,
-            directedness,
-            order.ascending(),
-            &mut visit,
-        )
+        self.visit_out_edges_by_directedness(src, directedness, order, visit)
     }
 
     /// Visits outgoing edges by directedness without checking that `src` is in range.
@@ -816,20 +563,14 @@ where
         src: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
-        mut visit: Visit,
+        visit: Visit,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E) -> ControlFlow<B>,
     {
         debug_assert!(u32::from(src) < self.vertices.len());
-        let vertex = self.vertices.get(src);
-        self.for_each_out_edges_by_directedness_impl(
-            src,
-            &vertex,
-            directedness,
-            order.ascending(),
-            &mut visit,
-        )
+        self.visit_out_edges_by_directedness(src, directedness, order, visit)
     }
 
     /// Finds the label bucket containing `needle` on `src`.
