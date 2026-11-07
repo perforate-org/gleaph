@@ -309,29 +309,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   not repeat implementation allocation. Its mixed-mode/group order, real caller GREEN/mutation,
   cost and implementation closure remain unproved. Queue/Graph/live width/0383 stay later gates.
 
-### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
-
-- **Status:**0395's two new entries are fixed and runtime-verified; broader capacity remains
-  unresolved. Corrected export-section verification and all three BEFORE measurements pass.
-- **Observed/owner:** The benchmark-only LARA Wasm's retained baseline exports19963 method-name
-  bytes. Two new physical-copy controls raise this to20125 and PocketIC13 rejects install against
-  the20000 limit, before any measurement. `canbench-rs-macros`0.7 emits both measurement and trace
-  queries and has no name override; `labeled/bench.rs` owns these new entries, not production graph
-  state. Official execution-error guidance recommends shorter method names.
-- **Evidence:** `vertex-layout-before-slab64.log` and
-  `segment-implementation/tiny-leaf-geometry/physical-layout-implementation/export-limit-diagnostics.json`
-  in the ADR0097 maintenance evidence bind exact original/current export lists and hashes.
-- **Current correction:** Only the two new entries use the existing CDK0.20.1 query-name API:
-  `__canbench__vls64` and `__canbench__vlt64` return the same measured fixture/result, with no optional
-  trace query. All original exports and saved results stay unchanged; actual corrected sum19997
-  is verified from the Wasm section (initial19995 estimate undercounted the12-byte prefix). No production layout/API or generic export framework changes.
-- **Impact/next decision:** Two short queries consume34 of37 remaining bytes; broader future
-  benchmark additions need a separately reviewed export-set/feature decision rather than repeated
-  name compression or deletion of domain coverage. This is not a sandbox failure or permission to
-  retry through external terminals.0395 finished its bound BEFORE before production behavior edits;
-  `W/physical-layout-implementation/before-{export-verification,benchmark-results}.json` records
-  successful install/measurement and unchanged original exports/saved results.
-
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
@@ -1440,6 +1417,40 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   reproduction shows is decisive. Closing this entry needs that sequence or a fresh reproduction from the audit's own
   harness, not another guess at the distribution; the test above is the floor for everything reproducible from the record.
 
+## Capability and trigger-gated items (not defects)
+
+These were carried in the open-gap list and are **not** open defects: none returns a wrong result, loses data or breaks a
+contract today. Each is either a capability nobody has asked for yet, or a latent requirement that appears only when
+another piece is built - and each states its own trigger. They live here so the defect list names only work actually owed,
+and so nothing is lost: the text is unchanged, only its section.
+
+Criteria for being here rather than above: (1) current behaviour fails closed or the path is not reached at all; (2) the
+item needs a product or design decision before code, not a repair; (3) the entry states the condition that would promote it
+back to a defect.
+
+### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
+
+- **Status:**0395's two new entries are fixed and runtime-verified; broader capacity remains
+  unresolved. Corrected export-section verification and all three BEFORE measurements pass.
+- **Observed/owner:** The benchmark-only LARA Wasm's retained baseline exports19963 method-name
+  bytes. Two new physical-copy controls raise this to20125 and PocketIC13 rejects install against
+  the20000 limit, before any measurement. `canbench-rs-macros`0.7 emits both measurement and trace
+  queries and has no name override; `labeled/bench.rs` owns these new entries, not production graph
+  state. Official execution-error guidance recommends shorter method names.
+- **Evidence:** `vertex-layout-before-slab64.log` and
+  `segment-implementation/tiny-leaf-geometry/physical-layout-implementation/export-limit-diagnostics.json`
+  in the ADR0097 maintenance evidence bind exact original/current export lists and hashes.
+- **Current correction:** Only the two new entries use the existing CDK0.20.1 query-name API:
+  `__canbench__vls64` and `__canbench__vlt64` return the same measured fixture/result, with no optional
+  trace query. All original exports and saved results stay unchanged; actual corrected sum19997
+  is verified from the Wasm section (initial19995 estimate undercounted the12-byte prefix). No production layout/API or generic export framework changes.
+- **Impact/next decision:** Two short queries consume34 of37 remaining bytes; broader future
+  benchmark additions need a separately reviewed export-set/feature decision rather than repeated
+  name compression or deletion of domain coverage. This is not a sandbox failure or permission to
+  retry through external terminals.0395 finished its bound BEFORE before production behavior edits;
+  `W/physical-layout-implementation/before-{export-verification,benchmark-results}.json` records
+  successful install/measurement and unchanged original exports/saved results.
+- **Trigger to promote back to a defect:** a benchmark that must be added and no longer fits the 812-728 byte registration headroom (ADR/plan 0401-0403 records the current budget). Until then this is a tooling budget, not a product risk.
 ### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
 
 - **Status:** Open — deferred capability, recorded 2026-09-12.
@@ -1461,7 +1472,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   or drop residual authorization checks.
 - **Contract:** [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md), update-lane
   policy and exact-target constraints; [plan format](gql/plan-format.md), exact vertex mutation input.
-
+- **Trigger to promote back to a defect:** a product requirement for EXISTS-chain policies on exact-vertex bulk updates. Today the path fails closed with a typed `NotImplemented` before any reservation or dispatch, so no policy is silently ignored.
 ### GAP-2026-09-11-004 — Bulk-load edge property update needs replicated resolution and retry-safe target validity
 
 - **Status:** Open — prerequisite slice. Recorded 2026-09-11 after the edge-property SET review
@@ -1690,7 +1701,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   contract do not represent this behavior as-is. No per-edge field or generation table is selected;
   recovery state belongs in the existing scalar journals and chunk receipts. Include actual
   serialized record/outbox/high-water measurements in the bounded validation plan.
-
+- **Trigger to promote back to a defect:** a product requirement for edge-property SET through bulk load. The surface was withdrawn rather than shipped weak, and the lane fails closed today.
 ### GAP-2026-09-11-002 — Cross-shard traversal fails closed on remote-vertex expand (federated scan limitation)
 
 - **Status:** Open — non-blocking; single-shard execution (the only exercised topology)
@@ -1716,7 +1727,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   with an explicit error rather than silently dropping rows.
 - **Next decision:** Resolve inside the slice that introduces cross-shard resolution,
   if ever demanded; until then no action.
-
+- **Trigger to promote back to a defect:** a multi-shard deployment that must traverse across shards. Single-shard execution is the only exercised topology, and cross-shard expand fails closed rather than returning a partial answer.
 ### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
 
 - **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
@@ -1747,7 +1758,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   cursor fan-out; until then no action.
 - **Status detail:** Blocked on the cursor-stream fan-out prerequisite; revisit when
   sharded postings land.
-
+- **Trigger to promote back to a defect:** per-shard cursor streams landing (ADR 0081's merge-aware union). Until those exist there is nothing to order, and no result is unordered today.
 ### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
 
 - **Status:** Open
@@ -1768,6 +1779,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
 - **Next decision:** When the migration primitive slice is planned, require `export_vector_rows` /
   `import_vector_rows` to round-trip the row aux.
 
+- **Trigger to promote back to a defect:** the row-copy migration primitive being built. It is latent by construction: no migration path exists, so no row can lose its aux scale.
 ## Resolved gaps
 
 ### GAP-LARA-MATERIALIZE-ADMISSION — RESOLVED: covered by composition, not by a materialization-specific E2E
