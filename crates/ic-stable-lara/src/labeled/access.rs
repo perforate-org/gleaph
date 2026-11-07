@@ -1,6 +1,7 @@
 //! Vertex-column accessors for labeled CSR stores.
 
 use super::bucket_store::LabelBucketStore;
+use crate::labeled::graph::leaf_cover::EdgeSlot;
 use crate::{VertexId, labeled::record::LabelBucket, lara::operation_error::VertexAccess};
 use ic_stable_structures::Memory;
 use std::cell::Cell;
@@ -69,7 +70,9 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
                 } else {
                     self.successor_start.max(bucket.edge_start())
                 };
-                bucket.with_edge_range(succ, 0).without_edge_spill_run()
+                bucket
+                    .with_edge_range(EdgeSlot::from_raw(succ), 0)
+                    .without_edge_spill_run()
             }
             _ => panic!("LabelEdgeSpanAccess only exposes row 0 and successor row 1"),
         }

@@ -1578,7 +1578,7 @@ mod physical_layout_tests {
             assert_eq!(&canonical_bytes(&m)[10..16], untouched_before);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
-                Some(source.with_edge_range(100, 5))
+                Some(source.with_edge_range(super::EdgeSlot::from_raw(100), 5))
             );
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(1),
@@ -1637,7 +1637,7 @@ mod physical_layout_tests {
             }
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
-                Some(source.with_edge_range(100, 5))
+                Some(source.with_edge_range(super::EdgeSlot::from_raw(100), 5))
             );
             graph
                 .insert_edge_skip_leaf_cascade(
@@ -1651,7 +1651,11 @@ mod physical_layout_tests {
             assert_eq!(graph.edges.spill_edge_at(run, 4).unwrap().target, 19);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
-                Some(source.with_edge_range(100, 5).with_degree_field(8))
+                Some(
+                    source
+                        .with_edge_range(super::EdgeSlot::from_raw(100), 5)
+                        .with_degree_field(8)
+                )
             );
             let targets: Vec<_> = graph
                 .iter_edges_for_label(VertexId::from(0), BucketLabelKey::from_raw(2))
@@ -1721,7 +1725,9 @@ mod physical_layout_tests {
             }
             assert!(!events.contains(&PhysicalLayoutEvent::Pin));
             assert_eq!(graph.labeled_leaf_physical_range(src).unwrap(), None);
-            let expected_bucket = source.with_edge_range(destination, 5).with_degree_field(8);
+            let expected_bucket = source
+                .with_edge_range(super::EdgeSlot::from_raw(destination), 5)
+                .with_degree_field(8);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
                 Some(expected_bucket)
@@ -1921,15 +1927,15 @@ mod physical_layout_tests {
             assert_eq!(&canonical_bytes(&m)[10..15], value_before);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
-                Some(slab.with_edge_range(destination, 4))
+                Some(slab.with_edge_range(super::EdgeSlot::from_raw(destination), 4))
             );
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(1),
-                Some(tree.with_edge_range(destination + 4, 512))
+                Some(tree.with_edge_range(super::EdgeSlot::from_raw(destination + 4), 512))
             );
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(2),
-                Some(tiny.with_edge_range(destination + 15, 0))
+                Some(tiny.with_edge_range(super::EdgeSlot::from_raw(destination + 15), 0))
             );
             assert_eq!(graph.buckets.read_label_bucket_slot(3), Some(peer));
             // The destination holds the edge root only.
@@ -1976,11 +1982,11 @@ mod physical_layout_tests {
             let graph = reopen_physical::<CopyOnlyEdge>(&m);
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(0),
-                Some(slab.with_edge_range(destination, 4))
+                Some(slab.with_edge_range(super::EdgeSlot::from_raw(destination), 4))
             );
             assert_eq!(
                 graph.buckets.read_label_bucket_slot(1),
-                Some(tree.with_edge_range(destination + 4, 512))
+                Some(tree.with_edge_range(super::EdgeSlot::from_raw(destination + 4), 512))
             );
             assert_eq!(*m[6].bytes.borrow(), spill_before);
             assert_eq!(*m[15].bytes.borrow(), ltb_before);
@@ -2825,10 +2831,22 @@ mod physical_layout_tests {
             let final_buckets = graph
                 .read_vertex_label_buckets(&graph.vertices.get(src))
                 .unwrap();
-            assert_eq!(final_buckets[0], early.with_edge_range(80, 41));
-            assert_eq!(final_buckets[1], slab.with_edge_range(80, 4));
-            assert_eq!(final_buckets[2], tree.with_edge_range(84, 512));
-            assert_eq!(final_buckets[3], late.with_edge_range(95, 0));
+            assert_eq!(
+                final_buckets[0],
+                early.with_edge_range(super::EdgeSlot::from_raw(80), 41)
+            );
+            assert_eq!(
+                final_buckets[1],
+                slab.with_edge_range(super::EdgeSlot::from_raw(80), 4)
+            );
+            assert_eq!(
+                final_buckets[2],
+                tree.with_edge_range(super::EdgeSlot::from_raw(84), 512)
+            );
+            assert_eq!(
+                final_buckets[3],
+                late.with_edge_range(super::EdgeSlot::from_raw(95), 0)
+            );
             assert_eq!(graph.edges.counts_store().get(1).actual, 4);
             assert_eq!(graph.edges.counts_store().get(1).total, 144);
             assert_eq!(graph.edges.header().num_edges, 520);
@@ -3376,6 +3394,7 @@ mod physical_layout_tests {
     }
 }
 
+use super::leaf_cover::EdgeSlot;
 use crate::{
     SegmentId, VertexId,
     labeled::{
@@ -3781,7 +3800,8 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
             } else if bytes.is_some() {
                 return Err(LaraOperationError::overflow().into());
             }
-            final_buckets.push(new.with_edge_range(position, new.stored_slots_raw()));
+            final_buckets
+                .push(new.with_edge_range(EdgeSlot::from_raw(position), new.stored_slots_raw()));
         }
         // The final first resident, not the source anchor, owns the whole cover.
         if final_buckets
@@ -4802,7 +4822,7 @@ where
                     .iter()
                     .zip(&row.buckets)
                     .any(|(new, old)| {
-                        new.with_edge_range(old.edge_start(), old.stored_slots_raw()) != *old
+                        new.with_edge_range(old.edge_slot(), old.stored_slots_raw()) != *old
                     })
                 || component.final_vertex
                     != if row.vertex.is_default_edge_labeled() {
@@ -7555,10 +7575,10 @@ mod tests {
         let buckets = [
             LabelBucket::default()
                 .with_bucket_label_key(BucketLabelKey::from_raw(1))
-                .with_edge_range(100, 10),
+                .with_edge_range(super::EdgeSlot::from_raw(100), 10),
             LabelBucket::default()
                 .with_bucket_label_key(BucketLabelKey::from_raw(2))
-                .with_edge_range(150, 20),
+                .with_edge_range(super::EdgeSlot::from_raw(150), 20),
         ];
         let intervals =
             LabeledLaraGraph::<TestEdge, crate::VectorMemory>::vertex_edge_span_retire_intervals(
@@ -9514,7 +9534,7 @@ mod tests {
     #[test]
     fn tree_spans_owns_the_property_root_address() {
         let tree = crate::labeled::record::LabelBucket::default()
-            .with_edge_range(100, 4096)
+            .with_edge_range(super::EdgeSlot::from_raw(100), 4096)
             .with_tree_mode(true)
             .with_rewritten_value_width(8)
             .with_tree_mode_property_depth(1);

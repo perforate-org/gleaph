@@ -8,6 +8,7 @@ pub(super) fn log_collect_overflow(message: &str) {
 #[cfg(not(target_family = "wasm"))]
 pub(super) fn log_collect_overflow(_message: &str) {}
 
+use super::leaf_cover::EdgeSlot;
 use crate::{
     VertexId,
     labeled::{
@@ -476,7 +477,7 @@ where
             let bucket = bucket
                 .try_enable_tiny_mode(E::BYTES)
                 .map_err(LaraOperationError::from)?;
-            let bucket = bucket.with_edge_range(anchor, 0);
+            let bucket = bucket.with_edge_range(EdgeSlot::from_raw(anchor), 0);
             self.publish_bucket_descriptor(bucket_slot, bucket)?;
             self.cache_bucket_lookup(src, label_id, &vertex, bucket_slot);
             return Ok((bucket_slot, bucket));
@@ -575,7 +576,7 @@ where
             "tiny bucket must not reach span placement"
         );
         let bucket = bucket
-            .with_edge_range(edge_start, 0)
+            .with_edge_range(EdgeSlot::from_raw(edge_start), 0)
             .without_edge_spill_run();
         self.publish_bucket_descriptor(slot, bucket)?;
         if initial_slots > 0 {

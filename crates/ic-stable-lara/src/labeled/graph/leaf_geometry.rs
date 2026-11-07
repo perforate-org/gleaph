@@ -345,7 +345,7 @@ mod tests {
             .expect("bucket");
         let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
         // Move the bucket's recorded start by one slot: the descriptor and the cover must move together.
-        let moved = bucket.with_edge_range(bucket.edge_start() + 1, bucket.stored_slots());
+        let moved = bucket.with_edge_range(bucket.edge_slot() + 1, bucket.stored_slots());
         let geometry = LeafGeometry::of(&graph);
         geometry
             .publish_bucket_and_cover(vid, slot, moved)

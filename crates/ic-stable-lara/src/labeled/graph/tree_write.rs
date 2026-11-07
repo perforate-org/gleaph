@@ -41,6 +41,7 @@
 //! (tree → slab era). `num_edges` and every tree/pin geometry count are
 //! unaffected by this rule.
 
+use super::leaf_cover::EdgeSlot;
 use ic_stable_structures::Memory;
 
 use super::{EDGE_SLOT_SCRATCH_BYTES, LabeledLaraGraph, edge_slot};
@@ -545,7 +546,7 @@ where
         };
         // 3. Publish the descriptor (canonical write).
         let new_bucket = bucket
-            .with_edge_range(new_combined_span_start, next_stored)
+            .with_edge_range(EdgeSlot::from_raw(new_combined_span_start), next_stored)
             .with_stored_slots(next_stored)
             .with_degree_field(next_degree)
             .with_tree_mode(true)
@@ -1443,7 +1444,7 @@ where
     match graph.tree_plane(*bucket).publish::<E>(
         bucket_slot,
         |b| {
-            b.with_edge_range(new_combined_start, next_stored)
+            b.with_edge_range(EdgeSlot::from_raw(new_combined_start), next_stored)
                 .with_degree_field(next_degree)
                 .with_stored_slots(next_stored)
                 .with_tree_mode(true)
@@ -1712,7 +1713,7 @@ where
         };
         // Publish: the tree plane writes the roots (when the arm changed them) and the descriptor (ADR 0102).
         let new_bucket = bucket
-            .with_edge_range(new_edge_start, next_stored)
+            .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
             .with_degree_field(next_degree)
             .with_stored_slots(next_stored)
             .with_tree_mode(true)
@@ -1905,7 +1906,7 @@ where
     // Publish the new descriptor (edge_start updated, edge depth
     // unchanged, property depth from the post-ensure bucket).
     let new_bucket = bucket
-        .with_edge_range(new_edge_start, next_stored)
+        .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
         .with_degree_field(next_degree)
         .with_stored_slots(next_stored)
         .with_tree_mode(true)
@@ -2528,7 +2529,7 @@ where
     // 6. Commit: build the new descriptor.
     let new_physical_depth = depth + 1;
     let new_bucket = bucket
-        .with_edge_range(new_combined_start, stored_slots)
+        .with_edge_range(EdgeSlot::from_raw(new_combined_start), stored_slots)
         .with_stored_slots(stored_slots)
         .with_degree_field(bucket.degree)
         .with_inline_property_bytes_offset(0)
@@ -2657,7 +2658,7 @@ where
     // 4. Commit: new descriptor. Reset the physical depth to 1
     //    (the flatten result is a flat root region; no interior).
     let new_bucket = bucket
-        .with_edge_range(new_edge_start, stored_slots)
+        .with_edge_range(EdgeSlot::from_raw(new_edge_start), stored_slots)
         .with_stored_slots(stored_slots)
         .with_degree_field(bucket.degree)
         .with_tree_mode(true)
@@ -2954,7 +2955,7 @@ where
     // log). `stored_slots = degree` (slab convention: stored == degree
     // for fresh slabs, gap regrows via the existing leaf cascade).
     let new_bucket = bucket
-        .with_edge_range(new_edge_start, degree)
+        .with_edge_range(EdgeSlot::from_raw(new_edge_start), degree)
         .with_stored_slots(degree)
         .with_degree_field(degree)
         .without_edge_spill_run()

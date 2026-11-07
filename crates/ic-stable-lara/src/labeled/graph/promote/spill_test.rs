@@ -1,4 +1,5 @@
 use super::*;
+use crate::labeled::graph::leaf_cover::EdgeSlot;
 use crate::{
     VectorMemory,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -1100,7 +1101,10 @@ fn normal_and_bypass_relocation_retains_runs_and_values() {
             }
             let after = bucket(&g, label);
             assert_eq!(
-                after.with_edge_range(source.edge_start(), after.stored_slots()),
+                after.with_edge_range(
+                    EdgeSlot::from_raw(source.edge_start()),
+                    after.stored_slots()
+                ),
                 source,
                 "width={width}, streaming={streaming}: relocation must not fold either plane"
             );

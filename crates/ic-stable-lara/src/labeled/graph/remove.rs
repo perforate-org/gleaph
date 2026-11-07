@@ -523,7 +523,7 @@ where
                 .with_inline_property_bytes_log_head(-1)
                 .with_inline_property_bytes_slab_slots(0)
                 .without_values_spill_run()
-                .with_edge_range(updated.edge_start(), 0)
+                .with_edge_range(updated.edge_slot(), 0)
         } else {
             updated
         };

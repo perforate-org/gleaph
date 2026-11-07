@@ -2036,7 +2036,13 @@ mod tests {
         let bucket1 = graph.buckets().read_label_bucket_slot(slot1).unwrap();
         graph
             .buckets()
-            .write_label_bucket_slot(slot1, bucket1.with_edge_range(base0, bucket1.degree()))
+            .write_label_bucket_slot(
+                slot1,
+                bucket1.with_edge_range(
+                    crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(base0),
+                    bucket1.degree(),
+                ),
+            )
             .unwrap();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

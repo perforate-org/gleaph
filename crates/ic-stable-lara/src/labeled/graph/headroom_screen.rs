@@ -1,6 +1,7 @@
 //! Source-valid hot/cold spill screen. Layout/capacity alternatives use fresh producers.
 //! Backing I/O and phase scopes exclude observations, logical oracles and reopen.
 
+use super::leaf_cover::EdgeSlot;
 use super::{BucketSearch, EdgePlacementPolicy, LabeledLaraGraph, OutEdgeOrder};
 use crate::{
     VertexId,
@@ -166,7 +167,10 @@ fn assert_state(graph: &Graph, extent: u32, cold: &[Option<crate::labeled::Label
                     assert_eq!(bucket.edge_spill_run(), NO_SPILL_RUN);
                     // Descriptor relocation may reanchor a Tiny row, never change its payload.
                     assert_eq!(
-                        Some(bucket.with_edge_range(0, bucket.stored_slots_raw())),
+                        Some(
+                            bucket
+                                .with_edge_range(EdgeSlot::from_raw(0), bucket.stored_slots_raw())
+                        ),
                         cold[owner as usize]
                     );
                 }
@@ -314,7 +318,7 @@ fn run_w2() {
                 .unwrap()
             {
                 BucketSearch::Found { bucket, .. } if owner != HOT => {
-                    Some(bucket.with_edge_range(0, bucket.stored_slots_raw()))
+                    Some(bucket.with_edge_range(EdgeSlot::from_raw(0), bucket.stored_slots_raw()))
                 }
                 BucketSearch::Found { .. } | BucketSearch::Missing { .. } => None,
             }

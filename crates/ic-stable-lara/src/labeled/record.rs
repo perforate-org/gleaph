@@ -1119,19 +1119,20 @@ impl LabelBucket {
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
     #[inline]
-    pub fn with_edge_range(self, edge_start: u64, stored_slots: u32) -> Self {
+    pub fn with_edge_range(self, edge_start: EdgeSlot, stored_slots: u32) -> Self {
         self.try_with_edge_range(edge_start, stored_slots)
-            .expect("LabelBucket::with_edge_range: edge_start out of 36-bit range")
+            // The 36-bit range is the type's own domain, so this cannot fail for an `EdgeSlot`.
+            .expect("LabelBucket::with_edge_range: an EdgeSlot is inside the index domain")
     }
 
     /// Fallible [`Self::with_edge_range`].
     #[inline]
     pub fn try_with_edge_range(
         self,
-        edge_start: u64,
+        edge_start: EdgeSlot,
         stored_slots: u32,
     ) -> Result<Self, LabelBucketFieldError> {
-        let word = try_replace_slot_index(self.word, edge_start)
+        let word = try_replace_slot_index(self.word, edge_start.get())
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
         Ok(Self {
             word,
@@ -1438,7 +1439,7 @@ impl CsrVertex for LabelBucket {
     }
 
     fn with_base_slot_start(self, start: u64) -> Self {
-        self.try_with_edge_range(start, self.stored_slots())
+        self.try_with_edge_range(EdgeSlot::from_raw(start), self.stored_slots())
             .expect("LabelBucket::with_base_slot_start: slot index overflow")
     }
 
