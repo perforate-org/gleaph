@@ -455,6 +455,15 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   view's `vertex_cover` still inherits the two-derivation disagreement above, which is why wiring it into promotion waits for
   that fact to be settled.
 
+- **The root-length answer moved into the geometry module (`ccd220ed`).** `bucket_span_region_len` - one of the two derivations
+  that disagree - is now `leaf_geometry::span_region_len`, and all 26 call sites name that module. The arithmetic is unchanged
+  (same suite counts), which is the point: the disagreement is now *one module's* answer rather than two modules' competing ones,
+  so unifying it is a local change instead of a negotiation.
+  **Still mutable from inside `graph`:** it stays `pub(in crate::labeled::graph)` because `tree_write`, `tree_read` and `promote`
+  legitimately ask it, and closing that needs each of those to carry a `LeafGeometry` handle - a per-site change that should
+  state its reason, like the `stored_slots` writers. That and `resident` versus `stored_slots` are what remain before the view
+  can be called the only way in.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
