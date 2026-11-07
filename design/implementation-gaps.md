@@ -1428,6 +1428,18 @@ Criteria for being here rather than above: (1) current behaviour fails closed or
 item needs a product or design decision before code, not a repair; (3) the entry states the condition that would promote it
 back to a defect.
 
+- **A third, targeted reconstruction also holds (2026-11-07).** The record's most specific evidence is the guard message
+  itself: "leaf 328: vid 5255 reserves up to 1384 but vid 5248 starts at 1184". On a segment-16 graph that leaf is vids
+  5248..5263, so instead of another distribution guess this builds **that leaf**: 5,264 vertices, all single-edge except a
+  2,048-degree hub at vid 5255, mates inserted first and the hub last (the order the entry's own minimal reproduction says
+  decides which free run a promotion lands in). `leaf_mate_overlap_guard_holds_for_the_leaf_the_witness_names` runs the guard
+  for every vertex and **holds**.
+  **Disposition:** three reconstructions (seven-vertex degrees, the recorded mix in two orders and two sizes, and the named
+  leaf itself) all hold, so the shape cannot be rebuilt from the record. The claim stays open only because its evidence was
+  never kept; the next attempt needs the audit's own probe (or the exact insertion sequence from whoever ran it), not another
+  interpretation. The three tests remain as the floor: any change that starts overlapping a mate fails with the guard's own
+  message, in every shape the record describes.
+
 ### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
 
 - **Status:**0395's two new entries are fixed and runtime-verified; broader capacity remains
