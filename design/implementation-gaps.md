@@ -412,6 +412,21 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   **Next:** implement "occupied ⊆ cover" under those exemptions and re-run the eight fixtures to separate real drift from the
   two exempt windows - the promotion RED included, since its cover is published by neither a relocation nor a pin.
 
+- **The type exists, and wiring it found the next real duplication (2026-11-08, `a57a4169` + `614af878`).**
+  `leaf_cover.rs` now holds `BucketLeafSpan` (what one bucket occupies *in the leaf*: slab rows, or a tree's edge root when it
+  is in leaf slots - empty for tiny and for a run-backed root) and `VertexLeafCover` (private fields, **no length-taking
+  constructor**; the only way to get one is `derive`, which unions the spans and applies a stated `SlackRule`).
+  `LabeledVertex::with_cover` takes the type, and `with_stored_slots` is documented as the explicitly raw setter for wire
+  images, loaders and intermediate rows.
+  Wiring the derivation into promotion was attempted and **reverted on evidence**: the edge root's length has **two
+  derivations today** - `promote` sizes it from `resident` (1,024 rows plus the pending append = two leaf ids), while
+  `bucket_span_region_len` sizes it from `stored_slots` (1,024 = one id). The derived cover therefore came out one slot
+  *shorter* than the root just written, which would have published a smaller cover than the bug it replaces. Unifying those
+  two inputs is the next slice, and it is a prerequisite for both the ratchet and the fix.
+  Two smaller findings from the same attempt, both now expressed in the type: a cover's base must be derived (the first
+  version took `vertex.base_slot_start()`, an address in the *bucket* store, while the cover describes the *edge* store), and
+  "a run-backed root needs no cover entry" is the `BucketLeafSpan::empty()` case rather than a comment.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
