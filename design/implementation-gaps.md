@@ -4152,25 +4152,6 @@ session did.
   The previously-red `parse_grant_execute_on_prepared_query_to_public_and_principal` and
   `parse_revoke_execute_on_prepared_query_mirrors_grant` pass unmodified (no test weakening).
 
-### GAP-2026-08-24-007 — Committed HEAD does not build `gleaph-router`: `auth::require_admin` callers landed before their auth definitions
-
-- **Status:** Open — window is green only while the owning pane's uncommitted WIP stays in the
-  tree; resolution owned by the ADR 0075 stream (w1:pT, notified 2026-08-24)
-- **Owner:** `crates/auth/src/lib.rs` (missing definitions) vs `0d9f58421`/`73d4b3737`/`e9159938b`
-  (router-side callers: `facade/store/catalogs.rs`, `idempotency.rs`, …)
-- **Observed behavior:** An isolated worktree at `5a8e6dc8a` (current main HEAD at detection time)
-  fails to compile `gleaph-router --lib` with `E0425 cannot find function require_admin in module
-  auth` (multiple sites). The main working tree passes (`951 passed / 0 failed`) because the
-  uncommitted auth-side changes of the same workstream are still present.
-- **Expected or needed behavior:** Every commit on main must build standalone. The auth-side
-  definitions (or an equivalent refactor of the callers) must land in the same push that lands the
-  callers. Same failure mode as the `8e392c127` half-committed `edge_properties.rs` incident.
-- **Evidence:** `git show 5a8e6dc8a:crates/router/src/facade/store/catalogs.rs | rg require_admin`
-  vs absent definition in `git show 5a8e6dc8a:crates/auth/src/lib.rs`; isolated-worktree build log.
-- **Impact:** Bisect over this range reports false positives; any fresh clone/worktree at these
-  commits cannot run router tests.
-- **Detection:** w1:pQ during edge IN-list slice verification (Phase 2 final gate), 2026-08-24.
-
 ### GAP-2026-08-24-006 — Pure-CLI platform bring-up fails on the Gleaph-owned launcher network
 
 - **Status:** Fully Resolved (2026-08-26). (a) operator tier + CLI deploy, (b) daemonization,
@@ -5610,6 +5591,16 @@ typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
 
+### GAP-2026-08-24-007 — RESOLVED: committed HEAD builds `gleaph-router`
+
+- **Status:** Resolved (2026-11-07, verified against a clean working tree). The gap recorded that an isolated worktree at
+  `5a8e6dc8a` failed to compile `gleaph-router --lib` with `E0425 cannot find function require_admin`, green only while
+  the owning workstream's uncommitted auth definitions sat in the tree. `require_admin` no longer exists in the
+  workspace - the callers were refactored onto the store-level capability check whose comment records that it preserves
+  the former function's error contract - so the half-landed pair is gone rather than merely finished.
+- **Evidence:** clean tree (`git status` empty) at this HEAD, `cargo build -p gleaph-router` succeeds, and
+  `cargo test -p gleaph-router --lib` is 1137 passed / 0 failed. The general rule from the original report stands and is
+  what made this checkable: every commit on main must build standalone, so a caller and its definition land in one push.
 ### GAP-2026-09-22-005 — RESOLVED: the obsolete combined maintenance tag is deleted
 
 - **Status:** Resolved (2026-11-07) by removal, not by repair. `CompactVertexEdgeAndValueSpanV1` (tag 4) called
