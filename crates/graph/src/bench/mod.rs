@@ -3910,6 +3910,47 @@ fn bench_graph_label_stats_delta_event_encode_vertex() -> canbench_rs::BenchResu
     })
 }
 
+/// Cost of the retirement transition a scalar PlanExecution endpoint would perform.
+///
+/// GAP-2026-09-22-001's option A adds one Router→Graph call per terminal scalar mutation: read the journal entry,
+/// confirm its identity, move `Active` to `Retired { at_ns }`, write it back and build the acknowledgement.
+///
+/// The measured entry uses the **ordered** identity because `graph-kernel`'s
+/// `validate_graph_mutation_journal_fields` refuses a PlanExecution entry that carries a retirement state
+/// ("PlanExecution journal entry must not have retirement state"). That refusal is the schema half of option A: the
+/// wire format already encodes `NotApplicable | Active | Retired`, so relaxing the predicate is a semantics change, not a
+/// layout change. The durable work measured here - one stable get with its full decode, the identity comparison, and one
+/// stable overwrite - is the same work that endpoint performs for either family.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_scalar_retirement_transition() -> canbench_rs::BenchResult {
+    use gleaph_graph_kernel::plan_exec::{
+        GraphMutationRequestIdentityV1, GraphMutationRetirementV1,
+    };
+
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [3; 32],
+        logical_item_count: 1,
+    };
+    let mut base = GraphMutationJournalEntry::completed(9_001, 1, Some(4), Some(4), Vec::new(), 0);
+    base.set_request_identity(identity.clone());
+    base.set_retirement(GraphMutationRetirementV1::Active);
+    let mut journal = GraphMutationJournal::init(VectorMemory::default());
+    journal.insert(base);
+
+    canbench_rs::bench_fn(|| {
+        // Read + identity check, as the retirement endpoint does before it transitions anything.
+        let mut entry = journal.get(9_001).expect("journaled");
+        assert_eq!(entry.request_identity(), &identity);
+        // The retirement transition and its durable write.
+        entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 77 });
+        journal.insert(black_box(entry));
+        // The acknowledgement the caller validates.
+        black_box((9_001u64, 1u64, 4u32));
+    })
+}
+
 /// StableBTreeMap insert cost for a brand-new mutation-id key in an empty journal.
 #[cfg(feature = "canbench")]
 #[bench(raw)]

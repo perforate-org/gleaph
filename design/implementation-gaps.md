@@ -1213,6 +1213,25 @@ acceptance remain separate. See the movement-publication correction above.
   This is the same conclusion the entry's next decision already states - Active/Retired evidence, exact durable receipts
   and acknowledged retirement at the existing owners - now with the reason a smaller Graph-local patch is unsound.
 
+- **Option A costed, 2026-11-07 (see [scalar retirement cost](investigations/2026-11-07-scalar-retirement-cost.md)).**
+  Measured, not estimated: the Graph half of a `retire_plan_execution` call - one stable get with its full decode,
+  the identity comparison, the `Active → Retired` transition, one stable overwrite and the acknowledgement - is
+  **14.63 K instructions, 0 heap / 0 stable pages**
+  (`bench_graph_journal_scalar_retirement_transition`). Against the existing Router-side gate read of ~4.89 M at
+  1 KiB, the journal transition is ~0.3 % of it.
+- **Call shape:** +1 awaited Graph update per **terminal** scalar mutation (the ordered families already pay exactly
+  this in `gql.rs`), i.e. roughly a 20-25 % call-count increase on that path and one round trip. No GC call changes:
+  both sweeps stay amortized on existing write paths (`MUTATION_JOURNAL_GC_BUDGET = 2` entries per completed mutation),
+  so a larger journal costs the same per mutation and only lengthens a lap.
+- **Retention does not grow when retirement is prompt:** a PlanExecution entry ages 9 days from *recording* today and
+  would age 9 days from *retirement* under A - in the same update, that is one round trip, not days. If retirement is
+  never acknowledged the entry is kept, bounded by stuck durable records rather than traffic, at roughly
+  47 B + key per entry.
+- **The blocker is a predicate, not a layout:** `graph-kernel`'s `validate_graph_mutation_journal_fields` refuses a
+  PlanExecution entry carrying any retirement state ("PlanExecution journal entry must not have retirement state"), so
+  option A relaxes that predicate on an enum the wire format already encodes (`NotApplicable | Active | Retired`). No
+  layout change, no reinstall.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
