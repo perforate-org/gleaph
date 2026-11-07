@@ -676,6 +676,22 @@ defect from being rediscovered without its prior reasoning.
   already covers the new leaf" arm) and the promotion's rollback of `allocated_blocks`. Reading those two against the
   reservation's rule is the next step.
 
+- **Decisive measurement 2026-11-07: no LTB block is released, so the duplicate is not a block release at all.**
+  `LtbRawBlockStore::release` was given a test-only call-site trace; the reproduction ran with **zero releases
+  recorded**. So the tree's blocks are never freed - the ids are distinct and stay distinct - and `[1, 2, 3, 1, 6]`
+  cannot be a leaf-id list at all. It is **not root data**: the wrong bytes are at the address the descriptor names,
+  which is the value-root region hypothesis again, but now with the release path narrowed to the **values store**
+  (`release_byte_span`, not `ltb().release`), where the earlier LTB-level checks could not see it.
+- **Where the region can go stale, by reading the code:** `BucketTreePlane::write_roots` calls `ensure_value_root`, which
+  releases the region it "replaces" **before** the caller writes the descriptor that names the new one. Every tree-append
+  path reaches it through `write_roots`, so a failure or an interleaved write between those two points leaves the
+  descriptor pointing at a freed region - and the value payloads then land on it, which is exactly the shape read back
+  (value-looking words at the root's address).
+- **Structural fix, stated:** `write_roots` must not release a replaced region at all; it should hand back the owned
+  region (`OwnedValueRoot`) and let the caller retire the old one **after** its descriptor publish, the way `publish`
+  already does. That is one signature change across the tree-write call sites and removes the only remaining
+  release-before-publish in this subsystem.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

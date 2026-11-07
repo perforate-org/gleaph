@@ -481,23 +481,23 @@ where
                         new_combined
                     }
                     None => {
-                        // Home interior already covers the new leaf:
-                        // write the leaf id into the interior row and the
-                        // value into leaf row 0. No combined-span realloc
-                        // (edge_start is the post-ensure value).
-                        if let Err(e) = graph.ltb().write_payload_partial(
-                            plan.interior_id,
-                            (plan.row as usize) * PROPERTY_ID_BYTES,
-                            &plan.leaf_id.to_le_bytes(),
-                        ) {
-                            release_property_plan::<E, M>(graph, &plan);
-                            return Err(LabeledOperationError::LtbBlock(e));
-                        }
+                        // Home interior already covers the new leaf. **The leaf's payload is written before the
+                        // interior row that names it** - the same "pointers last" rule the edge side follows: writing the
+                        // parent first and then failing on the payload released a block the interior still pointed at,
+                        // so the next mint reissued that id and the tree named it twice.
                         if let Err(e) =
                             graph
                                 .ltb()
                                 .write_payload_partial(plan.leaf_id, 0, property_value)
                         {
+                            release_property_plan::<E, M>(graph, &plan);
+                            return Err(LabeledOperationError::LtbBlock(e));
+                        }
+                        if let Err(e) = graph.ltb().write_payload_partial(
+                            plan.interior_id,
+                            (plan.row as usize) * PROPERTY_ID_BYTES,
+                            &plan.leaf_id.to_le_bytes(),
+                        ) {
                             release_property_plan::<E, M>(graph, &plan);
                             return Err(LabeledOperationError::LtbBlock(e));
                         }
