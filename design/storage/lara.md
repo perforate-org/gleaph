@@ -111,12 +111,15 @@ Whole-span maintenance admits only slab buckets to logical move selection and sl
 A slab trigger does not exclude tree/tiny siblings from the job: the shared step advances over
 those modes unchanged. Tree extent includes native tombstones; moving a root region physically
 must preserve its IDs, LTB metadata, logical ordinals and property identities.
-This is not acceptance of live tree deletion or demotion. The
-[property-deletion investigation](../evidence/adr0097-tree-deletion-prerequisites.md)
-leaves the writer/demotion repair paused (GAP-2026-09-22-001/003). The bounded point-state
-read repair below establishes dead/missing admission only. Selected property hydration (006)
-is implemented separately at the read owner below; matching mutation (004), metadata (002) and
-obsolete combined-maintenance observer handling (005) remain open.
+Property-bearing tree deletion and demotion are **implemented** (2026-11-07): the stale
+`inline_property_byte_width() == 0` assertion that blocked removal is gone, a demotion transcribes its
+edges and values from one live selection, and the rows a demotion repacks are published as
+`EdgeRemoval::moves` (GAP-2026-09-22-001/003 are resolved; the movement-event half is part of that).
+Deleting a valued row writes no value - ADR 0099's rule - because the row is tombstoned in place and a
+reader never asks a tombstoned slot for one. The bounded point-state read repair below still establishes
+dead/missing admission only, and selected property hydration (006) is implemented separately at the read
+owner below. Matching mutation (004) and tree header metadata (002) remain open; the obsolete
+combined-maintenance tag with discarded moves (005) was **deleted** rather than repaired.
 
 Same role as DGAP `do_insertion` + `have_space_onseg`.
 
