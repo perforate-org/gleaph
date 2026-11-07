@@ -6591,54 +6591,6 @@ where
                 >= self.edges.header().segment_size.max(1)
         }))
     }
-
-    pub(super) fn maintain_vertex_edge_span_light(
-        &self,
-        vid: VertexId,
-        allow_slack_grow: bool,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let vertex = self.vertices.get(vid);
-        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
-            return Ok(());
-        }
-        self.vertex_layout(vid).compact_span()?;
-        if !allow_slack_grow {
-            return Ok(());
-        }
-        let vertex = self.vertices.get(vid);
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        let total_live = buckets.iter().try_fold(0u32, |acc, bucket| {
-            acc.checked_add(bucket.degree())
-                .ok_or(LaraOperationError::RowDegreeOverflow)
-        })?;
-        if vertex.stored_slots > total_live.saturating_add(1) {
-            self.rewrite_vertex_edge_span_impl(vid, None, 0, true, None)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn rebalance_vertex_edge_span_light(
-        &self,
-        vid: VertexId,
-        allow_slack_grow: bool,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let vertex = self.vertices.get(vid);
-        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
-            return Ok(());
-        }
-        if allow_slack_grow {
-            self.rebalance_vertex_edge_span(vid, None, 0, true)
-        } else {
-            self.rebalance_vertex_edge_span(vid, None, 0, false)
-        }
-    }
-
     pub(super) fn fold_label_bucket_inline_property_bytes_log_to_slab(
         &self,
         src: VertexId,

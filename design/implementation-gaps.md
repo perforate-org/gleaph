@@ -1195,28 +1195,6 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** A separately bounded matching-removal design must consume canonical native
   selection and a safe writer, rather than adding caller guards or changing raw visitor semantics.
 
-### GAP-2026-09-22-005 — Obsolete combined maintenance tag discards movement events
-
-- **Status:** Open; pre-production cleanup, explicitly not changed by the deletion slice.
-- **Observed behavior:** `CompactVertexEdgeAndValueSpanV1`'s handler ignores both
-  `EdgeMoved(_)` and `OverflowRewrite(_)` while requeueing Required compaction in either
-  orientation. Repository search finds its enum/tag/codec/key/priority handling and these
-  requeues, but no initial enqueue producer. It is not observer-safe.
-- **Expected behavior:** Any retained logical compaction path must publish all survivor
-  movements through the canonical observer contract; superseded pre-production paths should
-  be deleted rather than preserved for compatibility. See
-  [ADR 0097 §7](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
-- **Owner:** `labeled/bidirectional/deferred.rs::MaintenanceWorkItem`, its codec and
-  `maintenance_with_edge_slot_move_observer` handler.
-- **Evidence:** [Exact handler/caller audit](evidence/adr0097-tree-deletion-prerequisites.md#obsolete-combined-maintenance-tag).
-  No queued-tag runtime witness ran; absence of a producer is a source-search result, not
-  proof that the decoder cannot reach the handler.
-- **Impact:** The tag cannot be included in the approved movement-publication or observer-safe
-  maintenance scope. Existing persisted decoding alone does not justify a compatibility path.
-- **Next decision:** Confirm obsolescence and remove its variant/codec/handler together under
-  fresh-state policy, or establish a concrete active producer and unify its observer ownership.
-  No handler behavior or persistent layout changed in this evidence slice.
-
 ### GAP-2026-09-22-006 — Selected tree inline-property hydration used slab live ranks
 
 - **Status:** Resolved in `036649e67` for the bounded selected-read contract; independently
@@ -5631,6 +5609,29 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-005 — RESOLVED: the obsolete combined maintenance tag is deleted
+
+- **Status:** Resolved (2026-11-07) by removal, not by repair. `CompactVertexEdgeAndValueSpanV1` (tag 4) called
+  `compact_vertex_edge_span_one_step` and **discarded** the `EdgeMoved` and `OverflowRewrite` moves it got back while
+  requeueing itself - so any execution of it would have moved rows without telling a single observer. It had no
+  producer: every `enqueue` site in the crate names a different variant, and its only occurrences were its own
+  definition, codec arms, key/priority arms and the handler's self-requeue.
+- **Why deletion rather than publication:** the movement-publication contract is only meaningful for a path that runs.
+  Gleaph is pre-production, so a tag nothing enqueues is deleted instead of kept for a persisted-state compatibility
+  path; its encoding now fails closed in `from_bytes` like any other unknown tag (reinstall, not silent execution), and
+  `tag()` says so where a reader will look for the missing number.
+- **Also removed in the same pass:** `maintain_vertex_edge_span_light` and `rebalance_vertex_edge_span_light`
+  (`compact.rs`), the only production-shaped callers that reached compaction through `compact_span()`, which drops its
+  moves. Neither had any caller in the workspace.
+- **The survey this came from, for the record:** paths that legitimately answer no moves are the slab, tiny and spill
+  deletes - ADR 0097 §7 tombstones a row where it lives, so nothing shifts and the code says so at each site. Paths
+  that do move rows and now publish are the live compaction tags (via `observer.edge_slot_moved` for `EdgeMoved` and
+  `OverflowRewrite`), the demotion (see GAP-2026-09-22-003), and the fold/rebuild steps that return their move lists to
+  their caller.
+- **Evidence:** the workspace has no remaining reference to the tag; `cargo test -p ic-stable-lara --lib` 775,
+  `--features canbench` 712, `gleaph-graph` 1132, `gleaph-router` 1137, clippy and fmt clean. No queued-tag runtime
+  witness existed before either, and none is needed for a tag with no producer.
 
 ### GAP-2026-09-22-003 — RESOLVED: a demotion transcribes both streams from one selection
 

@@ -219,13 +219,6 @@ pub enum MaintenanceWorkItem {
         /// Vertex owning the default-label bypass row.
         vid: VertexId,
     },
-    /// v1: Stable maintenance tag. It now advances edge compaction only; value maintenance is independent.
-    CompactVertexEdgeAndValueSpanV1 {
-        orientation: Orientation,
-        vid: VertexId,
-        anchor_bucket_index: u32,
-        resume_bucket_index: u32,
-    },
     /// v1: Compact the inline property bytes slab when aggregate free space is fragmented.
     CompactInlinePropertyBytesSlabV1 {
         /// Orientation whose inline property bytes slab should be compacted.
@@ -250,13 +243,17 @@ pub enum MaintenanceWorkItem {
 
 impl MaintenanceWorkItem {
     /// Stable variant tag byte (0..=8).
+    ///
+    /// Tag `4` is **retired**: `CompactVertexEdgeAndValueSpanV1` advanced edge compaction without publishing the slot
+    /// moves it performed, had no producer, and was deleted rather than kept as a compatibility path (pre-production
+    /// policy, ADR 0097 §7). Its encoding now fails closed in `from_bytes` like any other unknown tag, so stale state
+    /// requires a reinstall instead of silently running a path that hides movement.
     fn tag(&self) -> u8 {
         match self {
             Self::CompactLabelBucketVertexSegmentV1 { .. } => 0,
             Self::CompactVertexEdgeSpanV1 { .. } => 1,
             Self::CompactDenseLabeledVertexMaintenanceV1 { .. } => 2,
             Self::CompactVertexValueSpanV1 { .. } => 3,
-            Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
             Self::DeleteVertexV1 { .. } => 5,
             Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
             Self::MaterializeInlinePropertyStreamV2 { .. } => MATERIALIZE_WORK_TAG,
@@ -271,7 +268,6 @@ impl MaintenanceWorkItem {
             | Self::CompactVertexEdgeSpanV1 { .. }
             | Self::CompactDenseLabeledVertexMaintenanceV1 { .. }
             | Self::CompactVertexValueSpanV1 { .. }
-            | Self::CompactVertexEdgeAndValueSpanV1 { .. }
             | Self::DeleteVertexV1 { .. }
             | Self::CompactInlinePropertyBytesSlabV1 { .. }
             | Self::CompactDefaultBypassRowV1 { .. } => 1,
@@ -385,17 +381,6 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
             out.push(orientation_byte(*orientation));
             out.extend_from_slice(&u32::from(*vid).to_le_bytes());
         }
-        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            resume_bucket_index,
-        } => {
-            out.push(orientation_byte(*orientation));
-            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
-            out.extend_from_slice(&anchor_bucket_index.to_le_bytes());
-            out.extend_from_slice(&resume_bucket_index.to_le_bytes());
-        }
         MaintenanceWorkItem::DeleteVertexV1 { vid, removed_edges } => {
             out.extend_from_slice(&u32::from(*vid).to_le_bytes());
             out.extend_from_slice(&removed_edges.to_le_bytes());
@@ -465,12 +450,6 @@ impl Storable for MaintenanceWorkItem {
             (8, 1) => Self::CompactDefaultBypassRowV1 {
                 orientation: orientation_from_byte(payload[0]),
                 vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
-            },
-            (4, 1) => Self::CompactVertexEdgeAndValueSpanV1 {
-                orientation: orientation_from_byte(payload[0]),
-                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
-                anchor_bucket_index: u32::from_le_bytes(payload[5..9].try_into().unwrap()),
-                resume_bucket_index: u32::from_le_bytes(payload[9..13].try_into().unwrap()),
             },
             (5, 1) => Self::DeleteVertexV1 {
                 vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
@@ -566,12 +545,6 @@ fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
             (*orientation, *vid, 0)
         }
         MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            ..
-        }
-        | MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
             orientation,
             vid,
             anchor_bucket_index,
@@ -3667,63 +3640,6 @@ where
                         }
                     }
                     None
-                }
-                MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-                    orientation,
-                    vid,
-                    anchor_bucket_index,
-                    resume_bucket_index,
-                } => {
-                    let graph = match orientation {
-                        Orientation::Forward => &self.forward,
-                        Orientation::Reverse => &self.reverse,
-                    };
-                    let vertex = graph.vertices().get(*vid);
-                    if *anchor_bucket_index >= vertex.degree() {
-                        None
-                    } else {
-                        // Legacy order-preserving tag: no captured policies (ADR 0052 §9).
-                        match graph.compact_vertex_edge_span_one_step(
-                            *vid,
-                            *resume_bucket_index,
-                            0,
-                            &|_| EdgePlacementPolicy::Insertion,
-                        ) {
-                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-                                    orientation: *orientation,
-                                    vid: *vid,
-                                    anchor_bucket_index: *anchor_bucket_index,
-                                    resume_bucket_index: *resume_bucket_index,
-                                })
-                            }
-                            Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-                                    orientation: *orientation,
-                                    vid: *vid,
-                                    anchor_bucket_index: *anchor_bucket_index,
-                                    resume_bucket_index: next,
-                                })
-                            }
-                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
-                                    orientation: *orientation,
-                                    vid: *vid,
-                                    anchor_bucket_index: *anchor_bucket_index,
-                                    resume_bucket_index: 0,
-                                })
-                            }
-                            Ok(VertexEdgeSpanCompactOneStep::Finished) => {
-                                report.work.rebalanced_segments =
-                                    report.work.rebalanced_segments.saturating_add(1);
-                                None
-                            }
-                            Err(_) => {
-                                stalled = true;
-                                None
-                            }
-                        }
-                    }
                 }
                 MaintenanceWorkItem::DeleteVertexV1 { vid, removed_edges } => {
                     let (next, did_step, completed) = self.process_delete_vertex_step(
