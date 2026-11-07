@@ -485,8 +485,19 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   So deriving the cover as "the union of what the buckets occupy" is wrong: the cover is that union **plus deliberate
   headroom** (a segment-size floor beside the 5/4 growth `SlackRule` already models). The attempt is reverted, the method is
   kept (with `publish_bucket_and_cover` as the whole write), and the counter-example is now a named fixture rather than a hunch.
-  **Next:** express the headroom policy in the derivation (`SlackRule` gains the segment floor), then wire the six sites - no
-  site can be wired before that, because every one of them publishes a cover that includes headroom.
+  **Correction (2026-11-08): there is no segment floor.** A vertex starts with **zero** slots -
+  `labeled_leaf_initial_bucket_quota` returns 1 only for segment 16, and `insert` sets that initial width only for a first
+  bucket on a first-degree vertex - so "at least a segment" was my misreading of a *consequence*: promotion keeps
+  `new_alloc = old_alloc`, so the pre-promotion allocation (which happened to be large) is retained. The policy is
+  **no-shrink**, expressed as `SlackRule::NeverShrink { current }` (`3a206f44`), with tests for both directions (kept width
+  wins over smaller content; content wins when it reaches past).
+  - Wiring the depth-1 tail append with it restored the headroom contract and fixed the property-deepen failures (those
+    turned out to be a fixture driving the write path without a published vertex row; `republish_cover` now says so instead
+    of inventing a row).
+  - **The RED still stands and the probe narrowed it further:** republication runs (`current` 1 then 2) yet the cover is still
+    read as `[256, 258)` against a root at `[258, 260)`, so the move that matters is reached from a path this site does not
+    cover - `tree_mode_tail_append_depth_ge2` and the property-leaf append are the candidates. The wiring is reverted: a
+    partial fix that leaves the observed state is worse than the measured gap.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
