@@ -34,12 +34,35 @@ pub struct EdgeSlot(u64);
 impl EdgeSlot {
     pub const ZERO: Self = Self(0);
 
+    /// The largest address the leaf's slot word can hold: the descriptor packs the index into 36 bits
+    /// (`slab_index::SLOT_INDEX_MASK`).
+    pub const MAX: Self = Self(crate::slab_index::SLOT_INDEX_MASK);
+
     /// From a raw edge-store slot number.
     ///
     /// Named `from_raw` rather than a `From<u64>` impl on purpose: an implicit conversion would restore the mixing this type
-    /// exists to prevent, and every call site should say which space its number is in.
+    /// exists to prevent, and every call site should say which space its number is in. The value is asserted to fit the
+    /// 36-bit index in debug builds; use [`Self::try_from_raw`] where the number comes from outside.
     pub const fn from_raw(slot: u64) -> Self {
+        debug_assert!(
+            slot <= crate::slab_index::SLOT_INDEX_MASK,
+            "edge slot address does not fit the 36-bit index"
+        );
         Self(slot)
+    }
+
+    /// The fallible form, for an address that has not already been proved to fit.
+    pub const fn try_from_raw(slot: u64) -> Option<Self> {
+        if slot <= crate::slab_index::SLOT_INDEX_MASK {
+            Some(Self(slot))
+        } else {
+            None
+        }
+    }
+
+    /// `true` when this address fits the 36-bit index the descriptors pack.
+    pub const fn fits_36_bits(self) -> bool {
+        self.0 <= crate::slab_index::SLOT_INDEX_MASK
     }
 
     pub const fn get(self) -> u64 {
@@ -366,6 +389,25 @@ mod tests {
             assert_eq!(hand, expected, "table sanity");
             assert_eq!(typed.len(), expected, "previous={previous} span={span_len}");
         }
+    }
+
+    /// The type's domain is the leaf's 36-bit slot index - the field the descriptor packs.
+    ///
+    /// Making the bound part of the type is what lets a caller drop a separate range check: a value that exists as an
+    /// `EdgeSlot` already cannot overflow the word it will be stored in.
+    #[test]
+    fn the_address_domain_is_the_36_bit_slot_index() {
+        assert!(EdgeSlot::ZERO.fits_36_bits());
+        assert!(EdgeSlot::MAX.fits_36_bits());
+        assert_eq!(
+            EdgeSlot::try_from_raw(EdgeSlot::MAX.get()),
+            Some(EdgeSlot::MAX)
+        );
+        assert_eq!(EdgeSlot::try_from_raw(EdgeSlot::MAX.get() + 1), None);
+        assert!(
+            !EdgeSlot::MAX.advance(1).fits_36_bits(),
+            "advancing past the domain is detectable, not silent"
+        );
     }
 
     /// The address arithmetic models the one operation an address space has: address + length.
