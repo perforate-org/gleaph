@@ -71,7 +71,10 @@ impl GraphMutationJournalEntry {
             next_index: None,
             bulk_progress: None,
             request_identity: GraphMutationRequestIdentityV1::PlanExecution,
-            retirement: GraphMutationRetirementV1::NotApplicable,
+            // ADR 0027 amendment (2026-11-07): a scalar entry is retained until its owner retires it. `Active` is what
+            // stops the age-only sweep from deleting dedup evidence while the Router may still re-dispatch the mutation;
+            // `NotApplicable` (the previous state) is the shape old rows still carry and the GC still ages out.
+            retirement: GraphMutationRetirementV1::Active,
         })
     }
 
@@ -95,7 +98,7 @@ impl GraphMutationJournalEntry {
             next_index: None,
             bulk_progress: None,
             request_identity: GraphMutationRequestIdentityV1::PlanExecution,
-            retirement: GraphMutationRetirementV1::NotApplicable,
+            retirement: GraphMutationRetirementV1::Active,
         })
     }
 
@@ -1255,12 +1258,30 @@ mod tests {
     }
 
     #[test]
-    fn evicts_completed_entry_past_retention() {
+    fn evicts_a_retired_entry_past_retention() {
         let mut j = journal();
-        j.insert(completed_at(1, 0));
+        let mut entry = completed_at(1, 0);
+        entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
+        j.insert(entry);
         let (scanned, removed, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!((scanned, removed), (1, 1));
         assert!(j.get(1).is_none());
+    }
+
+    /// A scalar entry is `Active` until its owner retires it, and the age-only sweep must not touch it.
+    ///
+    /// This is the retention half of ADR 0027's amendment: the previous rule made every PlanExecution entry
+    /// `NotApplicable` - age-evictable - while the Router could still re-dispatch the mutation, so a lost outcome and nine
+    /// days of silence were enough to delete the only dedup evidence (GAP-2026-09-22-001).
+    #[test]
+    fn retains_an_active_scalar_entry_past_retention() {
+        let mut j = journal();
+        j.insert(completed_at(1, 0));
+        j.insert(GraphMutationJournalEntry::incomplete(2, None, None, 0));
+        let (scanned, removed, _) = j.evict_expired(None, 8, 100 * RETENTION_NS, RETENTION_NS);
+        assert_eq!((scanned, removed), (2, 0), "no active entry may age out");
+        assert!(j.get(1).is_some());
+        assert!(j.get(2).is_some());
     }
 
     #[test]
@@ -1273,11 +1294,16 @@ mod tests {
     }
 
     #[test]
-    fn evicts_incomplete_entry_past_retention() {
-        // Persisted Incomplete entries are also replay-dedup markers, so they are
-        // age-bounded too (must not leak, must not be dropped within the replay window).
+    /// An entry written before this rule still carries `NotApplicable`, and the sweep keeps aging those out.
+    ///
+    /// Pre-production removes the old rows by reinstall, but the sweep must not assume that happened: an entry with no
+    /// retirement evidence is exactly what the age rule was written for.
+    #[test]
+    fn evicts_a_legacy_not_applicable_entry_past_retention() {
         let mut j = journal();
-        j.insert(GraphMutationJournalEntry::incomplete(2, None, None, 0));
+        let mut entry = GraphMutationJournalEntry::incomplete(2, None, None, 0);
+        entry.set_retirement(GraphMutationRetirementV1::NotApplicable);
+        j.insert(entry);
         let (_, removed_early, _) = j.evict_expired(None, 8, RETENTION_NS - 1, RETENTION_NS);
         assert_eq!(removed_early, 0);
         let (_, removed_late, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
@@ -1322,7 +1348,11 @@ mod tests {
     fn round_robin_cursor_evicts_all_across_laps() {
         let mut j = journal();
         for id in 1..=5u64 {
-            j.insert(completed_at(id, 0));
+            // Retired, because an active scalar entry is retained until its owner retires it (ADR 0027 amendment);
+            // this test is about the cursor visiting every key across laps, not about the retention policy.
+            let mut entry = completed_at(id, 0);
+            entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
+            j.insert(entry);
         }
         let now = RETENTION_NS + 1;
         let mut cursor = None;

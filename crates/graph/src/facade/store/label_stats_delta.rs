@@ -1120,6 +1120,13 @@ mod tests {
             let mut cx = Context::from_waker(Waker::noop());
             assert!(future.as_mut().poll(&mut cx).is_pending());
             store.commit_record_completed_mutation_journal_at(20, 91_100, 1, None, None, vec![]);
+            // The entry is `Active` (retained until its owner retires it, ADR 0027 amendment), so the sweep can only
+            // age it out after a retirement. The fence under test does not depend on how the evidence disappeared.
+            GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+                let mut entry = journal.get(91_100).expect("entry recorded");
+                entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 20 });
+                journal.insert(entry);
+            });
             now.set(20 + GRAPH_MUTATION_JOURNAL_RETENTION_NS + 1);
             reset_mutation_journal_gc_cursor_for_test();
             for _ in 0..256 {
@@ -1275,6 +1282,13 @@ mod tests {
         let id = 9_000_001u64;
         // Recorded "long ago" via the timestamped write path.
         store.commit_record_completed_mutation_journal_at(0, id, 3, None, None, Vec::new());
+        // Retire it: an active scalar entry is retained until its owner says replay is over (ADR 0027 amendment), so
+        // the amortized sweep can only age out a retired one. This test measures the sweep, not the retention policy.
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let mut entry = journal.get(id).expect("entry recorded");
+            entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
+            journal.insert(entry);
+        });
         let entry = store.mutation_journal_entry(id).expect("entry recorded");
         assert_eq!(entry.recorded_at_ns(), Some(0));
 
@@ -1332,55 +1346,81 @@ mod tests {
         assert_eq!(wire.hot_forward_vertices().to_vec(), vec![7, 42]);
     }
 
-    /// An expired journal entry makes its mutation ID look "never attempted", which permits re-execution.
+    /// A scalar entry outlives the age-only sweep, so re-dispatch still finds its dedup evidence.
     ///
-    /// `mutation_journal_entry_for_replay` documents `None` as the only answer that lets a caller continue into mutable
-    /// planning and catalog validation, and `evict_expired` retires `NotApplicable` entries by age alone. Together they
-    /// mean that once retention passes, an identical re-dispatch is indistinguishable from a first attempt: the caller
-    /// re-plans and re-writes, so a later property value can be overwritten and an earlier zero can become a write.
-    ///
-    /// `#[ignore]`d because it asserts the **defect**, not the contract: GAP-2026-09-22-001 requires the last assertion
-    /// to be a refusal (an expired identity must be permanently inadmissible), and that needs the Graph-side fence the
-    /// ledger describes - Active/Retired scalar evidence and exact durable receipts - rather than a larger constant.
+    /// Before ADR 0027's 2026-11-07 amendment every PlanExecution entry was `NotApplicable`, which the sweep aged out
+    /// after nine days while the Router could still re-dispatch the mutation - a lost outcome plus nine quiet days
+    /// deleted the only evidence, and the retry re-executed. The entry is now `Active` until its owner retires it, so this
+    /// test drives the sweep far past retention and requires the evidence to still answer a replay.
     #[test]
-    #[ignore = "GAP-2026-09-22-001: reproduces re-execution permitted after retention"]
-    fn an_expired_journal_entry_permits_re_execution() {
+    fn an_active_scalar_entry_survives_the_age_only_sweep() {
         let store = GraphStore::new();
         let identity = GraphMutationRequestIdentityV1::PlanExecution;
         let mutation_id = 4_242;
-        let recorded_at = 10;
         store.commit_record_completed_mutation_journal_at(
-            recorded_at,
+            10,
             mutation_id,
-            0,
+            2,
             Some(1),
             Some(1),
             Vec::new(),
         );
-        // The plan-execution family retires as `NotApplicable`, which is evictable by age alone.
+        assert_eq!(
+            store
+                .mutation_journal_entry(mutation_id)
+                .expect("journaled")
+                .retirement(),
+            &GraphMutationRetirementV1::Active,
+            "a scalar entry starts active: the evidence is retained until the owner retires it"
+        );
+
+        let retention = 9 * 24 * 60 * 60 * 1_000_000_000u64;
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
-            let mut entry = journal.get(mutation_id).expect("journaled at admission");
-            entry.set_retirement(GraphMutationRetirementV1::NotApplicable);
+            journal.evict_expired(None, 64, 10 + 100 * retention, retention);
+        });
+        let replayed = store
+            .mutation_journal_entry_for_replay(mutation_id, &identity)
+            .expect("identity matches")
+            .expect("the evidence survives the sweep");
+        assert_eq!(replayed.row_count(), 2, "replay answers the recorded count");
+    }
+
+    /// Once the owner retires the entry, retention starts from the retirement and the sweep may erase it.
+    ///
+    /// Erasure is safe here for the reason the previous test is unsafe: the owner has declared that it will not replay
+    /// the mutation, so "no evidence" no longer has to mean anything.
+    #[test]
+    fn a_retired_scalar_entry_ages_out_from_its_retirement() {
+        let store = GraphStore::new();
+        let mutation_id = 4_243;
+        store.commit_record_completed_mutation_journal_at(
+            10,
+            mutation_id,
+            2,
+            Some(1),
+            Some(1),
+            Vec::new(),
+        );
+        let retention = 9 * 24 * 60 * 60 * 1_000_000_000u64;
+        let retired_at = 50;
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let mut entry = journal.get(mutation_id).expect("journaled");
+            entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: retired_at });
             journal.insert(entry);
         });
-        assert!(store.mutation_journal_entry(mutation_id).is_some());
-
-        // One sweep past the nine-day retention removes it.
-        let retention = 9 * 24 * 60 * 60 * 1_000_000_000u64;
-        let now = recorded_at + retention + 1;
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
-            journal.evict_expired(None, 64, now, retention);
+            journal.evict_expired(None, 64, retired_at + retention - 1, retention);
+        });
+        assert!(
+            store.mutation_journal_entry(mutation_id).is_some(),
+            "retention runs from the retirement, not from the recording"
+        );
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            journal.evict_expired(None, 64, retired_at + retention + 1, retention);
         });
         assert!(
             store.mutation_journal_entry(mutation_id).is_none(),
-            "retention evicted the only evidence"
-        );
-
-        // The defect: the replay entry now says "nothing was attempted here".
-        assert_eq!(
-            store.mutation_journal_entry_for_replay(mutation_id, &identity),
-            Ok(None),
-            "expired evidence is treated as a first attempt, so the caller may re-execute"
+            "a retired entry ages out once its retention passes"
         );
     }
 

@@ -1165,11 +1165,11 @@ pub fn validate_graph_mutation_journal_fields(
     bulk_progress: &Option<GraphBulkMutationProgress>,
 ) -> Result<(), &'static str> {
     match identity {
-        GraphMutationRequestIdentityV1::PlanExecution => {
-            if retirement != GraphMutationRetirementWireV1::NotApplicable {
-                return Err("PlanExecution journal entry must not have retirement state");
-            }
-        }
+        // PlanExecution carries the same exact-retirement lifecycle the ordered families use: `Active` while the Router
+        // may still re-dispatch the mutation, `Retired` once it has said it will not. `NotApplicable` is accepted only for
+        // entries written before that rule existed (ADR 0027 amendment 2026-11-07); a reader must treat it as "no
+        // retirement evidence", which is why the Graph GC still ages those old rows out.
+        GraphMutationRequestIdentityV1::PlanExecution => {}
         GraphMutationRequestIdentityV1::OrderedEdgeBatch {
             logical_item_count, ..
         } => {
@@ -2599,19 +2599,31 @@ mod tests {
         );
     }
 
+    /// A scalar entry may carry the exact-retirement lifecycle (ADR 0027 amendment 2026-11-07).
+    ///
+    /// The rule used to forbid it, which forced every PlanExecution entry to `NotApplicable` - the state the Graph GC is
+    /// allowed to age out - while the Router could still re-dispatch the mutation. The three wire states are now all
+    /// accepted; `Active` is what makes "evidence retained until the owner retires it" expressible.
     #[test]
-    fn plan_execution_journal_validation_rejects_retirement() {
-        assert_eq!(
-            validate_graph_mutation_journal_fields(
-                &GraphMutationRequestIdentityV1::PlanExecution,
-                GraphMutationRetirementWireV1::Active,
-                MutationJournalState::Completed,
-                0,
-                None,
-                &None,
-            ),
-            Err("PlanExecution journal entry must not have retirement state")
-        );
+    fn plan_execution_journal_validation_accepts_every_retirement_state() {
+        for retirement in [
+            GraphMutationRetirementWireV1::NotApplicable,
+            GraphMutationRetirementWireV1::Active,
+            GraphMutationRetirementWireV1::Retired,
+        ] {
+            assert_eq!(
+                validate_graph_mutation_journal_fields(
+                    &GraphMutationRequestIdentityV1::PlanExecution,
+                    retirement,
+                    MutationJournalState::Completed,
+                    0,
+                    None,
+                    &None,
+                ),
+                Ok(()),
+                "PlanExecution must accept {retirement:?}"
+            );
+        }
     }
 
     #[test]
