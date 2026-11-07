@@ -1322,6 +1322,20 @@ fn validate_classified_properties(
 }
 
 impl MutationStatus {
+    /// The status projection, with the in-doubt view's answer overriding the lifecycle phase's own guidance.
+    ///
+    /// The view owns *whether the outcome can be established*; this only reports it, so the two cannot disagree.
+    pub(crate) fn from_record_with_in_doubt(
+        record: &RouterMutationRecord,
+        in_doubt: crate::facade::store::InDoubt,
+    ) -> Self {
+        let mut status = Self::from_record(record);
+        if let Some(action) = in_doubt.next_action() {
+            status.next_action = action.to_owned();
+        }
+        status
+    }
+
     const ALL_PHASES: [MutationLifecyclePhase; 6] = [
         MutationLifecyclePhase::Routing,
         MutationLifecyclePhase::CanonicalPending,
@@ -1559,6 +1573,47 @@ pub struct AdminSweepMutationKeysStepResult {
     pub next_cursor: Option<ClientMutationKey>,
     /// True when the whole journal has been scanned in this step.
     pub done: bool,
+}
+
+/// Page request for the in-doubt mutation listing.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminListInDoubtArgs {
+    /// Resume scanning strictly after this key; `None` starts from the beginning.
+    pub start_after: Option<ClientMutationKey>,
+    /// Maximum journal entries to scan in this step (must be > 0).
+    pub max_scan: u32,
+}
+
+/// One mutation whose canonical outcome the Router cannot establish.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct InDoubtMutationV1 {
+    pub client_mutation_key: String,
+    /// How long it has gone without progress, in nanoseconds.
+    pub idle_ns: u64,
+}
+
+/// Page of in-doubt mutations plus the scan progress that produced it.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminListInDoubtResult {
+    pub unresolved: Vec<InDoubtMutationV1>,
+    /// Feed back as `start_after` to continue; `None` when the scan reached the end.
+    pub next_cursor: Option<ClientMutationKey>,
+    /// Entries examined in this step.
+    pub scanned: u32,
+    /// True when the whole journal has been scanned in this step.
+    pub done: bool,
+}
+
+/// Request to resolve one in-doubt mutation by recording an operator verdict.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminResolveInDoubtArgs {
+    pub key: ClientMutationKey,
+}
+
+/// The mutation an operator resolved.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminResolveInDoubtResult {
+    pub mutation_id: MutationId,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

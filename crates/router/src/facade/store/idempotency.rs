@@ -2133,6 +2133,61 @@ impl RouterStore {
         Ok(())
     }
 
+    /// Records an operator's in-doubt resolution: the mutation is durably failed with `reason`.
+    ///
+    /// The decision is written before any retirement attempt, so a failure to release the evidence afterwards cannot lose
+    /// the fact that a human resolved this mutation. Marking it terminally failed is what releases the client key: the
+    /// same-key retry returns the recorded verdict instead of dispatching again.
+    pub(crate) fn record_in_doubt_abort(
+        &self,
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+        reason: &str,
+    ) -> Result<(), RouterError> {
+        let mut record = self.scalar_mutation_record(key, mutation_id)?;
+        record.as_v1_mut().terminal_failure = Some(reason.to_owned());
+        record.mark_terminal_at_ns(ic_time_ns());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
+            records.insert(key.clone(), record);
+        });
+        Ok(())
+    }
+
+    /// Pages the mutation records whose in-doubt classification the caller accepts.
+    ///
+    /// Same bounded, cursor-shaped scan as the retention sweep beside it: the classifier stays in the view that owns the
+    /// rule, and this only walks the keyspace.
+    pub(crate) fn scan_in_doubt_mutations(
+        &self,
+        start_after: Option<&ClientMutationKey>,
+        budget: usize,
+        classify: impl Fn(&crate::facade::stable::label_stats::RouterMutationRecord) -> Option<u64>,
+    ) -> (
+        Vec<(ClientMutationKey, u64)>,
+        Option<ClientMutationKey>,
+        u32,
+    ) {
+        let mut scanned = 0u32;
+        let mut last_key = None;
+        let mut found = Vec::new();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|records| {
+            let lower = match start_after {
+                Some(key) => Bound::Excluded(key.clone()),
+                None => Bound::Unbounded,
+            };
+            for entry in records.range((lower, Bound::Unbounded)).take(budget) {
+                let key = entry.key().clone();
+                scanned += 1;
+                let record = entry.value();
+                if let Some(idle) = classify(&record) {
+                    found.push((key.clone(), idle));
+                }
+                last_key = Some(key);
+            }
+        });
+        (found, last_key, scanned)
+    }
+
     /// Records that the Graph retired this scalar mutation's journal evidence.
     ///
     /// Idempotent and cheap: the retirement driver re-reads the acknowledgement until it is written, so a lost write only

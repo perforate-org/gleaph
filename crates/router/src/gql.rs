@@ -6518,6 +6518,16 @@ async fn recover_ordered_vertex_batch_record(
 /// The Router captured this outcome and will never re-dispatch it, so its Graph journal evidence must stop being `Active`
 /// or it can never be reclaimed. Idempotent on both sides: the Graph answers the same acknowledgement for a repeated
 /// retirement, and writing the flag twice is a no-op, so a lost reply only costs another pass.
+/// [`retire_scalar_record`] for the operator resolution path: releasing the evidence is best-effort there too.
+#[cfg(target_family = "wasm")]
+pub(crate) async fn retire_scalar_record_for_resolution(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+) -> Result<(), RouterError> {
+    retire_scalar_record(store, key, record).await
+}
+
 #[cfg(target_family = "wasm")]
 async fn retire_scalar_record(
     store: &RouterStore,
@@ -6528,8 +6538,9 @@ async fn retire_scalar_record(
     use gleaph_graph_kernel::plan_exec::{
         ScalarMutationRetirementAck, ScalarMutationRetirementArgs, ScalarMutationRetirementArgsV1,
     };
-    let Some((mutation_id, graph_canister, row_count)) = store.scalar_retirement_receipt(record)
-    else {
+    // The receipt is asked of the in-doubt view, which owns what a record can state about its own outcome.
+    let view = crate::facade::store::InDoubtView::new(store, crate::facade::store::ic_time_ns());
+    let Some((mutation_id, graph_canister, row_count)) = view.retirement_receipt(record) else {
         // No captured outcome means no receipt to state, so there is nothing to retire yet.
         return Ok(());
     };

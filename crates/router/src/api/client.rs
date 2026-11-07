@@ -88,7 +88,14 @@ fn mutation_status_for(
 ) -> Result<types::MutationStatus, RouterError> {
     let (_, record) = mutation_status_record(store, caller, graph_name, client_mutation_key)?;
     record.ensure_gql_mutation_family()?;
-    Ok(types::MutationStatus::from_record(&record))
+    // One owner for "can this mutation's outcome be established": the status reports whatever the in-doubt view
+    // concludes instead of deriving a second opinion from the lifecycle phase (ADR 0100).
+    let in_doubt =
+        crate::facade::store::InDoubtView::new(store, crate::facade::store::ic_time_ns());
+    Ok(types::MutationStatus::from_record_with_in_doubt(
+        &record,
+        in_doubt.classify(&record),
+    ))
 }
 
 fn atomic_insert_status_for(

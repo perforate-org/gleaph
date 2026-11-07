@@ -5312,6 +5312,198 @@ fn gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged(
     );
 }
 
+/// The in-doubt view owns the whole decision, so each entry is tested here rather than through a caller.
+mod in_doubt_view {
+    use super::*;
+    use crate::facade::store::{InDoubt, InDoubtResolution, InDoubtView, UNRESOLVED_AFTER_NS};
+
+    fn key(name: &str) -> ClientMutationKey {
+        ClientMutationKey::new(
+            Principal::from_slice(&[3; 29]),
+            tenant_main_graph_id(),
+            name.into(),
+        )
+    }
+
+    /// A scalar record with no dispatch envelope: nothing was sent, so nothing is in doubt.
+    fn unsent_record(created_at_ns: u64) -> RouterMutationRecord {
+        let mut record = RouterMutationRecord::new(7, created_at_ns, b"fp".to_vec());
+        record.as_v1_mut().routing_in_progress = false;
+        record
+    }
+
+    /// A record that reached a terminal verdict without ever capturing an outcome: terminal, owing nothing.
+    fn settled_record(created_at_ns: u64) -> RouterMutationRecord {
+        let mut record = unsent_record(created_at_ns);
+        record.as_v1_mut().terminal_failure = Some("failed before dispatch".into());
+        record.mark_terminal_at_ns(created_at_ns);
+        record
+    }
+
+    fn install(key: ClientMutationKey, record: RouterMutationRecord) {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
+            records.insert(key, record);
+        });
+    }
+
+    #[test]
+    fn classify_reports_each_state_once() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+
+        let fresh = unsent_record(1_000);
+        assert_eq!(
+            InDoubtView::new(&store, 1_100).classify(&fresh),
+            InDoubt::Converging,
+            "a record with no progress yet is the recovery driver's work"
+        );
+
+        let settled = settled_record(1_000);
+        assert_eq!(
+            InDoubtView::new(&store, 1_100).classify(&settled),
+            InDoubt::Settled,
+            "terminal with no stateable receipt owes nothing"
+        );
+
+        let mut owing = unsent_record(1_000);
+        owing.as_v1_mut().completed_row_count = Some(2);
+        owing.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
+            shards: vec![
+                crate::facade::stable::label_stats::RouterMutationShardV1::new(
+                    ShardId::new(0),
+                    Principal::from_slice(&[4; 29]),
+                    None,
+                ),
+            ],
+            retirement_acked: false,
+        };
+        owing.mark_terminal_at_ns(1_000);
+        assert_eq!(
+            InDoubtView::new(&store, 1_100).classify(&owing),
+            InDoubt::AwaitingRetirement,
+            "a terminal record that still owes its retirement converges without an operator"
+        );
+
+        let stale = unsent_record(1_000);
+        assert_eq!(
+            InDoubtView::new(&store, 1_000 + UNRESOLVED_AFTER_NS).classify(&stale),
+            InDoubt::Unresolved {
+                idle_ns: UNRESOLVED_AFTER_NS
+            },
+            "no progress past the reporting threshold needs an operator"
+        );
+    }
+
+    #[test]
+    fn next_action_only_speaks_for_states_that_need_it() {
+        assert_eq!(InDoubt::Settled.next_action(), None);
+        assert_eq!(InDoubt::Converging.next_action(), None);
+        assert!(InDoubt::AwaitingRetirement.next_action().is_some());
+        assert!(
+            InDoubt::Unresolved { idle_ns: 1 }
+                .next_action()
+                .expect("operator guidance")
+                .contains("resolve_in_doubt_mutation")
+        );
+    }
+
+    #[test]
+    fn scan_lists_only_unresolved_records_and_pages() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+
+        install(key("a-settled"), settled_record(1_000));
+        install(key("b-stale"), unsent_record(1_000));
+        install(key("c-fresh"), unsent_record(9_999_999_999_999));
+
+        let late = InDoubtView::new(&store, 1_000 + UNRESOLVED_AFTER_NS + 1);
+        let (found, last, scanned) = late.scan(None, 100);
+        assert_eq!(scanned, 3, "the scan walks the whole page it was given");
+        assert_eq!(found.len(), 1, "only the unresolved record is listed");
+        assert_eq!(found[0].0.client_key, "b-stale");
+        assert_eq!(found[0].1, UNRESOLVED_AFTER_NS + 1);
+        assert!(last.is_some(), "a paging cursor is returned");
+
+        let (first_page, cursor, _) = late.scan(None, 1);
+        assert!(first_page.is_empty(), "the first key in order is settled");
+        let (second_page, _, _) = late.scan(cursor.as_ref(), 1);
+        assert_eq!(second_page.len(), 1, "paging reaches the unresolved record");
+    }
+
+    #[test]
+    fn resolve_records_the_decision_and_releases_the_key() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+        let key = key("to-resolve");
+        install(key.clone(), unsent_record(1_000));
+
+        let late = InDoubtView::new(&store, 1_000 + UNRESOLVED_AFTER_NS + 1);
+        assert_eq!(
+            late.resolve(&key, InDoubtResolution::AbortInDoubt),
+            Ok(7),
+            "the view answers which mutation it resolved"
+        );
+        let resolved = store.router_mutation_record(&key).expect("record retained");
+        assert!(
+            resolved.is_terminal(),
+            "the decision makes the record terminal"
+        );
+        assert!(
+            resolved
+                .as_v1()
+                .terminal_failure
+                .as_deref()
+                .is_some_and(|reason| reason.contains("in-doubt")),
+            "the decision is durable and says what it was"
+        );
+        assert_eq!(
+            late.classify(&resolved),
+            InDoubt::Settled,
+            "a resolved mutation is no longer in doubt"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_a_mutation_that_is_not_unresolved() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+        let key = key("still-converging");
+        install(key.clone(), unsent_record(1_000));
+
+        let fresh = InDoubtView::new(&store, 1_100);
+        assert_eq!(
+            fresh.resolve(&key, InDoubtResolution::AbortInDoubt),
+            Err(RouterError::Conflict(
+                "mutation has no unresolved outcome to abort".into()
+            )),
+            "aborting a converging mutation would risk the late-commit race"
+        );
+        let unknown = ClientMutationKey::new(
+            Principal::from_slice(&[3; 29]),
+            tenant_main_graph_id(),
+            "unknown".into(),
+        );
+        assert_eq!(
+            InDoubtView::new(&store, 1_100).resolve(&unknown, InDoubtResolution::AbortInDoubt),
+            Err(RouterError::NotFound(
+                "client_mutation_key is not known".into()
+            ))
+        );
+    }
+}
+
 // ADR 0029 Phase 4: an unexpired routing lease blocks a concurrent owner, but a lease past
 // ROUTING_LEASE_TTL_NS is reclaimable (the previous owner trapped before persisting an
 // envelope, so no canonical write happened and reclaiming is safe).

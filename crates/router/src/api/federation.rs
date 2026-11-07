@@ -169,6 +169,58 @@ fn sweep_expired_mutation_keys(
     )
 }
 
+/// List the mutations whose outcome an operator must resolve, oldest idle first within a bounded page.
+///
+/// Read-only: it reports the same classification `mutation_status` uses and changes nothing. Page through it with the
+/// returned cursor until `done`.
+#[query]
+fn list_in_doubt_mutations(
+    args: types::AdminListInDoubtArgs,
+) -> Result<types::AdminListInDoubtResult, RouterError> {
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
+    let store = crate::facade::store::RouterStore::new();
+    let view = crate::facade::store::InDoubtView::new(&store, crate::facade::store::ic_time_ns());
+    let (found, last_examined, scanned) =
+        view.scan(args.start_after.as_ref(), args.max_scan as usize);
+    Ok(types::AdminListInDoubtResult {
+        unresolved: found
+            .into_iter()
+            .map(|(key, idle_ns)| types::InDoubtMutationV1 {
+                client_mutation_key: key.client_key.clone(),
+                idle_ns,
+            })
+            .collect(),
+        next_cursor: last_examined,
+        scanned,
+        done: (scanned as usize) < args.max_scan as usize,
+    })
+}
+
+/// Resolve one in-doubt mutation by recording the operator's verdict.
+///
+/// This is the only automatic-free path out of an in-doubt state: it writes the decision durably, then the retirement of
+/// the Graph evidence proceeds best-effort (a failed retirement leaves the evidence in place rather than losing the fact
+/// that a decision was made).
+#[update]
+async fn resolve_in_doubt_mutation(
+    args: types::AdminResolveInDoubtArgs,
+) -> Result<types::AdminResolveInDoubtResult, RouterError> {
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
+    let store = crate::facade::store::RouterStore::new();
+    let view = crate::facade::store::InDoubtView::new(&store, crate::facade::store::ic_time_ns());
+    let key = args.key;
+    let mutation_id = view.resolve(&key, crate::facade::store::InDoubtResolution::AbortInDoubt)?;
+    // Best-effort evidence release, through the same driver the recovery path uses (wasm-only: it makes an
+    // inter-canister call). A failed release leaves the evidence in place; the recorded decision is what matters.
+    #[cfg(target_family = "wasm")]
+    if let Some(record) = store.router_mutation_record(&key)
+        && record.scalar_retirement_pending()
+    {
+        let _ = crate::gql::retire_scalar_record_for_resolution(&store, &key, &record).await;
+    }
+    Ok(types::AdminResolveInDoubtResult { mutation_id })
+}
+
 /// Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
 /// cursor (`MANAGE_FEDERATION`). Use only when no step is in flight for the shard.
 #[update]

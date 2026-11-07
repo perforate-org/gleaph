@@ -5,6 +5,7 @@
 //! - [`catalogs`] — federated label and property name resolution
 //! - [`label_stats_projection`] — label stats projection from graph shard deltas (ADR 0015)
 //! - [`idempotency`] — mutation ids and client mutation keys
+//! - [`in_doubt`] — the operator-visible decision for a mutation whose outcome cannot be established
 //! - [`backfill`] — label, vertex property, and edge posting backfill cursors and shard orchestration
 
 mod backfill;
@@ -12,6 +13,10 @@ pub(crate) mod bulk_load;
 mod catalogs;
 mod idempotency;
 pub(crate) use idempotency::{ScalarDispatchGate, ScalarShardProgress};
+mod in_doubt;
+#[cfg(test)]
+pub(crate) use in_doubt::UNRESOLVED_AFTER_NS;
+pub(crate) use in_doubt::{InDoubt, InDoubtResolution, InDoubtView};
 mod label_stats_projection;
 pub(crate) mod provisioning;
 mod registry;
