@@ -359,6 +359,21 @@ guarantee requires a separate repair; the desired regression is red. The subsequ
 add continuation fencing, monotonic scalar count capture and fresh send checks, but do not retain
 unconfirmed Graph outcomes or introduce scalar retirement.
 
+> **Amendment (2026-11-07): scalar retirement is introduced, and it is the ordered families' own mechanism.**
+> A scalar Graph journal entry is now written `Active` and cannot be reclaimed by the age-only sweep; retention starts
+> only when its owner retires it, which is the predicate ADR 0049 already established for ordered mutations. The Router
+> owns the obligation: a terminal scalar record whose outcome it captured (and which therefore names a Graph canister)
+> is **pinned against TTL eviction** until `retire_scalar_mutation` acknowledges the exact receipt - the canonical row
+> count it recorded - and the recovery driver re-drives that call until it succeeds. The point of the pin is the
+> ordering: evicting the record first would leave nobody able to retire the evidence, which would then never be
+> reclaimed.
+>
+> **Implemented:** the retention rule, the retirement transition with its receipt comparison, the Router pin, the driver
+> and both sides' idempotence, each with owning tests. **Not yet validated end to end:** the PocketIC 11-fault
+> reproduction has not been re-run against this contract, so the "no re-execution after real GC" regression is still the
+> outstanding gate, and the Router-side instruction cost of the extra call remains measured but unaccepted
+> ([cost record](../investigations/2026-11-07-scalar-retirement-cost.md)). The Gap entry stays open until that run.
+
 There is no whole-chunk rollback or compensating-write contract. A terminal receipt counts
 completed row statements, and an aborted chunk's unwritten suffix is abandoned, not re-driven.
 The authored payload cannot be changed under the same chunk fingerprint; corrected input belongs

@@ -1269,6 +1269,19 @@ acceptance remain separate. See the movement-publication correction above.
   the safe direction - no evidence is lost - but it is not a shippable end state. The retirement transition is therefore
   not an optional follow-up: it lands next, and until it does this half must not be released.
 
+- **Second half landed, 2026-11-07: the retirement transition and the Router obligation.** The Graph exposes
+  `retire_scalar_mutation`, which retires only when the caller's captured receipt (the canonical row count) matches the
+  journaled entry, is idempotent, and makes a retired entry non-replayable. The Router records `retirement_acked` on the
+  scalar payload, **pins** a terminal record that still owes the retirement against TTL eviction (same shape as the
+  reservation/effect pins), and the recovery dispatcher drives the call until the acknowledgement is written. Tests:
+  `scalar_retirement_requires_the_captured_receipt_and_is_idempotent`,
+  `scalar_retirement_of_an_unknown_mutation_answers_none`,
+  `gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged`. router 1138, graph 1137, kernel 202.
+  **Remaining gate:** re-run the PocketIC 11-fault reproduction against this contract and promote "GC cannot erase
+  evidence that replay still permits - the retry replays instead of re-executing" into the owning test. Until that run
+  passes, this entry stays open, and the temporary growth the first half introduced is closed by this one only when the
+  driver has run for every mutation.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
