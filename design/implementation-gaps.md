@@ -2194,6 +2194,20 @@ are preserved, not relabeled.
   slice: they are the reason this is not a drive-by patch. Until then, treat the
   K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
 
+
+- **Repo-resident reproducer added, and the recorded shape does not reproduce (2026-11-07).** The open half of this entry
+  was a span reservation that grows a cover past a leaf mate, reproduced once from an audit probe that lived under
+  `$TMPDIR` and was never kept - so the claim could only be remembered, never checked. The shape is now
+  `leaf_mate_overlap_guard_holds_for_skewed_degree_mates` (`leaf_arena.rs`): a segment-16 leaf with one 160-degree hub
+  beside 48/24/12/8/3/1-degree mates on one label, with the overlap guard run for every mate. **It passes on this tree** -
+  that shape does not trip the guard - and the test stays as the regression floor so a future change that starts
+  overlapping a mate fails here with the guard's own message.
+- **Status wording narrowed accordingly:** the fold half remains closed by deletion (ADR 0097); the "second path" claim is
+  **not reproduced by the recorded degrees**. That is not the same as "gone": the probe's exact fixture is unavailable, so
+  the remaining question is whether the audit's shape needed a different construction (more mates per leaf, a different
+  insertion order, or the skew phase's promotion timing). Re-running the skew-phase audit with that shape is the next
+  step, and the test above is where its result belongs.
+
 ### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
 
 - **Status:** Open — deferred capability, recorded 2026-09-12.
