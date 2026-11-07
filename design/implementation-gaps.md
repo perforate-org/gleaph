@@ -69,48 +69,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   the same 16K IC fixture and the paired cursor diagnostic; if the quadratic term survives, record it as inherent with
   the measurement rather than re-opening the experiment log.
 
-### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — RESOLVED: the fold's bound is the view's, and production cannot pass one
-
-- **Status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
-  `next_leaf_vertex_edge_start`, now has its own LARA test - including the guard that an unwritten
-  row (capacity, not a live mate) contributes no edge position. What remains open is the fold's
-  end-to-end stop at that layer.
-- **Observed behavior:** the fix that stops a bucket's spill fold at the next leaf-mate's edge start
-  is covered by the graph-level fixture
-  (`inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which asserts the
-  arena's layout contract), but nothing at the layer that owns it asserts it. A future change to the
-  fold could pass every LARA test and only fail two layers up.
-- **Why the end-to-end assertion did not land:** the existing `physical_fixture` hard-codes the two
-  buckets' origins (100 and 68), and a doctored mate at `content_end + 1` made the compaction step
-  *relocate* the bucket instead of folding into the region - so the assertion passed even with the
-  clamp disabled, i.e. it had no teeth. A meaningful test has to force the fold path (call the fold
-  with the room the caller would compute) rather than the rebuild path, and that is its own unit.
-- **Status: RESOLVED 2026-11-07 structurally.** The bound moved into the view that owns the fold:
-  `BucketLayout::fold_head(src, room: FoldRoom)` takes a *room kind*, not a number. `FoldRoom::UntilNextLeafMate`
-  makes the view measure the region tail clamped at the next leaf-mate's edge start (the ADR 0098 rule); the numeric
-  `FoldRoom::At` variant is compiled only for `cfg(any(test, feature = "canbench"))`, so **a production caller cannot
-  compute a bound of its own** - the duplication that produced both this gap's toothless tests and the measured
-  three-rows-past-the-bound is now unrepresentable. The compaction step passes `UntilNextLeafMate` and its twenty-line
-  bound computation is deleted; a direct view test pins the fail-closed answer (a bucket with no leaf folds nothing
-  and writes nothing) and the bench fixture states its own room with `At`.
-- **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
-- **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
-- **Attempted 2026-11-07 and reverted, with the numbers it produced.** The attempt moved the physical fixture's
-  mate to `content_end + 1` (which `next_leaf_vertex_edge_start(v0)` does report, so the bound is set as intended),
-  then ran `compact_vertex_edge_span_one_step_with_span_policy` and asserted the fold stopped there. It did not: the
-  descriptor went from `edge_start = 100, stored = 3` to `stored = 7`, i.e. the fold absorbed three rows while the
-  bound allowed one (`content_end = 104`, mate at 105).
-- **What that means, precisely:** the fixture's "mate" is not the one the step reads. The two-bucket
-  `physical_fixture` writes vertex 1's descriptor through `publish_bucket_descriptor(1, ..)`, and
-  `next_leaf_vertex_edge_start` does see it (the pre-step assertion proves it), yet the step folded past it - so
-  the step's own computation of `free` differs from the pre-step helper call. Two candidates, neither measured:
-  the step reads `finalized.stored_slots()` after a finalize that changed the content end, or it takes the
-  relocation arm and folds against the relocated layout.
-- **Missing evidence for the next attempt:** print `free`, `limit`, `content_end` and `finalized.stored_slots()`
-  inside the step for this fixture, and assert the fold against those numbers rather than against a pre-step
-  reading. That is one print away, and it turns the earlier "no teeth" problem and this "too much room" problem
-  into a fixture fact.
-
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
@@ -497,39 +455,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `W/physical-layout-implementation/before-{export-verification,benchmark-results}.json` records
   successful install/measurement and unchanged original exports/saved results.
 
-### GAP-TINY-CURSOR-EXTENT — Cursor paging still treats tiny placement as empty
-
-- **Status:** Resolved for slice0381's bounded tiny cursor/selected-read contract; independently
-  approved. Disposition **Fix now**. Fixing commit: `fix(lara): preserve tiny cursor extent and
-  empty values`, on parent `7651d6e52`; the [implementation report](evidence/adr0097-tiny-cursor-extent.md#review-and-commit-boundary)
-  identifies the exact external commit receipt.
-- **Observed behavior:** The new `cursor_tiny_pages_keep_used_width` runtime regression confirms
-  a four-edge tiny bucket returns `(0, true)` for start0/limit1 instead of `(1, false)`.
-  `read_label_bucket_placement_info` deliberately reports zero slab/spill geometry for tiny;
-  the cursor incorrectly reconstructed its logical extent from that projection.
-- **Expected behavior:** The cursor must cover the descriptor's tombstone-inclusive used prefix;
-  placement capacity is not logical extent. See [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
-- **Owner:** `ic-stable-lara`, `labeled/graph/traverse.rs::visit_edges_from_slot_with_inline_property`;
-  public caller `DeferredBidirectionalLabeledLaraGraph::visit_forward_edges_from_slot_with_inline_property`.
-- **Evidence:** [Cursor extent repair](evidence/adr0097-tiny-cursor-extent.md); regression
-  `cursor_tiny_pages_keep_used_width` covers mirrored orientations, both orders, holes, exact
-  cursor pairs, zero limits, missing labels, empty buckets and unchanged stable-memory bytes.
-  `cursor_slab_pages_keep_retained_spill_and_values` covers independent retained edge/value planes.
-- **Necessary read prerequisite (Fix now):** The extent-only candidate reaches the shared
-  `visit_edges_at_with_inline_property` path, which interpreted a tiny slot2 tombstone as width65535
-  and read outside the value memory. A direct selected-property call reproduces the same failure.
-  That reader now dispatches Tiny/Tree/Slab before schema interpretation and reuses the existing
-  valueless selected-topology path for tiny; no cursor-specific decoder or fallback was added.
-- **Implemented boundary:** The normal bucket cursor resolves the descriptor and consumes the
-  existing `bucket_reserved_edge_slots` owner. Duplicate placement arithmetic is removed;
-  vertex-owned bypass width, canonical topology decoding, tree/slab value hydration,
-  page-end arithmetic and public signatures are unchanged.
-- **Impact:** The recorded false-exhaustion and native tombstone/schema failures are repaired.
-  The bounded runtime tests and both independent reviews pass; inherited strict lint remains failed.
-  No full-suite, canonical-lock, mutation or Graph integration approval is implied.
-- **Next decision:** The separate sparse slab work-bound gap below remains open. This repair is
-  separate from slice0380's full-label/rank/select contract, not a compatibility path.
-
 ### GAP-SPARSE-CURSOR-PREFIX — Sparse slab value pages can rescan the cursor prefix
 
 - **Status:** Open; disposition **Record here**, non-blocking for slice0381's tiny extent repair.
@@ -550,40 +475,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
 - **Next decision:** Design and measure the owning LARA cursor/value-rank contract in a separate
   slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
   or weakened runtime assertion is introduced by slice0381.
-
-### GAP-2026-09-22-006 — Selected tree inline-property hydration used slab live ranks
-
-- **Status:** Resolved in `036649e67` for the bounded selected-read contract; independently
-  approved through `f297706ab`. No mutation or general performance/atomicity/space/PocketIC/
-  lifecycle/landing approval.
-- **Historical behavior:** At `a80d2e1ac`, the direct selected-property path obtains canonical
-  topology, then calls `bucket_live_ordinal_at_edge_slot` and slab/run value helpers for trees.
-  Genuine 1025-position trees with four transcribed holes panic in the slab collector:
-  `slab row must have exactly degree live edges among stored slots` (1025 versus1021 for width8/33;
-  1023 versus1021 for width0). The saved backtrace reaches the selected visitor, not setup or bulk
-  traversal. The first corrupt-property-root case is preempted by the same rank panic.
-- **Expected behavior:** The [selected-read contract](adr/0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability)
-  uses native property positions for trees and independent live-value ranks for slab/run storage.
-- **Owner/fix:** `graph/traverse.rs::visit_edges_at_with_inline_property` dispatches tree reads
-  before slab rank/value interpretation, reusing canonical point state and
-  `tree_read::read_property_value_at_slot`. Its slot-window and `Traversal` callers share the fix.
-  Three unused private point-hydration helpers are deleted rather than acquiring another mode
-  dispatch. Native bulk visitors, value/rank mutation helpers and writers are unchanged.
-- **Evidence:** [Five read witnesses and source-pinned red/green evidence](evidence/adr0097-selected-tree-properties.md):
-  `selected_property_tree_eight_byte_boundaries`, `selected_property_tree_thirty_three_byte_boundaries`,
-  `selected_property_tree_zero_width`, `selected_property_tree_corrupt_roots_propagate`, and
-  `selected_property_retained_independent_planes`. Four runtime failures plus one already-correct
-  retained-plane control become five passes. Native cases preserve all16 backing memories.
-  Final corruption checks reject requested bad roots exactly and allow sparse reads of other
-  leaves; no new error-after-Break rule is asserted. A wrong native value-position mutation fails.
-- **Impact/limits:** Selected live-only output now hydrates native values correctly in the tested
-  width8/33/depth1 boundary cases. Raw bulk traversal stays tombstone-inclusive. This is not a
-  Graph/mate-cache transaction, deeper-tree/new-width matrix, live mutation or failure-atomicity proof.
-  The unchanged scalar control is6214→6218 instructions (+4), not native-tree pricing or a regression waiver.
-- **Next decision:** Review this read slice independently. Mutation still requires the bounded
-  GAP003 demotion contract: joint live edge/value selection, positions or complete movement
-  publication, combined-root reservation and prepare/publish/retire failure boundaries. Do not
-  replace that design with a value filter or remove the live-deletion assertion alone.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
@@ -2112,7 +2003,127 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `adr0057_durable_bulk_load.rs::a_lost_prefix_record_still_settles_once_after_the_retention_window` is the defect's own
   shape: Graph commits, the Router's callback traps, both retention windows pass, and the identical retry settles the row
   **once** (one receipt, one updated row) from the surviving receipt. Native: router 1143, graph 1137, kernel 202.
-- **Stuck sagas are in-doubt transactions, not garbage.** A saga that never reaches terminal cannot be retired, so its
+- **Stuck sagas are in-do## Resolved gaps
+
+> Three entries moved here on 2026-11-07 because their own bodies recorded a resolution that the open list was still
+> carrying: the fold bound (structural, `FoldRoom`), the tiny cursor extent (fixed and independently approved), and the
+> selected tree inline-property hydration (fixed and approved). Their excluded scopes are tracked, not dropped: mutation
+> on a tree bucket is `GAP-2026-09-22-004` (resolved) and the remaining compaction read cost is `GAP-2026-11-07-001`.
+
+### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — RESOLVED: the fold's bound is the view's, and production cannot pass one
+
+> **Status header corrected 2026-11-07:** the line below records the 2026-11-03 partial state, which the later
+> structural resolution (**RESOLVED 2026-11-07 structurally**, below) superseded. Kept as written so the history of
+> *why* the end-to-end assertion could not land stays legible.
+
+- **Then-status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
+  `next_leaf_vertex_edge_start`, now has its own LARA test - including the guard that an unwritten
+  row (capacity, not a live mate) contributes no edge position. What remains open is the fold's
+  end-to-end stop at that layer.
+- **Observed behavior:** the fix that stops a bucket's spill fold at the next leaf-mate's edge start
+  is covered by the graph-level fixture
+  (`inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which asserts the
+  arena's layout contract), but nothing at the layer that owns it asserts it. A future change to the
+  fold could pass every LARA test and only fail two layers up.
+- **Why the end-to-end assertion did not land:** the existing `physical_fixture` hard-codes the two
+  buckets' origins (100 and 68), and a doctored mate at `content_end + 1` made the compaction step
+  *relocate* the bucket instead of folding into the region - so the assertion passed even with the
+  clamp disabled, i.e. it had no teeth. A meaningful test has to force the fold path (call the fold
+  with the room the caller would compute) rather than the rebuild path, and that is its own unit.
+- **Status: RESOLVED 2026-11-07 structurally.** The bound moved into the view that owns the fold:
+  `BucketLayout::fold_head(src, room: FoldRoom)` takes a *room kind*, not a number. `FoldRoom::UntilNextLeafMate`
+  makes the view measure the region tail clamped at the next leaf-mate's edge start (the ADR 0098 rule); the numeric
+  `FoldRoom::At` variant is compiled only for `cfg(any(test, feature = "canbench"))`, so **a production caller cannot
+  compute a bound of its own** - the duplication that produced both this gap's toothless tests and the measured
+  three-rows-past-the-bound is now unrepresentable. The compaction step passes `UntilNextLeafMate` and its twenty-line
+  bound computation is deleted; a direct view test pins the fail-closed answer (a bucket with no leaf folds nothing
+  and writes nothing) and the bench fixture states its own room with `At`.
+- **Owner:** `crates/ic-stable-lara/src/labeled/graph/compact.rs` tests.
+- **Evidence:** the reverted attempt, and the graph-level fixture that currently covers the behaviour.
+- **Attempted 2026-11-07 and reverted, with the numbers it produced.** The attempt moved the physical fixture's
+  mate to `content_end + 1` (which `next_leaf_vertex_edge_start(v0)` does report, so the bound is set as intended),
+  then ran `compact_vertex_edge_span_one_step_with_span_policy` and asserted the fold stopped there. It did not: the
+  descriptor went from `edge_start = 100, stored = 3` to `stored = 7`, i.e. the fold absorbed three rows while the
+  bound allowed one (`content_end = 104`, mate at 105).
+- **What that means, precisely:** the fixture's "mate" is not the one the step reads. The two-bucket
+  `physical_fixture` writes vertex 1's descriptor through `publish_bucket_descriptor(1, ..)`, and
+  `next_leaf_vertex_edge_start` does see it (the pre-step assertion proves it), yet the step folded past it - so
+  the step's own computation of `free` differs from the pre-step helper call. Two candidates, neither measured:
+  the step reads `finalized.stored_slots()` after a finalize that changed the content end, or it takes the
+  relocation arm and folds against the relocated layout.
+- **Missing evidence for the next attempt:** print `free`, `limit`, `content_end` and `finalized.stored_slots()`
+  inside the step for this fixture, and assert the fold against those numbers rather than against a pre-step
+  reading. That is one print away, and it turns the earlier "no teeth" problem and this "too much room" problem
+  into a fixture fact.
+
+### GAP-TINY-CURSOR-EXTENT — Cursor paging still treats tiny placement as empty
+
+- **Status:** Resolved for slice0381's bounded tiny cursor/selected-read contract; independently
+  approved. Disposition **Fix now**. Fixing commit: `fix(lara): preserve tiny cursor extent and
+  empty values`, on parent `7651d6e52`; the [implementation report](evidence/adr0097-tiny-cursor-extent.md#review-and-commit-boundary)
+  identifies the exact external commit receipt.
+- **Observed behavior:** The new `cursor_tiny_pages_keep_used_width` runtime regression confirms
+  a four-edge tiny bucket returns `(0, true)` for start0/limit1 instead of `(1, false)`.
+  `read_label_bucket_placement_info` deliberately reports zero slab/spill geometry for tiny;
+  the cursor incorrectly reconstructed its logical extent from that projection.
+- **Expected behavior:** The cursor must cover the descriptor's tombstone-inclusive used prefix;
+  placement capacity is not logical extent. See [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
+- **Owner:** `ic-stable-lara`, `labeled/graph/traverse.rs::visit_edges_from_slot_with_inline_property`;
+  public caller `DeferredBidirectionalLabeledLaraGraph::visit_forward_edges_from_slot_with_inline_property`.
+- **Evidence:** [Cursor extent repair](evidence/adr0097-tiny-cursor-extent.md); regression
+  `cursor_tiny_pages_keep_used_width` covers mirrored orientations, both orders, holes, exact
+  cursor pairs, zero limits, missing labels, empty buckets and unchanged stable-memory bytes.
+  `cursor_slab_pages_keep_retained_spill_and_values` covers independent retained edge/value planes.
+- **Necessary read prerequisite (Fix now):** The extent-only candidate reaches the shared
+  `visit_edges_at_with_inline_property` path, which interpreted a tiny slot2 tombstone as width65535
+  and read outside the value memory. A direct selected-property call reproduces the same failure.
+  That reader now dispatches Tiny/Tree/Slab before schema interpretation and reuses the existing
+  valueless selected-topology path for tiny; no cursor-specific decoder or fallback was added.
+- **Implemented boundary:** The normal bucket cursor resolves the descriptor and consumes the
+  existing `bucket_reserved_edge_slots` owner. Duplicate placement arithmetic is removed;
+  vertex-owned bypass width, canonical topology decoding, tree/slab value hydration,
+  page-end arithmetic and public signatures are unchanged.
+- **Impact:** The recorded false-exhaustion and native tombstone/schema failures are repaired.
+  The bounded runtime tests and both independent reviews pass; inherited strict lint remains failed.
+  No full-suite, canonical-lock, mutation or Graph integration approval is implied.
+- **Next decision:** The separate sparse slab work-bound gap below remains open. This repair is
+  separate from slice0380's full-label/rank/select contract, not a compatibility path.
+
+### GAP-2026-09-22-006 — Selected tree inline-property hydration used slab live ranks
+
+- **Status:** Resolved in `036649e67` for the bounded selected-read contract; independently
+  approved through `f297706ab`. No mutation or general performance/atomicity/space/PocketIC/
+  lifecycle/landing approval.
+- **Historical behavior:** At `a80d2e1ac`, the direct selected-property path obtains canonical
+  topology, then calls `bucket_live_ordinal_at_edge_slot` and slab/run value helpers for trees.
+  Genuine 1025-position trees with four transcribed holes panic in the slab collector:
+  `slab row must have exactly degree live edges among stored slots` (1025 versus1021 for width8/33;
+  1023 versus1021 for width0). The saved backtrace reaches the selected visitor, not setup or bulk
+  traversal. The first corrupt-property-root case is preempted by the same rank panic.
+- **Expected behavior:** The [selected-read contract](adr/0050-lara-traverse-read-api.md#7-selected-slot-reads-remain-a-first-class-capability)
+  uses native property positions for trees and independent live-value ranks for slab/run storage.
+- **Owner/fix:** `graph/traverse.rs::visit_edges_at_with_inline_property` dispatches tree reads
+  before slab rank/value interpretation, reusing canonical point state and
+  `tree_read::read_property_value_at_slot`. Its slot-window and `Traversal` callers share the fix.
+  Three unused private point-hydration helpers are deleted rather than acquiring another mode
+  dispatch. Native bulk visitors, value/rank mutation helpers and writers are unchanged.
+- **Evidence:** [Five read witnesses and source-pinned red/green evidence](evidence/adr0097-selected-tree-properties.md):
+  `selected_property_tree_eight_byte_boundaries`, `selected_property_tree_thirty_three_byte_boundaries`,
+  `selected_property_tree_zero_width`, `selected_property_tree_corrupt_roots_propagate`, and
+  `selected_property_retained_independent_planes`. Four runtime failures plus one already-correct
+  retained-plane control become five passes. Native cases preserve all16 backing memories.
+  Final corruption checks reject requested bad roots exactly and allow sparse reads of other
+  leaves; no new error-after-Break rule is asserted. A wrong native value-position mutation fails.
+- **Impact/limits:** Selected live-only output now hydrates native values correctly in the tested
+  width8/33/depth1 boundary cases. Raw bulk traversal stays tombstone-inclusive. This is not a
+  Graph/mate-cache transaction, deeper-tree/new-width matrix, live mutation or failure-atomicity proof.
+  The unchanged scalar control is6214→6218 instructions (+4), not native-tree pricing or a regression waiver.
+- **Next decision:** Review this read slice independently. Mutation still requires the bounded
+  GAP003 demotion contract: joint live edge/value selection, positions or complete movement
+  publication, combined-root reservation and prepare/publish/retire failure boundaries. Do not
+  replace that design with a value filter or remove the live-deletion assertion alone.
+
+not garbage.** A saga that never reaches terminal cannot be retired, so its
   evidence is retained indefinitely (~47 B + key). That is deliberate and now visible and decidable rather than silent:
   `InDoubtView` classifies it past a one-day reporting threshold, `list_in_doubt_mutations` lists it, and
   `resolve_in_doubt_mutation` records an operator's verdict durably. Automatic resolution was rejected on structure -
