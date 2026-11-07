@@ -154,6 +154,24 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   public stale-replay reachability are not claimed by native queue reopen. Root repair, selected codec,
   workload costs, adoption and0394 remain separately gated.0397's error-drop premise remains false.
 
+
+- **Status narrowed to one runtime gate (2026-11-07).** Everything the entry lists as scoped validation is landed and
+  coverable natively - the admission/schema/account sharing, prepared publication, the terminal-cancel-versus-retry split,
+  and the queue-identity-across-reopen witness
+  (`materialize_owner_queue_identity_preserves_retry_progress_across_reopen`,
+  `materialize_owner_worker_retry_scenario`, `materialize_owner_codec_rejects_terminal_and_malformed_pending_states`). What
+  the entry itself says native reopen cannot claim is the remainder: **actual timer, upgrade and rollback behaviour, and
+  public stale-replay reachability**. That is a PocketIC fixture, not a code change, and no amount of reading closes it.
+- **The fixture it needs, stated so it can be written once:** declare an inline-property width on a label that already holds
+  rows (which enqueues `MaterializeInlinePropertyStreamV2`), drive one bounded step, `upgrade_canister` the graph shard
+  (`wasm_bytes("GRAPH_WASM")`, the same call `adr0023_index_store_consistency` uses), then drain with
+  `drain_maintenance_via_timer` and require: the materialized stream is the one that was in progress (not a second one), the
+  queue identity and cursor survive the upgrade, and a replayed stale step is refused rather than republished. Every helper
+  it needs already exists in `pocket-ic-tests`.
+- **Why it was not written in this slice:** writing a PocketIC fixture and leaving it unrun would be worse than recording the
+  recipe - a test that has never executed establishes nothing, and the entry's own history is a long record of exactly that
+  kind of claim.
+
 ### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
 
 - **Status:** Planned / STOP at tree-resident source contract; the shared-publisher probe is
