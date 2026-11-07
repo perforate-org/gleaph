@@ -1264,6 +1264,11 @@ acceptance remain separate. See the movement-publication correction above.
   that calls it after outcome capture and projection, plus the pin that keeps the record until it is acknowledged. No
   scalar entry is retired yet, so the evidence is simply retained; end-to-end PocketIC re-validation is outstanding.
 
+- **Temporary consequence of the first half, and why it must be finished:** nothing retires a scalar entry yet, so every
+  scalar mutation's evidence is retained and the journal **grows without bound** (about 47 B + key per mutation). That is
+  the safe direction - no evidence is lost - but it is not a shippable end state. The retirement transition is therefore
+  not an optional follow-up: it lands next, and until it does this half must not be released.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
