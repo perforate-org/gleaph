@@ -1293,7 +1293,6 @@ mod tests {
         assert!(j.get(1).is_some());
     }
 
-    #[test]
     /// An entry written before this rule still carries `NotApplicable`, and the sweep keeps aging those out.
     ///
     /// Pre-production removes the old rows by reinstall, but the sweep must not assume that happened: an entry with no

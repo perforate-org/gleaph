@@ -159,6 +159,14 @@ fn retire_ordered_mutation(
     canister::handlers::retire_ordered_mutation(args)
 }
 
+/// Router → graph: retire an exact scalar outcome once its replay permission ends (ADR 0027 amendment).
+#[update(guard = "guard_router_canister")]
+fn retire_scalar_mutation(
+    args: gleaph_graph_kernel::plan_exec::ScalarMutationRetirementArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::ScalarMutationRetirementAck, String> {
+    canister::handlers::retire_scalar_mutation(args)
+}
+
 /// Router → graph: fingerprint-bound ordered mixed mutation retirement (ADR 0049).
 #[update(guard = "guard_router_canister")]
 fn retire_ordered_mixed_mutation(

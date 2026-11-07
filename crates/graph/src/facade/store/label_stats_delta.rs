@@ -13,7 +13,8 @@ use gleaph_graph_kernel::plan_exec::{
     LabelStatsDeltaEventWire, MutationId, MutationJournalState, OrderedMixedMutationRetirementAck,
     OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck,
     OrderedMutationRetirementAckV1, OrderedVertexMutationRetirementAck,
-    OrderedVertexMutationRetirementAckV1, ShardEventSeq,
+    OrderedVertexMutationRetirementAckV1, ScalarMutationRetirementAck,
+    ScalarMutationRetirementAckV1, ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -85,6 +86,18 @@ impl GraphStore {
         };
         if entry.request_identity() != expected_identity {
             return Err("mutation journal identity conflicts with replay request");
+        }
+        // A retired **scalar** entry cannot be replayed: retiring it is the Router's declaration that it will not retry the
+        // mutation, so a replay request for it is a caller bug - the Router only retires a record whose outcome it
+        // captured - and it fails closed instead of serving an outcome the family has closed. The ordered families keep
+        // their own answer for this state (`…ReplayResult::MutationRetired`), so the refusal is scoped by identity.
+        if expected_identity == &GraphMutationRequestIdentityV1::PlanExecution
+            && matches!(
+                entry.retirement(),
+                GraphMutationRetirementV1::Retired { .. }
+            )
+        {
+            return Err("mutation journal entry is retired and cannot be replayed");
         }
         // Re-validate the durable state at the owner boundary before exposing it to a replay
         // caller. This also rejects an ordered entry that was somehow persisted incompletely.
@@ -653,6 +666,75 @@ impl GraphStore {
             emitted_delta_last_seq,
             hot_forward_vertices,
         );
+    }
+
+    /// Retires one scalar mutation's journal evidence: the last step that lets retention reclaim it.
+    ///
+    /// **The caller states the receipt it captured**, and the transition refuses unless the journaled entry agrees with it
+    /// exactly. That is what makes retirement a claim about *this* outcome rather than about whatever entry happens to
+    /// carry the id: a stale retirement (a retried attempt whose capture differs) fails instead of removing evidence for a
+    /// different result. Retiring is idempotent - a second call with the same receipt answers the same ack - because the
+    /// Router re-drives it until it succeeds.
+    pub(crate) fn retire_scalar_mutation_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+    ) -> Result<Option<ScalarMutationRetirementAck>, &'static str> {
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let Some(mut entry) = journal.get(mutation_id) else {
+                return Ok(None);
+            };
+            if entry.request_identity() != &GraphMutationRequestIdentityV1::PlanExecution {
+                return Err("scalar retirement requires a plan-execution journal entry");
+            }
+            if !entry.is_completed() {
+                return Err("scalar retirement requires a completed journal entry");
+            }
+            if entry.row_count() != row_count
+                || entry.emitted_delta_first_seq() != emitted_delta_first_seq
+                || entry.emitted_delta_last_seq() != emitted_delta_last_seq
+            {
+                return Err("scalar retirement receipt conflicts with the journal entry");
+            }
+            match entry.retirement() {
+                GraphMutationRetirementV1::Active => {
+                    entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: now_ns });
+                    journal.insert(entry);
+                }
+                // Idempotent: the Router may re-drive this after a lost reply.
+                GraphMutationRetirementV1::Retired { .. } => {}
+                GraphMutationRetirementV1::NotApplicable => {
+                    return Err("scalar journal entry has no retirement state");
+                }
+            }
+            let ack = ScalarMutationRetirementAck::V1(ScalarMutationRetirementAckV1 {
+                mutation_id,
+                row_count,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
+            });
+            ack.validate()?;
+            Ok(Some(ack))
+        })
+    }
+
+    pub(crate) fn retire_scalar_mutation(
+        &self,
+        mutation_id: MutationId,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+    ) -> Result<Option<ScalarMutationRetirementAck>, &'static str> {
+        self.retire_scalar_mutation_at(
+            ic_time_ns(),
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+        )
     }
 
     pub(crate) fn retire_ordered_mutation_at(
@@ -1383,6 +1465,101 @@ mod tests {
             .expect("identity matches")
             .expect("the evidence survives the sweep");
         assert_eq!(replayed.row_count(), 2, "replay answers the recorded count");
+    }
+
+    /// Retirement is an exact claim about one captured outcome, and it is idempotent.
+    ///
+    /// The Router re-drives a retirement until it sees the acknowledgement, so the second call must answer the same ack;
+    /// and a retirement whose receipt disagrees with the journaled entry must fail, because accepting it would start
+    /// retention on evidence for a **different** result.
+    #[test]
+    fn scalar_retirement_requires_the_captured_receipt_and_is_idempotent() {
+        let store = GraphStore::new();
+        let mutation_id = 5_001;
+        store.commit_record_completed_mutation_journal_at(
+            10,
+            mutation_id,
+            3,
+            Some(7),
+            Some(9),
+            Vec::new(),
+        );
+        store.commit_record_completed_mutation_journal_at(
+            10,
+            5_002,
+            3,
+            Some(7),
+            Some(9),
+            Vec::new(),
+        );
+
+        // A receipt that disagrees with the entry retires nothing.
+        assert_eq!(
+            store.retire_scalar_mutation_at(20, mutation_id, 4, Some(7), Some(9)),
+            Err("scalar retirement receipt conflicts with the journal entry")
+        );
+        assert_eq!(
+            store.retire_scalar_mutation_at(20, mutation_id, 3, Some(7), None),
+            Err("scalar retirement receipt conflicts with the journal entry")
+        );
+        assert_eq!(
+            store
+                .mutation_journal_entry(mutation_id)
+                .expect("entry")
+                .retirement(),
+            &GraphMutationRetirementV1::Active,
+            "a refused retirement leaves the entry active"
+        );
+
+        let ack = store
+            .retire_scalar_mutation_at(20, mutation_id, 3, Some(7), Some(9))
+            .expect("exact receipt retires")
+            .expect("acknowledged");
+        let repeated = store
+            .retire_scalar_mutation_at(30, mutation_id, 3, Some(7), Some(9))
+            .expect("repeat retirement")
+            .expect("repeat ack");
+        assert_eq!(
+            ack, repeated,
+            "retirement is idempotent for the Router's re-drive"
+        );
+        assert_eq!(
+            store
+                .mutation_journal_entry(mutation_id)
+                .expect("entry")
+                .retirement(),
+            &GraphMutationRetirementV1::Retired { at_ns: 20 },
+            "the first retirement's timestamp is the one that starts retention"
+        );
+
+        // A retired scalar entry is not replayable: retirement is the Router's declaration that it will not retry.
+        assert_eq!(
+            store.mutation_journal_entry_for_replay(
+                mutation_id,
+                &GraphMutationRequestIdentityV1::PlanExecution
+            ),
+            Err("mutation journal entry is retired and cannot be replayed")
+        );
+        // Its sibling with the same receipt is untouched - retirement names one mutation, not a receipt.
+        assert_eq!(
+            store
+                .mutation_journal_entry(5_002)
+                .expect("sibling")
+                .retirement(),
+            &GraphMutationRetirementV1::Active
+        );
+    }
+
+    /// A retirement for an id the journal never held answers `None`, and an unknown id is not an error.
+    #[test]
+    fn scalar_retirement_of_an_unknown_mutation_answers_none() {
+        let store = GraphStore::new();
+        assert!(
+            store
+                .retire_scalar_mutation_at(20, 9_999, 0, None, None)
+                .expect("no entry is not a failure")
+                .is_none()
+        );
     }
 
     /// Once the owner retires the entry, retention starts from the retirement and the sweep may erase it.

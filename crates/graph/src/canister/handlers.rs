@@ -39,7 +39,7 @@ use gleaph_graph_kernel::plan_exec::{
     OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
     OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphRequest,
     OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
-    SeedBindingsWire, ShardEventSeq,
+    ScalarMutationRetirementAck, ScalarMutationRetirementArgs, SeedBindingsWire, ShardEventSeq,
 };
 
 use super::types::GraphInitArgs;
@@ -1654,6 +1654,26 @@ pub fn retire_ordered_mutation(
         .retire_ordered_mutation(args.mutation_id, args.graph_request_fingerprint)
         .map_err(str::to_string)?
         .ok_or_else(|| "ordered mutation journal entry not found".to_string())
+}
+
+/// Router → graph: retire an exact scalar (PlanExecution) outcome once its replay permission is over.
+///
+/// This is the last step of the scalar lifetime: while an entry is `Active` the age-only sweep leaves it alone, and this
+/// call is what starts its retention. The caller passes the receipt it captured, so a retirement can never remove
+/// evidence for a different result.
+pub fn retire_scalar_mutation(
+    args: ScalarMutationRetirementArgs,
+) -> Result<ScalarMutationRetirementAck, String> {
+    let ScalarMutationRetirementArgs::V1(args) = args;
+    GraphStore::new()
+        .retire_scalar_mutation(
+            args.mutation_id,
+            args.row_count,
+            args.emitted_delta_first_seq,
+            args.emitted_delta_last_seq,
+        )
+        .map_err(str::to_string)?
+        .ok_or_else(|| "scalar mutation journal entry not found".to_string())
 }
 
 /// Router → graph: retire an exact ordered mixed mutation after projection convergence.

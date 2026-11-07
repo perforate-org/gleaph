@@ -1555,6 +1555,53 @@ pub struct OrderedMutationRetirementArgsV1 {
     pub graph_request_fingerprint: [u8; 32],
 }
 
+/// Arguments for scalar (PlanExecution) mutation retirement.
+///
+/// A scalar mutation has no request fingerprint: its journal identity is the family itself
+/// (`GraphMutationRequestIdentityV1::PlanExecution`), so the exact identity a retirement confirms is the
+/// **durable receipt** the caller already holds - the row count and the label-stats sequence range it captured. Requiring
+/// them is what makes a stale or mismatched retirement fail instead of retiring someone else's outcome.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ScalarMutationRetirementArgs {
+    V1(ScalarMutationRetirementArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ScalarMutationRetirementArgsV1 {
+    pub mutation_id: MutationId,
+    pub row_count: u64,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
+}
+
+/// Graph-owned acknowledgement for scalar mutation retirement: the receipt the retirement confirmed.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ScalarMutationRetirementAck {
+    V1(ScalarMutationRetirementAckV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ScalarMutationRetirementAckV1 {
+    pub mutation_id: MutationId,
+    pub row_count: u64,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
+}
+
+impl ScalarMutationRetirementAck {
+    /// The acknowledgement must echo the receipt it retired; a caller compares it before dropping its own obligation.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(ack) => {
+                if ack.row_count > i64::MAX as u64 {
+                    return Err("scalar retirement receipt row_count is not a receipt value");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Arguments for vertex-only ordered mutation retirement.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum OrderedVertexMutationRetirementArgs {
