@@ -291,6 +291,68 @@ pub(crate) struct LtbRawBlockStore<M: Memory, E: CsrEdge> {
     record_marker: PhantomData<E>,
 }
 
+/// A set of LTB blocks reserved for one operation, released as a set if the operation does not commit.
+///
+/// Both trees reserve ids before writing payloads and both used to spell the rollback out by hand - a
+/// `for id in ids.iter().rev() { release(id) }` loop repeated at every failure point in a function, twice in the edge
+/// deepen and twice in the property deepen. A loop can be copied without one of its call sites, and an id that is
+/// released while a published root still names it is exactly how two leaves come to share one payload.
+///
+/// The reservation owns the ids: dropping it uncommitted returns every block, committing hands them over and the drop
+/// becomes a no-op. There is no third state to forget.
+pub(crate) struct LtbBlockReservation<'a, M: Memory, E: CsrEdge> {
+    ltb: &'a LtbRawBlockStore<M, E>,
+    ids: Vec<u32>,
+    committed: bool,
+}
+
+impl<'a, M: Memory, E: CsrEdge> LtbBlockReservation<'a, M, E> {
+    /// Mints `count` ids, releasing those already taken if a mint fails.
+    pub(crate) fn reserve(
+        ltb: &'a LtbRawBlockStore<M, E>,
+        count: u32,
+    ) -> Result<Self, crate::GrowFailed> {
+        let mut ids = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            match ltb.mint() {
+                Ok(id) => ids.push(id),
+                Err(error) => {
+                    for id in ids.into_iter().rev() {
+                        let _ = ltb.release(id);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(Self {
+            ltb,
+            ids,
+            committed: false,
+        })
+    }
+
+    /// The ids this reservation holds, in mint order.
+    pub(crate) fn ids(&self) -> &[u32] {
+        &self.ids
+    }
+
+    /// Hands the ids to the caller: the tree now owns them and the drop releases nothing.
+    pub(crate) fn commit(mut self) -> Vec<u32> {
+        self.committed = true;
+        std::mem::take(&mut self.ids)
+    }
+}
+
+impl<M: Memory, E: CsrEdge> Drop for LtbBlockReservation<'_, M, E> {
+    fn drop(&mut self) {
+        if !self.committed {
+            for id in self.ids.drain(..).rev() {
+                let _ = self.ltb.release(id);
+            }
+        }
+    }
+}
+
 impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
     /// Block payload in bytes: one edge record per slot, `EDGES_PER_BLOCK` slots.
     ///

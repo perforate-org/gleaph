@@ -449,6 +449,22 @@ where
                             Vec::new()
                         };
                         value_children.push(entry_id);
+                        // **Pointers last.** The leaf's payload is written before anything names it, exactly as the
+                        // edge side writes a row before the root that indexes it: a root written first names a block
+                        // whose payload write can still fail, and the failure path then releases a block the published
+                        // root still points at - so the next mint hands that id out again and two leaves alias one
+                        // payload (`DuplicateBlockMinted { id: 1 }` in the property scan test).
+                        if let Err(e) =
+                            graph
+                                .ltb()
+                                .write_payload_partial(plan.leaf_id, 0, property_value)
+                        {
+                            release_property_plan::<E, M>(graph, &plan);
+                            let _ = graph
+                                .edges()
+                                .release_span(new_combined, u64::from(new_combined_len));
+                            return Err(LabeledOperationError::LtbBlock(e));
+                        }
                         if graph
                             .tree_plane(*bucket)
                             .write_roots::<E>(new_combined, &edge_root_image, &value_children)
@@ -461,19 +477,6 @@ where
                             return Err(
                                 LabeledOperationError::from(LaraOperationError::overflow()),
                             );
-                        }
-                        // Write the property value at row 0 of the new
-                        // leaf (slot is a K boundary → row 0).
-                        if let Err(e) =
-                            graph
-                                .ltb()
-                                .write_payload_partial(plan.leaf_id, 0, property_value)
-                        {
-                            release_property_plan::<E, M>(graph, &plan);
-                            let _ = graph
-                                .edges()
-                                .release_span(new_combined, u64::from(new_combined_len));
-                            return Err(LabeledOperationError::LtbBlock(e));
                         }
                         new_combined
                     }
@@ -702,19 +705,13 @@ where
     );
     let b = u32::try_from(crate::labeled::tree_csr::B).expect("B fits u32");
     let new_interior_count = old_root_len.div_ceil(b);
-    // 1. Reserve: mint the interior blocks (LIFO rollback).
-    let mut interior_ids: Vec<u32> = Vec::with_capacity(new_interior_count as usize);
-    for _ in 0..new_interior_count {
-        match graph.ltb().mint() {
-            Ok(id) => interior_ids.push(id),
-            Err(e) => {
-                for &id in interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                return Err(LabeledOperationError::from(e));
-            }
-        }
-    }
+    // 1. Reserve: the reservation owns the ids and returns them if this function does not commit.
+    let reservation = crate::labeled::ltb_raw_block_store::LtbBlockReservation::reserve(
+        graph.ltb(),
+        new_interior_count,
+    )
+    .map_err(LabeledOperationError::from)?;
+    let interior_ids: Vec<u32> = reservation.ids().to_vec();
     // 2. Mark each interior as `InlinePropertyInterior` (level d').
     for &id in &interior_ids {
         let header = crate::labeled::ltb_raw_block_store::BlockHeader {
@@ -736,17 +733,12 @@ where
     for &interior_id in &interior_ids {
         let remaining = (old_root_len as usize) - cursor;
         let this_block_count = remaining.min(b as usize);
-        if let Err(e) = graph.ltb().write_payload_partial(
+        graph.ltb().write_payload_partial(
             interior_id,
             0,
             &old_root_bytes
                 [cursor * PROPERTY_ID_BYTES..(cursor + this_block_count) * PROPERTY_ID_BYTES],
-        ) {
-            for &id in interior_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            return Err(LabeledOperationError::LtbBlock(e));
-        }
+        )?;
         cursor += this_block_count;
     }
     debug_assert_eq!(cursor, old_root_len as usize);
@@ -766,11 +758,9 @@ where
         )
         .is_err()
     {
-        for &id in interior_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
+    let _ = reservation.commit();
     Ok(())
 }
 
@@ -2467,19 +2457,14 @@ where
         (new_interior_count as usize) < (old_root_len as usize) || old_root_len <= k,
         "deepen must reduce root length"
     );
-    // 1. Reserve: mint the interior blocks.
-    let mut interior_ids: Vec<u32> = Vec::with_capacity(new_interior_count as usize);
-    for _ in 0..new_interior_count {
-        match graph.ltb().mint() {
-            Ok(id) => interior_ids.push(id),
-            Err(e) => {
-                for &id in interior_ids.iter().rev() {
-                    let _ = graph.ltb().release(id);
-                }
-                return Err(LabeledOperationError::from(e));
-            }
-        }
-    }
+    // 1. Reserve: the reservation owns the ids and returns them if this function does not commit, so no failure
+    //    path has to spell the rollback out.
+    let reservation = crate::labeled::ltb_raw_block_store::LtbBlockReservation::reserve(
+        graph.ltb(),
+        new_interior_count,
+    )
+    .map_err(LabeledOperationError::from)?;
+    let interior_ids: Vec<u32> = reservation.ids().to_vec();
     // 2. Mark each interior as `EdgeInterior`.
     for (level, &id) in interior_ids.iter().enumerate() {
         let header = crate::labeled::ltb_raw_block_store::BlockHeader {
@@ -2506,16 +2491,11 @@ where
     for &interior_id in &interior_ids {
         let remaining = (old_root_len as usize) - cursor;
         let this_block_count = remaining.min(k as usize);
-        if let Err(e) = graph.ltb().write_payload_partial(
+        graph.ltb().write_payload_partial(
             interior_id,
             0,
             &old_edge_bytes[cursor * E::BYTES..(cursor + this_block_count) * E::BYTES],
-        ) {
-            for &id in interior_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
-            }
-            return Err(LabeledOperationError::LtbBlock(e));
-        }
+        )?;
         cursor += this_block_count;
     }
     debug_assert_eq!(cursor, old_root_len as usize);
@@ -2573,14 +2553,15 @@ where
         )
         .is_err()
     {
-        for &id in interior_ids.iter().rev() {
-            let _ = graph.ltb().release(id);
-        }
+        // `reservation` is still armed: its drop returns these ids, so this path only restores the overwritten root.
         let _ = graph
             .edges()
             .write_slots_contiguous_bytes(new_combined_start, &overwritten);
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
+    // The tree now names these blocks: the reservation hands them over and stops owning them.
+    let interior_ids = reservation.commit();
+    let _ = interior_ids;
     // 8. After publish, return the tail the smaller root no longer uses. A
     //    pin-sheltered tail is not released: the leaf's derived occupancy
     //    reclaims it.

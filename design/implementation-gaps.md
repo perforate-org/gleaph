@@ -656,6 +656,26 @@ defect from being rediscovered without its prior reasoning.
   next reading is the release/mint pairs around `release_property_plan`, the deepen plan's failure path and the
   promotion's restart.
 
+- **Edge side checked, and two asymmetries fixed as common process (2026-11-07).**
+  - **Pointers last.** The edge append writes a row's payload before the root that indexes it; the property append wrote
+    the root *first* and the leaf payload after. A payload failure then released a block the published root still named,
+    so the next mint handed that id out again - which is the shape of `[1, 2, 3, 1, 6]`. The property path now writes the
+    payload first too.
+  - **Retire last.** `BucketTreePlane::publish` released the value root it replaced *before* writing the descriptor that
+    names the new one, so a failed descriptor write left the old region free while the descriptor still pointed at it. It
+    now publishes first and retires after, using the same `OwnedValueRoot` that returns a region its attempt did not
+    publish.
+  - **One reservation owns the ids.** `LtbBlockReservation` (in `ltb_raw_block_store`) mints a set of blocks and returns
+    every one of them if the operation does not commit; `commit` hands them over. Both deepens used to spell the LIFO
+    rollback out by hand at *two* failure points each - four copies of one rule - which is how one of them can be missed.
+    They now hold a reservation and commit it after publication, so "release an id you already published" has no
+    spelling left.
+- **Still red, and now pointed at the append's own release:** the reproduction keeps `[1, 2, 3, 1, 6]`, so the duplicate
+  comes from a path that releases a *named* property leaf block outside the deepen - the candidates are
+  `release_property_plan`'s callers after a successful root write (lines 490-500 of `tree_write.rs`, the "home interior
+  already covers the new leaf" arm) and the promotion's rollback of `allocated_blocks`. Reading those two against the
+  reservation's rule is the next step.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

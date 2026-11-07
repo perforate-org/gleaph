@@ -408,14 +408,40 @@ where
         if !edge_root_image.is_empty() {
             self.write_edge_root::<E2>(edge_start, edge_root_image)?;
         }
-        if !value_children.is_empty() {
-            let offset = self.ensure_value_root(value_children, self.owned_value_root())?;
-            published = published.with_inline_property_bytes_offset(offset);
+        // **The replaced region is retired last.** Releasing it before the descriptor that names the new one is the
+        // same ordering defect as writing a pointer before its payload: if the descriptor write fails, the old region is
+        // already free while the descriptor still names it, so the next allocation writes into a live root and the tree
+        // reads garbage ids (`[1, 2, 3, 1, 6]` was that). The owned region also returns itself if anything above fails.
+        let replaced = self.owned_value_root();
+        let replaced_bytes = compact::value_root_region_bytes(&self.bucket);
+        let mut owned = if value_children.is_empty() {
+            None
+        } else {
+            Some(self.acquire_value_root(value_children)?)
+        };
+        if let Some(root) = owned.as_ref() {
+            published = published.with_inline_property_bytes_offset(root.offset());
         }
-        self.graph
+        if let Err(error) = self
+            .graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, published)
-            .map_err(LabeledOperationError::from)?;
+        {
+            // `owned` is still armed: it returns its region on drop, and the descriptor still names the old one.
+            return Err(LabeledOperationError::from(error));
+        }
+        if let Some(root) = owned.take() {
+            root.disarm();
+        }
+        if let Some(previous) = replaced
+            && replaced_bytes > 0
+            && Some(previous) != published.inline_property_bytes_offset().into()
+        {
+            let _ = self
+                .graph
+                .values()
+                .release_byte_span(previous, u64::from(replaced_bytes));
+        }
         Ok(published)
     }
 }
