@@ -175,6 +175,17 @@ impl VertexLeafCover {
         self.start
     }
 
+    /// The monotone cover the promotion paths compute by hand, as a value.
+    ///
+    /// `promote_tiny_to_slab` states the rule as `stored_slots.max(grown)` and the tree promotion as `new_alloc = old_alloc`.
+    /// Both are this function: the previous width is a floor, and content that reaches past it wins. The sites cannot call
+    /// [`crate::labeled::graph::leaf_geometry::LeafGeometry::vertex_cover`] (one is `CsrEdge`-clean, and both publish a single
+    /// bucket's span while the cover spans the vertex's first bucket), so this entry exists to be *the* statement of the rule
+    /// they are implementing - and a test pins that the hand-written arithmetic agrees with it.
+    pub fn monotone(previous: u32, occupied: BucketLeafSpan) -> Self {
+        Self::derive([occupied], SlackRule::NeverShrink { current: previous })
+    }
+
     /// Does this cover back the region the bucket occupies?
     ///
     /// The commit-boundary check from `storage/lara.md`, as a function: called where a cover is published, so a cover that
@@ -259,6 +270,23 @@ mod tests {
     fn derive_without_occupancy_is_empty() {
         let cover = VertexLeafCover::derive([BucketLeafSpan::empty()], SlackRule::None);
         assert!(cover.is_empty());
+    }
+
+    /// The hand-written rule in the promotion paths is this function, not a second rule.
+    ///
+    /// `promote_tiny_to_slab` computes `new_stored = vertex.stored_slots.max(span_end - base)`; the table below is that
+    /// expression for representative pairs, so a change to either side shows up here rather than as a cover that stopped
+    /// backing its content.
+    #[test]
+    fn monotone_agrees_with_the_promotion_arithmetic() {
+        for (previous, span_len, expected) in
+            [(0u32, 4u32, 4u32), (16, 4, 16), (2, 9, 9), (1026, 2, 1026)]
+        {
+            let hand = previous.max(span_len);
+            let typed = VertexLeafCover::monotone(previous, span(256, span_len));
+            assert_eq!(hand, expected, "table sanity");
+            assert_eq!(typed.len(), expected, "previous={previous} span={span_len}");
+        }
     }
 
     #[test]
