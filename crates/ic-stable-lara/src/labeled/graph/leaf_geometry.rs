@@ -11,7 +11,7 @@
 //! patch rather than mixed into the first one that introduces the seam.
 
 use super::compact::{SourceRows, bucket_content_slots, source_rows};
-use super::leaf_cover::{BucketLeafSpan, SlackRule, VertexLeafCover};
+use super::leaf_cover::{BucketLeafSpan, EdgeSlot, SlackRule, VertexLeafCover};
 use super::{BucketMode, LabeledLaraGraph};
 use crate::Address;
 use crate::VertexId;
@@ -98,10 +98,13 @@ where
                     .edges()
                     .initialized_slab_slots(bucket)
                     .expect("initialized slab slots must be readable");
-                BucketLeafSpan::new(bucket.edge_start(), initialized)
+                BucketLeafSpan::new(EdgeSlot::from_raw(bucket.edge_start()), initialized)
             }
             BucketMode::Tree if bucket.edge_run().is_some() => BucketLeafSpan::empty(),
-            BucketMode::Tree => BucketLeafSpan::new(bucket.edge_start(), span_region_len(bucket)),
+            BucketMode::Tree => BucketLeafSpan::new(
+                EdgeSlot::from_raw(bucket.edge_start()),
+                span_region_len(bucket),
+            ),
         }
     }
 
@@ -198,7 +201,9 @@ where
         vid: VertexId,
     ) -> Result<Address, super::LabeledOperationError> {
         Ok(Address::from(
-            self.vertex_cover(vid, SlackRule::None)?.start_anchor(),
+            self.vertex_cover(vid, SlackRule::None)?
+                .start_anchor()
+                .get(),
         ))
     }
 }
@@ -247,7 +252,7 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
         let span = LeafGeometry::of(&graph).bucket_span(&bucket);
         assert!(!span.is_empty());
-        assert_eq!(span.start(), bucket.edge_start());
+        assert_eq!(span.start().get(), bucket.edge_start());
         assert!(
             span.len() <= bucket.stored_slots(),
             "a span never exceeds the bucket's allocated width"

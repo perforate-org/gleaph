@@ -22,23 +22,72 @@ use crate::lara::edge::EdgeStore;
 use crate::traits::CsrEdgeTombstone;
 use ic_stable_structures::Memory;
 
+/// A slot address in the **edge** store.
+///
+/// The three stores address different spaces - edge slots, bucket-descriptor slots, and value-store bytes - and they were all
+/// plain `u64`. That is how this record's own figure 2 came to compare an edge-store root against a cover anchored at a
+/// bucket-store address and call the difference a violation. A span or a cover whose start is this type cannot be built from
+/// the wrong store's number without an explicit conversion, which is the whole point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeSlot(u64);
+
+impl core::fmt::Display for EdgeSlot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl EdgeSlot {
+    pub const ZERO: Self = Self(0);
+
+    /// From a raw edge-store slot number.
+    ///
+    /// Named `from_raw` rather than a `From<u64>` impl on purpose: an implicit conversion would restore the mixing this type
+    /// exists to prevent, and every call site should say which space its number is in.
+    pub const fn from_raw(slot: u64) -> Self {
+        Self(slot)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// The slot `count` positions later. Staying in the same space is the only arithmetic this type allows.
+    pub fn add(self, count: u64) -> Self {
+        Self(self.0 + count)
+    }
+
+    /// One past the last of `len` slots starting here.
+    pub fn end_of(self, len: u32) -> Self {
+        Self(self.0 + u64::from(len))
+    }
+
+    /// The distance to `other`, in slots; negative cases are a bug the caller reports, so it saturates at zero.
+    pub fn distance_to(self, other: Self) -> u64 {
+        other.0.saturating_sub(self.0)
+    }
+}
+
 /// The region one bucket occupies inside the leaf, in the leaf's slot unit.
 ///
 /// `empty()` covers the two cases where a bucket holds nothing in the leaf and therefore needs no cover entry: a tiny bucket
 /// (its payload is inline) and a tree whose edge root was placed in an edge run (the root lives in the run, not in the leaf).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BucketLeafSpan {
-    start: u64,
+    start: EdgeSlot,
     len: u32,
 }
 
 impl BucketLeafSpan {
     /// The empty span: nothing owned in the leaf.
     pub const fn empty() -> Self {
-        Self { start: 0, len: 0 }
+        Self {
+            start: EdgeSlot::ZERO,
+            len: 0,
+        }
     }
 
-    pub(super) fn new(start: u64, len: u32) -> Self {
+    pub(super) fn new(start: EdgeSlot, len: u32) -> Self {
         Self { start, len }
     }
 
@@ -55,18 +104,21 @@ impl BucketLeafSpan {
         match BucketMode::from_bucket(bucket) {
             BucketMode::Tiny => Self::empty(),
             BucketMode::Slab => Self::new(
-                bucket.edge_start(),
+                EdgeSlot::from_raw(bucket.edge_start()),
                 edges
                     .initialized_slab_slots(bucket)
                     .expect("initialized slab slots must be readable"),
             ),
             BucketMode::Tree if bucket.edge_run().is_some() => Self::empty(),
-            BucketMode::Tree => Self::new(bucket.edge_start(), span_region_len(bucket)),
+            BucketMode::Tree => Self::new(
+                EdgeSlot::from_raw(bucket.edge_start()),
+                span_region_len(bucket),
+            ),
         }
     }
 
     /// Where the span starts, or zero when empty.
-    pub fn start(self) -> u64 {
+    pub fn start(self) -> EdgeSlot {
         self.start
     }
 
@@ -80,8 +132,8 @@ impl BucketLeafSpan {
     }
 
     /// One past the last slot the span holds.
-    pub fn end(self) -> u64 {
-        self.start + u64::from(self.len)
+    pub fn end(self) -> EdgeSlot {
+        self.start.end_of(self.len)
     }
 }
 
@@ -115,14 +167,17 @@ pub enum SlackRule {
 /// exactly that expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VertexLeafCover {
-    start: u64,
+    start: EdgeSlot,
     len: u32,
 }
 
 impl VertexLeafCover {
     /// The empty cover: a vertex that owns nothing in the leaf.
     pub const fn empty() -> Self {
-        Self { start: 0, len: 0 }
+        Self {
+            start: EdgeSlot::ZERO,
+            len: 0,
+        }
     }
 
     /// The only constructor: the vertex's base address plus the spans its buckets occupy, grown by `slack`.
@@ -133,19 +188,19 @@ impl VertexLeafCover {
     /// starts, which is the edge-store address of its first non-tiny bucket (the vertex's own `base_slot_start` lives in the
     /// *bucket* store and is a different address space - conflating the two is how this was first written).
     pub fn derive(spans: impl IntoIterator<Item = BucketLeafSpan>, slack: SlackRule) -> Self {
-        let mut base = u64::MAX;
-        let mut end = 0u64;
+        let mut base: Option<EdgeSlot> = None;
+        let mut end = EdgeSlot::ZERO;
         for span in spans {
             if span.is_empty() {
                 continue;
             }
-            base = base.min(span.start);
+            base = Some(base.map_or(span.start, |b: EdgeSlot| b.min(span.start)));
             end = end.max(span.end());
         }
-        if base == u64::MAX {
+        let Some(base) = base else {
             return Self::empty();
-        }
-        let occupied = end - base;
+        };
+        let occupied = base.distance_to(end);
         let grown = match slack {
             SlackRule::None => occupied,
             SlackRule::NeverShrink { current } => occupied.max(u64::from(current)),
@@ -154,7 +209,7 @@ impl VertexLeafCover {
         Self { start: base, len }
     }
 
-    pub fn start(self) -> u64 {
+    pub fn start(self) -> EdgeSlot {
         self.start
     }
 
@@ -166,12 +221,12 @@ impl VertexLeafCover {
         self.len == 0
     }
 
-    pub fn end(self) -> u64 {
-        self.start + u64::from(self.len)
+    pub fn end(self) -> EdgeSlot {
+        self.start.end_of(self.len)
     }
 
     /// The cover's address in the edge store, for callers comparing it with a span start.
-    pub(crate) fn start_anchor(self) -> u64 {
+    pub(crate) fn start_anchor(self) -> EdgeSlot {
         self.start
     }
 
@@ -196,10 +251,10 @@ impl VertexLeafCover {
         }
         if span.start < self.start || span.end() > self.end() {
             return Err(CoverMiss {
-                cover_start: self.start,
-                cover_end: self.end(),
-                span_start: span.start,
-                span_end: span.end(),
+                cover_start: self.start.get(),
+                cover_end: self.end().get(),
+                span_start: span.start.get(),
+                span_end: span.end().get(),
             });
         }
         Ok(())
@@ -232,7 +287,7 @@ mod tests {
     const BASE: u64 = 256;
 
     fn span(start: u64, len: u32) -> BucketLeafSpan {
-        BucketLeafSpan::new(start, len)
+        BucketLeafSpan::new(EdgeSlot::from_raw(start), len)
     }
 
     #[test]
@@ -241,9 +296,9 @@ mod tests {
             [span(256, 5), span(264, 3), BucketLeafSpan::empty()],
             SlackRule::None,
         );
-        assert_eq!(cover.start(), BASE);
+        assert_eq!(cover.start(), EdgeSlot::from_raw(BASE));
         assert_eq!(cover.len(), 11);
-        assert_eq!(cover.end(), 267);
+        assert_eq!(cover.end().get(), 267);
     }
 
     /// The rule promotion follows: the cover is never shorter than what the vertex already holds.
@@ -295,7 +350,7 @@ mod tests {
         // because the root's span is an input and the cover is its union.
         let root = span(258, 2);
         let cover = VertexLeafCover::derive([root], SlackRule::None);
-        assert_eq!(cover.end(), 260);
+        assert_eq!(cover.end().get(), 260);
         assert!(cover.backs(root).is_ok());
 
         // A cover built from a smaller span still reports the miss rather than hiding it.
