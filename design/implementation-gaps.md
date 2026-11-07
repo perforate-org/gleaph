@@ -1027,104 +1027,6 @@ Decode work and both cursor strategies remain quadratic; broad performance, atom
 PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
 are preserved, not relabeled.
 
-### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
-
-- **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
-  GAP-2026-09-20-005 (the promotion's dead prefix). Numbers are page counts from
-  `Memory::size()` (whole 64 KiB WebAssembly pages) plus the graph's own accounting.
-- **Owner:** `ic-stable-lara` per-leaf overflow log (`lara/edge/log.rs`) and per-vertex bucket-row
-  slack (`labeled/bucket_store.rs`).
-- **Observed behavior (5000 vertices, one edge each, single label, segment 16):**
-  | | value |
-  |---|---|
-  | committed pages, empty graph | **30 pages ≈ 1.9 MB** (16 memories' 1-page minimums + the stores' initial growth) |
-  | committed pages, after 5000 tiny edges | **66 pages ≈ 4.2 MB** (buckets 15, log 11, edges 5, vertices 2 pages) |
-  | actual edge data | 5000 × 4 B = **20 KB** |
-  | bucket descriptor rows reserved | **25,000** for 5,000 buckets (5 rows per vertex: 1 live + 4 slack = 116 B/vertex, physically committed) |
-  | overflow-log capacity declared | **87,040 entries = 696 KB** for a workload that used **0 entries** |
-  | edge-slab cover / resident | 0 / 0 (tiny truly occupies no edge slab) |
-- **Two scaling wastes:**
-  1. **Per-leaf overflow-log capacity is eagerly committed.** `DEFAULT_MAX_LOG_ENTRIES = 170` per leaf
-     (`log.rs`), stride `4 + E::BYTES` = 8 B, and `grow_segment_count_to` ensures the *whole*
-     `segment_count × 170 × 8 B` region is backed at init/reopen. At segment 16 that is
-     **1,360 B per 16 vertices = 85 B/vertex**: 1M vertices → ~85 MB, 10M → ~850 MB, committed
-     whether or not any leaf ever spills. The log is only needed for leaves that actually overflow
-     the slab window, and the earlier log-pressure measurement (Finding C, ~1.1K instructions per
-     append, folds ~43K) gives no evidence that the capacity must be reserved graph-wide.
-  2. **Per-vertex bucket-row slack commits 4 extra 29-byte rows (116 B) per vertex with any label.**
-     The slack is consumed by later label inserts without an in-segment rewrite (the reason it
-     exists: `insert_label_bucket_at`'s fast path), so the fix is a policy/tuning question, not a
-     delete: measure the descriptor-rewrite cost it saves (the vertex-segment rewrite path) against
-     the 116 B/vertex.
-- **Also noted (fixed-cost, likely inherent):** every one of the 16 stable memories costs a 1-page
-  minimum (≈1 MB at init), and the edge/lb stores each grow to ~320 KB before any payload; merging
-  small meta stores or lowering the initial growth is a layout-table decision, not a local change.
-- **Expected or needed behavior:** grow the log's entry region lazily (per touched leaf, or with a
-  high-water counter) so tiny/slab-only graphs commit no log entries; re-tune the bucket-row slack
-  with a measured insert-vs-rewrite trade; then re-run the audit probe
-  (`$TMPDIR/space_audit_probe.rs`) to confirm the delta.
-- **Post-swap measurement (F8, 2026-09-20), same shape and same probe on both sides**
-  (segment 16, `InitialCapacities::uniform(256)`, 5000 vertices x 1 edge, 5000 buckets, all tiny:
-  cover 0, resident 0, zero overflow usage; pages are `Memory::size()` over `FailpointMemory`,
-  which reports whole 64 KiB pages - `VectorMemory::size()` reports written bytes and was the
-  earlier probe's mislabelling):
-
-  | region | `main` 9a64049f4 | `spill-swap` 1ed1f9843 |
-  |---|---|---|
-  | **committed pages, total** | **66** (4,325,376 B) | **56** (3,670,016 B) |
-  | edge log / spill arena (mem 6) | 11 pages (720,896 B) | **1 page** (65,536 B) |
-  | log capacity declared | 87,040 entries = 696,320 B, **0 used** | no log state exists |
-  | spill arena runs / rows used | - | **0 runs, 0 rows** (the page is the store header) |
-  | bucket descriptors | 25,000 rows x 29 B = 725,000 B | 25,000 rows x 36 B = **900,000 B** |
-  | descriptor delta | - | **+7 B/row = +175,000 B** (absorbed: buckets stay 15 pages both sides) |
-  | buckets promoted to tree | - | **0** |
-  | other regions (identical both sides) | vertices 2, buckets 15, ipb_log 16, edges 5, edge_span_meta 1, free-span stores 1/3/1/3/1/3, ipb_slab 1, value_blobs 1, ltb 1 | same |
-
-  The expectation is **confirmed**: `main` grows its per-leaf log region to the declared capacity
-  (696 KB, 87,040 entries, zero used) for a workload that never spills, while the swap grows no log
-  region at all and zero arena rows - it pays +7 B per descriptor row instead, and for this shape
-  that delta fits inside the page the descriptors already had. Net: **-10 pages (-655,360 B)**.
-  The values plane's own `ipb_log` (16 pages, 1,048,576 B) is unchanged on both sides: it is the
-  values twin's log, still awaiting the final-row slice, and it shows the same eager-capacity shape
-  this entry describes.
-- **Slice 5 measurement (2026-09-20), same shape and same probe, three heads side by side**
-  (segment 16, `InitialCapacities::uniform(256)`, 5000 vertices x 1 edge, 5000 buckets, all
-  tiny: cover 0, zero overflow usage; pages are `Memory::size()` over `FailpointMemory`):
-
-  | region | `main` 9a64049f4 | `spill-swap` before slice 5 (36 B row) | `spill-swap` 5c/5d (34 B row) |
-  |---|---|---|---|
-  | **committed pages, total** | **66** | **56** | **41** |
-  | edge log / edge spill (mem 6) | 11 | 1 | **1** |
-  | values ipb_log / values spill (mem 13) | **16** | **16** | **1** |
-  | bucket descriptors | 25,000 x 29 B = 725,000 B | 25,000 x 36 B = 900,000 B | 25,000 x **34 B = 850,000 B** |
-  | buckets memory | 15 | 15 | 15 |
-
-  Both eager reservations the entry describes are gone: the edge log's 10 pages went with
-  the edge swap, the values log's **15 pages** (16 -> 1, the values spill arena's header) with
-  slice 5, and the descriptor reached its final 34-byte row. Net over the audit shape:
-  **66 -> 41 pages (-25)**, of which slice 5 is **-15 pages** and the 34-byte row takes back
-  50,000 B of the interim 36-byte row's 175,000 B. Against `main` the descriptor is
-  **+5 B/row (+125,000 B)** - the price of the two run ids - bought back many times by the
-  25 pages of never-used capacity the graph no longer commits.
-
-- **Next decision:** decide whether to fold this into the same space-first slice as
-  GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
-  bench for the slack trade.
-
-
-- **Eager log capacity: closed by deletion (2026-11-07).** The entry's first item is gone twice over. ADR 0097 replaced the
-  per-leaf overflow log with per-bucket spill runs, which the recorded slice-5 measurement already confirmed ("no log state
-  exists; the page is the spill arena's header", 66 -> 41 total pages across the same audit shape). What remained was the
-  module: `lara/edge/log.rs` (633 lines, `LogStore`, its header, its own tests) had **no consumer in the workspace** - the
-  labeled graph never instantiated it, `log_mut` builds on the spill runs, and the only other reference was a public
-  re-export nothing imported. It is deleted with those re-exports and the `read_i32`/`write_i32` helpers whose only caller
-  it was. lara 772, canbench 709, graph 1139.
-- **Remaining item, narrowed to one question:** per-vertex bucket-row slack (5 rows per vertex with any label, 4 of them
-  slack = 116 B/vertex on the audited shape) is still committed eagerly, and the entry's own next decision is a *measured*
-  trade: the slack exists so a later label insert avoids an in-segment rewrite, so removing it trades 116 B/vertex against
-  descriptor-rewrite cost. That needs the insert-vs-rewrite bench, not a code read, and it is the only part of this entry
-  still open.
-
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
@@ -2551,6 +2453,26 @@ are preserved, not relabeled.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-20-006 — RESOLVED: the eager log capacity is gone, and the bucket-row slack is measured as worth keeping
+
+- **Status:** Resolved (2026-11-07). The entry recorded two scaling wastes on the audit shape (5000 tiny edges: 66 committed
+  pages, 20 KB of actual edge data). Both are now settled - one by removal, one by measurement.
+- **Eager per-leaf overflow-log capacity: gone, twice over.** ADR 0097 replaced the log with per-bucket spill runs, which
+  the entry's own slice-5 measurement already recorded ("no log state exists; the page is the spill arena's header",
+  66 → 41 total pages). What remained was the module: `lara/edge/log.rs` (633 lines, `LogStore`, its header, its tests) had
+  **no consumer in the workspace** - the labeled graph never instantiated it, `log_mut` builds on the spill runs, and the
+  only other reference was a public re-export nothing imported. Deleted with those re-exports and the `read_i32`/`write_i32`
+  helpers whose only caller it was (lara 772, canbench 709).
+- **Per-vertex bucket-row slack: measured, and kept.** The slack (`MIN_BUCKET_ROW_ALLOC = 4`, then 5/4 growth) commits
+  116 B per vertex so a later label insert consumes a spare row instead of rewriting the vertex segment. Two benchmarks on
+  the same shape differ only in whether the inserts stay inside it:
+  `bench_l_slack_s16_4labels` (scope: 4 calls, 75.48 K) against `bench_l_slack_s16_9labels` (9 calls, 276.11 K). The five
+  inserts that must grow the span cost **(276.11 − 75.48) / 5 ≈ 40.1 K each**, against ≈ 11.8 K for slack-served ones -
+  about **28 K instructions saved per insert for 116 B**. The policy stays as it is; that is the answer the entry's own
+  next decision asked for, and it was measured rather than read.
+- **Left as inherent:** the 16 stable memories' one-page minimum (≈1 MB at init) and the stores' pre-payload growth are
+  layout-table decisions, not local changes, and the entry never claimed otherwise.
 
 ### GAP-2026-09-20-008 — RESOLVED: the compaction step no longer spins; the policy says which answer it may give
 
