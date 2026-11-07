@@ -464,6 +464,20 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   state its reason, like the `stored_slots` writers. That and `resident` versus `stored_slots` are what remain before the view
   can be called the only way in.
 
+- **Fact settled: the defect is not in promotion, it is in the append that moves the root (2026-11-08, measured + one fix).**
+  The two-line probe answered it: `promote` builds its template with `pending = false`, `resident = 1024`,
+  `stored_slots = 1024` and derives a **one-slot** root - it is right about both. The two-slot root at `[258, 260)` arrives
+  afterwards, from an **append that reallocates** the root (`VertexLayout::reserve_span` moves the array when the grown root
+  does not fit in place), and that append published the bucket descriptor's new `edge_start` while leaving the vertex's cover
+  where the previous in-place growth had put it (`[256, 258)`).
+  So the rule is: **whoever moves the root publishes both rows.** `0b6a1aad` implements it in the append's growth path, via
+  `LeafGeometry::vertex_cover` (derived, not adjusted).
+  - **One of six, and that is the real shape of the remaining work:** `tree_write` has **six** `reserve_span` sites that can
+    move the root, and each caller currently has to remember the second write. The RED stays `#[ignore]`d on the reallocation
+    path with that measured reason. The next slice is a single "root region moved" operation that writes both rows, not a
+    seventh site - the same DRY rule this session has applied everywhere else, now applied to the two rows that describe one
+    region.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
