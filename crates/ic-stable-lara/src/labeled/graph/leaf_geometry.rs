@@ -147,6 +147,30 @@ where
         ))
     }
 
+    /// Publishes a bucket descriptor **and** the vertex cover it implies - the two rows that describe one region.
+    ///
+    /// This exists because the rule was written at six call sites and one of them forgot: an append that reallocates the root
+    /// publishes the bucket's new `edge_start` and must also republish the vertex's cover, or the cover keeps describing where the
+    /// root used to be. That is `GAP-LARA-TINY-GEOMETRY`'s measured defect (`root [258, 260)` against `cover [256, 258)`).
+    ///
+    /// The order is the safe one for a failure: the descriptor is written first, and the cover is derived from what the store
+    /// holds afterwards, so a failed descriptor write leaves the cover untouched rather than pointing at a row that was never
+    /// published. The cover's own write cannot fail for a row that exists.
+    pub(crate) fn publish_bucket_and_cover(
+        &self,
+        vid: VertexId,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<(), super::LabeledOperationError> {
+        self.graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, bucket)?;
+        let cover = self.vertex_cover(vid, SlackRule::None)?;
+        let vertex_row = self.graph.vertices().get(vid).with_cover(cover);
+        self.graph.vertices().set(vid, &vertex_row);
+        Ok(())
+    }
+
     /// The edge-store address the vertex's cover starts at, or zero when it owns nothing.
     pub(crate) fn cover_anchor(
         &self,
@@ -265,6 +289,51 @@ mod tests {
                 .backs(geometry.bucket_span(bucket))
                 .unwrap_or_else(|miss| panic!("{}: {miss}", bucket.bucket_label_key().raw()));
         }
+    }
+
+    /// Publishing a descriptor also publishes the cover it implies - one call, two rows.
+    #[test]
+    fn publish_bucket_and_cover_writes_both_rows() {
+        let graph = wide_graph();
+        let vid = graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push vertex");
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 0..8 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &[],
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        // Move the bucket's recorded start by one slot: the descriptor and the cover must move together.
+        let moved = bucket.with_edge_range(bucket.edge_start() + 1, bucket.stored_slots());
+        let geometry = LeafGeometry::of(&graph);
+        geometry
+            .publish_bucket_and_cover(vid, slot, moved)
+            .expect("publish");
+        let after = graph.vertices().get(vid);
+        let cover = geometry.vertex_cover(vid, SlackRule::None).expect("cover");
+        assert_eq!(
+            after.stored_slots,
+            cover.len(),
+            "the vertex row must hold the derived cover after a descriptor move"
+        );
+        cover
+            .backs(geometry.bucket_span(&moved))
+            .expect("the cover must back the moved bucket");
     }
 
     /// The view is a fresh read: it answers from the stores it borrows, so a second call sees a later mutation.
