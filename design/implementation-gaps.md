@@ -162,12 +162,23 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `materialize_owner_worker_retry_scenario`, `materialize_owner_codec_rejects_terminal_and_malformed_pending_states`). What
   the entry itself says native reopen cannot claim is the remainder: **actual timer, upgrade and rollback behaviour, and
   public stale-replay reachability**. That is a PocketIC fixture, not a code change, and no amount of reading closes it.
-- **The fixture it needs, stated so it can be written once:** declare an inline-property width on a label that already holds
-  rows (which enqueues `MaterializeInlinePropertyStreamV2`), drive one bounded step, `upgrade_canister` the graph shard
-  (`wasm_bytes("GRAPH_WASM")`, the same call `adr0023_index_store_consistency` uses), then drain with
-  `drain_maintenance_via_timer` and require: the materialized stream is the one that was in progress (not a second one), the
-  queue identity and cursor survive the upgrade, and a replayed stale step is refused rather than republished. Every helper
-  it needs already exists in `pocket-ic-tests`.
+- **The fixture it needs, corrected against the code so it can be written once.** The recipe is *not* "declare a width on
+  a label that already holds rows": the DDL creates the schema, while the deferred work is triggered at **insert time on a
+  non-empty bucket whose published width is 0** - `values.rs::materialize_inline_property_stream` returns
+  `Migration::Deferred` only when the stream is too large to migrate inline, and the insert path unwinds with
+  `InlinePropertyMaterializeDeferredRequired`, which the deferred owner turns into a `MaterializeInlinePropertyStreamV2`
+  queue item. So the E2E shape is:
+  1. install a single-shard federation and insert **many** value-less edges on one label through
+     `e2e_insert_directed_edge_with_label` (the count must exceed the inline fast path, or the migration never defers);
+  2. insert one edge **with** inline property bytes through `e2e_insert_directed_edge_with_inline_property`, which is the
+     0 -> w insert that defers;
+  3. `upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), ..)` - the same call
+     `adr0023_index_store_consistency` uses - with the item still queued;
+  4. `drain_maintenance_via_timer(&env, env.graph_source)`;
+  5. require: the upgraded shard resumes the **in-progress** item (one stream, not a second one), the cursor survives, every
+     pre-existing row reads a value at the declared width, and a replayed stale step is refused rather than republished.
+  Every helper exists in `pocket-ic-tests`; the unknown is the row count that actually defers, so step 1 should assert the
+  deferral was observed (queue length non-zero via `e2e_maintenance_queue_len`) instead of assuming it.
 - **Why it was not written in this slice:** writing a PocketIC fixture and leaving it unrun would be worse than recording the
   recipe - a test that has never executed establishes nothing, and the entry's own history is a long record of exactly that
   kind of claim.
