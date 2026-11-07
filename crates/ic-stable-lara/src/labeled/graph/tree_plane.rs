@@ -80,6 +80,111 @@ pub(crate) fn validate_root_ids(
     Ok(())
 }
 
+/// Where a root array is stored, for both roots.
+///
+/// The edge root and the value root differ in exactly one thing - the store their array lives in - and differ in nothing
+/// else: both are `entry_count` 4-byte block ids, both are written *after* the blocks they name, and both replace a
+/// region or a slot range that is retired only after the descriptor is published. Modelling the location lets one
+/// `write_root_array` serve both, so the ordering rules cannot be implemented twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RootArrayStore {
+    /// Edge slots in the leaf, `E::BYTES` per entry with the id in the first four bytes.
+    LeafSlots { start: u64, slot_bytes: u32 },
+    /// The same, held by an edge spill run: one entry per row.
+    LeafRun {
+        run: crate::labeled::spill_run_store::SpillRunId,
+        rows: u32,
+    },
+    /// A byte region in the value store: `4` bytes per entry, packed.
+    ValueBytes { offset: u64 },
+}
+
+impl<'a, E, M> BucketTreePlane<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    /// Writes an id array into whichever store holds it, padding leaf slots to a whole record.
+    ///
+    /// The one write path for both roots: a caller states the location and the entries, and the store-specific byte
+    /// layout lives here. Leaf slots pad each id to `slot_bytes` (a raw copy moves the array), the value store packs
+    /// them at four bytes.
+    pub(crate) fn write_root_array(
+        &self,
+        store: RootArrayStore,
+        entries: &[u32],
+    ) -> Result<(), LabeledOperationError> {
+        match store {
+            RootArrayStore::ValueBytes { offset } => {
+                let mut bytes = Vec::with_capacity(entries.len() * 4);
+                for id in entries {
+                    bytes.extend_from_slice(&id.to_le_bytes());
+                }
+                self.graph
+                    .values()
+                    .write_bytes(offset, &bytes)
+                    .map_err(|_| {
+                        LabeledOperationError::from(
+                        crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+                    )
+                    })
+            }
+            RootArrayStore::LeafRun { run, rows } => {
+                if entries.len() > rows as usize {
+                    return Err(LabeledOperationError::RootEntryCountMismatch(
+                        super::error::RootEntryCountMismatch {
+                            root: "edge",
+                            expected: rows,
+                            got: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+                        },
+                    ));
+                }
+                for (index, id) in entries.iter().enumerate() {
+                    self.graph
+                        .edges()
+                        .spill_write_row(run, index as u32, &id.to_le_bytes())
+                        .map_err(LabeledOperationError::from)?;
+                }
+                Ok(())
+            }
+            RootArrayStore::LeafSlots { start, slot_bytes } => {
+                let slot_bytes = slot_bytes as usize;
+                let mut image = vec![0u8; entries.len() * slot_bytes];
+                for (index, id) in entries.iter().enumerate() {
+                    let offset = index * slot_bytes;
+                    image[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
+                }
+                self.graph
+                    .edges()
+                    .write_slots_contiguous_bytes(start, &image)
+                    .map_err(LabeledOperationError::from)
+            }
+        }
+    }
+
+    /// A root array's store, derived from the descriptor being written.
+    pub(crate) fn edge_root_store(&self, edge_start: u64, slot_bytes: u32) -> RootArrayStore {
+        match self.edge_root_loc() {
+            EdgeRootLoc::Run { run, rows } => RootArrayStore::LeafRun { run, rows },
+            EdgeRootLoc::Slots { .. } => RootArrayStore::LeafSlots {
+                start: edge_start,
+                slot_bytes,
+            },
+        }
+    }
+
+    /// The leaf-slot store for a given start, for tests that exercise the writer directly.
+    #[cfg(test)]
+    pub(crate) fn edge_root_store_for_test(start: u64, slot_bytes: u32) -> RootArrayStore {
+        RootArrayStore::LeafSlots { start, slot_bytes }
+    }
+
+    /// The value root's store for a descriptor whose value-root region starts at `offset`.
+    pub(crate) fn value_root_store(offset: u64) -> RootArrayStore {
+        RootArrayStore::ValueBytes { offset }
+    }
+}
+
 /// A value-root region **this attempt owns**.
 ///
 /// The region exists between the allocation and the descriptor that records it, and the failure in between is the
@@ -274,31 +379,22 @@ where
         &self,
         value_children: &[u32],
     ) -> Result<OwnedValueRoot<'_, E, M>, super::LabeledOperationError> {
-        let mut children = Vec::with_capacity(value_children.len() * 4);
-        for child in value_children {
-            children.extend_from_slice(&child.to_le_bytes());
-        }
+        let children_len = value_children.len() * 4;
         let offset = self
             .graph
             .values()
-            .allocate_byte_span(children.len() as u64)
+            .allocate_byte_span(children_len as u64)
             .map_err(|_| {
                 super::LabeledOperationError::from(
                     crate::lara::operation_error::LaraOperationError::overflow(),
                 )
             })?;
-        self.graph
-            .values()
-            .write_bytes(offset, &children)
-            .map_err(|_| {
-                super::LabeledOperationError::from(
-                    crate::lara::operation_error::LaraOperationError::overflow(),
-                )
-            })?;
+        // The same writer as the edge root: only the store differs.
+        self.write_root_array(RootArrayStore::ValueBytes { offset }, value_children)?;
         Ok(OwnedValueRoot {
             graph: self.graph,
             offset,
-            bytes: children.len() as u64,
+            bytes: children_len as u64,
             armed: true,
         })
     }
@@ -338,33 +434,22 @@ where
     where
         E2: CsrEdge + crate::traits::CsrEdgeTombstone,
     {
-        // Where the array goes is the view's answer: the leaf's slots, or the edge run that holds it when the vertex
-        // slice had no room for a span.
-        if let EdgeRootLoc::Run { run, rows } = self.edge_root_loc() {
-            let id_bytes = crate::labeled::tree_csr::PROPERTY_ID_BYTES;
-            let written = edge_root_image.len() / id_bytes;
-            if written > rows as usize {
-                return Err(super::LabeledOperationError::Store(
-                    crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
-                ));
-            }
-            for index in 0..written {
-                let start = index * id_bytes;
-                self.graph
-                    .edges()
-                    .spill_write_row(run, index as u32, &edge_root_image[start..start + id_bytes])
-                    .map_err(super::LabeledOperationError::from)?;
-            }
-            return Ok(());
-        }
+        // Both roots are id arrays; only the store differs, so the write goes through the one `write_root_array`.
+        // An image that is not a whole number of slots is padded first: its trailing bytes belong to the last slot and
+        // dropping them would leave that slot's tail as it was.
         let slot_bytes = E2::BYTES;
-        let slots = edge_root_image.len().div_ceil(slot_bytes.max(1));
-        let mut image = vec![0u8; slots * slot_bytes];
-        image[..edge_root_image.len()].copy_from_slice(edge_root_image);
-        self.graph
-            .edges()
-            .write_slots_contiguous_bytes(edge_start, &image)
-            .map_err(super::LabeledOperationError::from)
+        let mut image = edge_root_image.to_vec();
+        if slot_bytes > 0 && !image.len().is_multiple_of(slot_bytes) {
+            image.resize(image.len().div_ceil(slot_bytes) * slot_bytes, 0);
+        }
+        let entries: Vec<u32> = image
+            .chunks_exact(slot_bytes.max(1))
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        self.write_root_array(
+            self.edge_root_store(edge_start, u32::try_from(slot_bytes).unwrap_or(u32::MAX)),
+            &entries,
+        )
     }
 
     /// Writes both roots and returns the value root's new offset (for the paths whose publication is not this
@@ -515,6 +600,57 @@ mod tests {
     }
 
     /// ADR 0101: the descriptor records where the value root went, and both roots read back what was written.
+    /// Both roots are id arrays and both are written by one function; the store is the only difference.
+    ///
+    /// The value store packs entries at four bytes and the leaf slots pad each id to the record width, so one writer
+    /// serving both proves the layouts really are the same array in two stores - the property the edge and value roots
+    /// were implemented twice without stating.
+    #[test]
+    fn one_writer_serves_both_root_stores() {
+        let graph = inline_property_test_graph();
+        let bucket = install(&graph, &[11, 12, 13, 14], &[21, 22, 23]);
+        let plane = graph.tree_plane(bucket);
+
+        // Value store: packed at four bytes.
+        let value_store =
+            <BucketTreePlane<'_, InlinePropertyTestEdge, VectorMemory>>::value_root_store(4096);
+        plane
+            .write_root_array(value_store, &[7, 8, 9])
+            .expect("write the value root");
+        let mut packed = [0u8; 12];
+        graph.values().read_bytes(4096, &mut packed);
+        assert_eq!(
+            packed
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+
+        // Leaf slots: each id padded to the record width, so a raw copy moves the array.
+        let (start, _slots) = plane.edge_root();
+        let slot_store =
+            <BucketTreePlane<'_, InlinePropertyTestEdge, VectorMemory>>::edge_root_store_for_test(
+                start, 8,
+            );
+        plane
+            .write_root_array(slot_store, &[31, 32])
+            .expect("write the edge root");
+        let mut slots = [0u8; 16];
+        graph.edges().read_slots_contiguous_bytes(start, &mut slots);
+        assert_eq!(
+            slots
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect::<Vec<_>>(),
+            vec![31, 32]
+        );
+    }
+
     #[test]
     fn publish_places_each_root_in_its_own_store() {
         let graph = inline_property_test_graph();

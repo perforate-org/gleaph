@@ -692,6 +692,18 @@ defect from being rediscovered without its prior reasoning.
   already does. That is one signature change across the tree-write call sites and removes the only remaining
   release-before-publish in this subsystem.
 
+- **The roots are one structure now, not two implementations (2026-11-07).** `RootArrayStore` says where a root array
+  lives - `LeafSlots { start, slot_bytes }`, `LeafRun { run, rows }`, `ValueBytes { offset }` - and
+  `BucketTreePlane::write_root_array` is the only writer for both roots. The two had been written twice: the edge root
+  padded ids to `E::BYTES` and could live in a run, the value root packed them at four bytes into a value-store region,
+  and the ordering rules ("pointers last", "retire last") therefore had two homes. A direct test drives one writer into
+  both stores and checks the layouts - leaf slots pad to the record width so a raw copy moves the array, the value store
+  packs at four bytes - which is the property the two implementations never stated.
+- **What the unification makes impossible:** a new root write cannot choose its own byte layout, its own padding or its
+  own release point; it passes entries to one function that knows the store. The remaining defect (see above) is the
+  value root's *address* being retired before the descriptor that names it, which is now a single call site to fix rather
+  than two implementations to keep in step.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
