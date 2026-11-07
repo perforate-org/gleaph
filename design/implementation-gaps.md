@@ -704,6 +704,20 @@ defect from being rediscovered without its prior reasoning.
   value root's *address* being retired before the descriptor that names it, which is now a single call site to fix rather
   than two implementations to keep in step.
 
+- **`write_roots` no longer retires, and the allocation trace names the remaining shape (2026-11-07).**
+  `write_roots` hands back the `OwnedValueRoot` it acquired and *never* releases the region it replaces; the caller
+  settles both **after** its descriptor publish (`disarm` the new root, then `retire_value_root` the old one). That
+  removes the last release-before-publish in the tree append path.
+- **The trace, which is now the whole story:** minting is clean (`0..7`, distinct), no LTB block is ever released, and
+  the value store's spans go
+  `alloc 8 -> 0`, `alloc 12 -> 8`, `release 0..8`, `alloc 16 -> 20`, `alloc 20 -> 36`, `release 8..24`. So the root the
+  descriptor names is the 20-byte region at **36** - five entries, which is the right size for 2100 rows at 512 rows per
+  property leaf. Its contents `[1, 2, 3, 1, 6]` therefore came from the *entries handed to the write*, not from the
+  store: the append read four old entries from the 16-byte region at 20 and pushed a fifth, and the old read already
+  contained a duplicate. So the duplicate is in a root region **written by an earlier append**, and the next reading is
+  the entries that append computed - `read_property_root_ids(graph, bucket, old_prop_root_len)` where
+  `old_prop_root_len = property_root_region_len(bucket)` - against the region's real content at that moment.
+
 ### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
 
 - **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).

@@ -366,6 +366,11 @@ where
             return Err(LabeledOperationError::LtbBlock(e));
         }
         // 2. Property stream: mint at K boundary, else in-place.
+        // Ownership carried out of the realloc arm: the value root this append allocates, and the one it replaces.
+        // Both are settled **after** the descriptor publish below, never before it.
+        let tree_plane = graph.tree_plane(*bucket);
+        let mut owned_value_root = None;
+        let mut replaced_value_root: Option<(u64, u32)> = None;
         let new_combined_span_start: u64 = if w > 0 {
             let property_value = edge.edge_inline_property_bytes();
             if property_value.len() != usize::from(w) {
@@ -465,18 +470,22 @@ where
                                 .release_span(new_combined, u64::from(new_combined_len));
                             return Err(LabeledOperationError::LtbBlock(e));
                         }
-                        if graph
-                            .tree_plane(*bucket)
-                            .write_roots::<E>(new_combined, &edge_root_image, &value_children)
-                            .is_err()
-                        {
-                            release_property_plan::<E, M>(graph, &plan);
-                            let _ = graph
-                                .edges()
-                                .release_span(new_combined, u64::from(new_combined_len));
-                            return Err(
-                                LabeledOperationError::from(LaraOperationError::overflow()),
-                            );
+                        replaced_value_root = tree_plane.owns_value_root();
+                        match tree_plane.write_roots::<E>(
+                            new_combined,
+                            &edge_root_image,
+                            &value_children,
+                        ) {
+                            Ok(owned) => owned_value_root = owned,
+                            Err(_) => {
+                                release_property_plan::<E, M>(graph, &plan);
+                                let _ = graph
+                                    .edges()
+                                    .release_span(new_combined, u64::from(new_combined_len));
+                                return Err(LabeledOperationError::from(
+                                    LaraOperationError::overflow(),
+                                ));
+                            }
                         }
                         new_combined
                     }
@@ -540,6 +549,22 @@ where
             // the inconsistency window. Accept the brief window
             // (bounded to the next insert) for simplicity.
             return Err(e.into());
+        }
+        // The descriptor now names the new value root, so the never-before-order is settled: keep the new region and
+        // retire the one it replaced. `owned_value_root` still owns it, so a failure above would have returned it.
+        if let Some(root) = owned_value_root.take() {
+            root.disarm();
+        }
+        if let Some((offset, bytes)) = replaced_value_root.take()
+            && Some(offset)
+                != graph
+                    .tree_plane(new_bucket)
+                    .owns_value_root()
+                    .map(|(o, _)| o)
+        {
+            graph
+                .tree_plane(new_bucket)
+                .retire_value_root(offset, bytes);
         }
         // Release the old combined span after the canonical publish
         // (mirrors `tree_mode_tail_append_depth1`). When a property

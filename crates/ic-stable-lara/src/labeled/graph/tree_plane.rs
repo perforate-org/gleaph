@@ -452,24 +452,43 @@ where
         )
     }
 
-    /// Writes both roots and returns the value root's new offset (for the paths whose publication is not this
-    /// view's: promotion publishes through its own guard).
+    /// Writes both roots and hands back the value root **this attempt owns**, for a caller that publishes the
+    /// descriptor itself.
+    ///
+    /// It deliberately does **not** release the region it replaces. Releasing before the caller writes the descriptor
+    /// that names the new one leaves the descriptor pointing at freed bytes between the two writes, and the value
+    /// payloads then land on them - `[1, 2, 3, 1, 6]` at the root's address was that. The caller retires the old region
+    /// after its publish, and the returned owner returns the new one if the publish never happens.
     pub(crate) fn write_roots<E2>(
         &self,
         edge_start: u64,
         edge_root_image: &[u8],
         value_children: &[u32],
-    ) -> Result<u64, super::LabeledOperationError>
+    ) -> Result<Option<OwnedValueRoot<'_, E, M>>, super::LabeledOperationError>
     where
         E2: CsrEdge + crate::traits::CsrEdgeTombstone,
     {
-        let offset = if value_children.is_empty() {
-            0
+        let owned = if value_children.is_empty() {
+            None
         } else {
-            self.ensure_value_root(value_children, self.owned_value_root())?
+            Some(self.acquire_value_root(value_children)?)
         };
         self.write_edge_root::<E2>(edge_start, edge_root_image)?;
-        Ok(offset)
+        Ok(owned)
+    }
+
+    /// The value-root region this bucket owns, for a caller that replaces it.
+    pub(crate) fn owns_value_root(&self) -> Option<(u64, u32)> {
+        let bytes = compact::value_root_region_bytes(&self.bucket);
+        (bytes > 0).then(|| (self.bucket.inline_property_bytes_offset(), bytes))
+    }
+
+    /// Retires a value-root region this bucket owned, after the descriptor that named it is gone.
+    pub(crate) fn retire_value_root(&self, offset: u64, bytes: u32) {
+        let _ = self
+            .graph
+            .values()
+            .release_byte_span(offset, u64::from(bytes));
     }
 
     /// Writes a tree bucket's roots and publishes its descriptor: the only way a tree bucket is published.
