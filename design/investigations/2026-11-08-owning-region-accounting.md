@@ -141,6 +141,35 @@ reconcile_vertex_inline_property_bytes_allocated_bytes()   <- already derive-the
 Because that path already recomputes the total from the buckets and only writes when it differs, adding the missing term
 closes the value-side hole without touching its callers.
 
+## 8. The drift inventory, and why the obvious invariant cannot land yet
+
+The plan for the edge side starts by *finding* which of the cover's writers drift, so the naive ratchet was tried: assert in
+`invariants::assert_labeled_layout_invariants` that a vertex's cover backs the region its buckets occupy
+(`bucket_span_region_len`) - the rule the promotion case violates. It fired on **six existing fixtures**, not one:
+
+| fixture | vertex | cover | bucket content reaches |
+| --- | --- | --- | --- |
+| `compact::tests::fold_growth_stays_mate_disjoint_across_span_growth` | 1 | `[0, 1)` | 76 |
+| `compact::physical_layout_tests::mode_footprint_tree_append_preserves_pin_and_retirement` | 1 | `[266, 271)` | 345 |
+| `headroom_screen::tests::shared_hot_with_cold_preserves_slots_spill_and_reopen` | 0 | `[256, 265)` | 3301 |
+| `leaf_arena::tests::labeled_heavy_relocation_survives_reopen_without_corruption` | 3 | `[391, 711)` | 789 |
+| `promote::spill_test::root_geometry_normal_promotion_keeps_cover_and_pin` | 0 | `[1048591, 1048687)` | 1048903 |
+| `bucket::tests::last_bucket_successor_respects_descriptor_order_cover` | - | fired | - |
+
+That is a result about the *invariant*, not only about the code: "cover ⊇ every bucket's occupied region" is too strict as
+written, because at least one of these is a deliberate state. `fold_growth_stays_mate_disjoint_across_span_growth` is the
+GAP-2026-09-20-005 regression fixture, whose whole point is a fold that **grows a span and then relocates** - a window where
+the cover and the content legitimately disagree until the relocation publishes. The same shape explains the reopen fixtures:
+a reopened graph derives the cover from the pin rather than from the buckets.
+
+So the ratchet needs a stated contract first: which windows are allowed to disagree (mid-operation, and reopened-from-pin), and
+whether the cover is the *content* union or the *allocated* region (the entry's own witness had cover `[256, 273)` against slab
+`[256, 272)`, one slot more, which suggests allocated). Without that decision the assertion measures three different things at
+once - and a ratchet that fires on intended states is not a ratchet, it is noise.
+
+**The experiment was reverted rather than landed red.** It cost one suite run and produced the table above, which is the
+inventory the plan asked for; the next slice starts from the contract question, not from the assertion.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
