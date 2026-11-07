@@ -47,89 +47,8 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### Resolved 2026-11-04: the pre-ADR-0099 bench verifiers are gone
-
-- **What was removed** (approved): `value_fold_case!`, `continuous_case!`, `update_reuse_case!`,
-  `RepeatedFold::Values`, `assert_retired_prefix_reusable`, `materialize_owner_*` and the per-round
-  `slab_occupied_tail` / `free_bytes` / "later values stay at the tail" assertions. Every one of them
-  verified the byte-span values allocator or the values-only fold, both removed by ADR 0099.
-- **What was kept:** `fold_cost`, `fold_economics`, `repeated_fold::{Unfolded, Both}` and all edge-plane
-  checks - the edge allocator is unchanged, so those assertions still constrain real behaviour.
-- **Evidence:** `cargo test -p ic-stable-lara --lib --features canbench` is **641 passed / 0 failed**;
-  `canbench --persist` completes unfiltered for **both** crates, and both artifacts are current
-  (`43fe89ce0` for graph, `f493688fa` for lara).
-- **Cost, stated plainly:** five bench families and their coverage are gone. Rebuilding that coverage
-  against the slot-addressed geometry is a bench-design task and is **not** done here.
-
-
-### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
-
-- **Status:** Resolved 2026-11-04 (`7aa512a1b`). The benchmark runs again.
-- **Cause:** a tree bucket keeps its values in the property root inside the edge span, and
-  `read_bucket_inline_property_bytes_for_slot_into` - the slab/run reader - took its "row beyond the
-  prefix" branch for one, found no values run (there is none by design) and reported
-  `MissingAscLogIndex { asc_log_index: 0 }`: an error about a plane the bucket does not own. It routes
-  tree buckets to `tree_read::read_property_value_at_slot` now.
-- **Follow-up, open:** the benchmark now measures **6.77M instructions against a 2.11M baseline**
-  (+220%), and the breakdown localises it: `plan_query_execute_ops` **5.75M (+420.7%)**, while
-  `plan_op_project` is +12.7% and `plan_query_materialize_value_rows` +3.3%. So the cost is the expand
-  operator reading the promoted bucket's values - per-row tree reads through the path this fix made
-  correct. Letting a tree bucket into the inline-property batch gate (`966d4107b`) took the benchmark
-  **6.77M -> 3.79M** (+220% -> +79%) and `plan_query_execute_ops` 5.75M -> 2.77M.
-- **Where it stands:** +79% against a baseline recorded for the same fixture in its **slab** shape, while
-  the fixture now promotes. Part of the remainder is the tree read path itself (a property-tree walk per
-  block against one contiguous slab read). Refreshing `crates/graph/canbench_results.yml` is what would
-  settle whether the tree shape is the new normal for this bench, and that refresh is only possible now
-  that the suite runs to completion.
-
-
-### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
-
-- **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
-- **Observed behavior:** against the committed baseline, `bench_graph_inline_scalar_filter_1k`
-  was +23.9 %, `bench_graph_inline_scalar_projection_1k` +23.1 % and
-  `bench_graph_vertex_insert_scalar_16` +28.2 %, while `bench_scalar_fan_out_128_width_0` was -37 %.
-- **Cause, found by bisecting:** `61395eb` ("route memory access through an installed shadow"). The
-  overlay sent every `read`/`write`/`size`/`grow` through a thread-local check even when no shadow was
-  installed, so any path that touches memory paid for it. Two earlier guesses - the ADR 0098 flag and
-  the per-message drain - were each measured and cleared by forcing them off and reproducing the slow
-  numbers exactly.
-- **Fix and recovery:** the shadow had no production consumer (already rejected as a speed tool at
-  1.71x slower than direct writes, with its atomicity benefit never wired to an entry point), so the
-  overlay, its bench and its test were deleted. Measured after: 1.21 M / -0.65 % and 32.56 M on the
-  two benches above - back inside the noise threshold of the baseline.
-- **Evidence:** the two benches before and after, the bisect verdict naming the overlay commit, and
-  the two forcing experiments that cleared the drain and the ADR 0098 flag.
-- **Lesson worth keeping:** a whole-memory interception layer is invisible to unit tests and shows up
-  only as a uniform percentage on every bench; bisecting on one bench found it faster than reading
-  the diff.
-
-### GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW — inline value update lands one ordinal low
-
-- **Status:** Resolved 2026-11-03 (`d661eaaf2`). The update path passed the row's bucket-local
-  physical slot to a plane addressed by live ordinal; the writer now resolves the ordinal
-  (`bucket_live_ordinal_at_edge_slot`) and the primitive takes an ordinal, which the tombstone-reuse
-  path keeps using because it already computed the hole's live ordinal. The reproduction is green and
-  ADR 0099's property test is enabled (240 random ops). lara 708/0, graph 1107/0.
-- **Original report follows.**
-- **Observed behavior:** with four directed edges carrying width-2 values on one vertex, updating one
-  value, deleting a row that precedes another, then updating the later row's value writes that value
-  **one row too early**: after `v3=304, v1=102, v2=203, v0=1`, `update(v2, 204)`, `delete(v1)`,
-  `update(v2, 205)`, the reader returns `v0=205, v2=204, v3=304` where the values last written are
-  `v0=1, v2=205, v3=304`.
-- **Expected or needed behavior:** every live row reads back the value last written to it. The
-  property test `values_stay_with_their_rows_through_random_mutations` interleaves inserts, hole
-  refills, updates, deletes and maintenance passes and asserts exactly that; it is `#[ignore]`d until
-  this is fixed, because it fails at the same op shape.
-- **Interpretation:** the update path derives the value's ordinal from a position that the delete's
-  left-shift has not been applied to - the update wrote to the slot that the deleted row used to
-  occupy. This is the ordinal/slot divergence ADR 0099 exists to remove: the values plane is a rank
-  lookup that has to be kept consistent with the rows, and one path is not doing it.
-- **Owner:** the inline-property update path in `crates/ic-stable-lara/src/labeled/graph/values.rs`
-  (the ordinal derivation), with the frozen reproduction in
-  `crates/graph/src/facade/store/inline_update_fixture.rs`.
-- **Evidence:** `inline_update_after_a_delete_writes_the_right_row` (frozen reproduction, currently
-  the suite's only red test) and the ignored property test above.
+Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
+its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
 ### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — RESOLVED: the fold's bound is the view's, and production cannot pass one
 
@@ -172,365 +91,6 @@ defect from being rediscovered without its prior reasoning.
   inside the step for this fixture, and assert the fold against those numbers rather than against a pre-step
   reading. That is one print away, and it turns the earlier "no teeth" problem and this "too much room" problem
   into a fixture fact.
-
-### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
-
-- **Status:** Resolved 2026-11-03 ([ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
-  The last one was a real defect: a bucket's spill fold took its room from a region that was derived
-  from the regions that exist, so a leaf-mate whose rows all lived in its run contributed no region
-  and the fold wrote rows over that mate's edge start - one row landed on the guard vertex's base and
-  read back inside another vertex's prefix. The fold now stops at `next_leaf_vertex_edge_start`, the
-  rewrite path takes the same bound, and the fixed-quota fast path requires the leaf's recorded
-  `fixed_quota_intact` flag rather than a vertex record width that is the bypass width. lara 707/0,
-  graph 1106/0.
-- **Original report follows.** Three of the six are understood (contract drift after ADR 0097); one is a
-  compaction behavior question with the spill explanation ruled out; two are untriaged.
-- **Observed behavior:** `cargo test -p gleaph-graph --lib` reports 1097 passed / 6 failed:
-  `insertion_policy_maintenance_preserves_left_pack_order`,
-  `unordered_compaction_swap_publishes_move_and_moves_sidecars`,
-  `swap_compaction_rekeys_inline_scalar_index_to_new_slot`,
-  `unordered_captured_at_enqueue_drains_without_ambient_table`,
-  `updating_undirected_edge_inline_property_updates_both_storage_rows`, and
-  `vertex_delete::tests::detach_delete_fence_uses_canonical_forward_slot_for_diverged_directed_in_edge`.
-- **What is known per test:**
-  - The three swap/left-pack tests sit behind `slab_bucket_allows_unordered_swap`, which requires
-    the inline values to be slab-backed and exactly one block per live row; with a value width the
-    fixtures do not reach that state before the delete, so the pass left-packs instead of swapping.
-  - `detach_delete_fence_...`: the fixture's bucket is **`BucketMode::Tiny`** (`stored_slots = 2`,
-    `degree = 2`), and the span step advances past tiny buckets by design, so no slab compaction
-    ever runs and the slots never diverge. Confirmed by instrumenting the step entry: it is called
-    twice and returns `AdvanceBucket` both times.
-  - `unordered_compaction_swap_publishes_move_and_moves_sidecars`: the bucket *is* `Slab` but is
-    run-backed - `stored_slots = 0` with a live `edge_spill_run` - so every row lives in the run and
-    the span-level swap finds no slots to move. Promoting the fixture out of tiny mode first does
-    **not** help: deleting the fillers empties the bucket, which releases its span, so the edges
-    under test land in a zero-slot region again and the fold has nothing to fit. A working fixture
-    has to keep the bucket non-empty while giving it span room, or seed the slab geometry directly.
-  - Seeding it directly was tried and is not the missing piece either: exposing LARA's
-    `promote_bucket_to_slab` to the graph crate through a `test-support` feature compiles, but both
-    fixtures refuse it with "bucket is already promoted" - the swap fixture's bucket is already
-    `Slab` with a zero-slot span, and the fence fixture's is promoted before the seeding point. That
-    exposure was reverted rather than kept without a user.
-  - The open question is therefore narrower than "the fixture needs promotion": **why does a bucket
-    carrying inline values end up promoted with `stored_slots = 0` and every row in its run?** That
-    decides whether the remaining swap failures are a fixture problem or an insert-path defect.
-  - **Answered (2026-11-03): it is the insert path, by design.** An edge that carries inline property
-    bytes is inserted through `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location`
-    (`bidirectional/deferred.rs:2140`), which deliberately skips the leaf cascade so the captured
-    value offsets stay valid; `insert_edge` - the entry that grows the leaf through
-    `rebalance_cascade_after_labeled_mutation` - is never called on that path. Instrumenting
-    `insert_edge_inner` showed why every one of those inserts spills: `have_space_on_slab` is
-    `loc < slab_window_exclusive_end`, and a fresh vertex's window is empty
-    (`stored_degree = 0`), so the first insert already spills and the vertex keeps a run. The rows
-    then return to the span only when something grows the leaf - which is what the fixtures' pre-fold
-    drain is supposed to do and cannot, because the fold needs the room the cascade would have made.
-    A fixture that wants a span-resident value-bearing bucket must therefore grow the leaf by some
-    other means first, and that is a real hole in the test kit rather than a stale assertion.
-  - **Closed except one (2026-11-03).** The hole is now filled:
-    `fixture_support::force_span_fold` (behind the `test-support` feature) runs the eager
-    `Required`-policy fold, and the five fixtures that needed a span-resident bucket call it. Suite
-    1097/6 -> 1102/1. What remains is
-    `updating_undirected_edge_inline_property_updates_both_storage_rows`, whose fixture models exact
-    slot placement across several undirected buckets and now differs in one row (slot 2 reports
-    `VertexId(2)` where the model says `VertexId(0)`); that one needs its model checked against the
-    spill layout rather than another fold.
-  - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
-    only, and the discrepancy now looks like a **defect rather than a model gap**. The fixture's
-    vertices are `low = VertexId(0)`, `high = VertexId(1)`, `guard = VertexId(2)`; low's undirected
-    bucket reads back 17 rows whose values all match the model (`2000..2007`, the `high`-`low` edge
-    with `5000` and neighbour `VertexId(1)`, then `4000..4007`), except **slot 2**: its value is the
-    expected `2002` but its neighbour reads `VertexId(2)` (`guard`) where every other self-loop on
-    low reads `VertexId(0)`. So one row carries the right value and the wrong neighbour - the
-    signature of a write landing in the wrong field or a row/value pair being mismatched, not of a
-    fixture that forgot to fold.
-  - **Reproduced (2026-11-03)** by
-    `inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which replays the
-    fixture's insert order and asserts only that each row's neighbour is right. With **8** valued
-    self-loops on `high` it passes; with **32** it fails exactly like the real fixture - `low`'s slot
-    2 reads neighbour `VertexId(2)` (`guard`) with the correct value `2002`. Removing the guard
-    self-loop from the real fixture changed two expectations, so it could not isolate the row; the
-    new test can, and the only difference between pass and fail is the size of the *other* vertex's
-    first batch. Bisected: **24 rows pass and 25 fail**, so the trigger is that batch's size rather
-    than anything about the row being read.
-  - What the reproduction shows: `guard`'s own bucket still holds its row correctly (slot 0,
-    neighbour `VertexId(2)`, value 6000), so this is **not** a row overwritten by another bucket -
-    the self-loop row itself was written with the wrong neighbour.
-  - **The payloads are correct at the LARA entry the undirected path uses.**
-    `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location` receives
-    16 x `(low, low)`, 33 x `(high, high)`, one `(low, high)`, one `(high, low)` and one
-    `(guard, guard)` - all right. So the wrong neighbour appears *inside* the deferred placement,
-    not on the way in.
-  - **Instrumenting the wrong function first cost time, and the mystery was self-inflicted.** The
-    earlier probe sat in `lara/edge/insert.rs::insert_edge_inner` and reported 54 calls all with
-    owner 0. The reason is in `labeled/graph/insert.rs:540`: this path calls
-    `insert_edge_without_logical_slot(&access, VertexId::from(0), ...)` - the `vid` argument is a
-    placeholder and the real context rides in `access`. So those counts were neighbours only, and
-    they were right (17 x neighbour 0, 1 x neighbour 2, 36 x neighbour 1 against 16 low self-loops,
-    33 high self-loops, the cross edge each way and guard's one row).
-  - The write site agrees. Instrumenting it (`labeled/graph/insert.rs`, just before
-    `insert_edge_without_logical_slot`) shows the exact expected set - 33 `high` self-loops at bucket
-    start 4097, 16 `low` self-loops at 4096, one `guard` at 4098, and the cross edge once in each
-    direction - so nothing above the row write is wrong, and the earlier "two extra writes" was an
-    artefact of comparing runs with different batch sizes.
-  - What the addresses do show: **the three buckets' regions start one slot apart** (4096, 4097,
-    4098) while each holds many rows, so all of those rows live in the per-bucket spill runs, not in
-    the slabs. The corrupted row is therefore a *run* row.
-  - **Instrumenting the run write is the wrong layer, twice over.** In
-    `log_mut.rs::insert_into_spill_with_layout` every append printed the same neighbour
-    (`VertexId(1)`) and the same run id (`0`) regardless of the vertex, which cannot be the stored
-    payload: the read-back disagrees. Like `VertexId::from(0)` in the earlier probe, the value this
-    layer sees is a placeholder/normalised one and the real identity rides in the `access` context.
-    Two probes in a row have now misled on that; the reliable observation is what is read back, not
-    what these inner functions are handed. A dump of the run's stored rows (an inspector, not a
-    print at a write site) is the next instrument.
-  - One read-side fact is now settled: reading the same vertex twice returns the same rows, so the
-    wrong neighbour is **stored**, not produced by the read mapping. That rules out the ordinal/slot
-    resolution path and confirms the row content itself is wrong in the run.
-  - **Cause found (2026-11-03): two buckets' spans overlap.** A run inspector
-    (`fixture_support::bucket_geometry`) reports, for the reproduction:
-    `low = (edge_start 4096, stored_slots 11, degree 17)`, `high = (4097, 0, 34)`,
-    `guard = (4098, 1, 1)`. Low's span is `[4096, 4107)` and it contains `high`'s start at 4097 and
-    `guard`'s at 4098, so `guard`'s single row is written at physical 4098 - which is low's slot
-    index 2. That is exactly the observed row: value from low's values span (2002) and neighbour
-    from guard's row. So this is not a spill bug at all: the leaf arena handed out bucket starts one
-    slot apart and then one bucket's prefix grew across its siblings. It is a residency violation of
-    the leaf contract (E5: placement stays inside the vertex's own slice), and the reproduction now
-    asserts it directly with a non-overlap check on the three spans.
-  - The overlap is already there **immediately after the inserts** (no relayout involved), and the
-    write window is one slot: a synthetic `LabelEdgeSpanAccess` reports `v_ord = 0` with
-    `trusts_neighbor_boundary() == true`, so `slab_window_exclusive_end` clamps the append at
-    `vertices[1].base_slot_start()`. Low could therefore write exactly one slab row - yet its bucket
-    records `stored_slots = 11`.
-  - First lead, **checked and wrong**: that the spill path grows the prefix.
-    `CsrVertex::try_grow_packed_slab_by_one` already branches on `edge_spill_run != NO_SPILL_RUN`
-    and grows only `degree` there, so a spill row cannot lengthen `stored_slots`.
-  - **Second lead, consistent with every number:** the *fold* fills the span past the sibling
-    boundary. Low holds 11 prefix rows and 6 run rows, so 11 rows reached the slab by some path even
-    though the append window is one slot - and the path that can do that is
-    `compact_label_bucket_overflow_to_slab`, whose room check is
-    `available = bucket_successor_start(...) - bucket.edge_start()`: the next *bucket inside the same
-    vertex*, not the next *vertex's* base. Growing a prefix up to the next bucket of its own vertex
-    can therefore cross into the vertex that was placed after it, which is what the recorded
-    4096/4097/4098 starts show. The fix belongs where that fold decides it has room.
-  - **Sharpest statement of the defect.** Low's prefix is 11 slots at 4096, so low's own extent must
-    cover at least `[4096, 4107)` for those rows to be legal - yet `high` was placed at 4097 and
-    `guard` at 4098, inside it. Either the extent really is 11 and the *placement of the next
-    vertex* ignored it, or the extent is 1 and the prefix grew past it. Both are one question: does
-    the leaf arena place a new vertex after the end of the previous vertex's extent? That is the
-    invariant to check (`next_vertex_edge_span_allocation` / `LeafArena::reserve`), and it is the
-    same E2/E5 residency rule the fail-closed ladder exists to keep - a *vertex*-level violation
-    here rather than a bucket-level one.
-  - **The clamp cannot land alone (tried 2026-11-03).** Capping the bucket's successor at the next
-    vertex's base is the obvious minimal fix, and it makes
-    `deferred::tests::compaction_cursor_packs_alternating_tombstones_across_steps` overflow the stack:
-    that fixture builds nine vertices and folds eight rows into `src`'s span, so with the cap its
-    fold has about one slot of room, errors, and the drain recurses. In other words a long-green
-    test's layout already assumes a vertex's span may run past the next vertex's base - the overlap
-    is not an edge case, it is what the placement currently relies on, and the suite is green only
-    because nothing reads those rows back afterwards.
-  - That is the argument for doing the slice and the growth bound together rather than the bound
-    first: placement has to hand each vertex a slice wide enough for its span, and only then can
-    growth be clamped to the slice without starving legitimate buckets. The clamp was reverted.
-  - **Decision recorded in [ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md).** The
-    owner is `LeafSlice`, which ADR 0088 already names for exactly this, so the ADR rejects a new
-    `VertexArena` layer and instead routes the write window, the fold and the bucket successor
-    through the slice. It also records why a bound-only clamp is insufficient (the stack-overflowing
-    fixture) and that spill rows stay in `SpillRunStore`, with only the slab/run decision and the
-    `stored_slots` + `spill_used_len` pairing changing.
-  - **Step 1 landed; step 2 measured.** `LeafSlice::fits(start, need)` now answers the capacity
-    question and `grow_region` uses it, so the predicate has one implementation and one test-facing
-    meaning. Routing the *fold* through it - the actual fix - turns 13 lara tests red, which is the
-    migration the ADR predicts, and not uniform fallout: `bucket::tests::last_bucket_successor_respects_descriptor_order_cover`
-    does `validate().unwrap_err()`, i.e. it asserts that the arena's validator *reports* an
-    overlapping cover, so with the fold refusing to grow across, there is nothing to report and the
-    assertion inverts. Others sit in `compact::physical_layout_tests` (`non_forcing_compaction_*`)
-    and `deferred::tests::retained_compaction_observer_*`. Each needs a decision - assert the refusal,
-    or give the vertex a slice wide enough for the fold it wants - so the routing is its own unit.
-  - **Triage of all 13 (2026-11-03).** Grouped by what the failure says, because the groups need
-    different work:
-    - *The refusal is not a failure - it is a "grow and retry" signal, and the growth is the bug (5).* `selected_property_tree_eight_byte_boundaries`,
-      `selected_property_tree_thirty_three_byte_boundaries`, `selected_property_tree_corrupt_roots_propagate`,
-      `selected_property_retained_independent_planes` and `non_forcing_compaction_rebuilds_a_dense_spill_run`
-      fail with `Store(CollectAllocationOverflow)` or `SpillNeedsPromotion`. The first reading of this
-      - "the refusal should be a non-event" - is **wrong**, and the callers say so: both
-      `promote.rs:98` and the span step at `compact.rs:6035` treat
-      `Store(CollectAllocationOverflow)` as *no room, so force room and retry*, calling
-      `rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)` and folding again. So
-      the error only escapes when that forced rebalance has already grown the span somewhere it may
-      not - which is the same overlap, now made by the growth step instead of the fold. That also
-      explains the fourth group's trip ("[288, 296) exceeds VertexEdgeSpan [288, 293)"): the check is
-      correct and the growth is what violates it. **The bound belongs in the forced slack grow**, not
-      only in the fold's room check.
-    - *Move reporting changes (5).* `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis`
-      and `non_forcing_compaction_repacks_a_tail_tombstoned_run_without_reporting_moves` expect no
-      moves but now get `OverflowRewrite(...)`: the rebuild arm fires precisely because the fold
-      declined. `retained_compaction_observer_keeps_external_identities_through_retry_and_finish`,
-      `retained_compaction_finished_matches_every_reported_move` and
-      `cursor_slab_pages_keep_retained_spill_and_values` differ in a count. These need a decision
-      about whether a declined fold may itself trigger a rebuild.
-    - *Inverted expectation (1).* `last_bucket_successor_respects_descriptor_order_cover` asserts
-      `validate().unwrap_err()` - it wants the validator to report an overlapping cover.
-    - *Invariant live, fixture wrong (1).* `root_geometry_normal_promotion_keeps_cover_and_pin` now
-      trips a check that already existed: "on-slab edge range [288, 296) exceeds VertexEdgeSpan
-      [288, 293)". The fixture was placing six rows into a five-slot span and the check only went
-      unexercised because the fold made the same mistake.
-    - *Fixture simply asserts the old width (1).* `compact_vertex_edge_span_shrinks_vertex_edge_span`
-      fails on `before.stored_slots > 8`.
-  - **Two of the three growth paths are now bounded, and neither stops the corruption.**
-    `try_labeled_vertex_edge_base_in_pinned_leaf` accepted a widening span that stayed inside the
-    *leaf* while running over a leaf-mate's base - and the leaf-mate was invisible to its overlap
-    check because that vertex's rows all live in its run, so it occupies no slab slots. It now also
-    requires `LeafSlice::fits`, which costs no test (706/0). Routing the fold's room check through
-    the same predicate also leaves the reproduction unchanged: the overlap is still
-    `[4096, 4108)` against `4097`. So neither widening nor the fold is the path that grows this
-    prefix - the **slab insert itself** accepts rows that the window should refuse, one slot at a
-    time, and the next probe belongs in `have_space_on_slab` /
-    `slab_window_exclusive_end` for a synthetic `LabelEdgeSpanAccess` whose `v_ord` is 0 while its
-    real owner is another vertex.
-  - **The insert path measured (2026-11-03).** Logging the window decision at every insert shows
-    the writes are *correctly refused* - `has_space=false` for all of them - and the anomaly is
-    elsewhere: `loc` (`base + stored_degree`) walks forward one slot per insert (`4096, 4097, ...`)
-    and the reported window `end` follows it exactly, so the comparison degenerates to
-    `loc < loc`. `stored_degree` for a non-default labeled vertex is its logical `degree`, which the
-    spill path grows by design, so for a run-backed bucket `loc` is not a slab position at all - it
-    is the logical row count added to the base. Nothing writes there (the check refuses), but the
-    bookkeeping that later reads treat as "11 slab slots" comes from this counter, not from the
-    spill path inventing writes.
-    So the next question is narrower still: which reader turns that counter into the bucket's
-    `stored_slots`, and why does it not stay at the slab prefix the run-backed shape implies.
-  - **The setter was found, and the slice check is circular (2026-11-03).** Logging `with_stored_slots`
-    and `with_edge_range` shows a bucket with `edge_start = 4096` and a live run (`run = 33`) walking
-    `stored_slots` 1 -> 2 -> ... -> 12 as its degree grows in step, i.e. the **fold** is what grows the
-    prefix, and it keeps doing so even with the fold's room check routed through
-    `LeafSlice::fits`. The reason is that `slices()` derives each slice from the vertex's
-    **first-region starts**: once the neighbouring vertex has been placed at the overlapping address,
-    the derived slice contains it, so the bound can never refuse the growth it was meant to stop.
-    That is a circularity, not a tuning problem, and it is now recorded in ADR 0098 (alternative B')
-    along with the conclusion: the bound has to come from something placement cannot move - the next
-    vertex's `base_slot_start`, or an allocated width.
-  - **The exact mechanism (2026-11-03).** `LeafArena::validate` already reports the defect once it
-    runs: `region of VertexId(0) 4096..4107 outside its slice 4096..4098`. The numbers say why -
-    the slice ends at **4098**, which is the *third* vertex's start, so the second vertex (all of
-    whose rows live in its run) contributed no boundary at all. `slices()` is built from the
-    vertices that have a first region, so a vertex with none is invisible and its space is handed to
-    its predecessor. This is the sharper form of the circularity in ADR 0098, and it names the fix:
-    the partition must include every vertex, taking `base_slot_start` as the boundary, not "the next
-    vertex that happens to have placed something".
-  - `fixture_support::leaf_layout_errors` now exposes `validate()` to a dependent crate's tests, and
-    the reproduction asserts the contract is satisfied, so the failure message names the invariant
-    rather than a neighbour mismatch.
-  - **Both halves of the fix were tried together (2026-11-03).** Including every vertex in the
-    partition works as predicted - the reproduction's slice end moves from 4098 to 4097, the second
-    vertex's base - but it turns **11 lara tests red**, and the fold routing then trips the
-    partition's own `debug_assert`: *"two vertices of one leaf start at the same slot"* (3
-    participants, 2 distinct bases). That is the defect in its purest form: **placement assigns two
-    vertices the same base**, so no boundary can be drawn between them. It confirms the order this
-    ledger has been converging on - the placement invariant (base at or after the previous base plus
-    its allocation) has to be established *before* the partition can be authoritative, and the 11-13
-    fixtures have to be migrated with it. Both changes were reverted; the validation and the
-    reproduction's contract assertion stayed, because they are green and they name the invariant.
-  - **The two address spaces (measured 2026-11-03).** The duplicate-base assert was my own doing: I
-    had compared `base_slot_start` values, and those live in a **different arena** from the edge slab.
-    Measured for the reproduction: `(vid, base_slot_start, vertex stored_slots, first bucket
-    edge_start)` = `(0, 1027, 1, 4096)`, `(1, 1028, 0, 4097)`, `(2, 1029, 1, 4098)`. A vertex's edge
-    position is its first bucket's `edge_start`; `base_slot_start` is a vertex-slot address and must
-    never be compared with it. The check now reads the edge slab - `vertex_edge_start` /
-    `vertex_edge_allocation` - and the reproduction reports the invariant exactly:
-    `vertex VertexId(2) edge start 4098 starts inside VertexId(0) 4096+11`.
-  - **What enforcement therefore has to do.** Vertex 1 has an allocation of **0** (its rows all live
-    in its run), so it contributes no boundary, and vertex 0's 11-slot claim runs over vertex 2's
-    start. Placement must assign `edge_start(next) >= edge_start(previous) + allocation(previous)`
-    even when `allocation(previous)` is zero - i.e. an empty vertex's boundary is still a boundary,
-    and its own start must sit at or after the previous vertex's end. Today the placement only
-    avoids the spans that leaf-mates have actually *occupied* (`labeled_leaf_occupied_spans`), which
-    is why an empty leaf-mate is invisible. That is the concrete change: make the occupied-span
-    input include every vertex as `[edge_start, edge_start + allocation)`, including the zero-width
-    ones, and require the new base to clear all of them.
-  - **Tried, and it exposes the next inconsistency (2026-11-03).** Reporting zero-width leaf-mates
-    from `labeled_leaf_occupied_spans` (using the buckets' summed widths instead of the vertex's
-    `stored_slots`) turns 11 lara tests red and trips a check that already existed:
-    *"fixed-quota fast path returned base 4098 (end 4099) overlapping a leaf-mate; layout is not
-    fixed-quota intact"*. That check is right, and it names the real gap: the fast path is skipped
-    only when `labeled_leaf_has_oversized_vertex` sees a mate above the quota, and that function
-    reads **`vertex.stored_slots`**, which for the reproduction is **1** while the vertex's own
-    bucket claims **11**. The vertex record and its buckets disagree about the span width, so the
-    cheap soundness test says "fixed-quota intact" for a leaf that is nothing of the sort.
-  - So the ordering gains one more prerequisite, ahead of the placement change: **the vertex's edge
-    allocation must equal what its buckets actually claim** (measured mismatch 1 vs 11). Until those
-    two agree, every cheap guard - the fast path, the oversized test, the occupied-span list - is
-    reasoning about a number that is not the layout.
-  - **Why the record must not be kept in sync (counted 2026-11-03).** There is no single point that
-    publishes a bucket's width: `with_stored_slots` / `with_edge_range` / `try_with_edge_range` are
-    called from **78 sites** (32 of them in `compact.rs`, 7 in `insert.rs`, 5 in `bucket_store.rs`,
-    plus `bypass.rs`, `headroom_screen.rs`, `access.rs`). Keeping `vertex.stored_slots` equal to the
-    sum would therefore mean adding an update at 78 places, which is the duplicated-update-logic
-    shape the round-one review rejects - and the measured 1-vs-11 drift is what that shape produces.
-    The buckets stay the source of truth; the vertex field is the **bypass** span width (it already
-    is, in `stored_degree` and `slab_append_exclusive_end`, both gated on
-    `is_default_edge_labeled()`), and every labeled consumer goes through one derived accessor.
-    Readers counted on labeled paths: `compact.rs` (9), `deferred.rs` (2), `promote.rs` (1).
-  - **Step 4 tried again after the derived accessor landed (2026-11-03).** With `vertex_edge_start` /
-    `vertex_edge_allocation` in place, reporting zero-width leaf-mates still turns **11 lara tests**
-    red, and the check it trips was already there: *"leaf-mate edge spans overlap in leaf 0: vid
-    VertexId(0) reserves up to 1048832 but vid VertexId(1) starts at 1048737"*. That is a ~95-slot
-    overlap in a relocation fixture, so those fixtures are not merely fragile - their layouts are
-    overlapping by construction, and this ledger's earlier note ("a long-green test relies on the
-    overlap") is confirmed on a second, independent check.
-  - Where this leaves the work: steps 1-3 are landed and green (derived accessor, oversized test,
-    a fast-path check that now runs in every build). Step 4 is correct but needs the **11-fixture
-    migration** first: each fixture has to give every leaf vertex an allocation wide enough for its
-    span before placement can be required to clear all of them. That migration is the unit; the
-    change itself was reverted again to keep the suite green.
-  - **A hot-path contract forbids the cheap fix (2026-11-03).** Including zero-width mates makes
-    placement read each mate's buckets, and `g6_tiny_insert_reads_no_edge_bytes` fails - that test
-    exists to keep the insert path from touching edge bytes. So the allocation cannot be derived on
-    the hot path; it has to be **recorded at the leaf level** (each vertex's edge start and width,
-    written by the rewrite/relocate that already tiles the leaf wholesale) so placement reads one
-    small structure instead of N bucket lists. Unifying the debug overlap assertion onto the same
-    occupancy model was the other half of the attempt: on its own it also changes which fixtures
-    trip, including the guard's own injection test, so it has to land with the recorded allocation.
-  - **Revised order.** (a) record per-vertex edge start/width in the leaf's span metadata, written
-    only by rewrite/relocate; (b) point placement, the oversized test, `validate`, and the debug
-    guard at it; (c) then the 11-fixture migration. Deriving from buckets stays correct but is only
-    affordable off the hot path - `validate` uses it today.
-  - **The recorded flag landed, as a one-byte field (2026-11-03).** `SegmentSpanMeta` is now 9 bytes
-    (`physical_start` plus `fixed_quota_intact`, `ENTRY_SIZE` 8 -> 9) with the version left at 1: the
-    header's stride check already rejects a store built with the old row size. The flag is one-way
-    and re-pinning a leaf carries it over rather than restoring it. The fast path requires it, and
-    the fold clears it - that is the path the measurement caught growing `stored_slots` 1 -> 11
-    without a rewrite. lara 707/0.
-  - **Routing the fold's room check as well still fails (re-measured).** With the flag in place,
-    pointing the fold at `LeafSlice::fits` still turns 13 lara tests red and the reproduction's
-    prefix grows one slot further (12 instead of 11), so the growth that remains is not the fold: it
-    is the rewrite path (`rewrite_vertex_edge_span_with_policy` and the relocate it delegates to),
-    which publishes a wider span through `with_edge_range`. That is where the next bound goes, and
-    it is why the routing was reverted a third time while the flag stayed.
-  - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
-    width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
-    `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
-    vertex's `base_slot_start` is not required to sit at `base + alloc` of the previous one: the
-    reproduction has `low` allocated 11 slots at 4096 with `high` at 4097. So the invariant to
-    enforce is not "the span fits the derived slice" but "**a vertex's base starts at or after the
-    previous vertex's base plus its allocation**" - and enforcing it is what makes the derived slice
-    (and therefore `fits`) meaningful again.
-  - **Where the remaining growth can still come from.** `LabelBucket::try_grow_packed_slab_by_one`
-    does have the ADR 0097 §7 run branch, so the bucket record is not it. The span width is set by
-    `with_edge_range`/`with_stored_slots` from the rewrite path, and two of that path's exits are
-    still unbounded: `finish_span_resolution`'s `tail_append_labeled_edge_base(new_alloc)` under
-    `Required` mid-relocation, and `resolve_labeled_edge_base_for_growth`'s relocate-and-retry loop,
-    which repeats `try_labeled_vertex_edge_base_in_pinned_leaf` (now bounded) but falls through to
-    that tail append when the loop exhausts. Those are the two places to bound next.
-  - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
-    with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
-    fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
-    fixtures. The routing was reverted again so the suite stays green while those land.
-- **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
-  state or the tests must state the narrower contract (value-bearing buckets left-pack until the
-  values are dense). For the other three, the behavior must be explained before any test is edited.
-- **Owner:** `crates/graph/src/facade/store` (test contracts); `compact.rs` for the compaction
-  question.
-- **Evidence:** the test names and the run command above; ADR 0052's 2026-11-02 amendment for the
-  swap gate; `plans/0408` carries the session log (ignored by git).
 
 ### GAP-LARA-INLINE-DELETE-COST — removing from a bucket with inline values is superlinear
 
@@ -934,113 +494,6 @@ defect from being rediscovered without its prior reasoning.
   not repeat implementation allocation. Its mixed-mode/group order, real caller GREEN/mutation,
   cost and implementation closure remain unproved. Queue/Graph/live width/0383 stay later gates.
 
-### GAP-LARA-MODE-FOOTPRINT — Normal/bypass handoff corrupts assigned pin width
-
-- **Status:** Resolved in the validated dirty worktree by [0396](../plans/0396-mode-footprint-handoff.md),
-  with P5 independent implementation/cost approval and final closure. Fixing change:
-  `fix(lara): preserve assigned pin width across mode changes`, parent f25567bad;
-  `mode-footprint-user-commit-c1/commit-receipt.json` binds the exact commit and index-only validation.
-  The owning regressions are `mode_footprint_retained_roundtrip_preserves_assigned_pin` and
-  `mode_footprint_tree_append_preserves_pin_and_retirement`.0394's fresh baseline is now frozen.
-  Draft approval, original REDs and P3 BEFORE bindings remain immutable.
-- **Observed:** The existing retained-prefix/run fixture reaches physical prefix5 and assigned
-  pin16 at256. Normal→bypass subtracts5; after spill reaches64, bypass→normal charges raw69 as
-  normal cover and adds69 to total11. Pin/capacity are unchanged and the inferred end336 exceeds272.
-  The strengthened temporary exact1 assertion fails, exit101. Its diagnostic source is archived
-  and restored; the original success contract is unchanged.
-- **Owner:** `graph/insert.rs::enable_default_edge_bypass`,
-  `graph/bypass.rs::promote_bypass_to_bucket_mode` and the tree-append sibling
-  `graph/promote.rs::promote_bypass_with_edge`; `EdgeStore` and its counts/row-layout owners enforce
-  prepared physical contribution/range decisions. Segment rewrite owns descriptors/final row links.
-  Existing prefix/root projection owners remain authoritative.
-- **Evidence:** [Source diagnosis, current representations and proposed boundary](evidence/adr0097-pin-extent-source-diagnosis.md).
-  `W/geometry-copy-composition/pin-extent-source-r1/{baseline,stage-cause}.json` plus
-  `stage-red-source.rs`/`stage-red.patch` and `pin-extent-source-r1-stage-red.log` bind four reached
-  stages and the source. One existing graph/33 memories; no new identity/PocketIC/install/reopen.
-- **Historical impact:** The defective writers manufactured pin slack, truncated its inferred extent
-  and published a cover containing spill width. Strict admission rejected an existing caller. The old
-  mixed-mode audit skipped total and missed intermediate11. No data-loss claim follows from this probe.
-- **Implemented ownership:** `EdgeStore::prepare_vertex_span_counts` selects assigned retention or
-  exact unassigned contribution for compact/ordinary/tree paths. One checked count-source read admits
-  backing before capture/preparation/revalidation. The segment publisher owns the final bypass row
-  without clear→set; the tree transcriber owns prepared actual exclusion and the exact post-allocation
-  header witness. One checked assigned-range interpretation replaces the inspected reader formulas.
-  Current formats, clean scans and root placement/retirement policy remain unchanged; no clamp,
-  count reset, additional length field or compatibility path is introduced. Fresh state is required
-  for old corrupt counts/covers. P5 deletes both fallible tree publication callbacks and preserves the
-  existing two writer forms in private transient prepared/ready sum types. Storage reserve/ready
-  precedes one final transcriber admission. The same6-case fixture injects during descriptor reserve,
-  preserves active source LTB0, checks exact free targets1/2/links/kinds and exact logical-row/allocator
-  integrity at the existing rejection reopen. Bypass audit bounds now use initialized prefix, not spill.
-- **P4 validation:** Native723 passes with all715 original identities and8 additions. Frozen fixture
-  cost is16 fresh graphs,1 outer graph,290 native memories and8 reopens,0 PocketIC/installs. Retained,
-  mixed, unassigned, empty/zero-live/run ownership, index/arithmetic/backing, stale-source, eligibility
-  and allocator-grown tree success/cleanup variants pass. Three exact mutants (assigned charging,
-  raw spill-inclusive cover, late count admission) fail at their advertised assertions; byte-identical
-  restoration and the same exact tests pass. Strict lib/tests Clippy, format and locked Wasm build pass.
-  The zero-live prefix expectation is intentionally retained rather than discarded; the existing
-  relocation fixture seeds a real folded prefix while keeping exact67 rows and both-order assertions.
-  `W/geometry-copy-composition/mode-footprint-p4/{fixtures-r4,native-validated}.json` and
-  `mutation-*-{applied,restored}.json` bind these stages. Failed RED/build/first-native commands stay failed.
-- **P5 continuation:** User `いいよ。進めて` authorizes a separately bound runner admitting only R/crate
-  and four fresh external AFTER directories. It derives the immutable real-lock contract; protected
-  old runners/configs/CSVs and repository saved results remain unchanged. Native723/Clippy/format,
-  the late-tree-admission mutant/restored exact GREEN and fresh locked Wasm pass. Fresh AFTER versus
-  P3 BEFORE: slab1530725 (-306), tree1577829 (-306), tiny191032946 (+207223/+0.1086%), bypass18854 (0),
-  all page growth0. Independent re-review accepts the tiny pressure-retry increment as bounded
-  safety-admission cost; no weakened sanity or0395 cost approval substitution. `mode-footprint-p5/{baseline,
-  runner-permission,fixture-red-r2,native-validated,mutation-restored,after-results}.json` binds this.
-- **Closure:** P4's packet-only REQUEST CHANGES (148.22s, one turn/ZERO tools) stays recorded. P5
-  re-review returns APPROVE IMPLEMENTATION AND COST BOUNDARY (45.80s, one turn/ZERO tools), no
-  remaining concrete P1/P2. `mode-footprint-p5/{review-completion,pre-closure,closure}.json` binds the
-  verdict, unchanged reviewed code, all required gates and exact source/protected/index preservation.
-  These are pre-commit receipts; subsequent user authorization permits the scoped commit, not push.
-  0394's separately authorized baseline-only restart now freezes native723 and fresh BEFORE in
-  `restart-p2-post0396-baseline/before-results.json`. The current full-worktree Wasm has19997
-  export-name bytes; a cached14657-byte C1 snapshot binary is rejected before measurement and the
-  owning compilation unit is rebuilt. Production source, all410 protected hashes and empty index
-  are preserved. No geometry/runtime approval or reinterpretation of historical715/728 follows.
-- **Preflight:** The historical P2 locked-build stop is resolved by P3's separate
-  [workspace lock prerequisite](#gap-workspace-lock-drift--locked-build-prerequisite-resolved).
-  P3's four fresh BEFORE controls are retained as BEFORE; P4 native/Wasm are not benchmark passes.
-
-### GAP-WORKSPACE-LOCK-DRIFT — Locked build prerequisite (resolved)
-
-- **Status:** Resolved by user-authorized P3 lock-only alignment, before mode production changes.
-  No manifest/source/version upgrade. P3's no-stage/commit/push receipt remains historical; the
-  subsequent user-authorized mode-fix commit includes the reviewed lock. Lock alignment alone does
-  not resolve the mode defect.
-- **Historical P2 observation:** `env CARGO_TARGET_DIR=target/canbench cargo build -p ic-stable-lara
-  --locked --release --target wasm32-unknown-unknown --features canbench` failed before compilation
-  because Cargo needed to update `Cargo.lock` (exit101/1.08s). Locked target metadata also failed
-  (exit101/1.29s). These failures remain immutable.
-- **Owner:** Workspace manifest/lock consistency; `Cargo.lock`, workspace/package manifests and
-  dependency resolution, not `EdgeStore` or the mode-conversion publishers.
-- **Evidence:** `W/geometry-copy-composition/mode-footprint-p2/baseline.json` freezes the continuation.
-  `lock-diagnostic.json`/`lock-delta-summary.json` record successful offline resolution in a separate
-  diagnostic mirror:1227→1083 lock packages, morph-dict gains unicode-normalization, obsolete local
-  graph-explorer-new is removed, GPUI disambiguation changes; no changed canbench/ic/LARA package rows
-  are observed. The P2 real lock had SHA256 `15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2`.
-  `minimal-lock-diagnostic.json` shows that adding only morph-dict's dependency to another diagnostic
-  copy still fails locked metadata (exit101/1.35s); a one-line canonical repair is not proven.
-- **P3 resolution:** User `いいよ` authorizes the lock exception. Independent r3 packet-only review
-  approves only its boundary (exit0/13.50s/ZERO tools). Cargo's real offline resolution exactly matches
-  reviewed SHA256 `f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`:
-  144 removals/zero additions, retained versions/sources/checksums equal, and optional-inclusive168-package
-  LARA closure equal. Six obsolete optional-edge reductions and morph-dict's current manifest edge are
-  explicitly recorded. Original lock/evidence/measurements remain historical; no handwritten schema,
-  cargo update, manifest edit or unlocked build is used.
-- **Validation:** Locked real target metadata passes (5.07s), the original locked Wasm build passes
-  (128.76s), and all four fresh BEFORE controls pass with19997/20000 export-name bytes. Exact current
-  source/lock/Wasm/CSV/native evidence is `W/geometry-copy-composition/mode-footprint-p3-lock/
-  {application,locked-target-metadata-receipt,semantic-lock-delta,lara-lock-closure,before-wasm,before-results}.json`.
-  Old715 identities pass with only the reproduced deliberate RED excluded; no all-tests GREEN.
-  Repository saved results/index and all Rust/manifests are unchanged. The obsolete runner's125 lock
-  guard and archive receipt-key failure stay failed; the current runner uses only the reviewed real lock.
-- **Subsequent resolution:**0396 closes the mode/count/range/tree boundary above with723 native,
-  restored mutants, fresh AFTER and independent implementation/cost approval. Its commit retains the
-  reviewed lock;0394 still requires a fresh baseline before its separate geometry implementation.
-
 ### GAP-LARA-BENCH-EXPORT-NAMES — Aggregate benchmark method names exhaust the install limit
 
 - **Status:**0395's two new entries are fixed and runtime-verified; broader capacity remains
@@ -1117,32 +570,6 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** Design and measure the owning LARA cursor/value-rank contract in a separate
   slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
   or weakened runtime assertion is introduced by slice0381.
-
-### GAP-LARA-TEST-CLIPPY — Strict test-target lint diagnostics
-
-- **Status:** Resolved by0393's scoped validation and review; the fixing source is included in the
-  validated0386/0393/0395 publication checkpoint. Discovered during the rejected Plan0359
-  allocator-operation trial.
-- **Observed behavior:** The historical `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara
-  --lib --tests --target aarch64-apple-darwin -- -D warnings` reported43 LARA test diagnostics in14
-  unchanged files. The later frozen0386 checkpoint had41 across13 exact paths. These are separate
-  historical inventories, not interchangeable counts. Categories included unused imports/results,
-  redundant casts/borrows, constant-size chunks, single-pattern matches, boolean assertions, doc
-  indentation, range indexing and dropping a Copy value.
-- **Expected behavior:** The affected Rust test targets must pass strict scoped lint without
-  suppressing diagnostics or excluding tests to claim full validation.
-- **Owner:** `ic-stable-lara` test modules under `labeled/{graph,bidirectional}` and `lara/vertex.rs`.
-- **Evidence:** The [rekey trial](evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected)
-  preserves the original diagnostics/toolchain/source pins. [0393 validation closure](evidence/adr0097-bucket-segment-publication-preflight.md#validation-closure-0393)
-  records actual exit0 for `cargo clippy -p ic-stable-lara --locked --lib --tests -- -D warnings`,
-  native708/0 with unchanged allocator34/bucket17 identities, workspace format and independent
-  cleanup APPROVE. `validation-closure/baseline.json` binds exact dirty-before paths/bytes; every
-  formerly ignored traversal result now asserts exact Continue, and existing test contracts remain.
-- **Impact:** Current LARA lib/test lint is clean; production lint or runtime success was not used
-  as a substitute. Historical failed commands remain failed and the rejected rekey trial remains
-  rejected. No domain, API/layout, fixture or benchmark behavior changed in the cleanup.
-- **Next decision:** None for this lint debt. Broader W2,0383 acceptance and separate implementation
-  prerequisites remain open; resolving this entry does not approve them.
 
 ### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
 
@@ -1255,167 +682,6 @@ defect from being rediscovered without its prior reasoning.
   fresh-state policy or route it through the existing canonical visitor with valid trait bounds.
   Do not duplicate mode guards, repair matching mutation incidentally or expand the completed
   selected-read validation turn.
-
-### GAP-2026-09-20-007 — The leaf cascade's span rewrite failed for a bucket that owns a spill run
-
-- **Status:** Fixed (F7, `spill-swap`). Found 2026-09-20 by the canbench gate; the four
-  gates (`cargo check --lib`, `cargo test --lib`, fmt, clippy) could not see it, and the
-  canbench feature's benches were the only witness.
-- **Owner:** the labeled leaf cascade (`rebalance_cascade_after_labeled_mutation` ->
-  `rewrite_vertex_edge_span` / `materialize_labeled_vertex_edge_plan` /
-  `commit_vertex_edge_span_layout`) and the span geometry it sizes.
-- **Reproduction:** `cd crates/ic-stable-lara && canbench bench_l_nt_bp`.
-  `bench_l_nt_bp_ins_1024` trapped with
-  `'Panicked at 'non-tail bypass insert: Store(CollectAllocationOverflow)'`
-  (`bench.rs:2905`). The identical command on `main` (`9a64049f4`) ran all three
-  `bench_l_nt_bp_ins_*` benches to completion (391.09 K instructions, the +19.32%
-  regression the ledger already recorded), so the swap introduced the defect.
-- **Cause (measured):** the rewrite's plan counted the bucket's run in `total_live`
-  (`bucket_resident_rows` = prefix + run), so `min_required` (65) exceeded the span the
-  vertex already had (64), the plan requested 144 slots
-  (`next_vertex_edge_span_allocation`), and `finish_span_resolution` reported
-  `resolve_labeled_edge_base: no placement for a required span of 144 slots`; with the run
-  excluded from the plan but the position calculator's `degree` floor left in place it
-  became `span_slots=64 < effective_live=65`. `main` made room for the fold by growing the
-  vertex span first - the step ADR 0097 removes.
-- **Fix (decision (b): a relocation keeps the run, positions do not change, only an
-  explicit compaction folds):** the rewrite plan counts the slab prefix; the plan's
-  spanless-vertex shortcut honours `preferred_extra` (a caller asking for real room must
-  get a span); the commit's resident scratch keeps the run for a keeping relocation
-  (otherwise the published descriptor lost it and the rows became unreachable -
-  `slab scan ended before yielding all logical edges`); the position calculator's slab
-  `degree` floor goes (the materialized width is the SSOT: a relocation's prefix, a
-  compaction's packed live rows); and the wide-edge carve-out, which cannot promote, now
-  goes through the explicit compaction instead of a span-growing rewrite, extracted as
-  `compact_run_into_prefix_with_growth_retry` and, at that revision, shared with promotion's
-  Phase 0a. `15ab44efb` subsequently removes promotion's fold; the wide-edge carve-out remains.
-- **Witness:** `labeled::graph::spill_swap_test::a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals`
-  (the bench's fixture). It fails before the fix (`insert 1000000:
-  Store(CollectAllocationOverflow)`) and passes after, with the run and its ordinals intact
-  and the descriptor still pointing at it.
-- **Cost, attributed and closed (F8).**
-  `cd crates/ic-stable-lara && canbench bench_l_nt_bp` (same command, same fixture) measures
-
-  | bench | `main` 9a64049f4 | `spill-swap` 52b2c7796 | ratio |
-  | --- | --- | --- | --- |
-  | `bench_l_nt_bp_ins_256` | 390,604 | 1,164,747 | 2.98x |
-  | `bench_l_nt_bp_ins_1024` | 391,094 | 1,163,272 | 2.97x |
-  | `bench_l_nt_bp_ins_4096` | 391,094 | 1,163,272 | 2.97x |
-
-  Flat across all three fixture densities on *both* sides, so this was a regression of the
-  swap, not a cost of the fixture shape. The scope call counts named the mechanism: `main`
-  runs the leaf cascade **once** for the 16 inserts (`labeled_rebalance_leaf_cascade`
-  1 call / 194,089 instructions, of which `labeled_rebalance_edge_log_vertex` - the fold -
-  is 185,893), because that single run re-lays the leaf and drops its density below the
-  trigger (`LEAF_VERTEX_EDGE_SEGMENT_DENSITY = 1.0`). The swap head runs it **16 times**
-  (927,185 instructions, of which `labeled_rewrite_vertex_edge_span` is 16 calls /
-  810,149): a bucket whose rows live in its run keeps its span in place, so the rewrite
-  changes nothing about the leaf's geometry, the density stays at 1.0, and every insert
-  re-enters the cascade and repeats the same rewrite. The slack placement search is only
-  `labeled_rewrite_read_and_plan` (16 calls / 60,155, ~5% of the total); the cost was the
-  repetition.
-
-  **Fix (F8):** the rule was already in the tree - db04af585: speculative slack must not
-  force allocation when the content already fits, and may use extra space only when it is
-  currently placeable. The cascade's rewrite of the source vertex is a *forced-slack*
-  rewrite, so it is skipped when the vertex is not span-resident (any bucket owning a run):
-  there is no span content to grow, the run holds those rows, and the rewrite could only
-  re-publish the same layout. The rest of the cascade still runs. Measured with the same
-  command and fixture: 364,070 / 363,906 / 363,906 for `ins_256` / `ins_1024` / `ins_4096`
-  against `main`'s 390,604 / 391,094 / 391,094 - the cascade's 16 calls now cost 129,776 in
-  total and no `labeled_rewrite_vertex_edge_span` scope appears. Witness:
-  `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
-  0 after).
-
-### Historical landing evidence — selected pre/post-5i rows
-
-Main values below are rounded console totals from `$TMPDIR/bench-main-full.log`, not exact
-persisted measurements. The earlier parser dropped the B suffix; those entries are corrected
-below using the recovered 189-name comparison. Pre/post columns describe 5i, not current HEAD.
-The earlier claims that this was a complete >5% list and that exactly one row changed were
-incorrect: candidate workloads also changed substantially. The recovered current comparison
-has 38 differences above +5% against rounded main; see GAP-009 for the scoped diagnosis.
-
-| bench | main (measured) | pre-5i | post-5i |
-| --- | --- | --- | --- |
-| `offset_workload_candidate_bursty` | 1,390,000,000 | 1,465,455,879 | 491,406,745 |
-| `offset_workload_candidate_uniform` | 1,400,000,000 | 1,433,556,965 | 471,147,924 |
-| `offset_workload_candidate_churn_light` | 1,250,000,000 | 1,252,356,452 | 401,477,074 |
-| `tcsr_65536_insert_grow` | 1,120,000,000 | 1,118,273,942 | 1,118,273,942 |
-| `tree_churn_bursty_reuse` | 1,040,000,000 | 1,041,741,982 | 1,041,741,982 |
-| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384` | 15,540,000,000 | 15,542,810,613 | 43,911,532 |
-| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536` | 247,360,000,000 | 247,370,242,366 | 247,370,340,681 |
-| `bench_t_vip_descending` | 27,010 | 197,860 | 197,860 |
-| `bench_t_vip` | 28,060 | 197,851 | 197,851 |
-| `bounded_inline_promote_full` | 216,850 | 1,132,525 | 1,132,525 |
-| `bench_l_mix_hub_scn_33x50` | 350,320 | 1,710,929 | 1,710,929 |
-| `bench_l_mix_hub_asc_33x50` | 452,960 | 2,011,687 | 2,011,687 |
-| `bounded_inline_64_full` | 18,970 | 80,251 | 80,251 |
-| `bench_t_v_in_hyb_ip` | 74,470 | 292,185 | 292,185 |
-| `bench_t_v_pf_then_sel` | 152,750 | 512,905 | 512,905 |
-| `bench_t_v_hyb` | 81,010 | 241,373 | 241,373 |
-| `bench_r_ed_st_d_oi_lb_128` | 27,090 | 80,452 | 80,452 |
-| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
-| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
-| `bench_t_v_in_dense` | 88,130 | 254,474 | 254,474 |
-| `bench_r_ed_st_oi_lb_128` | 35,380 | 88,746 | 88,746 |
-| `bench_l_s2_h_del_1024` | 127,160,000 | 266,537,637 | 193,429,761 |
-| `bench_t_vip_filtered_reference` | 154,220 | 318,265 | 318,265 |
-| `bench_t_v_w_ip` | 155,530 | 320,305 | 320,305 |
-| `bounded_topology_64_full` | 32,950 | 63,238 | 63,238 |
-| `bench_t_lvp_same` | 363,100 | 528,866 | 528,866 |
-| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
-| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
-| `bench_t_v_at_replay` | 4,989 | 6,107 | 6,107 |
-| `bench_l_ins_fresh_256` | 33,150,000 | 39,224,402 | 39,224,402 |
-| `bench_l_ip_frag_comp` | 38,220,000 | 43,470,216 | 43,470,216 |
-| `bench_l_ip_frag_s4_ctl` | 38,210,000 | 43,458,762 | 43,458,762 |
-| `bench_l_df_ip_frag_enq_6` | 76,550,000 | 87,051,135 | 87,051,135 |
-| `bench_l_ip_frag_s6` | 38,280,000 | 43,527,769 | 43,527,769 |
-| `bench_l_df_ip_frag_mnt_6` | 76,660,000 | 87,162,578 | 87,162,578 |
-| `bench_l_ip_pstats_16` | 41,160,000 | 46,569,383 | 46,569,383 |
-| `bench_l_ip_pstats_64` | 59,400,000 | 67,018,574 | 67,018,574 |
-| `bench_l_ins_ap_hub_1024` | 10,320 | 11,536 | 11,536 |
-| `bench_l_ip_exg_256` | 44,740,000 | 49,900,227 | 49,900,227 |
-| `bench_l_ip_pstats_256` | 285,060,000 | 312,686,647 | 312,686,647 |
-| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,908,039 | 77,909,616 |
-| `bench_r_ed_st_ls_128` | 346,750 | 369,658 | 369,658 |
-| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
-| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
-| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
-
-Headline (better than main, unchanged by 5i): the three rows above.
-
-Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
-cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
-descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
-
-### Historical finalize experiment — notification acceptance withdrawn
-
-The measurements below belong to the earlier experiment, not a valid movement-publication
-contract. Its `Finished` rewrite folded and repacked rows without delivering their changed
-ordinals. The former “fits by construction” justification did not establish notification or
-relocation safety. `15ceaabf1` removes that path: completion packs only captured physical regions,
-retaining run/prefix ordinals when the non-forcing fold declines. [Corrected evidence and owner/observer witnesses](evidence/adr0097-compaction-movement-publication.md).
-The instruction/space figures below remain historical observations, not revalidated landing evidence.
-
-| bench | main (measured) | pre-fix | post-fix |
-| --- | --- | --- | --- |
-| `bench_l_s2_h_del_1024` | 127,160,000 | 193,429,761 | 193,655,245 |
-| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
-| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
-| `bench_l_s2_det_hub_st_1024` | 45,845,565 | 57,849,414 | 45,848,699 |
-| `bench_l_s2_det_sat_1024` | 465,196 | 937,953 | 465,286 |
-| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,909,616 | 77,908,562 |
-| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
-| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
-| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
-| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
-| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
-
-Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
-cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
-descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
@@ -2105,20 +1371,6 @@ acceptance remain separate. See the movement-publication correction above.
 - **Next decision:** decide whether to fold this into the same space-first slice as
   GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
   bench for the slack trade.
-
-### Incident 2026-09-20 — `git stash` + `drop` in the shared worktree (recovered)
-
-Whlie diagnosing GAP-2026-09-20-005 a `git stash` was used to bisect and then dropped, which swept up
-**twelve uncommitted files belonging to other workstreams** (`crates/graph/src/facade/**`,
-`crates/graph/src/index/canonical_export.rs`, `Cargo.lock`, the `deferred.rs` / `iter.rs` comment
-hunks, `pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, `design/adr/0050` / `0059`). All of
-them were restored from the still-reachable dangling stash commit `c2fae9e5b` (`git fsck
---no-reflogs --unreachable`), verified back in place, and the suite is green again (611/0). No
-foreign content had been committed: the one shared file committed here (`design/adr/README.md`)
-contains only this workstream's ADR 0096 row.
-**Discipline for this worktree:** never `git stash` (or any tree-wide state operation) while other
-agents have uncommitted work; bisect with file copies instead (`$TMPDIR/...`), as the rest of this
-session did.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
@@ -3203,6 +2455,1685 @@ session did.
   slice: they are the reason this is not a drive-by patch. Until then, treat the
   K=4 boundary flip (`91575bc29`) as needing this follow-up before release.
 
+### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
+
+- **Status:** Open — deferred capability, recorded 2026-09-12.
+- **Observed behavior:** Fixed-vertex SET/REMOVE admits a labeled NodeScan and property residuals.
+  EXISTS policy lowering needs SemiApply/reverse-seed joins, outside that Graph input contract.
+  Router deliberately rejects applicable target-label chain policies before scalar reservation
+  or Graph dispatch with `NotImplemented("bulk vertex updates with EXISTS policies are not supported")`.
+  Property-only conditional grants, including indexed equality, are supported. The policy is never
+  ignored, and the rejected row leaves no scalar dispatch for Abort to settle.
+- **Owner:** Router `policy_pushdown.rs` / `gql::lower_for_execution`; Graph
+  `plan_wire_guard::validate_mutation_target_plan` owns exact-input admission.
+- **Evidence:** `pure_exists_row_lowers_to_one_bounded_semi_apply_probe` checks ordinary chain
+  lowering and the bound-input rejection; `bound_vertex_keeps_indexed_policy_as_a_full_residual`
+  checks the supported property form. These are native tests, not an EXISTS bulk E2E claim.
+- **Impact / needed behavior:** A non-tenant whose target-label visibility needs a chain cannot
+  perform bulk vertex updates under that policy. Ordinary GQL policy execution is unchanged.
+- **Next decision:** Specify bounded chain evaluation over the one saved vertex and its replicated
+  execution path before extending the exact-input shape. Do not substitute an index-selected target
+  or drop residual authorization checks.
+- **Contract:** [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md), update-lane
+  policy and exact-target constraints; [plan format](gql/plan-format.md), exact vertex mutation input.
+
+### GAP-2026-09-11-004 — Bulk-load edge property update needs replicated resolution and retry-safe target validity
+
+- **Status:** Open — prerequisite slice. Recorded 2026-09-11 after the edge-property SET review
+  round withdrew the implemented surface (wire variant, CLI mode, Router path, docs section) from
+  its slice rather than shipping a weakening contract. Edge-property SET through bulk load is
+  **not implemented**. The vertex update lane's journal-first resume/abort work in the same round
+  did not re-add any edge surface, identity, or lock substrate.
+- **Owner:** Router bulk-load workflow (`crates/router/src/bulk_load.rs`) owns admission and
+  replay. Graph owns canonical adjacency, edge-target validity, and any Router→Graph resolution
+  API (`crates/graph/src/lib.rs`, GraphStore, and the underlying LARA mutation boundaries).
+- **Observed behavior (confirmed):** Router ingress handlers execute in replicated mode. The
+  withdrawn Router→Graph pre-read of *edge state* used the composite query
+  `execute_plan_query` (`#[query(composite = true, guard = "guard_router_canister")]`), which a
+  replicated-mode handler cannot call. A PocketIC run of the withdrawn edge-update lifecycle
+  failed with `InvalidArgument("graph execute_plan_query call failed: call rejected: 5 - IC0527:
+  Composite query cannot be called in replicated mode")`, so an `Append` handler could not
+  evaluate the required exactly-one count before admission.
+- **Observed behavior (what already exists, confirmed):** Edge property indexes and Router-side
+  edge index lookup are implemented: `indexed_catalog::active_edge_physical_index`,
+  `router/src/index_lookup.rs` `collect_edge_equal_hits_paged` (`lookup_edge_equal_page`) and
+  `collect_edge_range_hits_paged` (`lookup_edge_range_page`), the Router wire helpers
+  `lookup_edge_equal_wires`/`lookup_edge_range_wires` (`router/src/gql.rs`), and the planner's
+  `PlanOp::EdgeIndexScan` (`gql-planner/src/plan.rs`). The earlier statement that no edge property
+  index exists was wrong.
+- **Replicated-call finding (2026-09-12, source/specification evidence):** Edge index paging
+  endpoints are ordinary, non-composite queries. The [IC interface specification](https://docs.internetcomputer.org/references/ic-interface-spec/)
+  permits update execution to call update and ordinary query methods. The earlier call-mode
+  uncertainty is resolved at the protocol level, not by a new bulk-edge runtime test. These APIs
+  select property values and return `EdgePostingHit { shard_id, owner_vertex_id, label_id,
+  slot_index }`, not endpoint-pair adjacency or a destination/generation witness. Posting count
+  alone therefore cannot establish canonical multiplicity for `(from, label, to)`. Graph's
+  `execute_plan_update` is not a read-only substitute: its wire guard rejects read-only plans.
+- **Target-validity finding (2026-09-12, source/test inspection):** `GlobalEdgeId` is a 16-byte
+  query-time physical handle `(shard, owner, label, slot)`, not a lifetime occurrence ID. LARA's
+  `unordered_scalar_insert_reuses_interior_slab_tombstone` deletes target 20 at slot 1 and inserts
+  target 21 into the same slot. Graph maintenance also moves slots and relocates sidecars/postings.
+  Saving the handle does not prevent an unstarted row from updating a replacement edge; checking
+  the destination still cannot distinguish delete/reinsert with identical endpoints. The latter
+  is an identity-model counterexample, not a newly executed test. Repairing the read API alone
+  cannot establish the retry contract.
+- **Selected direction (2026-09-12; planned, not implemented):** Preserve multi-edges; select and
+  update all eligible matches at each input row's first Graph execution, rather than pinning a
+  singleton edge before admission. Zero matches succeeds with target count zero. Exceeding bounded
+  work/mutation/byte limits rejects before writes. Selection, canonical SET and durable outcome
+  must complete locally without an intervening external call; retries replay recorded outcomes.
+  This replaces the withdrawn zero/many-rejection requirement for edge updates, not the existing
+  vertex bulk contract. See [selected direction and storage accounting](investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting).
+- **Evidence:** `crates/graph/src/lib.rs:80` (composite-query graph read),
+  `crates/router/src/graph_client.rs:100-119` (mode→method mapping),
+  `crates/router/src/gql_search.rs:1637` (query-mode dispatch),
+  `crates/router/src/index_lookup.rs:185,216` (edge equality/range lookup),
+  `crates/router/src/facade/stable/indexed_catalog.rs:267` (`active_edge_physical_index`),
+  `crates/gql-planner/src/plan.rs:414` (`PlanOp::EdgeIndexScan`),
+  `crates/graph/src/facade/store/handle.rs:10` (internal edge handle), and the failing PocketIC
+  run recorded in this review round.
+- **Research:** [Bulk edge SET prerequisites](investigations/2026-09-12-bulk-edge-set-prerequisites.md)
+  records the API/identity evidence, existing journal/receipt extension points, alternatives, and
+  validation gates against `95d791087`. No implementation or new runtime validation was performed.
+- **Candidate design (2026-09-12):** [Sparse edge-reference tokens](investigations/2026-09-12-sparse-edge-reference-tokens.md)
+  explores a bounded Graph registration map and non-reusing allocator, without widening every
+  vertex or edge. Internal LARA materialize/sibling drains use no-op observers, so existing Graph
+  callbacks alone do not establish complete invalidation coverage. Bounded resolution and the
+  availability cost of capacity-driven invalidation also remain gates. No design approval,
+  MemoryId allocation, implementation, or runtime validation is claimed.
+- **Alternative research (2026-09-12):** [Primary-source comparison](investigations/2026-09-12-edge-reference-alternatives.md)
+  identifies occurrence IDs with bounded source/label lookup as an alternative that requires no
+  global ID-to-location directory. Kuzu's inspected update code uses this lookup organization;
+  applying it to Gleaph would require wider edge records and identity-preserving rewrites.
+  The all-edge ID proposal was declined on storage/performance grounds; no measured throughput
+  regression is claimed.
+- **Fixed-budget research (2026-09-12):** [Logical-membership witnesses](investigations/2026-09-12-bounded-edge-membership-witnesses.md)
+  combines canonical singleton selection with a fixed-size hashed revision array for edge
+  insertion/deletion. Adjacency rows stay unchanged; pure movement need not notify the witness,
+  and an unusable saved slot rejects rather than starting another scan. Complete membership-write
+  coverage, storage-mode/work bounds, metadata-write cost, and bulk-level hash false conflicts
+  remain unclosed gates. No implementation or runtime validation was performed.
+- **Bounded-read prerequisite (2026-09-12 23:34:39 UTC +0000):** Implemented tree visitor
+  short-circuiting in LARA; [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#tree-visitor-short-circuit-implemented)
+  owns the contract and measurements. Previously, the topology and inline-property adapters saved
+  a callback's `Break` but the underlying walkers continued through later blocks/properties.
+  `tree_visit_break_stops_topology_reads` and `tree_visit_break_stops_property_reads` reproduced
+  both defects and now prove physical stopping in both orders. This is not complete selection:
+  `read_label_bucket_placement_info` counts the overflow chain, and selected-slot readers can
+  reconstruct chains/prefetch tables outside the emitted-row count. Those existing APIs are not
+  a whole-row work/byte bound; no new validity registry is needed.
+- **Complete-topology prerequisite (2026-09-13 00:22:26 UTC +0000):** LARA now exposes
+  `collect_edge_topology_bounded` and its forward adapter; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-topology-collection-implemented)
+  owns the contract. A physical-slot allowance includes tombstones and linked overflow entries;
+  exhaustion returns an error, never a successful prefix. No property stream or whole-leaf log
+  table is read. Workspace and topology payload are bounded from the slot allowance and concrete
+  edge width; this is not an independent byte-budget API. Six native contracts and focused
+  canbench cover the storage capability, not bulk SET or policy/mutation atomicity.
+- **Inline-read prerequisite (2026-09-13 01:26:43 UTC +0000):** LARA exposes a complete topology plus
+  `InlinePropertyBytes` collector with physical-slot and value-body allowances; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented)
+  owns the bounds. Value admission precedes property reads, reserves wide-blob lookahead, validates
+  exact property-log exhaustion, and preserves slab live ordinals/tree physical slots. Six native
+  contracts and focused canbench validate this read capability, not policy/SET atomicity. The tree
+  property helper's out-of-range block-zero sentinel was replaced with a typed rejection.
+- **Sidecar pre-read blocker (2026-09-13, source inspection):** `facade/stable/edge_properties.rs`
+  stores unbounded `StoredPropertyValue`s. The ic-stable-structures 0.7.2 B-tree getter materializes
+  the whole encoded value before its `Storable::from_bytes` call; `ensure_persistable` only checks
+  binary encoding. A size check after the ordinary getter cannot establish a pre-read byte cap.
+  No sidecar format, length map, dependency fork or whole-row mutation preflight was introduced.
+- **Sidecar node-discovery evidence (2026-09-13 01:52:13 UTC +0000):** A native 0.7.2 B-tree probe
+  with fixed 14-byte keys and unbounded raw values confirms that a ten-byte lookup, a missing-key
+  lookup and key-only iteration all perform more metadata reads as an unselected neighbor grows.
+  `Node::load_v2` reconstructs the whole node overflow list before key search, so exposing only a
+  value length would not close the work bound. The [investigation and reproducer](investigations/2026-09-13-sidecar-bounded-read-options.md)
+  compare a dependency-owner extension, a global property cap and out-of-line storage. That
+  investigation recommended an extension as the minimum layout-preserving change; the design
+  direction below supersedes that priority. This is primitive read evidence, not Graph codec,
+  write-budget, policy or bulk SET validation.
+- **Property-value separation design (2026-09-13 03:57:44 UTC +0000):** The
+  [design](investigations/2026-09-13-property-value-separation-design.md) keeps per-property
+  keys and bounded small cells in the existing vertex/edge directories, with independent large
+  bodies owned by each PropertyStore. A reclaimable fixed-block allocator is an experiment, not
+  an accepted production layout. Threshold, fragmentation, common-path cost, rekey ownership and
+  whole-row preflight remain validation gates. No production Rust, MemoryId, persisted codec,
+  dependency or public API changed; no extra adjacency IDs or reference journal are proposed.
+- **Value-separation experiment (2026-09-13 06:23:23 UTC +0000):** Two native tests over 24
+  configurations passed, including body admission before reads, zero-write rejection, ownership
+  transfer and persistent block reuse. The [results](investigations/2026-09-13-property-value-separation-design.md#8-probe-results-and-disposition)
+  demonstrate removal of unselected-body read/write coupling. They do not select the fixed-block/
+  replacement-body candidate: short-body waste, retained high-water and ordinary-path preparation
+  cost require further design. A partial-pair reopen defect was found and fixed in the new probe,
+  not in production Graph. No Graph codec, Wasm instruction, policy, whole-row SET or IC rollback
+  proof is claimed; the existing storage and public capability remain unchanged.
+- **Comparison-first follow-up (2026-09-13 09:36:59 UTC +0000):** The
+  [B-tree body comparison](investigations/2026-09-13-property-body-btree-comparison.md) measures five
+  whole/chunk configurations, with two native tests and 188 I/O rows. Default-geometry 4 KiB chunks
+  reduce the small external-body neighbor rewrite from 1048708 to 16582 bytes, but rewrite a 1 MiB
+  body with about 5.30× the whole-body write volume. Declared 4 KiB bounds occupy 27 native pages
+  for the tested 256 short bodies versus one with default geometry; shrink can also allocate during
+  tree mutation. These are diagnostic observations, not Graph instruction or workload acceptance.
+  The [extent proposal](investigations/2026-09-13-property-body-extent-design.md) was not measured
+  by this B-tree slice; its later native checkpoint is recorded below, without production selection. Body-key/format/move ownership, decoder and
+  total-work admission, whole-row co-write and IC lifecycle remain open; no production region,
+  allocator, dependency or public capability changed.
+- **IC body-lane comparison (2026-09-13 11:08:59 UTC +0000):** The
+  [stable-memory follow-up](investigations/2026-09-13-property-body-btree-comparison.md#ic-stable-memory-follow-up)
+  completed 32 canbench cases using direct Ic0StableMemory and the shared native body algorithm.
+  Default-geometry 4 KiB chunks reduce a small external-body neighbor rewrite from 2.62M to 0.188M
+  instructions, but a full 1 MiB replacement costs 28.32M versus 6.94M, and shrink 38.27M versus
+  5.06M. Ordinary Whole point-get is also retained as a faster read control than range/assembly.
+  All measured heap/stable page deltas are zero after setup; this does not mean zero allocation.
+  The two native tests and all 188 I/O rows remain unchanged. Query benchmarking is not Graph
+  commit/rollback or workload acceptance; no production layout or custom allocator is selected.
+- **Workload relevance (2026-09-13 11:35:15 UTC +0000):** The
+  [codec-based input profile](investigations/2026-09-13-property-body-workload-profile.md) covers
+  Knowledge and Social 1x1/5x20 typed load artifacts. Maximum Value size is 143 bytes; none exceeds
+  4 KiB. Social scaling repeats 71 post texts, not a sampled large-body tail. At hypothetical T=128,
+  300/35932 scaled vertex-property occurrences and 0/94460 edge-property occurrences remain external,
+  but counts are not access frequencies (all Social prepared queries project Post.body). No runtime
+  read/rewrite/shrink history is available from these inputs; large-row test fixtures are synthetic.
+  This does not select a cap/threshold or justify custom allocation; representative old/new sizes
+  and operation counts remain necessary for workload-weighted acceptance.
+- **Chunk-size sensitivity (2026-09-13 12:30:53 UTC +0000):** The
+  [wider-chunk comparison](investigations/2026-09-13-property-body-chunk-size-sensitivity.md) extends
+  the same body algorithm to 16/64 KiB default-geometry caps: two native tests, 260 I/O rows and
+  48 IC query benchmarks pass; the original 188 native rows/32 IC counters are unchanged. Wider
+  chunks improve some costs versus 4 KiB, but 1 MiB replacement still costs 3.44×/3.85× Whole and
+  shrink 5.28×/5.12×. Neighbor isolation worsens; the 16 KiB shrink adds one stable page. This is
+  size sensitivity, not workload acceptance, a production cap or custom-allocation authorization.
+- **Native extent checkpoint (2026-09-13 14:02:33 UTC +0000):** After explicit authorization, the
+  [allocator-only comparison](investigations/2026-09-13-property-body-extent-comparison.md) passed
+  six native tests/36 extent rows; all 260 B-tree reference rows remain unchanged. Existing 0.7.2
+  exposes no selected-node batch replacement/removal API; no fork was introduced. Contiguous
+  1 MiB replacement writes 1048592 bytes versus 5559316 with 4 KiB chunks. Repeated hot shrink
+  writes 260 bytes but still reads the full old 1 MiB value. Exact partition/index/owner oracles,
+  pre-effect rejection, post-allocation retirement and nine paired reopens pass. The extra index
+  doubles the raw short-body floor (two pages versus one); fragmentation and relocation can retain
+  more capacity. These are native I/O results, not IC instructions, rollback/upgrade, directory
+  atomicity or whole-row work bounds. The managed IC follow-up is recorded below; production
+  selection remains pending.
+- **Managed IC extent checkpoint (2026-09-13 20:50:20 UTC +0000):** The
+  [91-case comparison](investigations/2026-09-13-property-body-extent-canbench.md) uses the same
+  four-page variable-manager policy for one-region B-trees and two-region extents. All91 query
+  cases pass; six native tests and296 numeric rows remain unchanged. Extent1MiB replacement/shrink
+  costs3.15M/2.11M instructions versus Whole7.36M/5.86M and chunks26.71–32.31M/29.54–44.75M.
+  Adverse results remain: Whole point-get1.43M beats extent read2.10M; allocation from already-
+  coalesced space atF128 costs68.65K versus38.08–38.12K. Extent retains four extra physical pages
+  in these fixtures (ten versus six small;26 versus22 large). Five initial grows add16 physical
+  pages each; three also grow heap. Query measurement/local collection reload is not persistent-
+  directory atomicity, Graph work admission or IC update rollback/upgrade proof. A separately
+  reviewed integration design is justified, not production activation or a workload-weighted win.
+- **Native PropertyStore checkpoint (2026-09-14 01:10:06 UTC +0000):** The
+  [comparison](investigations/2026-09-13-property-store-native-comparison.md) implements actual
+  8/14-byte keys, Graph Value codec, directory ownership and single-property moves for Direct,
+  directory+B-tree4/16/64KiB and directory+custom extents. Ten tests pass;40 full stores produce
+  2640 region rows, with all260+36 raw rows preserved. Candidates pre-admit selected bytes; Direct
+  remains an unbounded admission reference. Small-directory isolation helps all candidates, but
+  small mutations add reads and eager lanes retain backing. Chunk writes/moves amplify I/O;
+  extent relocation retains holes/high-water, while B-tree deletion can also grow backing.
+  These native counts do not establish IC speed or total work bounds. The separate managed
+  full-store measurement follows below; frozen0357/0358 sources preserve historical provenance.
+  Fine bucket/zero-fill/free-lookup optimizations remain deferred. No production format, whole-row
+  safety, durable edge outcomes or bulk edge capability is selected.
+- **Managed PropertyStore checkpoint (2026-09-17 22:24:02 UTC +0000):** The
+  [full-store IC comparison](investigations/2026-09-17-property-store-managed-comparison.md) passes
+  all210 full-store cases plus91 reused body controls. Actual keys, Value validation/codec,
+  previous values and all regions are included. For edge keys, Direct ordinary1MiB get/replacement
+  costs5.36M/9.85M instructions versus extent6.04M/10.25M; extent scalar insert/replace is about
+  37%/60% more expensive. Extent large moves improve26.55M→12.11M, and small-neighbor isolation
+  helps every separated candidate. Extent coalesced allocation costs118.36K versus Direct46.81K.
+  Small physical totals are Direct6/chunks10/extent14 pages;1MiB point totals22/26/30. These are
+  independently reserved capacities, not per-edge metadata or automatically wasted bytes. C64
+  large move/deletion each grows four physical pages; extent relocation retains high-water.
+  Native2640+296 rows reproduce. No production integration, total-work/whole-row proof,
+  update/upgrade lifecycle validation or workload-weighted winner follows.
+- **Outcome design (2026-09-22 09:41:27 UTC +0000; planned):**
+  [Durable outcomes and retry ownership](investigations/2026-09-22-bulk-edge-set-outcomes.md) proposes
+  a typed row family in the existing Graph/Router journals: positive and zero success, definitive
+  rejection, exact replay, separate input-row/matched-edge counts, Abort settlement and explicit
+  retirement. It requires a fresh actual-send gate and a fixed Router/Graph sender pair; a timeout
+  or missing journal is not cancellation. Existing variants do not represent this unchanged.
+  Exact encoding/API, endpoint/policy semantics, production bounds and whole-row commit remain
+  prerequisites. No code, new memory region, occurrence identity or runtime validation was added.
+  The independently discovered scalar retention mismatch is tracked as GAP-2026-09-22-001.
+- **Impact:** Bulk-load edge SET remains unavailable. The selected direction needs bounded local
+  selection/SET and durable terminal replay, not a cross-message edge-reference registry. Bulk-load
+  edge inserts and vertex SET/REMOVE contracts are unchanged; ordinary GQL edge `SET` remains
+  available. The tree, topology and inline-property read prerequisites do not expose a bulk operation.
+- **Next decision:** Specify endpoint/policy semantics, local work/mutation/byte limits, exact
+  positive/zero/rejection outcome representation, input-row versus matched-edge counts, and
+  retention/Abort behavior before implementation. The existing exact-vertex seed and receipt
+  contract do not represent this behavior as-is. No per-edge field or generation table is selected;
+  recovery state belongs in the existing scalar journals and chunk receipts. Include actual
+  serialized record/outbox/high-water measurements in the bounded validation plan.
+
+### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
+
+- **Status:** Open — non-blocking follow-up recorded 2026-09-11 during the GQL-execution
+  Unsupported-path survey. Fail-closed only; no wrong results. Low priority; a docs-only
+  disposition is acceptable.
+- **Owner:** Graph aggregate executor (`crates/graph/src/plan/query/aggregate.rs`).
+- **Observed behavior:** Three error paths are reachable through grammatical queries:
+  (1) `aggregate.rs:591` "aggregate: percentile fraction must be constant per group"
+  for `PERCENTILE_CONT(x, <row-varying expr>)` such as `PERCENTILE_CONT(x, n.k)`;
+  (2) `aggregate.rs:719` "aggregate: percentile fraction missing" for
+  `PERCENTILE_CONT(x, NULL)` (fraction NULL on every row of a non-empty group);
+  (3) `percentile_fraction_from_value` (`aggregate.rs:215-227`)
+  `InvalidExpressionValue` for non-finite or out-of-`[0, 1]` fractions such as
+  `PERCENTILE_CONT(x, 1.5)`. The constant-fraction requirement itself is SQL-consistent;
+  the contract is simply undocumented.
+- **Evidence:** source paths above; aggregate happy-path tests (`percentile_cont_median`
+  et al.) cover no error path; no `percentile` mention in
+  `design/gql/extension-syntax.md` or this ledger.
+- **Expected or needed behavior:** The fraction contract (constant per group, non-NULL,
+  finite, within `[0, 1]`) stated in `extension-syntax.md`, or error-path unit tests
+  locking the three fail-closed arms.
+- **Impact:** Users hitting these shapes get an execution error against an undocumented
+  contract; nothing unsafe or misleading is returned.
+- **Next decision:** Document the fraction contract in `extension-syntax.md` (smallest);
+  add the three error-path unit tests only if the contract is ever relaxed.
+
+### GAP-2026-09-11-002 — Cross-shard traversal fails closed on remote-vertex expand (federated scan limitation)
+
+- **Status:** Open — non-blocking; single-shard execution (the only exercised topology)
+  is unaffected. Recorded 2026-09-11 as one bundled entry during the GQL-execution
+  Unsupported-path survey.
+- **Owner:** Graph federation expand (`crates/graph/src/federation/expand.rs`) together
+  with the streaming expand and WCOJ paths.
+- **Observed behavior:** A traversal touching a vertex placed on another shard fails
+  closed: `UnsupportedOp("cross-shard expand (remote vertex binding)")`
+  (`federation/expand.rs:93`; sibling arms `:38,43,64,97,122`),
+  `UnsupportedOp("Expand.var_len.remote")`
+  (`plan/query/executor/scan/streaming.rs:570`), the limited-streaming remote-source
+  arm (`streaming.rs:525`), and `WorstCaseOptimalJoin.remote_vertex` / `.var_len`
+  (`plan/query/executor/wcoj.rs:21,154`). Relation to GAP-2026-08-25-003: that entry
+  covers cross-shard *ordering* (concatenated sorted fragments); this entry covers
+  cross-shard *traversal* (no remote-vertex resolution). Both stem from shard-local
+  execution without a cross-shard fan-out.
+- **Evidence:** source paths above; PocketIC fixtures are single-shard, so no E2E
+  coverage exists for any of these arms.
+- **Expected or needed behavior:** Either a remote-vertex resolution fan-out or an
+  explicit documented federated-traversal limitation.
+- **Impact:** Multi-shard deployments cannot traverse shard boundaries; queries fail
+  with an explicit error rather than silently dropping rows.
+- **Next decision:** Resolve inside the slice that introduces cross-shard resolution,
+  if ever demanded; until then no action.
+
+### GAP-2026-09-11-003 — Federated aggregate merge errors on all-NULL partials instead of yielding NULL/skip
+
+- **Status:** Open — non-blocking, low priority. Fail-closed error direction (never a
+  wrong result); single-shard execution unaffected; `Avg` excluded (already
+  non-mergeable UnionRows). Recorded 2026-09-11 during the GQL-execution
+  Unsupported-path survey.
+- **Owner:** Router federation aggregate merge
+  (`crates/router/src/federation/aggregate_merge.rs`).
+- **Observed behavior:** For mergeable `COUNT`/`SUM`/`MIN`/`MAX`, when the
+  first-ingested shard partial for a group is `Null` — e.g. grouped `SUM(x)` where one
+  shard holds the group's rows but every value is NULL, so the Graph partial is Null —
+  `merge_add_values` (`:345`) / `merge_extreme_value` (`:381`) return
+  `Err("aggregate merge on null")` instead of skipping the NULL partial. All shards
+  empty produces no rows and does not trigger.
+- **Evidence:** source paths above; merge tests (`merge_aggregate_blobs_*`) cover valued
+  partials only.
+- **Expected or needed behavior:** SQL-consistent outcome: skip NULL partials and emit
+  NULL when every partial is NULL.
+- **Impact:** A rare multi-shard-only query error; the error direction is safe.
+- **Next decision:** Smallest fix is "skip NULL partials, emit NULL when all partials
+  are NULL" plus a two-shard unit test; open only on demand.
+
+### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
+
+- **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
+  (2026-08-25). Not a regression introduced by that slice: Federation v1 already merged
+  shard-local `ORDER BY` fragments by concatenation.
+- **Owner:** Router federation merge (`crates/router/src/federation/merge.rs`
+  `FederatedMergeMode::UnionRows` → `GqlWireRows::merge_optional_batch_blobs`)
+  together with the future per-shard cursor-stream fan-out described in
+  [ADR 0081 §Decision 3](adr/0081-index-ordered-order-by-delivery.md).
+- **Observed behavior:** Every current index read path delivers one globally ordered
+  hit stream (native single posting map; single index canister per logical graph via
+  `RouterIndexLookup::require_single_target`), so ADR 0081's R-way merge degenerates to
+  identity and shards return ascending fragments. When a query fans out over multiple
+  graph shards, the router concatenates those sorted fragments (`UnionRows`), so global
+  cross-shard ordering is not guaranteed — both for the new ordered-delivery plans and,
+  unchanged, for every pre-existing `Sort`/`TopK` plan executed per shard.
+- **Evidence:** `design/gql/plan-format.md` §"IndexScan ordered-delivery intent";
+  `crates/router/src/index_lookup.rs:315` (`require_single_target`);
+  `crates/router/src/federation/merge.rs` UnionRows branch.
+- **Expected or needed behavior:** When per-shard cursor streams exist, the federation
+  bind boundary should run an R-way heap merge of the ascending streams (ADR 0081 §3)
+  or, at the router, a merge-aware union for batches whose plans carry
+  `IndexScan { ordered_by_sort }`.
+- **Impact:** Multi-shard deployments cannot rely on router-level result ordering for
+  `ORDER BY` queries; single-shard execution (the only mode exercised by native stores
+  and current canister topologies) is unaffected.
+- **Next decision:** Fold merge-aware union into the slice that introduces per-shard
+  cursor fan-out; until then no action.
+- **Status detail:** Blocked on the cursor-stream fan-out prerequisite; revisit when
+  sharded postings land.
+
+### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
+
+- **Status:** Open
+- **Severity:** P2 (latent; no code path today)
+- **Owner:** vector canister slab page store / migration primitive
+- **Observed behavior:** With `VectorEncoding::I8` implemented (Slice 0242), stored rows are an i8
+  payload plus a per-row f32 scale in row-meta aux. The design's row-copy migration primitive
+  (`export_vector_rows` / `import_vector_rows`) is **not implemented**; grep confirms no such code
+  exists yet.
+- **Expected or needed behavior:** A future export/import that copies rows across canisters (shard
+  split, ADR 0031 multi-canister) must carry the per-row aux (scale) alongside the payload, or the
+  imported I8 rows would be decoded with a wrong/zero scale.
+- **Owner:** vector canister `PAGE_STORE` / `export_vector_rows` future slice.
+- **Evidence:** `crates/vector-canister/src/facade/stable/page_store.rs` (`read_row_bytes` returns
+  `(vertex_id, bytes, aux)`); `design/index/vector-index.md` §Multi-canister readiness.
+- **Impact:** Latent until migration is built; adding it without carrying aux would silently corrupt
+  I8 distances on the target canister.
+- **Next decision:** When the migration primitive slice is planned, require `export_vector_rows` /
+  `import_vector_rows` to round-trip the row aux.
+
+## Resolved gaps
+
+### GAP-2026-08-24-007 — RESOLVED: committed HEAD builds `gleaph-router`
+
+- **Status:** Resolved (2026-11-07, verified against a clean working tree). The gap recorded that an isolated worktree at
+  `5a8e6dc8a` failed to compile `gleaph-router --lib` with `E0425 cannot find function require_admin`, green only while
+  the owning workstream's uncommitted auth definitions sat in the tree. `require_admin` no longer exists in the
+  workspace - the callers were refactored onto the store-level capability check whose comment records that it preserves
+  the former function's error contract - so the half-landed pair is gone rather than merely finished.
+- **Evidence:** clean tree (`git status` empty) at this HEAD, `cargo build -p gleaph-router` succeeds, and
+  `cargo test -p gleaph-router --lib` is 1137 passed / 0 failed. The general rule from the original report stands and is
+  what made this checkable: every commit on main must build standalone, so a caller and its definition land in one push.
+### GAP-2026-09-22-005 — RESOLVED: the obsolete combined maintenance tag is deleted
+
+- **Status:** Resolved (2026-11-07) by removal, not by repair. `CompactVertexEdgeAndValueSpanV1` (tag 4) called
+  `compact_vertex_edge_span_one_step` and **discarded** the `EdgeMoved` and `OverflowRewrite` moves it got back while
+  requeueing itself - so any execution of it would have moved rows without telling a single observer. It had no
+  producer: every `enqueue` site in the crate names a different variant, and its only occurrences were its own
+  definition, codec arms, key/priority arms and the handler's self-requeue.
+- **Why deletion rather than publication:** the movement-publication contract is only meaningful for a path that runs.
+  Gleaph is pre-production, so a tag nothing enqueues is deleted instead of kept for a persisted-state compatibility
+  path; its encoding now fails closed in `from_bytes` like any other unknown tag (reinstall, not silent execution), and
+  `tag()` says so where a reader will look for the missing number.
+- **Also removed in the same pass:** `maintain_vertex_edge_span_light` and `rebalance_vertex_edge_span_light`
+  (`compact.rs`), the only production-shaped callers that reached compaction through `compact_span()`, which drops its
+  moves. Neither had any caller in the workspace.
+- **The survey this came from, for the record:** paths that legitimately answer no moves are the slab, tiny and spill
+  deletes - ADR 0097 §7 tombstones a row where it lives, so nothing shifts and the code says so at each site. Paths
+  that do move rows and now publish are the live compaction tags (via `observer.edge_slot_moved` for `EdgeMoved` and
+  `OverflowRewrite`), the demotion (see GAP-2026-09-22-003), and the fold/rebuild steps that return their move lists to
+  their caller.
+- **Evidence:** the workspace has no remaining reference to the tag; `cargo test -p ic-stable-lara --lib` 775,
+  `--features canbench` 712, `gleaph-graph` 1132, `gleaph-router` 1137, clippy and fmt clean. No queued-tag runtime
+  witness existed before either, and none is needed for a tag with no producer.
+
+### GAP-2026-09-22-003 — RESOLVED: a demotion transcribes both streams from one selection
+
+- **Status:** Resolved (2026-11-07). `tree_mode_demote_to_slab` collected its two streams with two different selections:
+  the edge visit filtered tombstones, and the value visit (added later for property-bearing trees) kept **every** slot. The
+  assertion that caught it - `live property values must cover degree * w bytes` - was reading a real divergence, not a
+  test artifact.
+- **The fix is the DRY rule this repository now states:** one selection feeds both streams. A single pass over the live
+  positions pushes each survivor's edge *and* its value, so the descriptor's `degree`, the edge slab and the value span
+  are three views of one transcription. `w == 0` keeps the cheaper edge-only visit, with the same predicate.
+- **Evidence:** `a_property_bearing_tree_demotes_with_its_values` (`bucket.rs`) promotes a 1026-row valued bucket, removes
+  down to `T_DEMOTE`, and asserts the bucket is slab again with `degree == T_DEMOTE` and a value for every survivor. With
+  the fix removed the same test fails `live property values must cover degree * w bytes` (**8208 versus 4096**); with it,
+  green. lara 774, canbench 711, graph 1132.
+- **What remains open from the original report:** the movement-event parity half - a successful demotion packs survivors
+  but `remove_edge_at_slot_with_move` returns no movement events - was **not** addressed here, and the
+  writer/demotion boundary it belongs to is unchanged.
+
+- **Movement parity closed the same day.** The other half of this gap was that a successful demotion repacked survivors but
+  its removal caller returned no movement events - and `EdgeRemoval::moves` is the **only** channel through which an
+  observer tracking external identities learns that a row changed position. `tree_mode_demote_to_slab` now collects each
+  survivor's tree ordinal during the same live-selection pass and answers `Vec<EdgeSlotMove>` for the rows whose dense
+  ordinal differs (`old = tree slot`, `new = dense position`); `row_plane`'s tree arm carries them into
+  `EdgeRemoval::moves` (best-effort, as the demote trigger is: a mid-demote failure reports no moves and the next
+  removal retries). `a_demotion_reports_the_rows_it_moves` asserts the moves arrive, that each moves something, and that
+  they belong to the removed label. lara 775, canbench 712, graph 1132, router 1137.
+
+### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
+
+- **Status:** Resolved (2026-11-07). `tree_mode_remove_edge_at_slot` carried
+  `debug_assert_eq!(bucket.inline_property_byte_width(), 0, "tree mode rejects inline-property buckets (promote is
+  fail-closed)")`. It was true when written and false since property-bearing promotion landed (ADR 0088); a debug-only
+  rejection is not a public contract, and it made a real valued tree panic in native debug before reaching any write.
+  The assertion is gone, and the path it blocked is a test.
+- **Why deleting a valued row is safe without writing a value:** ADR 0099's rule - a delete writes **no value** - holds
+  for tree mode too. The row is tombstoned where it lives (its LTB block's payload plus the block header's
+  `tombstone_count`), and a reader never asks a tombstoned slot for a value. The tree walk reports the hole to a
+  mutation-shaped walk and skips it for a reader, which is the row-visibility split the row walker owns.
+- **Evidence:** `a_property_bearing_tree_bucket_removes_a_row` (`bucket.rs`) promotes a 1024+8-row valued bucket to a
+  tree, removes a row, and asserts the descriptor's degree, that a reader sees exactly the survivors, and that every
+  remaining row still reads its own value. Suite: lara 773, canbench 710, graph 1132.
+- **What this does *not* claim:** demotion after a valued-tree delete (GAP-2026-09-22-003) and the writer/demotion
+  boundary it is a prerequisite for remain open, and no release-mode/Wasm deletion result was measured here.
+
+### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — RESOLVED: a second label joins a filled vertex
+
+- **Status:** Resolved (2026-11-07). A bucket whose vertex slice has no span left promotes into a **run-backed slab
+  bucket**: it is slab mode with `stored_slots = 0` and its rows in a spill run, so ADR 0098's floor is never consulted
+  and the vertex's slice does not grow. When that bucket later outgrows the run's class it promotes to tree mode with its
+  **root in an edge run** (`EdgeRootLoc::Run`), which is still the edge side - the root never leaves it.
+- **Evidence:** `a_second_label_joins_a_ten_thousand_row_hub` (graph crate) builds the bench fixture's own shape - 10 000
+  parallel edges on one label of a hub, then 500 on a second - through `GraphStore::new` and the public insert API, and
+  passes. `a_valued_second_label_joins_a_ten_thousand_row_vertex` and
+  `every_insert_on_a_second_label_writes_exactly_one_row` pin the valued case and the row count per insert.
+- **The three defects found on the way, each now a rule:** the run was over-allocated by one for the pending edge (a
+  reservation sized for an operation that had not happened yet must not become the count); the tree promotion's degree
+  field was compared instead of replaced (a derivable value is now derived - `SourceRows`); and a tree root needed a leaf
+  slot it could not get (the location is now a type - `EdgeRootLoc`).
+- **Left open:** refreshing `crates/graph/canbench_results.yml` needs a `canbench --persist` run in the wasm environment.
+
+### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS-OLD — RESOLVED: the tree's valued reads are correct again
+
+- **Status:** Resolved (2026-11-07). The bench shape - 2 100 valued edges on one bucket, so it promotes and keeps growing
+  across five property leaves - now reads every row's own value back, and the reproduction is a contract test
+  (`a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`). lara 772, canbench suite 709,
+  graph 1132, clippy and fmt clean.
+- **What it actually was, in the order the measurements found it.** The reported `MissingAscLogIndex` no longer
+  reproduced (the point reader had already been routed to the property tree); behind it were three separate defects, each
+  found by making the code state a rule instead of repeating one:
+  1. **A leaf payload was written after the pointer that named it**, in two arms of the property append. A payload
+     failure then released a block the published pointer still named, and the next mint handed that id out again. The
+     edge side had always written the payload first; the property side now does too.
+  2. **The descriptor did not record the value-root region the append had just written.** When a new root did not fit in
+     place the append allocated a fresh region, published the old offset, and the next append read past its own array and
+     took the next region's first id as an entry - which is exactly the `[1, 2, 3, 1, 6]` that started this. The
+     descriptor now records the address in the same write as everything else, via `OwnedValueRoot`.
+  3. **The roots were implemented twice.** The edge root and the value root are the same array in different stores, but
+     each had its own writer, its own reader and its own length arithmetic, so every ordering rule had two homes.
+     `RootArrayStore` (`LeafSlots` / `LeafRun` / `ValueBytes`) with `write_root_array` / `read_root_array`, one
+     `tree_root_entries` derivation and one `validate_root_ids` check now serve both, and `LtbBlockReservation` owns a set
+     of blocks so "release an id you already published" has no spelling left.
+- **Evidence path worth keeping:** every step above came from a measurement rather than a guess - the row read before the
+  descriptor, the LTB release trace (zero), the mint trace (distinct), the values-store span trace
+  (`0..8 -> 8..20 -> 20..36 -> 36..56`), and finally the append tuple
+  `(old_len, descriptor_offset, ids_read, entry, region)`, which showed the descriptor still naming offset 8 while the
+  four-entry root had been written at 20.
+- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
+  environment; the defects that aborted the suite are gone.
+
+### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — RESOLVED: the fixture's graph now builds
+
+- **Status:** Resolved (2026-11-07) by the run-backed promotion and the run-sizing fix
+  (`promote_tiny_to_run_backed_slab` allocates exactly the rows it transcribes). The fixture's own shape - 10 000
+  parallel edges on one label of a hub, then 500 on a second - is now a contract test in the graph crate:
+  `gql_run::tests::a_second_label_joins_a_ten_thousand_row_hub` runs that exact sequence through the bench's own API
+  (`GraphStore::new`, `insert_vertex_named`, `insert_directed_edge_named`) and passes in 0.6 s.
+- **What the trap was:** the fifth second-label edge could not be added because the vertex slice had no span for the
+  bucket's promotion, and the promotion had no way to say "then use a run". That path exists now: a bucket whose vertex
+  slice is full promotes into a run-backed slab bucket, and once it outgrows the run's class it promotes to tree with
+  its root in an edge run.
+- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
+  environment. The defect that aborted the suite is gone; producing the artifact is a separate mechanical step.
+- **Original report follows.** The largest expand fixture could not build its graph: `target edge:
+  Graph(Forward(Store(CollectAllocationOverflow)))` at `bench/mod.rs:1185` while inserting the tenth thousand rows
+  into one bucket, which also meant `canbench --persist` could not complete for `crates/graph`.
+
+### GAP-LARA-FOLD-BENCH-RUN-PROBE — RESOLVED: the classes come back from a fold
+
+- **Status:** Resolved (2026-11-07). The probe that reported the trap passes natively, and the whole
+  `--features canbench` suite is green.
+- **Original symptom:** `canbench "bench_t_fold_cost_33_256"` trapped in `assert_reusable`; relaxing it to "the
+  freed class must not grow the arena" still failed (`299 -> 556`), while the descriptor had already stopped naming
+  the run.
+- **What the fix was:** the release and the field clear were paired by hand at each site. The values plane got the
+  pairing as one operation (`BucketValuePlane::release_run`, and `fold_head_into_span` releasing an emptied values run
+  when it clears the field), and the fold-to-slab path captures both run ids *before* the admission that clears the
+  fields and releases both after publication. The comments on those two sites credit this probe by name, which is
+  what a gap entry is for.
+- **Evidence (re-run 2026-11-07):** `check_fold_economics` is the probe's native twin - it captures `runs()` before
+  folding, folds edges and values, asserts both descriptors answer `NO_SPILL_RUN`, and then calls
+  `assert_reusable(runs)`, which allocates each freed class and demands the arena's high-water mark not move.
+  `cargo test -p ic-stable-lara --lib --features canbench fold_economics` is **4 passed**, and the full suite is
+  **697 passed / 0 failed**.
+- **What was ruled out on the way:** a folded run cannot be emptied into a different class (`drop_head` refuses a
+  drop that changes `class_rows`), so the "release an emptied run during the fold" patch is unreachable; every site
+  that clears a live edge run releases it (`repack`, the fold-to-slab path), and the ones that do not are no-ops
+  (a tree bucket never sets a run, a fresh bucket has none, the synthetic successor view is not stored).
+- **Left open deliberately:** refreshing `crates/ic-stable-lara`'s canbench artifact needs a `canbench --persist`
+  run in the wasm environment, which this change did not execute. The defect the artifact was blocked on is gone;
+  producing the artifact is a separate, mechanical step.
+
+### GAP-2026-09-02-001 — RESOLVED: production `LabeledLaraGraph::visit_edges` dispatches tree-mode buckets into the dense slab read path
+
+- **Status:** Resolved (2026-09-02, Plan 0324 REWORK-2).
+- **Severity:** P0 production-correctness defect (read of stable
+  memory garbage / trap with `VectorMemory::read: out of bounds`).
+  Tree mode is the primary high-degree storage mode; any production
+  canister that visits a high-degree tree bucket would trap.
+- **Root cause:** 3 dispatch sites in `traverse.rs` used a "dense,
+  tombstone-free" fast path that bulk-reads
+  `degree × E::BYTES` bytes from `bucket.edge_start()`. For tree
+  mode, `edge_start` is the LEG root region (block_id array,
+  `root_len × 4` bytes), not the LTB payload blocks. The dispatch
+  condition matched tree mode (overflow_log_head = -1,
+  reserved_slots = stored_slots), so the dense slab-path was
+  incorrectly taken and the bulk read went OOB.
+- **Initial fix (REWORK-2)**: tree branches routed through
+  `tree_mode_out_edges_collect` (Vec materialization) + `enumerate()`,
+  yielding live-ordinal positions. Worked for dense tree buckets
+  (where enumerate == tombstone-inclusive slot) but violated the
+  position contract (ADR 0088 §2) for tombstoned buckets.
+- **Final fix (REWORK-3, this slice's design)**: tree branches call
+  `visit_tree_mode_label_bucket_edges` directly, forwarding the
+  tombstone-inclusive `u32` slot to `BucketEntryPosition::new(slot)`.
+  `ControlFlow::Break` is captured via a mutable cell. Dispatch
+  order reordered: dense condition first (more selective, with
+  `!is_tree_mode()` guard), tree branch after. **~50% instruction
+  reduction on the 3 read benches** as a bonus.
+- **Fix (REWORK-3):** added `if bucket.is_tree_mode() { ... }` branches
+  at 3 dispatch sites:
+
+  | Site | Function | Routing |
+  |---|---|---|
+  | `traverse.rs:790` | `visit_edges` | `tree_mode_out_edges_collect` + `ControlFlow` adapter |
+  | `traverse.rs:1580` | `visit_edges_window` | `tree_mode_out_edges_collect` + window slice + `ControlFlow` adapter |
+  | `traverse.rs:1843` | `visit_edges_with_inline_property` | `!is_tree_mode()` guard on dense path; falls through to `visit_slab_bucket_span_edges` (LTB-aware) |
+
+  `visit_edges_for_label_impl` (line 2000) and
+  `visit_edges_for_label_with_inline_property` already had the
+  tree branch (Plan 0318 Step 5). Other read paths require
+  `inline_property_byte_width > 0` for dispatch (a precondition),
+  which is always 0 in tree mode (set on promote), so they are
+  tree-mode safe by construction.
+
+- **Regression tests:**
+  - `tree_visit_edges_via_public_api_works_on_dense_tree_bucket` in
+    `tree_read.rs:447` (dense tree bucket: 4096 slots, no tombstone).
+    Verified to FAIL without the fix and PASS with the fix.
+  - `tombstoned_tree_bucket_visit_preserves_logical_positions` in
+    `tree_read.rs:511` (REWORK-3): promotes 4K tree bucket,
+    tombstones slot 100, verifies `graph.visit_edges` yields 4096
+    visits (not 4095) with tombstone at position 100, all positions
+    0..4096 covered exactly once, ascending AND descending.
+    Verified to FAIL with the REWORK-2 fix (enumeration gives
+    live-ordinal; tombstone at position 3995 in descending) and
+    PASS with the REWORK-3 fix (tombstone at position 100 in both
+    orders).
+
+- **Bench verification:** the 3 previously-TRAPping benches
+  (`tcsr_1048576_full_scan_descending`,
+  `tcsr_1048576_random_ordinal_access`,
+  `tcsr_131072_full_scan_descending`) now PASS deterministically
+  (3-for-3 each) and are persisted in `canbench_results.yml`.
+  Original 3 write-path benches (131K insert_grow, 1M insert_grow,
+  1M root_capacity) still PASS. 4K/65K prototype baseline 0%
+  regression (6/6 unchanged). Full canbench suite 158/158
+  unchanged, 0 regressed, 0 failed.
+
+- **Why the bug wasn't caught in Plan 0318 Step 5:** the Step 5
+  read-dispatch tests used `tree_mode_out_edges_collect` directly
+  (the LTB primitive), not the public `graph.visit_edges` API.
+  The public API has its own dispatch at `visit_edges` line 786
+  that unconditionally tried the dense fast path before falling
+  through. The Step 5 tests also used bucket degrees below the
+  LEG root size (4096 edges = 4 LTB blocks = LEG root 16 bytes),
+  so even a misread from `edge_start` returned within the (small)
+  memory window without trapping. The 1M bench exposed the bug
+  because 1M = 1024 LTB blocks = LEG root 4096 bytes, while the
+  dense read attempted 4MB.
+
+- **Diagnostic history:** the original (REWORK-1) audit
+  misdiagnosed the bug as "seeding above ~77K edges traps non-
+  deterministically" and proposed reducing the bench anchor to
+  131K. The REWORK-1 audit was internally inconsistent (the
+  131K insert_grow bench worked, requiring seeding past the
+  alleged 77K boundary). The REWORK-2 audit identified the
+  read-dispatch as the actual cause; REWORK-2 verified
+  determinism (3-for-3 trap) and re-root-caused the OOB.
+
+### GAP-2026-09-02-002 — RESOLVED: `tree-mode-interior-level-insert-growth` (right-spine cascade) and the 2^30 fail-closed boundary
+
+- **Status:** Resolved (2026-09-02, Plan 0325).
+- **Severity:** P1 production-correctness defect (effective tree-mode
+  cap of 2^20 per bucket was 4 KiB per label per vertex — too tight
+  for any non-trivial high-degree use case).
+- **Owner:** `tree_mode_insert_edge` (`tree_write.rs:58-280`),
+  `tree_mode_deepen` (already shipped, level-generic), depth-generic
+  resolver `resolve_leaf_block_id` (already shipped, physical depth).
+- **Observed behavior:** the Plan 0318 §Step 7 amend shipped an
+  interim fail-closed `TreeRootCapacityReached` guard at 2^20
+  (`stored_slots + 1 > R_MAX × B = 1,048,576` in a depth-1 tree
+  bucket). Production tree-mode inserts above 2^20 returned
+  `Err(TreeRootCapacityReached)`. The depth-generic infrastructure
+  needed for the cascade was already shipped and unit-verified
+  (mixed-radix resolver, `tree_mode_deepen`, `tree_mode_flatten`,
+  demote Phase 5b interior release, `bucket_span_region_len`
+  physical-depth match) — only the insert-side wiring was missing.
+- **Why it matters (design invariant):** ADR 0088 §4 documents
+  `TREE_STRUCTURAL_CAP = 2^30` (depth 1 → 2 at 2^20, depth 2 → 3 at
+  2^30, MAX_DEPTH = 3 primitive safety). The interim guard
+  contradicted the documented cap by 2^10. Production canisters
+  promoting high-degree label buckets to tree mode would hit the
+  guard at 2^20 with no way to grow further.
+- **Fix (Plan 0325):** rewrote `tree_mode_insert_edge` to wire
+  the right-spine cascade:
+  1. The `tail_offset == 0` branch now consults the
+     **physical** root length (ceil-chain, NOT
+     `derived_root_len` — `derive_depth` returns 1 for a deepened
+     bucket at stored = 2^20, but the physical root has 1 entry,
+     not 1024).
+  2. When the physical root is at `R_MAX`, the cascade fires:
+     - if `depth >= MAX_DEPTH` OR `next_stored > TREE_STRUCTURAL_CAP` →
+       typed `TreeRootCapacityReached` (fail-closed at the 2^30
+       structural boundary);
+     - else → `tree_mode_deepen` + **re-read the bucket
+       descriptor** (the caller's `bucket` copy is stale after
+       deepen publishes a new `edge_start` /
+       `tree_mode_physical_depth`).
+  3. After the cascade, the dispatch routes to
+     `tree_mode_tail_append_depth1` (depth 1) or
+     `tree_mode_tail_append_depth_ge2` (depth ≥ 2). The depth ≥ 2
+     path appends the new leaf id to its **home interior** (not
+     the root); the root grows only when a new interior is minted
+     (`l % K == 0`).
+  4. New helper `resolve_interior_block_id` — the
+     `resolve_leaf_block_id` hop chain truncated one level short.
+     Used by `tree_mode_tail_append_depth_ge2` to find the
+     home interior.
+
+- **Audit of depth-generic infrastructure (file:line):**
+  - `resolve_leaf_block_id` (tree_write.rs:516) — depth-generic ✓
+  - `collect_leaf_block_ids` (tree_write.rs:586) — depth-generic ✓
+  - `tree_mode_deepen` (tree_write.rs:632) — level-generic ✓
+  - `tree_mode_flatten` (tree_write.rs:830) — depth-2 → depth-1 ✓
+  - demote Phase 5b (tree_write.rs:1025) — interior release ✓
+  - `bucket_span_region_len` (compact.rs:234) — physical-depth match ✓
+  - `tree_mode_random_ordinal_access` (tree_read.rs:54) — DEPTH-1
+    DEBUG_ASSERT was relaxed (the prior `block_root_index < root_len`
+    debug_assert used structural root_len; relaxed to
+    `block_root_index < leaf_count` for depth-2 safety)
+  - `visit_tree_mode_label_bucket_edges` (tree_read.rs:115) —
+    DEPTH-1 DEBUG_ASSERT was relaxed (the prior
+    `debug_assert_eq!(leaf_count, root_len)` failed for depth ≥ 2;
+    relaxed to `leaf_count >= root_len` invariant — actual walk
+    uses `resolve_leaf_block_id` for the descent)
+  - `tree_mode_insert_edge` `tail_offset == 0` branch
+    (tree_write.rs:113-280) — **DEPTH-1-ONLY** (replaced by the
+    cascade + depth-aware append)
+
+- **Regression tests** (synthetic layout, host `VectorMemory`,
+  cheap):
+  - `tree_insert_fails_closed_at_2_30_cap`: 2^30 fail-closed at
+    depth 2 + root_len = R_MAX.
+  - `production_insert_path_fails_closed_at_2_30_cap`: same,
+    via the public `insert_edge_skip_leaf_cascade` API.
+  - `cascade_at_2_20_plus_1_deepens`: 2^20 + 1 insert SUCCEEDS,
+    depth 1 → 2, stored 2^20 + 1, visit yields 2^20 + 1 slots.
+  - `interior_row_append_keeps_root_constant`: depth 2 with
+    2 interiors + 1 leaf in the 2nd; next insert at row 1 of the
+    2nd interior (l = 1025, l % K = 1) — root unchanged.
+  - `new_interior_mint_grows_root`: depth 2 with 2 full interiors
+    + tail_offset == 0; next insert at l = 2048, l % K = 0 —
+    root grows from 2 to 3.
+  - `public_read_accessors_over_depth_2`: `tree_mode_out_edges_collect`
+    walks 1,048,577 slots for stored = 2^20 + 1, depth 2.
+  - Replaces the obsolete 0318 §Step 7 tests
+    `tree_insert_fails_closed_at_root_capacity` and
+    `production_insert_path_fails_closed_at_root_capacity` (the
+    2^20 guard was superseded by the cascade + 2^30 boundary).
+
+- **Bench surface:** REPLACED `tcsr_1048576_root_capacity_reached`
+  (2^20 + 1 insert previously FAIL-CLOSED) with
+  `tcsr_1048576_deepen_beyond_r_max` (2^20 + 1 insert now
+  SUCCEEDS via deepen; verified PASS ×3 with depth 2 / root_len 2 /
+  stored 2^20 + 1 / edge readable at slot 2^20). ADDED
+  `tcsr_1048576_deepen_then_interior_grow` (2^20 → 2^20 + 1024:
+  1 deepen + 1023 interior-row appends + 1 new-interior mint;
+  5,111,272 ins, 4994 ins/insert).
+  - Existing depth-1 benches (5 of them) 0% regression
+    (insert_grow / full_scan / random_ordinal / 131K insert_grow
+    / 131K full_scan): "no change" or within noise threshold
+    (≤ 1% on insert_grow, 0% on read benches).
+  - Full canbench 158/158 unchanged, 1 regressed
+    (`bench_t_v_window` +2.10%, pre-existing from Plan 0324
+    REWORK-3; small slab bench, 220 ins regression, acceptable).
+  - Wasm 15,661 chars / 4,339 headroom (was 15,536; +125 for
+    2 new bench names).
+
+- **Why depth 3 is not exercised (deliberate):** ADR 0088 §4
+  documents `MAX_DEPTH = 3` as a primitive-level safety bound
+  (`TreeDepthLimitReached`); the production cap of 2^30 binds
+  first. Depth 3 coverage (2^40 slots, 1 TiB per bucket) is
+  structurally wired (the resolver handles it, the canbench
+  surface cannot seed it: 17.9T ins > 10T per-bench limit). Lifting
+  the cap to 2^40 in production requires an ADR amend (out of
+  scope for this slice).
+
+### GAP-2026-08-28-001 — RESOLVED: index-anchored scans are unattributed in authz requirement extraction (grants silently stop working when an index exists)
+
+- **Status:** Resolved (2026-08-28). Fixing commit `0aebf4513`; Router suite 1045 → 1056 green.
+- **Severity:** P1 authorization-semantics defect (availability + plan-dependence)
+- **Owner:** Router authz requirement walker (`crates/router/src/authz.rs` `walk_op`,
+  `PlanCatalogView`, `RouterCatalogView`) with the index catalog seam
+  (`crates/router/src/facade/stable/indexed_catalog.rs`)
+- **Observed behavior:** On the demo network — the one environment with an active property
+  index (`document_title`, demo migration 000002) — every index-anchored read was denied to
+  non-tenants regardless of grants: `MATCH (d:Document {title: 'X'}) RETURN 1` → uniform
+  `Forbidden` for anonymous, while the identical shape over the deliberately unindexed
+  `Concept.name` executed, and the registry owner (tenancy root) always passed. The walker's
+  `PlanOp::IndexScan` arm deferred the anchor's property read without noting any label fact;
+  an index anchor never receives a later `NodeScan`, so the deferred read resolved with
+  `unique_vertex_label == None` → `require_unattributed` → fail-closed tenancy-only. The
+  same gap existed in the `IndexIntersection` arm and the `ConditionalIndexScan` candidate
+  path (only `fallback_label` was noted). Every extraction contract test ran indexless
+  fixtures (ADR 0054 indexless bootstrap), so the planner always emitted `NodeScan` and the
+  `IndexScan` arms had zero walker coverage — the bug was invisible to the suite and only
+  the live demo network surfaced it.
+- **Why it matters (design invariant):** authorization demands must not depend on which
+  physical plan the planner chooses. Before the fix, creating an index silently changed who
+  could run an existing prepared query — physical layout leaking into logical access
+  control. Removing the demo's index would have hidden the defect, not fixed it.
+- **Implemented behavior:** `PlanCatalogView` gained a catalog-driven label resolution for
+  the unique active vertex property index covering a property (same unique/fail-closed
+  semantics as the executor's `active_vertex_physical_index`); the `IndexScan`,
+  `IndexIntersection`, and `ConditionalIndexScan` walker arms now note the resolved label
+  fact and demand the same scan-side rows an equivalent `NodeScan` would (`Match` +
+  `Read`/`ReadProperty` via `require_vertex_scan_rows`). Ambiguous or inactive index
+  resolution stays unattributed (fail-closed, unchanged). The PocketIC citation-reach flow
+  fixture now creates `document_title` and drains maintenance to active, pinning the
+  index-anchored path end-to-end: a non-owner executes the op after the same PUBLIC grant
+  surface.
+- **Evidence:** live bisection on the demo network (indexed `Document.title` filter denies,
+  unindexed `Concept.name` filter passes; plain scans, traversal, quantified paths, and
+  `ELEMENT_ID` projections all pass) + indexless-vs-indexed extraction tests in
+  `crates/router/src/gql_grants.rs` and walker unit tests in `crates/router/src/authz.rs`.
+- **Next decision:** none open for the walker. Long-term, the planner could carry the label
+  in `PlanOp::IndexScan` (self-describing plan) — planner-stream territory, deferred until
+  the next plan-wire revision; the catalog-driven resolution matches executor semantics and
+  needs no wire change.
+
+### GAP-2026-08-26-001 — RESOLVED: `ELEMENT_ID` over quantified-path group variables fail-closed as "requires element indexing"
+
+- **Status:** Resolved (plan 0307 slice A, 2026-08-26) — executor completeness for GQL
+  group variables, not a demo workaround.
+- **Severity:** P2 demo-blocking executor gap
+- **Owner:** graph executor expression evaluation
+  (`crates/graph/src/plan/query/executor/eval.rs`, `eval_element_id`)
+- **Observed behavior:** With the PUBLIC grant surface applied, the knowledge demo's
+  `citation-reach` op (`ELEMENT_ID(e)` over `-[e:CITES]->{1,3}`) failed at execution for
+  ANY caller (owner included) with `InvalidArgument("invalid query expression value for
+  'ELEMENT_ID(e) on a group edge variable requires element indexing'")`. Quantified-path
+  variables bind as groups (`PlanBinding::EdgeGroup` hop trail / `VertexGroup`), and
+  `eval_element_id` rejected all three group binding kinds since commits `51ba273c9` /
+  `c7a6eb01a` (2026-06-08). Authorization was never the blocker: requirement extraction
+  adds no demand for element-id reads (plan 0306 contract test
+  `edge_element_id_projection_demands_stay_attributed`).
+- **Expected or needed behavior:** GQL group variables are lists; an element-identity read
+  over them returns a list of element ids in group order (empty group → empty list), so
+  published ops projecting edge identity execute end-to-end for authorized callers.
+- **Resolution:** `eval_element_id` now evaluates `EdgeGroup` → `Value::List` of edge-id
+  bytes in traversal order and `VertexGroup` → list of vertex-id bytes in group order,
+  reusing the singleton-arm encodings verbatim; empty groups yield empty lists;
+  `PathGroup` stays fail-closed with an actionable message (paths are not elements; use
+  `CARDINALITY(p)` or path element access). No planner, wire, rkyv, or authz changes.
+  Tests: host-level `element_id_on_edge_group_lists_hop_ids_in_traversal_order`,
+  `element_id_on_vertex_group_preserves_order_and_empty_group_yields_empty_list`,
+  `element_id_on_path_group_stays_fail_closed_with_guidance`; PocketIC
+  `knowledge_demo_citation_reach_flow.rs` upgraded to full row-content assertions
+  (default-deny leg preserved; non-owner execution with per-row hop-count-pinned
+  `cite_edge_id` lists).
+- **Evidence:** detection run during brief #2 PocketIC validation (w1:p8, 2026-08-26);
+  root cause read of `eval.rs` / `expand/var_len.rs`
+  [group-variables.md](execution/group-variables.md); post-fix green runs recorded in the
+  Validation Transcript of `plans/0307-group-element-id.md`.
+- **Related contracts:** GAP-2026-08-24-008 Impact follow-up (a) — citation-reach runtime
+  execution is now actually proven; the 2026-08-26 plan 0306 note was extraction-correct
+  but execution remained blocked until this slice.
+- **Detection:** w1:p8 during brief #2 validation (2026-08-26); resolved same day by w1:p8
+  under brief #3.
+
+### GAP-2026-08-25-004 — Committed HEAD fails `gleaph-router` lib-test standalone: `GqlQueryResult.truncated` constructor updates left uncommitted
+
+- **Status:** Resolved by commit 5cb98eb4c (2026-08-25; landed by w1:pM after the owning pane
+  could not be identified and the fix was routed through the operator)
+- **Severity:** P1 repository integrity
+- **Owner:** `crates/router/src/federation/aggregate_index_fast_path.rs` constructor call sites
+  for the `truncated` field added to `GqlQueryResult` by kernel commit `49f10d461` (ADR 0078)
+- **Observed behavior:** An isolated worktree at `d31909605` — and equally at then-HEAD —
+  failed `cargo test -p gleaph-router --lib` with
+  `E0063: missing field 'truncated' in initializer of GqlQueryResult`
+  (`aggregate_index_fast_path.rs:120/139/254`). The main tree compiled only while the owning
+  stream's uncommitted WIP stayed present, so the breakage was invisible locally.
+- **Expected or needed behavior:** Kernel-side field additions and their constructor-site
+  updates land in the same commit (GAP-2026-08-24-007 precedent).
+- **Resolution:** All three aggregate fast-path result constructors initialize
+  `truncated: None` (commit `5cb98eb4c`). Isolated-worktree verification at the fixing commit:
+  `cargo test -p gleaph-router --lib` → 980 passed / 0 failed, including the ADR 0081 Slice A
+  router-side ordered-range seed fail-closed surface.
+- **Evidence:** `git log -S "truncated" -- crates/graph-kernel/src/plan_exec.rs` → `49f10d461`;
+  isolated-worktree build log; fixing commit `5cb98eb4c`.
+- **Related contracts:** [ADR 0078](adr/0078-authz-aware-vector-search.md)
+- **Detection:** w1:pM during ADR 0081 Slice A verification (2026-08-25).
+
+### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
+
+- **Status:** Packed-prefix rereads addressed in cursor-forwarding drivers by Plan 0201
+  (ADR 0052 Slice 6); quadratic tombstone-gap rescanning remains open.
+- **Severity:** P2 maintenance-performance risk
+- **Owner:** `ic-stable-lara` labeled edge-slab compaction and deferred-maintenance cursor state
+- **Historical observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
+  most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
+  after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
+  resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
+  `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` at 73.36M instructions versus
+  4.14M previously; the existing 4,096- and 16,384-edge cases were already dominated by the same
+  quadratic shape.
+- **Expected or needed behavior:** preserve ascending/descending edge scan order and immediate
+  per-edge sidecar/index re-keying while carrying enough progress state that successive bounded
+  maintenance steps do not rescan the already-packed prefix.
+- **Resolution:** `CompactVertexEdgeSpan` (v1 work item) carries a `resume_slot_index` cursor;
+  `compact_vertex_edge_span_one_step` and both finders scan from the cursor with `next_live` seeded
+  from it (packed-prefix invariant), `EdgeMoved` re-enqueues carry the advanced cursor,
+  `AdvanceBucket` resets it, and a cursor-scan miss triggers a full re-scan from slot zero before
+  `stored_slots = degree`, so an interleaved delete inside the already-packed prefix can never
+  truncate a live edge. This does not establish linear work: forwarding avoids rereading the
+  packed live prefix but still scans an expanding tombstone gap. The earlier claim that this
+  moves compaction off the quadratic shape is withdrawn. The unchanged 16K benchmark itself
+  supplies zero; the separate completed zero/forwarded diagnostics and subsequent bounded-read
+  improvement are source-tagged in the [follow-up evidence](evidence/adr0097-left-pack-bounded-reads.md).
+  Batching reads reduces a constant factor, not repeated decoding.
+- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/compact.rs::first_edge_slot_move_in_bucket`
+  (cursor parameter), `compact_vertex_edge_span_one_step`; regression tests
+  `compaction_cursor_packs_alternating_tombstones_across_steps` and
+  `compaction_cursor_survives_interleaved_delete_in_packed_prefix` in
+  `labeled/bidirectional/deferred.rs`; ADR 0020's one-`EdgeMoved`-per-pop contract.
+- **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
+  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
+  [ADR 0052](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) Slice 6
+
+### GAP-2026-07-04-003 — No application-facing vertex-embedding ingestion boundary
+
+- **Status:** Resolved by plan 0048 implementation
+- **Severity:** P1 product gap
+- **Owner:** Router authorization/resolution + Graph validation boundary + Vector durable store
+- **Observed behavior:** before plan 0048, there was no canister API for an application or deployment
+  tool to write a canonical vertex embedding. Vector-index fixtures and demos had to seed the
+  derived `graph-vector-index` canister directly, bypassing Graph canonical ownership and the
+  Router embedding-name catalog.
+- **Expected or needed behavior:** an authorized caller should submit only graph name, opaque encoded
+  vertex id, registered embedding name, and finite F32 values to the typed Router endpoint; Router
+  should validate the value dimension/finiteness before stamp allocation and the Graph await, Graph
+  should validate vertex/tombstone/label and payload-independent embedding metadata, and every
+  allocated Router stamp should have one exact durable owner before the first Graph await.
+- **Resolution:** The typed Router `ingest_vertex_embeddings` flow validates the encoded id, live
+  shard, registered
+  vector definition, value dimension, and finiteness, then synchronously co-writes the allocated
+  stamps and exact `AwaitingGraph` intents before the first Graph await. Graph `stamp_embedding`
+  validates existence/tombstone state, required labels, and payload-independent embedding
+  metadata/encoding, then returns the Router-issued stamp without embedding-byte or journal writes.
+  Exact acceptance transitions the row to `AwaitingVector`; exact rejection changes the row to
+  `AwaitingFrontier`; an observed Vector prefix also changes only the applied rows to
+  `AwaitingFrontier`. Unknown Graph, Vector, or frontier outcomes retain the applicable phase. No
+  finite-time or client-level exactly-once guarantee is implied.
+- **Evidence:** `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
+  `crates/graph/src/canister/handlers.rs::stamp_embedding`; and the focused Router/Vector unit
+  coverage. The named PocketIC gate `graph_only_markerless_lane_advances_frontier_on_autonomous_timer`
+  passes exactly one test with seven filtered, one `PocketIc`, one federation, and four canister
+  installs; it advances the ordinary timer with an empty MemoryId 53 lane and exercises bounded GC.
+  The persisted Router `crates/router/canbench_results.yml` artifact has all 41 terminal benchmark
+  entries; `markerless_frontier_catalog` records exactly 52,080,138 total and 52,079,143 scoped
+  instructions. The dated Plan 0277 focused/persisted Vector `bench_router_frontier_gc_budget`
+  baseline records 2,110,300,092 total and 2,110,299,087 scoped instructions. The later live
+  artifact currently records 2,084,327,695 total and 2,084,326,690 scoped instructions from
+  unrelated work and is not Plan 0277 evidence. The targeted
+  affected-crate format check passes, while the
+  workspace-wide format check is blocked by unrelated dirty paths and never passed. The bounded
+  Quint model has fifteen deterministic tests and 5,000 sampled traces with all requested witnesses;
+  `quint verify` remains unrun and non-required, so this is not production proof or a finite-time
+  liveness claim.
+- **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
+  [design/index/vector-index.md](./index/vector-index.md),
+  [design/execution/pipeline.md](./execution/pipeline.md)
+
+### GAP-2026-07-04-002 — `NEXT INSERT` lost edge endpoint identity
+
+- **Status:** Resolved by commit `27e993ae`
+- **Severity:** P1 correctness defect
+- **Owner:** GQL block planning and Graph projection/mutation execution
+- **Observed behavior:** a `MATCH ... RETURN ... NEXT INSERT (a)-[:L]->(b)` mutation reported
+  success, but a later traversal observed disconnected/`NULL` endpoints. Separate seed operations
+  could not build a shared-vertex social graph.
+- **Resolution:** no-YIELD `NEXT` boundaries now preserve typed graph bindings; already-bound node
+  variables are not planned as new vertices; plain-variable projections retain `PlanBinding`
+  identity through native and wire execution.
+- **Evidence:**
+  `gql_run::tests::{block_match_next_insert_edge_keeps_endpoints,wire_block_match_next_insert_edge_keeps_endpoints,block_match_next_insert_edge_shares_source}`.
+- **Related contracts:** [gql/plan-format.md](gql/plan-format.md),
+  [execution/pipeline.md](execution/pipeline.md)
+
+### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
+
+- **Status:** Resolved by measured canbench + PocketIC acceptance (2026-08-03/2026-08-04; commits
+  `test(graph): measure plan-batch tail costs for headroom acceptance`, `test(graph): verify
+plan-batch drain boundary end to end`, `test(graph-index): measure posting_batch loop costs for
+headroom acceptance`, `test(vector-index): measure vector_sync_batch loop costs for headroom
+acceptance`, `test(graph-index): measure batched page-answer lookahead tail`, `test(router):
+measure graph batch chunk decision costs for headroom acceptance`, `test(graph): measure timer
+maintenance tick and per-step costs`)
+- **Severity:** P1 availability and resumability risk
+- **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
+- **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
+  independently chosen values, but no repository benchmark or acceptance table establishes that
+  each headroom covers its owning path's final operation, response encoding, post-operation drain,
+  and cross-canister call overhead. Current examples include Router's 5B headroom, Graph's pending
+  5B headroom for `execute_plan_update_batch`, graph-index and graph-vector-index batch ceilings at
+  32B with 100M per-loop reserves, graph-index's 1B update / 0.5B query lookahead, and Graph timer
+  maintenance at 32B with a 100M reserve. These values have different ownership and semantics and
+  must not be treated as interchangeable.
+- **Resolution:** every dynamic batch / bounded maintenance loop in the GAP now has measured,
+  path-specific instruction-ceiling and headroom acceptance evidence (plan-batch, posting_batch,
+  vector_sync_batch, page-answer lookahead, Router chunk decision, timer maintenance):
+  - **Graph plan-batch** (`execute_plan_update_batch`, `GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM`
+    2B + 500M drain estimate): adversarial single operation 32.98M < `MIN_OP_INSTRUCTION_ESTIMATE`
+    (50M) and far below the ~37.5B trap threshold; response tail ≤ 581K vs the 2.5B reserve; the
+    inter-canister drain is covered by the PocketIC boundary test
+    (`adr0060_plan_batch_instruction_boundary.rs`) which completes a 300-operation NEXT-chained
+    mutation on a converged index without trapping and serves the drained posting.
+  - **graph-index `posting_batch`** (32B ceiling, 100M reserve): max single op ≈1.92M (4096-byte
+    value) + response 38K, two orders below the reserve; ceiling cuts off only after ~16.6K
+    max-value postings. Fully local; no boundary test needed.
+  - **graph-vector-index `vector_sync_batch`** (32B ceiling, 100M reserve): max single op ≈1.12M
+    (flat in dims) + response 38K, two orders below the reserve; ceiling cuts off after ~29K
+    upserts. Fully local; no boundary test needed.
+  - **graph-index page-answer lookahead** (500M query lookahead): max per-check work (worst page
+    ≈206.4M + encode ≤ 316K) ≈206.7M, 2.4× below the lookahead. The 1B update lookahead has no
+    caller and needs no evidence until used.
+  - **Router mutation-batching chunk decision** (`ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` 4B):
+    decision cost 6.01M nominal / 37.34M adversarial (≈0.15% / ≈0.9% of the reserve); the
+    remaining per-chunk tail is bounded by the inter-canister sizing policy (≤2 MiB) and the
+    dispatch count is bounded by live shard count, so no dedicated boundary test was added.
+  - **Graph timer maintenance** (`MAX_TIMER_MAINTENANCE_INSTRUCTIONS` 32B,
+    `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` 100M): single work item 61.60K and whole tick on a
+    dense 2048-edge hub 1.33M, so the worst per-check work (≤ whole tick) is ≈1.3% of the reserve
+    and a realistic backlog drains in ≈0.004% of the cap. Fully local; no boundary test needed.
+    Follow-up refactor (`relocate_edge_properties_for_move`): the inline-property posting rekey,
+    previously a post-pass loop outside the budget check, now runs inside the per-move observer
+    through the unified property relocation, so the entire edge-move consequence is covered by
+    the per-item cutoff; the measured tick is unchanged (1.33M, re-persisted 2026-08-04).
+- **Evidence:** canbench targets and persisted results: `crates/graph/src/bench/plan_batch.rs`,
+  `crates/graph/src/bench/timer_maintenance.rs`, `crates/graph-index/src/bench.rs`,
+  `crates/graph-vector-index/src/bench.rs`, `crates/router/src/bench.rs`, with the matching
+  `canbench_results.yml` per crate; the plan-batch PocketIC boundary test
+  `crates/pocket-ic-tests/tests/adr0060_plan_batch_instruction_boundary.rs`. No headroom was
+  justified by copying another canister's constant: each path carries its own measured worst-case
+  and tail numbers.
+- **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
+  [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
+  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
+  [design/index/property-index.md](index/property-index.md),
+  [design/index/vector-index.md](index/vector-index.md)
+
+### GAP-2026-08-07-001 — Newer-incarnation replacement can tombstone the old row before a fallible append
+
+- **Status:** Resolved by a commit-before-tombstone reorder in `vector_upsert` (Plan 0233).
+- **Severity:** P2 correctness edge (only reachable on stable-memory OOM during a subject-map commit)
+- **Owner:** graph-vector-index (`VectorCanisterStore::vector_upsert`)
+- **Observed behavior:** In the `mutation_id > stamp` (newer-incarnation) branch, the superseded old
+  active/shadow slots were tombstoned _before_ the fallible `VECTOR_SUBJECT_TO_ID` commit. If that
+  commit failed (`StableGrowFailed`, stable-memory OOM), the retained old subject entry pointed at a
+  now-tombstoned row, ghosting the subject from search.
+- **Resolution:** The branch now commits the subject map (pointing at the new slot) before tombstoning
+  the old slots; on a commit failure it tombstones only the just-appended rows, leaving the old slot
+  live and the retained entry consistent. A regression test
+  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`) injects a subject-map insert failure via
+  a test seam (`arm_subject_insert_failure`) and asserts the old slot stays live and `live_len` is
+  unchanged. The resurrection case is likewise fixed: `unmark_deleted` now runs only after a
+  successful commit.
+- **Evidence:** `crates/vector-canister/src/facade/store/mutation.rs` (reorder + seam),
+  `crates/vector-canister/src/facade/store/tests.rs`
+  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`).
+- **Related contracts:** [ADR 0032](adr/0032-vector-index-slab-page-store.md)
+
+### Resolved 2026-11-04: the pre-ADR-0099 bench verifiers are gone
+
+- **What was removed** (approved): `value_fold_case!`, `continuous_case!`, `update_reuse_case!`,
+  `RepeatedFold::Values`, `assert_retired_prefix_reusable`, `materialize_owner_*` and the per-round
+  `slab_occupied_tail` / `free_bytes` / "later values stay at the tail" assertions. Every one of them
+  verified the byte-span values allocator or the values-only fold, both removed by ADR 0099.
+- **What was kept:** `fold_cost`, `fold_economics`, `repeated_fold::{Unfolded, Both}` and all edge-plane
+  checks - the edge allocator is unchanged, so those assertions still constrain real behaviour.
+- **Evidence:** `cargo test -p ic-stable-lara --lib --features canbench` is **641 passed / 0 failed**;
+  `canbench --persist` completes unfiltered for **both** crates, and both artifacts are current
+  (`43fe89ce0` for graph, `f493688fa` for lara).
+- **Cost, stated plainly:** five bench families and their coverage are gone. Rebuilding that coverage
+  against the slot-addressed geometry is a bench-design task and is **not** done here.
+
+
+### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS — resolved: the slot reader answered for a tree bucket
+
+- **Status:** Resolved 2026-11-04 (`7aa512a1b`). The benchmark runs again.
+- **Cause:** a tree bucket keeps its values in the property root inside the edge span, and
+  `read_bucket_inline_property_bytes_for_slot_into` - the slab/run reader - took its "row beyond the
+  prefix" branch for one, found no values run (there is none by design) and reported
+  `MissingAscLogIndex { asc_log_index: 0 }`: an error about a plane the bucket does not own. It routes
+  tree buckets to `tree_read::read_property_value_at_slot` now.
+- **Follow-up, open:** the benchmark now measures **6.77M instructions against a 2.11M baseline**
+  (+220%), and the breakdown localises it: `plan_query_execute_ops` **5.75M (+420.7%)**, while
+  `plan_op_project` is +12.7% and `plan_query_materialize_value_rows` +3.3%. So the cost is the expand
+  operator reading the promoted bucket's values - per-row tree reads through the path this fix made
+  correct. Letting a tree bucket into the inline-property batch gate (`966d4107b`) took the benchmark
+  **6.77M -> 3.79M** (+220% -> +79%) and `plan_query_execute_ops` 5.75M -> 2.77M.
+- **Where it stands:** +79% against a baseline recorded for the same fixture in its **slab** shape, while
+  the fixture now promotes. Part of the remainder is the tree read path itself (a property-tree walk per
+  block against one contiguous slab read). Refreshing `crates/graph/canbench_results.yml` is what would
+  settle whether the tree shape is the new normal for this bench, and that refresh is only possible now
+  that the suite runs to completion.
+
+
+### GAP-GRAPH-BENCH-REGRESSION — solved: the copy-on-write shadow overlay
+
+- **Status:** Resolved 2026-11-03 by deleting the overlay (`660464205`).
+- **Observed behavior:** against the committed baseline, `bench_graph_inline_scalar_filter_1k`
+  was +23.9 %, `bench_graph_inline_scalar_projection_1k` +23.1 % and
+  `bench_graph_vertex_insert_scalar_16` +28.2 %, while `bench_scalar_fan_out_128_width_0` was -37 %.
+- **Cause, found by bisecting:** `61395eb` ("route memory access through an installed shadow"). The
+  overlay sent every `read`/`write`/`size`/`grow` through a thread-local check even when no shadow was
+  installed, so any path that touches memory paid for it. Two earlier guesses - the ADR 0098 flag and
+  the per-message drain - were each measured and cleared by forcing them off and reproducing the slow
+  numbers exactly.
+- **Fix and recovery:** the shadow had no production consumer (already rejected as a speed tool at
+  1.71x slower than direct writes, with its atomicity benefit never wired to an entry point), so the
+  overlay, its bench and its test were deleted. Measured after: 1.21 M / -0.65 % and 32.56 M on the
+  two benches above - back inside the noise threshold of the baseline.
+- **Evidence:** the two benches before and after, the bisect verdict naming the overlay commit, and
+  the two forcing experiments that cleared the drain and the ADR 0098 flag.
+- **Lesson worth keeping:** a whole-memory interception layer is invisible to unit tests and shows up
+  only as a uniform percentage on every bench; bisecting on one bench found it faster than reading
+  the diff.
+
+### GAP-GRAPH-UPDATE-AFTER-DELETE-WRITES-THE-WRONG-ROW — inline value update lands one ordinal low
+
+- **Status:** Resolved 2026-11-03 (`d661eaaf2`). The update path passed the row's bucket-local
+  physical slot to a plane addressed by live ordinal; the writer now resolves the ordinal
+  (`bucket_live_ordinal_at_edge_slot`) and the primitive takes an ordinal, which the tombstone-reuse
+  path keeps using because it already computed the hole's live ordinal. The reproduction is green and
+  ADR 0099's property test is enabled (240 random ops). lara 708/0, graph 1107/0.
+- **Original report follows.**
+- **Observed behavior:** with four directed edges carrying width-2 values on one vertex, updating one
+  value, deleting a row that precedes another, then updating the later row's value writes that value
+  **one row too early**: after `v3=304, v1=102, v2=203, v0=1`, `update(v2, 204)`, `delete(v1)`,
+  `update(v2, 205)`, the reader returns `v0=205, v2=204, v3=304` where the values last written are
+  `v0=1, v2=205, v3=304`.
+- **Expected or needed behavior:** every live row reads back the value last written to it. The
+  property test `values_stay_with_their_rows_through_random_mutations` interleaves inserts, hole
+  refills, updates, deletes and maintenance passes and asserts exactly that; it is `#[ignore]`d until
+  this is fixed, because it fails at the same op shape.
+- **Interpretation:** the update path derives the value's ordinal from a position that the delete's
+  left-shift has not been applied to - the update wrote to the slot that the deleted row used to
+  occupy. This is the ordinal/slot divergence ADR 0099 exists to remove: the values plane is a rank
+  lookup that has to be kept consistent with the rows, and one path is not doing it.
+- **Owner:** the inline-property update path in `crates/ic-stable-lara/src/labeled/graph/values.rs`
+  (the ordinal derivation), with the frozen reproduction in
+  `crates/graph/src/facade/store/inline_update_fixture.rs`.
+- **Evidence:** `inline_update_after_a_delete_writes_the_right_row` (frozen reproduction, currently
+  the suite's only red test) and the ignored property test above.
+
+### GAP-GRAPH-SIX-RED-FACADE-STORE-TESTS — six `facade::store` tests fail against the current contracts
+
+- **Status:** Resolved 2026-11-03 ([ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md)).
+  The last one was a real defect: a bucket's spill fold took its room from a region that was derived
+  from the regions that exist, so a leaf-mate whose rows all lived in its run contributed no region
+  and the fold wrote rows over that mate's edge start - one row landed on the guard vertex's base and
+  read back inside another vertex's prefix. The fold now stops at `next_leaf_vertex_edge_start`, the
+  rewrite path takes the same bound, and the fixed-quota fast path requires the leaf's recorded
+  `fixed_quota_intact` flag rather than a vertex record width that is the bypass width. lara 707/0,
+  graph 1106/0.
+- **Original report follows.** Three of the six are understood (contract drift after ADR 0097); one is a
+  compaction behavior question with the spill explanation ruled out; two are untriaged.
+- **Observed behavior:** `cargo test -p gleaph-graph --lib` reports 1097 passed / 6 failed:
+  `insertion_policy_maintenance_preserves_left_pack_order`,
+  `unordered_compaction_swap_publishes_move_and_moves_sidecars`,
+  `swap_compaction_rekeys_inline_scalar_index_to_new_slot`,
+  `unordered_captured_at_enqueue_drains_without_ambient_table`,
+  `updating_undirected_edge_inline_property_updates_both_storage_rows`, and
+  `vertex_delete::tests::detach_delete_fence_uses_canonical_forward_slot_for_diverged_directed_in_edge`.
+- **What is known per test:**
+  - The three swap/left-pack tests sit behind `slab_bucket_allows_unordered_swap`, which requires
+    the inline values to be slab-backed and exactly one block per live row; with a value width the
+    fixtures do not reach that state before the delete, so the pass left-packs instead of swapping.
+  - `detach_delete_fence_...`: the fixture's bucket is **`BucketMode::Tiny`** (`stored_slots = 2`,
+    `degree = 2`), and the span step advances past tiny buckets by design, so no slab compaction
+    ever runs and the slots never diverge. Confirmed by instrumenting the step entry: it is called
+    twice and returns `AdvanceBucket` both times.
+  - `unordered_compaction_swap_publishes_move_and_moves_sidecars`: the bucket *is* `Slab` but is
+    run-backed - `stored_slots = 0` with a live `edge_spill_run` - so every row lives in the run and
+    the span-level swap finds no slots to move. Promoting the fixture out of tiny mode first does
+    **not** help: deleting the fillers empties the bucket, which releases its span, so the edges
+    under test land in a zero-slot region again and the fold has nothing to fit. A working fixture
+    has to keep the bucket non-empty while giving it span room, or seed the slab geometry directly.
+  - Seeding it directly was tried and is not the missing piece either: exposing LARA's
+    `promote_bucket_to_slab` to the graph crate through a `test-support` feature compiles, but both
+    fixtures refuse it with "bucket is already promoted" - the swap fixture's bucket is already
+    `Slab` with a zero-slot span, and the fence fixture's is promoted before the seeding point. That
+    exposure was reverted rather than kept without a user.
+  - The open question is therefore narrower than "the fixture needs promotion": **why does a bucket
+    carrying inline values end up promoted with `stored_slots = 0` and every row in its run?** That
+    decides whether the remaining swap failures are a fixture problem or an insert-path defect.
+  - **Answered (2026-11-03): it is the insert path, by design.** An edge that carries inline property
+    bytes is inserted through `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location`
+    (`bidirectional/deferred.rs:2140`), which deliberately skips the leaf cascade so the captured
+    value offsets stay valid; `insert_edge` - the entry that grows the leaf through
+    `rebalance_cascade_after_labeled_mutation` - is never called on that path. Instrumenting
+    `insert_edge_inner` showed why every one of those inserts spills: `have_space_on_slab` is
+    `loc < slab_window_exclusive_end`, and a fresh vertex's window is empty
+    (`stored_degree = 0`), so the first insert already spills and the vertex keeps a run. The rows
+    then return to the span only when something grows the leaf - which is what the fixtures' pre-fold
+    drain is supposed to do and cannot, because the fold needs the room the cascade would have made.
+    A fixture that wants a span-resident value-bearing bucket must therefore grow the leaf by some
+    other means first, and that is a real hole in the test kit rather than a stale assertion.
+  - **Closed except one (2026-11-03).** The hole is now filled:
+    `fixture_support::force_span_fold` (behind the `test-support` feature) runs the eager
+    `Required`-policy fold, and the five fixtures that needed a span-resident bucket call it. Suite
+    1097/6 -> 1102/1. What remains is
+    `updating_undirected_edge_inline_property_updates_both_storage_rows`, whose fixture models exact
+    slot placement across several undirected buckets and now differs in one row (slot 2 reports
+    `VertexId(2)` where the model says `VertexId(0)`); that one needs its model checked against the
+    spill layout rather than another fold.
+  - `updating_undirected_edge_inline_property_updates_both_storage_rows` differs in one dumped row
+    only, and the discrepancy now looks like a **defect rather than a model gap**. The fixture's
+    vertices are `low = VertexId(0)`, `high = VertexId(1)`, `guard = VertexId(2)`; low's undirected
+    bucket reads back 17 rows whose values all match the model (`2000..2007`, the `high`-`low` edge
+    with `5000` and neighbour `VertexId(1)`, then `4000..4007`), except **slot 2**: its value is the
+    expected `2002` but its neighbour reads `VertexId(2)` (`guard`) where every other self-loop on
+    low reads `VertexId(0)`. So one row carries the right value and the wrong neighbour - the
+    signature of a write landing in the wrong field or a row/value pair being mismatched, not of a
+    fixture that forgot to fold.
+  - **Reproduced (2026-11-03)** by
+    `inline_update_fixture::undirected_valued_insert_sequence_keeps_neighbours`, which replays the
+    fixture's insert order and asserts only that each row's neighbour is right. With **8** valued
+    self-loops on `high` it passes; with **32** it fails exactly like the real fixture - `low`'s slot
+    2 reads neighbour `VertexId(2)` (`guard`) with the correct value `2002`. Removing the guard
+    self-loop from the real fixture changed two expectations, so it could not isolate the row; the
+    new test can, and the only difference between pass and fail is the size of the *other* vertex's
+    first batch. Bisected: **24 rows pass and 25 fail**, so the trigger is that batch's size rather
+    than anything about the row being read.
+  - What the reproduction shows: `guard`'s own bucket still holds its row correctly (slot 0,
+    neighbour `VertexId(2)`, value 6000), so this is **not** a row overwritten by another bucket -
+    the self-loop row itself was written with the wrong neighbour.
+  - **The payloads are correct at the LARA entry the undirected path uses.**
+    `insert_edge_skip_leaf_cascade_deferred_inline_property_with_location` receives
+    16 x `(low, low)`, 33 x `(high, high)`, one `(low, high)`, one `(high, low)` and one
+    `(guard, guard)` - all right. So the wrong neighbour appears *inside* the deferred placement,
+    not on the way in.
+  - **Instrumenting the wrong function first cost time, and the mystery was self-inflicted.** The
+    earlier probe sat in `lara/edge/insert.rs::insert_edge_inner` and reported 54 calls all with
+    owner 0. The reason is in `labeled/graph/insert.rs:540`: this path calls
+    `insert_edge_without_logical_slot(&access, VertexId::from(0), ...)` - the `vid` argument is a
+    placeholder and the real context rides in `access`. So those counts were neighbours only, and
+    they were right (17 x neighbour 0, 1 x neighbour 2, 36 x neighbour 1 against 16 low self-loops,
+    33 high self-loops, the cross edge each way and guard's one row).
+  - The write site agrees. Instrumenting it (`labeled/graph/insert.rs`, just before
+    `insert_edge_without_logical_slot`) shows the exact expected set - 33 `high` self-loops at bucket
+    start 4097, 16 `low` self-loops at 4096, one `guard` at 4098, and the cross edge once in each
+    direction - so nothing above the row write is wrong, and the earlier "two extra writes" was an
+    artefact of comparing runs with different batch sizes.
+  - What the addresses do show: **the three buckets' regions start one slot apart** (4096, 4097,
+    4098) while each holds many rows, so all of those rows live in the per-bucket spill runs, not in
+    the slabs. The corrupted row is therefore a *run* row.
+  - **Instrumenting the run write is the wrong layer, twice over.** In
+    `log_mut.rs::insert_into_spill_with_layout` every append printed the same neighbour
+    (`VertexId(1)`) and the same run id (`0`) regardless of the vertex, which cannot be the stored
+    payload: the read-back disagrees. Like `VertexId::from(0)` in the earlier probe, the value this
+    layer sees is a placeholder/normalised one and the real identity rides in the `access` context.
+    Two probes in a row have now misled on that; the reliable observation is what is read back, not
+    what these inner functions are handed. A dump of the run's stored rows (an inspector, not a
+    print at a write site) is the next instrument.
+  - One read-side fact is now settled: reading the same vertex twice returns the same rows, so the
+    wrong neighbour is **stored**, not produced by the read mapping. That rules out the ordinal/slot
+    resolution path and confirms the row content itself is wrong in the run.
+  - **Cause found (2026-11-03): two buckets' spans overlap.** A run inspector
+    (`fixture_support::bucket_geometry`) reports, for the reproduction:
+    `low = (edge_start 4096, stored_slots 11, degree 17)`, `high = (4097, 0, 34)`,
+    `guard = (4098, 1, 1)`. Low's span is `[4096, 4107)` and it contains `high`'s start at 4097 and
+    `guard`'s at 4098, so `guard`'s single row is written at physical 4098 - which is low's slot
+    index 2. That is exactly the observed row: value from low's values span (2002) and neighbour
+    from guard's row. So this is not a spill bug at all: the leaf arena handed out bucket starts one
+    slot apart and then one bucket's prefix grew across its siblings. It is a residency violation of
+    the leaf contract (E5: placement stays inside the vertex's own slice), and the reproduction now
+    asserts it directly with a non-overlap check on the three spans.
+  - The overlap is already there **immediately after the inserts** (no relayout involved), and the
+    write window is one slot: a synthetic `LabelEdgeSpanAccess` reports `v_ord = 0` with
+    `trusts_neighbor_boundary() == true`, so `slab_window_exclusive_end` clamps the append at
+    `vertices[1].base_slot_start()`. Low could therefore write exactly one slab row - yet its bucket
+    records `stored_slots = 11`.
+  - First lead, **checked and wrong**: that the spill path grows the prefix.
+    `CsrVertex::try_grow_packed_slab_by_one` already branches on `edge_spill_run != NO_SPILL_RUN`
+    and grows only `degree` there, so a spill row cannot lengthen `stored_slots`.
+  - **Second lead, consistent with every number:** the *fold* fills the span past the sibling
+    boundary. Low holds 11 prefix rows and 6 run rows, so 11 rows reached the slab by some path even
+    though the append window is one slot - and the path that can do that is
+    `compact_label_bucket_overflow_to_slab`, whose room check is
+    `available = bucket_successor_start(...) - bucket.edge_start()`: the next *bucket inside the same
+    vertex*, not the next *vertex's* base. Growing a prefix up to the next bucket of its own vertex
+    can therefore cross into the vertex that was placed after it, which is what the recorded
+    4096/4097/4098 starts show. The fix belongs where that fold decides it has room.
+  - **Sharpest statement of the defect.** Low's prefix is 11 slots at 4096, so low's own extent must
+    cover at least `[4096, 4107)` for those rows to be legal - yet `high` was placed at 4097 and
+    `guard` at 4098, inside it. Either the extent really is 11 and the *placement of the next
+    vertex* ignored it, or the extent is 1 and the prefix grew past it. Both are one question: does
+    the leaf arena place a new vertex after the end of the previous vertex's extent? That is the
+    invariant to check (`next_vertex_edge_span_allocation` / `LeafArena::reserve`), and it is the
+    same E2/E5 residency rule the fail-closed ladder exists to keep - a *vertex*-level violation
+    here rather than a bucket-level one.
+  - **The clamp cannot land alone (tried 2026-11-03).** Capping the bucket's successor at the next
+    vertex's base is the obvious minimal fix, and it makes
+    `deferred::tests::compaction_cursor_packs_alternating_tombstones_across_steps` overflow the stack:
+    that fixture builds nine vertices and folds eight rows into `src`'s span, so with the cap its
+    fold has about one slot of room, errors, and the drain recurses. In other words a long-green
+    test's layout already assumes a vertex's span may run past the next vertex's base - the overlap
+    is not an edge case, it is what the placement currently relies on, and the suite is green only
+    because nothing reads those rows back afterwards.
+  - That is the argument for doing the slice and the growth bound together rather than the bound
+    first: placement has to hand each vertex a slice wide enough for its span, and only then can
+    growth be clamped to the slice without starving legitimate buckets. The clamp was reverted.
+  - **Decision recorded in [ADR 0098](adr/0098-the-vertex-slice-owns-its-growth-bound.md).** The
+    owner is `LeafSlice`, which ADR 0088 already names for exactly this, so the ADR rejects a new
+    `VertexArena` layer and instead routes the write window, the fold and the bucket successor
+    through the slice. It also records why a bound-only clamp is insufficient (the stack-overflowing
+    fixture) and that spill rows stay in `SpillRunStore`, with only the slab/run decision and the
+    `stored_slots` + `spill_used_len` pairing changing.
+  - **Step 1 landed; step 2 measured.** `LeafSlice::fits(start, need)` now answers the capacity
+    question and `grow_region` uses it, so the predicate has one implementation and one test-facing
+    meaning. Routing the *fold* through it - the actual fix - turns 13 lara tests red, which is the
+    migration the ADR predicts, and not uniform fallout: `bucket::tests::last_bucket_successor_respects_descriptor_order_cover`
+    does `validate().unwrap_err()`, i.e. it asserts that the arena's validator *reports* an
+    overlapping cover, so with the fold refusing to grow across, there is nothing to report and the
+    assertion inverts. Others sit in `compact::physical_layout_tests` (`non_forcing_compaction_*`)
+    and `deferred::tests::retained_compaction_observer_*`. Each needs a decision - assert the refusal,
+    or give the vertex a slice wide enough for the fold it wants - so the routing is its own unit.
+  - **Triage of all 13 (2026-11-03).** Grouped by what the failure says, because the groups need
+    different work:
+    - *The refusal is not a failure - it is a "grow and retry" signal, and the growth is the bug (5).* `selected_property_tree_eight_byte_boundaries`,
+      `selected_property_tree_thirty_three_byte_boundaries`, `selected_property_tree_corrupt_roots_propagate`,
+      `selected_property_retained_independent_planes` and `non_forcing_compaction_rebuilds_a_dense_spill_run`
+      fail with `Store(CollectAllocationOverflow)` or `SpillNeedsPromotion`. The first reading of this
+      - "the refusal should be a non-event" - is **wrong**, and the callers say so: both
+      `promote.rs:98` and the span step at `compact.rs:6035` treat
+      `Store(CollectAllocationOverflow)` as *no room, so force room and retry*, calling
+      `rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)` and folding again. So
+      the error only escapes when that forced rebalance has already grown the span somewhere it may
+      not - which is the same overlap, now made by the growth step instead of the fold. That also
+      explains the fourth group's trip ("[288, 296) exceeds VertexEdgeSpan [288, 293)"): the check is
+      correct and the growth is what violates it. **The bound belongs in the forced slack grow**, not
+      only in the fold's room check.
+    - *Move reporting changes (5).* `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis`
+      and `non_forcing_compaction_repacks_a_tail_tombstoned_run_without_reporting_moves` expect no
+      moves but now get `OverflowRewrite(...)`: the rebuild arm fires precisely because the fold
+      declined. `retained_compaction_observer_keeps_external_identities_through_retry_and_finish`,
+      `retained_compaction_finished_matches_every_reported_move` and
+      `cursor_slab_pages_keep_retained_spill_and_values` differ in a count. These need a decision
+      about whether a declined fold may itself trigger a rebuild.
+    - *Inverted expectation (1).* `last_bucket_successor_respects_descriptor_order_cover` asserts
+      `validate().unwrap_err()` - it wants the validator to report an overlapping cover.
+    - *Invariant live, fixture wrong (1).* `root_geometry_normal_promotion_keeps_cover_and_pin` now
+      trips a check that already existed: "on-slab edge range [288, 296) exceeds VertexEdgeSpan
+      [288, 293)". The fixture was placing six rows into a five-slot span and the check only went
+      unexercised because the fold made the same mistake.
+    - *Fixture simply asserts the old width (1).* `compact_vertex_edge_span_shrinks_vertex_edge_span`
+      fails on `before.stored_slots > 8`.
+  - **Two of the three growth paths are now bounded, and neither stops the corruption.**
+    `try_labeled_vertex_edge_base_in_pinned_leaf` accepted a widening span that stayed inside the
+    *leaf* while running over a leaf-mate's base - and the leaf-mate was invisible to its overlap
+    check because that vertex's rows all live in its run, so it occupies no slab slots. It now also
+    requires `LeafSlice::fits`, which costs no test (706/0). Routing the fold's room check through
+    the same predicate also leaves the reproduction unchanged: the overlap is still
+    `[4096, 4108)` against `4097`. So neither widening nor the fold is the path that grows this
+    prefix - the **slab insert itself** accepts rows that the window should refuse, one slot at a
+    time, and the next probe belongs in `have_space_on_slab` /
+    `slab_window_exclusive_end` for a synthetic `LabelEdgeSpanAccess` whose `v_ord` is 0 while its
+    real owner is another vertex.
+  - **The insert path measured (2026-11-03).** Logging the window decision at every insert shows
+    the writes are *correctly refused* - `has_space=false` for all of them - and the anomaly is
+    elsewhere: `loc` (`base + stored_degree`) walks forward one slot per insert (`4096, 4097, ...`)
+    and the reported window `end` follows it exactly, so the comparison degenerates to
+    `loc < loc`. `stored_degree` for a non-default labeled vertex is its logical `degree`, which the
+    spill path grows by design, so for a run-backed bucket `loc` is not a slab position at all - it
+    is the logical row count added to the base. Nothing writes there (the check refuses), but the
+    bookkeeping that later reads treat as "11 slab slots" comes from this counter, not from the
+    spill path inventing writes.
+    So the next question is narrower still: which reader turns that counter into the bucket's
+    `stored_slots`, and why does it not stay at the slab prefix the run-backed shape implies.
+  - **The setter was found, and the slice check is circular (2026-11-03).** Logging `with_stored_slots`
+    and `with_edge_range` shows a bucket with `edge_start = 4096` and a live run (`run = 33`) walking
+    `stored_slots` 1 -> 2 -> ... -> 12 as its degree grows in step, i.e. the **fold** is what grows the
+    prefix, and it keeps doing so even with the fold's room check routed through
+    `LeafSlice::fits`. The reason is that `slices()` derives each slice from the vertex's
+    **first-region starts**: once the neighbouring vertex has been placed at the overlapping address,
+    the derived slice contains it, so the bound can never refuse the growth it was meant to stop.
+    That is a circularity, not a tuning problem, and it is now recorded in ADR 0098 (alternative B')
+    along with the conclusion: the bound has to come from something placement cannot move - the next
+    vertex's `base_slot_start`, or an allocated width.
+  - **The exact mechanism (2026-11-03).** `LeafArena::validate` already reports the defect once it
+    runs: `region of VertexId(0) 4096..4107 outside its slice 4096..4098`. The numbers say why -
+    the slice ends at **4098**, which is the *third* vertex's start, so the second vertex (all of
+    whose rows live in its run) contributed no boundary at all. `slices()` is built from the
+    vertices that have a first region, so a vertex with none is invisible and its space is handed to
+    its predecessor. This is the sharper form of the circularity in ADR 0098, and it names the fix:
+    the partition must include every vertex, taking `base_slot_start` as the boundary, not "the next
+    vertex that happens to have placed something".
+  - `fixture_support::leaf_layout_errors` now exposes `validate()` to a dependent crate's tests, and
+    the reproduction asserts the contract is satisfied, so the failure message names the invariant
+    rather than a neighbour mismatch.
+  - **Both halves of the fix were tried together (2026-11-03).** Including every vertex in the
+    partition works as predicted - the reproduction's slice end moves from 4098 to 4097, the second
+    vertex's base - but it turns **11 lara tests red**, and the fold routing then trips the
+    partition's own `debug_assert`: *"two vertices of one leaf start at the same slot"* (3
+    participants, 2 distinct bases). That is the defect in its purest form: **placement assigns two
+    vertices the same base**, so no boundary can be drawn between them. It confirms the order this
+    ledger has been converging on - the placement invariant (base at or after the previous base plus
+    its allocation) has to be established *before* the partition can be authoritative, and the 11-13
+    fixtures have to be migrated with it. Both changes were reverted; the validation and the
+    reproduction's contract assertion stayed, because they are green and they name the invariant.
+  - **The two address spaces (measured 2026-11-03).** The duplicate-base assert was my own doing: I
+    had compared `base_slot_start` values, and those live in a **different arena** from the edge slab.
+    Measured for the reproduction: `(vid, base_slot_start, vertex stored_slots, first bucket
+    edge_start)` = `(0, 1027, 1, 4096)`, `(1, 1028, 0, 4097)`, `(2, 1029, 1, 4098)`. A vertex's edge
+    position is its first bucket's `edge_start`; `base_slot_start` is a vertex-slot address and must
+    never be compared with it. The check now reads the edge slab - `vertex_edge_start` /
+    `vertex_edge_allocation` - and the reproduction reports the invariant exactly:
+    `vertex VertexId(2) edge start 4098 starts inside VertexId(0) 4096+11`.
+  - **What enforcement therefore has to do.** Vertex 1 has an allocation of **0** (its rows all live
+    in its run), so it contributes no boundary, and vertex 0's 11-slot claim runs over vertex 2's
+    start. Placement must assign `edge_start(next) >= edge_start(previous) + allocation(previous)`
+    even when `allocation(previous)` is zero - i.e. an empty vertex's boundary is still a boundary,
+    and its own start must sit at or after the previous vertex's end. Today the placement only
+    avoids the spans that leaf-mates have actually *occupied* (`labeled_leaf_occupied_spans`), which
+    is why an empty leaf-mate is invisible. That is the concrete change: make the occupied-span
+    input include every vertex as `[edge_start, edge_start + allocation)`, including the zero-width
+    ones, and require the new base to clear all of them.
+  - **Tried, and it exposes the next inconsistency (2026-11-03).** Reporting zero-width leaf-mates
+    from `labeled_leaf_occupied_spans` (using the buckets' summed widths instead of the vertex's
+    `stored_slots`) turns 11 lara tests red and trips a check that already existed:
+    *"fixed-quota fast path returned base 4098 (end 4099) overlapping a leaf-mate; layout is not
+    fixed-quota intact"*. That check is right, and it names the real gap: the fast path is skipped
+    only when `labeled_leaf_has_oversized_vertex` sees a mate above the quota, and that function
+    reads **`vertex.stored_slots`**, which for the reproduction is **1** while the vertex's own
+    bucket claims **11**. The vertex record and its buckets disagree about the span width, so the
+    cheap soundness test says "fixed-quota intact" for a leaf that is nothing of the sort.
+  - So the ordering gains one more prerequisite, ahead of the placement change: **the vertex's edge
+    allocation must equal what its buckets actually claim** (measured mismatch 1 vs 11). Until those
+    two agree, every cheap guard - the fast path, the oversized test, the occupied-span list - is
+    reasoning about a number that is not the layout.
+  - **Why the record must not be kept in sync (counted 2026-11-03).** There is no single point that
+    publishes a bucket's width: `with_stored_slots` / `with_edge_range` / `try_with_edge_range` are
+    called from **78 sites** (32 of them in `compact.rs`, 7 in `insert.rs`, 5 in `bucket_store.rs`,
+    plus `bypass.rs`, `headroom_screen.rs`, `access.rs`). Keeping `vertex.stored_slots` equal to the
+    sum would therefore mean adding an update at 78 places, which is the duplicated-update-logic
+    shape the round-one review rejects - and the measured 1-vs-11 drift is what that shape produces.
+    The buckets stay the source of truth; the vertex field is the **bypass** span width (it already
+    is, in `stored_degree` and `slab_append_exclusive_end`, both gated on
+    `is_default_edge_labeled()`), and every labeled consumer goes through one derived accessor.
+    Readers counted on labeled paths: `compact.rs` (9), `deferred.rs` (2), `promote.rs` (1).
+  - **Step 4 tried again after the derived accessor landed (2026-11-03).** With `vertex_edge_start` /
+    `vertex_edge_allocation` in place, reporting zero-width leaf-mates still turns **11 lara tests**
+    red, and the check it trips was already there: *"leaf-mate edge spans overlap in leaf 0: vid
+    VertexId(0) reserves up to 1048832 but vid VertexId(1) starts at 1048737"*. That is a ~95-slot
+    overlap in a relocation fixture, so those fixtures are not merely fragile - their layouts are
+    overlapping by construction, and this ledger's earlier note ("a long-green test relies on the
+    overlap") is confirmed on a second, independent check.
+  - Where this leaves the work: steps 1-3 are landed and green (derived accessor, oversized test,
+    a fast-path check that now runs in every build). Step 4 is correct but needs the **11-fixture
+    migration** first: each fixture has to give every leaf vertex an allocation wide enough for its
+    span before placement can be required to clear all of them. That migration is the unit; the
+    change itself was reverted again to keep the suite green.
+  - **A hot-path contract forbids the cheap fix (2026-11-03).** Including zero-width mates makes
+    placement read each mate's buckets, and `g6_tiny_insert_reads_no_edge_bytes` fails - that test
+    exists to keep the insert path from touching edge bytes. So the allocation cannot be derived on
+    the hot path; it has to be **recorded at the leaf level** (each vertex's edge start and width,
+    written by the rewrite/relocate that already tiles the leaf wholesale) so placement reads one
+    small structure instead of N bucket lists. Unifying the debug overlap assertion onto the same
+    occupancy model was the other half of the attempt: on its own it also changes which fixtures
+    trip, including the guard's own injection test, so it has to land with the recorded allocation.
+  - **Revised order.** (a) record per-vertex edge start/width in the leaf's span metadata, written
+    only by rewrite/relocate; (b) point placement, the oversized test, `validate`, and the debug
+    guard at it; (c) then the 11-fixture migration. Deriving from buckets stays correct but is only
+    affordable off the hot path - `validate` uses it today.
+  - **The recorded flag landed, as a one-byte field (2026-11-03).** `SegmentSpanMeta` is now 9 bytes
+    (`physical_start` plus `fixed_quota_intact`, `ENTRY_SIZE` 8 -> 9) with the version left at 1: the
+    header's stride check already rejects a store built with the old row size. The flag is one-way
+    and re-pinning a leaf carries it over rather than restoring it. The fast path requires it, and
+    the fold clears it - that is the path the measurement caught growing `stored_slots` 1 -> 11
+    without a rewrite. lara 707/0.
+  - **Routing the fold's room check as well still fails (re-measured).** With the flag in place,
+    pointing the fold at `LeafSlice::fits` still turns 13 lara tests red and the reproduction's
+    prefix grows one slot further (12 instead of 11), so the growth that remains is not the fold: it
+    is the rewrite path (`rewrite_vertex_edge_span_with_policy` and the relocate it delegates to),
+    which publishes a wider span through `with_edge_range`. That is where the next bound goes, and
+    it is why the routing was reverted a third time while the flag stayed.
+  - **The shape the fix has to take.** The arena already has an allocation per vertex - the span
+    width `rewrite_vertex_edge_span_read_and_plan` calls `old_alloc`/`new_alloc`, and
+    `next_vertex_edge_span_allocation` decides how it grows. What is missing is that the *next*
+    vertex's `base_slot_start` is not required to sit at `base + alloc` of the previous one: the
+    reproduction has `low` allocated 11 slots at 4096 with `high` at 4097. So the invariant to
+    enforce is not "the span fits the derived slice" but "**a vertex's base starts at or after the
+    previous vertex's base plus its allocation**" - and enforcing it is what makes the derived slice
+    (and therefore `fits`) meaningful again.
+  - **Where the remaining growth can still come from.** `LabelBucket::try_grow_packed_slab_by_one`
+    does have the ADR 0097 §7 run branch, so the bucket record is not it. The span width is set by
+    `with_edge_range`/`with_stored_slots` from the rewrite path, and two of that path's exits are
+    still unbounded: `finish_span_resolution`'s `tail_append_labeled_edge_base(new_alloc)` under
+    `Required` mid-relocation, and `resolve_labeled_edge_base_for_growth`'s relocate-and-retry loop,
+    which repeats `try_labeled_vertex_edge_base_in_pinned_leaf` (now bounded) but falls through to
+    that tail append when the loop exhausts. Those are the two places to bound next.
+  - Ordering this implies: (a) put the slice bound on the *forced slack grow* (`rebalance_vertex_edge_span`
+    with `force = true`), which is what actually creates the overlap; (b) decide whether a declined
+    fold may trigger a rebuild, since the two move-report tests turn on that; then (c) migrate the
+    fixtures. The routing was reverted again so the suite stays green while those land.
+- **Expected or needed behavior:** for the swap family, either the fixtures must reach the gate's
+  state or the tests must state the narrower contract (value-bearing buckets left-pack until the
+  values are dense). For the other three, the behavior must be explained before any test is edited.
+- **Owner:** `crates/graph/src/facade/store` (test contracts); `compact.rs` for the compaction
+  question.
+- **Evidence:** the test names and the run command above; ADR 0052's 2026-11-02 amendment for the
+  swap gate; `plans/0408` carries the session log (ignored by git).
+
+### GAP-LARA-MODE-FOOTPRINT — Normal/bypass handoff corrupts assigned pin width
+
+- **Status:** Resolved in the validated dirty worktree by [0396](../plans/0396-mode-footprint-handoff.md),
+  with P5 independent implementation/cost approval and final closure. Fixing change:
+  `fix(lara): preserve assigned pin width across mode changes`, parent f25567bad;
+  `mode-footprint-user-commit-c1/commit-receipt.json` binds the exact commit and index-only validation.
+  The owning regressions are `mode_footprint_retained_roundtrip_preserves_assigned_pin` and
+  `mode_footprint_tree_append_preserves_pin_and_retirement`.0394's fresh baseline is now frozen.
+  Draft approval, original REDs and P3 BEFORE bindings remain immutable.
+- **Observed:** The existing retained-prefix/run fixture reaches physical prefix5 and assigned
+  pin16 at256. Normal→bypass subtracts5; after spill reaches64, bypass→normal charges raw69 as
+  normal cover and adds69 to total11. Pin/capacity are unchanged and the inferred end336 exceeds272.
+  The strengthened temporary exact1 assertion fails, exit101. Its diagnostic source is archived
+  and restored; the original success contract is unchanged.
+- **Owner:** `graph/insert.rs::enable_default_edge_bypass`,
+  `graph/bypass.rs::promote_bypass_to_bucket_mode` and the tree-append sibling
+  `graph/promote.rs::promote_bypass_with_edge`; `EdgeStore` and its counts/row-layout owners enforce
+  prepared physical contribution/range decisions. Segment rewrite owns descriptors/final row links.
+  Existing prefix/root projection owners remain authoritative.
+- **Evidence:** [Source diagnosis, current representations and proposed boundary](evidence/adr0097-pin-extent-source-diagnosis.md).
+  `W/geometry-copy-composition/pin-extent-source-r1/{baseline,stage-cause}.json` plus
+  `stage-red-source.rs`/`stage-red.patch` and `pin-extent-source-r1-stage-red.log` bind four reached
+  stages and the source. One existing graph/33 memories; no new identity/PocketIC/install/reopen.
+- **Historical impact:** The defective writers manufactured pin slack, truncated its inferred extent
+  and published a cover containing spill width. Strict admission rejected an existing caller. The old
+  mixed-mode audit skipped total and missed intermediate11. No data-loss claim follows from this probe.
+- **Implemented ownership:** `EdgeStore::prepare_vertex_span_counts` selects assigned retention or
+  exact unassigned contribution for compact/ordinary/tree paths. One checked count-source read admits
+  backing before capture/preparation/revalidation. The segment publisher owns the final bypass row
+  without clear→set; the tree transcriber owns prepared actual exclusion and the exact post-allocation
+  header witness. One checked assigned-range interpretation replaces the inspected reader formulas.
+  Current formats, clean scans and root placement/retirement policy remain unchanged; no clamp,
+  count reset, additional length field or compatibility path is introduced. Fresh state is required
+  for old corrupt counts/covers. P5 deletes both fallible tree publication callbacks and preserves the
+  existing two writer forms in private transient prepared/ready sum types. Storage reserve/ready
+  precedes one final transcriber admission. The same6-case fixture injects during descriptor reserve,
+  preserves active source LTB0, checks exact free targets1/2/links/kinds and exact logical-row/allocator
+  integrity at the existing rejection reopen. Bypass audit bounds now use initialized prefix, not spill.
+- **P4 validation:** Native723 passes with all715 original identities and8 additions. Frozen fixture
+  cost is16 fresh graphs,1 outer graph,290 native memories and8 reopens,0 PocketIC/installs. Retained,
+  mixed, unassigned, empty/zero-live/run ownership, index/arithmetic/backing, stale-source, eligibility
+  and allocator-grown tree success/cleanup variants pass. Three exact mutants (assigned charging,
+  raw spill-inclusive cover, late count admission) fail at their advertised assertions; byte-identical
+  restoration and the same exact tests pass. Strict lib/tests Clippy, format and locked Wasm build pass.
+  The zero-live prefix expectation is intentionally retained rather than discarded; the existing
+  relocation fixture seeds a real folded prefix while keeping exact67 rows and both-order assertions.
+  `W/geometry-copy-composition/mode-footprint-p4/{fixtures-r4,native-validated}.json` and
+  `mutation-*-{applied,restored}.json` bind these stages. Failed RED/build/first-native commands stay failed.
+- **P5 continuation:** User `いいよ。進めて` authorizes a separately bound runner admitting only R/crate
+  and four fresh external AFTER directories. It derives the immutable real-lock contract; protected
+  old runners/configs/CSVs and repository saved results remain unchanged. Native723/Clippy/format,
+  the late-tree-admission mutant/restored exact GREEN and fresh locked Wasm pass. Fresh AFTER versus
+  P3 BEFORE: slab1530725 (-306), tree1577829 (-306), tiny191032946 (+207223/+0.1086%), bypass18854 (0),
+  all page growth0. Independent re-review accepts the tiny pressure-retry increment as bounded
+  safety-admission cost; no weakened sanity or0395 cost approval substitution. `mode-footprint-p5/{baseline,
+  runner-permission,fixture-red-r2,native-validated,mutation-restored,after-results}.json` binds this.
+- **Closure:** P4's packet-only REQUEST CHANGES (148.22s, one turn/ZERO tools) stays recorded. P5
+  re-review returns APPROVE IMPLEMENTATION AND COST BOUNDARY (45.80s, one turn/ZERO tools), no
+  remaining concrete P1/P2. `mode-footprint-p5/{review-completion,pre-closure,closure}.json` binds the
+  verdict, unchanged reviewed code, all required gates and exact source/protected/index preservation.
+  These are pre-commit receipts; subsequent user authorization permits the scoped commit, not push.
+  0394's separately authorized baseline-only restart now freezes native723 and fresh BEFORE in
+  `restart-p2-post0396-baseline/before-results.json`. The current full-worktree Wasm has19997
+  export-name bytes; a cached14657-byte C1 snapshot binary is rejected before measurement and the
+  owning compilation unit is rebuilt. Production source, all410 protected hashes and empty index
+  are preserved. No geometry/runtime approval or reinterpretation of historical715/728 follows.
+- **Preflight:** The historical P2 locked-build stop is resolved by P3's separate
+  [workspace lock prerequisite](#gap-workspace-lock-drift--locked-build-prerequisite-resolved).
+  P3's four fresh BEFORE controls are retained as BEFORE; P4 native/Wasm are not benchmark passes.
+
+### GAP-WORKSPACE-LOCK-DRIFT — Locked build prerequisite (resolved)
+
+- **Status:** Resolved by user-authorized P3 lock-only alignment, before mode production changes.
+  No manifest/source/version upgrade. P3's no-stage/commit/push receipt remains historical; the
+  subsequent user-authorized mode-fix commit includes the reviewed lock. Lock alignment alone does
+  not resolve the mode defect.
+- **Historical P2 observation:** `env CARGO_TARGET_DIR=target/canbench cargo build -p ic-stable-lara
+  --locked --release --target wasm32-unknown-unknown --features canbench` failed before compilation
+  because Cargo needed to update `Cargo.lock` (exit101/1.08s). Locked target metadata also failed
+  (exit101/1.29s). These failures remain immutable.
+- **Owner:** Workspace manifest/lock consistency; `Cargo.lock`, workspace/package manifests and
+  dependency resolution, not `EdgeStore` or the mode-conversion publishers.
+- **Evidence:** `W/geometry-copy-composition/mode-footprint-p2/baseline.json` freezes the continuation.
+  `lock-diagnostic.json`/`lock-delta-summary.json` record successful offline resolution in a separate
+  diagnostic mirror:1227→1083 lock packages, morph-dict gains unicode-normalization, obsolete local
+  graph-explorer-new is removed, GPUI disambiguation changes; no changed canbench/ic/LARA package rows
+  are observed. The P2 real lock had SHA256 `15d08391d78c37bdefaecf488881f7d37f5e70e9596e4978ebeb3cc18ceea9a2`.
+  `minimal-lock-diagnostic.json` shows that adding only morph-dict's dependency to another diagnostic
+  copy still fails locked metadata (exit101/1.35s); a one-line canonical repair is not proven.
+- **P3 resolution:** User `いいよ` authorizes the lock exception. Independent r3 packet-only review
+  approves only its boundary (exit0/13.50s/ZERO tools). Cargo's real offline resolution exactly matches
+  reviewed SHA256 `f5d323d0c66d9afe939a6c7e13db316e201c39fce4c4bde44e515a8c855496bf`:
+  144 removals/zero additions, retained versions/sources/checksums equal, and optional-inclusive168-package
+  LARA closure equal. Six obsolete optional-edge reductions and morph-dict's current manifest edge are
+  explicitly recorded. Original lock/evidence/measurements remain historical; no handwritten schema,
+  cargo update, manifest edit or unlocked build is used.
+- **Validation:** Locked real target metadata passes (5.07s), the original locked Wasm build passes
+  (128.76s), and all four fresh BEFORE controls pass with19997/20000 export-name bytes. Exact current
+  source/lock/Wasm/CSV/native evidence is `W/geometry-copy-composition/mode-footprint-p3-lock/
+  {application,locked-target-metadata-receipt,semantic-lock-delta,lara-lock-closure,before-wasm,before-results}.json`.
+  Old715 identities pass with only the reproduced deliberate RED excluded; no all-tests GREEN.
+  Repository saved results/index and all Rust/manifests are unchanged. The obsolete runner's125 lock
+  guard and archive receipt-key failure stay failed; the current runner uses only the reviewed real lock.
+- **Subsequent resolution:**0396 closes the mode/count/range/tree boundary above with723 native,
+  restored mutants, fresh AFTER and independent implementation/cost approval. Its commit retains the
+  reviewed lock;0394 still requires a fresh baseline before its separate geometry implementation.
+
+### GAP-LARA-TEST-CLIPPY — Strict test-target lint diagnostics
+
+- **Status:** Resolved by0393's scoped validation and review; the fixing source is included in the
+  validated0386/0393/0395 publication checkpoint. Discovered during the rejected Plan0359
+  allocator-operation trial.
+- **Observed behavior:** The historical `cargo clippy -p ic-stable-paged-ordered-map -p ic-stable-lara
+  --lib --tests --target aarch64-apple-darwin -- -D warnings` reported43 LARA test diagnostics in14
+  unchanged files. The later frozen0386 checkpoint had41 across13 exact paths. These are separate
+  historical inventories, not interchangeable counts. Categories included unused imports/results,
+  redundant casts/borrows, constant-size chunks, single-pattern matches, boolean assertions, doc
+  indentation, range indexing and dropping a Copy value.
+- **Expected behavior:** The affected Rust test targets must pass strict scoped lint without
+  suppressing diagnostics or excluding tests to claim full validation.
+- **Owner:** `ic-stable-lara` test modules under `labeled/{graph,bidirectional}` and `lara/vertex.rs`.
+- **Evidence:** The [rekey trial](evidence/adr0097-performance-architecture-research.md#13-order-preserving-rekey-rejected)
+  preserves the original diagnostics/toolchain/source pins. [0393 validation closure](evidence/adr0097-bucket-segment-publication-preflight.md#validation-closure-0393)
+  records actual exit0 for `cargo clippy -p ic-stable-lara --locked --lib --tests -- -D warnings`,
+  native708/0 with unchanged allocator34/bucket17 identities, workspace format and independent
+  cleanup APPROVE. `validation-closure/baseline.json` binds exact dirty-before paths/bytes; every
+  formerly ignored traversal result now asserts exact Continue, and existing test contracts remain.
+- **Impact:** Current LARA lib/test lint is clean; production lint or runtime success was not used
+  as a substitute. Historical failed commands remain failed and the rejected rekey trial remains
+  rejected. No domain, API/layout, fixture or benchmark behavior changed in the cleanup.
+- **Next decision:** None for this lint debt. Broader W2,0383 acceptance and separate implementation
+  prerequisites remain open; resolving this entry does not approve them.
+
+### GAP-2026-09-20-007 — The leaf cascade's span rewrite failed for a bucket that owns a spill run
+
+- **Status:** Fixed (F7, `spill-swap`). Found 2026-09-20 by the canbench gate; the four
+  gates (`cargo check --lib`, `cargo test --lib`, fmt, clippy) could not see it, and the
+  canbench feature's benches were the only witness.
+- **Owner:** the labeled leaf cascade (`rebalance_cascade_after_labeled_mutation` ->
+  `rewrite_vertex_edge_span` / `materialize_labeled_vertex_edge_plan` /
+  `commit_vertex_edge_span_layout`) and the span geometry it sizes.
+- **Reproduction:** `cd crates/ic-stable-lara && canbench bench_l_nt_bp`.
+  `bench_l_nt_bp_ins_1024` trapped with
+  `'Panicked at 'non-tail bypass insert: Store(CollectAllocationOverflow)'`
+  (`bench.rs:2905`). The identical command on `main` (`9a64049f4`) ran all three
+  `bench_l_nt_bp_ins_*` benches to completion (391.09 K instructions, the +19.32%
+  regression the ledger already recorded), so the swap introduced the defect.
+- **Cause (measured):** the rewrite's plan counted the bucket's run in `total_live`
+  (`bucket_resident_rows` = prefix + run), so `min_required` (65) exceeded the span the
+  vertex already had (64), the plan requested 144 slots
+  (`next_vertex_edge_span_allocation`), and `finish_span_resolution` reported
+  `resolve_labeled_edge_base: no placement for a required span of 144 slots`; with the run
+  excluded from the plan but the position calculator's `degree` floor left in place it
+  became `span_slots=64 < effective_live=65`. `main` made room for the fold by growing the
+  vertex span first - the step ADR 0097 removes.
+- **Fix (decision (b): a relocation keeps the run, positions do not change, only an
+  explicit compaction folds):** the rewrite plan counts the slab prefix; the plan's
+  spanless-vertex shortcut honours `preferred_extra` (a caller asking for real room must
+  get a span); the commit's resident scratch keeps the run for a keeping relocation
+  (otherwise the published descriptor lost it and the rows became unreachable -
+  `slab scan ended before yielding all logical edges`); the position calculator's slab
+  `degree` floor goes (the materialized width is the SSOT: a relocation's prefix, a
+  compaction's packed live rows); and the wide-edge carve-out, which cannot promote, now
+  goes through the explicit compaction instead of a span-growing rewrite, extracted as
+  `compact_run_into_prefix_with_growth_retry` and, at that revision, shared with promotion's
+  Phase 0a. `15ab44efb` subsequently removes promotion's fold; the wide-edge carve-out remains.
+- **Witness:** `labeled::graph::spill_swap_test::a_dense_leaf_rewrite_keeps_the_run_and_its_ordinals`
+  (the bench's fixture). It fails before the fix (`insert 1000000:
+  Store(CollectAllocationOverflow)`) and passes after, with the run and its ordinals intact
+  and the descriptor still pointing at it.
+- **Cost, attributed and closed (F8).**
+  `cd crates/ic-stable-lara && canbench bench_l_nt_bp` (same command, same fixture) measures
+
+  | bench | `main` 9a64049f4 | `spill-swap` 52b2c7796 | ratio |
+  | --- | --- | --- | --- |
+  | `bench_l_nt_bp_ins_256` | 390,604 | 1,164,747 | 2.98x |
+  | `bench_l_nt_bp_ins_1024` | 391,094 | 1,163,272 | 2.97x |
+  | `bench_l_nt_bp_ins_4096` | 391,094 | 1,163,272 | 2.97x |
+
+  Flat across all three fixture densities on *both* sides, so this was a regression of the
+  swap, not a cost of the fixture shape. The scope call counts named the mechanism: `main`
+  runs the leaf cascade **once** for the 16 inserts (`labeled_rebalance_leaf_cascade`
+  1 call / 194,089 instructions, of which `labeled_rebalance_edge_log_vertex` - the fold -
+  is 185,893), because that single run re-lays the leaf and drops its density below the
+  trigger (`LEAF_VERTEX_EDGE_SEGMENT_DENSITY = 1.0`). The swap head runs it **16 times**
+  (927,185 instructions, of which `labeled_rewrite_vertex_edge_span` is 16 calls /
+  810,149): a bucket whose rows live in its run keeps its span in place, so the rewrite
+  changes nothing about the leaf's geometry, the density stays at 1.0, and every insert
+  re-enters the cascade and repeats the same rewrite. The slack placement search is only
+  `labeled_rewrite_read_and_plan` (16 calls / 60,155, ~5% of the total); the cost was the
+  repetition.
+
+  **Fix (F8):** the rule was already in the tree - db04af585: speculative slack must not
+  force allocation when the content already fits, and may use extra space only when it is
+  currently placeable. The cascade's rewrite of the source vertex is a *forced-slack*
+  rewrite, so it is skipped when the vertex is not span-resident (any bucket owning a run):
+  there is no span content to grow, the run holds those rows, and the rewrite could only
+  re-publish the same layout. The rest of the cascade still runs. Measured with the same
+  command and fixture: 364,070 / 363,906 / 363,906 for `ins_256` / `ins_1024` / `ins_4096`
+  against `main`'s 390,604 / 391,094 / 391,094 - the cascade's 16 calls now cost 129,776 in
+  total and no `labeled_rewrite_vertex_edge_span` scope appears. Witness:
+  `a_run_backed_vertex_is_not_force_rewritten_by_the_cascade` (15 forced rewrites before,
+  0 after).
+
 ### GAP-2026-09-20-004 — PMA counts tree maintained eagerly with no runtime reader
 
 - **Status:** Fixed 2026-09-20 (commit `f9b276b6e`) — recorded the same day while
@@ -3618,362 +4549,6 @@ session did.
   slab-unit footprint; both halves are fixed (see the follow-up bullets above).
   Remaining decision tracked there: whether to adopt `T_PROMOTE = 1024` now that
   the post-fix evidence favors it at workload scale.
-
-### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
-
-- **Status:** Open — deferred capability, recorded 2026-09-12.
-- **Observed behavior:** Fixed-vertex SET/REMOVE admits a labeled NodeScan and property residuals.
-  EXISTS policy lowering needs SemiApply/reverse-seed joins, outside that Graph input contract.
-  Router deliberately rejects applicable target-label chain policies before scalar reservation
-  or Graph dispatch with `NotImplemented("bulk vertex updates with EXISTS policies are not supported")`.
-  Property-only conditional grants, including indexed equality, are supported. The policy is never
-  ignored, and the rejected row leaves no scalar dispatch for Abort to settle.
-- **Owner:** Router `policy_pushdown.rs` / `gql::lower_for_execution`; Graph
-  `plan_wire_guard::validate_mutation_target_plan` owns exact-input admission.
-- **Evidence:** `pure_exists_row_lowers_to_one_bounded_semi_apply_probe` checks ordinary chain
-  lowering and the bound-input rejection; `bound_vertex_keeps_indexed_policy_as_a_full_residual`
-  checks the supported property form. These are native tests, not an EXISTS bulk E2E claim.
-- **Impact / needed behavior:** A non-tenant whose target-label visibility needs a chain cannot
-  perform bulk vertex updates under that policy. Ordinary GQL policy execution is unchanged.
-- **Next decision:** Specify bounded chain evaluation over the one saved vertex and its replicated
-  execution path before extending the exact-input shape. Do not substitute an index-selected target
-  or drop residual authorization checks.
-- **Contract:** [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md), update-lane
-  policy and exact-target constraints; [plan format](gql/plan-format.md), exact vertex mutation input.
-
-### GAP-2026-09-11-004 — Bulk-load edge property update needs replicated resolution and retry-safe target validity
-
-- **Status:** Open — prerequisite slice. Recorded 2026-09-11 after the edge-property SET review
-  round withdrew the implemented surface (wire variant, CLI mode, Router path, docs section) from
-  its slice rather than shipping a weakening contract. Edge-property SET through bulk load is
-  **not implemented**. The vertex update lane's journal-first resume/abort work in the same round
-  did not re-add any edge surface, identity, or lock substrate.
-- **Owner:** Router bulk-load workflow (`crates/router/src/bulk_load.rs`) owns admission and
-  replay. Graph owns canonical adjacency, edge-target validity, and any Router→Graph resolution
-  API (`crates/graph/src/lib.rs`, GraphStore, and the underlying LARA mutation boundaries).
-- **Observed behavior (confirmed):** Router ingress handlers execute in replicated mode. The
-  withdrawn Router→Graph pre-read of *edge state* used the composite query
-  `execute_plan_query` (`#[query(composite = true, guard = "guard_router_canister")]`), which a
-  replicated-mode handler cannot call. A PocketIC run of the withdrawn edge-update lifecycle
-  failed with `InvalidArgument("graph execute_plan_query call failed: call rejected: 5 - IC0527:
-  Composite query cannot be called in replicated mode")`, so an `Append` handler could not
-  evaluate the required exactly-one count before admission.
-- **Observed behavior (what already exists, confirmed):** Edge property indexes and Router-side
-  edge index lookup are implemented: `indexed_catalog::active_edge_physical_index`,
-  `router/src/index_lookup.rs` `collect_edge_equal_hits_paged` (`lookup_edge_equal_page`) and
-  `collect_edge_range_hits_paged` (`lookup_edge_range_page`), the Router wire helpers
-  `lookup_edge_equal_wires`/`lookup_edge_range_wires` (`router/src/gql.rs`), and the planner's
-  `PlanOp::EdgeIndexScan` (`gql-planner/src/plan.rs`). The earlier statement that no edge property
-  index exists was wrong.
-- **Replicated-call finding (2026-09-12, source/specification evidence):** Edge index paging
-  endpoints are ordinary, non-composite queries. The [IC interface specification](https://docs.internetcomputer.org/references/ic-interface-spec/)
-  permits update execution to call update and ordinary query methods. The earlier call-mode
-  uncertainty is resolved at the protocol level, not by a new bulk-edge runtime test. These APIs
-  select property values and return `EdgePostingHit { shard_id, owner_vertex_id, label_id,
-  slot_index }`, not endpoint-pair adjacency or a destination/generation witness. Posting count
-  alone therefore cannot establish canonical multiplicity for `(from, label, to)`. Graph's
-  `execute_plan_update` is not a read-only substitute: its wire guard rejects read-only plans.
-- **Target-validity finding (2026-09-12, source/test inspection):** `GlobalEdgeId` is a 16-byte
-  query-time physical handle `(shard, owner, label, slot)`, not a lifetime occurrence ID. LARA's
-  `unordered_scalar_insert_reuses_interior_slab_tombstone` deletes target 20 at slot 1 and inserts
-  target 21 into the same slot. Graph maintenance also moves slots and relocates sidecars/postings.
-  Saving the handle does not prevent an unstarted row from updating a replacement edge; checking
-  the destination still cannot distinguish delete/reinsert with identical endpoints. The latter
-  is an identity-model counterexample, not a newly executed test. Repairing the read API alone
-  cannot establish the retry contract.
-- **Selected direction (2026-09-12; planned, not implemented):** Preserve multi-edges; select and
-  update all eligible matches at each input row's first Graph execution, rather than pinning a
-  singleton edge before admission. Zero matches succeeds with target count zero. Exceeding bounded
-  work/mutation/byte limits rejects before writes. Selection, canonical SET and durable outcome
-  must complete locally without an intervening external call; retries replay recorded outcomes.
-  This replaces the withdrawn zero/many-rejection requirement for edge updates, not the existing
-  vertex bulk contract. See [selected direction and storage accounting](investigations/2026-09-12-bounded-edge-membership-witnesses.md#selected-direction-and-storage-accounting).
-- **Evidence:** `crates/graph/src/lib.rs:80` (composite-query graph read),
-  `crates/router/src/graph_client.rs:100-119` (mode→method mapping),
-  `crates/router/src/gql_search.rs:1637` (query-mode dispatch),
-  `crates/router/src/index_lookup.rs:185,216` (edge equality/range lookup),
-  `crates/router/src/facade/stable/indexed_catalog.rs:267` (`active_edge_physical_index`),
-  `crates/gql-planner/src/plan.rs:414` (`PlanOp::EdgeIndexScan`),
-  `crates/graph/src/facade/store/handle.rs:10` (internal edge handle), and the failing PocketIC
-  run recorded in this review round.
-- **Research:** [Bulk edge SET prerequisites](investigations/2026-09-12-bulk-edge-set-prerequisites.md)
-  records the API/identity evidence, existing journal/receipt extension points, alternatives, and
-  validation gates against `95d791087`. No implementation or new runtime validation was performed.
-- **Candidate design (2026-09-12):** [Sparse edge-reference tokens](investigations/2026-09-12-sparse-edge-reference-tokens.md)
-  explores a bounded Graph registration map and non-reusing allocator, without widening every
-  vertex or edge. Internal LARA materialize/sibling drains use no-op observers, so existing Graph
-  callbacks alone do not establish complete invalidation coverage. Bounded resolution and the
-  availability cost of capacity-driven invalidation also remain gates. No design approval,
-  MemoryId allocation, implementation, or runtime validation is claimed.
-- **Alternative research (2026-09-12):** [Primary-source comparison](investigations/2026-09-12-edge-reference-alternatives.md)
-  identifies occurrence IDs with bounded source/label lookup as an alternative that requires no
-  global ID-to-location directory. Kuzu's inspected update code uses this lookup organization;
-  applying it to Gleaph would require wider edge records and identity-preserving rewrites.
-  The all-edge ID proposal was declined on storage/performance grounds; no measured throughput
-  regression is claimed.
-- **Fixed-budget research (2026-09-12):** [Logical-membership witnesses](investigations/2026-09-12-bounded-edge-membership-witnesses.md)
-  combines canonical singleton selection with a fixed-size hashed revision array for edge
-  insertion/deletion. Adjacency rows stay unchanged; pure movement need not notify the witness,
-  and an unusable saved slot rejects rather than starting another scan. Complete membership-write
-  coverage, storage-mode/work bounds, metadata-write cost, and bulk-level hash false conflicts
-  remain unclosed gates. No implementation or runtime validation was performed.
-- **Bounded-read prerequisite (2026-09-12 23:34:39 UTC +0000):** Implemented tree visitor
-  short-circuiting in LARA; [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#tree-visitor-short-circuit-implemented)
-  owns the contract and measurements. Previously, the topology and inline-property adapters saved
-  a callback's `Break` but the underlying walkers continued through later blocks/properties.
-  `tree_visit_break_stops_topology_reads` and `tree_visit_break_stops_property_reads` reproduced
-  both defects and now prove physical stopping in both orders. This is not complete selection:
-  `read_label_bucket_placement_info` counts the overflow chain, and selected-slot readers can
-  reconstruct chains/prefetch tables outside the emitted-row count. Those existing APIs are not
-  a whole-row work/byte bound; no new validity registry is needed.
-- **Complete-topology prerequisite (2026-09-13 00:22:26 UTC +0000):** LARA now exposes
-  `collect_edge_topology_bounded` and its forward adapter; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-topology-collection-implemented)
-  owns the contract. A physical-slot allowance includes tombstones and linked overflow entries;
-  exhaustion returns an error, never a successful prefix. No property stream or whole-leaf log
-  table is read. Workspace and topology payload are bounded from the slot allowance and concrete
-  edge width; this is not an independent byte-budget API. Six native contracts and focused
-  canbench cover the storage capability, not bulk SET or policy/mutation atomicity.
-- **Inline-read prerequisite (2026-09-13 01:26:43 UTC +0000):** LARA exposes a complete topology plus
-  `InlinePropertyBytes` collector with physical-slot and value-body allowances; [ADR 0050](adr/0050-lara-traverse-read-api.md#bounded-complete-inline-property-collection-implemented)
-  owns the bounds. Value admission precedes property reads, reserves wide-blob lookahead, validates
-  exact property-log exhaustion, and preserves slab live ordinals/tree physical slots. Six native
-  contracts and focused canbench validate this read capability, not policy/SET atomicity. The tree
-  property helper's out-of-range block-zero sentinel was replaced with a typed rejection.
-- **Sidecar pre-read blocker (2026-09-13, source inspection):** `facade/stable/edge_properties.rs`
-  stores unbounded `StoredPropertyValue`s. The ic-stable-structures 0.7.2 B-tree getter materializes
-  the whole encoded value before its `Storable::from_bytes` call; `ensure_persistable` only checks
-  binary encoding. A size check after the ordinary getter cannot establish a pre-read byte cap.
-  No sidecar format, length map, dependency fork or whole-row mutation preflight was introduced.
-- **Sidecar node-discovery evidence (2026-09-13 01:52:13 UTC +0000):** A native 0.7.2 B-tree probe
-  with fixed 14-byte keys and unbounded raw values confirms that a ten-byte lookup, a missing-key
-  lookup and key-only iteration all perform more metadata reads as an unselected neighbor grows.
-  `Node::load_v2` reconstructs the whole node overflow list before key search, so exposing only a
-  value length would not close the work bound. The [investigation and reproducer](investigations/2026-09-13-sidecar-bounded-read-options.md)
-  compare a dependency-owner extension, a global property cap and out-of-line storage. That
-  investigation recommended an extension as the minimum layout-preserving change; the design
-  direction below supersedes that priority. This is primitive read evidence, not Graph codec,
-  write-budget, policy or bulk SET validation.
-- **Property-value separation design (2026-09-13 03:57:44 UTC +0000):** The
-  [design](investigations/2026-09-13-property-value-separation-design.md) keeps per-property
-  keys and bounded small cells in the existing vertex/edge directories, with independent large
-  bodies owned by each PropertyStore. A reclaimable fixed-block allocator is an experiment, not
-  an accepted production layout. Threshold, fragmentation, common-path cost, rekey ownership and
-  whole-row preflight remain validation gates. No production Rust, MemoryId, persisted codec,
-  dependency or public API changed; no extra adjacency IDs or reference journal are proposed.
-- **Value-separation experiment (2026-09-13 06:23:23 UTC +0000):** Two native tests over 24
-  configurations passed, including body admission before reads, zero-write rejection, ownership
-  transfer and persistent block reuse. The [results](investigations/2026-09-13-property-value-separation-design.md#8-probe-results-and-disposition)
-  demonstrate removal of unselected-body read/write coupling. They do not select the fixed-block/
-  replacement-body candidate: short-body waste, retained high-water and ordinary-path preparation
-  cost require further design. A partial-pair reopen defect was found and fixed in the new probe,
-  not in production Graph. No Graph codec, Wasm instruction, policy, whole-row SET or IC rollback
-  proof is claimed; the existing storage and public capability remain unchanged.
-- **Comparison-first follow-up (2026-09-13 09:36:59 UTC +0000):** The
-  [B-tree body comparison](investigations/2026-09-13-property-body-btree-comparison.md) measures five
-  whole/chunk configurations, with two native tests and 188 I/O rows. Default-geometry 4 KiB chunks
-  reduce the small external-body neighbor rewrite from 1048708 to 16582 bytes, but rewrite a 1 MiB
-  body with about 5.30× the whole-body write volume. Declared 4 KiB bounds occupy 27 native pages
-  for the tested 256 short bodies versus one with default geometry; shrink can also allocate during
-  tree mutation. These are diagnostic observations, not Graph instruction or workload acceptance.
-  The [extent proposal](investigations/2026-09-13-property-body-extent-design.md) was not measured
-  by this B-tree slice; its later native checkpoint is recorded below, without production selection. Body-key/format/move ownership, decoder and
-  total-work admission, whole-row co-write and IC lifecycle remain open; no production region,
-  allocator, dependency or public capability changed.
-- **IC body-lane comparison (2026-09-13 11:08:59 UTC +0000):** The
-  [stable-memory follow-up](investigations/2026-09-13-property-body-btree-comparison.md#ic-stable-memory-follow-up)
-  completed 32 canbench cases using direct Ic0StableMemory and the shared native body algorithm.
-  Default-geometry 4 KiB chunks reduce a small external-body neighbor rewrite from 2.62M to 0.188M
-  instructions, but a full 1 MiB replacement costs 28.32M versus 6.94M, and shrink 38.27M versus
-  5.06M. Ordinary Whole point-get is also retained as a faster read control than range/assembly.
-  All measured heap/stable page deltas are zero after setup; this does not mean zero allocation.
-  The two native tests and all 188 I/O rows remain unchanged. Query benchmarking is not Graph
-  commit/rollback or workload acceptance; no production layout or custom allocator is selected.
-- **Workload relevance (2026-09-13 11:35:15 UTC +0000):** The
-  [codec-based input profile](investigations/2026-09-13-property-body-workload-profile.md) covers
-  Knowledge and Social 1x1/5x20 typed load artifacts. Maximum Value size is 143 bytes; none exceeds
-  4 KiB. Social scaling repeats 71 post texts, not a sampled large-body tail. At hypothetical T=128,
-  300/35932 scaled vertex-property occurrences and 0/94460 edge-property occurrences remain external,
-  but counts are not access frequencies (all Social prepared queries project Post.body). No runtime
-  read/rewrite/shrink history is available from these inputs; large-row test fixtures are synthetic.
-  This does not select a cap/threshold or justify custom allocation; representative old/new sizes
-  and operation counts remain necessary for workload-weighted acceptance.
-- **Chunk-size sensitivity (2026-09-13 12:30:53 UTC +0000):** The
-  [wider-chunk comparison](investigations/2026-09-13-property-body-chunk-size-sensitivity.md) extends
-  the same body algorithm to 16/64 KiB default-geometry caps: two native tests, 260 I/O rows and
-  48 IC query benchmarks pass; the original 188 native rows/32 IC counters are unchanged. Wider
-  chunks improve some costs versus 4 KiB, but 1 MiB replacement still costs 3.44×/3.85× Whole and
-  shrink 5.28×/5.12×. Neighbor isolation worsens; the 16 KiB shrink adds one stable page. This is
-  size sensitivity, not workload acceptance, a production cap or custom-allocation authorization.
-- **Native extent checkpoint (2026-09-13 14:02:33 UTC +0000):** After explicit authorization, the
-  [allocator-only comparison](investigations/2026-09-13-property-body-extent-comparison.md) passed
-  six native tests/36 extent rows; all 260 B-tree reference rows remain unchanged. Existing 0.7.2
-  exposes no selected-node batch replacement/removal API; no fork was introduced. Contiguous
-  1 MiB replacement writes 1048592 bytes versus 5559316 with 4 KiB chunks. Repeated hot shrink
-  writes 260 bytes but still reads the full old 1 MiB value. Exact partition/index/owner oracles,
-  pre-effect rejection, post-allocation retirement and nine paired reopens pass. The extra index
-  doubles the raw short-body floor (two pages versus one); fragmentation and relocation can retain
-  more capacity. These are native I/O results, not IC instructions, rollback/upgrade, directory
-  atomicity or whole-row work bounds. The managed IC follow-up is recorded below; production
-  selection remains pending.
-- **Managed IC extent checkpoint (2026-09-13 20:50:20 UTC +0000):** The
-  [91-case comparison](investigations/2026-09-13-property-body-extent-canbench.md) uses the same
-  four-page variable-manager policy for one-region B-trees and two-region extents. All91 query
-  cases pass; six native tests and296 numeric rows remain unchanged. Extent1MiB replacement/shrink
-  costs3.15M/2.11M instructions versus Whole7.36M/5.86M and chunks26.71–32.31M/29.54–44.75M.
-  Adverse results remain: Whole point-get1.43M beats extent read2.10M; allocation from already-
-  coalesced space atF128 costs68.65K versus38.08–38.12K. Extent retains four extra physical pages
-  in these fixtures (ten versus six small;26 versus22 large). Five initial grows add16 physical
-  pages each; three also grow heap. Query measurement/local collection reload is not persistent-
-  directory atomicity, Graph work admission or IC update rollback/upgrade proof. A separately
-  reviewed integration design is justified, not production activation or a workload-weighted win.
-- **Native PropertyStore checkpoint (2026-09-14 01:10:06 UTC +0000):** The
-  [comparison](investigations/2026-09-13-property-store-native-comparison.md) implements actual
-  8/14-byte keys, Graph Value codec, directory ownership and single-property moves for Direct,
-  directory+B-tree4/16/64KiB and directory+custom extents. Ten tests pass;40 full stores produce
-  2640 region rows, with all260+36 raw rows preserved. Candidates pre-admit selected bytes; Direct
-  remains an unbounded admission reference. Small-directory isolation helps all candidates, but
-  small mutations add reads and eager lanes retain backing. Chunk writes/moves amplify I/O;
-  extent relocation retains holes/high-water, while B-tree deletion can also grow backing.
-  These native counts do not establish IC speed or total work bounds. The separate managed
-  full-store measurement follows below; frozen0357/0358 sources preserve historical provenance.
-  Fine bucket/zero-fill/free-lookup optimizations remain deferred. No production format, whole-row
-  safety, durable edge outcomes or bulk edge capability is selected.
-- **Managed PropertyStore checkpoint (2026-09-17 22:24:02 UTC +0000):** The
-  [full-store IC comparison](investigations/2026-09-17-property-store-managed-comparison.md) passes
-  all210 full-store cases plus91 reused body controls. Actual keys, Value validation/codec,
-  previous values and all regions are included. For edge keys, Direct ordinary1MiB get/replacement
-  costs5.36M/9.85M instructions versus extent6.04M/10.25M; extent scalar insert/replace is about
-  37%/60% more expensive. Extent large moves improve26.55M→12.11M, and small-neighbor isolation
-  helps every separated candidate. Extent coalesced allocation costs118.36K versus Direct46.81K.
-  Small physical totals are Direct6/chunks10/extent14 pages;1MiB point totals22/26/30. These are
-  independently reserved capacities, not per-edge metadata or automatically wasted bytes. C64
-  large move/deletion each grows four physical pages; extent relocation retains high-water.
-  Native2640+296 rows reproduce. No production integration, total-work/whole-row proof,
-  update/upgrade lifecycle validation or workload-weighted winner follows.
-- **Outcome design (2026-09-22 09:41:27 UTC +0000; planned):**
-  [Durable outcomes and retry ownership](investigations/2026-09-22-bulk-edge-set-outcomes.md) proposes
-  a typed row family in the existing Graph/Router journals: positive and zero success, definitive
-  rejection, exact replay, separate input-row/matched-edge counts, Abort settlement and explicit
-  retirement. It requires a fresh actual-send gate and a fixed Router/Graph sender pair; a timeout
-  or missing journal is not cancellation. Existing variants do not represent this unchanged.
-  Exact encoding/API, endpoint/policy semantics, production bounds and whole-row commit remain
-  prerequisites. No code, new memory region, occurrence identity or runtime validation was added.
-  The independently discovered scalar retention mismatch is tracked as GAP-2026-09-22-001.
-- **Impact:** Bulk-load edge SET remains unavailable. The selected direction needs bounded local
-  selection/SET and durable terminal replay, not a cross-message edge-reference registry. Bulk-load
-  edge inserts and vertex SET/REMOVE contracts are unchanged; ordinary GQL edge `SET` remains
-  available. The tree, topology and inline-property read prerequisites do not expose a bulk operation.
-- **Next decision:** Specify endpoint/policy semantics, local work/mutation/byte limits, exact
-  positive/zero/rejection outcome representation, input-row versus matched-edge counts, and
-  retention/Abort behavior before implementation. The existing exact-vertex seed and receipt
-  contract do not represent this behavior as-is. No per-edge field or generation table is selected;
-  recovery state belongs in the existing scalar journals and chunk receipts. Include actual
-  serialized record/outbox/high-water measurements in the bounded validation plan.
-
-### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
-
-- **Status:** Open — non-blocking follow-up recorded 2026-09-11 during the GQL-execution
-  Unsupported-path survey. Fail-closed only; no wrong results. Low priority; a docs-only
-  disposition is acceptable.
-- **Owner:** Graph aggregate executor (`crates/graph/src/plan/query/aggregate.rs`).
-- **Observed behavior:** Three error paths are reachable through grammatical queries:
-  (1) `aggregate.rs:591` "aggregate: percentile fraction must be constant per group"
-  for `PERCENTILE_CONT(x, <row-varying expr>)` such as `PERCENTILE_CONT(x, n.k)`;
-  (2) `aggregate.rs:719` "aggregate: percentile fraction missing" for
-  `PERCENTILE_CONT(x, NULL)` (fraction NULL on every row of a non-empty group);
-  (3) `percentile_fraction_from_value` (`aggregate.rs:215-227`)
-  `InvalidExpressionValue` for non-finite or out-of-`[0, 1]` fractions such as
-  `PERCENTILE_CONT(x, 1.5)`. The constant-fraction requirement itself is SQL-consistent;
-  the contract is simply undocumented.
-- **Evidence:** source paths above; aggregate happy-path tests (`percentile_cont_median`
-  et al.) cover no error path; no `percentile` mention in
-  `design/gql/extension-syntax.md` or this ledger.
-- **Expected or needed behavior:** The fraction contract (constant per group, non-NULL,
-  finite, within `[0, 1]`) stated in `extension-syntax.md`, or error-path unit tests
-  locking the three fail-closed arms.
-- **Impact:** Users hitting these shapes get an execution error against an undocumented
-  contract; nothing unsafe or misleading is returned.
-- **Next decision:** Document the fraction contract in `extension-syntax.md` (smallest);
-  add the three error-path unit tests only if the contract is ever relaxed.
-
-### GAP-2026-09-11-002 — Cross-shard traversal fails closed on remote-vertex expand (federated scan limitation)
-
-- **Status:** Open — non-blocking; single-shard execution (the only exercised topology)
-  is unaffected. Recorded 2026-09-11 as one bundled entry during the GQL-execution
-  Unsupported-path survey.
-- **Owner:** Graph federation expand (`crates/graph/src/federation/expand.rs`) together
-  with the streaming expand and WCOJ paths.
-- **Observed behavior:** A traversal touching a vertex placed on another shard fails
-  closed: `UnsupportedOp("cross-shard expand (remote vertex binding)")`
-  (`federation/expand.rs:93`; sibling arms `:38,43,64,97,122`),
-  `UnsupportedOp("Expand.var_len.remote")`
-  (`plan/query/executor/scan/streaming.rs:570`), the limited-streaming remote-source
-  arm (`streaming.rs:525`), and `WorstCaseOptimalJoin.remote_vertex` / `.var_len`
-  (`plan/query/executor/wcoj.rs:21,154`). Relation to GAP-2026-08-25-003: that entry
-  covers cross-shard *ordering* (concatenated sorted fragments); this entry covers
-  cross-shard *traversal* (no remote-vertex resolution). Both stem from shard-local
-  execution without a cross-shard fan-out.
-- **Evidence:** source paths above; PocketIC fixtures are single-shard, so no E2E
-  coverage exists for any of these arms.
-- **Expected or needed behavior:** Either a remote-vertex resolution fan-out or an
-  explicit documented federated-traversal limitation.
-- **Impact:** Multi-shard deployments cannot traverse shard boundaries; queries fail
-  with an explicit error rather than silently dropping rows.
-- **Next decision:** Resolve inside the slice that introduces cross-shard resolution,
-  if ever demanded; until then no action.
-
-### GAP-2026-09-11-003 — Federated aggregate merge errors on all-NULL partials instead of yielding NULL/skip
-
-- **Status:** Open — non-blocking, low priority. Fail-closed error direction (never a
-  wrong result); single-shard execution unaffected; `Avg` excluded (already
-  non-mergeable UnionRows). Recorded 2026-09-11 during the GQL-execution
-  Unsupported-path survey.
-- **Owner:** Router federation aggregate merge
-  (`crates/router/src/federation/aggregate_merge.rs`).
-- **Observed behavior:** For mergeable `COUNT`/`SUM`/`MIN`/`MAX`, when the
-  first-ingested shard partial for a group is `Null` — e.g. grouped `SUM(x)` where one
-  shard holds the group's rows but every value is NULL, so the Graph partial is Null —
-  `merge_add_values` (`:345`) / `merge_extreme_value` (`:381`) return
-  `Err("aggregate merge on null")` instead of skipping the NULL partial. All shards
-  empty produces no rows and does not trigger.
-- **Evidence:** source paths above; merge tests (`merge_aggregate_blobs_*`) cover valued
-  partials only.
-- **Expected or needed behavior:** SQL-consistent outcome: skip NULL partials and emit
-  NULL when every partial is NULL.
-- **Impact:** A rare multi-shard-only query error; the error direction is safe.
-- **Next decision:** Smallest fix is "skip NULL partials, emit NULL when all partials
-  are NULL" plus a two-shard unit test; open only on demand.
-
-### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
-
-- **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
-  (2026-08-25). Not a regression introduced by that slice: Federation v1 already merged
-  shard-local `ORDER BY` fragments by concatenation.
-- **Owner:** Router federation merge (`crates/router/src/federation/merge.rs`
-  `FederatedMergeMode::UnionRows` → `GqlWireRows::merge_optional_batch_blobs`)
-  together with the future per-shard cursor-stream fan-out described in
-  [ADR 0081 §Decision 3](adr/0081-index-ordered-order-by-delivery.md).
-- **Observed behavior:** Every current index read path delivers one globally ordered
-  hit stream (native single posting map; single index canister per logical graph via
-  `RouterIndexLookup::require_single_target`), so ADR 0081's R-way merge degenerates to
-  identity and shards return ascending fragments. When a query fans out over multiple
-  graph shards, the router concatenates those sorted fragments (`UnionRows`), so global
-  cross-shard ordering is not guaranteed — both for the new ordered-delivery plans and,
-  unchanged, for every pre-existing `Sort`/`TopK` plan executed per shard.
-- **Evidence:** `design/gql/plan-format.md` §"IndexScan ordered-delivery intent";
-  `crates/router/src/index_lookup.rs:315` (`require_single_target`);
-  `crates/router/src/federation/merge.rs` UnionRows branch.
-- **Expected or needed behavior:** When per-shard cursor streams exist, the federation
-  bind boundary should run an R-way heap merge of the ascending streams (ADR 0081 §3)
-  or, at the router, a merge-aware union for batches whose plans carry
-  `IndexScan { ordered_by_sort }`.
-- **Impact:** Multi-shard deployments cannot rely on router-level result ordering for
-  `ORDER BY` queries; single-shard execution (the only mode exercised by native stores
-  and current canister topologies) is unaffected.
-- **Next decision:** Fold merge-aware union into the slice that introduces per-shard
-  cursor fan-out; until then no action.
-- **Status detail:** Blocked on the cursor-stream fan-out prerequisite; revisit when
-  sharded postings land.
 
 ### GAP-2026-08-24-008 - RESOLVED: ELEMENT_ID projections need property-level READ grants (plan 0303 diagnosis; no Router defect)
 
@@ -5079,26 +5654,6 @@ session did.
 - **Next decision:** None for this defect; retain the focused regression with the owning map
   implementation.
 
-### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
-
-- **Status:** Open
-- **Severity:** P2 (latent; no code path today)
-- **Owner:** vector canister slab page store / migration primitive
-- **Observed behavior:** With `VectorEncoding::I8` implemented (Slice 0242), stored rows are an i8
-  payload plus a per-row f32 scale in row-meta aux. The design's row-copy migration primitive
-  (`export_vector_rows` / `import_vector_rows`) is **not implemented**; grep confirms no such code
-  exists yet.
-- **Expected or needed behavior:** A future export/import that copies rows across canisters (shard
-  split, ADR 0031 multi-canister) must carry the per-row aux (scale) alongside the payload, or the
-  imported I8 rows would be decoded with a wrong/zero scale.
-- **Owner:** vector canister `PAGE_STORE` / `export_vector_rows` future slice.
-- **Evidence:** `crates/vector-canister/src/facade/stable/page_store.rs` (`read_row_bytes` returns
-  `(vertex_id, bytes, aux)`); `design/index/vector-index.md` §Multi-canister readiness.
-- **Impact:** Latent until migration is built; adding it without carrying aux would silently corrupt
-  I8 distances on the target canister.
-- **Next decision:** When the migration primitive slice is planned, require `export_vector_rows` /
-  `import_vector_rows` to round-trip the row aux.
-
 ### GAP-2026-08-10-002 — `size_up` under-allocates the canonical entry stride
 
 - **Status:** Resolved by commit `c1dc31db7` (crate retired; see ADR 0067)
@@ -5589,661 +6144,115 @@ one transient unrelated build failure).
 None — closed. Both adr0034 read fixtures now conform to their declared graph types, and the
 typed-schema endpoint gate remains unchanged and fail-closed.
 
-## Resolved gaps
+### Historical records kept in this ledger
 
-### GAP-2026-08-24-007 — RESOLVED: committed HEAD builds `gleaph-router`
+The following were never gaps: they are dated records (evidence, a withdrawn experiment, an
+incident) that the ledger keeps because the *Disposition rule* forbids leaving findings only in a
+transcript.
 
-- **Status:** Resolved (2026-11-07, verified against a clean working tree). The gap recorded that an isolated worktree at
-  `5a8e6dc8a` failed to compile `gleaph-router --lib` with `E0425 cannot find function require_admin`, green only while
-  the owning workstream's uncommitted auth definitions sat in the tree. `require_admin` no longer exists in the
-  workspace - the callers were refactored onto the store-level capability check whose comment records that it preserves
-  the former function's error contract - so the half-landed pair is gone rather than merely finished.
-- **Evidence:** clean tree (`git status` empty) at this HEAD, `cargo build -p gleaph-router` succeeds, and
-  `cargo test -p gleaph-router --lib` is 1137 passed / 0 failed. The general rule from the original report stands and is
-  what made this checkable: every commit on main must build standalone, so a caller and its definition land in one push.
-### GAP-2026-09-22-005 — RESOLVED: the obsolete combined maintenance tag is deleted
+#### Historical landing evidence — selected pre/post-5i rows
 
-- **Status:** Resolved (2026-11-07) by removal, not by repair. `CompactVertexEdgeAndValueSpanV1` (tag 4) called
-  `compact_vertex_edge_span_one_step` and **discarded** the `EdgeMoved` and `OverflowRewrite` moves it got back while
-  requeueing itself - so any execution of it would have moved rows without telling a single observer. It had no
-  producer: every `enqueue` site in the crate names a different variant, and its only occurrences were its own
-  definition, codec arms, key/priority arms and the handler's self-requeue.
-- **Why deletion rather than publication:** the movement-publication contract is only meaningful for a path that runs.
-  Gleaph is pre-production, so a tag nothing enqueues is deleted instead of kept for a persisted-state compatibility
-  path; its encoding now fails closed in `from_bytes` like any other unknown tag (reinstall, not silent execution), and
-  `tag()` says so where a reader will look for the missing number.
-- **Also removed in the same pass:** `maintain_vertex_edge_span_light` and `rebalance_vertex_edge_span_light`
-  (`compact.rs`), the only production-shaped callers that reached compaction through `compact_span()`, which drops its
-  moves. Neither had any caller in the workspace.
-- **The survey this came from, for the record:** paths that legitimately answer no moves are the slab, tiny and spill
-  deletes - ADR 0097 §7 tombstones a row where it lives, so nothing shifts and the code says so at each site. Paths
-  that do move rows and now publish are the live compaction tags (via `observer.edge_slot_moved` for `EdgeMoved` and
-  `OverflowRewrite`), the demotion (see GAP-2026-09-22-003), and the fold/rebuild steps that return their move lists to
-  their caller.
-- **Evidence:** the workspace has no remaining reference to the tag; `cargo test -p ic-stable-lara --lib` 775,
-  `--features canbench` 712, `gleaph-graph` 1132, `gleaph-router` 1137, clippy and fmt clean. No queued-tag runtime
-  witness existed before either, and none is needed for a tag with no producer.
+Main values below are rounded console totals from `$TMPDIR/bench-main-full.log`, not exact
+persisted measurements. The earlier parser dropped the B suffix; those entries are corrected
+below using the recovered 189-name comparison. Pre/post columns describe 5i, not current HEAD.
+The earlier claims that this was a complete >5% list and that exactly one row changed were
+incorrect: candidate workloads also changed substantially. The recovered current comparison
+has 38 differences above +5% against rounded main; see GAP-009 for the scoped diagnosis.
 
-### GAP-2026-09-22-003 — RESOLVED: a demotion transcribes both streams from one selection
+| bench | main (measured) | pre-5i | post-5i |
+| --- | --- | --- | --- |
+| `offset_workload_candidate_bursty` | 1,390,000,000 | 1,465,455,879 | 491,406,745 |
+| `offset_workload_candidate_uniform` | 1,400,000,000 | 1,433,556,965 | 471,147,924 |
+| `offset_workload_candidate_churn_light` | 1,250,000,000 | 1,252,356,452 | 401,477,074 |
+| `tcsr_65536_insert_grow` | 1,120,000,000 | 1,118,273,942 | 1,118,273,942 |
+| `tree_churn_bursty_reuse` | 1,040,000,000 | 1,041,741,982 | 1,041,741,982 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384` | 15,540,000,000 | 15,542,810,613 | 43,911,532 |
+| `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536` | 247,360,000,000 | 247,370,242,366 | 247,370,340,681 |
+| `bench_t_vip_descending` | 27,010 | 197,860 | 197,860 |
+| `bench_t_vip` | 28,060 | 197,851 | 197,851 |
+| `bounded_inline_promote_full` | 216,850 | 1,132,525 | 1,132,525 |
+| `bench_l_mix_hub_scn_33x50` | 350,320 | 1,710,929 | 1,710,929 |
+| `bench_l_mix_hub_asc_33x50` | 452,960 | 2,011,687 | 2,011,687 |
+| `bounded_inline_64_full` | 18,970 | 80,251 | 80,251 |
+| `bench_t_v_in_hyb_ip` | 74,470 | 292,185 | 292,185 |
+| `bench_t_v_pf_then_sel` | 152,750 | 512,905 | 512,905 |
+| `bench_t_v_hyb` | 81,010 | 241,373 | 241,373 |
+| `bench_r_ed_st_d_oi_lb_128` | 27,090 | 80,452 | 80,452 |
+| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
+| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
+| `bench_t_v_in_dense` | 88,130 | 254,474 | 254,474 |
+| `bench_r_ed_st_oi_lb_128` | 35,380 | 88,746 | 88,746 |
+| `bench_l_s2_h_del_1024` | 127,160,000 | 266,537,637 | 193,429,761 |
+| `bench_t_vip_filtered_reference` | 154,220 | 318,265 | 318,265 |
+| `bench_t_v_w_ip` | 155,530 | 320,305 | 320,305 |
+| `bounded_topology_64_full` | 32,950 | 63,238 | 63,238 |
+| `bench_t_lvp_same` | 363,100 | 528,866 | 528,866 |
+| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
+| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
+| `bench_t_v_at_replay` | 4,989 | 6,107 | 6,107 |
+| `bench_l_ins_fresh_256` | 33,150,000 | 39,224,402 | 39,224,402 |
+| `bench_l_ip_frag_comp` | 38,220,000 | 43,470,216 | 43,470,216 |
+| `bench_l_ip_frag_s4_ctl` | 38,210,000 | 43,458,762 | 43,458,762 |
+| `bench_l_df_ip_frag_enq_6` | 76,550,000 | 87,051,135 | 87,051,135 |
+| `bench_l_ip_frag_s6` | 38,280,000 | 43,527,769 | 43,527,769 |
+| `bench_l_df_ip_frag_mnt_6` | 76,660,000 | 87,162,578 | 87,162,578 |
+| `bench_l_ip_pstats_16` | 41,160,000 | 46,569,383 | 46,569,383 |
+| `bench_l_ip_pstats_64` | 59,400,000 | 67,018,574 | 67,018,574 |
+| `bench_l_ins_ap_hub_1024` | 10,320 | 11,536 | 11,536 |
+| `bench_l_ip_exg_256` | 44,740,000 | 49,900,227 | 49,900,227 |
+| `bench_l_ip_pstats_256` | 285,060,000 | 312,686,647 | 312,686,647 |
+| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,908,039 | 77,909,616 |
+| `bench_r_ed_st_ls_128` | 346,750 | 369,658 | 369,658 |
+| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
 
-- **Status:** Resolved (2026-11-07). `tree_mode_demote_to_slab` collected its two streams with two different selections:
-  the edge visit filtered tombstones, and the value visit (added later for property-bearing trees) kept **every** slot. The
-  assertion that caught it - `live property values must cover degree * w bytes` - was reading a real divergence, not a
-  test artifact.
-- **The fix is the DRY rule this repository now states:** one selection feeds both streams. A single pass over the live
-  positions pushes each survivor's edge *and* its value, so the descriptor's `degree`, the edge slab and the value span
-  are three views of one transcription. `w == 0` keeps the cheaper edge-only visit, with the same predicate.
-- **Evidence:** `a_property_bearing_tree_demotes_with_its_values` (`bucket.rs`) promotes a 1026-row valued bucket, removes
-  down to `T_DEMOTE`, and asserts the bucket is slab again with `degree == T_DEMOTE` and a value for every survivor. With
-  the fix removed the same test fails `live property values must cover degree * w bytes` (**8208 versus 4096**); with it,
-  green. lara 774, canbench 711, graph 1132.
-- **What remains open from the original report:** the movement-event parity half - a successful demotion packs survivors
-  but `remove_edge_at_slot_with_move` returns no movement events - was **not** addressed here, and the
-  writer/demotion boundary it belongs to is unchanged.
+Headline (better than main, unchanged by 5i): the three rows above.
 
-- **Movement parity closed the same day.** The other half of this gap was that a successful demotion repacked survivors but
-  its removal caller returned no movement events - and `EdgeRemoval::moves` is the **only** channel through which an
-  observer tracking external identities learns that a row changed position. `tree_mode_demote_to_slab` now collects each
-  survivor's tree ordinal during the same live-selection pass and answers `Vec<EdgeSlotMove>` for the rows whose dense
-  ordinal differs (`old = tree slot`, `new = dense position`); `row_plane`'s tree arm carries them into
-  `EdgeRemoval::moves` (best-effort, as the demote trigger is: a mid-demote failure reports no moves and the next
-  removal retries). `a_demotion_reports_the_rows_it_moves` asserts the moves arrive, that each moves something, and that
-  they belong to the removed label. lara 775, canbench 712, graph 1132, router 1137.
+Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
+cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
+descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
-### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
+#### Historical finalize experiment — notification acceptance withdrawn
 
-- **Status:** Resolved (2026-11-07). `tree_mode_remove_edge_at_slot` carried
-  `debug_assert_eq!(bucket.inline_property_byte_width(), 0, "tree mode rejects inline-property buckets (promote is
-  fail-closed)")`. It was true when written and false since property-bearing promotion landed (ADR 0088); a debug-only
-  rejection is not a public contract, and it made a real valued tree panic in native debug before reaching any write.
-  The assertion is gone, and the path it blocked is a test.
-- **Why deleting a valued row is safe without writing a value:** ADR 0099's rule - a delete writes **no value** - holds
-  for tree mode too. The row is tombstoned where it lives (its LTB block's payload plus the block header's
-  `tombstone_count`), and a reader never asks a tombstoned slot for a value. The tree walk reports the hole to a
-  mutation-shaped walk and skips it for a reader, which is the row-visibility split the row walker owns.
-- **Evidence:** `a_property_bearing_tree_bucket_removes_a_row` (`bucket.rs`) promotes a 1024+8-row valued bucket to a
-  tree, removes a row, and asserts the descriptor's degree, that a reader sees exactly the survivors, and that every
-  remaining row still reads its own value. Suite: lara 773, canbench 710, graph 1132.
-- **What this does *not* claim:** demotion after a valued-tree delete (GAP-2026-09-22-003) and the writer/demotion
-  boundary it is a prerequisite for remain open, and no release-mode/Wasm deletion result was measured here.
+The measurements below belong to the earlier experiment, not a valid movement-publication
+contract. Its `Finished` rewrite folded and repacked rows without delivering their changed
+ordinals. The former “fits by construction” justification did not establish notification or
+relocation safety. `15ceaabf1` removes that path: completion packs only captured physical regions,
+retaining run/prefix ordinals when the non-forcing fold declines. [Corrected evidence and owner/observer witnesses](evidence/adr0097-compaction-movement-publication.md).
+The instruction/space figures below remain historical observations, not revalidated landing evidence.
 
-### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — RESOLVED: a second label joins a filled vertex
+| bench | main (measured) | pre-fix | post-fix |
+| --- | --- | --- | --- |
+| `bench_l_s2_h_del_1024` | 127,160,000 | 193,429,761 | 193,655,245 |
+| `bench_l_s2_h_pt_d_1024` | 17,770,000 | 51,985,176 | 51,985,176 |
+| `bench_l_s2_h_scn_d_1024` | 17,720,000 | 51,932,493 | 51,932,493 |
+| `bench_l_s2_det_hub_st_1024` | 45,845,565 | 57,849,414 | 45,848,699 |
+| `bench_l_s2_det_sat_1024` | 465,196 | 937,953 | 465,286 |
+| `bench_l_s2_h_del_h_1024` | 72,740,000 | 77,909,616 | 77,908,562 |
+| `offset_workload_baseline_bursty` | 304,330,000 | 417,022,107 | 417,022,107 |
+| `offset_workload_baseline_uniform` | 301,930,000 | 376,405,141 | 376,405,141 |
+| `bench_l_nt_bp_ins_256` | 390,600 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_1024` | 391,090 | 365,548 | 365,548 |
+| `bench_l_nt_bp_ins_4096` | 391,090 | 365,497 | 365,497 |
 
-- **Status:** Resolved (2026-11-07). A bucket whose vertex slice has no span left promotes into a **run-backed slab
-  bucket**: it is slab mode with `stored_slots = 0` and its rows in a spill run, so ADR 0098's floor is never consulted
-  and the vertex's slice does not grow. When that bucket later outgrows the run's class it promotes to tree mode with its
-  **root in an edge run** (`EdgeRootLoc::Run`), which is still the edge side - the root never leaves it.
-- **Evidence:** `a_second_label_joins_a_ten_thousand_row_hub` (graph crate) builds the bench fixture's own shape - 10 000
-  parallel edges on one label of a hub, then 500 on a second - through `GraphStore::new` and the public insert API, and
-  passes. `a_valued_second_label_joins_a_ten_thousand_row_vertex` and
-  `every_insert_on_a_second_label_writes_exactly_one_row` pin the valued case and the row count per insert.
-- **The three defects found on the way, each now a rule:** the run was over-allocated by one for the pending edge (a
-  reservation sized for an operation that had not happened yet must not become the count); the tree promotion's degree
-  field was compared instead of replaced (a derivable value is now derived - `SourceRows`); and a tree root needed a leaf
-  slot it could not get (the location is now a type - `EdgeRootLoc`).
-- **Left open:** refreshing `crates/graph/canbench_results.yml` needs a `canbench --persist` run in the wasm environment.
+Space audit (GAP-006 shape, segment16/uniform256, 5000 vertices x 1 edge, 5000 tiny buckets,
+cover 0): committed pages **66 (main) -> 56 (36-byte interim row) -> 41 (34-byte final row)**;
+descriptor 25,000 x 34 B = 850,000 B; edge spill 1 page, values spill 1 page.
 
-### GAP-GRAPH-EXPAND-SKEWED-BENCH-TRAPS-OLD — RESOLVED: the tree's valued reads are correct again
+#### Incident 2026-09-20 — `git stash` + `drop` in the shared worktree (recovered)
 
-- **Status:** Resolved (2026-11-07). The bench shape - 2 100 valued edges on one bucket, so it promotes and keeps growing
-  across five property leaves - now reads every row's own value back, and the reproduction is a contract test
-  (`a_promoted_valued_bucket_reads_every_row_through_the_point_reader` in `bucket.rs`). lara 772, canbench suite 709,
-  graph 1132, clippy and fmt clean.
-- **What it actually was, in the order the measurements found it.** The reported `MissingAscLogIndex` no longer
-  reproduced (the point reader had already been routed to the property tree); behind it were three separate defects, each
-  found by making the code state a rule instead of repeating one:
-  1. **A leaf payload was written after the pointer that named it**, in two arms of the property append. A payload
-     failure then released a block the published pointer still named, and the next mint handed that id out again. The
-     edge side had always written the payload first; the property side now does too.
-  2. **The descriptor did not record the value-root region the append had just written.** When a new root did not fit in
-     place the append allocated a fresh region, published the old offset, and the next append read past its own array and
-     took the next region's first id as an entry - which is exactly the `[1, 2, 3, 1, 6]` that started this. The
-     descriptor now records the address in the same write as everything else, via `OwnedValueRoot`.
-  3. **The roots were implemented twice.** The edge root and the value root are the same array in different stores, but
-     each had its own writer, its own reader and its own length arithmetic, so every ordering rule had two homes.
-     `RootArrayStore` (`LeafSlots` / `LeafRun` / `ValueBytes`) with `write_root_array` / `read_root_array`, one
-     `tree_root_entries` derivation and one `validate_root_ids` check now serve both, and `LtbBlockReservation` owns a set
-     of blocks so "release an id you already published" has no spelling left.
-- **Evidence path worth keeping:** every step above came from a measurement rather than a guess - the row read before the
-  descriptor, the LTB release trace (zero), the mint trace (distinct), the values-store span trace
-  (`0..8 -> 8..20 -> 20..36 -> 36..56`), and finally the append tuple
-  `(old_len, descriptor_offset, ids_read, entry, region)`, which showed the descriptor still naming offset 8 while the
-  four-entry root had been written at 20.
-- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
-  environment; the defects that aborted the suite are gone.
-
-### GAP-GRAPH-EXPAND-10K-BENCH-TRAPS — RESOLVED: the fixture's graph now builds
-
-- **Status:** Resolved (2026-11-07) by the run-backed promotion and the run-sizing fix
-  (`promote_tiny_to_run_backed_slab` allocates exactly the rows it transcribes). The fixture's own shape - 10 000
-  parallel edges on one label of a hub, then 500 on a second - is now a contract test in the graph crate:
-  `gql_run::tests::a_second_label_joins_a_ten_thousand_row_hub` runs that exact sequence through the bench's own API
-  (`GraphStore::new`, `insert_vertex_named`, `insert_directed_edge_named`) and passes in 0.6 s.
-- **What the trap was:** the fifth second-label edge could not be added because the vertex slice had no span for the
-  bucket's promotion, and the promotion had no way to say "then use a run". That path exists now: a bucket whose vertex
-  slice is full promotes into a run-backed slab bucket, and once it outgrows the run's class it promotes to tree with
-  its root in an edge run.
-- **Left open:** refreshing `crates/graph/canbench_results.yml` still needs a `canbench --persist` run in the wasm
-  environment. The defect that aborted the suite is gone; producing the artifact is a separate mechanical step.
-- **Original report follows.** The largest expand fixture could not build its graph: `target edge:
-  Graph(Forward(Store(CollectAllocationOverflow)))` at `bench/mod.rs:1185` while inserting the tenth thousand rows
-  into one bucket, which also meant `canbench --persist` could not complete for `crates/graph`.
-
-### GAP-LARA-FOLD-BENCH-RUN-PROBE — RESOLVED: the classes come back from a fold
-
-- **Status:** Resolved (2026-11-07). The probe that reported the trap passes natively, and the whole
-  `--features canbench` suite is green.
-- **Original symptom:** `canbench "bench_t_fold_cost_33_256"` trapped in `assert_reusable`; relaxing it to "the
-  freed class must not grow the arena" still failed (`299 -> 556`), while the descriptor had already stopped naming
-  the run.
-- **What the fix was:** the release and the field clear were paired by hand at each site. The values plane got the
-  pairing as one operation (`BucketValuePlane::release_run`, and `fold_head_into_span` releasing an emptied values run
-  when it clears the field), and the fold-to-slab path captures both run ids *before* the admission that clears the
-  fields and releases both after publication. The comments on those two sites credit this probe by name, which is
-  what a gap entry is for.
-- **Evidence (re-run 2026-11-07):** `check_fold_economics` is the probe's native twin - it captures `runs()` before
-  folding, folds edges and values, asserts both descriptors answer `NO_SPILL_RUN`, and then calls
-  `assert_reusable(runs)`, which allocates each freed class and demands the arena's high-water mark not move.
-  `cargo test -p ic-stable-lara --lib --features canbench fold_economics` is **4 passed**, and the full suite is
-  **697 passed / 0 failed**.
-- **What was ruled out on the way:** a folded run cannot be emptied into a different class (`drop_head` refuses a
-  drop that changes `class_rows`), so the "release an emptied run during the fold" patch is unreachable; every site
-  that clears a live edge run releases it (`repack`, the fold-to-slab path), and the ones that do not are no-ops
-  (a tree bucket never sets a run, a fresh bucket has none, the synthetic successor view is not stored).
-- **Left open deliberately:** refreshing `crates/ic-stable-lara`'s canbench artifact needs a `canbench --persist`
-  run in the wasm environment, which this change did not execute. The defect the artifact was blocked on is gone;
-  producing the artifact is a separate, mechanical step.
-
-### GAP-2026-09-02-001 — RESOLVED: production `LabeledLaraGraph::visit_edges` dispatches tree-mode buckets into the dense slab read path
-
-- **Status:** Resolved (2026-09-02, Plan 0324 REWORK-2).
-- **Severity:** P0 production-correctness defect (read of stable
-  memory garbage / trap with `VectorMemory::read: out of bounds`).
-  Tree mode is the primary high-degree storage mode; any production
-  canister that visits a high-degree tree bucket would trap.
-- **Root cause:** 3 dispatch sites in `traverse.rs` used a "dense,
-  tombstone-free" fast path that bulk-reads
-  `degree × E::BYTES` bytes from `bucket.edge_start()`. For tree
-  mode, `edge_start` is the LEG root region (block_id array,
-  `root_len × 4` bytes), not the LTB payload blocks. The dispatch
-  condition matched tree mode (overflow_log_head = -1,
-  reserved_slots = stored_slots), so the dense slab-path was
-  incorrectly taken and the bulk read went OOB.
-- **Initial fix (REWORK-2)**: tree branches routed through
-  `tree_mode_out_edges_collect` (Vec materialization) + `enumerate()`,
-  yielding live-ordinal positions. Worked for dense tree buckets
-  (where enumerate == tombstone-inclusive slot) but violated the
-  position contract (ADR 0088 §2) for tombstoned buckets.
-- **Final fix (REWORK-3, this slice's design)**: tree branches call
-  `visit_tree_mode_label_bucket_edges` directly, forwarding the
-  tombstone-inclusive `u32` slot to `BucketEntryPosition::new(slot)`.
-  `ControlFlow::Break` is captured via a mutable cell. Dispatch
-  order reordered: dense condition first (more selective, with
-  `!is_tree_mode()` guard), tree branch after. **~50% instruction
-  reduction on the 3 read benches** as a bonus.
-- **Fix (REWORK-3):** added `if bucket.is_tree_mode() { ... }` branches
-  at 3 dispatch sites:
-
-  | Site | Function | Routing |
-  |---|---|---|
-  | `traverse.rs:790` | `visit_edges` | `tree_mode_out_edges_collect` + `ControlFlow` adapter |
-  | `traverse.rs:1580` | `visit_edges_window` | `tree_mode_out_edges_collect` + window slice + `ControlFlow` adapter |
-  | `traverse.rs:1843` | `visit_edges_with_inline_property` | `!is_tree_mode()` guard on dense path; falls through to `visit_slab_bucket_span_edges` (LTB-aware) |
-
-  `visit_edges_for_label_impl` (line 2000) and
-  `visit_edges_for_label_with_inline_property` already had the
-  tree branch (Plan 0318 Step 5). Other read paths require
-  `inline_property_byte_width > 0` for dispatch (a precondition),
-  which is always 0 in tree mode (set on promote), so they are
-  tree-mode safe by construction.
-
-- **Regression tests:**
-  - `tree_visit_edges_via_public_api_works_on_dense_tree_bucket` in
-    `tree_read.rs:447` (dense tree bucket: 4096 slots, no tombstone).
-    Verified to FAIL without the fix and PASS with the fix.
-  - `tombstoned_tree_bucket_visit_preserves_logical_positions` in
-    `tree_read.rs:511` (REWORK-3): promotes 4K tree bucket,
-    tombstones slot 100, verifies `graph.visit_edges` yields 4096
-    visits (not 4095) with tombstone at position 100, all positions
-    0..4096 covered exactly once, ascending AND descending.
-    Verified to FAIL with the REWORK-2 fix (enumeration gives
-    live-ordinal; tombstone at position 3995 in descending) and
-    PASS with the REWORK-3 fix (tombstone at position 100 in both
-    orders).
-
-- **Bench verification:** the 3 previously-TRAPping benches
-  (`tcsr_1048576_full_scan_descending`,
-  `tcsr_1048576_random_ordinal_access`,
-  `tcsr_131072_full_scan_descending`) now PASS deterministically
-  (3-for-3 each) and are persisted in `canbench_results.yml`.
-  Original 3 write-path benches (131K insert_grow, 1M insert_grow,
-  1M root_capacity) still PASS. 4K/65K prototype baseline 0%
-  regression (6/6 unchanged). Full canbench suite 158/158
-  unchanged, 0 regressed, 0 failed.
-
-- **Why the bug wasn't caught in Plan 0318 Step 5:** the Step 5
-  read-dispatch tests used `tree_mode_out_edges_collect` directly
-  (the LTB primitive), not the public `graph.visit_edges` API.
-  The public API has its own dispatch at `visit_edges` line 786
-  that unconditionally tried the dense fast path before falling
-  through. The Step 5 tests also used bucket degrees below the
-  LEG root size (4096 edges = 4 LTB blocks = LEG root 16 bytes),
-  so even a misread from `edge_start` returned within the (small)
-  memory window without trapping. The 1M bench exposed the bug
-  because 1M = 1024 LTB blocks = LEG root 4096 bytes, while the
-  dense read attempted 4MB.
-
-- **Diagnostic history:** the original (REWORK-1) audit
-  misdiagnosed the bug as "seeding above ~77K edges traps non-
-  deterministically" and proposed reducing the bench anchor to
-  131K. The REWORK-1 audit was internally inconsistent (the
-  131K insert_grow bench worked, requiring seeding past the
-  alleged 77K boundary). The REWORK-2 audit identified the
-  read-dispatch as the actual cause; REWORK-2 verified
-  determinism (3-for-3 trap) and re-root-caused the OOB.
-
-### GAP-2026-09-02-002 — RESOLVED: `tree-mode-interior-level-insert-growth` (right-spine cascade) and the 2^30 fail-closed boundary
-
-- **Status:** Resolved (2026-09-02, Plan 0325).
-- **Severity:** P1 production-correctness defect (effective tree-mode
-  cap of 2^20 per bucket was 4 KiB per label per vertex — too tight
-  for any non-trivial high-degree use case).
-- **Owner:** `tree_mode_insert_edge` (`tree_write.rs:58-280`),
-  `tree_mode_deepen` (already shipped, level-generic), depth-generic
-  resolver `resolve_leaf_block_id` (already shipped, physical depth).
-- **Observed behavior:** the Plan 0318 §Step 7 amend shipped an
-  interim fail-closed `TreeRootCapacityReached` guard at 2^20
-  (`stored_slots + 1 > R_MAX × B = 1,048,576` in a depth-1 tree
-  bucket). Production tree-mode inserts above 2^20 returned
-  `Err(TreeRootCapacityReached)`. The depth-generic infrastructure
-  needed for the cascade was already shipped and unit-verified
-  (mixed-radix resolver, `tree_mode_deepen`, `tree_mode_flatten`,
-  demote Phase 5b interior release, `bucket_span_region_len`
-  physical-depth match) — only the insert-side wiring was missing.
-- **Why it matters (design invariant):** ADR 0088 §4 documents
-  `TREE_STRUCTURAL_CAP = 2^30` (depth 1 → 2 at 2^20, depth 2 → 3 at
-  2^30, MAX_DEPTH = 3 primitive safety). The interim guard
-  contradicted the documented cap by 2^10. Production canisters
-  promoting high-degree label buckets to tree mode would hit the
-  guard at 2^20 with no way to grow further.
-- **Fix (Plan 0325):** rewrote `tree_mode_insert_edge` to wire
-  the right-spine cascade:
-  1. The `tail_offset == 0` branch now consults the
-     **physical** root length (ceil-chain, NOT
-     `derived_root_len` — `derive_depth` returns 1 for a deepened
-     bucket at stored = 2^20, but the physical root has 1 entry,
-     not 1024).
-  2. When the physical root is at `R_MAX`, the cascade fires:
-     - if `depth >= MAX_DEPTH` OR `next_stored > TREE_STRUCTURAL_CAP` →
-       typed `TreeRootCapacityReached` (fail-closed at the 2^30
-       structural boundary);
-     - else → `tree_mode_deepen` + **re-read the bucket
-       descriptor** (the caller's `bucket` copy is stale after
-       deepen publishes a new `edge_start` /
-       `tree_mode_physical_depth`).
-  3. After the cascade, the dispatch routes to
-     `tree_mode_tail_append_depth1` (depth 1) or
-     `tree_mode_tail_append_depth_ge2` (depth ≥ 2). The depth ≥ 2
-     path appends the new leaf id to its **home interior** (not
-     the root); the root grows only when a new interior is minted
-     (`l % K == 0`).
-  4. New helper `resolve_interior_block_id` — the
-     `resolve_leaf_block_id` hop chain truncated one level short.
-     Used by `tree_mode_tail_append_depth_ge2` to find the
-     home interior.
-
-- **Audit of depth-generic infrastructure (file:line):**
-  - `resolve_leaf_block_id` (tree_write.rs:516) — depth-generic ✓
-  - `collect_leaf_block_ids` (tree_write.rs:586) — depth-generic ✓
-  - `tree_mode_deepen` (tree_write.rs:632) — level-generic ✓
-  - `tree_mode_flatten` (tree_write.rs:830) — depth-2 → depth-1 ✓
-  - demote Phase 5b (tree_write.rs:1025) — interior release ✓
-  - `bucket_span_region_len` (compact.rs:234) — physical-depth match ✓
-  - `tree_mode_random_ordinal_access` (tree_read.rs:54) — DEPTH-1
-    DEBUG_ASSERT was relaxed (the prior `block_root_index < root_len`
-    debug_assert used structural root_len; relaxed to
-    `block_root_index < leaf_count` for depth-2 safety)
-  - `visit_tree_mode_label_bucket_edges` (tree_read.rs:115) —
-    DEPTH-1 DEBUG_ASSERT was relaxed (the prior
-    `debug_assert_eq!(leaf_count, root_len)` failed for depth ≥ 2;
-    relaxed to `leaf_count >= root_len` invariant — actual walk
-    uses `resolve_leaf_block_id` for the descent)
-  - `tree_mode_insert_edge` `tail_offset == 0` branch
-    (tree_write.rs:113-280) — **DEPTH-1-ONLY** (replaced by the
-    cascade + depth-aware append)
-
-- **Regression tests** (synthetic layout, host `VectorMemory`,
-  cheap):
-  - `tree_insert_fails_closed_at_2_30_cap`: 2^30 fail-closed at
-    depth 2 + root_len = R_MAX.
-  - `production_insert_path_fails_closed_at_2_30_cap`: same,
-    via the public `insert_edge_skip_leaf_cascade` API.
-  - `cascade_at_2_20_plus_1_deepens`: 2^20 + 1 insert SUCCEEDS,
-    depth 1 → 2, stored 2^20 + 1, visit yields 2^20 + 1 slots.
-  - `interior_row_append_keeps_root_constant`: depth 2 with
-    2 interiors + 1 leaf in the 2nd; next insert at row 1 of the
-    2nd interior (l = 1025, l % K = 1) — root unchanged.
-  - `new_interior_mint_grows_root`: depth 2 with 2 full interiors
-    + tail_offset == 0; next insert at l = 2048, l % K = 0 —
-    root grows from 2 to 3.
-  - `public_read_accessors_over_depth_2`: `tree_mode_out_edges_collect`
-    walks 1,048,577 slots for stored = 2^20 + 1, depth 2.
-  - Replaces the obsolete 0318 §Step 7 tests
-    `tree_insert_fails_closed_at_root_capacity` and
-    `production_insert_path_fails_closed_at_root_capacity` (the
-    2^20 guard was superseded by the cascade + 2^30 boundary).
-
-- **Bench surface:** REPLACED `tcsr_1048576_root_capacity_reached`
-  (2^20 + 1 insert previously FAIL-CLOSED) with
-  `tcsr_1048576_deepen_beyond_r_max` (2^20 + 1 insert now
-  SUCCEEDS via deepen; verified PASS ×3 with depth 2 / root_len 2 /
-  stored 2^20 + 1 / edge readable at slot 2^20). ADDED
-  `tcsr_1048576_deepen_then_interior_grow` (2^20 → 2^20 + 1024:
-  1 deepen + 1023 interior-row appends + 1 new-interior mint;
-  5,111,272 ins, 4994 ins/insert).
-  - Existing depth-1 benches (5 of them) 0% regression
-    (insert_grow / full_scan / random_ordinal / 131K insert_grow
-    / 131K full_scan): "no change" or within noise threshold
-    (≤ 1% on insert_grow, 0% on read benches).
-  - Full canbench 158/158 unchanged, 1 regressed
-    (`bench_t_v_window` +2.10%, pre-existing from Plan 0324
-    REWORK-3; small slab bench, 220 ins regression, acceptable).
-  - Wasm 15,661 chars / 4,339 headroom (was 15,536; +125 for
-    2 new bench names).
-
-- **Why depth 3 is not exercised (deliberate):** ADR 0088 §4
-  documents `MAX_DEPTH = 3` as a primitive-level safety bound
-  (`TreeDepthLimitReached`); the production cap of 2^30 binds
-  first. Depth 3 coverage (2^40 slots, 1 TiB per bucket) is
-  structurally wired (the resolver handles it, the canbench
-  surface cannot seed it: 17.9T ins > 10T per-bench limit). Lifting
-  the cap to 2^40 in production requires an ADR amend (out of
-  scope for this slice).
-
-### GAP-2026-08-28-001 — RESOLVED: index-anchored scans are unattributed in authz requirement extraction (grants silently stop working when an index exists)
-
-- **Status:** Resolved (2026-08-28). Fixing commit `0aebf4513`; Router suite 1045 → 1056 green.
-- **Severity:** P1 authorization-semantics defect (availability + plan-dependence)
-- **Owner:** Router authz requirement walker (`crates/router/src/authz.rs` `walk_op`,
-  `PlanCatalogView`, `RouterCatalogView`) with the index catalog seam
-  (`crates/router/src/facade/stable/indexed_catalog.rs`)
-- **Observed behavior:** On the demo network — the one environment with an active property
-  index (`document_title`, demo migration 000002) — every index-anchored read was denied to
-  non-tenants regardless of grants: `MATCH (d:Document {title: 'X'}) RETURN 1` → uniform
-  `Forbidden` for anonymous, while the identical shape over the deliberately unindexed
-  `Concept.name` executed, and the registry owner (tenancy root) always passed. The walker's
-  `PlanOp::IndexScan` arm deferred the anchor's property read without noting any label fact;
-  an index anchor never receives a later `NodeScan`, so the deferred read resolved with
-  `unique_vertex_label == None` → `require_unattributed` → fail-closed tenancy-only. The
-  same gap existed in the `IndexIntersection` arm and the `ConditionalIndexScan` candidate
-  path (only `fallback_label` was noted). Every extraction contract test ran indexless
-  fixtures (ADR 0054 indexless bootstrap), so the planner always emitted `NodeScan` and the
-  `IndexScan` arms had zero walker coverage — the bug was invisible to the suite and only
-  the live demo network surfaced it.
-- **Why it matters (design invariant):** authorization demands must not depend on which
-  physical plan the planner chooses. Before the fix, creating an index silently changed who
-  could run an existing prepared query — physical layout leaking into logical access
-  control. Removing the demo's index would have hidden the defect, not fixed it.
-- **Implemented behavior:** `PlanCatalogView` gained a catalog-driven label resolution for
-  the unique active vertex property index covering a property (same unique/fail-closed
-  semantics as the executor's `active_vertex_physical_index`); the `IndexScan`,
-  `IndexIntersection`, and `ConditionalIndexScan` walker arms now note the resolved label
-  fact and demand the same scan-side rows an equivalent `NodeScan` would (`Match` +
-  `Read`/`ReadProperty` via `require_vertex_scan_rows`). Ambiguous or inactive index
-  resolution stays unattributed (fail-closed, unchanged). The PocketIC citation-reach flow
-  fixture now creates `document_title` and drains maintenance to active, pinning the
-  index-anchored path end-to-end: a non-owner executes the op after the same PUBLIC grant
-  surface.
-- **Evidence:** live bisection on the demo network (indexed `Document.title` filter denies,
-  unindexed `Concept.name` filter passes; plain scans, traversal, quantified paths, and
-  `ELEMENT_ID` projections all pass) + indexless-vs-indexed extraction tests in
-  `crates/router/src/gql_grants.rs` and walker unit tests in `crates/router/src/authz.rs`.
-- **Next decision:** none open for the walker. Long-term, the planner could carry the label
-  in `PlanOp::IndexScan` (self-describing plan) — planner-stream territory, deferred until
-  the next plan-wire revision; the catalog-driven resolution matches executor semantics and
-  needs no wire change.
-
-### GAP-2026-08-26-001 — RESOLVED: `ELEMENT_ID` over quantified-path group variables fail-closed as "requires element indexing"
-
-- **Status:** Resolved (plan 0307 slice A, 2026-08-26) — executor completeness for GQL
-  group variables, not a demo workaround.
-- **Severity:** P2 demo-blocking executor gap
-- **Owner:** graph executor expression evaluation
-  (`crates/graph/src/plan/query/executor/eval.rs`, `eval_element_id`)
-- **Observed behavior:** With the PUBLIC grant surface applied, the knowledge demo's
-  `citation-reach` op (`ELEMENT_ID(e)` over `-[e:CITES]->{1,3}`) failed at execution for
-  ANY caller (owner included) with `InvalidArgument("invalid query expression value for
-  'ELEMENT_ID(e) on a group edge variable requires element indexing'")`. Quantified-path
-  variables bind as groups (`PlanBinding::EdgeGroup` hop trail / `VertexGroup`), and
-  `eval_element_id` rejected all three group binding kinds since commits `51ba273c9` /
-  `c7a6eb01a` (2026-06-08). Authorization was never the blocker: requirement extraction
-  adds no demand for element-id reads (plan 0306 contract test
-  `edge_element_id_projection_demands_stay_attributed`).
-- **Expected or needed behavior:** GQL group variables are lists; an element-identity read
-  over them returns a list of element ids in group order (empty group → empty list), so
-  published ops projecting edge identity execute end-to-end for authorized callers.
-- **Resolution:** `eval_element_id` now evaluates `EdgeGroup` → `Value::List` of edge-id
-  bytes in traversal order and `VertexGroup` → list of vertex-id bytes in group order,
-  reusing the singleton-arm encodings verbatim; empty groups yield empty lists;
-  `PathGroup` stays fail-closed with an actionable message (paths are not elements; use
-  `CARDINALITY(p)` or path element access). No planner, wire, rkyv, or authz changes.
-  Tests: host-level `element_id_on_edge_group_lists_hop_ids_in_traversal_order`,
-  `element_id_on_vertex_group_preserves_order_and_empty_group_yields_empty_list`,
-  `element_id_on_path_group_stays_fail_closed_with_guidance`; PocketIC
-  `knowledge_demo_citation_reach_flow.rs` upgraded to full row-content assertions
-  (default-deny leg preserved; non-owner execution with per-row hop-count-pinned
-  `cite_edge_id` lists).
-- **Evidence:** detection run during brief #2 PocketIC validation (w1:p8, 2026-08-26);
-  root cause read of `eval.rs` / `expand/var_len.rs`
-  [group-variables.md](execution/group-variables.md); post-fix green runs recorded in the
-  Validation Transcript of `plans/0307-group-element-id.md`.
-- **Related contracts:** GAP-2026-08-24-008 Impact follow-up (a) — citation-reach runtime
-  execution is now actually proven; the 2026-08-26 plan 0306 note was extraction-correct
-  but execution remained blocked until this slice.
-- **Detection:** w1:p8 during brief #2 validation (2026-08-26); resolved same day by w1:p8
-  under brief #3.
-
-### GAP-2026-08-25-004 — Committed HEAD fails `gleaph-router` lib-test standalone: `GqlQueryResult.truncated` constructor updates left uncommitted
-
-- **Status:** Resolved by commit 5cb98eb4c (2026-08-25; landed by w1:pM after the owning pane
-  could not be identified and the fix was routed through the operator)
-- **Severity:** P1 repository integrity
-- **Owner:** `crates/router/src/federation/aggregate_index_fast_path.rs` constructor call sites
-  for the `truncated` field added to `GqlQueryResult` by kernel commit `49f10d461` (ADR 0078)
-- **Observed behavior:** An isolated worktree at `d31909605` — and equally at then-HEAD —
-  failed `cargo test -p gleaph-router --lib` with
-  `E0063: missing field 'truncated' in initializer of GqlQueryResult`
-  (`aggregate_index_fast_path.rs:120/139/254`). The main tree compiled only while the owning
-  stream's uncommitted WIP stayed present, so the breakage was invisible locally.
-- **Expected or needed behavior:** Kernel-side field additions and their constructor-site
-  updates land in the same commit (GAP-2026-08-24-007 precedent).
-- **Resolution:** All three aggregate fast-path result constructors initialize
-  `truncated: None` (commit `5cb98eb4c`). Isolated-worktree verification at the fixing commit:
-  `cargo test -p gleaph-router --lib` → 980 passed / 0 failed, including the ADR 0081 Slice A
-  router-side ordered-range seed fail-closed surface.
-- **Evidence:** `git log -S "truncated" -- crates/graph-kernel/src/plan_exec.rs` → `49f10d461`;
-  isolated-worktree build log; fixing commit `5cb98eb4c`.
-- **Related contracts:** [ADR 0078](adr/0078-authz-aware-vector-search.md)
-- **Detection:** w1:pM during ADR 0081 Slice A verification (2026-08-25).
-
-### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
-
-- **Status:** Packed-prefix rereads addressed in cursor-forwarding drivers by Plan 0201
-  (ADR 0052 Slice 6); quadratic tombstone-gap rescanning remains open.
-- **Severity:** P2 maintenance-performance risk
-- **Owner:** `ic-stable-lara` labeled edge-slab compaction and deferred-maintenance cursor state
-- **Historical observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
-  most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
-  after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
-  resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
-  `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` at 73.36M instructions versus
-  4.14M previously; the existing 4,096- and 16,384-edge cases were already dominated by the same
-  quadratic shape.
-- **Expected or needed behavior:** preserve ascending/descending edge scan order and immediate
-  per-edge sidecar/index re-keying while carrying enough progress state that successive bounded
-  maintenance steps do not rescan the already-packed prefix.
-- **Resolution:** `CompactVertexEdgeSpan` (v1 work item) carries a `resume_slot_index` cursor;
-  `compact_vertex_edge_span_one_step` and both finders scan from the cursor with `next_live` seeded
-  from it (packed-prefix invariant), `EdgeMoved` re-enqueues carry the advanced cursor,
-  `AdvanceBucket` resets it, and a cursor-scan miss triggers a full re-scan from slot zero before
-  `stored_slots = degree`, so an interleaved delete inside the already-packed prefix can never
-  truncate a live edge. This does not establish linear work: forwarding avoids rereading the
-  packed live prefix but still scans an expanding tombstone gap. The earlier claim that this
-  moves compaction off the quadratic shape is withdrawn. The unchanged 16K benchmark itself
-  supplies zero; the separate completed zero/forwarded diagnostics and subsequent bounded-read
-  improvement are source-tagged in the [follow-up evidence](evidence/adr0097-left-pack-bounded-reads.md).
-  Batching reads reduces a constant factor, not repeated decoding.
-- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/compact.rs::first_edge_slot_move_in_bucket`
-  (cursor parameter), `compact_vertex_edge_span_one_step`; regression tests
-  `compaction_cursor_packs_alternating_tombstones_across_steps` and
-  `compaction_cursor_survives_interleaved_delete_in_packed_prefix` in
-  `labeled/bidirectional/deferred.rs`; ADR 0020's one-`EdgeMoved`-per-pop contract.
-- **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
-  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
-  [ADR 0052](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) Slice 6
-
-### GAP-2026-07-04-003 — No application-facing vertex-embedding ingestion boundary
-
-- **Status:** Resolved by plan 0048 implementation
-- **Severity:** P1 product gap
-- **Owner:** Router authorization/resolution + Graph validation boundary + Vector durable store
-- **Observed behavior:** before plan 0048, there was no canister API for an application or deployment
-  tool to write a canonical vertex embedding. Vector-index fixtures and demos had to seed the
-  derived `graph-vector-index` canister directly, bypassing Graph canonical ownership and the
-  Router embedding-name catalog.
-- **Expected or needed behavior:** an authorized caller should submit only graph name, opaque encoded
-  vertex id, registered embedding name, and finite F32 values to the typed Router endpoint; Router
-  should validate the value dimension/finiteness before stamp allocation and the Graph await, Graph
-  should validate vertex/tombstone/label and payload-independent embedding metadata, and every
-  allocated Router stamp should have one exact durable owner before the first Graph await.
-- **Resolution:** The typed Router `ingest_vertex_embeddings` flow validates the encoded id, live
-  shard, registered
-  vector definition, value dimension, and finiteness, then synchronously co-writes the allocated
-  stamps and exact `AwaitingGraph` intents before the first Graph await. Graph `stamp_embedding`
-  validates existence/tombstone state, required labels, and payload-independent embedding
-  metadata/encoding, then returns the Router-issued stamp without embedding-byte or journal writes.
-  Exact acceptance transitions the row to `AwaitingVector`; exact rejection changes the row to
-  `AwaitingFrontier`; an observed Vector prefix also changes only the applied rows to
-  `AwaitingFrontier`. Unknown Graph, Vector, or frontier outcomes retain the applicable phase. No
-  finite-time or client-level exactly-once guarantee is implied.
-- **Evidence:** `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
-  `crates/graph/src/canister/handlers.rs::stamp_embedding`; and the focused Router/Vector unit
-  coverage. The named PocketIC gate `graph_only_markerless_lane_advances_frontier_on_autonomous_timer`
-  passes exactly one test with seven filtered, one `PocketIc`, one federation, and four canister
-  installs; it advances the ordinary timer with an empty MemoryId 53 lane and exercises bounded GC.
-  The persisted Router `crates/router/canbench_results.yml` artifact has all 41 terminal benchmark
-  entries; `markerless_frontier_catalog` records exactly 52,080,138 total and 52,079,143 scoped
-  instructions. The dated Plan 0277 focused/persisted Vector `bench_router_frontier_gc_budget`
-  baseline records 2,110,300,092 total and 2,110,299,087 scoped instructions. The later live
-  artifact currently records 2,084,327,695 total and 2,084,326,690 scoped instructions from
-  unrelated work and is not Plan 0277 evidence. The targeted
-  affected-crate format check passes, while the
-  workspace-wide format check is blocked by unrelated dirty paths and never passed. The bounded
-  Quint model has fifteen deterministic tests and 5,000 sampled traces with all requested witnesses;
-  `quint verify` remains unrun and non-required, so this is not production proof or a finite-time
-  liveness claim.
-- **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
-  [design/index/vector-index.md](./index/vector-index.md),
-  [design/execution/pipeline.md](./execution/pipeline.md)
-
-### GAP-2026-07-04-002 — `NEXT INSERT` lost edge endpoint identity
-
-- **Status:** Resolved by commit `27e993ae`
-- **Severity:** P1 correctness defect
-- **Owner:** GQL block planning and Graph projection/mutation execution
-- **Observed behavior:** a `MATCH ... RETURN ... NEXT INSERT (a)-[:L]->(b)` mutation reported
-  success, but a later traversal observed disconnected/`NULL` endpoints. Separate seed operations
-  could not build a shared-vertex social graph.
-- **Resolution:** no-YIELD `NEXT` boundaries now preserve typed graph bindings; already-bound node
-  variables are not planned as new vertices; plain-variable projections retain `PlanBinding`
-  identity through native and wire execution.
-- **Evidence:**
-  `gql_run::tests::{block_match_next_insert_edge_keeps_endpoints,wire_block_match_next_insert_edge_keeps_endpoints,block_match_next_insert_edge_shares_source}`.
-- **Related contracts:** [gql/plan-format.md](gql/plan-format.md),
-  [execution/pipeline.md](execution/pipeline.md)
-
-### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
-
-- **Status:** Resolved by measured canbench + PocketIC acceptance (2026-08-03/2026-08-04; commits
-  `test(graph): measure plan-batch tail costs for headroom acceptance`, `test(graph): verify
-plan-batch drain boundary end to end`, `test(graph-index): measure posting_batch loop costs for
-headroom acceptance`, `test(vector-index): measure vector_sync_batch loop costs for headroom
-acceptance`, `test(graph-index): measure batched page-answer lookahead tail`, `test(router):
-measure graph batch chunk decision costs for headroom acceptance`, `test(graph): measure timer
-maintenance tick and per-step costs`)
-- **Severity:** P1 availability and resumability risk
-- **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
-- **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
-  independently chosen values, but no repository benchmark or acceptance table establishes that
-  each headroom covers its owning path's final operation, response encoding, post-operation drain,
-  and cross-canister call overhead. Current examples include Router's 5B headroom, Graph's pending
-  5B headroom for `execute_plan_update_batch`, graph-index and graph-vector-index batch ceilings at
-  32B with 100M per-loop reserves, graph-index's 1B update / 0.5B query lookahead, and Graph timer
-  maintenance at 32B with a 100M reserve. These values have different ownership and semantics and
-  must not be treated as interchangeable.
-- **Resolution:** every dynamic batch / bounded maintenance loop in the GAP now has measured,
-  path-specific instruction-ceiling and headroom acceptance evidence (plan-batch, posting_batch,
-  vector_sync_batch, page-answer lookahead, Router chunk decision, timer maintenance):
-  - **Graph plan-batch** (`execute_plan_update_batch`, `GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM`
-    2B + 500M drain estimate): adversarial single operation 32.98M < `MIN_OP_INSTRUCTION_ESTIMATE`
-    (50M) and far below the ~37.5B trap threshold; response tail ≤ 581K vs the 2.5B reserve; the
-    inter-canister drain is covered by the PocketIC boundary test
-    (`adr0060_plan_batch_instruction_boundary.rs`) which completes a 300-operation NEXT-chained
-    mutation on a converged index without trapping and serves the drained posting.
-  - **graph-index `posting_batch`** (32B ceiling, 100M reserve): max single op ≈1.92M (4096-byte
-    value) + response 38K, two orders below the reserve; ceiling cuts off only after ~16.6K
-    max-value postings. Fully local; no boundary test needed.
-  - **graph-vector-index `vector_sync_batch`** (32B ceiling, 100M reserve): max single op ≈1.12M
-    (flat in dims) + response 38K, two orders below the reserve; ceiling cuts off after ~29K
-    upserts. Fully local; no boundary test needed.
-  - **graph-index page-answer lookahead** (500M query lookahead): max per-check work (worst page
-    ≈206.4M + encode ≤ 316K) ≈206.7M, 2.4× below the lookahead. The 1B update lookahead has no
-    caller and needs no evidence until used.
-  - **Router mutation-batching chunk decision** (`ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` 4B):
-    decision cost 6.01M nominal / 37.34M adversarial (≈0.15% / ≈0.9% of the reserve); the
-    remaining per-chunk tail is bounded by the inter-canister sizing policy (≤2 MiB) and the
-    dispatch count is bounded by live shard count, so no dedicated boundary test was added.
-  - **Graph timer maintenance** (`MAX_TIMER_MAINTENANCE_INSTRUCTIONS` 32B,
-    `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` 100M): single work item 61.60K and whole tick on a
-    dense 2048-edge hub 1.33M, so the worst per-check work (≤ whole tick) is ≈1.3% of the reserve
-    and a realistic backlog drains in ≈0.004% of the cap. Fully local; no boundary test needed.
-    Follow-up refactor (`relocate_edge_properties_for_move`): the inline-property posting rekey,
-    previously a post-pass loop outside the budget check, now runs inside the per-move observer
-    through the unified property relocation, so the entire edge-move consequence is covered by
-    the per-item cutoff; the measured tick is unchanged (1.33M, re-persisted 2026-08-04).
-- **Evidence:** canbench targets and persisted results: `crates/graph/src/bench/plan_batch.rs`,
-  `crates/graph/src/bench/timer_maintenance.rs`, `crates/graph-index/src/bench.rs`,
-  `crates/graph-vector-index/src/bench.rs`, `crates/router/src/bench.rs`, with the matching
-  `canbench_results.yml` per crate; the plan-batch PocketIC boundary test
-  `crates/pocket-ic-tests/tests/adr0060_plan_batch_instruction_boundary.rs`. No headroom was
-  justified by copying another canister's constant: each path carries its own measured worst-case
-  and tail numbers.
-- **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
-  [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
-  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
-  [design/index/property-index.md](index/property-index.md),
-  [design/index/vector-index.md](index/vector-index.md)
-
-### GAP-2026-08-07-001 — Newer-incarnation replacement can tombstone the old row before a fallible append
-
-- **Status:** Resolved by a commit-before-tombstone reorder in `vector_upsert` (Plan 0233).
-- **Severity:** P2 correctness edge (only reachable on stable-memory OOM during a subject-map commit)
-- **Owner:** graph-vector-index (`VectorCanisterStore::vector_upsert`)
-- **Observed behavior:** In the `mutation_id > stamp` (newer-incarnation) branch, the superseded old
-  active/shadow slots were tombstoned _before_ the fallible `VECTOR_SUBJECT_TO_ID` commit. If that
-  commit failed (`StableGrowFailed`, stable-memory OOM), the retained old subject entry pointed at a
-  now-tombstoned row, ghosting the subject from search.
-- **Resolution:** The branch now commits the subject map (pointing at the new slot) before tombstoning
-  the old slots; on a commit failure it tombstones only the just-appended rows, leaving the old slot
-  live and the retained entry consistent. A regression test
-  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`) injects a subject-map insert failure via
-  a test seam (`arm_subject_insert_failure`) and asserts the old slot stays live and `live_len` is
-  unchanged. The resurrection case is likewise fixed: `unmark_deleted` now runs only after a
-  successful commit.
-- **Evidence:** `crates/vector-canister/src/facade/store/mutation.rs` (reorder + seam),
-  `crates/vector-canister/src/facade/store/tests.rs`
-  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`).
-- **Related contracts:** [ADR 0032](adr/0032-vector-index-slab-page-store.md)
+Whlie diagnosing GAP-2026-09-20-005 a `git stash` was used to bisect and then dropped, which swept up
+**twelve uncommitted files belonging to other workstreams** (`crates/graph/src/facade/**`,
+`crates/graph/src/index/canonical_export.rs`, `Cargo.lock`, the `deferred.rs` / `iter.rs` comment
+hunks, `pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, `design/adr/0050` / `0059`). All of
+them were restored from the still-reachable dangling stash commit `c2fae9e5b` (`git fsck
+--no-reflogs --unreachable`), verified back in place, and the suite is green again (611/0). No
+foreign content had been committed: the one shared file committed here (`design/adr/README.md`)
+contains only this workstream's ADR 0096 row.
+**Discipline for this worktree:** never `git stash` (or any tree-wide state operation) while other
+agents have uncommitted work; bisect with file copies instead (`$TMPDIR/...`), as the rest of this
+session did.
 
 ## Property and index capability gaps
 
