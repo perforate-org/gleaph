@@ -292,11 +292,19 @@ Block 1: ...
 ```
 
 Per-block header (16 bytes): `kind` (1 B: 0 Free, 1 Edge, 2 InlineProperty,
-3 EdgeInterior, 4 InlinePropertyInterior), reserved (1 B, zero), bucket label
-key wire (2 B), owner vertex id **or next-free id when `kind == Free`** (4 B),
-stream ordinal (4 B), level (1 B, validation metadata only), reserved (3 B,
-zero). Kind/owner/ordinal/level are **validation metadata**, never addressing
-keys; the root array is the single source of reachability.
+3 EdgeInterior, 4 InlinePropertyInterior), reserved (1 B, zero), reserved (2 B,
+zero), next-free id **when `kind == Free`** (4 B, zero for a live block), reserved
+(4 B, zero), reserved (1 B, zero), tombstone count (2 B, ADR 0094 §level 1),
+reserved (1 B, zero).
+
+**Amendment (2026-11-07): the header carries only what a reader acts on.** It used to
+declare a bucket label wire, an owner vertex id and a stream ordinal as "validation
+metadata", but no reader consumed them: reachability is the root array's (this ADR §6),
+offset/LIMIT skips read the tombstone count, and the free list walks the link word. Three
+tree producers therefore wrote zeros into fields the layout advertised, which is the defect
+recorded as GAP-2026-09-22-002. The type now holds `kind`, a `free_next` that exists exactly
+for `Free`, and `tombstone_count`; the removed fields' bytes stay reserved and zero, so the
+persisted 16-byte layout is unchanged and a reinstate would be a deliberate new decision.
 
 **Block id domain:** bare u32 with `NULL_BLOCK = u32::MAX` as the free-list
 terminator (effective domain 2³² − 1 blocks). Shared capacity across all
@@ -837,7 +845,9 @@ Safety is anchored at **allocation time**, not reopen:
   entry than the FreeSpanStore merge validation. No O(blocks), O(buckets), or
   O(edges) work at reopen.
 - **Access-time (fail-closed, O(1)–O(root)):** per-stream derivation equation
-  (§6) and block-header kind/owner/ordinal/level agreement on dereference.
+  (§6), the block-header `kind` (an unknown byte panics, §8) and the tombstone count a
+  tombstone-inclusive skip reads. Header fields the layout no longer carries are not checked
+  because they do not exist (amendment 2026-11-07); reachability is the root array's.
 - **Test-only:** full reachability audit (every non-free block reachable from
   exactly one root; free list disjoint).
 

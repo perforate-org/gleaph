@@ -572,28 +572,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
   or weakened runtime assertion is introduced by slice0381.
 
-### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
-
-- **Status:** Open; root reachability and byte preservation are tested, not header validation.
-- **Observed behavior:** `transcribe_and_publish_tree` constructs a base `BlockHeader` with
-  label, owner and ordinal all zero, retaining those values for emitted edge/property blocks.
-  A real label-3 root therefore resolves to a header with label zero; the first witness's
-  label-equality assertion failed before maintenance. Final witnesses preserve those exact
-  producer bytes, distinct root IDs, block kinds/levels/tombstone counts and allocation state.
-- **Expected behavior:** [ADR 0088 §4/§8](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
-  describes owner/ordinal metadata agreement on dereference. Roots remain the sole addressing
-  source; metadata is not a second reachability map.
-- **Owner:** `graph/promote.rs::transcribe_and_publish_tree`, other tree block producers,
-  and tree dereference validation.
-- **Evidence:** The same [setup evidence](evidence/adr0097-tree-compaction-admission.md#setup-findings-not-compaction-reds)
-  and source-pinned promoter/read code. No forged metadata was inserted to make the witness pass.
-- **Impact:** Preservation through compaction does not prove the advertised owner/ordinal
-  validation contract. Incorrect header metadata is not evidence that the valid root references
-  themselves are aliased or unbacked.
-- **Next decision:** Audit all producers and dereference checks, then reconcile implemented
-  metadata with the active ADR contract in a separate bounded slice. Do not add another mapping
-  or silently claim validation from successful traversal.
-
 ### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
 
 - **Status:** Open for matching-removal mutation. The bounded **point-state/liveness READ
@@ -2833,6 +2811,26 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-002 — RESOLVED: the header no longer advertises metadata nothing writes
+
+- **Status:** Resolved (2026-11-07) by removing the advertisement rather than by encoding it. The 16-byte block header
+  declared a bucket-label wire (2 B), an owner vertex id (4 B), a stream ordinal (4 B) and a level (1 B) as "validation
+  metadata", and nothing read any of them: the free list walks the link word, offset/LIMIT skips read the tombstone
+  count, and tree reachability is the root arrays' job (ADR 0102). Three tree producers wrote zeros into those fields,
+  which is exactly the reported mismatch - producers and "advertised" metadata disagreeing because the metadata had no
+  consumer to agree with.
+- **What replaced it:** `BlockHeader` is `kind` + `free_next: Option<u32>` + `tombstone_count`, with
+  `BlockHeader::free(link)` and `BlockHeader::live(kind)` as the only constructors and `with_kind` /
+  `with_tombstone_count` as the only transitions. The free-list link is `Some` exactly for `Free`, so a live block cannot
+  carry one, a free block cannot be built without one, and `free_next()` panics on a live block - the misuse the plain
+  `u32` invited. The removed fields' bytes stay reserved and zero, so the persisted layout is unchanged.
+- **Evidence:** all 24 construction sites and every reader go through the constructors and accessors;
+  `header_round_trip_preserves_kind_and_tombstone_count` and the new
+  `a_free_header_round_trips_its_link_and_refuses_to_answer_otherwise` pin the bytes that still mean something; two loops
+  that existed only to compute the level they stored are gone. lara 776, canbench 713, graph 1132; clippy and fmt clean.
+- **Design sync:** ADR 0088 §6 carries a dated amendment with the new 16-byte layout and says why the removed fields are
+  not checked on dereference; `lara.md` and `lara-dgap-contract.md` no longer list (002) as open.
 
 ### GAP-2026-08-24-007 — RESOLVED: committed HEAD builds `gleaph-router`
 
