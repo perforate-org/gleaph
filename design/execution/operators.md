@@ -66,6 +66,29 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `Materialize` | Exec | |
 | `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT), `OTHERWISE` fallback |
 
+### Aggregate function contracts
+
+The `Aggregate` operator's semantics live here rather than in the syntax reference, because these are execution contracts
+a caller must satisfy, not grammar.
+
+**Percentile parameters (`PERCENTILE_CONT`, `PERCENTILE_DISC`).** The second argument is the *fraction* and must be:
+
+| Requirement | Rejected with | Why |
+| --- | --- | --- |
+| Constant within a group | `aggregate: percentile fraction must be constant per group` | A percentile has one fraction per group; a row-varying one has no single meaning, so the executor fails closed instead of silently picking a row's value |
+| Finite | `aggregate: percentile fraction must be finite` | `NaN`/`±Inf` are not positions in an ordered sample |
+| Within `[0, 1]` (an epsilon of slack is clamped away) | `aggregate: percentile fraction must be in [0, 1]` | Outside the unit interval there is no sample position |
+| Present when the group has rows | `aggregate: percentile fraction missing` | A `NULL` fraction means "no percentile was asked for", which is an error rather than `NULL` |
+
+`PERCENTILE_CONT` interpolates between the two neighbouring values; `PERCENTILE_DISC` returns the first sample value at or
+above the fraction's position, both over the group's non-`NULL` samples in `ORDER BY` order when one is given. A group whose
+samples are all `NULL` yields `NULL`, not an error.
+
+These three fail-closed arms are locked by
+`percentile_fraction_must_be_finite_and_within_the_unit_interval` and
+`percentile_fraction_must_be_constant_per_group` in `crates/graph/src/plan/query/aggregate.rs`, so relaxing the contract
+requires changing a test, not just adding a document line.
+
 ## DML (update path)
 
 | PlanOp | Status |

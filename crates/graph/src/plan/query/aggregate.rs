@@ -1396,6 +1396,86 @@ mod tests {
         }
     }
 
+    /// The fraction contract is documented (`design/execution/operators.md`); these lock its three fail-closed arms so a
+    /// future relaxation cannot happen silently.
+    #[test]
+    fn percentile_fraction_must_be_finite_and_within_the_unit_interval() {
+        let eval = TestRowEval;
+        for (literal, expected) in [
+            (
+                Value::Float64(1.5),
+                "aggregate: percentile fraction must be in [0, 1]",
+            ),
+            (
+                Value::Float64(-0.1),
+                "aggregate: percentile fraction must be in [0, 1]",
+            ),
+            (
+                Value::Float64(f64::INFINITY),
+                "aggregate: percentile fraction must be finite",
+            ),
+            (
+                Value::Float64(f64::NAN),
+                "aggregate: percentile fraction must be finite",
+            ),
+        ] {
+            let error = execute_aggregate(
+                vec![row_value("v", Value::Int64(10))],
+                &[],
+                &[spec(
+                    AggregateFunc::PercentileCont,
+                    Some(Expr::new(ExprKind::Variable("v".into()))),
+                    Some(Expr::new(ExprKind::Literal(literal))),
+                    false,
+                    None,
+                    None,
+                )],
+                &eval,
+            )
+            .expect_err("an out-of-contract fraction must fail closed");
+            assert!(
+                matches!(&error, PlanQueryError::InvalidExpressionValue { expression } if expression == expected),
+                "unexpected error: {error:?}"
+            );
+        }
+    }
+
+    /// A fraction that varies per row has no single meaning for the group, so it fails closed instead of picking one.
+    #[test]
+    fn percentile_fraction_must_be_constant_per_group() {
+        let eval = TestRowEval;
+        let error = execute_aggregate(
+            vec![
+                BTreeMap::from([
+                    ("v".to_owned(), PlanBinding::Value(Value::Int64(10))),
+                    ("p".to_owned(), PlanBinding::Value(Value::Float64(0.25))),
+                ])
+                .into(),
+                BTreeMap::from([
+                    ("v".to_owned(), PlanBinding::Value(Value::Int64(30))),
+                    ("p".to_owned(), PlanBinding::Value(Value::Float64(0.75))),
+                ])
+                .into(),
+            ],
+            &[],
+            &[spec(
+                AggregateFunc::PercentileCont,
+                Some(Expr::new(ExprKind::Variable("v".into()))),
+                // A row-varying fraction: each row binds a different value, which has no single group meaning.
+                Some(Expr::new(ExprKind::Variable("p".into()))),
+                false,
+                None,
+                None,
+            )],
+            &eval,
+        )
+        .expect_err("a row-varying fraction must fail closed");
+        assert!(
+            matches!(&error, PlanQueryError::UnsupportedExpression { expression } if expression.contains("constant per group")),
+            "unexpected error: {error:?}"
+        );
+    }
+
     #[test]
     fn percentile_cont_median() {
         let eval = TestRowEval;
